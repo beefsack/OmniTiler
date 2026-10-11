@@ -659,8 +659,7 @@ export function startWorkspaceSendAdapterEntry(
                     return writeDesktopForOutput(surface, desktopRef, output);
                 }
                 if (Object.prototype.hasOwnProperty.call(surface, "currentDesktop")) {
-                    Reflect.set(surface, "currentDesktop", desktopRef);
-                    return true;
+                    return Reflect.set(surface, "currentDesktop", desktopRef);
                 }
                 return false;
             } catch (error) {

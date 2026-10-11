@@ -10,8 +10,14 @@
 // suite; this file only pins the fallback.
 
 import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createInterface } from "node:readline";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
+import { PLAN_DEBOUNCE_MS } from "../src/plan-adapter";
+import { WORKSPACE_SEND_TIMEOUT_MS } from "../src/workspace-send-adapter";
 import { readDomainGaps } from "../src/domain-gap";
 import {
     observeDirectionalDomain,
@@ -242,6 +248,16 @@ describe("kwin 6.6 legacy-shared capability seam", () => {
         assert.equal(supportsPerOutputDesktops(partial.workspace), true);
         assert.equal(writeDesktopForOutput(partial.workspace, world.desktops[1] as object, world.outputs[0] as object), false);
     });
+
+    it("reflects a refused shared write instead of claiming success", () => {
+        const world = world66();
+        const shared = world.desktops[0];
+        Object.defineProperty(world.workspace, "currentDesktop", {
+            configurable: true,
+            get: (): unknown => shared,
+        });
+        assert.equal(writeDesktopForOutput(world.workspace, world.desktops[1] as object, world.outputs[0] as object), false);
+    });
 });
 
 describe("kwin 6.6 workspace navigation degrades to shared", () => {
@@ -375,5 +391,528 @@ describe("kwin 6.6 production entry runs shared", () => {
             `migration refusal log: ${JSON.stringify(logs)}`,
         );
         handle.stop();
+    });
+});
+
+// ---- Legacy (6.6) production-entry wire coverage against the real Engine ----
+// Same route as the 6.7 engine fixtures, but the workspace exposes no
+// currentDesktopForScreen/setCurrentDesktopForScreen methods: every
+// per-output read resolves to the shared currentDesktop and every switch to
+// the shared write. Replies come from the real Planner (planner_eval), never
+// hand-built, and timers fire deterministically.
+function legacyRepoRoot(): string {
+    let dir = resolve(process.cwd());
+    for (let depth = 0; depth < 4; depth += 1) {
+        if (existsSync(join(dir, "Cargo.toml"))) {
+            return dir;
+        }
+        dir = dirname(dir);
+    }
+    throw new Error("fixture root not found");
+}
+
+class LegacyBridge {
+    private readonly proc: ChildProcess;
+    private readonly waiters: Array<{
+        resolve: (reply: string) => void;
+        reject: (error: Error) => void;
+    }> = [];
+    private dead: string | null = null;
+
+    private constructor(proc: ChildProcess) {
+        this.proc = proc;
+        const stdout = proc.stdout;
+        if (stdout === null || stdout === undefined) {
+            throw new Error("planner_eval stdout unavailable");
+        }
+        createInterface({ input: stdout }).on("line", (line: string) => {
+            this.waiters.shift()?.resolve(line);
+        });
+        proc.stderr?.resume();
+        proc.on("error", (error) => {
+            this.failAll(error instanceof Error ? error : new Error(String(error)));
+        });
+        proc.on("exit", (code) => {
+            this.failAll(new Error(`planner_eval exited with code ${String(code)}`));
+        });
+    }
+
+    private failAll(error: Error): void {
+        if (this.dead === null) {
+            this.dead = error.message;
+        }
+        while (this.waiters.length > 0) {
+            this.waiters.shift()?.reject(error);
+        }
+    }
+
+    static start(): LegacyBridge {
+        return new LegacyBridge(
+            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "planner_eval"], {
+                cwd: legacyRepoRoot(),
+                stdio: ["pipe", "pipe", "pipe"],
+            }),
+        );
+    }
+
+    send(request: string): Promise<string> {
+        if (this.dead !== null) {
+            return Promise.reject(new Error(this.dead));
+        }
+        if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
+            return Promise.reject(new Error("planner_eval process already exited"));
+        }
+        return new Promise<string>((resolvePromise, reject) => {
+            this.waiters.push({ resolve: resolvePromise, reject });
+            try {
+                this.proc.stdin?.write(request + "\n");
+            } catch (error) {
+                reject(error instanceof Error ? error : new Error(String(error)));
+            }
+        });
+    }
+
+    async close(): Promise<void> {
+        try {
+            this.proc.stdin?.end();
+        } catch (error) {
+            void error;
+        }
+        await new Promise<void>((resolvePromise) => {
+            const timer = setTimeout(() => {
+                try {
+                    this.proc.kill("SIGKILL");
+                } catch (error) {
+                    void error;
+                }
+                resolvePromise();
+            }, 3000);
+            this.proc.on("exit", () => {
+                clearTimeout(timer);
+                resolvePromise();
+            });
+        });
+    }
+}
+
+interface LegacySignal {
+    readonly handlers: Set<() => void>;
+    readonly signal: {
+        connect: (handler: () => void) => void;
+        disconnect: (handler: () => void) => void;
+    };
+    readonly fire: () => void;
+}
+
+function legacySignal(): LegacySignal {
+    const handlers = new Set<() => void>();
+    return {
+        handlers,
+        signal: {
+            connect: (handler: () => void): void => {
+                handlers.add(handler);
+            },
+            disconnect: (handler: () => void): void => {
+                handlers.delete(handler);
+            },
+        },
+        fire: (): void => {
+            for (const handler of [...handlers]) {
+                handler();
+            }
+        },
+    };
+}
+
+interface LegacyOutput {
+    readonly name: string;
+    readonly geometry: { x: number; y: number; width: number; height: number };
+}
+
+interface LegacyDesktop {
+    readonly id: string;
+    readonly x11DesktopNumber: number;
+}
+
+interface LegacyWindow extends Record<string, unknown> {
+    normalWindow: boolean;
+    managed: boolean;
+    minimized: boolean;
+    fullScreen: boolean;
+    maximizeMode: number;
+    onAllDesktops: boolean;
+    output: LegacyOutput;
+    desktops: LegacyDesktop[];
+    internalId: string;
+    frameGeometry: { x: number; y: number; width: number; height: number };
+    resourceClass: string;
+    outputSig: LegacySignal;
+}
+
+interface LegacyHarness {
+    readonly bridge: LegacyBridge;
+    readonly workspace: Record<string, unknown>;
+    readonly outputs: { top: LegacyOutput; bottom: LegacyOutput };
+    readonly desktops: { a: LegacyDesktop; b?: LegacyDesktop };
+    readonly wins: LegacyWindow[];
+    readonly mover: LegacyWindow;
+    readonly dbusCalls: Array<{ method: string; payload: string }>;
+    readonly callbacks: Array<(reply: unknown) => void>;
+    readonly replies: Map<number, string>;
+    readonly timers: Array<{ delayMs: number; callback: () => void; cancelled: boolean; fired: boolean }>;
+    readonly logs: string[];
+    readonly handle: NonNullable<ReturnType<typeof startPlanAdapterEntry>>;
+    readonly fireTimers: (delayMs: number) => number;
+    readonly flushAll: () => Promise<void>;
+    readonly sendPayloads: () => Array<{ index: number; body: Record<string, unknown> }>;
+    readonly stop: () => Promise<void>;
+}
+
+async function makeLegacyHarness(secondDesktop = false): Promise<LegacyHarness> {
+    // Stacked outputs sharing one current desktop: the 6.6 shape is defined
+    // by ABSENCE, so the per-output keys must never appear on the surface.
+    const top: LegacyOutput = { name: "out-top", geometry: { x: 0, y: 0, width: 1920, height: 540 } };
+    const bottom: LegacyOutput = { name: "out-bottom", geometry: { x: 0, y: 540, width: 1920, height: 540 } };
+    const wsA: LegacyDesktop = { id: "ws-a", x11DesktopNumber: 1 };
+    const wsB: LegacyDesktop = { id: "ws-b", x11DesktopNumber: 2 };
+    const liveDesktops = secondDesktop ? [wsA, wsB] : [wsA];
+    const mkWin = (
+        output: LegacyOutput,
+        desktop: LegacyDesktop,
+        internalId: string,
+        frame: { x: number; y: number; width: number; height: number },
+    ): LegacyWindow => {
+        const outputSig = legacySignal();
+        return {
+            normalWindow: true,
+            managed: true,
+            minimized: false,
+            fullScreen: false,
+            maximizeMode: 0,
+            onAllDesktops: false,
+            output,
+            desktops: [desktop],
+            internalId,
+            frameGeometry: { ...frame },
+            resourceClass: "app",
+            desktopsChanged: legacySignal().signal,
+            outputChanged: outputSig.signal,
+            frameGeometryChanged: legacySignal().signal,
+            fullScreenChanged: legacySignal().signal,
+            maximizedChanged: legacySignal().signal,
+            outputSig,
+        };
+    };
+    const wins: LegacyWindow[] = [
+        mkWin(top, wsA, "o-win-1", { x: 20, y: 20, width: 400, height: 300 }),
+        mkWin(top, wsA, "o-win-2", { x: 440, y: 20, width: 400, height: 300 }),
+        mkWin(bottom, wsA, "o-win-t", { x: 20, y: 600, width: 400, height: 300 }),
+    ];
+    const mover = wins[1] as LegacyWindow;
+    const wsig = {
+        windowAdded: legacySignal(),
+        windowRemoved: legacySignal(),
+        windowActivated: legacySignal(),
+        screensChanged: legacySignal(),
+        currentDesktopChanged: legacySignal(),
+        desktopsChanged: legacySignal(),
+    };
+    const workspace: Record<string, unknown> = {
+        activeWindow: mover,
+        activeScreen: top,
+        screens: [top, bottom],
+        desktops: liveDesktops,
+        // Shared current desktop: current on EVERY output on 6.6.
+        currentDesktop: wsA,
+        // NOTE: no currentDesktopForScreen / setCurrentDesktopForScreen.
+        clientArea: (kind: unknown, output: unknown): object => {
+            void kind;
+            if (output === top) {
+                return { x: 0, y: 0, w: 1920, h: 500 };
+            }
+            return { x: 0, y: 580, w: 1920, h: 500 };
+        },
+        windowList: (): object[] => [...wins],
+        sendClientToScreen: (client: object, output: object): void => {
+            const win = client as LegacyWindow;
+            win.output = output as LegacyOutput;
+            win.outputSig.fire();
+        },
+        windowAdded: wsig.windowAdded.signal,
+        windowRemoved: wsig.windowRemoved.signal,
+        windowActivated: wsig.windowActivated.signal,
+        screensChanged: wsig.screensChanged.signal,
+        currentDesktopChanged: wsig.currentDesktopChanged.signal,
+        desktopsChanged: wsig.desktopsChanged.signal,
+    };
+    const bridge = LegacyBridge.start();
+    const dbusCalls: LegacyHarness["dbusCalls"] = [];
+    const callbacks: LegacyHarness["callbacks"] = [];
+    const replies = new Map<number, string>();
+    const timers: LegacyHarness["timers"] = [];
+    const logs: LegacyHarness["logs"] = [];
+    const harness: LegacyHarness = {
+        bridge,
+        workspace,
+        outputs: { top, bottom },
+        desktops: secondDesktop ? { a: wsA, b: wsB } : { a: wsA },
+        wins,
+        mover,
+        dbusCalls,
+        callbacks,
+        replies,
+        timers,
+        logs,
+        handle: null as unknown as NonNullable<ReturnType<typeof startPlanAdapterEntry>>,
+        fireTimers: (delayMs: number): number => {
+            let fired = 0;
+            for (const timer of timers) {
+                if (timer.delayMs === delayMs && !timer.cancelled && !timer.fired) {
+                    timer.fired = true;
+                    fired += 1;
+                    timer.callback();
+                }
+            }
+            return fired;
+        },
+        flushAll: async (): Promise<void> => {
+            for (let round = 0; round < 12; round += 1) {
+                const next = dbusCalls.findIndex((call, at) => call.method === "DescribePlan" && !replies.has(at));
+                if (next < 0) {
+                    return;
+                }
+                const reply = await bridge.send(dbusCalls[next]?.payload as string);
+                replies.set(next, reply);
+                callbacks[next]?.(reply);
+            }
+            throw new Error("flushAll did not converge: planner keeps dispatching");
+        },
+        sendPayloads: (): Array<{ index: number; body: Record<string, unknown> }> => {
+            const out: Array<{ index: number; body: Record<string, unknown> }> = [];
+            dbusCalls.forEach((call, index) => {
+                if (call.method !== "DescribePlan") {
+                    return;
+                }
+                try {
+                    const body = JSON.parse(call.payload) as Record<string, unknown>;
+                    if ((body["command"] as Record<string, unknown> | undefined)?.["op"] === "send-to-output") {
+                        out.push({ index, body });
+                    }
+                } catch {
+                    return;
+                }
+            });
+            return out;
+        },
+        stop: async (): Promise<void> => {
+            try {
+                harness.handle?.stop();
+            } catch (error) {
+                void error;
+            }
+            await bridge.close();
+        },
+    };
+    const handle = startPlanAdapterEntry({
+        workspace,
+        owner: "owner-1",
+        generation: "gen-1",
+        log: (message: string): void => {
+            logs.push(message);
+        },
+        callDbus: (_service, _path, _iface, method, payload, callback): void => {
+            if (method === "NameHasOwner") {
+                callback(true);
+                return;
+            }
+            if (method === "GetNameOwner") {
+                callback(":1.7");
+                return;
+            }
+            if (method === "StartServiceByName") {
+                callback(1);
+                return;
+            }
+            dbusCalls.push({ method, payload });
+            callbacks.push(callback);
+        },
+        scheduleOnce: (delayMs, callback): (() => void) => {
+            const timer = { delayMs, callback, cancelled: false, fired: false };
+            timers.push(timer);
+            return (): void => {
+                timer.cancelled = true;
+            };
+        },
+        registerShortcutFn: (): boolean => true,
+        readProfileFn: (): string => "cosmic",
+        readWorkspaceModeFn: (): unknown => "per-output-local",
+        readInnerGapFn: (): number => 8,
+        readOuterGapFn: (): number => 8,
+    });
+    assert.notEqual(handle, null, "production entry starts on the 6.6-shaped surface");
+    (harness as { handle: unknown }).handle = handle;
+    return harness;
+}
+
+function legacyPlanCalls(harness: LegacyHarness): Array<Record<string, unknown>> {
+    return harness.dbusCalls
+        .filter((call) => call.method === "DescribePlan")
+        .map((call) => JSON.parse(call.payload) as Record<string, unknown>);
+}
+
+function assertLegacyShape(harness: LegacyHarness): void {
+    assert.equal("currentDesktopForScreen" in harness.workspace, false, "6.6 surface never gains the read method");
+    assert.equal("setCurrentDesktopForScreen" in harness.workspace, false, "6.6 surface never gains the setter");
+}
+
+async function settleLegacy(harness: LegacyHarness): Promise<void> {
+    for (let round = 0; round < 10; round += 1) {
+        harness.fireTimers(PLAN_DEBOUNCE_MS);
+        const before = harness.dbusCalls.length;
+        await harness.flushAll();
+        harness.fireTimers(PLAN_DEBOUNCE_MS);
+        await harness.flushAll();
+        if (harness.dbusCalls.length === before) {
+            return;
+        }
+    }
+    throw new Error("legacy plan flights did not settle");
+}
+
+describe("kwin 6.6 production entry wire coverage (real Engine, methods absent)", () => {
+    it("runs the automatic startup resync on the shared desktop", async () => {
+        const h = await makeLegacyHarness();
+        try {
+            assert.ok(
+                h.logs.some((line) => line === "omnitiler:workspace:workspace-mode-degraded:per-output-local-to-shared"),
+                `honest degrade log: ${JSON.stringify(h.logs)}`,
+            );
+            assertLegacyShape(h);
+            h.fireTimers(PLAN_DEBOUNCE_MS);
+            await h.flushAll();
+            const calls = legacyPlanCalls(h);
+            assert.ok(calls.length >= 1, "startup resync dispatches automatically");
+            for (const body of calls) {
+                assert.equal(
+                    (body["domain"] as Record<string, unknown>)["workspace"],
+                    "ws-a",
+                    "every startup domain resolves the shared current desktop",
+                );
+            }
+            const domains = new Set(
+                calls.map((body) => {
+                    const domain = body["domain"] as Record<string, unknown>;
+                    return `${domain["output"] as string} ${domain["workspace"] as string}`;
+                }),
+            );
+            assert.ok(domains.has("out-top ws-a"), `foreground startup domain: ${JSON.stringify([...domains])}`);
+            assert.ok(domains.has("out-bottom ws-a"), `hidden startup domain: ${JSON.stringify([...domains])}`);
+            assertLegacyShape(h);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("sends cross-output with follow and no desktop switch", async () => {
+        const h = await makeLegacyHarness();
+        try {
+            await settleLegacy(h);
+            assertLegacyShape(h);
+            h.handle.requestSendToOutput("down", true);
+            assert.equal(h.sendPayloads().length, 1, "exactly one send-to-output dispatch, no replay at dispatch");
+            const sent = h.sendPayloads()[0]?.body as Record<string, unknown>;
+            assert.equal((sent["command"] as Record<string, unknown>)["follow"], true);
+            assert.equal((sent["target_domain"] as Record<string, unknown>)["output"], "out-bottom");
+            assert.equal((sent["target_domain"] as Record<string, unknown>)["workspace"], "ws-a");
+            await h.flushAll();
+            const sendCall = h.sendPayloads()[0];
+            assert.ok(sendCall !== undefined);
+            const reply = JSON.parse(h.replies.get(sendCall.index) as string) as Record<string, unknown>;
+            assert.equal(reply["outcome"], "planned", "real Engine plans the legacy shared-desktop send");
+            assert.equal(reply["kind"], "send-to-output");
+            // Cross-output transfer actually actuated on the shared desktop.
+            assert.equal(h.mover.output.name, "out-bottom");
+            assert.deepEqual(
+                h.mover.desktops.map((entry) => entry.id),
+                ["ws-a"],
+            );
+            // Follow focuses the mover with no desktop switch: one desktop is
+            // current everywhere on legacy hosts.
+            assert.equal(h.workspace["activeWindow"], h.mover);
+            assert.equal((h.workspace["currentDesktop"] as { id: string }).id, "ws-a");
+            assert.equal(
+                h.logs.filter((line) => line.includes("follow") && line.includes("state-confirmed")).length,
+                1,
+                "exactly one follow, no replay",
+            );
+            assert.equal(h.sendPayloads().length, 1, "no replay after settlement");
+            h.fireTimers(WORKSPACE_SEND_TIMEOUT_MS);
+            assert.equal(h.sendPayloads().length, 1, "arrival deadline is a no-op post-settlement");
+            assertLegacyShape(h);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("sends cross-output with stay and keeps source focus", async () => {
+        const h = await makeLegacyHarness();
+        try {
+            // Seed source focus history through the real Engine on the
+            // pending startup debounce (direct assignment fires no signal,
+            // so this must ride timers already queued at startup): focus
+            // o-win-1, then the mover.
+            const survivorSeed = h.wins.find((win) => win.internalId === "o-win-1");
+            assert.ok(survivorSeed !== undefined);
+            h.workspace["activeWindow"] = survivorSeed;
+            h.fireTimers(PLAN_DEBOUNCE_MS);
+            await h.flushAll();
+            h.workspace["activeWindow"] = h.mover;
+            h.fireTimers(PLAN_DEBOUNCE_MS);
+            await h.flushAll();
+            await settleLegacy(h);
+            h.handle.requestSendToOutput("down", false);
+            assert.equal(h.sendPayloads().length, 1, "exactly one send-to-output dispatch");
+            const sent = h.sendPayloads()[0]?.body as Record<string, unknown>;
+            assert.equal((sent["command"] as Record<string, unknown>)["follow"], false);
+            await h.flushAll();
+            assert.equal(h.mover.output.name, "out-bottom", "transfer actuates on stay too");
+            assert.deepEqual(
+                h.mover.desktops.map((entry) => entry.id),
+                ["ws-a"],
+            );
+            const survivorStay = h.wins.find((win) => win.internalId === "o-win-1");
+            assert.ok(survivorStay !== undefined);
+            assert.equal(h.workspace["activeWindow"], survivorStay, "stay binds focus to the source survivor");
+            assert.equal((h.workspace["currentDesktop"] as { id: string }).id, "ws-a", "stay never switches");
+            assert.equal(h.sendPayloads().length, 1, "no replay");
+            assertLegacyShape(h);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("moves workspaces with follow through the shared switch", async () => {
+        const h = await makeLegacyHarness(true);
+        try {
+            await settleLegacy(h);
+            assertLegacyShape(h);
+            h.handle.requestWorkspaceMove(2, true);
+            h.fireTimers(PLAN_DEBOUNCE_MS);
+            await h.flushAll();
+            assert.deepEqual(
+                h.mover.desktops.map((entry) => entry.id),
+                ["ws-b"],
+                "membership follows the mover to the target workspace",
+            );
+            assert.equal(
+                (h.workspace["currentDesktop"] as { id: string }).id,
+                "ws-b",
+                "follow switches the shared desktop, current everywhere",
+            );
+            assert.equal(h.workspace["activeWindow"], h.mover, "follow keeps focus on the mover");
+            assertLegacyShape(h);
+        } finally {
+            await h.stop();
+        }
     });
 });

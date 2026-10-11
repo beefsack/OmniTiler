@@ -69,5 +69,21 @@ else
   cat "$OUTPUT" >&2
 fi
 
+# ---- Part 4: a cast receiver with a generic comma must not hide a symbol ----
+mkdir -p "$WORK/src3"
+cp "$REPO_ROOT/kwin/src/"*.ts "$WORK/src3/"
+printf '\nconst hidden = Reflect.get(workspace as Record<string, unknown>, "brandNewApi");\nvoid hidden;\n' >> "$WORK/src3/plan-adapter-entry.ts"
+if bash "$GUARD" "$WORK/src3" >"$OUTPUT" 2>&1; then
+  fail "cast-negative" "guard missed a cast-hidden unaudited API symbol"
+else
+  pass
+fi
+if grep -Fq "unaudited API symbol: brandNewApi" "$OUTPUT"; then
+  pass
+else
+  fail "cast-message" "missing cast-hidden violation message"
+  cat "$OUTPUT" >&2
+fi
+
 echo "kwin-66-api-guard: PASS=$PASS FAIL=$FAIL"
 [[ "$FAIL" -eq 0 ]]

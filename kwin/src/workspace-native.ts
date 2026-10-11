@@ -549,8 +549,9 @@ export function writeDesktopForOutput(surface: unknown, desktop: object, output:
         return false;
     }
     try {
-        Reflect.set(target, "currentDesktop", desktop);
-        return true;
+        // Reflect.set reports a refused shared write as false; callers
+        // read back, so propagate it instead of claiming success.
+        return Reflect.set(target, "currentDesktop", desktop);
     } catch (error) {
         void error;
         return false;
@@ -3247,8 +3248,7 @@ export class WorkspaceNativeAdapter {
             return writeDesktopForOutput(surface, desktop, output);
         }
         try {
-            Reflect.set(surface, "currentDesktop", desktop);
-            return true;
+            return Reflect.set(surface, "currentDesktop", desktop);
         } catch (error) {
             void error;
             return false;
@@ -3264,8 +3264,9 @@ export class WorkspaceNativeAdapter {
         const fn = readProp(surface, "setCurrentDesktopForScreen");
         if (screens === null || typeof fn !== "function") {
             try {
-                Reflect.set(surface, "currentDesktop", desktop);
-                this.logToken("workspace-navigate-set");
+                if (Reflect.set(surface, "currentDesktop", desktop)) {
+                    this.logToken("workspace-navigate-set");
+                }
             } catch (error) {
                 void error;
             }

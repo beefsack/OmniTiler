@@ -38,9 +38,11 @@ while IFS= read -r file; do
 done < <(find "$SRC_DIR" -maxdepth 1 -name '*.ts' | sort)
 
 # ---- Part 2: every runtime API name must be audited (allowlist) ----
+# Receiver patterns exclude parens (not commas) so TypeScript casts with
+# generic commas such as `Record<string, unknown>` do not hide a name.
 ALLOW=(
     activeScreen activeWindow clientArea configChanged createDesktop
-    currentDesktop currentDesktopChanged currentDesktopForScreen desktops
+    currentDesktop currentDesktopChanged currentDesktopForScreen cursorPos desktops
     desktopsChanged frameGeometry frameGeometryChanged fullScreen
     fullScreenChanged geometry id interactiveMoveResizeFinished
     interactiveMoveResizeStarted interactiveMoveResizeStepped internalId
@@ -66,9 +68,9 @@ allow_hit() {
 
 used="$(
     {
-        grep -hoE 'readProp\([^,]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
-        grep -hoE 'Reflect\.(get|set)\([^,]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
-        grep -hoE 'readSignal\([^,]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
+        grep -hoE 'readProp\([^()]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
+        grep -hoE 'Reflect\.(get|set)\([^()]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
+        grep -hoE 'readSignal\([^()]+, "[^"]+"\)' "$SRC_DIR"/*.ts || true
         grep -hoE '(sub|subWindow[A-Za-z]*)\("[^"]+"' "$SRC_DIR"/*.ts || true
         grep -hoE '"slot[A-Za-z]+"' "$SRC_DIR"/*.ts || true
     } | grep -oE '"[^"]+"' | tr -d '"' | sort -u
