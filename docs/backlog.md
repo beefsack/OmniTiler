@@ -42,7 +42,9 @@ decisions of 2026-09-24 are under
     is effect-only. Remaining: OBS tag-to-stable source/checksum handoff, accounts/provisioning,
     license audit/CI gate, runtime/solver validation. OBS/AUR names are
     `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). Ubuntu native ECM
-    floor (effect only) and neon provisioning remain blocked.
+    floor (effect only) has a verified lower-floor route awaiting decision;
+    neon provisioning remains blocked.
+    [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
   - External NixOS/Home Manager validation (P1 gate).
   - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11;
@@ -54,12 +56,14 @@ decisions of 2026-09-24 are under
   ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
-- P1 | Ubuntu native effect research | Pre-0.1: find a shipping route for
-  borders, group underlay and drop preview on Ubuntu 26.04. Core + Settings
-  already build; the effect is blocked by ECM 6.24 versus the 6.26 floor and
-  must build against Ubuntu's KWin. Assess whether 6.26 is genuinely needed,
-  bundling the needed ECM modules in the source tarball, Kubuntu backports PPA,
-  KWin API differences versus 6.7.5, and KDE neon OBS provisioning.
+- P1 | Ubuntu native effect research | research done, awaiting user decision
+  (2026-10-11). Recommend stock Ubuntu 26.04 updates, ECM floor 6.24 and an
+  effect-only Debian companion: throwaway builds against KWin 6.6.6 passed,
+  including offline build/install and six non-compositor checks. Bundling is
+  license-feasible but untested and unnecessary for the proven route;
+  backports offers no version gain; neon is a separate, unprovisioned OBS
+  target. Base-only 6.6.4, live behavior and OBS
+  backend remain unverified. [Recommendation and options](research/distribution-package-feasibility/ubuntu-native-effect.md).
 - P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
   GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
   [Research and dependency inventory](research/licensing.md). Remaining:
