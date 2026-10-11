@@ -431,7 +431,92 @@ cmd_build() {
     injected_path="$cargo_dir:$rustc_dir"
   fi
 
+  # Normalize trailing slashes first: a path like <symlink>/ defeats the
+  # -L guard below and rm -rf would empty the link target.
+  while [[ "$build_dir" == */ && "$build_dir" != "/" ]]; do
+    build_dir="${build_dir%/}"
+  done
+  if [[ -z "$build_dir" || "$build_dir" == "/" ]]; then
+    echo "error: refusing to clean unsafe build directory: ${build_dir:-empty}" >&2
+    exit 1
+  fi
   mkdir -p -- "$build_dir" || { echo "error: could not create build directory: $build_dir" >&2; exit 1; }
+
+  # Relocation recovery: a moved checkout leaves a CMakeCache.txt recording a
+  # different source or build directory. That build dir is regenerable, so
+  # remove it and configure fresh with a one-line notice. Matching caches
+  # stay incremental (CMake handles source changes itself). Anything unsafe
+  # or ambiguous (symlinked build dir, symlinked/non-regular cache, absent
+  # or duplicate/malformed keys, unowned dir, deletion overlapping the
+  # source) is left alone: never a broad cleanup, fail closed on real errors.
+  local canon_source="" canon_build="" cache_file=""
+  if [[ -L "$build_dir" ]]; then
+    echo "error: refusing to use symlinked build directory: $build_dir" >&2
+    exit 1
+  fi
+  canon_source="$(canonicalize "$source_dir")" || exit 1
+  canon_build="$(canonicalize "$build_dir")" || exit 1
+  if [[ "$canon_build" == "/" ]]; then
+    echo "error: refusing to clean unsafe build directory: $build_dir" >&2
+    exit 1
+  fi
+  if [[ "$canon_build" == "$canon_source" || "$canon_source" == "$canon_build"/* ]]; then
+    echo "error: refusing to delete build directory overlapping source (source $canon_source, build $canon_build)" >&2
+    exit 1
+  fi
+  cache_file="$build_dir/CMakeCache.txt"
+  if [[ -e "$cache_file" || -L "$cache_file" ]]; then
+    if [[ -L "$cache_file" || ! -f "$cache_file" ]]; then
+      : # Symlinked/non-regular cache is never trusted: stay incremental.
+    elif [[ ! -O "$build_dir" ]]; then
+      echo "error: build directory not owned by current user, refusing automatic cleanup: $build_dir" >&2
+      exit 1
+    else
+      local home_n="" dir_n="" home_val="" dir_val="" home_norm="" dir_norm="" stale=0 ambiguous=0
+      home_n="$(grep -c '^CMAKE_HOME_DIRECTORY:[A-Za-z_][A-Za-z0-9_]*=' -- "$cache_file" 2>/dev/null || true)"
+      dir_n="$(grep -c '^CMAKE_CACHEFILE_DIR:[A-Za-z_][A-Za-z0-9_]*=' -- "$cache_file" 2>/dev/null || true)"
+      [[ "$home_n" =~ ^[0-9]+$ ]] || home_n="2"
+      [[ "$dir_n" =~ ^[0-9]+$ ]] || dir_n="2"
+      # Duplicate keys or empty values are ambiguous: stay incremental.
+      if [[ "$home_n" != "0" && "$home_n" != "1" ]]; then
+        ambiguous=1
+      elif [[ "$home_n" == "1" ]]; then
+        home_val="$(sed -n 's/^CMAKE_HOME_DIRECTORY:[A-Za-z_][A-Za-z0-9_]*=//p' -- "$cache_file")"
+        if [[ -z "$home_val" ]]; then
+          ambiguous=1
+        else
+          home_norm="${home_val%/}"; [[ -n "$home_norm" ]] || home_norm="/"
+        fi
+      fi
+      if [[ "$dir_n" != "0" && "$dir_n" != "1" ]]; then
+        ambiguous=1
+      elif [[ "$dir_n" == "1" ]]; then
+        dir_val="$(sed -n 's/^CMAKE_CACHEFILE_DIR:[A-Za-z_][A-Za-z0-9_]*=//p' -- "$cache_file")"
+        if [[ -z "$dir_val" ]]; then
+          ambiguous=1
+        else
+          dir_norm="${dir_val%/}"; [[ -n "$dir_norm" ]] || dir_norm="/"
+        fi
+      fi
+      if [[ "$ambiguous" == "0" && ( "$home_n" == "1" || "$dir_n" == "1" ) ]]; then
+        if [[ "$home_n" == "1" && "$home_norm" != "$canon_source" ]]; then stale=1; fi
+        if [[ "$dir_n" == "1" && "$dir_norm" != "$canon_build" ]]; then stale=1; fi
+        if [[ "$stale" == "1" ]]; then
+          echo "notice: stale CMake cache records a different source/build directory; recreating fresh build dir: $build_dir"
+          if [[ -L "$build_dir" ]]; then
+            echo "error: build directory became a symlink during setup: $build_dir; refusing" >&2
+            exit 1
+          fi
+          rm -rf -- "$build_dir" || { echo "error: could not remove stale build directory: $build_dir" >&2; exit 1; }
+          if [[ -L "$build_dir" || -e "$build_dir" ]]; then
+            echo "error: stale build directory reappeared during cleanup: $build_dir; refusing" >&2
+            exit 1
+          fi
+          mkdir -p -- "$build_dir" || { echo "error: could not recreate build directory: $build_dir" >&2; exit 1; }
+        fi
+      fi
+    fi
+  fi
 
   # Keying note for diagnostics (identity already validated safe).
   echo "host package: $RES_IDENTITY ($RES_DRV)" >&2

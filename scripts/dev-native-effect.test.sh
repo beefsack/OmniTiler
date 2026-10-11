@@ -130,6 +130,7 @@ part1_setup() {
   set -e
   check_exit 1 "setup refuses alternate checkout"
   assert_contains "unfamiliar" "setup alternate msg"
+  grep -Fq "$root/stage" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [setup alternate preserved]" >&2; FAIL=$((FAIL + 1)); }
 
   # Missing staged .so fails actionable.
   rm -f "$root/stage/kwin/effects/plugins/omnitiler-active-border.so"
@@ -323,6 +324,181 @@ part1_canonical_and_collision() {
   set -e
   check_exit 1 "load missing start value friendly"
   assert_contains "expect-start requires a value" "load missing start friendly msg"
+}
+
+# ---- Part 1b: relocation recovery (moved checkout) ----
+
+part1_relocation() {
+  local cfg="$WORK/p1r-config" oldroot="$WORK/p1r-old" newroot="$WORK/p1r-new"
+  local env_file="$cfg/plasma-workspace/env/60-omnitiler-native-effect.sh"
+  local oldstage="$oldroot/target/kwin-native-effect-stage"
+  local newstage="$newroot/target/kwin-native-effect-stage"
+  mkrelstage() {
+    mkdir -p "$1/kwin/effects/plugins" "$1/kwin/effects/configs" "$1/kwin/scripts/configs"
+    printf 'b' > "$1/kwin/effects/plugins/omnitiler-active-border.so"
+    printf 'k' > "$1/kwin/effects/configs/omnitiler-active-border_config.so"
+    printf 's' > "$1/kwin/scripts/configs/omnitiler-kwin_config.so"
+  }
+  mkrelstage "$oldstage"
+  mkrelstage "$newstage"
+  export XDG_CONFIG_HOME="$cfg"
+
+  # Seed this machine's env script from the old checkout, then move it away.
+  set +e
+  OMNITILER_NATIVE_STAGE="$oldstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "relocation seed old"
+  rm -rf "$oldroot"
+
+  # Canonical content whose stage no longer exists is replaced (old+new named).
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "relocation replaced"
+  assert_contains "$oldstage" "relocation notice names old"
+  assert_contains "$newstage" "relocation notice names new"
+  grep -Fq "$newstage" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [relocation new content]" >&2; FAIL=$((FAIL + 1)); }
+  env -u QT_PLUGIN_PATH sh -c ". \"$env_file\"; printf '%s' \"\$QT_PLUGIN_PATH\"" > "$OUTPUT" 2>&1
+  if [[ "$(cat "$OUTPUT")" == "$newstage" ]]; then PASS=$((PASS + 1)); else echo "FAIL [relocation source roundtrip]" >&2; cat "$OUTPUT" >&2; FAIL=$((FAIL + 1)); fi
+
+  # Two live checkouts: canonical other stage that still exists is refused
+  # with a dev-native-remove hint naming the other checkout root, and the
+  # current file is preserved.
+  mkrelstage "$oldstage"
+  set +e
+  OMNITILER_NATIVE_STAGE="$oldstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "two checkouts refused"
+  assert_contains "another checkout" "two checkout msg"
+  assert_contains "dev-native-remove" "two checkout remove hint"
+  assert_contains "from that checkout ('$newroot')" "two checkout names root"
+  grep -Fq "$newstage" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [two checkout preserved]" >&2; FAIL=$((FAIL + 1)); }
+
+  # Dangling symlink stage is not absent: refused like a live checkout.
+  rm -f "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$oldstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "dangling seed old"
+  rm -rf "$oldstage"
+  ln -s -- "$oldroot/nonexistent-target" "$oldstage"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "dangling stage refused"
+  assert_contains "another checkout" "dangling msg"
+  grep -Fq "$oldstage" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [dangling preserved]" >&2; FAIL=$((FAIL + 1)); }
+  rm -f "$oldstage"
+  mkrelstage "$oldstage"
+
+  # Trailing content after a canonical line is unfamiliar: refused, preserved.
+  rm -f "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "trailing seed"
+  { cat "$env_file"; printf 'export OMNITILER_UNRELATED=1\n'; } > "$env_file.tmp"
+  mv -- "$env_file.tmp" "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "trailing content refused"
+  assert_contains "unfamiliar" "trailing content msg"
+  grep -Fq "OMNITILER_UNRELATED=1" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [trailing preserved]" >&2; FAIL=$((FAIL + 1)); }
+
+  # Non-suffix canonical line is not owned relocation content: refused, kept.
+  rm -f "$env_file"
+  printf "export QT_PLUGIN_PATH='%s'\${QT_PLUGIN_PATH:+:\$QT_PLUGIN_PATH}\n" "/no/suffix/here" > "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "non-suffix refused"
+  assert_contains "unfamiliar" "non-suffix msg"
+  grep -Fq "/no/suffix/here" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [non-suffix preserved]" >&2; FAIL=$((FAIL + 1)); }
+
+  # NUL injection inside a canonical line is refused, bytes preserved.
+  rm -f "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "nul seed"
+  { head -c 30 "$env_file"; printf '\0'; tail -c +31 "$env_file"; } > "$env_file.tmp"
+  mv -- "$env_file.tmp" "$env_file"
+  cp -- "$env_file" "$WORK/nul-save"
+  set +e
+  OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "nul refused"
+  assert_contains "unfamiliar" "nul msg"
+  if cmp -s -- "$env_file" "$WORK/nul-save"; then PASS=$((PASS + 1)); else echo "FAIL [nul preserved]" >&2; FAIL=$((FAIL + 1)); fi
+
+  # Swap race: live file replaced with unfamiliar content between approval
+  # and snapshot copy must be refused and preserved (approval pinned).
+  rm -f "$env_file"
+  set +e
+  OMNITILER_NATIVE_STAGE="$oldstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "swap seed old"
+  rm -rf "$oldroot"
+  REAL_CP="$(command -v cp)"
+  mkdir -p "$WORK/p1r-fakebin"
+  cat > "$WORK/p1r-fakebin/cp" <<EOF
+#!/usr/bin/env bash
+printf 'export EVIL_UNFAMILIAR=1\n' > "$env_file"
+exec "$REAL_CP" "\$@"
+EOF
+  chmod +x "$WORK/p1r-fakebin/cp"
+  set +e
+  PATH="$WORK/p1r-fakebin:$PATH" OMNITILER_NATIVE_STAGE="$newstage" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 1 "swap race refused"
+  assert_contains "changed during setup" "swap race msg"
+  grep -Fq "EVIL_UNFAMILIAR=1" "$env_file" && PASS=$((PASS + 1)) || { echo "FAIL [swap race preserved]" >&2; FAIL=$((FAIL + 1)); }
+  if grep -Fq "$newstage" "$env_file"; then echo "FAIL [swap race no takeover]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+
+  # Escaped paths (spaces and single quotes) roundtrip through replacement.
+  local wold="$WORK/p1r-wold/a b'q/target/kwin-native-effect-stage"
+  local wnew="$WORK/p1r-wnew/a b'q/target/kwin-native-effect-stage"
+  rm -rf "$WORK/p1r-wold" "$WORK/p1r-wnew" "$env_file"
+  mkrelstage "$wold"
+  mkrelstage "$wnew"
+  set +e
+  OMNITILER_NATIVE_STAGE="$wold" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "escaped seed"
+  rm -rf "$WORK/p1r-wold"
+  set +e
+  OMNITILER_NATIVE_STAGE="$wnew" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "escaped replaced"
+  assert_contains "$wold" "escaped notice names old"
+  assert_contains "$wnew" "escaped notice names new"
+  env -u QT_PLUGIN_PATH sh -c ". \"$env_file\"; printf '%s' \"\$QT_PLUGIN_PATH\"" > "$OUTPUT" 2>&1
+  if [[ "$(cat "$OUTPUT")" == "$wnew" ]]; then PASS=$((PASS + 1)); else echo "FAIL [escaped roundtrip exact]" >&2; cat "$OUTPUT" >&2; FAIL=$((FAIL + 1)); fi
+  set +e
+  OMNITILER_NATIVE_STAGE="$wnew" bash "$HELPER" setup >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+  check_exit 0 "escaped idempotent"
+  assert_contains "already current" "escaped idempotent msg"
+
+  # Static: setup never evaluates the env file and replaces atomically.
+  if grep -Eq '^[[:space:]]*(\.|source)[[:space:]]+.*ENV_FILE' "$HELPER"; then echo "FAIL [setup never sources env]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+  if grep -Fq 'mv -T -- "$tmp" "$ENV_FILE"' "$HELPER"; then PASS=$((PASS + 1)); else echo "FAIL [setup atomic replace mv -T]" >&2; FAIL=$((FAIL + 1)); fi
 }
 
 # ---- Part 2: D-Bus preflight/load/unload with fake busctl/proc ----
@@ -991,6 +1167,7 @@ EOF
 part1_setup
 part1_quoting
 part1_canonical_and_collision
+part1_relocation
 part2_tests
 part3_integration
 

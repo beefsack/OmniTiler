@@ -720,6 +720,142 @@ assert_contains "host-matched native build failed" "build develop fail msg"
 assert_contains "no fallback" "build develop no fallback"
 unset FAKE_BUILD_DIR
 
+# ---- relocation recovery: stale CMake cache from a moved checkout ----
+run_stale_build() {
+  set +e
+  env "PATH=$FAKE_BIN:$PATH" \
+    "NIX_BIN=$FAKE_BIN/nix" "JQ_BIN=$REAL_JQ" \
+    "RUSTC_BIN=$STORE_ROOT/hash-rustc/bin/rustc" \
+    "CARGO_BIN=$STORE_ROOT/hash-cargo/bin/cargo" \
+    "OMNITILER_HOST_KWIN_BIN=$HOST_BIN_DIR/kwin_wayland" \
+    "OMNITILER_STORE_ROOT=$STORE_ROOT" "OMNITILER_REPO_ROOT=$WORK/repo" \
+    "FAKE_STATE_DIR=$WORK/state" "FAKE_NIX_LOG=$NIX_LOG" \
+    "FAKE_HOST_NATIVE_BIN=$HOST_NATIVE_BIN" "FAKE_HOST_CMAKE_LOG=$HOST_CMAKE_LOG" \
+    "FAKE_DRV=$FAKE_DRV" "FAKE_STORE_PATH=$FAKE_STORE_PATH" "FAKE_DEV_OUT=$FAKE_DEV_OUT" \
+    "$BASH_PATH" "$BUILDER" build --source "$1" --build-dir "$2" >"$OUTPUT" 2>&1
+  EXIT=$?
+  set -e
+}
+
+# moved checkout: cache records different source/build dirs; build removes the
+# regenerable dir and configures fresh with a one-line notice.
+reset_state
+MOVED_BUILD="$WORK/build-moved"
+mkdir -p "$MOVED_BUILD"
+printf 'CMAKE_HOME_DIRECTORY:FILEPATH=/old/checkout/kwin/native-effect\nCMAKE_CACHEFILE_DIR:INTERNAL=/old/checkout/target/kwin-native-host-abc-build\n' > "$MOVED_BUILD/CMakeCache.txt"
+printf 'stale-marker\n' > "$MOVED_BUILD/stale-marker.txt"
+run_stale_build "$WORK/src" "$MOVED_BUILD"
+check_exit 0 "moved cache rebuild"
+assert_contains "stale CMake cache" "moved cache notice"
+assert_contains "$MOVED_BUILD" "moved cache notice names dir"
+if [[ -e "$MOVED_BUILD/stale-marker.txt" ]]; then echo "FAIL [moved cache removed]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+assert_host_cmake_log_contains "host-cmake -S" "moved cache fresh configure ran"
+if [[ -f "$MOVED_BUILD/bin/kwin/effects/plugins/omnitiler-active-border.so" ]]; then PASS=$((PASS + 1)); else echo "FAIL [moved cache fresh payload]" >&2; FAIL=$((FAIL + 1)); fi
+
+# matching cache stays incremental: sentinel preserved, no notice.
+reset_state
+MATCH_BUILD="$WORK/build-match"
+mkdir -p "$MATCH_BUILD"
+SRC_CANON="$(readlink -f -- "$WORK/src")"
+MATCH_CANON="$(readlink -f -- "$MATCH_BUILD")"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s\nCMAKE_CACHEFILE_DIR:INTERNAL=%s\nCMAKE_HOME_DIRECTORY_EXTRA:INTERNAL=/unrelated\n' "$SRC_CANON" "$MATCH_CANON" > "$MATCH_BUILD/CMakeCache.txt"
+printf 'keep-me\n' > "$MATCH_BUILD/keep.txt"
+run_stale_build "$WORK/src" "$MATCH_BUILD"
+check_exit 0 "matching cache incremental"
+if [[ -f "$MATCH_BUILD/keep.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [matching cache preserved]" >&2; FAIL=$((FAIL + 1)); fi
+assert_not_contains "stale CMake cache" "matching cache no notice"
+
+# trailing-slash recording still matches (exact parser normalization).
+reset_state
+SLASH_BUILD="$WORK/build-slash"
+mkdir -p "$SLASH_BUILD"
+SLASH_CANON="$(readlink -f -- "$SLASH_BUILD")"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s/\nCMAKE_CACHEFILE_DIR:INTERNAL=%s/\n' "$SRC_CANON" "$SLASH_CANON" > "$SLASH_BUILD/CMakeCache.txt"
+printf 'keep-me\n' > "$SLASH_BUILD/keep.txt"
+run_stale_build "$WORK/src" "$SLASH_BUILD"
+check_exit 0 "trailing slash cache incremental"
+if [[ -f "$SLASH_BUILD/keep.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [trailing slash preserved]" >&2; FAIL=$((FAIL + 1)); fi
+assert_not_contains "stale CMake cache" "trailing slash no notice"
+
+# duplicate recorded keys are ambiguous: never delete, stay incremental.
+reset_state
+DUP_BUILD="$WORK/build-dup"
+mkdir -p "$DUP_BUILD"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=/old/checkout/src\nCMAKE_HOME_DIRECTORY:INTERNAL=/other/src\nCMAKE_CACHEFILE_DIR:INTERNAL=/old/checkout/build\n' > "$DUP_BUILD/CMakeCache.txt"
+printf 'keep-me\n' > "$DUP_BUILD/keep.txt"
+run_stale_build "$WORK/src" "$DUP_BUILD"
+check_exit 0 "duplicate cache keys incremental"
+if [[ -f "$DUP_BUILD/keep.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [duplicate cache preserved]" >&2; FAIL=$((FAIL + 1)); fi
+assert_not_contains "stale CMake cache" "duplicate cache no notice"
+
+# malformed recorded value (empty) is ambiguous: never delete.
+reset_state
+MAL_BUILD="$WORK/build-malformed"
+mkdir -p "$MAL_BUILD"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=\nCMAKE_CACHEFILE_DIR:INTERNAL=/old/checkout/build\n' > "$MAL_BUILD/CMakeCache.txt"
+printf 'keep-me\n' > "$MAL_BUILD/keep.txt"
+run_stale_build "$WORK/src" "$MAL_BUILD"
+check_exit 0 "malformed cache incremental"
+if [[ -f "$MAL_BUILD/keep.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [malformed cache preserved]" >&2; FAIL=$((FAIL + 1)); fi
+assert_not_contains "stale CMake cache" "malformed cache no notice"
+
+# symlinked build dir is never deleted: fail closed, target preserved.
+reset_state
+LINK_TARGET="$WORK/link-target"
+mkdir -p "$LINK_TARGET"
+printf 'precious\n' > "$LINK_TARGET/precious.txt"
+LINK_BUILD="$WORK/build-link"
+rm -f "$LINK_BUILD"
+ln -s -- "$LINK_TARGET" "$LINK_BUILD"
+run_stale_build "$WORK/src" "$LINK_BUILD"
+check_exit 1 "symlinked build dir refused"
+assert_contains "refusing" "symlinked build dir msg"
+if [[ -f "$LINK_TARGET/precious.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [symlink target preserved]" >&2; FAIL=$((FAIL + 1)); fi
+
+# symlinked CMakeCache is never trusted for deletion: preserved, no notice.
+reset_state
+CACHELINK_BUILD="$WORK/build-cachelink"
+mkdir -p "$CACHELINK_BUILD" "$WORK/cache-real"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=/old/checkout/src\nCMAKE_CACHEFILE_DIR:INTERNAL=/old/checkout/build\n' > "$WORK/cache-real/CMakeCache.txt"
+rm -f "$CACHELINK_BUILD/CMakeCache.txt"
+ln -s -- "$WORK/cache-real/CMakeCache.txt" "$CACHELINK_BUILD/CMakeCache.txt"
+printf 'keep-me\n' > "$CACHELINK_BUILD/keep.txt"
+run_stale_build "$WORK/src" "$CACHELINK_BUILD"
+check_exit 0 "symlinked cache incremental"
+if [[ -f "$CACHELINK_BUILD/keep.txt" && -L "$CACHELINK_BUILD/CMakeCache.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [symlinked cache preserved]" >&2; FAIL=$((FAIL + 1)); fi
+assert_not_contains "stale CMake cache" "symlinked cache no notice"
+
+# build dir equal to source dir would delete the source: fail closed.
+reset_state
+OVERLAP_SRC="$WORK/overlap-src"
+mkdir -p "$OVERLAP_SRC"
+printf 'cmake_minimum_required(VERSION 3.19)\nproject(fake)\n' > "$OVERLAP_SRC/CMakeLists.txt"
+run_stale_build "$OVERLAP_SRC" "$OVERLAP_SRC"
+check_exit 1 "build dir equal source refused"
+assert_contains "refusing" "overlap refusal msg"
+if [[ -f "$OVERLAP_SRC/CMakeLists.txt" ]]; then PASS=$((PASS + 1)); else echo "FAIL [source preserved on overlap]" >&2; FAIL=$((FAIL + 1)); fi
+
+# non-regular build dir (plain file) fails closed without deletion.
+reset_state
+printf 'not-a-dir\n' > "$WORK/build-file"
+run_stale_build "$WORK/src" "$WORK/build-file"
+check_exit 1 "file build dir refused"
+if [[ -f "$WORK/build-file" ]] && [[ "$(cat "$WORK/build-file")" == "not-a-dir" ]]; then PASS=$((PASS + 1)); else echo "FAIL [file build dir preserved]" >&2; FAIL=$((FAIL + 1)); fi
+
+# symlinked build dir with trailing slash is still a symlink: fail closed,
+# never rm -rf through the link into the target.
+reset_state
+SLLINK_TARGET="$WORK/sllink-target"
+mkdir -p "$SLLINK_TARGET"
+printf 'sentinel\n' > "$SLLINK_TARGET/sentinel.txt"
+SLLINK_BUILD="$WORK/build-sllink"
+rm -f "$SLLINK_BUILD"
+ln -s -- "$SLLINK_TARGET" "$SLLINK_BUILD"
+run_stale_build "$WORK/src" "$SLLINK_BUILD/"
+check_exit 1 "trailing slash symlink refused"
+assert_contains "refusing" "trailing slash symlink msg"
+if [[ -f "$SLLINK_TARGET/sentinel.txt" ]] && [[ "$(cat "$SLLINK_TARGET/sentinel.txt")" == "sentinel" ]]; then PASS=$((PASS + 1)); else echo "FAIL [trailing slash target preserved]" >&2; FAIL=$((FAIL + 1)); fi
+
 echo "passes: $PASS failures: $FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1

@@ -522,9 +522,15 @@ then creates only the project-owned
 `$XDG_CONFIG_HOME/plasma-workspace/env/60-omnitiler-native-effect.sh`
 for this checkout, with robust quoting for paths containing spaces or shell
 metacharacters. It prepends the stage to `QT_PLUGIN_PATH` while retaining any
-existing value, writes no `kwinrc` keys, uses no D-Bus, and is idempotent only
-for exact same expected content (unfamiliar files, symlinks, and
-alternate-checkout content are refused). Undo with:
+existing value, writes no `kwinrc` keys, uses no D-Bus, and is idempotent for
+exact same expected content. After moving a checkout, setup automatically
+recreates native build caches recording different source/build paths and
+replaces the canonical generated env export if its old
+`target/kwin-native-effect-stage` no longer exists. Matching caches remain
+incremental. Unfamiliar files, symlinks, non-regular files, and another
+checkout's existing stage are refused; for two existing checkouts, choose
+which one owns delivery and run `just dev-native-remove` from the other
+checkout before setting up this one. Undo with:
 
 ```sh
 just dev-native-remove
@@ -536,7 +542,7 @@ removes parent directories. Neither command touches the running KWin.
 The dogfood `effect-install`/`effect-remove` path and this dev path share the
 exact `$XDG_CONFIG_HOME/plasma-workspace/env/60-omnitiler-native-effect.sh`
 path and cannot coexist there: dogfood refuses a dev-owned script and preserves
-it, and the dev helper refuses dogfood/alternate content.
+it, and the dev helper refuses dogfood content and another existing dev stage.
 
 Log out and log back in after setup, and again after every effect rebuild.
 `just dev` preflights both effects against `/Effects` before any startup

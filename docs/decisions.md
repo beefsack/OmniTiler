@@ -1506,6 +1506,14 @@ platform API behavior.
   invocation-owned effects with KWin owner guards (preserving preloaded ones
   in reverse-order teardown), and promises no hot reload; unload verification
   never proves the library is unmapped.
+- Native development setup recovers checkout relocation automatically: a
+  native build cache recording a different source or build directory is
+  recreated, while matching caches remain incremental. Setup may replace a
+  byte-exact generated env export for `target/kwin-native-effect-stage` only
+  when its previous stage no longer exists. Another existing stage,
+  unfamiliar content, symlinks, and non-regular env files remain refused.
+  Cache cleanup refuses unsafe source overlap and symlinked build directories.
+  Session delivery still requires logout/login after setup or a native rebuild.
 - Approved 2026-09-20, durable for native development: the current-system
   host KWin derivation is the native development authority.
   `scripts/nix-host-kwin-build.sh` resolves
