@@ -42,8 +42,9 @@ decisions of 2026-09-24 are under
     is effect-only. Remaining: OBS tag-to-stable source/checksum handoff, accounts/provisioning,
     license audit/CI gate, runtime/solver validation. OBS/AUR names are
     `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). Ubuntu native ECM
-    floor (effect only) has a verified lower-floor route awaiting decision;
-    neon provisioning remains blocked.
+    floor (effect only) has a verified lower-floor build route; follow-up
+    found a separate KWin 6.7 script API floor blocking stock Ubuntu tiling.
+    Support scope awaits decision; neon provisioning remains blocked.
     [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
   - External NixOS/Home Manager validation (P1 gate).
@@ -57,13 +58,15 @@ decisions of 2026-09-24 are under
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
 - P1 | Ubuntu native effect research | research done, awaiting user decision
-  (2026-10-11). Recommend stock Ubuntu 26.04 updates, ECM floor 6.24 and an
-  effect-only Debian companion: throwaway builds against KWin 6.6.6 passed,
-  including offline build/install and six non-compositor checks. Bundling is
-  license-feasible but untested and unnecessary for the proven route;
-  backports offers no version gain; neon is a separate, unprovisioned OBS
-  target. Base-only 6.6.4, live behavior and OBS
-  backend remain unverified. [Recommendation and options](research/distribution-package-feasibility/ubuntu-native-effect.md).
+  (2026-10-11, support-floor follow-up complete). Ubuntu base KWin 6.6.4 and
+  updates 6.6.6 effect builds pass with ECM 6.24, including six offline checks;
+  full-product support is separately blocked by required KWin 6.7 scripting
+  APIs (shared mode does not repair observation). Debian 13 Settings build
+  on ECM 6.13; core needs newer Rust, and effect still lacks a KWin header
+  after ECM/Rust workarounds. Recommend KWin 6.7 for unchanged 0.1 scope,
+  or a separate older-KWin compatibility decision before Ubuntu delivery.
+  Plasma 5 is unsupported as-is; runtime/solver/OBS acceptance remains open.
+  [Compatibility table, evidence and recommendation](research/distribution-package-feasibility/ubuntu-native-effect.md#support-floor-and-older-distributions).
 - P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
   GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
   [Research and dependency inventory](research/licensing.md). Remaining:

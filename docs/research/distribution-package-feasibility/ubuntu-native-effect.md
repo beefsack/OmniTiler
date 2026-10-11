@@ -1,10 +1,15 @@
-# Ubuntu 26.04 native effect shipping research
+# Ubuntu native effect and KDE support-floor research
 
 - Research date: 2026-10-11. Status: **research done, awaiting user decision**.
-- Recommendation: use stock Ubuntu 26.04 updates, lower the effect's ECM
-  requirement to the already-used Settings floor of **6.24**, and add an
-  effect-only Debian companion built against that target's KWin. This is a
-  proposed follow-up, not an implemented build or packaging decision.
+- Updated recommendation: **KWin 6.7 is the current full-product API floor**.
+  The [support-floor follow-up](#support-floor-and-older-distributions)
+  found that the script's tiling observation requires APIs absent from stock
+  Ubuntu 26.04's KWin 6.6, even in shared mode. Supporting that target needs
+  a script compatibility change and a workspace-behavior decision first.
+- Native build recommendation remains ECM **6.24** and a host-matched
+  effect-only Debian companion: both Ubuntu base 6.6.4 and updates 6.6.6
+  compile. This is a component build route, not evidence that the full
+  tiler works on those runtimes. No support/build-floor decision is adopted.
 - A throwaway floor change was sufficient: the effect builds and installs;
   the effect-only build passes six offline checks against stock `kwin-dev`
   **6.6.6**. No API workaround or ECM bundle was needed. Runtime
@@ -14,23 +19,24 @@
   and [core-with-Settings evidence](../../changes/archive/release-0.1-core-settings.md)
   are retained; those builds were not repeated.
 
-## Options and consequences
+## Native package options and consequences
+
+- All stock-Ubuntu options below remain subject to the separate script API
+  blocker. ECM bundling or effect omission does not fix that blocker.
 
 | Option | What users get on Ubuntu 26.04 | Effort (relative estimate) | Risks / consequences |
 | --- | --- | --- | --- |
-| **A. Stock updates + ECM 6.24 floor (recommended)** | Core + Settings and optional active border, group underlay, drop preview; effect rebuilt for stock KWin | Low build-system change; medium companion packaging and release validation | Compile/offline checks proven on 6.6.6, not runtime; rebuild after KWin changes; older base-only 6.6.4 needs a separate matching build or update |
+| **A. Stock KWin + ECM 6.24 floor (native-build recommendation)** | Core + Settings packages and native visuals can be built; working tiling additionally needs script compatibility | Low build-system change; medium companion packaging and release validation, plus script work | Effect/offline checks proven on 6.6.4 and 6.6.6; separate matching binaries; script API and runtime gates remain |
 | B. Bundle pinned ECM 6.26 in source archive | Same features on the same stock KWin; no host ECM upgrade | Medium: archive inputs, local ECM prefix, recipe wiring, attribution and bundle test | No benefit over A demonstrated; maintain another pinned source dependency and module/template closure; does not solve KWin ABI matching |
-| C. Keep Ubuntu core + Settings only for 0.1 | Tiling and Settings/Revert; no native border, underlay or drop preview | Lowest additional work; existing Debian recipe | Explicit Ubuntu visual-feature omission despite a proven compile route; runtime core-only acceptance still required |
+| C. Keep Ubuntu core + Settings only for 0.1 | Existing package builds, without native border, underlay or drop preview | Lowest additional native packaging work | Still blocked by script API requirements; removing the effect does not make older-KWin tiling work |
 | D. Require Kubuntu backports PPA | Currently the same KWin 6.6.6 stack as stock updates | Extra repository/provisioning work | PPA has no newer KWin or resolute ECM; does not fix the current floor; unnecessary third-party repository dependency |
 | E. Add KDE neon as a separate target | Full features for neon users if separately built/validated; no stock Ubuntu 26.04 effect binary | High/uncertain: OBS provisioning, noble toolchain/recipe trial, rolling rebuilds | Version-sufficient KDE stack but Ubuntu 24.04 base, distinct ABI target, no verified public neon OBS DoD target |
 
-- Material choices: A versus B/C; whether 0.1 Ubuntu effect support targets
-  normal updated installations only or also a separate base-only 6.6.4 build;
-  whether neon provisioning is worth pursuing independently.
-- Recommended scope: A for updated Ubuntu/Kubuntu 26.04, no PPA requirement,
-  retain C as a fallback if runtime/release validation fails, and keep neon
-  outside the initial shipping promise. Effort estimates are not measured
-  delivery schedules.
+- Material choice first: retain KWin 6.7 as the full-product floor or pursue
+  older-KWin script compatibility. If the latter is selected, A is the
+  demonstrated stock-Ubuntu native route; base-only 6.6.4 needs its own
+  matching binary, not a 6.6.6 build. Neon remains separate context.
+  Effort estimates above do not measure the script compatibility work.
 
 ## 1. ECM: actual requirements and safe floor
 
@@ -54,14 +60,17 @@
   existing `-Wall -Wextra -Werror`. A separate offline effect-only build and
   checks also passed. **No observed requirement genuinely needs ECM 6.26.**
 - Recommendation: one tested 6.24 floor for effect and Settings. Do not infer
-  support below 6.24 merely from the macro's 6.18 introduction. A later
+  effect support below 6.24 merely from the macro's 6.18 introduction.
+  The follow-up separately proves Settings on ECM 6.13. A later
   implementation should reconcile the RPM/Arch dependency floors and
   documentation with CMake, while keeping actual distro Qt/KF6/KWin inputs.
   This evidence is about Ubuntu's tested stack, not arbitrary older stacks.
 
 ## 2. Bundling ECM in the source archive
 
-- Feasible fallback, not empirically built here. The needed ECM module files
+- ECM 6.26 remains an unbuilt fallback; the follow-up tested a private ECM
+  6.24 bundle on Debian, clearing configure but not its later Rust/C++ gaps.
+  The needed ECM module files
   carry `BSD-3-Clause`; redistribution requires retained copyright notices,
   conditions/disclaimer and the non-endorsement condition. Preserve upstream
   SPDX headers and license text and extend the vendored attribution / Debian
@@ -100,7 +109,7 @@
   Current stock `resolute-updates` supplies **4:6.6.6-0ubuntu0.1**, used in
   this experiment. Sources: [base package](https://packages.ubuntu.com/resolute/kwin-dev),
   [updates package](https://www.ubuntuupdates.org/package/core/resolute/universe/updates/kwin-dev).
-  Base-only 6.6.4 was not built here.
+  The follow-up also built the effect against release-only 6.6.4 successfully.
 - The supplied reference
   [`8438567a741826da8b7536a8b10eb3af8fc8820d`](https://github.com/KDE/kwin/commit/8438567a741826da8b7536a8b10eb3af8fc8820d)
   is a translation-sync commit whose
@@ -227,7 +236,9 @@ options.h  window.h  plugin.h
   Verify actual selected versions in OBS buildinfo, not just path names.
 - **Core + Settings:** existing Debian recipe uses ECM 6.24 and no `kwin-dev`;
   prior offline `.deb` build succeeded. Stock dependencies are present, so
-  the standard OBS target is feasible without PPA/neon provisioning. The
+  the standard OBS target is build-feasible without PPA/neon provisioning.
+  The script's KWin 6.7 API requirement prevents equating that build with
+  working stock-Ubuntu tiling. The
   actual OBS Debian backend, `cargo:native`/`rustc:native` resolution and
   install/upgrade solver acceptance have not been exercised.
 - **Effect:** the checked-in CMake floor still rejects stock ECM. Option A
@@ -292,18 +303,209 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
 - Evidence limits: this was a source-copy experiment, not a new final release
   tarball or effect `.deb`/OBS build. No live compositor was started; no
   rendering, load, absent/failed/removed-effect, KWin upgrade or dependency
-  solver acceptance is claimed. ECM bundling, base-only 6.6.4 and a complete
-  neon build remain untested.
+  solver acceptance is claimed. These initial results are extended below
+  with base-only 6.6.4 and Debian diagnostics; a complete neon build remains
+  untested.
+
+## Support floor and older distributions
+
+### Compatibility table
+
+- Compile results describe source experiments or explicitly identified prior
+  package evidence. Script gaps are static source findings, not live-session
+  observations. A successful native build is not full-product acceptance.
+
+| Distribution / version | KWin | ECM | Compile result | Script API gaps | Recommended support status |
+| --- | --- | --- | --- | --- | --- |
+| Ubuntu/Kubuntu 26.04 LTS, release pocket only | 6.6.4 | 6.24 | Effect build/install + 6/6 offline checks pass with throwaway 6.24 floor; matching headers/library | Required per-output desktop methods absent; tiling observation fails closed in every mode | Native-build capable, full product blocked pending script compatibility |
+| Ubuntu/Kubuntu 26.04 LTS, updates | 6.6.6 | 6.24 | Prior core + Settings package and full native builds pass; effect-only 6/6 checks pass | Same missing methods as base | Same full-product blocker; updates do not supply 6.7 APIs |
+| Ubuntu/Kubuntu 24.04 LTS, stock | 5.27.11 | 5.115 | Not built; stock KWin/Qt5/KF5 cannot satisfy current effect/KCM source | `client*` versus required `window*` API; desktop/output argument differences; no per-output desktop methods | Unsupported as-is; separate Plasma 5 port required |
+| Debian 13 trixie stable | 6.3.6 | 6.13 | Settings pass at 6.13; stock-Rust core fails; newer-Rust core passes; effect still fails on missing border header after ECM/Rust workaround | Required per-output desktop methods absent | Unsupported as-is; toolchain, native API and script work required |
+| Debian 12 bookworm, oldstable/LTS | 5.27.5 | 5.103 | Not built; Plasma 5 stack is incompatible as-is | Same Plasma 5 interface mismatch | Unsupported as-is; LTS security status does not change APIs |
+| openSUSE Leap 16.0, base | 6.4.2 | 6.16 | Not built; source tag lacks required border header; ECM also predates `MACRO_NAMES` | Required per-output desktop methods absent | Unsupported as-is; native/script compatibility needed |
+| Fedora 43, base only | 6.4.5 | 6.18 | Not built; source tag lacks required border header; macro prerequisite present but declared floors reject | Required per-output desktop methods absent | Unsupported base; use a separately validated newer KDE stack |
+| Previously verified Fedora updates / Tumbleweed / Arch stacks | 6.7.5 | 6.30 | Prior offline core + native package builds passed ([evidence](../../installation.md)) | Audited required per-output methods present | Candidate 0.1 targets; remaining runtime/release gates still apply |
+
+### Ubuntu and Debian LTS boundary
+
+- **Ubuntu 26.04 is the current LTS**, released 2026-04-23; 24.04 is the
+  previous LTS. Sources: [Canonical announcement](https://canonical.com/blog/canonical-releases-ubuntu-26-04-lts-resolute-raccoon),
+  [26.04 release notes](https://documentation.ubuntu.com/release-notes/26.04/).
+  Ubuntu Desktop itself uses GNOME; the KDE stack assessed here is Kubuntu
+  or KDE packages from the Ubuntu archive. Stock noble ships
+  [KWin 5.27.11](https://packages.ubuntu.com/noble/kwin-dev) and
+  [ECM 5.115](https://packages.ubuntu.com/noble/extra-cmake-modules).
+- **Debian 13 trixie is stable**, with KWin/Plasma 6.3.6. **Debian 12 is now
+  oldstable under Debian LTS**, with Plasma/KWin 5.27.5. Regular bookworm
+  support ended 2026-07-11, LTS runs through 2028-06-30 with reduced
+  architecture/package coverage; KWin-specific LTS security coverage was
+  not verified. Sources: [trixie release](https://www.debian.org/releases/trixie/),
+  [bookworm lifecycle](https://www.debian.org/releases/bookworm/),
+  [KWin package tracker](https://tracker.debian.org/pkg/kwin),
+  [bookworm ECM tracker](https://tracker.debian.org/pkg/extra-cmake-modules).
+- Plasma 5 support is **impossible with the current sources and stock stack**,
+  not fundamentally impossible to implement. The script requires
+  `windowList`, `activeWindow`, `windowAdded`/`windowRemoved`/`windowActivated`;
+  5.27 exposes `clientList`, `activeClient` and `client*` signals instead.
+  Its `removeDesktop(int)` and `sendClientToScreen(Window*, int)` also differ
+  from current object arguments. The native tree requests Qt6/KF6 and KWin
+  6 internal APIs; newer Rust or an ECM bundle cannot port those interfaces.
+  Sources: [5.27 wrapper](https://github.com/KDE/kwin/blob/Plasma/5.27/src/scripting/workspace_wrapper.h),
+  [current startup window-list gate](../../../kwin/src/plan-adapter-entry.ts),
+  [native dependencies](../../../kwin/native-effect/CMakeLists.txt).
+
+### Release-pocket Ubuntu build proof
+
+- Prepared an isolated `ubuntu:26.04` builder using only the `resolute`
+  release pocket, with release pin priority 1001 and a downgrade of packages
+  baked into the image from updates. Merely deleting update sources initially
+  left incompatible preinstalled library versions; the pinned downgrade
+  resolved that builder-preparation issue. This was not a host-system change.
+- Inventory confirmed `kwin-dev`, `kwin-common`, `libkwin6` all at
+  **4:6.6.4-0ubuntu1**, ECM 6.24.0-0ubuntu1, Qt 6.10.2, KF6 6.24, Rust/Cargo
+  1.93.1ubuntu1 and CMake 4.2.3-2ubuntu2. Headers and link-time KWin library
+  matched; no 6.6.4/6.6.6 mixture was used.
+- With only the source-copy effect ECM floor lowered to 6.24, offline
+  effect-only configure/build/install passed and CTest passed **6/6**.
+  The installed plugin's IID is
+  `org.kde.kwin.EffectPluginFactory6.6.4`; its ELF linkage resolves to the
+  matching `libkwin6`. Reproduction uses the earlier effect-only CMake/Cargo
+  commands after the release-pocket builder preparation. Runtime loading,
+  rendering, upgrade transactions and OBS builds were not exercised.
+
+### Debian 13 build proof and actual toolchain constraints
+
+- Stock `debian:trixie` inventory: KWin dev/library **4:6.3.6-1**,
+  ECM **6.13.0-1**, Qt **6.8.2+dfsg-9+deb13u2**, KF6 **6.13**, CMake
+  **3.31.6-2**, Rust/Cargo **1.85.1+dfsg1-1+deb13u1**. All source inputs
+  came from a copy of commit `0bb4b14`, with the locked vendor tree.
+
+| Build leg | Result / failure | Interpretation |
+| --- | --- | --- |
+| Core, stock Rust 1.85.1, `cargo build --release --locked --offline -p omnitiler` with vendor replacement | Exit 101: locked `zbus` 5.19.0, `zvariant` 5.15.0 and associated crates require Rust 1.87 | Edition-2024 support alone is insufficient |
+| Settings-only, throwaway ECM floor 6.13 | Configure/build/install pass; both KCMs produced, no `libkwin` linkage | Qt 6.8.2 / KF6 6.13 / CMake 3.31.6 suffice for these KCM sources |
+| Effect-only, throwaway ECM floor 6.13, stock ECM | Configure exit 1: `Unknown keywords ... MACRO_NAMES;KWIN_EFFECT_FACTORY;...` | Module exists, but this argument needs ECM >=6.18; lowering to 6.13 alone is invalid |
+| Effect configure with private pinned ECM 6.24 | Configure passes | Full ECM source bundle/private prefix is feasible; it does not resolve later blockers |
+| Effect with private ECM 6.24 and stock Rust | Build exit 2: `E0658` for let-chains and `unsigned_is_multiple_of` | Independent source-language floor beyond Rust 1.85 |
+| Core diagnostic with nonstock Rust 1.98.1 / Cargo 1.98.0 | Offline locked build exit 0 | Newer Rust clears the observed core compiler blocker; not a stock-trixie build |
+| Effect diagnostic with that Rust and private ECM, stock Debian C++/KWin | Rust staticlib passes, C++ build exit 2: `scene/outlinedborderitem.h: No such file or directory` | Real KWin API/header gap, not merely ECM/Rust version checks |
+
+- ECM bundle used the complete
+  [6.24.0 source tarball](https://download.kde.org/stable/frameworks/6.24/extra-cmake-modules-6.24.0.tar.xz),
+  SHA-256 `8ef3f7e176588e099c02559d20ddf4fed0590f92c168f0bcc60a7e638ba1e6a3`.
+  Configured with docs/tests disabled, installed to a private build prefix,
+  selected through `-DECM_DIR=<prefix>/share/ECM/cmake`; no global replacement
+  or C++/Rust source edits. The newer-Rust diagnostic used an existing
+  toolchain read-only, retaining Debian's C++/Qt/KF6/KWin packages.
+- **Observed Rust lower bound is 1.88**, not a declared/proven MSRV:
+  `edition = "2024"` needs 1.85; locked D-Bus dependencies demand 1.87;
+  [let-chains in `size_hints.rs`](../../../crates/tiler-core/src/size_hints.rs)
+  require [Rust 1.88](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/),
+  while integer `is_multiple_of` requires 1.87. No crate currently declares
+  `rust-version`. Versions 1.88-1.92 were not tested; passing compilers here
+  were 1.93.1 (Ubuntu) and 1.98.1 (Debian diagnostic).
+- Current CMake requests >=3.19 and does not set explicit Qt/KF6 minimums.
+  The Debian Settings experiment demonstrates their tested lower stack;
+  it does not establish minimum versions for every native feature. ECM
+  6.18 is the effect macro prerequisite, **6.24 is the tested successful
+  effect build version**. CMake 3.31.6 was not a blocker, including when
+  configuring/installing ECM 6.24 (upstream CMake minimum 3.27).
+- The diagnostic stopped at the first missing include; further effect API
+  differences are untested behind that gap. Shipping Debian
+  13 would require more than lowering floors or supplying a modern compiler.
+
+### Script API audit and the limiting floor
+
+- Checked the script's actual runtime accesses against KWin's exposed
+  `Q_PROPERTY`, `Q_INVOKABLE`, scriptable methods and signals, rather than
+  counting names in type declarations. Wrapper baselines:
+  [6.3.6](https://github.com/KDE/kwin/blob/v6.3.6/src/scripting/workspace_wrapper.h),
+  [6.4.5](https://github.com/KDE/kwin/blob/v6.4.5/src/scripting/workspace_wrapper.h),
+  [6.6.4](https://github.com/KDE/kwin/blob/v6.6.4/src/scripting/workspace_wrapper.h),
+  [6.6.6](https://github.com/KDE/kwin/blob/v6.6.6/src/scripting/workspace_wrapper.h),
+  [6.7.0](https://github.com/KDE/kwin/blob/v6.7.0/src/scripting/workspace_wrapper.h),
+  [6.7.5](https://github.com/KDE/kwin/blob/v6.7.5/src/scripting/workspace_wrapper.h).
+
+| Consumed interface | 6.3.x | 6.4.x | 6.6.x | 6.7.x | Significance |
+| --- | --- | --- | --- | --- | --- |
+| `windowList`, `activeWindow`, `screens`, `activeScreen`, `desktops`, `currentDesktop`, `clientArea`, desktop creation/removal, output-object `sendClientToScreen` | Present at 6.3.6 | Present at 6.4.5 | Present at 6.6.4/6.6.6 | Present | Basic object-based window/desktop/output interfaces are not the limiting gap |
+| `windowAdded`, `windowRemoved`, `windowActivated`, `screensChanged`, `desktopsChanged` | Present | Present | Present | Present | Lifecycle/topology resync |
+| `currentDesktopForScreen`, `setCurrentDesktopForScreen` | Absent | Absent | Absent | Present from 6.7.0 | Required by current observation/navigation; the full-product floor |
+| `currentDesktopChanged` | One argument | One argument | One argument | Three arguments | Subscription re-reads state with a zero-argument callback; no static arity blocker found |
+| Window geometry/membership/state properties and signals, output identity/geometry, desktop id | Audited at 6.3.6 | Detailed window audit not repeated | Detailed window audit not repeated | Audited current surface | Most basic APIs predate 6.7; this does not override missing workspace methods |
+| `rootTile` and low-level Tile manipulation | `rootTile` absent | Present | Present | Present | Declared types, not current runtime calls; not the limiting tiling API |
+
+- Per-output desktop APIs were introduced by
+  [commit `fa6c4a42`](https://github.com/KDE/kwin/commit/fa6c4a42), first
+  stable in 6.7.0, after the 6.6 line. `rootTile` arrived in 6.4 via
+  [commit `eded5996`](https://github.com/KDE/kwin/commit/eded5996), but the
+  product does not currently call that API; it must not inflate the floor.
+- Concrete current-source chain:
+  - [`observeNative`](../../../kwin/src/plan-adapter-entry.ts) reads
+    `currentDesktopForScreen` at lines 2856-2859 and returns null if absent.
+    `observeHiddenDomains` returns an empty list at lines 2231-2234.
+    Neither gate branches on workspace mode.
+  - `collectAllSnapshots` at lines 5429-5455 receives no foreground/background
+    domains through those paths. Static consequence: automatic tiling cannot
+    obtain its normal planner snapshots on unmodified KWin <=6.6.
+  - [`WorkspaceNativeAdapter`](../../../kwin/src/workspace-native.ts)
+    independently gates per-output reads/writes on those methods. Its
+    `synchronizeShared` fallback can write `currentDesktop`, but does not
+    fix the mode-independent observation gates. **Selecting shared mode
+    alone is not a demonstrated workaround.**
+  - Default is `per-output-local`; startup accepts the mode without automatic
+    capability-based downgrade. No runtime polyfill was found. Capability
+    checks fail closed; this is not evidence of a compositor crash.
+- Window `frameGeometry`, `desktops`, state flags, size hints and relevant
+  geometry/move/desktop/output signals were present in the 6.3.6
+  [window header](https://github.com/KDE/kwin/blob/v6.3.6/src/window.h), with
+  [output](https://github.com/KDE/kwin/blob/v6.3.6/src/core/output.h) and
+  [desktop](https://github.com/KDE/kwin/blob/v6.3.6/src/virtualdesktops.h)
+  properties. Optional/global helpers have guarded fallback paths; type-only
+  Tile/window declarations are not proof of a required runtime dependency.
+  Signal timing and JS exposure behavior were not run in a compositor.
+- Independent native lower bound: required `OutlinedBorderItem` was added by
+  [commit `3843ab61`](https://github.com/KDE/kwin/commit/3843ab61), first
+  found in stable 6.5.0 and absent in 6.3.6, 6.4.2 and 6.4.5. Its presence
+  alone does not prove full 6.5 native compatibility. KWin 6.0-6.2 were not
+  exhaustively audited; the later required API introductions already exclude
+  them from current full-product support.
+- Context package sources: [Leap 16 OSS archive](https://download.opensuse.org/distribution/leap/16.0/repo/oss/)
+  (`kwin6` 6.4.2, ECM 6.16) and Fedora 43 base
+  [KWin](https://packages.fedoraproject.org/pkgs/kwin/kwin/fedora-43.html) /
+  [ECM](https://packages.fedoraproject.org/pkgs/extra-cmake-modules/extra-cmake-modules/fedora-43.html)
+  (6.4.5 / 6.18). Exact Qt/KF6/Rust inventories and builds on those two
+  targets were not performed; base and updates must not be conflated.
+
+### Neon package-reuse context
+
+KDE neon User still publishes its Plasma/KWin 6.7.5 stack on an Ubuntu
+24.04/noble base ([FAQ](https://neon.kde.org/faq), noble index above);
+[early-October community discussion](https://discuss.kde.org/t/updated-isos-for-neon/50632)
+reports that the 26.04 rebase had not started, rather than an official
+schedule commitment. Ubuntu 26.04 binaries cannot be assumed installable
+before the rebase: base-library and package dependencies differ, even though
+neon's Qt/KF6 are newer. After a 26.04 rebase, core/KCM reuse may become
+possible if actual dependencies and Qt/KF6 linkage validate; it is not
+automatic. An Ubuntu 6.6.x-built effect would still be refused by neon's
+6.7.x factory IID check and needs a build for neon's exact KWin. No neon
+install/rebase test was performed.
 
 ## Decision and exact next action
 
-- User selects the route and Ubuntu base/updates coverage; recommendation is
-  **A with updated stock Ubuntu 26.04**, neon deferred.
-- If accepted: lower/reconcile the ECM floor, add an effect-only Debian
-  companion, build the exact release archive offline into both Debian
-  packages, then trial an unpublished OBS x86_64 target with the correct
-  universe/update ordering and inspect buildinfo/package dependencies.
-- Before shipping: validate an actual Ubuntu KDE session's border, group
+- User chooses **KWin 6.7 as the current full-product floor**, or authorizes
+  a separate older-KWin compatibility change and decides how workspace modes
+  should behave without native per-output desktops. Recommendation: retain
+  6.7 for the initial unchanged-product scope; no Plasma 5 port or Debian 13
+  native port for 0.1. Exact 6.7.0 native builds were not run; prior 6.7.5
+  builds and this source audit do not replace runtime acceptance.
+- If stock Ubuntu 26.04 support is selected, resolve and verify the script
+  observation/workspace compatibility first, then lower/reconcile the tested
+  ECM floor and add a host-matched effect-only Debian companion. Use exact
+  release-archive and OBS builds, including the correct universe/update
+  ordering. Base-only 6.6.4 compile feasibility is now proven, but not runtime
+  compatibility or binary reuse across KWin versions.
+- Before shipping a selected target: validate its KDE session's border, group
   underlay/drop preview and missing/failed/removed-effect behavior, plus
   KWin upgrade/solver transactions and rebuild timing. Preserve the existing
   non-pinning, independent-core policy. Same-version ABI patches require
