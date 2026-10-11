@@ -15,7 +15,7 @@ Name:           omnitiler
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        COSMIC-style automatic tiling for KWin (core)
-License:        GPL-2.0-or-later
+License:        MIT
 URL:            https://github.com/beefsack/OmniTiler
 Source0:        https://github.com/beefsack/OmniTiler/releases/download/v%{version}/omnitiler-%{version}.tar.gz
 
@@ -94,6 +94,7 @@ KWin).
 
 %package native-effect
 Summary:        OmniTiler native KWin effect (active border)
+License:        GPL-2.0-or-later
 Requires:       %{name} = %{version}-%{release}
 # Deliberately unversioned: this package must never hold a KWin upgrade
 # back (a pinned Requires would block host security updates), and an exact
@@ -215,6 +216,7 @@ if [ $1 -eq 0 ]; then
 fi
 
 %files
+%license LICENSE
 %{_bindir}/omnitiler
 %{_datadir}/kwin/scripts/omnitiler-kwin/
 %{_datadir}/dbus-1/services/com.omnitiler.Planner.service
@@ -227,6 +229,8 @@ fi
 %{kwin_plugindir}/kwin/scripts/configs/omnitiler-kwin_config.so
 
 %files native-effect
+%license LICENSES/GPL-2.0-or-later.txt
+%license LICENSE
 %{kwin_plugindir}/kwin/effects/plugins/omnitiler-active-border.so
 
 %changelog

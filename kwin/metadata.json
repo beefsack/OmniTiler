@@ -5,7 +5,7 @@
     "Name": "OmniTiler",
     "Description": "COSMIC-style automatic tiling for KWin.",
     "EnabledByDefault": false,
-    "License": "GPL-2.0-or-later",
+    "License": "MIT",
     "Icon": "preferences-system-windows"
   },
   "X-Plasma-API": "javascript",

@@ -4,6 +4,7 @@ set -uo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCTION_SCRIPT="$REPO_ROOT/scripts/build-kpackage.sh"
 MEMBERS=(
+  LICENSE
   metadata.json
   contents/code/main.js
   contents/config/main.xml
@@ -76,9 +77,13 @@ archive_in() {
 }
 
 assert_source_inputs() {
-  local path
+  local path source
   for path in "${MEMBERS[@]}"; do
-    if [[ ! -f "$FIXTURE/kwin/$path" || -L "$FIXTURE/kwin/$path" ]]; then
+    case "$path" in
+      LICENSE) source="$FIXTURE/$path" ;;
+      *) source="$FIXTURE/kwin/$path" ;;
+    esac
+    if [[ ! -f "$source" || -L "$source" ]]; then
       fail "fixture source is not a regular non-symlink file: $path"
     fi
   done
@@ -91,7 +96,7 @@ assert_archive_audit() {
   local index mode
   mapfile -t got < <("$ZIPINFO_BIN" -1 "$archive")
   if [[ "${#got[@]}" -ne "${#MEMBERS[@]}" ]]; then
-    fail "archive does not contain exactly four members"
+    fail "archive does not contain exactly five members"
     return
   fi
   for index in "${!MEMBERS[@]}"; do
@@ -105,7 +110,7 @@ assert_archive_audit() {
 
   mapfile -t records < <("$ZIPINFO_BIN" -l "$archive" | awk '/^[-dl][rwxstST-]{9}/')
   if [[ "${#records[@]}" -ne "${#MEMBERS[@]}" ]]; then
-    fail "archive audit did not find four file records"
+    fail "archive audit did not find five file records"
     return
   fi
   mode="${records[0]%% *}"
@@ -117,15 +122,19 @@ assert_archive_audit() {
   else
     fail "archive contains ZIP extra fields"
   fi
-  if [[ "$("$ZIPINFO_BIN" -v "$archive" | awk '/file last modified on \(DOS date\/time\):/ { if ($0 !~ /1980 Jan 1 00:00:00/) exit 1; count++ } END { print count + 0 }')" != 4 ]]; then
+  if [[ "$("$ZIPINFO_BIN" -v "$archive" | awk '/file last modified on \(DOS date\/time\):/ { if ($0 !~ /1980 Jan 1 00:00:00/) exit 1; count++ } END { print count + 0 }')" != 5 ]]; then
     fail "archive member timestamps are not exactly 1980-01-01 00:00:00"
   fi
 }
 
 assert_archive_payload() {
-  local archive="$1" member
+  local archive="$1" member expected
   for member in "${MEMBERS[@]}"; do
-    if ! "$UNZIP_BIN" -p "$archive" "$member" | cmp -s - "$FIXTURE/kwin/$member"; then
+    case "$member" in
+      LICENSE) expected="$FIXTURE/$member" ;;
+      *) expected="$FIXTURE/kwin/$member" ;;
+    esac
+    if ! "$UNZIP_BIN" -p "$archive" "$member" | cmp -s - "$expected"; then
       fail "archive payload differs from the staged script member: $member"
     fi
   done
@@ -317,6 +326,7 @@ setup_fixture() {
   rm -rf "$FIXTURE"
   mkdir -p "$FIXTURE/scripts" "$FIXTURE/kwin/contents/code" "$FIXTURE/kwin/contents/config" "$FIXTURE/kwin/contents/ui" "$FIXTURE_TMP"
   cp "$REPO_ROOT/kwin/metadata.json" "$FIXTURE/kwin/metadata.json"
+  cp "$REPO_ROOT/LICENSE" "$FIXTURE/LICENSE"
   cp "$REPO_ROOT/kwin/contents/config/main.xml" "$FIXTURE/kwin/contents/config/main.xml"
   cp "$REPO_ROOT/kwin/contents/ui/config.ui" "$FIXTURE/kwin/contents/ui/config.ui"
   printf 'stale-manual-bundle\n' > "$FIXTURE/kwin/contents/code/main.js"
@@ -375,6 +385,7 @@ self_check() {
   local source="$WORK/self-check"
   local archive="$WORK/self-check.kwinscript"
   mkdir -p "$source/contents/code" "$source/contents/config" "$source/contents/ui"
+  printf 'MIT notice\n' > "$source/LICENSE"
   printf '{}\n' > "$source/metadata.json"
   printf 'bundle\n' > "$source/contents/code/main.js"
   printf '<kcfg/>\n' > "$source/contents/config/main.xml"
@@ -418,6 +429,8 @@ else
     # native-effect delivery is installed alongside this package.
     "$UNZIP_BIN" -p "$ARCHIVE_ONE" metadata.json | grep -Fq "kwin/scripts/configs/omnitiler-kwin_config" \
       || fail "archived metadata does not reference the native script KCM companion"
+    "$UNZIP_BIN" -p "$ARCHIVE_ONE" metadata.json | grep -Fq '"License": "MIT"' \
+      || fail "archived metadata does not declare the MIT license"
   fi
 fi
 [[ -s "$FIXTURE_TMP/validation-args" ]] || fail "isolated validation was not invoked"

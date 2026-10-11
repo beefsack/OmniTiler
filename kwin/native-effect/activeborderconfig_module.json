@@ -4,6 +4,6 @@
         "Name": "OmniTiler",
         "Description": "Configure the OmniTiler active window border.",
         "Icon": "preferences-system-windows",
-        "License": "GPL-2.0-or-later"
+        "License": "MIT"
     }
 }

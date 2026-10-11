@@ -35,10 +35,13 @@ reproducibility is claimed, not identical RPM/DEB payloads.
 
 ## Recipe layout (tentative)
 
-Licensing metadata is tentative: KPlugin metadata declares GPL-2.0-or-later,
-but there is no project-wide LICENSE or Rust-manifest license declaration.
-Confirm first-party licensing and complete the vendored-crate copyright
-inventory before publishing. The Debian copyright file is a partial template.
+First-party licensing is MIT (copyright Michael Alexander), except the native
+effect plugin sources, GPL-2.0-or-later. The linked Rust staticlib and both
+Settings KCMs remain MIT. Cargo/npm, KPlugin and distro/Nix metadata match;
+packages include first-party license notices and Debian has per-path DEP-5
+stanzas. Complete the tool-based audit, vendored attribution inventory and
+per-distro native closure checks before publishing
+([licensing research](research/licensing.md)).
 
 | Path | Purpose |
 | --- | --- |
@@ -70,6 +73,10 @@ one plugin under the Qt6 plugin dir -
 embedded in the `.so` files at compile time (`K_PLUGIN_CLASS_WITH_JSON` /
 `KWIN_EFFECT_FACTORY`), so no `.json` ships alongside; this matches the
 flake `installCheck` file sets (effect-only vs settings-only).
+
+First-party notices ship in distro/Nix package license directories (Debian
+uses its standard copyright file). The standalone `.kwinscript` archive has
+five files: the four script files above plus root `LICENSE`.
 
 ## Enable, tray, and planner
 

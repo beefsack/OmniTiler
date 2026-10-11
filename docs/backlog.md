@@ -40,7 +40,7 @@ decisions of 2026-09-24 are under
     builds passed. Core Settings ownership approved and delivered 2026-10-11
     ([evidence](changes/archive/release-0.1-core-settings.md)); effect companion
     is effect-only. Remaining: OBS tag-to-stable source/checksum handoff, accounts/provisioning,
-    licensing confirmation, runtime/solver validation. OBS/AUR names are
+    license audit/CI gate, runtime/solver validation. OBS/AUR names are
     `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). Ubuntu native ECM
     floor (effect only) and neon provisioning remain blocked.
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
@@ -60,10 +60,12 @@ decisions of 2026-09-24 are under
   must build against Ubuntu's KWin. Assess whether 6.26 is genuinely needed,
   bundling the needed ECM modules in the source tarball, Kubuntu backports PPA,
   KWin API differences versus 6.7.5, and KDE neon OBS provisioning.
-- P1 | Licensing | Pre-0.1, user decision pending:
-  [research and dependency inventory](research/licensing.md). Run the pending
-  license tools and finish native linked-library/closure verification; add the
-  LICENSE file, headers and manifest/package declarations after the decision.
+- P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
+  GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
+  [Research and dependency inventory](research/licensing.md). Remaining:
+  reload the development environment, run the tool-based audit and add a CI
+  license gate; complete native linked-library/closure checks per distro and
+  vendored attribution inventory.
 - P1 | OBS release handoff redesign | Pre-0.1 research: narrow OBS tokens
   (`runservice`, `rebuild`, `release`, `workflow`) cannot upload new sources or
   checksums. Compare full-credential `osc commit` from GitHub Actions with

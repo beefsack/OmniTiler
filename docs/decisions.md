@@ -94,6 +94,26 @@ platform API behavior.
 - Pre-release rename: no migrations or compatibility shims; old installed state
   stops being used. The local checkout directory is not renamed.
 
+## Licensing
+
+- User decision 2026-10-11: project default is MIT, copyright Michael
+  Alexander. All Rust crates, including the staticlib linked into the native
+  effect, KWin TypeScript script, Settings KCMs, tray/planner, scripts,
+  packaging and documentation are MIT.
+- Exception: the native KWin effect implementation is GPL-2.0-or-later,
+  matching KWin's effect API header grant. Exact sources under
+  `kwin/native-effect`: `activewindowborder.cpp`, `activewindowborder.h`,
+  `activeborderlogic.h`, `oraclepress.h`; its `metadata.json` declares the
+  same license. Shared FFI/config inputs are MIT, not part of the exception.
+- MIT source may link into a GPL-covered binary without changing its own
+  source license. GPL effect source is chosen to make the boundary explicit
+  and permit KWin code reuse; it is not a source-license requirement imposed
+  by linking. Root LICENSE covers MIT sources; GPL sources carry SPDX
+  license/copyright headers. Full texts are in `LICENSES/`.
+- Metadata and first-party notice delivery are applied. Tool-based dependency
+  audit, CI license gate and full native closure per distro remain release
+  follow-ups ([research](research/licensing.md)).
+
 ## Development Environment
 
 - User decision 2026-10-03 (dev environments): single root `mise.toml` for
@@ -1439,10 +1459,10 @@ platform API behavior.
   automated handoff is resolved. The source-service template currently needs
   a manual source commit after release; it is not an approved replacement
   for tag-only automated delivery. No accounts or release tags were created.
-- Publishing prerequisite: confirm project-wide first-party licensing and
-  complete the vendored-crate inventory. Package license labels tentatively
-  follow the existing KPlugin GPL-2.0-or-later declarations; Rust manifests
-  have no license field and the repository has no project-wide LICENSE.
+- Publishing prerequisite: complete the tool-based dependency/license audit
+  and vendored attribution inventory. First-party MIT licensing and the
+  GPL-2.0-or-later effect exception are applied under [Licensing](#licensing);
+  package declarations and first-party notices match that boundary.
 - Nix-first current-host delivery is selected. The repository flake statically
   exports `packages.default`, `packages.kwin-script`,
   `packages.native-effect`, and `packages.tray`, plus

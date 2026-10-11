@@ -1,8 +1,8 @@
 # Licensing research: provenance, dependencies, candidates, stores, recommendation
 
-Status: research and metadata inventory complete; license-tool verification and
-distribution-specific native closure audits pending. No project license is
-selected and no `LICENSE` file exists (section 9).
+Status: MIT project license applied by the 2026-10-11 decision, with a
+GPL-2.0-or-later native-effect exception (section 8). License-tool verification,
+the CI license gate and distribution-specific native closure audits remain pending.
 
 Pins: `Cargo.lock` (`--locked` throughout); Nix `nixpkgs`
 `54ba4bcec4043e72a4006d825e0d7aff5562008f`; devenv `nixpkgs`
@@ -11,8 +11,8 @@ from this repo's own research docs (section 5).
 
 ## 1. Provenance sweep
 
-Bounded search (not proof of absence) over tracked `crates/`, `kwin/src`,
-`kwin/native-effect`, `test-fixtures/` for license headers, reuse
+Before license application, a bounded search (not proof of absence) over
+tracked `crates/`, `kwin/src`, `kwin/native-effect`, `test-fixtures/` for license headers, reuse
 markers (`ported`, `vendored`, `adapted from`, ...), `Krohnkite`,
 `Bismuth`, `Polonium`, `Karousel`, and COSMIC identifiers: no SPDX
 headers, no license texts, no `vendor/` dir, no third-party WM code.
@@ -43,7 +43,7 @@ crates-io + 5 workspace. License strings are declared `license` fields,
 grouped verbatim; each package appears exactly once
 (46 + 21 + 16 + 2 + 1 + 1 + 1 = 88; 87 unique names, `syn` twice).
 
-### 2.1 Workspace crates (first-party, no `license` or `publish` field)
+### 2.1 Workspace crates (first-party, all `license = "MIT"`)
 
 | Crate | Role |
 | --- | --- |
@@ -53,7 +53,8 @@ grouped verbatim; each package appears exactly once
 | `omnitiler` | Linux planner/service binary (zbus, rustix, serde) |
 | `tiler-windows` | Windows binary (serde; `windows-sys`/`windows-link` on `cfg(windows)`) |
 
-Metadata gap to close at license selection (section 9).
+All five declarations are confirmed by `cargo metadata --locked` after license
+application. The Rust staticlib stays MIT when linked into the GPL effect.
 
 ### 2.2 Screen: no dependency requiring copyleft
 
@@ -163,6 +164,11 @@ GPL-2.0-or-later`
 The combined effect binary distributes under GPL-compatible terms
 (GPLv2 s2 / GPLv3 s5(c)); GPLv2 s9 permits the GPLv3 election
 ([GPLv2 s9](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)).
+This does not require our original effect source to be GPL: MIT source can
+be linked into a GPL-covered binary while retaining its MIT grant. The
+2026-10-11 decision instead chooses GPL-2.0-or-later for the effect sources
+to make the boundary explicit and permit KWin code reuse. It does not
+relicense the MIT Rust staticlib or the Settings KCMs.
 KDE policy confirms the file-level regime
 ([Licensing Policy](https://community.kde.org/Policies/Licensing_Policy)).
 Transitive runtime closure unmapped: treat GPL compatibility as required.
@@ -217,11 +223,9 @@ the read-only Nix store artifacts: `libc.so.6`, `libm.so.6`,
 | libstdc++ / libgcc (`libstdc++.so.6`, `libgcc_s.so.1`) | `GPL-3.0-or-later WITH GCC-exception-3.1` ([GCC runtime exception](https://www.gnu.org/licenses/gcc-exception-3.1.html)) | Exception covers eligible compilation; does NOT force project GPL |
 | LLVM/Clang runtime | Unknown (no LLVM runtime linked in the inspected NEEDED) | Pending only if ever linked |
 
-Three shipped `KPlugin` metadata files declare `"License":
-"GPL-2.0-or-later"` (`metadata.json`, `activeborderconfig_module.json`,
-`scriptconfig_module.json`): provisional declarations, not the project
-decision. Sync them to the chosen license at selection (section 10);
-unchanged here.
+The script `kwin/metadata.json` and both Settings KCM metadata files
+(`activeborderconfig_module.json`, `scriptconfig_module.json`) declare MIT.
+Only `kwin/native-effect/metadata.json` declares GPL-2.0-or-later.
 
 ## 5. Reference-WM reuse
 
@@ -362,45 +366,44 @@ imposes no store EULA, so the Usage-Rule conflict does not arise; Corresponding 
 (and Installation Information where applicable) is still owed. winget has
 no license-class restriction beyond accurate manifests.
 
-## 8. Recommendation
+## 8. Approved decision (2026-10-11)
 
-For the user's interest in MAS, preserve store optionality unless stronger
-copyleft is the preferred trade-off. The license decision remains open:
-
-- **Recommended if MAS optionality outranks copyleft: Route B**
-  (permissive core + GPL effect). License `tiler-core`,
-  `tiler-protocol`, `tiler-windows`, and the KWin script under MIT OR
-  Apache-2.0; the native effect (+ FFI staticlib) under GPL-3.0-or-later
-  (GPL-2.0-or-later is also possible, electing v3 when combining with
-  GPLv3-only code or Qt's LGPLv3). Non-effect binaries retain licensing
-  flexibility for stores at the cost of permanent
-  boundary hygiene (REUSE headers, per-crate `license`, CI policy).
-- **Choose instead if copyleft priority outranks MAS: Route A**
-  (GPL-3.0-or-later everywhere). Simplest, all reuse options open, no
-  boundary work - but any binary sharing `tiler-core` (incl. a future Mac
-  binary) inherits the section 7.3 licensing question, and section 7.2
-  shows a full MAS tiler is technically unproven either way.
-
-MPL-2.0 for the core is not recommended (overhead, solves no gate).
+- Project default: MIT, copyright 2026 Michael Alexander, confirmed against
+  git authorship. Root `LICENSE` supplies the notice; `LICENSES/` supplies
+  MIT and GPL-2.0-or-later texts. This is not a claim of full REUSE coverage.
+- GPL-2.0-or-later exception: `activewindowborder.cpp`, `activewindowborder.h`,
+  `activeborderlogic.h`, `oraclepress.h` in `kwin/native-effect`, each with
+  SPDX license/copyright headers, plus the effect's `metadata.json` License.
+  These are effect implementation/policy inputs, not MIT KCM inputs.
+- Everything else stays MIT: all Rust crates including the effect staticlib,
+  shared POD FFI declarations and config inputs, KWin TypeScript script,
+  Settings KCMs, tray/planner, scripts, packaging and docs. MIT code inside
+  the GPL-covered effect binary retains its MIT source license.
+- The source choice is deliberate, not forced by linking (section 4.1).
+  Non-effect binaries retain licensing flexibility for stores; section 7.2
+  still leaves full MAS tiler feasibility unproven.
+- Cargo/npm, KPlugin, RPM/Arch/Debian and Nix package metadata now match;
+  package payloads carry the applicable first-party notices. Per-distro
+  native dependency and vendored attribution checks remain separate.
 
 | Component | Outcome |
 | --- | --- |
-| Rust core / planner | Permissive inventory; policy choice, not dependency-driven |
-| Native effect + FFI | GPL compatibility required (KWin link, in-process; headers GPL-2.0-or-later) |
-| Settings KCMs | LGPL only; no KWin GPL requirement on their link line |
-| Windows binary | Permissive inventory; Store + winget viable |
-| Future Mac binary | No inventory; Route B preserves licensing flexibility; direct distribution is feasible, MAS feature feasibility unproven |
+| Rust core / planner / effect staticlib | MIT; permissive dependency inventory |
+| Native effect plugin | GPL-2.0-or-later by choice; combined binary GPL-covered |
+| Settings KCMs / KWin script | MIT; KCM link line has Qt/KF6, no KWin GPL dependency |
+| Windows binary | MIT; Store + winget viable |
+| Future Mac binary | MIT default; no native inventory yet; direct distribution feasible, MAS feature feasibility unproven |
 
 ## 9. License tools and policy
 
-`deny.toml` is an unvalidated draft allowing exactly `Apache-2.0`,
-`MIT`, `Unicode-3.0` (minimal set for section 2.3). Workspace crates
-have no `license` field yet, so the check fails until the user chooses -
-that failure is the intended gate. Tools are already in
+`deny.toml` allows exactly `Apache-2.0`, `MIT`, `Unicode-3.0` (minimal set
+for section 2.3). TOML syntax and all five workspace MIT declarations have
+been validated; cargo-deny policy/schema execution remains unverified.
+Tools are already declared in
 [devenv.nix](../../devenv.nix) (`cargo-deny 0.20.2`, `cargo-about
-0.9.0`, `license_finder 7.2.1`, store-verified); a session restart is
-still needed to load them. No tool runs have been performed for this
-report. Exact pending runs after env restart:
+0.9.0`, `license_finder 7.2.1`, store-verified); reload the development
+environment to load them. No license-audit tool runs have been performed.
+Exact pending runs after environment reload:
 
 - `cargo deny --locked check licenses` (workspace root; `--locked`
   asserts `Cargo.lock` unchanged,
@@ -409,14 +412,16 @@ report. Exact pending runs after env restart:
   [README](https://github.com/pivotal/LicenseFinder) are text/csv/html/
   markdown - csv chosen for machine use; needs `node_modules` installed).
 
-cargo-about is available as an optional attribution follow-up
+cargo-about is declared as an optional attribution follow-up
 ([devenv.nix](../../devenv.nix)); it needs a template/config first, so no
 command is prescribed here.
 
 ## 10. Follow-ups and unknowns
 
-Run section 9 commands; map transitive native closures per target and confirm
-complete library-source coverage beyond the sampled headers; workspace `license` fields +
-REUSE headers + `LICENSE` at selection; Rectangle Pro internals Unknown.
+Run section 9 commands and add a CI license gate; map transitive native
+closures per distro/target and confirm complete library-source coverage
+beyond the sampled headers, including vendored attribution. License selection,
+texts, GPL source headers and manifest/package declarations are complete.
+Rectangle Pro internals remain Unknown.
 Unsettled: GPL Custom-EULA acceptance in practice; sandboxed full-tiler
 feasibility; Installation-Information mapping for direct downloads.

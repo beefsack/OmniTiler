@@ -2,6 +2,7 @@
   "name": "omnitiler-kwin",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "KWin scripting component for OmniTiler. Development-only toolchain; KWin executes only the generated non-module bundle.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",

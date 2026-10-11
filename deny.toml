@@ -1,8 +1,6 @@
-# Unvalidated draft; see docs/research/licensing.md, section 9.
-# Minimal allow set for the observed `cargo metadata --locked` inventory:
-# every OR-expression offers an MIT/Apache-2.0/Unicode-3.0 alternative.
+# First-party license policy; see docs/research/licensing.md, sections 2-3.
+# All workspace crates resolve to MIT. Minimal allow set for the observed
+# `cargo metadata --locked` inventory: every external OR-expression offers
+# an MIT/Apache-2.0/Unicode-3.0 alternative.
 [licenses]
 allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
-
-# Workspace crates have no `license` field yet; the check fails until the
-# user selects a license. That failure is the intended gate.

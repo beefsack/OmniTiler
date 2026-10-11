@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-FileCopyrightText: 2026 Michael Alexander
 #include "activewindowborder.h"
 #include "activeborderconfig.h"
 #include "activeborderlogic.h"

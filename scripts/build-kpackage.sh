@@ -10,6 +10,11 @@ MEMBERS=(
   contents/config/main.xml
   contents/ui/config.ui
 )
+# Root MIT notice ships as a top-level LICENSE member; its source lives at
+# the repository root, not under kwin/.
+LICENSE_MEMBER="LICENSE"
+LICENSE_SRC="$REPO_ROOT/LICENSE"
+ARCHIVE_MEMBERS=("$LICENSE_MEMBER" "${MEMBERS[@]}")
 
 usage() {
   printf 'usage: build-kpackage.sh [--output-dir <dir>]\n' >&2
@@ -149,6 +154,7 @@ for member in "${MEMBERS[@]}"; do
   source="$KWIN_DIR/$member"
   [[ -f "$source" && ! -L "$source" ]] || die "source is not a regular non-symlink file: $member"
 done
+[[ -f "$LICENSE_SRC" && ! -L "$LICENSE_SRC" ]] || die "source is not a regular non-symlink file: $LICENSE_MEMBER"
 
 rm -rf -- "$STAGING"
 mkdir -p -- "$STAGING/contents/code" "$STAGING/contents/config" "$STAGING/contents/ui"
@@ -156,14 +162,16 @@ for member in "${MEMBERS[@]}"; do
   cp -- "$KWIN_DIR/$member" "$STAGING/$member"
   chmod 0644 -- "$STAGING/$member"
 done
+cp -- "$LICENSE_SRC" "$STAGING/$LICENSE_MEMBER"
+chmod 0644 -- "$STAGING/$LICENSE_MEMBER"
 
 export LC_ALL=C
 export LANG=C
 export TZ=UTC0
-touch -t 198001010000 -- "${MEMBERS[@]/#/$STAGING/}"
+touch -t 198001010000 -- "$STAGING/$LICENSE_MEMBER" "${MEMBERS[@]/#/$STAGING/}"
 (
   cd -- "$STAGING"
-  "$ZIP" -q -X -D "$ARCHIVE_TMP" "${MEMBERS[@]}"
+  "$ZIP" -q -X -D "$ARCHIVE_TMP" "${ARCHIVE_MEMBERS[@]}"
 ) || die "archive creation failed"
 
 digest="$("$SHA256SUM" "$ARCHIVE_TMP" | awk '{print $1}')" || die "could not calculate archive SHA-256"
@@ -216,7 +224,7 @@ while IFS= read -r -d '' installed_path; do
   [[ "$installed_path" == "$PACKAGE_ROOT/"* ]] \
     || die "kpackagetool6 installed a file or symlink outside the expected package tree"
 done < "$TMP_ROOT/installed-paths"
-for member in "${MEMBERS[@]}"; do
+for member in "${ARCHIVE_MEMBERS[@]}"; do
   [[ -f "$PACKAGE_ROOT/$member" && ! -L "$PACKAGE_ROOT/$member" ]] \
     || die "kpackagetool6 installed an invalid package member: $member"
 done
@@ -226,7 +234,7 @@ member_count=0
 while IFS= read -r -d '' installed_path; do
   installed_member="${installed_path#"$PACKAGE_ROOT/"}"
   valid_member=0
-  for member in "${MEMBERS[@]}"; do
+  for member in "${ARCHIVE_MEMBERS[@]}"; do
     if [[ "$installed_member" == "$member" ]]; then
       ((member_count += 1))
       valid_member=1
@@ -235,7 +243,7 @@ while IFS= read -r -d '' installed_path; do
   done
   [[ "$valid_member" -eq 1 ]] || die "kpackagetool6 installed an unexpected package member: $installed_member"
 done < "$TMP_ROOT/installed-members"
-[[ "$member_count" -eq "${#MEMBERS[@]}" ]] || die "kpackagetool6 installed an incomplete package"
+[[ "$member_count" -eq "${#ARCHIVE_MEMBERS[@]}" ]] || die "kpackagetool6 installed an incomplete package"
 
 PUBLICATION_ACTIVE=1
 if ! "$MV" -f -- "$ARCHIVE_TMP" "$ARCHIVE_OUTPUT"; then

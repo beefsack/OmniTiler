@@ -14,6 +14,9 @@
       kwinScriptSource = pkgs: pkgs.lib.fileset.toSource {
         root = ./.;
         fileset = pkgs.lib.fileset.unions [
+          # License notices travel with the sources.
+          ./LICENSE
+          ./LICENSES
           ./kwin/metadata.json
           ./kwin/package.json
           ./kwin/package-lock.json
@@ -26,6 +29,8 @@
       traySource = pkgs: pkgs.lib.fileset.toSource {
         root = ./.;
         fileset = pkgs.lib.fileset.unions [
+          ./LICENSE
+          ./LICENSES
           ./Cargo.toml
           ./Cargo.lock
           ./crates
@@ -43,6 +48,10 @@
       nativeEffectSource = pkgs: pkgs.lib.fileset.toSource {
         root = ./.;
         fileset = pkgs.lib.fileset.unions [
+          # License notices travel with every source fileset: the effect
+          # binary links the MIT staticlib into GPL-covered plugin sources.
+          ./LICENSE
+          ./LICENSES
           # Complete native-effect subtree for BUILD_TESTING (effect, KCM,
           # all test sources, validators, headers) plus the script metadata
           # referenced by discovery validation. Individual file lists drift;
@@ -82,6 +91,7 @@
         pkgs.stdenv.mkDerivation {
           pname = "omnitiler-native-effect";
           version = "0.1.0";
+          meta.license = pkgs.lib.licenses.gpl2Plus;
           src = nativeEffectSource pkgs;
           sourceRoot = "source/kwin/native-effect";
 
@@ -132,10 +142,22 @@
             "-DKWin_DIR=${kwinDev}/lib/cmake/KWin"
           ];
 
+          # License notices in the installed output: GPL effect text plus
+          # the MIT notice for the linked staticlib portion. $src is the
+          # fileset store path (postInstall runs from the CMake build
+          # dir, not sourceRoot, so no relative path is used).
+          postInstall = ''
+            mkdir -p "$out/share/licenses/omnitiler-native-effect"
+            cp "$src/LICENSE" "$out/share/licenses/omnitiler-native-effect/LICENSE"
+            cp "$src/LICENSES/GPL-2.0-or-later.txt" "$out/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
+          '';
+
           doInstallCheck = true;
           installCheckPhase = ''
             runHook preInstallCheck
             test -f "$out/lib/qt-6/plugins/kwin/effects/plugins/omnitiler-active-border.so"
+            grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler-native-effect/LICENSE"
+            grep -Fq "GNU GENERAL PUBLIC LICENSE" "$out/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
             ${if withTests then ''
               # Test-only derivation: the full tree ships both KCMs as test
               # artifacts alongside the effect.
@@ -174,6 +196,7 @@
         pkgs.stdenv.mkDerivation {
           pname = "omnitiler-native-settings";
           version = "0.1.0";
+          meta.license = pkgs.lib.licenses.mit;
           src = nativeEffectSource pkgs;
           sourceRoot = "source/kwin/native-effect";
 
@@ -200,9 +223,17 @@
             "-DKDE_INSTALL_PLUGINDIR=lib/qt-6/plugins"
           ];
 
+          # MIT notice in the installed output ($src: fileset store path;
+          # postInstall runs from the CMake build dir, not sourceRoot).
+          postInstall = ''
+            mkdir -p "$out/share/licenses/omnitiler-native-settings"
+            cp "$src/LICENSE" "$out/share/licenses/omnitiler-native-settings/LICENSE"
+          '';
+
           doInstallCheck = true;
           installCheckPhase = ''
             runHook preInstallCheck
+            grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler-native-settings/LICENSE"
             test -f "$out/lib/qt-6/plugins/kwin/effects/configs/omnitiler-active-border_config.so"
             test -f "$out/lib/qt-6/plugins/kwin/scripts/configs/omnitiler-kwin_config.so"
             test ! -e "$out/lib/qt-6/plugins/kwin/effects/plugins/omnitiler-active-border.so"
@@ -229,6 +260,7 @@
         pkgs.buildNpmPackage {
           pname = "omnitiler-kwin";
           version = "0.1.0";
+          meta.license = pkgs.lib.licenses.mit;
           src = kwinScriptSource pkgs;
           sourceRoot = "source/kwin";
           npmDepsHash = "sha256-6V4SnPLw4sqYE5QRtx6vr8UQ7nHaLq1nAOgzR1P6bGY=";
@@ -242,6 +274,9 @@
             installRoot="$out/share/kwin/scripts/omnitiler-kwin"
             mkdir -p "$installRoot"
             cp -a metadata.json contents "$installRoot/"
+            # MIT notice in the installed output ($src: fileset store path).
+            mkdir -p "$out/share/licenses/omnitiler-kwin"
+            cp "$src/LICENSE" "$out/share/licenses/omnitiler-kwin/LICENSE"
             # Static build-id marker, no paths.
             printf '%s\n' "package=omnitiler-kwin" "version=0.1.0" "source=${sourceRev}" > "$installRoot/build-id"
             runHook postInstall
@@ -250,6 +285,7 @@
           doInstallCheck = true;
           installCheckPhase = ''
             runHook preInstallCheck
+            grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler-kwin/LICENSE"
             installRoot="$out/share/kwin/scripts/omnitiler-kwin"
             grep -Fx "package=omnitiler-kwin" "$installRoot/build-id"
             grep -Fx "version=0.1.0" "$installRoot/build-id"
@@ -269,6 +305,7 @@
         pkgs.rustPlatform.buildRustPackage {
           pname = "omnitiler";
           version = "0.1.0";
+          meta.license = pkgs.lib.licenses.mit;
           src = traySource pkgs;
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "omnitiler" ];
@@ -293,10 +330,14 @@
             # Static build-id marker, no paths.
             mkdir -p "$out/share/omnitiler"
             printf '%s\n' "package=omnitiler" "version=0.1.0" "source=${sourceRev}" > "$out/share/omnitiler/build-id"
+            # MIT notice in the installed output ($src: fileset store path).
+            mkdir -p "$out/share/licenses/omnitiler"
+            cp "$src/LICENSE" "$out/share/licenses/omnitiler/LICENSE"
           '';
           doInstallCheck = true;
           installCheckPhase = ''
             runHook preInstallCheck
+            grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler/LICENSE"
             test -s "$out/share/icons/hicolor/scalable/apps/omnitiler.svg"
             test -s "$out/share/dbus-1/services/com.omnitiler.Planner.service"
             grep -Fx "[D-BUS Service]" "$out/share/dbus-1/services/com.omnitiler.Planner.service"

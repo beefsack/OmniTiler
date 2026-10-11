@@ -17,7 +17,7 @@ pkgrel=1
 pkgdesc='COSMIC-style automatic tiling for KWin (core: script, planner, tray)'
 arch=(x86_64)
 url='https://github.com/beefsack/OmniTiler'
-license=(GPL-2.0-or-later)
+license=('MIT' 'GPL-2.0-or-later')
 # No release exists yet, so no digest can be pinned. At release time
 # packaging/bump-version.sh fills this from the published .sha256 sidecar;
 # until then the checksum stays SKIP and the prepare() VERSION assertion
@@ -62,6 +62,7 @@ build() {
 
 package_omnitiler() {
   pkgdesc='COSMIC-style automatic tiling for KWin with Settings pages; press Revert in Settings before removing'
+  license=('MIT')
   # Core ships the KCMs, so their direct Qt/KF6 runtimes plus the
   # enable/Settings journey helpers (kwriteconfig6/kreadconfig6 in kconfig,
   # kcmshell6 in kcmutils) are hard requirements, not optionals. kwin stays
@@ -88,6 +89,8 @@ package_omnitiler() {
     "$pkgdir/usr/lib/systemd/user/omnitiler-planner.service"
   install -Dm644 assets/icons/omnitiler.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/omnitiler.svg"
+  # MIT notice for the core payload (script, KCMs, tray/planner).
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/omnitiler/LICENSE"
   # KWin-independent settings pages (Qt/KF6 only; JSON metadata is embedded
   # in the .so files at compile time, so no .json ships alongside).
   # Installed via the full native tree, minus the ABI-bound effect plugin
@@ -98,6 +101,7 @@ package_omnitiler() {
 
 package_omnitiler-native-effect() {
   pkgdesc='OmniTiler native KWin effect, active border only (optional, ABI-bound)'
+  license=('GPL-2.0-or-later')
   # Deliberately unversioned KWin dependency: this package must never hold a
   # KWin upgrade back (a pinned dependency makes pacman -Su fail until the
   # effect is rebuilt/removed), and an exact dependency still would not prove
@@ -115,6 +119,10 @@ package_omnitiler-native-effect() {
   DESTDIR="$pkgdir" cmake --install build-native
   rm -f "$pkgdir/usr/lib/qt6/plugins/kwin/effects/configs/omnitiler-active-border_config.so" \
     "$pkgdir/usr/lib/qt6/plugins/kwin/scripts/configs/omnitiler-kwin_config.so"
+  # GPL effect text plus the MIT notice for the linked staticlib portion.
+  install -Dm644 LICENSES/GPL-2.0-or-later.txt \
+    "$pkgdir/usr/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/omnitiler-native-effect/MIT"
 }
 
 # vim: ft=sh
