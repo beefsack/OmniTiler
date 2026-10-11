@@ -1325,6 +1325,13 @@ struct TileLoop {
     /// HWND plus process creation so a recycled HWND re-arms for the fresh
     /// window while the same window never retries.
     maximize_admission_attempted: HashSet<String>,
+    /// R-MAX-06 keep-overlay latch: exact fresh lifetimes bound at tiled-first
+    /// slotless admission under the live overlay value. Keyed by full member
+    /// identity, never HWND alone; pruned with membership. Floating-first
+    /// (R-MAX-03), pre-existing, and born-fullscreen lifetimes never enter,
+    /// so their tiled admission keeps the existing one-shot clear under both
+    /// setting values.
+    born_keep_overlay: BTreeSet<crate::workspace::WindowKey>,
     /// Born-fullscreen hold (KDE initial-fullscreen-hold parity): first-seen
     /// fullscreen windows without a retained tile slot, tracked slotless as a
     /// planner-only exception until their first exit. Keyed by full member
@@ -3927,6 +3934,18 @@ fn admission_clear_eligible(facts: WindowFacts) -> bool {
 /// once with no automatic retry. Fullscreen never clears. The cleared window
 /// converges as eligible on the next tick.
 ///
+/// R-MAX-06: the keep-overlay policy binds to the exact fresh lifetime at
+/// tiled-first slotless admission (`born_keep_overlay`, set only after every
+/// ownership fence in `admit_slotless_maximized`). A latched row skips the
+/// clear and converges through the existing retained-slot overlay machinery
+/// instead (slotless admission seeds the slot on the tiled domain, row
+/// assembly rides the canonical retained rect, and the retained-only token
+/// takes no geometry write until a native restore lands it in the slot).
+/// Floating-first (R-MAX-03), pre-existing, born-fullscreen-exit, and later
+/// maxima rows never latch, so they keep the existing one-shot clear (or no
+/// clear) under both setting values; a live flip applies only to subsequent
+/// first admissions and never moves an already-bound lifetime.
+///
 /// Attempts key on HWND plus process creation plus the live lifetime tag, so
 /// a recycled HWND re-arms for the fresh window while the same window never
 /// retries. Stale attempts prune when the HWND leaves the enumeration or the
@@ -4009,12 +4028,13 @@ fn clear_maximize_at_admission(
             live_pid,
             live_tag.as_deref().unwrap_or("")
         );
-        if !crate::tiling::should_clear_maximize_at_admission(
+        if !crate::tiling::should_clear_maximize_at_admission_with_mode(
             row.fullscreen,
             row.maximized,
             false,
             state.maximize_admission_attempted.contains(&attempt_key),
             tiled,
+            state.born_keep_overlay.contains(&row.key),
         ) {
             continue;
         }
@@ -4297,6 +4317,7 @@ fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
     if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
         state.restore_wake = None;
     }
+    state.born_keep_overlay.remove(key);
     state.float_topmost_prev.remove(key);
     state.floated.remove(key);
     state.sticky.remove(key);
@@ -5778,6 +5799,16 @@ fn actuate_focus(
 fn same_axis_move_for(live: Option<&LiveSettings>) -> tiler_core::directional::SameAxisMove {
     live.map(|live| live.settings.core.same_axis_move_mode())
         .unwrap_or_default()
+}
+
+/// R-MAX-06 mode for the next first-seen maximized tiled admission: the
+/// last-good live setting, read per tick so a saved change applies to
+/// subsequent admissions only. Proof owners carry no live settings (`None`)
+/// and keep the default tile-on-launch clear. Previously admitted
+/// clients and Engine topology are untouched: the flag only gates the
+/// one-shot clear below, never existing slots.
+fn born_maximized_keep_overlay_for(live: Option<&LiveSettings>) -> bool {
+    live.is_some_and(|live| live.settings.core.born_maximized_keep_overlay())
 }
 
 /// Drain one bounded batch of product keyboard intents against fresh complete
@@ -9740,8 +9771,20 @@ fn admit_slotless_maximized(
             state.member_tokens.insert(row.key.clone(), token.clone());
             state.member_identity.insert(row.key.clone(), live);
             state.member_tags.insert(row.key.clone(), fresh_tag);
-            // Deliberately no `member_rects` seed: slotless until the tiled
-            // admission clear. No Engine exception, no hold set.
+            // R-MAX-06 latch, bound here after every ownership fence above
+            // (exact-lifetime, scope, hosted-child, proof, fresh tag): only a
+            // tiled-first admission under the live overlay value keeps the
+            // overlay. Floating-first rows take the unchanged R-MAX-03 lane
+            // (no latch, one-shot clear on retile under both values), and a
+            // later live flip cannot move this lifetime.
+            if crate::tiling::born_keep_latch(
+                state.workspaces.is_tiled(&output, &active),
+                born_maximized_keep_overlay_for(state.settings_live.as_ref()),
+            ) {
+                state.born_keep_overlay.insert(row.key.clone());
+            }
+            // No tile seed here: tiled row assembly reserves the overlay slot,
+            // or the one-shot clear permits ordinary observed admission.
             log_json_at(
                 &log_path,
                 serde_json::json!({
@@ -10339,6 +10382,9 @@ fn workspace_close_cleanup(state: &mut TileLoop) {
     state
         .born_fullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
+    state
+        .born_keep_overlay
+        .retain(|key| state.member_tokens.contains_key(key));
     state
         .seen_nonfullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
@@ -16863,6 +16909,11 @@ fn apply_live_settings(
     // assigning `live.settings` below is enough, since `keyboard_tick` reads
     // the mode per move. A change to only this field returns false, so no
     // tree rebuild or resync follows; the next move simply uses the new mode.
+    // R-MAX-06 rides the same assignment: `admit_slotless_maximized` binds
+    // the born-maximized policy per fresh lifetime at admission, so a
+    // setting-only change adopts for subsequent first admissions with no
+    // rebuild, and already-bound lifetimes plus previously admitted clients
+    // keep their slots and topology.
     if let Some(live) = state.settings_live.as_mut() {
         live.settings = settings;
         live.mtime = mtime;
@@ -17124,6 +17175,7 @@ fn run_tile_loop(
         active_output: String::new(),
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),
+        born_keep_overlay: BTreeSet::new(),
         born_fullscreen: BTreeSet::new(),
         seen_nonfullscreen: BTreeSet::new(),
         last_foreground: 0,
@@ -20255,6 +20307,753 @@ mod same_axis_move_tests {
 }
 
 #[cfg(test)]
+mod born_maximized_tests {
+    use super::{born_maximized_keep_overlay_for, rmax03_adapter_tests::test_state};
+    use crate::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings};
+    use tiler_core::geometry::Rect;
+
+    const BOUNDS: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1040,
+    };
+    const NATIVE_MAX: Rect = Rect {
+        x: -8,
+        y: -8,
+        w: 1936,
+        h: 1056,
+    };
+    const RESTORED: Rect = Rect {
+        x: 120,
+        y: 120,
+        w: 800,
+        h: 600,
+    };
+    const SIBLING: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+
+    /// Shared harness: proof-style owner state plus one workspace in the
+    /// requested mode. No HWNDs, hooks, or live effects.
+    fn harness(tiled: bool) -> (super::TileLoop, String, String) {
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        state.workspaces.set_tiled(&output, &active, tiled);
+        assert_eq!(state.workspaces.is_tiled(&output, &active), tiled);
+        (state, output, active)
+    }
+
+    fn max_key(hwnd: u64) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid: 7,
+            creation: "creation-live".to_owned(),
+        }
+    }
+
+    fn live_with(born: &str) -> LiveSettings {
+        let mut settings = Settings::default();
+        settings.core.born_maximized = born.to_owned();
+        LiveSettings::fresh(settings, None)
+    }
+
+    /// Stage the slotless-admission outcome for one fresh lifetime through the
+    /// actual production binding helper: workspace membership without a tile
+    /// slot, plus the latch exactly when production binds it. Returns the key.
+    /// (`admit_slotless_maximized` itself needs live HWNDs for its ownership
+    /// fences, so staging its committed outcome through the real helper is
+    /// the hermetic boundary; the helper, the latch set, and the gate below
+    /// are the production selection.)
+    fn admit_slotless(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        hwnd: u64,
+        token: &str,
+    ) -> crate::workspace::WindowKey {
+        let key = max_key(hwnd);
+        assert!(state.workspaces.assign(key.clone(), output, active, false));
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        assert!(!state.member_rects.contains_key(token));
+        if crate::tiling::born_keep_latch(
+            state.workspaces.is_tiled(output, active),
+            born_maximized_keep_overlay_for(state.settings_live.as_ref()),
+        ) {
+            state.born_keep_overlay.insert(key.clone());
+        }
+        key
+    }
+
+    /// Assemble one domain round through the production row path.
+    fn assemble(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        observed: &[super::ObservedWindow],
+        retained: &[super::RetainedRow],
+    ) -> Vec<crate::workspace_owner::OwnerRow> {
+        let mut hint_cx = super::HintCx::new();
+        super::assemble_domain_rows(
+            state,
+            output,
+            active,
+            observed,
+            retained,
+            "reconcile",
+            "rmax-06",
+            &mut hint_cx,
+        )
+        .expect("rows assemble")
+    }
+
+    /// Accepted Engine revision for one domain, for follow-up rounds.
+    fn accepted_revision(state: &super::TileLoop, output: &str, active: &str) -> u64 {
+        let (_, key) = crate::workspace_owner::workspace_domain(
+            output,
+            active,
+            BOUNDS,
+            crate::tiling::INNER_GAP,
+        );
+        state
+            .engine
+            .session(&key)
+            .map(|session| session.accepted_revision())
+            .unwrap_or(0)
+    }
+
+    /// Drive one production reconcile round through the real retained Engine
+    /// and return the planned writes.
+    fn reconcile(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        rows: &[crate::workspace_owner::OwnerRow],
+        revision: u64,
+    ) -> Vec<crate::workspace_owner::PlannedWrite> {
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
+        let (domain, domain_key) = crate::workspace_owner::workspace_domain(
+            output,
+            active,
+            BOUNDS,
+            crate::tiling::INNER_GAP,
+        );
+        let windows: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("rmax06-adapter").expect("generation");
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &CorrelationId::parse("rmax-06").expect("correlation"),
+            revision,
+            fp,
+            &domain,
+            &domain_key,
+            crate::tiling::OUTER_GAP,
+            &windows,
+            None,
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(
+                reply,
+                tiler_core::boundary::CoreReply::Tiled(_)
+                    | tiler_core::boundary::CoreReply::Projection(_)
+            ),
+            "unexpected reply: {reply:?}"
+        );
+        crate::workspace_owner::planned_writes(&reply).expect("tile plan")
+    }
+
+    #[test]
+    fn latch_binds_tiled_first_overlay_only() {
+        use crate::tiling::{born_keep_latch, born_maximized_keep_overlay};
+        // Exact wire values first: only the overlay token keeps; hand-built
+        // near-misses tile, and proof owners (no live settings) read default.
+        assert!(born_maximized_keep_overlay(BORN_MAXIMIZED_OVERLAY));
+        assert!(!born_maximized_keep_overlay(BORN_MAXIMIZED_TILE));
+        for bad in [
+            "",
+            "tile",
+            "keep-overlay",
+            "TILE-ON-LAUNCH",
+            "KEEP-MAXIMIZED-OVERLAY",
+            "group-with-neighbor",
+        ] {
+            assert!(!born_maximized_keep_overlay(bad), "{bad}");
+        }
+        assert!(!born_maximized_keep_overlay_for(None));
+        assert!(!born_keep_latch(
+            true,
+            born_maximized_keep_overlay_for(None)
+        ));
+        // Lane matrix through the actual binding helper: tiled-first under
+        // the overlay value latches; floating-first (R-MAX-03) never latches
+        // under either value, and tiled-first under the tile default does not.
+        assert!(born_keep_latch(true, true));
+        assert!(!born_keep_latch(true, false));
+        assert!(!born_keep_latch(false, true));
+        assert!(!born_keep_latch(false, false));
+    }
+
+    #[test]
+    fn gate_honors_latch_with_legacy_gates_intact() {
+        use crate::tiling::should_clear_maximize_at_admission_with_mode as gate;
+        // The latched first tiled sighting keeps; the unlatched one clears.
+        assert!(gate(false, true, false, false, true, false));
+        assert!(!gate(false, true, false, false, true, true));
+        // Every other gate is latch-independent, so R-MAX-03 retile,
+        // born-fullscreen exits, and later maxima behave identically under
+        // both values: fullscreen never clears, slotted members (later
+        // maxima) never re-clear, attempts never retry, floating defers, and
+        // non-maximized rows never clear.
+        for (fullscreen, maximized, known_slot, attempted, tiled) in [
+            (true, true, false, false, true),
+            (false, true, true, false, true),
+            (false, true, false, true, true),
+            (false, true, false, false, false),
+            (false, false, false, false, true),
+        ] {
+            for keep in [false, true] {
+                assert!(
+                    !gate(fullscreen, maximized, known_slot, attempted, tiled, keep),
+                    "no clear for ({fullscreen},{maximized},{known_slot},{attempted},{tiled},{keep})"
+                );
+            }
+        }
+        // The legacy five-argument gate pins the unlatched lane exactly.
+        for (fullscreen, maximized, known_slot, attempted, tiled) in [
+            (false, true, false, false, true),
+            (true, true, false, false, true),
+            (false, true, true, false, true),
+            (false, true, false, true, true),
+            (false, true, false, false, false),
+            (false, false, false, false, true),
+        ] {
+            assert_eq!(
+                crate::tiling::should_clear_maximize_at_admission(
+                    fullscreen, maximized, known_slot, attempted, tiled
+                ),
+                gate(fullscreen, maximized, known_slot, attempted, tiled, false),
+                "legacy gate pins tile lane"
+            );
+        }
+    }
+
+    #[test]
+    fn tile_bound_lifetime_clears_despite_overlay_flip() {
+        // Tiled-first under the tile default binds no latch; flipping live to
+        // overlay afterwards cannot move the earlier admission: it still clears.
+        let (mut state, output, active) = harness(true);
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_TILE));
+        let max = admit_slotless(&mut state, &output, &active, 101, "w8");
+        assert!(!state.born_keep_overlay.contains(&max));
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        assert!(!state.born_keep_overlay.contains(&max));
+        assert!(
+            crate::tiling::should_clear_maximize_at_admission_with_mode(
+                false, true, false, false, true, false
+            ),
+            "earlier tile-bound admission still clears after the flip"
+        );
+    }
+
+    fn maximized_row(
+        key: &crate::workspace::WindowKey,
+        token: &str,
+        frame: tiler_core::geometry::Rect,
+        maximized: bool,
+    ) -> super::RetainedRow {
+        super::RetainedRow {
+            key: key.clone(),
+            token: token.to_owned(),
+            rect: Some(frame),
+            maximized,
+            fullscreen: false,
+            facts: Some(crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            }),
+        }
+    }
+
+    fn observed_normal(
+        hwnd: u64,
+        token: &str,
+        frame: tiler_core::geometry::Rect,
+    ) -> super::ObservedWindow {
+        super::ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer: frame,
+            visible: frame,
+            insets: crate::tiling::FrameInsets {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            identity: crate::tiling::ObservedTarget {
+                hwnd,
+                pid: 7,
+                process_creation: "creation-live".to_owned(),
+                exe_path: "C:\\test\\app.exe".to_owned(),
+                user_sid: "S-1".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    #[test]
+    fn overlay_born_reserves_slot_and_restore_lands_exact() {
+        // Fixed-size detection is unwired on Windows (item 13 owns the gap):
+        // every maximized row here rides the ordinary overlay path with no
+        // fixed branch, so this delivery adds none.
+        let (mut state, output, active) = harness(true);
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        // Sibling already tiled; first-seen maximum admitted slotless through
+        // the production binding helper (tiled-first + overlay latches).
+        let sib = max_key(100);
+        assert!(
+            state
+                .workspaces
+                .assign(sib.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(sib.clone(), "w7".to_owned());
+        state.member_rects.insert("w7".to_owned(), SIBLING);
+        let max = admit_slotless(&mut state, &output, &active, 101, "w8");
+        assert!(state.born_keep_overlay.contains(&max));
+        // The bound lifetime, not the live value, gates its clear: flipping
+        // live to tile cannot move it, and no attempt ever arms.
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_TILE));
+        assert!(state.born_keep_overlay.contains(&max));
+        assert!(
+            !crate::tiling::should_clear_maximize_at_admission_with_mode(
+                false, true, false, false, true, true
+            )
+        );
+        assert!(state.maximize_admission_attempted.is_empty());
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+
+        // Production row assembly over the retained maximum plus the live
+        // sibling: the slot seeds and both rows reach the real Engine.
+        let observed = vec![observed_normal(100, "w7", SIBLING)];
+        let retained = vec![maximized_row(&max, "w8", NATIVE_MAX, true)];
+        let rows = assemble(&mut state, &output, &active, &observed, &retained);
+        assert_eq!(rows.len(), 2);
+        let overlaid = rows.iter().find(|r| r.token == "w8").expect("slot row");
+        assert!(
+            !overlaid.floating,
+            "overlay keeps a tile slot, not a float exception"
+        );
+        assert!(
+            state.member_rects.contains_key("w8"),
+            "tiled overlay must seed the retained slot"
+        );
+        let writes = reconcile(&mut state, &output, &active, &rows, 0);
+        let reserved = writes
+            .iter()
+            .find(|w| w.window.0 == "w8")
+            .expect("reserved slot")
+            .rect;
+        assert_ne!(reserved, NATIVE_MAX, "slot is layout, not the max frame");
+        assert!(
+            writes.iter().any(|w| w.window.0 == "w7"),
+            "sibling keeps its allocated share beside the overlay"
+        );
+        let writable = super::writable_tokens(&state, &output, &active, &observed);
+        assert!(
+            writable.contains("w7"),
+            "sibling takes the production tiled write"
+        );
+        assert!(
+            !writable.contains("w8"),
+            "retained-only overlay takes no geometry write: no native fight"
+        );
+
+        // Repeated maximized signals settle: reassembly is stable, still no
+        // attempt arms, still no writable fight.
+        let slot = state.member_rects.get("w8").copied().expect("slot");
+        let again = assemble(&mut state, &output, &active, &observed, &retained);
+        assert_eq!(again.len(), 2);
+        assert_eq!(
+            state.member_rects.get("w8").copied(),
+            Some(slot),
+            "repeat signals must not move the reserved slot"
+        );
+        assert!(state.maximize_admission_attempted.is_empty());
+        assert!(
+            !super::writable_tokens(&state, &output, &active, &observed).contains("w8"),
+            "repeat signals must not fight native state"
+        );
+
+        // Native restore refetches ordinary beside the sibling and lands
+        // EXACTLY the reserved Engine geometry on the next Engine round.
+        let refetched = vec![
+            observed_normal(100, "w7", SIBLING),
+            observed_normal(101, "w8", RESTORED),
+        ];
+        let rows = assemble(&mut state, &output, &active, &refetched, &[]);
+        assert_eq!(rows.len(), 2);
+        let revision = accepted_revision(&state, &output, &active);
+        let writes = reconcile(&mut state, &output, &active, &rows, revision);
+        let landed = writes
+            .iter()
+            .find(|w| w.window.0 == "w8")
+            .expect("restored tile")
+            .rect;
+        assert_eq!(
+            landed, reserved,
+            "restore must land exactly the reserved slot"
+        );
+        assert_eq!(
+            super::writable_tokens(&state, &output, &active, &refetched),
+            std::collections::HashSet::from(["w7".to_owned(), "w8".to_owned()]),
+            "restored member rejoins production writes beside its sibling"
+        );
+    }
+
+    #[test]
+    fn floating_first_retile_clears_under_both_values() {
+        // R-MAX-03 invariant: a floating-first admission never latches, so
+        // its first tiled admission keeps the existing one-shot clear under
+        // BOTH setting values, including a flip while it sits slotless.
+        let (mut state, output, active) = harness(false);
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        let max = admit_slotless(&mut state, &output, &active, 101, "w8");
+        assert!(
+            !state.born_keep_overlay.contains(&max),
+            "R-MAX-03 never latches"
+        );
+        // Floating assembly keeps it slotless (existing outcome).
+        let retained = vec![maximized_row(&max, "w8", NATIVE_MAX, true)];
+        let rows = assemble(&mut state, &output, &active, &[], &retained);
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !state.member_rects.contains_key("w8"),
+            "floating maximum stays slotless"
+        );
+        // Retile: the still-slotless maximum clears under both live values.
+        assert!(state.workspaces.set_tiled(&output, &active, true));
+        for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
+            state.settings_live = Some(live_with(born));
+            assert!(
+                crate::tiling::should_clear_maximize_at_admission_with_mode(
+                    false,
+                    true,
+                    state.member_rects.contains_key("w8"),
+                    false,
+                    true,
+                    state.born_keep_overlay.contains(&max)
+                ),
+                "R-MAX-03 retile must clear under {born}"
+            );
+        }
+        assert!(state.maximize_admission_attempted.is_empty());
+        assert!(state.born_keep_overlay.is_empty());
+    }
+
+    #[test]
+    fn overlay_hwmd_reuse_stays_lifetime_safe() {
+        // A recycled HWND mints a fresh lifetime: the stale member drops all
+        // runtime state (slot included) and the new occupant starts slotless,
+        // so no retained overlay leaks across windows.
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        state.workspaces.set_tiled(&output, &active, true);
+        let dead = crate::workspace::WindowKey {
+            hwnd: 101,
+            pid: 7,
+            creation: "creation-old".to_owned(),
+        };
+        assert!(
+            state
+                .workspaces
+                .assign(dead.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(dead.clone(), "w8".to_owned());
+        state.member_rects.insert(
+            "w8".to_owned(),
+            tiler_core::geometry::Rect {
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 300,
+            },
+        );
+        state.born_keep_overlay.insert(dead.clone());
+        let fresh = crate::workspace::WindowKey {
+            hwnd: 101,
+            pid: 9,
+            creation: "creation-new".to_owned(),
+        };
+        let stale = crate::workspace_owner::reused_hwnd_stale(
+            &state.member_tokens.keys().cloned().collect::<Vec<_>>(),
+            &state.hidden_claims.keys().cloned().collect(),
+            &fresh,
+        );
+        assert_eq!(stale, vec![dead.clone()]);
+        for dead in stale {
+            super::drop_member_state(&mut state, &dead);
+        }
+        assert!(!state.member_tokens.contains_key(&dead));
+        assert!(
+            !state.born_keep_overlay.contains(&dead),
+            "latch drops with the lifetime"
+        );
+        assert!(
+            !state.member_rects.contains_key("w8"),
+            "reused lifetime must not inherit the overlay slot"
+        );
+        assert!(state.workspaces.member_loc(&fresh).is_none());
+    }
+
+    #[test]
+    fn born_fullscreen_exit_and_later_maxima_stay_independent() {
+        use crate::tiling::should_clear_maximize_at_admission_with_mode as gate;
+        // Later maxima (retained slot) never clear under either latch state.
+        for keep in [false, true] {
+            assert!(!gate(false, true, true, false, true, keep));
+        }
+        // Born-fullscreen admission stages no latch (production
+        // `admit_born_fullscreen` never touches the set): after the real
+        // production release drops its seed, the exit to maximized is
+        // slotless and clears under both live values.
+        let (mut state, output, active) = harness(true);
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        // The production release below logs its once-per-lifecycle line:
+        // point the owner log at system temp and remove it afterwards, so the
+        // hermetic run leaves no repo residue.
+        let log_path = std::env::temp_dir().join(format!(
+            "tiler-born-release-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        state.log_path = log_path.clone();
+        let key = max_key(101);
+        assert!(
+            state
+                .workspaces
+                .assign(key.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(key.clone(), "w8".to_owned());
+        state.member_rects.insert("w8".to_owned(), RESTORED);
+        state.born_fullscreen.insert(key.clone());
+        assert!(!state.born_keep_overlay.contains(&key));
+        super::track_fullscreen_holds(&mut state, &[], &[]);
+        assert!(!state.born_fullscreen.contains(&key));
+        assert!(
+            !state.member_rects.contains_key("w8"),
+            "release drops the seed"
+        );
+        for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
+            state.settings_live = Some(live_with(born));
+            assert!(
+                gate(
+                    false,
+                    true,
+                    false,
+                    false,
+                    true,
+                    state.born_keep_overlay.contains(&key)
+                ),
+                "born-fullscreen exit clears under {born}"
+            );
+        }
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn apply_born_only_returns_false_adopts_and_rebuilds_nothing() {
+        use crate::settings::{build_disabled, build_remap, tile_options_from_settings};
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        use tiler_core::directional::WindowId;
+        use tiler_core::geometry::Rect;
+        use tiler_core::ids::CorrelationId;
+
+        // Scratch home for the ledger lock and the owner log line: never the
+        // repo or the live product directory. No window, hook, suspend, or
+        // registry effect exists on this path (every native lane below is
+        // aligned away); the temp dir is removed at the end.
+        let tmp = std::env::temp_dir().join(format!(
+            "tiler-born-max-live-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
+        let mut state = test_state();
+        state.log_path = tmp.join("owner.log");
+        // Align every lane with the defaults so the incoming document differs
+        // in exactly one field.
+        let base = tile_options_from_settings(&Settings::default());
+        state.border = base.border;
+        state.underlay = base.underlay;
+        state.keyboard = crate::snapkey::KeyboardConfig {
+            takeover: true,
+            allow_win_l: false,
+        };
+        state.last_remap = build_remap(&Settings::default());
+        state.last_disabled = build_disabled(&Settings::default());
+        state.settings_live = Some(LiveSettings::fresh(Settings::default(), None));
+        let mut snap_want = true;
+        // Retained session: two tiled windows, so "no rebuild" is observable
+        // instead of vacuous.
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1600,
+            h: 900,
+        };
+        let domain = crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let seed_fp =
+            crate::tiling::fingerprint(&[("w1".to_owned(), bounds), ("w2".to_owned(), bounds)]);
+        let seed = crate::tiling::build_reconcile_event_for(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("live-seed").expect("correlation"),
+            0,
+            seed_fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                ),
+                (
+                    WindowId("w2".to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                ),
+            ],
+            Some(&WindowId("w2".to_owned())),
+        );
+        let reply = state.engine.handle(&seed);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed must converge, got {reply:?}"
+        );
+        // A move command builds here exactly like `keyboard_tick` builds it.
+        let moved = {
+            let mut event = seed.clone();
+            event.revision = state
+                .engine
+                .session(&domain.1)
+                .map(|session| session.accepted_revision())
+                .unwrap_or(0);
+            event.focused_window = WindowId("w2".to_owned());
+            event.command = CoreCommand::Move {
+                window: "w2".to_owned(),
+                direction: "left".to_owned(),
+                cross_output_transfer: false,
+                same_axis_move: super::same_axis_move_for(state.settings_live.as_ref()),
+            };
+            state.engine.handle(&event)
+        };
+        assert!(
+            matches!(moved, CoreReply::MoveDirectional(_)),
+            "pre-apply move must plan, got {moved:?}"
+        );
+        let before = state.engine.session(&domain.1).expect("session").snapshot();
+        let me = crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        };
+        let mut incoming = Settings::default();
+        incoming.core.born_maximized = BORN_MAXIMIZED_OVERLAY.to_owned();
+        incoming.revision = 7;
+        let changed = super::apply_live_settings(
+            &mut state,
+            &tmp,
+            &me,
+            &store,
+            &mut snap_want,
+            incoming,
+            None,
+        );
+        assert!(
+            !changed,
+            "born-maximized-only adoption must report no owner change"
+        );
+        assert_eq!(
+            state.engine.session(&domain.1).expect("session").snapshot(),
+            before,
+            "retained session untouched: no rebuild, no resync"
+        );
+        let live = state.settings_live.as_ref().expect("live");
+        assert_eq!(live.settings.core.born_maximized, BORN_MAXIMIZED_OVERLAY);
+        assert_eq!(live.status, "saved:7");
+        assert!(
+            born_maximized_keep_overlay_for(state.settings_live.as_ref()),
+            "subsequent admissions use the adopted setting"
+        );
+        assert!(
+            state.born_keep_overlay.is_empty(),
+            "setting-only Apply binds no lifetime"
+        );
+        assert_eq!((state.inner_gap, state.outer_gap), (8, 8));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
 mod send_preflight_tests {
     use super::SendPreflight;
     use crate::workspace_owner::SendFenceSnapshot;
@@ -21029,6 +21828,7 @@ mod rmax03_adapter_tests {
             active_output: String::new(),
             workspace_proof: false,
             maximize_admission_attempted: std::collections::HashSet::new(),
+            born_keep_overlay: std::collections::BTreeSet::new(),
             born_fullscreen: std::collections::BTreeSet::new(),
             seen_nonfullscreen: std::collections::BTreeSet::new(),
             last_foreground: 0,

@@ -605,7 +605,49 @@ pub const fn should_clear_maximize_at_admission(
     attempted: bool,
     tiled: bool,
 ) -> bool {
-    tiled && !fullscreen && maximized && !known_slot && !attempted
+    should_clear_maximize_at_admission_with_mode(
+        fullscreen, maximized, known_slot, attempted, tiled, false,
+    )
+}
+
+/// R-MAX-06 mode-aware form of [`should_clear_maximize_at_admission`]:
+/// `keep_overlay` (latched at first-seen tiled admission) keeps
+/// the native maximize over the reserved tile slot instead of clearing once,
+/// so first-seen maximized tiled admission converges through the existing
+/// retained-slot overlay machinery with no native clear. Every other gate is
+/// unchanged: fullscreen still never clears, slotted members never re-clear,
+/// attempts never retry, and floating domains still defer.
+#[must_use]
+pub const fn should_clear_maximize_at_admission_with_mode(
+    fullscreen: bool,
+    maximized: bool,
+    known_slot: bool,
+    attempted: bool,
+    tiled: bool,
+    keep_overlay: bool,
+) -> bool {
+    !keep_overlay && tiled && !fullscreen && maximized && !known_slot && !attempted
+}
+
+/// R-MAX-06 born-maximized mode predicate over the raw wire value: true only
+/// for the exact `keep-maximized-overlay` token. Unknown hand-built values
+/// tile (fail-closed to the default); only validated live settings reach the
+/// production gate, where anything invalid keeps last-good instead.
+#[must_use]
+pub fn born_maximized_keep_overlay(value: &str) -> bool {
+    value == crate::settings::BORN_MAXIMIZED_OVERLAY
+}
+
+/// R-MAX-06 latch decision at slotless admission: bind keep-overlay to the
+/// exact fresh lifetime only for tiled-first admissions under the live
+/// overlay value. Floating-first (R-MAX-03 lane), pre-existing, and
+/// born-fullscreen lifetimes never latch, so their later tiled admission
+/// keeps the existing one-shot clear regardless of the live setting. A later
+/// live flip cannot move an already-bound lifetime: the stored binding, not
+/// the live value, gates its clear.
+#[must_use]
+pub const fn born_keep_latch(tiled_first: bool, keep_setting: bool) -> bool {
+    tiled_first && keep_setting
 }
 
 /// Slotless maximized admission rule (R-MAX-03): a first-seen maximized,

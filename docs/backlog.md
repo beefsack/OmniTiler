@@ -169,6 +169,11 @@ decisions of 2026-09-24 are under
     as tile placement; exact trace replay and nested-layout regression pass.
     Underlay appearance live check pending
     ([record](changes/archive/windows-group-underlay-geometry.md)).
+  - (d) Offline-delivered: `core.born_maximized`, default `tile-on-launch`
+    and working `keep-maximized-overlay`; live changes affect subsequent
+    admissions only. Launch/restore, Settings and gaming live checks pending
+    ([record](changes/archive/windows-born-maximized-setting.md)); R-MAX-03
+    overlay parity remains item 11, fixed detection remains item 13.
   - (e) Offline-delivered: active border radius defaults to 6 in Windows
     settings and CLI/proof owners; explicit radii preserved. Settings/visual
     live check pending ([record](changes/archive/windows-border-radius-default.md)).
@@ -1866,6 +1871,10 @@ decisions of 2026-09-24 are under
     KDE R-MAX-06 delivered offline, R-MAX-03 delivered offline in
     `29c75fe` ([record](changes/archive/kde-maximized-floating-retile-overlay.md),
     born-max [record](changes/archive/kde-born-maximized-overlay.md)).
+    R-MAX-06 now has the 2026-10-11 setting: Windows both values delivered
+    offline ([record](changes/archive/windows-born-maximized-setting.md));
+    this item's remaining Windows implementation is R-MAX-03, independent
+    of that setting. Native acceptance remains pending for both legs.
 
     #### Item 11 behavior and reference seams
 

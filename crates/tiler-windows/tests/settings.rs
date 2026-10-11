@@ -1524,6 +1524,99 @@ fn same_axis_move_presets_leave_core_field_unchanged() {
     }
 }
 
+#[test]
+fn born_maximized_schema_v1_missing_field_defaults_to_tile() {
+    use tiler_windows::settings::{BORN_MAXIMIZED_TILE, validate_settings};
+    // Pre-R-MAX-06 schema-v1 file without the additive field: serde
+    // missing-default supplies tile-on-launch, schema stays version 1.
+    let temp = Temp::new("born-max-missing");
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"inner_gap":8,"outer_gap":8},"bindings":{}}"#,
+    )
+    .expect("write");
+    let LoadOutcome::Loaded(settings) = load_from_dir(&temp.path) else {
+        panic!("old file loads");
+    };
+    assert_eq!(settings.v, 1);
+    assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_TILE);
+    assert!(!settings.core.born_maximized_keep_overlay());
+    assert!(validate_settings(&settings).is_ok());
+}
+
+#[test]
+fn born_maximized_both_tokens_round_trip() {
+    use tiler_windows::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE};
+    let temp = Temp::new("born-max-roundtrip");
+    for token in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
+        let mut settings = Settings::default();
+        settings.core.born_maximized = token.to_owned();
+        save_to_dir(&temp.path, &mut settings).expect("save");
+        let LoadOutcome::Loaded(back) = load_from_dir(&temp.path) else {
+            panic!("reloads {token}");
+        };
+        assert_eq!(back.core.born_maximized, token);
+    }
+    // Atomic save leaves only the final name behind.
+    let entries: Vec<String> = std::fs::read_dir(&temp.path)
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["settings.json".to_owned()]);
+}
+
+#[test]
+fn born_maximized_invalid_value_and_type_refuse() {
+    use tiler_windows::settings::SettingsError;
+    let temp = Temp::new("born-max-invalid");
+    // Unknown value (including retired aliases): invalid, bytes untouched.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"born_maximized":"keep-overlay"},"bindings":{}}"#,
+    )
+    .expect("write");
+    assert!(matches!(
+        load_from_dir(&temp.path),
+        LoadOutcome::Invalid(SettingsError::Invalid(_))
+    ));
+    // Wrong JSON type: malformed, bytes untouched.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"born_maximized":7},"bindings":{}}"#,
+    )
+    .expect("write");
+    assert!(matches!(
+        load_from_dir(&temp.path),
+        LoadOutcome::Invalid(SettingsError::Malformed)
+    ));
+    // Live poll keeps last-good with a degraded status; the file is never
+    // rewritten, so a later valid save still applies.
+    let mut live_settings = Settings::default();
+    live_settings.core.born_maximized = tiler_windows::settings::BORN_MAXIMIZED_OVERLAY.to_owned();
+    let live = tiler_windows::settings::LiveSettings::fresh(live_settings, None);
+    let outcome = poll_for_change(&temp.path, &live);
+    assert!(
+        matches!(outcome, PollOutcome::InvalidKept(_)),
+        "keeps last-good, got {outcome:?}"
+    );
+    assert_eq!(live.settings.core.born_maximized, "keep-maximized-overlay");
+    let mut valid = Settings::default();
+    valid.core.born_maximized = tiler_windows::settings::BORN_MAXIMIZED_OVERLAY.to_owned();
+    save_to_dir(&temp.path, &mut valid).expect_err("invalid on-disk file blocks save");
+}
+
+#[test]
+fn born_maximized_presets_leave_core_field_unchanged() {
+    use tiler_windows::settings::{BORN_MAXIMIZED_OVERLAY, validate_settings};
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        settings.core.born_maximized = BORN_MAXIMIZED_OVERLAY.to_owned();
+        tiler_windows::settings::apply_preset(&mut settings, preset);
+        assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_OVERLAY);
+        assert!(validate_settings(&settings).is_ok());
+    }
+}
+
 // Keyboard resize catalog/settings: 8 logical rows (letter plus arrow alias
 // each, 16 physical chords) on the dedicated Win+Alt / Win+Shift+Alt arms
 // with mode-carrying actions. Both presets keep the defaults (Windows

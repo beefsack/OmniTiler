@@ -6,17 +6,18 @@ use tiler_windows::tiling::{
     OWN_SETTINGS_WINDOW_CLASS, ObservedTarget, ObservedTargetRef, ReadbackOutcome, RefusedTracker,
     ResizeOptions, ResizeRepeat, ResizeRequest, ScopeHostChild, SkipReason, StatelessVerdict,
     TokenMap, WindowFacts, WorkspaceAction, WorkspaceRequest, allow_match, allowlist_digest,
-    build_reconcile_event, build_reconcile_event_for, build_reconcile_event_for_floating,
-    canonical_retained_rect, classify, classify_focus, classify_gesture, fingerprint,
-    float_toggle_refusal, float_topmost_restore_needed, fullscreen_toggle_decision,
-    hosted_child_allows, inspect_stateless_verdict, is_borderless_fullscreen,
-    is_own_settings_window, min_hints_from_outer, normalize_min_track, overlay_refusal,
-    parse_allowlist, parse_capture_args, parse_children_args, parse_hide_proof_args,
-    parse_inspect_args, parse_resize_args, parse_resize_request, parse_scope_host_child,
-    parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args, parse_workspace_args,
-    parse_workspace_proof_args, parse_workspace_request, readback_outcome, render_resize_request,
-    render_workspace_request, resize_direction_valid, resize_mode_valid, resize_repeat_next,
-    scope_allows, scope_exe_basename, send_flags_stable, should_clear_maximize_at_admission,
+    born_keep_latch, born_maximized_keep_overlay, build_reconcile_event, build_reconcile_event_for,
+    build_reconcile_event_for_floating, canonical_retained_rect, classify, classify_focus,
+    classify_gesture, fingerprint, float_toggle_refusal, float_topmost_restore_needed,
+    fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
+    is_borderless_fullscreen, is_own_settings_window, min_hints_from_outer, normalize_min_track,
+    overlay_refusal, parse_allowlist, parse_capture_args, parse_children_args,
+    parse_hide_proof_args, parse_inspect_args, parse_resize_args, parse_resize_request,
+    parse_scope_host_child, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
+    parse_workspace_args, parse_workspace_proof_args, parse_workspace_request, readback_outcome,
+    render_resize_request, render_workspace_request, resize_direction_valid, resize_mode_valid,
+    resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
+    should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
     should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
     verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
     verify_resize_argv_consistency, verify_shortcut_proof_argv_consistency,
@@ -325,6 +326,55 @@ fn maximize_admission_clears_once_never_fullscreen() {
     assert!(!should_clear_maximize_at_admission(
         false, true, true, true, false
     ));
+}
+
+#[test]
+fn born_maximized_overlay_keeps_first_sighting_other_gates_unchanged() {
+    // R-MAX-06: the keep-overlay value suppresses only the canonical first
+    // tiled sighting; fullscreen, slotted, attempted, floating, and
+    // non-maximized rows keep their existing refusal under both values, and
+    // the legacy gate pins the tile-on-launch default exactly.
+    assert!(should_clear_maximize_at_admission_with_mode(
+        false, true, false, false, true, false
+    ));
+    assert!(!should_clear_maximize_at_admission_with_mode(
+        false, true, false, false, true, true
+    ));
+    for (fullscreen, maximized, known_slot, attempted, tiled) in [
+        (true, true, false, false, true),
+        (false, true, true, false, true),
+        (false, true, false, true, true),
+        (false, true, false, false, false),
+        (false, false, false, false, true),
+        (true, false, false, false, true),
+    ] {
+        for keep in [false, true] {
+            assert!(
+                !should_clear_maximize_at_admission_with_mode(
+                    fullscreen, maximized, known_slot, attempted, tiled, keep
+                ),
+                "no clear for ({fullscreen},{maximized},{known_slot},{attempted},{tiled},{keep})"
+            );
+        }
+    }
+    // Exact wire values only: the overlay token keeps, everything else tiles.
+    assert!(born_maximized_keep_overlay("keep-maximized-overlay"));
+    assert!(!born_maximized_keep_overlay("tile-on-launch"));
+    for bad in [
+        "",
+        "tile",
+        "overlay",
+        "TILE-ON-LAUNCH",
+        "group-with-neighbor",
+    ] {
+        assert!(!born_maximized_keep_overlay(bad), "{bad}");
+    }
+    // Production binding helper: only tiled-first under the overlay value
+    // latches; floating-first (R-MAX-03) never latches under either value.
+    assert!(born_keep_latch(true, true));
+    assert!(!born_keep_latch(true, false));
+    assert!(!born_keep_latch(false, true));
+    assert!(!born_keep_latch(false, false));
 }
 
 #[test]

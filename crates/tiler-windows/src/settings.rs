@@ -109,6 +109,43 @@ pub const SAME_AXIS_MOVE_SWAP_LABEL: &str = "Swap with neighbor";
 /// Reference WMs named by the alternative's tooltip (KCM parity).
 pub const SAME_AXIS_MOVE_SWAP_TIP: &str = "i3, sway";
 
+/// R-MAX-06 born-maximized admission wire values (user 2026-10-11, option B,
+/// cross-platform functional IDs `core.born_maximized`). Exact tokens only:
+/// no aliases, no migration; unknown or mistyped values refuse through the
+/// existing invalid-file/last-good path.
+pub const BORN_MAXIMIZED_TILE: &str = "tile-on-launch";
+/// R-MAX-06 keep-overlay alternative wire value.
+pub const BORN_MAXIMIZED_OVERLAY: &str = "keep-maximized-overlay";
+/// Functional label for the default (KCM parity).
+pub const BORN_MAXIMIZED_TILE_LABEL: &str = "Tile on launch";
+/// Reference WMs named by the default's tooltip (KCM parity: never a setting id).
+pub const BORN_MAXIMIZED_TILE_TIP: &str = "bspwm, i3, xmonad, sway, qtile";
+/// Functional label for the keep-overlay alternative (KCM parity).
+pub const BORN_MAXIMIZED_OVERLAY_LABEL: &str = "Keep maximized overlay";
+/// Reference WMs named by the alternative's tooltip (KCM parity).
+pub const BORN_MAXIMIZED_OVERLAY_TIP: &str = "COSMIC, Hyprland";
+
+/// R-MAX-06 two-choice control rows: `(wire token, functional label, WM tooltip)`.
+#[must_use]
+pub const fn born_maximized_options() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        (
+            BORN_MAXIMIZED_TILE,
+            BORN_MAXIMIZED_TILE_LABEL,
+            BORN_MAXIMIZED_TILE_TIP,
+        ),
+        (
+            BORN_MAXIMIZED_OVERLAY,
+            BORN_MAXIMIZED_OVERLAY_LABEL,
+            BORN_MAXIMIZED_OVERLAY_TIP,
+        ),
+    ]
+}
+
+fn default_born_maximized() -> String {
+    BORN_MAXIMIZED_TILE.to_owned()
+}
+
 /// R-MOV-03 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
 pub const fn same_axis_move_options() -> [(&'static str, &'static str, &'static str); 2] {
@@ -143,6 +180,11 @@ pub struct CoreSettings {
     /// besides the two exact tokens refuses in [`validate_settings`].
     #[serde(default = "default_same_axis_move")]
     pub same_axis_move: String,
+    /// R-MAX-06 born-maximized admission mode. Additive schema-v1 field: a
+    /// missing value defaults to [`BORN_MAXIMIZED_TILE`]; any other value
+    /// besides the two exact tokens refuses in [`validate_settings`].
+    #[serde(default = "default_born_maximized")]
+    pub born_maximized: String,
     #[serde(default)]
     pub border: BorderSettings,
     #[serde(default)]
@@ -169,6 +211,7 @@ impl Default for CoreSettings {
             inner_gap: DEFAULT_INNER_GAP,
             outer_gap: DEFAULT_OUTER_GAP,
             same_axis_move: default_same_axis_move(),
+            born_maximized: default_born_maximized(),
             border: BorderSettings::default(),
             underlay: UnderlaySettings::default(),
             keyboard: KeyboardSettings::default(),
@@ -185,6 +228,16 @@ impl CoreSettings {
     #[must_use]
     pub fn same_axis_move_mode(&self) -> tiler_core::directional::SameAxisMove {
         tiler_core::directional::SameAxisMove::parse_wire(&self.same_axis_move).unwrap_or_default()
+    }
+
+    /// Typed R-MAX-06 mode for the next first-seen maximized admission: true
+    /// keeps the Q3 retained-slot overlay, false clears once then admits
+    /// ordinarily. Live settings are always validated, so the fallback only
+    /// covers hand-built defaults; invalid files never become live (they keep
+    /// last-good instead).
+    #[must_use]
+    pub fn born_maximized_keep_overlay(&self) -> bool {
+        self.born_maximized == BORN_MAXIMIZED_OVERLAY
     }
 }
 
@@ -1847,6 +1900,13 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
             "core.same_axis_move needs group-with-neighbor|swap-with-neighbor".to_owned(),
         ));
     }
+    if settings.core.born_maximized != BORN_MAXIMIZED_TILE
+        && settings.core.born_maximized != BORN_MAXIMIZED_OVERLAY
+    {
+        return Err(SettingsError::Invalid(
+            "core.born_maximized needs tile-on-launch|keep-maximized-overlay".to_owned(),
+        ));
+    }
     validate_border(&settings.core.border)?;
     validate_underlay(&settings.core.underlay)?;
     validate_bindings(settings)?;
@@ -2422,6 +2482,8 @@ mod tests {
             settings.core.same_axis_move_mode(),
             tiler_core::directional::SameAxisMove::GroupWithNeighbor
         );
+        assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_TILE);
+        assert!(!settings.core.born_maximized_keep_overlay());
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -2493,6 +2555,63 @@ mod tests {
             settings.core.same_axis_move = SAME_AXIS_MOVE_SWAP.to_owned();
             apply_preset(&mut settings, preset);
             assert_eq!(settings.core.same_axis_move, SAME_AXIS_MOVE_SWAP);
+            assert!(validate_settings(&settings).is_ok());
+        }
+    }
+
+    #[test]
+    fn born_maximized_options_carry_functional_labels_and_wm_tips() {
+        assert_eq!(
+            born_maximized_options(),
+            [
+                (
+                    BORN_MAXIMIZED_TILE,
+                    "Tile on launch",
+                    "bspwm, i3, xmonad, sway, qtile"
+                ),
+                (
+                    BORN_MAXIMIZED_OVERLAY,
+                    "Keep maximized overlay",
+                    "COSMIC, Hyprland"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn born_maximized_tokens_map_exactly_with_tile_default() {
+        // Exact tokens only: no aliases, no case folding, no empty token.
+        let mut settings = Settings::default();
+        assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_TILE);
+        assert!(!settings.core.born_maximized_keep_overlay());
+        settings.core.born_maximized = BORN_MAXIMIZED_OVERLAY.to_owned();
+        assert!(settings.core.born_maximized_keep_overlay());
+        assert!(validate_settings(&settings).is_ok());
+        for bad in [
+            "",
+            "tile",
+            "keep-overlay",
+            "TILE-ON-LAUNCH",
+            "overlay",
+            "group-with-neighbor",
+        ] {
+            let mut settings = Settings::default();
+            settings.core.born_maximized = bad.to_owned();
+            assert!(!settings.core.born_maximized_keep_overlay(), "{bad}");
+            assert!(
+                matches!(validate_settings(&settings), Err(SettingsError::Invalid(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn born_maximized_presets_leave_core_field_unchanged() {
+        for preset in [Preset::Authentic, Preset::Compatible] {
+            let mut settings = Settings::default();
+            settings.core.born_maximized = BORN_MAXIMIZED_OVERLAY.to_owned();
+            apply_preset(&mut settings, preset);
+            assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_OVERLAY);
             assert!(validate_settings(&settings).is_ok());
         }
     }

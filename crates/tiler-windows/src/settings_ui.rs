@@ -80,6 +80,8 @@ pub const ID_DEFAULT_TILED: u32 = 131;
 pub const ID_DEFAULT_FLOATING: u32 = 132;
 pub const ID_SAME_AXIS_GROUP: u32 = 133;
 pub const ID_SAME_AXIS_SWAP: u32 = 134;
+pub const ID_BORN_MAX_TILE: u32 = 135;
+pub const ID_BORN_MAX_OVERLAY: u32 = 136;
 
 const ESCAPE_VK: usize = 0x1B;
 
@@ -152,11 +154,12 @@ struct App {
     /// Set while the on-disk file is invalid: Apply stays disabled.
     invalid: Option<String>,
     /// R-MOV-03 native tooltip text buffers (wide, NUL-terminated), one per
-    /// radio, built from the shared options table. Owned by the boxed `App`
-    /// so the pointers handed to the tooltip control stay valid for the whole
-    /// window lifetime: the tooltip is a child window, destroyed with its
-    /// parent before `WM_DESTROY` reclaims this box.
-    tip_text: [Vec<u16>; 2],
+    /// radio, built from the shared options table, followed by the two
+    /// R-MAX-06 born-maximized buffers in the same order. Owned by the boxed
+    /// `App` so the pointers handed to the tooltip control stay valid for the
+    /// whole window lifetime: the tooltip is a child window, destroyed with
+    /// its parent before `WM_DESTROY` reclaims this box.
+    tip_text: [Vec<u16>; 4],
 }
 
 impl App {
@@ -325,12 +328,49 @@ fn same_axis_tip_texts() -> [Vec<u16>; 2] {
     [wide(options[0].2), wide(options[1].2)]
 }
 
+/// R-MAX-06 radio selection from saved/draft settings: true selects the
+/// keep-overlay radio, false the tile-on-launch default. Unknown values
+/// (possible only in hand-built drafts, never from disk) show the default.
+fn born_overlay_selected(settings: &Settings) -> bool {
+    settings.core.born_maximized == crate::settings::BORN_MAXIMIZED_OVERLAY
+}
+
+/// R-MAX-06 draft staging from the overlay radio state: writes the exact wire
+/// token for the selected choice, so Apply persists a validated value.
+fn apply_born_maximized_selection(draft: &mut Settings, overlay: bool) {
+    draft.core.born_maximized = if overlay {
+        crate::settings::BORN_MAXIMIZED_OVERLAY.to_owned()
+    } else {
+        crate::settings::BORN_MAXIMIZED_TILE.to_owned()
+    };
+}
+
+/// R-MAX-06 native tooltip text buffers from the shared options table: the
+/// WM reference per choice (`bspwm, i3, xmonad, sway, qtile` /
+/// `COSMIC, Hyprland`), wide-encoded for the tooltip control. Radio labels
+/// stay functional-only per the naming rule.
+fn born_maximized_tip_texts() -> [Vec<u16>; 2] {
+    let options = crate::settings::born_maximized_options();
+    [wide(options[0].2), wide(options[1].2)]
+}
+
+/// All four two-choice radio tooltip buffers in control order: the two
+/// R-MOV-03 buffers then the two R-MAX-06 buffers.
+fn choice_tip_texts() -> [Vec<u16>; 4] {
+    let axis = same_axis_tip_texts();
+    let born = born_maximized_tip_texts();
+    let [a0, a1] = axis;
+    let [b0, b1] = born;
+    [a0, a1, b0, b1]
+}
+
 /// Attach native tooltips naming the reference WM to the two R-MOV-03
-/// radios. One `tooltips_class32` child (`TTS_ALWAYSTIP`) with `TTF_SUBCLASS`
-/// tools, so hover tracking needs no manual relay. Text pointers ride the
-/// `App`-owned `tip_text` buffers (see the field docs for the lifetime).
-/// Best-effort: a failed tooltip leaves the functional dialog untouched.
-fn attach_same_axis_tips(app: &App, hwnd: HWND, hinst: windows_sys::Win32::Foundation::HINSTANCE) {
+/// radios and the two R-MAX-06 born-maximized radios. One
+/// `tooltips_class32` child (`TTS_ALWAYSTIP`) with `TTF_SUBCLASS` tools, so
+/// hover tracking needs no manual relay. Text pointers ride the `App`-owned
+/// `tip_text` buffers (see the field docs for the lifetime). Best-effort: a
+/// failed tooltip leaves the functional dialog untouched.
+fn attach_choice_tips(app: &App, hwnd: HWND, hinst: windows_sys::Win32::Foundation::HINSTANCE) {
     use windows_sys::Win32::UI::Controls::{
         ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TTF_IDISHWND, TTF_SUBCLASS,
         TTM_ADDTOOLW, TTS_ALWAYSTIP, TTTOOLINFOW,
@@ -366,6 +406,8 @@ fn attach_same_axis_tips(app: &App, hwnd: HWND, hinst: windows_sys::Win32::Found
     for (id, text) in [
         (ID_SAME_AXIS_GROUP, &app.tip_text[0]),
         (ID_SAME_AXIS_SWAP, &app.tip_text[1]),
+        (ID_BORN_MAX_TILE, &app.tip_text[2]),
+        (ID_BORN_MAX_OVERLAY, &app.tip_text[3]),
     ] {
         let control = app.ctl(id);
         if control.is_null() {
@@ -418,6 +460,11 @@ fn refresh_all(app: &App) {
     let swap = same_axis_swap_selected(&app.work);
     set_checked(app.ctl(ID_SAME_AXIS_GROUP), !swap);
     set_checked(app.ctl(ID_SAME_AXIS_SWAP), swap);
+    // R-MAX-06 two-choice control: same functional-labels-only rule; its own
+    // WS_GROUP pair below keeps it independent from the same-axis pair.
+    let overlay = born_overlay_selected(&app.work);
+    set_checked(app.ctl(ID_BORN_MAX_TILE), !overlay);
+    set_checked(app.ctl(ID_BORN_MAX_OVERLAY), overlay);
     refresh_list(app);
     enable(app.ctl(ID_APPLY), app.invalid.is_none());
 }
@@ -500,6 +547,9 @@ fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // R-MOV-03: the swap radio stages the exact swap token, otherwise the
     // exact group token; only these two values can reach validation.
     apply_same_axis_selection(&mut draft, checked(app.ctl(ID_SAME_AXIS_SWAP)));
+    // R-MAX-06: the overlay radio stages the exact overlay token, otherwise
+    // the exact tile token; only these two values can reach validation.
+    apply_born_maximized_selection(&mut draft, checked(app.ctl(ID_BORN_MAX_OVERLAY)));
     draft.revision = app.base.revision;
     validate_settings(&draft).map_err(|e| e.to_string())?;
     Ok(draft)
@@ -1083,7 +1133,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
 
     let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let client_w = px(924, dpi);
-    let client_h = px(860, dpi);
+    let client_h = px(924, dpi);
     let mut rect = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
@@ -1105,7 +1155,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         work: base,
         selected: Some(catalog_index_of("focus-left").unwrap_or(0)),
         invalid: invalid.clone(),
-        tip_text: same_axis_tip_texts(),
+        tip_text: choice_tip_texts(),
     });
     let raw = Box::into_raw(app);
     let hwnd = unsafe {
@@ -1199,18 +1249,22 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_SAME_AXIS_GROUP, class: "BUTTON", text: "Group with neighbor".to_owned(), x: 20, y: 474, w: 200, h: 24, style: radio_first | tab },
         Ctl { id: ID_SAME_AXIS_SWAP, class: "BUTTON", text: "Swap with neighbor".to_owned(), x: 230, y: 474, w: 200, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "Same-axis moves apply to subsequent moves only; existing trees keep their layout until the next move.".to_owned(), x: 440, y: 472, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (84 rows)".to_owned(), x: 10, y: 516, w: 904, h: 268, style: group },
-        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 538, w: 540, h: 230, style: list_style | tab },
-        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 538, w: 324, h: 100, style: info_style },
-        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 642, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 642, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 674, w: 150, h: 24, style: edit_style | tab },
-        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 672, w: 120, h: 26, style: push | tab },
-        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 702, w: 324, h: 74, style: label },
-        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 792, w: 540, h: 60, style: label },
-        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 792, w: 100, h: 30, style: defpush | tab },
-        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 792, w: 100, h: 30, style: push | tab },
-        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 792, w: 100, h: 30, style: push | tab },
+        Ctl { id: 0, class: "BUTTON", text: "Born maximized".to_owned(), x: 10, y: 516, w: 904, h: 56, style: group },
+        Ctl { id: ID_BORN_MAX_TILE, class: "BUTTON", text: "Tile on launch".to_owned(), x: 20, y: 538, w: 200, h: 24, style: radio_first | tab },
+        Ctl { id: ID_BORN_MAX_OVERLAY, class: "BUTTON", text: "Keep maximized overlay".to_owned(), x: 230, y: 538, w: 200, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Born-maximized admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 536, w: 464, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (84 rows)".to_owned(), x: 10, y: 580, w: 904, h: 268, style: group },
+        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 602, w: 540, h: 230, style: list_style | tab },
+        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 602, w: 324, h: 100, style: info_style },
+        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 706, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 706, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 738, w: 150, h: 24, style: edit_style | tab },
+        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 736, w: 120, h: 26, style: push | tab },
+        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 766, w: 324, h: 74, style: label },
+        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 856, w: 540, h: 60, style: label },
+        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 856, w: 100, h: 30, style: defpush | tab },
+        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 856, w: 100, h: 30, style: push | tab },
+        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 856, w: 100, h: 30, style: push | tab },
     ];
     // Group/label/statics carry id 0 and skip automation lookup. Groupboxes
     // are pinned behind every sibling (see below); their handles ride here.
@@ -1281,8 +1335,9 @@ pub fn cmd_settings() -> Result<String, DynError> {
         }
     }
     refresh_all(app);
-    // Native tooltips for the R-MOV-03 radios; best-effort (see the helper).
-    attach_same_axis_tips(app, hwnd, hinst);
+    // Native tooltips for the R-MOV-03 and R-MAX-06 radios; best-effort (see
+    // the helper).
+    attach_choice_tips(app, hwnd, hinst);
     if let Some(reason) = invalid {
         status(
             app,
@@ -1331,8 +1386,14 @@ pub fn cmd_settings() -> Result<String, DynError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_same_axis_selection, same_axis_swap_selected};
-    use crate::settings::{SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP, Settings};
+    use super::{
+        apply_born_maximized_selection, apply_same_axis_selection, born_overlay_selected,
+        same_axis_swap_selected,
+    };
+    use crate::settings::{
+        BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP,
+        Settings,
+    };
 
     #[test]
     fn same_axis_radio_round_trips_both_tokens() {
@@ -1376,13 +1437,68 @@ mod tests {
     }
 
     #[test]
+    fn born_maximized_radio_round_trips_both_tokens() {
+        let mut draft = Settings::default();
+        assert!(!born_overlay_selected(&draft));
+        apply_born_maximized_selection(&mut draft, true);
+        assert_eq!(draft.core.born_maximized, BORN_MAXIMIZED_OVERLAY);
+        assert!(born_overlay_selected(&draft));
+        apply_born_maximized_selection(&mut draft, false);
+        assert_eq!(draft.core.born_maximized, BORN_MAXIMIZED_TILE);
+        assert!(!born_overlay_selected(&draft));
+    }
+
+    #[test]
+    fn born_maximized_radio_shows_tile_for_unknown_hand_built_value() {
+        let mut draft = Settings::default();
+        draft.core.born_maximized = "retired-alias".to_owned();
+        assert!(!born_overlay_selected(&draft));
+    }
+
+    #[test]
+    fn born_maximized_selection_validates_after_apply() {
+        for overlay in [false, true] {
+            let mut draft = Settings::default();
+            apply_born_maximized_selection(&mut draft, overlay);
+            crate::settings::validate_settings(&draft).expect("radio stages a valid token");
+        }
+    }
+
+    #[test]
+    fn born_maximized_tip_texts_come_from_shared_options() {
+        let options = crate::settings::born_maximized_options();
+        let tips = super::born_maximized_tip_texts();
+        assert_eq!(tips.len(), 2);
+        for (buffer, option) in tips.iter().zip(options.iter()) {
+            assert_eq!(*buffer, super::wide(option.2));
+        }
+        // Exact WM references, functional labels kept out of the tips.
+        assert_eq!(tips[0], super::wide("bspwm, i3, xmonad, sway, qtile"));
+        assert_eq!(tips[1], super::wide("COSMIC, Hyprland"));
+    }
+
+    #[test]
+    fn choice_tip_buffers_cover_both_radio_pairs() {
+        // Four buffers in control order: same-axis pair then born-maximized
+        // pair, so each tooltip tool reads its own choice text.
+        let tips = super::choice_tip_texts();
+        assert_eq!(tips.len(), 4);
+        assert_eq!(tips[0], super::wide("COSMIC"));
+        assert_eq!(tips[1], super::wide("i3, sway"));
+        assert_eq!(tips[0], super::same_axis_tip_texts()[0]);
+        assert_eq!(tips[1], super::same_axis_tip_texts()[1]);
+        assert_eq!(tips[2], super::born_maximized_tip_texts()[0]);
+        assert_eq!(tips[3], super::born_maximized_tip_texts()[1]);
+    }
+
+    #[test]
     fn dialog_fits_1380_work_area_at_dpi120() {
-        // Lowest control edge is the status line (y792 h60); it must sit
-        // inside the 860-high client area, which itself must fit a
-        // 1380-high work area at DPI 120 (px(860, 120) == 1075, leaving room
+        // Lowest control edge is the status line (y856 h60); it must sit
+        // inside the 924-high client area, which itself must fit a
+        // 1380-high work area at DPI 120 (px(924, 120) == 1155, leaving room
         // for the non-client frame on top).
-        assert_eq!(super::px(860, 120), 1075);
-        assert!(super::px(792 + 60, 120) <= super::px(860, 120));
-        assert!(super::px(860, 120) <= 1380);
+        assert_eq!(super::px(924, 120), 1155);
+        assert!(super::px(856 + 60, 120) <= super::px(924, 120));
+        assert!(super::px(924, 120) <= 1380);
     }
 }

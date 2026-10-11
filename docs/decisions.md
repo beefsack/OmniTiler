@@ -1979,12 +1979,18 @@ platform API behavior.
     Default tiles: one launch unmaximize, then ordinary admission (tooltip
     names bspwm, i3, xmonad, sway, qtile). Alternative keeps the Q3
     reserved-slot overlay (tooltip names COSMIC, Hyprland). Functional
-    names per Functional naming; exact IDs chosen at implementation. Reason:
+    names per Functional naming. IDs: `core.born_maximized`, default
+    `tile-on-launch` ("Tile on launch"), alternative `keep-maximized-overlay`
+    ("Keep maximized overlay"); reference WM names live in tooltips. Reason:
     a born-maximized launch (e.g. browser session restore) felt janky in
     Windows dogfood. Fullscreen (exclusive/borderless) stays untouched; game
     risk of a game launching in maximized-window mode is checked in the
     user's gaming test. R-MAX-03 floating-to-tiled overlay, D4 fixed
     born-maximized float and later user maximizes are unchanged.
+    - Windows offline-delivered: both values, Settings Apply/Revert and
+      lifetime-bound subsequent-admission adoption; native launch/restore and
+      gaming acceptance pending ([record](changes/archive/windows-born-maximized-setting.md)).
+      R-MAX-03 parity remains item 11; fixed-client detection remains item 13.
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06
