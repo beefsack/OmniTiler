@@ -78,8 +78,8 @@ platform API behavior.
 
 ## Project Name
 
-- User decision 2026-10-11: the project is **OmniTiler**, formerly
-  `plasma-auto-tiler`, reflecting KDE, Windows and later macOS targets.
+- User decision 2026-10-11: the project is **OmniTiler**, reflecting KDE,
+  Windows and later macOS targets.
 - Naming: display and upper CamelCase `OmniTiler`; lower CamelCase `omniTiler`;
   lowercase IDs, packages, binaries, filenames, snake identifiers, KWin/KPackage
   IDs, systemd units, Nix attributes/options and shortcut prefixes `omnitiler`;
@@ -92,7 +92,7 @@ platform API behavior.
   project and backs its `com.omnitiler.*` reverse-DNS IDs. It is the future
   project home page, not yet live; package homepage fields retain the GitHub URL.
 - Pre-release rename: no migrations or compatibility shims; old installed state
-  stops being used. The local checkout directory is not renamed.
+  stops being used.
 
 ## Licensing
 
