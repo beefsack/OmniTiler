@@ -215,13 +215,15 @@ transient (no dialog flag) is a different fixture and is not claimed.
   NORMATIVE D1-D8 (User 2026-10-08; D1/D5/D6 delivered offline,
   D7 implementation pending); [real Planner fixtures](../../../kwin/tests/fixed-size-admission.test.ts),
   [record](../../changes/archive/fixed-size-admission.md).
-- Then Ours Windows: tiles with its declared-hint clamp carried
-  into the Engine rows (`WM_GETMINMAXINFO` per member; no
-  fixed-size exclusion). `S(S-ours-spc-win)`.
+- Then Ours Windows: E floats automatically outside the tile tree with no
+  admitted-client geometry/focus/stacking/keep-above writes. Windows adapter
+  and retained Engine fixtures delivered offline 2026-10-11, prerequisite
+  `a41fcb5` plus runtime delivery; native hints/game journey TBD.
+  `S(S-ours-spc-win)`; [record](../../changes/archive/windows-fixed-size-admission.md).
 - Variant hook: NORMATIVE D1/D8 (User 2026-10-08; delivered offline).
   KDE `fixedSizePredicate=both-axes-fixed` default (`Width and height both fixed`,
   tooltip COSMIC) or `either-axis-fixed` (`Width or height fixed`, tooltip
-  Hyprland (Wayland), sway); both float this fixture. Windows handoff
+  Hyprland (Wayland), sway); both float this fixture. Windows
   `core.fixed_size_predicate`; no migration.
 
 ### R-SPC-05: app-owned resize and minimum-hint change on a tile
@@ -334,7 +336,11 @@ All fresh variants below reset the client and WM state independently.
   leg has no reference-WM outcome claim. Delivered offline 2026-10-08;
   [predicate/Planner fixtures](../../../kwin/tests/fixed-size-admission.test.ts),
   [D1 record](../../changes/archive/admission-and-move-settings.md). Native TBD.
-- Then Ours Windows: TBD (handoff only; behavior frozen).
+- Then Ours Windows: both variants tile under `both-axes-fixed` and float
+  under `either-axis-fixed`; live changes affect subsequent admissions only,
+  without rebuilding retained classifications. Offline 2026-10-11, prerequisite
+  `a41fcb5` plus runtime delivery; native UI/hints TBD.
+  [Record](../../changes/archive/windows-fixed-size-admission.md).
 - Variant hook: NORMATIVE whole-size default or either-axis setting
   (User 2026-10-08); functional IDs delivered offline.
 
@@ -418,8 +424,13 @@ All fresh variants below reset the client and WM state independently.
   COSMIC float raw-equal sentinels). The width-fixed/height-absent
   variant tiles under both (whole vectors must be usable). Reference outcomes
   for that added guard variant and native hint representation remain TBD.
-- Then Ours Windows: TBD (max-track extraction not wired); G-05 per-axis-zero
-  target above selected, Windows handoff pending.
+- Then Ours Windows: both partial-zero orientations tile under the default
+  and float through the nonzero axis under `either-axis-fixed`; missing,
+  full-zero, sentinel and height-absent guards tile under both. Fresh outer
+  tracks retain zero per axis through frame conversion and use the shared
+  predicate. Offline 2026-10-11, prerequisite `a41fcb5` plus runtime delivery;
+  retained classifications survive predicate changes. Native representation
+  TBD. [Item 17 record](../../changes/archive/windows-per-axis-zero-predicate.md).
 - Variant hook: NORMATIVE whole-size equality vs meaningful-bound
   normalization (User 2026-10-08).
 
@@ -486,7 +497,11 @@ All fresh variants below reset the client and WM state independently.
   gaps/overlaps, no new hint-signal work. Implemented offline
   2026-10-08 with real Planner [fixtures](../../../kwin/tests/fixed-size-admission.test.ts);
   native exact frames/focus TBD.
-- Then Ours Windows: TBD (handoff only; behavior frozen).
+- Then Ours Windows: retained tiles remain tiled after becoming fixed;
+  automatic fixed floats remain floating after losing hints. Current min/max
+  hints use shared projection/clamp policy (maximums accept explained clamps,
+  never redistribute shares). Offline 2026-10-11;
+  [record](../../changes/archive/windows-fixed-size-admission.md). Native frames/focus TBD.
 - Variant hook: NORMATIVE admission-only vs dynamic classification
   (User 2026-10-08).
 
@@ -546,7 +561,11 @@ All fresh variants below reset the client and WM state independently.
   D7 now restores matched fixed-window tile overrides across owner restart
   ([restart fixtures](../../../kwin/tests/float-intent.test.ts)); no positions persist.
   Physical hide/show/domain reassignment TBD.
-- Then Ours Windows: TBD (handoff only; behavior frozen).
+- Then Ours Windows: explicit tile wins for the same live client through
+  observations, hide/scope and workspace re-adoption. Only tile wins over known
+  automatic fixed origin persist the tile marker; repeated generic non-fixed
+  unfloats do not. Offline 2026-10-11;
+  [record](../../changes/archive/windows-fixed-size-admission.md). Native journeys TBD.
 - Variant hook: NORMATIVE explicit intent vs automatic fixed
   classification (User 2026-10-08).
 
@@ -631,7 +650,12 @@ All fresh variants below reset the client and WM state independently.
   Explicit user tile overrides retain Q3 R-MAX-03's reserved-slot route.
   Implemented offline 2026-10-08; [production-entry fixtures](../../../kwin/tests/fixed-size-workspace-entry.test.ts),
   [D5/D6 record](../../changes/archive/fixed-size-exit-and-enable.md). Native TBD.
-- Then Ours Windows: TBD (same intersection; handoff only).
+- Then Ours Windows: fixed birth keeps a slotless floating base beneath
+  maximize under both `core.born_maximized` values; unmaximize stays floating.
+  Enable rechecks current hints. Fixed-origin explicit overrides instead keep
+  a reserved tiled overlay, including hint loss (tentative Windows routing).
+  Offline 2026-10-11; [record](../../changes/archive/windows-fixed-size-admission.md).
+  Native launch/restore and game no-touch TBD; ordinary non-fixed routes unchanged.
 - Variant hook: NORMATIVE fixed-float base vs Q3 reserved tiled base
   (User 2026-10-08).
 
@@ -749,7 +773,12 @@ All fresh variants below reset the client and WM state independently.
   later exits retain that float even after hint loss (D2), never re-admit.
   Implemented offline 2026-10-09, [real Planner fixtures](../../../kwin/tests/fixed-size-admission.test.ts),
   [record](../../changes/archive/fixed-size-exit-and-enable.md); native game/restore journey TBD.
-- Then Ours Windows: TBD; current borderless-game inference stays frozen.
+- Then Ours Windows: first born-fullscreen exit uses current hints/predicate:
+  fixed floats without target writes; unknown/non-fixed tiles. A committed
+  first exit consumes its lifetime mark; repeated toggles and previously
+  automatic floats preserve admission identity. Offline 2026-10-11, production
+  assembly/stamped Engine fixtures; [record](../../changes/archive/windows-fixed-size-admission.md).
+  Native/game journey TBD; borderless-game inference unchanged.
 - Variant hook: NORMATIVE first normal admission vs fullscreen restore
   identity (User 2026-10-08; first-exit classification delivered offline).
 
@@ -838,8 +867,12 @@ All fresh variants below reset the client and WM state independently.
   [production-entry release/retile fixtures](../../../kwin/tests/fixed-size-workspace-entry.test.ts)
   and [intentional/sticky controls](../../../kwin/tests/fixed-size-admission.test.ts).
   [record](../../changes/archive/fixed-size-exit-and-enable.md). Native release/placement TBD.
-- Then Ours Windows: fixed E TBD (handoff only); intentional C
-  preservation reuses R-FLT-04 evidence.
+- Then Ours Windows: every candidate is freshly classified at enable, including
+  floating-workspace arrivals and changed ordinary hints/predicate; fixed stays
+  slotless automatic float, non-fixed tiles, explicit tile/intentional/sticky
+  intent survives. D4 latches and ordinary pins reset only on confirmed release.
+  Offline 2026-10-11; [record](../../changes/archive/windows-fixed-size-admission.md).
+  Native release/restore TBD; intentional C also reuses R-FLT-04 evidence.
 - Variant hook: NORMATIVE automatic vs intentional float identity at
   workspace enable (User 2026-10-08; check-every-window delivered offline).
 
@@ -865,8 +898,9 @@ All fresh variants below reset the client and WM state independently.
   the owner, then disable/enable tiling. Observe override hydration, automatic
   origin, reserved-slot versus maximize-clear routing, and native writes.
   Reference outcomes and Ours Windows observed outcomes remain TBD; Windows
-  fixed-origin marker coverage and retained-maximized hydration remain pending
-  implementation edges ([active record](../../changes/windows-fixed-size-admission.md)).
+  fixed-origin marker coverage and retained-maximized hydration are implemented
+  offline; fixed-override reserved-overlay routing under both born-maximized
+  values is tentative ([record](../../changes/archive/windows-fixed-size-admission.md)).
 - Observe: fixed classification at adoption vs open-only classification;
   previous explicit tile override vs recomputed automatic identity.
   Reference outcomes for the unavailable-store variant are TBD.
@@ -950,7 +984,15 @@ All fresh variants below reset the client and WM state independently.
   Legacy v1 without tile reads compatibly empty for overrides; degraded reads
   log and proceed empty, both recompute fixed E to untouched float.
   Native owner journey TBD; [D7 record](../../changes/archive/fixed-window-tile-override-restart.md).
-- Then Ours Windows: TBD (handoff only; behavior frozen).
+- Then Ours Windows: startup recomputes automatic fixed origin; matched
+  `OmniTiler.TileOverride.v1` hydrates fixed-origin tile intent before automatic
+  classification on visible and retained/maximized lifetimes, including hint
+  loss. Generic non-fixed wins write no tile marker; re-float/verified removal
+  clears it, absent/corrupt/mismatched identity recomputes without hold/retry.
+  Offline 2026-10-11; owned message-only marker readback/retained hydration
+  fixtures cover both born modes with no Engine commit or native frame/style
+  writes. [Record](../../changes/archive/windows-fixed-size-admission.md).
+  Ordinary-app restart/native discriminator outcomes remain TBD.
 - Variant hook: NORMATIVE admission/adoption scope (User 2026-10-08);
   explicit identity persistence is separately selected by R-RST-01,
   tile-override persistence delivered offline.

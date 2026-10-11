@@ -498,6 +498,25 @@ pub const fn restart_sticky_eligible(
     }
 }
 
+/// Whether one classified marker re-adopts an explicit fixed-window tile
+/// override on owner restart (R-SPC-04 D7): admitted membership plus exact
+/// identity plus live lifetime tag, with a valid tile-override marker. The
+/// override restores classification only (the stamped suppress signal on
+/// subsequent observations); hydration performs no writes, stages no Engine
+/// commit, and installs no marker. Missing/degraded/unmatched records fall
+/// back to ordinary fixed classification (recompute, no hold/retry). Every
+/// other lane (sticky, float, corrupt, unreadable, absent) never overrides
+/// here.
+#[must_use]
+pub const fn restart_tile_override_eligible(
+    admitted: bool,
+    identity_ok: bool,
+    lifetime_ok: bool,
+    marker: RestartMarker,
+) -> bool {
+    admitted && identity_ok && lifetime_ok && matches!(marker, RestartMarker::TileOverride)
+}
+
 /// Focus-before-geometry gate for a verified workspace transition: establish
 /// the appropriate target focus before geometry only when the transition
 /// verified and no fullscreen/elevated foreground arrived. A real fullscreen
@@ -829,6 +848,54 @@ pub fn domain_rows(
     }
     rows.sort_by(|a, b| a.token.cmp(&b.token));
     Some(rows)
+}
+
+/// Fixed-size admission observation flags for one Engine window
+/// (R-SPC-04 D1-D8, G-05). Carried per observation from live adapter state,
+/// never inferred in core and never retained across observations:
+///
+/// - `fullscreen`: live native fullscreen overlay (D5 first-exit routing and
+///   brand-new fullscreen holds). Sticky/maximized overlays keep their
+///   existing adapter lanes and stay false here.
+/// - `fixed_auto`: adapter-asserted automatic fixed-float origin (D4
+///   fixed max-births admitted slotless beneath native maximize). Never set
+///   from an intentional floating flag or fixed hints alone.
+/// - `fixed_suppress`: explicit user tile win for this live client (D3/D6/D7:
+///   unfloats, workspace-enable re-adoption, and restart-hydrated tile
+///   overrides). The Engine records the win transactionally; the adapter's
+///   runtime set plus on-window marker carry it across domain releases and
+///   restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FixedAdmissionFlags {
+    pub fullscreen: bool,
+    pub fixed_auto: bool,
+    pub fixed_suppress: bool,
+}
+
+/// Stamp fixed-size admission observation flags onto an assembled Engine
+/// event's windows. Windows without an entry keep the builder defaults
+/// (all false), so existing builder call sites and fixtures behave exactly
+/// as before until the production handle path stamps live state. Pure:
+/// no reads, no writes, no topology effects.
+///
+/// Sticky-dominance note: the production stamp never asserts `fixed_auto`
+/// for a sticky member (core never marks automatic for a sticky
+/// observation), and sticky/maximized Engine flags stay adapter-owned
+/// (false) because `SessionCommand::Admit` refuses overlaid observations -
+/// stamping them would refuse legitimate ToggleFloat unfloats (notably
+/// sticky-off-to-tile). Sticky intent therefore always wins over automatic
+/// origin without touching the ToggleFloat binding.
+pub fn stamp_fixed_admission_flags(
+    windows: &mut [EngineWindow],
+    flags: &std::collections::HashMap<WindowId, FixedAdmissionFlags>,
+) {
+    for window in windows.iter_mut() {
+        if let Some(entry) = flags.get(&window.window) {
+            window.fullscreen = entry.fullscreen;
+            window.fixed_auto = entry.fixed_auto;
+            window.fixed_suppress = entry.fixed_suppress;
+        }
+    }
 }
 
 /// Same-HWND reuse set: known member keys sharing the fresh window's HWND
@@ -4002,6 +4069,172 @@ mod tests {
     }
 
     #[test]
+    fn max_only_hints_clamp_without_reallocation() {
+        // AR12 shared policy, no adapter copy: maximums never reallocate
+        // siblings; they only bound clamp acceptance (`clamp(desired, min,
+        // max)` with per-axis tolerance). A max-only window plans the
+        // identical share to its unhinted control, while a client frame
+        // clamped to the shared policy accepts as `client_clamped` and the
+        // same shortfall with no usable max (unhinted, or sentinel which
+        // the adapter normalizes to absent) counts as drift. Hints come
+        // from the production outer-track conversion, never hand-built.
+        use tiler_core::boundary::CoreReply;
+        use tiler_core::geometry::Rect;
+        use tiler_core::size_hints::{
+            FixedSizePredicate, WindowSizeHints, assess_window_clamp, is_fixed_size_with,
+        };
+        let mut engine = tiler_core::engine::Engine::new();
+        engine.set_fixed_size_admission(true);
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        engine.sync_binding(&owner, &generation);
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let (domain, key) = workspace_domain("mon-a", "ws-1", bounds, 8);
+        // Production conversion: max-only outer tracks with zero insets.
+        // A seeded-untouched maximum (sentinel) normalizes to absent, and
+        // min/max failure is unknown (no hint), never a floor or cap.
+        let maxed = crate::tiling::hints_from_outer(
+            None,
+            Some((216, 316)),
+            crate::tiling::FrameInsets::default(),
+        );
+        assert_eq!(
+            (maxed.min_w, maxed.min_h, maxed.max_w, maxed.max_h),
+            (None, None, Some(216), Some(316))
+        );
+        let sentinel = crate::tiling::hints_from_outer(
+            None,
+            Some((i32::MAX, i32::MAX)),
+            crate::tiling::FrameInsets::default(),
+        );
+        assert!(
+            sentinel.max_w.is_none() && sentinel.max_h.is_none(),
+            "sentinel maximums normalize to absent"
+        );
+        assert!(
+            !is_fixed_size_with(maxed, FixedSizePredicate::BothAxes)
+                && !is_fixed_size_with(maxed, FixedSizePredicate::EitherAxis),
+            "max-only hints never classify fixed"
+        );
+        let wmax = tiler_core::directional::WindowId("wmax".to_owned());
+        let w1 = tiler_core::directional::WindowId("w1".to_owned());
+        let rows = vec![
+            (wmax.clone(), bounds, maxed),
+            (w1.clone(), bounds, WindowSizeHints::none()),
+        ];
+        let project = |engine: &mut tiler_core::engine::Engine,
+                       rows: &[(tiler_core::directional::WindowId, Rect, WindowSizeHints)],
+                       fp: u64,
+                       correlation: &str| {
+            let correlation = CorrelationId::parse(correlation).expect("correlation");
+            let event = crate::tiling::build_reconcile_event_for(
+                &owner,
+                &generation,
+                &correlation,
+                engine
+                    .session(&key)
+                    .map(|s| s.accepted_revision())
+                    .unwrap_or(0),
+                fp,
+                &domain,
+                &key,
+                8,
+                rows,
+                None,
+            );
+            match engine.handle(&event) {
+                CoreReply::Projection(plan) => plan.geometry,
+                CoreReply::Tiled(plan) => plan.geometry,
+                reply => panic!("max-only projects, got {reply:?}"),
+            }
+        };
+        let fp_full =
+            crate::tiling::fingerprint(&[("wmax".to_owned(), bounds), ("w1".to_owned(), bounds)]);
+        let seed = project(&mut engine, &rows, fp_full, "max-tick-1");
+        assert_eq!(seed.len(), 2);
+        let planned = seed
+            .iter()
+            .find(|g| g.window == wmax)
+            .expect("max window planned");
+        assert!(
+            !planned.overconstrained,
+            "max-only plans a full share, never overconstrained"
+        );
+        // Retained tick with the client frame clamped to the shared policy:
+        // same origin, sizes at the maximum. The share must not move and
+        // the clamped member must flag `client_clamped`, not drift.
+        let clamped = Rect {
+            x: planned.rect.x,
+            y: planned.rect.y,
+            w: 216,
+            h: 316,
+        };
+        let fp_clamped =
+            crate::tiling::fingerprint(&[("wmax".to_owned(), clamped), ("w1".to_owned(), bounds)]);
+        let retained = project(
+            &mut engine,
+            &[
+                (wmax.clone(), clamped, maxed),
+                (w1.clone(), bounds, WindowSizeHints::none()),
+            ],
+            fp_clamped,
+            "max-tick-2",
+        );
+        let kept = retained
+            .iter()
+            .find(|g| g.window == wmax)
+            .expect("max window retained");
+        assert_eq!(
+            (kept.rect.w, kept.rect.h),
+            (planned.rect.w, planned.rect.h),
+            "maximums never reallocate the share"
+        );
+        assert!(
+            kept.client_clamped,
+            "max-clamped client frame accepts instead of drifting"
+        );
+        assert!(
+            retained
+                .iter()
+                .find(|g| g.window == w1)
+                .is_some_and(|g| !g.client_clamped),
+            "unclamped sibling flags nothing"
+        );
+        // Unhinted control plans the identical share: the maximum moved
+        // nothing in either direction.
+        let plain: Vec<(tiler_core::directional::WindowId, Rect, WindowSizeHints)> = rows
+            .iter()
+            .map(|(w, r, _)| (w.clone(), *r, WindowSizeHints::none()))
+            .collect();
+        let control = project(&mut engine, &plain, fp_full, "max-tick-3");
+        let control_widths: Vec<i32> = control.iter().map(|g| g.rect.w).collect();
+        let maxed_widths: Vec<i32> = seed.iter().map(|g| g.rect.w).collect();
+        assert_eq!(
+            maxed_widths, control_widths,
+            "max hints plan byte-identical shares to no hints"
+        );
+        // Shared assessment direct: clamped accepts under max-only hints,
+        // the same shortfall drifts unhinted and under sentinel-absent.
+        assert!(
+            assess_window_clamp(&clamped, &planned.rect, &maxed).accepted,
+            "shared policy accepts the max clamp"
+        );
+        assert!(
+            !assess_window_clamp(&clamped, &planned.rect, &WindowSizeHints::none()).accepted,
+            "unhinted shortfall is drift, never accepted"
+        );
+        assert!(
+            !assess_window_clamp(&clamped, &planned.rect, &sentinel).accepted,
+            "sentinel-absent shortfall is drift, never accepted"
+        );
+    }
+
+    #[test]
     fn sticky_toggle_refusals_match_float_overlays_with_sticky_vocabulary() {
         // Fullscreen wins, then maximize; normal proceeds. Sticky uses its
         // own outcome strings so logs distinguish the arm.
@@ -6631,5 +6864,1675 @@ mod tests {
                 "root edge refuses, got {edge_group:?}"
             );
         }
+    }
+}
+
+/// R-SPC-04 D1-D8 + G-05 fixed-size admission regressions at the adapter
+/// boundary: real retained `Engine` observations through the production
+/// builders plus [`stamp_fixed_admission_flags`], the same stamping the
+/// production handle path applies. No native calls, no HWNDs.
+#[cfg(test)]
+mod fixed_admission_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tiler_core::boundary::{CoreCommand, CoreReply};
+    use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
+
+    fn fixed_hints() -> WindowSizeHints {
+        WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
+        }
+    }
+
+    fn partial_w_hints() -> WindowSizeHints {
+        WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(0),
+            max_w: Some(640),
+            max_h: Some(0),
+        }
+    }
+
+    fn partial_h_hints() -> WindowSizeHints {
+        WindowSizeHints {
+            min_w: Some(0),
+            min_h: Some(480),
+            max_w: Some(0),
+            max_h: Some(480),
+        }
+    }
+
+    fn rig() -> (
+        tiler_core::engine::Engine,
+        OwnerId,
+        GenerationId,
+        (OutputDomain, DomainKey),
+        Rect,
+    ) {
+        let mut engine = tiler_core::engine::Engine::new();
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        engine.sync_binding(&owner, &generation);
+        engine.set_fixed_size_admission(true);
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let key = DomainKey {
+            output: OutputId("mon-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let domain = OutputDomain {
+            id: OutputId("mon-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            bounds,
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        };
+        (engine, owner, generation, (domain, key), bounds)
+    }
+
+    fn revision_of(engine: &tiler_core::engine::Engine, domain: &(OutputDomain, DomainKey)) -> u64 {
+        engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile(
+        engine: &mut tiler_core::engine::Engine,
+        owner: &OwnerId,
+        generation: &GenerationId,
+        domain: &(OutputDomain, DomainKey),
+        rows: &[(WindowId, Rect, WindowSizeHints, bool, FixedAdmissionFlags)],
+        focused: &str,
+        correlation: &str,
+    ) -> CoreReply {
+        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|(id, rect, hints, floating, _)| (id.clone(), *rect, *hints, *floating))
+            .collect();
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|(id, rect, _, _, _)| (id.0.clone(), *rect))
+                .collect::<Vec<_>>(),
+        );
+        let correlation = CorrelationId::parse(correlation).expect("correlation");
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            owner,
+            generation,
+            &correlation,
+            revision_of(engine, domain),
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        let flags: HashMap<WindowId, FixedAdmissionFlags> = rows
+            .iter()
+            .map(|(id, _, _, _, flags)| (id.clone(), *flags))
+            .collect();
+        stamp_fixed_admission_flags(&mut event.windows, &flags);
+        engine.handle(&event)
+    }
+
+    fn plain_row(
+        id: &str,
+        bounds: Rect,
+    ) -> (WindowId, Rect, WindowSizeHints, bool, FixedAdmissionFlags) {
+        (
+            WindowId(id.to_owned()),
+            bounds,
+            WindowSizeHints::none(),
+            false,
+            FixedAdmissionFlags::default(),
+        )
+    }
+
+    fn fixed_row(
+        id: &str,
+        bounds: Rect,
+    ) -> (WindowId, Rect, WindowSizeHints, bool, FixedAdmissionFlags) {
+        (
+            WindowId(id.to_owned()),
+            bounds,
+            fixed_hints(),
+            false,
+            FixedAdmissionFlags::default(),
+        )
+    }
+
+    fn is_tiled(
+        engine: &tiler_core::engine::Engine,
+        domain: &(OutputDomain, DomainKey),
+        id: &str,
+    ) -> bool {
+        engine.session(&domain.1).is_some_and(|s| {
+            s.snapshot().windows.iter().any(|w| w.window.0 == id)
+                && !s.is_exception(&WindowId(id.to_owned()))
+        })
+    }
+
+    fn is_float(
+        engine: &tiler_core::engine::Engine,
+        domain: &(OutputDomain, DomainKey),
+        id: &str,
+    ) -> bool {
+        engine
+            .session(&domain.1)
+            .is_some_and(|s| s.is_exception(&WindowId(id.to_owned())))
+    }
+
+    fn is_automatic(
+        engine: &tiler_core::engine::Engine,
+        domain: &(OutputDomain, DomainKey),
+        id: &str,
+    ) -> bool {
+        engine
+            .session(&domain.1)
+            .is_some_and(|s| s.is_automatic_fixed_float(&WindowId(id.to_owned())))
+    }
+
+    fn has_override(
+        engine: &tiler_core::engine::Engine,
+        domain: &(OutputDomain, DomainKey),
+        id: &str,
+    ) -> bool {
+        engine
+            .session(&domain.1)
+            .is_some_and(|s| s.has_fixed_tile_override(&WindowId(id.to_owned())))
+    }
+
+    #[test]
+    fn tile_override_marker_hydrates_only_with_full_fences() {
+        use crate::tiling::{parse_tile_override_marker, tile_override_marker_value};
+        use crate::workspace_owner::{
+            MarkerSlot, RestartMarker, classify_restart_marker, restart_tile_override_eligible,
+        };
+        assert!(parse_tile_override_marker(tile_override_marker_value()).is_some());
+        assert!(parse_tile_override_marker(0).is_none());
+        let tile = classify_restart_marker(
+            MarkerSlot::Absent,
+            MarkerSlot::Absent,
+            MarkerSlot::Value(tile_override_marker_value()),
+        );
+        assert_eq!(tile, RestartMarker::TileOverride);
+        // Full fences hydrate; any missing fence fails closed with no
+        // intent (recompute fallback covers the window through its hints).
+        assert!(restart_tile_override_eligible(true, true, true, tile));
+        assert!(!restart_tile_override_eligible(false, true, true, tile));
+        assert!(!restart_tile_override_eligible(true, false, true, tile));
+        assert!(!restart_tile_override_eligible(true, true, false, tile));
+        // Every other lane never overrides here.
+        for marker in [
+            RestartMarker::Absent,
+            RestartMarker::FloatIntent,
+            RestartMarker::Sticky(false),
+            RestartMarker::Sticky(true),
+            RestartMarker::Corrupt,
+            RestartMarker::Unreadable,
+        ] {
+            assert!(
+                !restart_tile_override_eligible(true, true, true, marker),
+                "{marker:?} never hydrates an override"
+            );
+        }
+    }
+
+    #[test]
+    fn stamp_helper_sets_only_listed_windows() {
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let correlation = CorrelationId::parse("stamp-1").expect("correlation");
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        let key = DomainKey {
+            output: OutputId("mon-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let domain = OutputDomain {
+            id: OutputId("mon-a".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            bounds,
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        };
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &correlation,
+            0,
+            7,
+            &domain,
+            &key,
+            8,
+            &[
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+                (
+                    WindowId("w2".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    true,
+                ),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        for window in &event.windows {
+            assert!(!window.fullscreen);
+            assert!(!window.fixed_auto);
+            assert!(!window.fixed_suppress);
+        }
+        let flags: HashMap<WindowId, FixedAdmissionFlags> = [(
+            WindowId("w2".to_owned()),
+            FixedAdmissionFlags {
+                fullscreen: true,
+                fixed_auto: true,
+                fixed_suppress: true,
+            },
+        )]
+        .into_iter()
+        .collect();
+        stamp_fixed_admission_flags(&mut event.windows, &flags);
+        let w1 = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "w1")
+            .expect("w1");
+        let w2 = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "w2")
+            .expect("w2");
+        assert!(!w1.fullscreen && !w1.fixed_auto && !w1.fixed_suppress);
+        assert!(w2.fullscreen && w2.fixed_auto && w2.fixed_suppress);
+        // Sticky/maximized stay adapter-owned (false) through the stamp.
+        assert!(!w2.sticky);
+        assert!(!w2.maximized);
+    }
+
+    #[test]
+    fn fixed_brand_new_floats_automatic_with_bounded_report_and_no_geometry() {
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "admission converges, got {reply:?}"
+        );
+        assert!(is_float(&engine, &domain, "wfix"), "fixed floats");
+        assert!(is_automatic(&engine, &domain, "wfix"), "automatic mark");
+        assert!(is_tiled(&engine, &domain, "w1"), "ordinary tiles");
+        // D8: the automatic admission plans no native target writes: only
+        // the ordinary tile takes geometry.
+        if let CoreReply::Tiled(plan) = &reply {
+            assert!(
+                plan.geometry.iter().all(|g| g.window.0 != "wfix"),
+                "no geometry for the automatic float"
+            );
+            assert!(
+                plan.geometry.iter().any(|g| g.window.0 == "w1"),
+                "ordinary tile placed"
+            );
+        }
+        let report = engine.last_fixed_admission().expect("bounded report");
+        assert_eq!(report.reason, "fixed-equal");
+        assert_eq!(report.admitted, 1);
+    }
+
+    #[test]
+    fn partial_zero_tiles_under_default_and_floats_under_either_axis() {
+        // G-05: zero is unset per axis. Both partial-zero orientations tile
+        // under both-axes-fixed and float through the nonzero axis under
+        // either-axis-fixed. Missing and full-zero tile under both.
+        for (name, hints) in [("width", partial_w_hints()), ("height", partial_h_hints())] {
+            let (mut engine, owner, generation, domain, bounds) = rig();
+            let rows = vec![
+                (
+                    WindowId(format!("p-{name}")),
+                    bounds,
+                    hints,
+                    false,
+                    FixedAdmissionFlags::default(),
+                ),
+                plain_row("w1", bounds),
+            ];
+            let reply = reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-1",
+            );
+            assert!(
+                !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+                "{name} converges, got {reply:?}"
+            );
+            assert!(
+                is_tiled(&engine, &domain, &format!("p-{name}")),
+                "{name} partial-zero tiles under the default"
+            );
+            assert!(
+                engine.last_fixed_admission().is_none(),
+                "{name} default admits nothing automatic"
+            );
+            engine.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
+            let rows = vec![
+                (
+                    WindowId(format!("q-{name}")),
+                    bounds,
+                    hints,
+                    false,
+                    FixedAdmissionFlags::default(),
+                ),
+                plain_row("w1", bounds),
+            ];
+            let reply = reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-2",
+            );
+            assert!(
+                !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+                "{name} either-axis converges, got {reply:?}"
+            );
+            assert!(
+                is_automatic(&engine, &domain, &format!("q-{name}")),
+                "{name} partial-zero floats under either-axis"
+            );
+        }
+        // Missing and full-zero tile under both predicates.
+        for hints in [
+            WindowSizeHints::none(),
+            WindowSizeHints {
+                min_w: Some(0),
+                min_h: Some(0),
+                max_w: Some(0),
+                max_h: Some(0),
+            },
+        ] {
+            for predicate in [FixedSizePredicate::BothAxes, FixedSizePredicate::EitherAxis] {
+                let (mut engine, owner, generation, domain, bounds) = rig();
+                engine.set_fixed_size_predicate(predicate);
+                let rows = vec![
+                    (
+                        WindowId("z".to_owned()),
+                        bounds,
+                        hints,
+                        false,
+                        FixedAdmissionFlags::default(),
+                    ),
+                    plain_row("w1", bounds),
+                ];
+                reconcile(
+                    &mut engine,
+                    &owner,
+                    &generation,
+                    &domain,
+                    &rows,
+                    "w1",
+                    "reconcile-1",
+                );
+                assert!(
+                    is_tiled(&engine, &domain, "z"),
+                    "zero/missing tiles under {predicate:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn predicate_switch_never_reclassifies_retained_windows() {
+        // D2: a one-axis-fixed window tiles under the default; switching to
+        // either-axis leaves the retained tile alone. Only subsequent
+        // admissions use the new predicate.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let one_axis = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(960),
+        };
+        let rows = vec![
+            (
+                WindowId("wone".to_owned()),
+                bounds,
+                one_axis,
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_tiled(&engine, &domain, "wone"));
+        engine.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-2",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "switch converges, got {reply:?}"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wone"),
+            "retained tile survives the switch"
+        );
+        assert!(!is_automatic(&engine, &domain, "wone"));
+        // A subsequent identical admission floats under the new predicate.
+        let rows = vec![
+            (
+                WindowId("wone".to_owned()),
+                bounds,
+                one_axis,
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            (
+                WindowId("wtwo".to_owned()),
+                bounds,
+                one_axis,
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-3",
+        );
+        assert!(is_tiled(&engine, &domain, "wone"));
+        assert!(
+            is_automatic(&engine, &domain, "wtwo"),
+            "later admission uses either-axis"
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn toggle_float(
+        engine: &mut tiler_core::engine::Engine,
+        owner: &OwnerId,
+        generation: &GenerationId,
+        domain: &(OutputDomain, DomainKey),
+        rows: &[(WindowId, Rect, WindowSizeHints, bool, FixedAdmissionFlags)],
+        focused: &str,
+        window: &str,
+        correlation: &str,
+        float_rect: Option<Rect>,
+    ) -> CoreReply {
+        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|(id, rect, hints, floating, _)| (id.clone(), *rect, *hints, *floating))
+            .collect();
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|(id, rect, _, _, _)| (id.0.clone(), *rect))
+                .collect::<Vec<_>>(),
+        );
+        let correlation = CorrelationId::parse(correlation).expect("correlation");
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            owner,
+            generation,
+            &correlation,
+            revision_of(engine, domain),
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        let flags: HashMap<WindowId, FixedAdmissionFlags> = rows
+            .iter()
+            .map(|(id, _, _, _, flags)| (id.clone(), *flags))
+            .collect();
+        stamp_fixed_admission_flags(&mut event.windows, &flags);
+        event.command = CoreCommand::ToggleFloat {
+            window: window.to_owned(),
+            float_rect,
+        };
+        engine.handle(&event)
+    }
+
+    #[test]
+    fn explicit_unfloat_wins_and_survives_release_with_suppress() {
+        // D3/D6/D7: unfloating an automatic fixed float records the
+        // override; after a domain release (workspace enable), the stamped
+        // suppress signal re-tiles it instead of re-floating. Without the
+        // signal the same hints re-float (control leg).
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_automatic(&engine, &domain, "wfix"));
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                fixed_hints(),
+                true,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = toggle_float(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "wfix",
+            "wfix",
+            "unfloat-1",
+            None,
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "unfloat commits, got {reply:?}"
+        );
+        assert!(is_tiled(&engine, &domain, "wfix"), "explicit tile wins");
+        assert!(
+            !is_automatic(&engine, &domain, "wfix"),
+            "automatic mark withdraws"
+        );
+        assert!(has_override(&engine, &domain, "wfix"), "override recorded");
+        // Workspace enable: release drops the session including the marks.
+        let correlation = CorrelationId::parse("release-1").expect("correlation");
+        let mut release = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &correlation,
+            revision_of(&engine, &domain),
+            11,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (WindowId("wfix".to_owned()), bounds, fixed_hints(), false),
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        release.command = CoreCommand::ReleaseDomain;
+        assert!(matches!(engine.handle(&release), CoreReply::Released));
+        // Fresh re-admission with the adapter suppress signal (override set /
+        // marker): the fixed window tiles instead of re-floating.
+        let suppress = FixedAdmissionFlags {
+            fullscreen: false,
+            fixed_auto: false,
+            fixed_suppress: true,
+        };
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                fixed_hints(),
+                false,
+                suppress,
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-2",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "enable converges, got {reply:?}"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wfix"),
+            "override stays tiled at enable"
+        );
+        assert!(!is_automatic(&engine, &domain, "wfix"));
+        // Control: a fresh fixed window without the signal floats.
+        let rows = vec![
+            fixed_row("wnew", bounds),
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                fixed_hints(),
+                false,
+                suppress,
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-3",
+        );
+        assert!(
+            is_automatic(&engine, &domain, "wnew"),
+            "unsuppressed fixed floats"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wfix"),
+            "suppressed override keeps tiling"
+        );
+    }
+
+    #[test]
+    fn born_fullscreen_first_exit_uses_current_hints_then_retains_identity() {
+        // D5: born-fullscreen arrivals hold slotless; the first exit
+        // classifies with current hints and predicate (fixed floats
+        // untouched, otherwise tiles); later toggles retain identity (D2).
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let held = FixedAdmissionFlags {
+            fullscreen: true,
+            fixed_auto: false,
+            fixed_suppress: false,
+        };
+        let rows = vec![
+            (
+                WindowId("efix".to_owned()),
+                bounds,
+                fixed_hints(),
+                true,
+                held,
+            ),
+            (
+                WindowId("nplain".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                true,
+                held,
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-1",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "birth hold converges, got {reply:?}"
+        );
+        assert!(is_float(&engine, &domain, "efix"), "born hold floats");
+        assert!(
+            !is_automatic(&engine, &domain, "efix"),
+            "hold carries no automatic mark"
+        );
+        // First exit: fixed floats automatic, non-fixed tiles.
+        let rows = vec![
+            fixed_row("efix", bounds),
+            plain_row("nplain", bounds),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "exit-1",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "first exit converges, got {reply:?}"
+        );
+        assert!(
+            is_automatic(&engine, &domain, "efix"),
+            "fixed first exit floats automatic"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "nplain"),
+            "non-fixed first exit tiles"
+        );
+        // Repeated toggles retain identity: re-enter fullscreen, exit again,
+        // and the layers persist instead of reclassifying. A later
+        // fullscreen transition on the slotted member rides tiled with the
+        // overlay flag (managed overlay transition, never a float flip).
+        let held_full = FixedAdmissionFlags {
+            fullscreen: true,
+            fixed_auto: false,
+            fixed_suppress: false,
+        };
+        let rows = vec![
+            (
+                WindowId("efix".to_owned()),
+                bounds,
+                fixed_hints(),
+                true,
+                held,
+            ),
+            (
+                WindowId("nplain".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                false,
+                held_full,
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "refull-1",
+        );
+        assert!(is_float(&engine, &domain, "efix"));
+        assert!(
+            is_tiled(&engine, &domain, "nplain"),
+            "tiled member keeps its slot under fullscreen"
+        );
+        let rows = vec![
+            fixed_row("efix", bounds),
+            plain_row("nplain", bounds),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "exit-2",
+        );
+        assert!(
+            is_float(&engine, &domain, "efix"),
+            "automatic stays floating"
+        );
+        assert!(is_tiled(&engine, &domain, "nplain"), "tiled stays tiled");
+    }
+
+    #[test]
+    fn workspace_enable_rechecks_every_candidate_and_keeps_intent() {
+        // D6: enabling workspace tiling checks every window being tiled,
+        // including arrivals while floating: fixed stays/becomes untouched
+        // float, others tile. Explicit overrides stay tiled; intentional and
+        // sticky floats keep their existing rules.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_automatic(&engine, &domain, "wfix"));
+        let correlation = CorrelationId::parse("release-1").expect("correlation");
+        let mut release = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &correlation,
+            revision_of(&engine, &domain),
+            11,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (WindowId("wfix".to_owned()), bounds, fixed_hints(), false),
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        release.command = CoreCommand::ReleaseDomain;
+        assert!(matches!(engine.handle(&release), CoreReply::Released));
+        // Enable re-admission: the fixed arrival floats, the hint-changed
+        // ordinary arrival tiles, the explicit override tiles, and the
+        // intentional float stays intentional (never automatic).
+        let suppress = FixedAdmissionFlags {
+            fullscreen: false,
+            fixed_auto: false,
+            fixed_suppress: true,
+        };
+        let rows = vec![
+            fixed_row("wfix", bounds),
+            plain_row("wchanged", bounds),
+            (
+                WindowId("wover".to_owned()),
+                bounds,
+                fixed_hints(),
+                false,
+                suppress,
+            ),
+            (
+                WindowId("wintent".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                true,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "enable-1",
+        );
+        assert!(
+            !matches!(reply, CoreReply::Rejected { .. } | CoreReply::Diverged(_)),
+            "enable converges, got {reply:?}"
+        );
+        assert!(
+            is_automatic(&engine, &domain, "wfix"),
+            "fixed stays automatic float"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wchanged"),
+            "hint-changed ordinary tiles"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wover"),
+            "explicit override stays tiled"
+        );
+        assert!(!is_automatic(&engine, &domain, "wover"));
+        assert!(
+            is_float(&engine, &domain, "wintent"),
+            "intentional stays floating"
+        );
+        assert!(
+            !is_automatic(&engine, &domain, "wintent"),
+            "intentional never marked automatic"
+        );
+    }
+
+    #[test]
+    fn id_reuse_after_removal_classifies_again() {
+        // D3: removal drops fixed-size bookkeeping, so a reused id with
+        // different hints classifies fresh.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_automatic(&engine, &domain, "wfix"));
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[plain_row("w1", bounds)],
+            "w1",
+            "reconcile-2",
+        );
+        assert!(
+            engine
+                .session(&domain.1)
+                .is_some_and(|s| !s.is_exception(&WindowId("wfix".to_owned()))),
+            "removal drops membership"
+        );
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[plain_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-3",
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wfix"),
+            "reused id with plain hints tiles"
+        );
+        assert!(!is_automatic(&engine, &domain, "wfix"));
+        assert!(!has_override(&engine, &domain, "wfix"));
+    }
+
+    #[test]
+    fn send_carries_suppress_so_override_mover_stays_tiled() {
+        // An explicit tile override survives a workspace send when the
+        // adapter stamps its suppress origin on the mover.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                fixed_hints(),
+                true,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        toggle_float(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "wfix",
+            "wfix",
+            "unfloat-1",
+            None,
+        );
+        assert!(has_override(&engine, &domain, "wfix"));
+        let target_domain = {
+            let key = DomainKey {
+                output: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-2".to_owned()),
+            };
+            let domain = OutputDomain {
+                id: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-2".to_owned()),
+                bounds,
+                gap: 8,
+                adjacent: BTreeMap::new(),
+            };
+            (domain, key)
+        };
+        let source_rows = vec![
+            OwnerRow {
+                token: "wfix".to_owned(),
+                rect: bounds,
+                hints: fixed_hints(),
+                floating: false,
+            },
+            OwnerRow {
+                token: "w1".to_owned(),
+                rect: bounds,
+                hints: WindowSizeHints::none(),
+                floating: false,
+            },
+        ];
+        let target_rows = vec![OwnerRow {
+            token: "w2".to_owned(),
+            rect: bounds,
+            hints: WindowSizeHints::none(),
+            floating: false,
+        }];
+        // The target workspace session exists (per-workspace sessions);
+        // seed it so the two-domain plan has a retained target.
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &target_domain,
+            &[plain_row("w2", bounds)],
+            "w2",
+            "seed-target",
+        );
+        let correlation = CorrelationId::parse("send-1").expect("correlation");
+        let mut event = build_send_event(
+            &owner,
+            &generation,
+            &correlation,
+            revision_of(&engine, &domain),
+            23,
+            (domain.0.clone(), domain.1.clone()),
+            (target_domain.0.clone(), target_domain.1.clone()),
+            &source_rows,
+            &target_rows,
+            "wfix",
+            8,
+            true,
+        )
+        .expect("send event builds");
+        stamp_send_target(&mut event, &target_domain.1);
+        let flags: HashMap<WindowId, FixedAdmissionFlags> = [(
+            WindowId("wfix".to_owned()),
+            FixedAdmissionFlags {
+                fullscreen: false,
+                fixed_auto: false,
+                fixed_suppress: true,
+            },
+        )]
+        .into_iter()
+        .collect();
+        stamp_fixed_admission_flags(&mut event.windows, &flags);
+        stamp_fixed_admission_flags(&mut event.target_windows, &flags);
+        let reply = engine.handle(&event);
+        assert!(
+            !matches!(
+                reply,
+                CoreReply::Rejected { .. }
+                    | CoreReply::Diverged(_)
+                    | CoreReply::SnapshotInvalid { .. }
+            ),
+            "send converges, got {reply:?}"
+        );
+        assert!(
+            engine.session(&target_domain.1).is_some_and(|s| s
+                .snapshot()
+                .windows
+                .iter()
+                .any(|w| w.window.0 == "wfix")),
+            "mover arrives in the target"
+        );
+    }
+
+    fn converted(min_outer: Option<(i32, i32)>, max_outer: Option<(i32, i32)>) -> WindowSizeHints {
+        // Production conversion path with a nonzero frame (8px every side):
+        // the same inset subtraction the native query feeds the Engine.
+        crate::tiling::hints_from_outer(
+            min_outer,
+            max_outer,
+            crate::tiling::FrameInsets {
+                left: 8,
+                top: 8,
+                right: 8,
+                bottom: 8,
+            },
+        )
+    }
+
+    #[test]
+    fn production_conversion_partial_zero_width_floats_only_under_either_axis() {
+        // G-05 through the real production conversion (raw outer tracks plus
+        // nonzero frame insets) into a real Engine: min=max=(640,0) outer
+        // converts to visible (624,0)/(624,0), which tiles under the default
+        // and floats through its nonzero axis under either-axis-fixed.
+        for predicate in [FixedSizePredicate::BothAxes, FixedSizePredicate::EitherAxis] {
+            let (mut engine, owner, generation, domain, bounds) = rig();
+            engine.set_fixed_size_predicate(predicate);
+            let hints = converted(Some((640, 0)), Some((640, 0)));
+            assert_eq!(
+                (hints.min_w, hints.min_h, hints.max_w, hints.max_h),
+                (Some(624), Some(0), Some(624), Some(0)),
+                "conversion preserves the unset axis"
+            );
+            let rows = vec![
+                (
+                    WindowId("p".to_owned()),
+                    bounds,
+                    hints,
+                    false,
+                    FixedAdmissionFlags::default(),
+                ),
+                plain_row("w1", bounds),
+            ];
+            let reply = reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-1",
+            );
+            assert!(
+                !matches!(
+                    reply,
+                    CoreReply::Rejected { .. }
+                        | CoreReply::Diverged(_)
+                        | CoreReply::SnapshotInvalid { .. }
+                ),
+                "converges under {predicate:?}, got {reply:?}"
+            );
+            match predicate {
+                FixedSizePredicate::BothAxes => assert!(
+                    is_tiled(&engine, &domain, "p"),
+                    "partial-zero width tiles under the default"
+                ),
+                FixedSizePredicate::EitherAxis => assert!(
+                    is_automatic(&engine, &domain, "p"),
+                    "partial-zero width floats under either-axis"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn production_conversion_partial_zero_height_floats_only_under_either_axis() {
+        // Mirror orientation: min=max=(0,480) outer converts to visible
+        // (0,464)/(0,464) and behaves symmetrically.
+        for predicate in [FixedSizePredicate::BothAxes, FixedSizePredicate::EitherAxis] {
+            let (mut engine, owner, generation, domain, bounds) = rig();
+            engine.set_fixed_size_predicate(predicate);
+            let hints = converted(Some((0, 480)), Some((0, 480)));
+            assert_eq!(
+                (hints.min_w, hints.min_h, hints.max_w, hints.max_h),
+                (Some(0), Some(464), Some(0), Some(464)),
+                "conversion preserves the unset axis"
+            );
+            let rows = vec![
+                (
+                    WindowId("p".to_owned()),
+                    bounds,
+                    hints,
+                    false,
+                    FixedAdmissionFlags::default(),
+                ),
+                plain_row("w1", bounds),
+            ];
+            reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-1",
+            );
+            match predicate {
+                FixedSizePredicate::BothAxes => assert!(
+                    is_tiled(&engine, &domain, "p"),
+                    "partial-zero height tiles under the default"
+                ),
+                FixedSizePredicate::EitherAxis => assert!(
+                    is_automatic(&engine, &domain, "p"),
+                    "partial-zero height floats under either-axis"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn production_conversion_fixed_with_insets_floats_and_reports() {
+        // A 640x480 fixed client behind an 8px frame converts to visible
+        // 624x464 on both sides: still equal and nonzero, so it floats
+        // automatic with the bounded fixed-equal report and no geometry.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let hints = converted(Some((640, 480)), Some((640, 480)));
+        assert_eq!(
+            (hints.min_w, hints.min_h, hints.max_w, hints.max_h),
+            (Some(624), Some(464), Some(624), Some(464))
+        );
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                hints,
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_automatic(&engine, &domain, "wfix"));
+        if let CoreReply::Tiled(plan) = &reply {
+            assert!(
+                plan.geometry.iter().all(|g| g.window.0 != "wfix"),
+                "no native target writes for the automatic float"
+            );
+        } else {
+            panic!("admission plans, got {reply:?}");
+        }
+        let report = engine.last_fixed_admission().expect("bounded report");
+        assert_eq!((report.reason, report.admitted), ("fixed-equal", 1));
+    }
+
+    #[test]
+    fn first_exit_with_converted_current_hints_and_predicate() {
+        // D5 through production conversion: the exit classifies with the
+        // hints and predicate current at exit, not at birth. Birth holds
+        // slotless; a predicate flip plus hint change mid-hold selects the
+        // exit layer; a fixed exit floats untouched.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let held = FixedAdmissionFlags {
+            fullscreen: true,
+            fixed_auto: false,
+            fixed_suppress: false,
+        };
+        // Born one-axis-fixed under the default: held, not classified.
+        let birth_hints = converted(Some((640, 480)), Some((640, 960)));
+        let rows = vec![
+            (WindowId("e".to_owned()), bounds, birth_hints, true, held),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-1",
+        );
+        assert!(is_float(&engine, &domain, "e"));
+        assert!(!is_automatic(&engine, &domain, "e"));
+        // Mid-hold the predicate flips to either-axis: the first exit now
+        // sees a fixed window and floats it automatic.
+        engine.set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
+        let exit_hints = converted(Some((640, 480)), Some((640, 960)));
+        let rows = vec![
+            (
+                WindowId("e".to_owned()),
+                bounds,
+                exit_hints,
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "exit-1",
+        );
+        assert!(
+            is_automatic(&engine, &domain, "e"),
+            "exit uses the current predicate, not the birth one"
+        );
+        // Reverse: hints lose fixedness before exit (ordinary at exit).
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        let rows = vec![
+            (
+                WindowId("e".to_owned()),
+                bounds,
+                converted(Some((640, 480)), Some((640, 480))),
+                true,
+                held,
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "reconcile-1",
+        );
+        let rows = vec![
+            (
+                WindowId("e".to_owned()),
+                bounds,
+                converted(Some((640, 480)), Some((800, 600))),
+                false,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "exit-1",
+        );
+        assert!(
+            is_tiled(&engine, &domain, "e"),
+            "hint loss before exit tiles (admission-only, current hints)"
+        );
+    }
+
+    #[test]
+    fn suppress_on_non_fixed_window_is_behavior_neutral() {
+        // Verified inert-suppress evidence (D3/D7 scope): stamping an
+        // explicit tile win on a window whose hints never classify fixed
+        // changes no outcome across fresh admission, release, and enable.
+        // Core records an override on every unfloat; the marker mirrors it,
+        // and neutrality here is why mirroring is safe.
+        let run = |suppress: bool| {
+            let (mut engine, owner, generation, domain, bounds) = rig();
+            let flags = FixedAdmissionFlags {
+                fullscreen: false,
+                fixed_auto: false,
+                fixed_suppress: suppress,
+            };
+            let rows = vec![
+                (
+                    WindowId("w".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                    flags,
+                ),
+                plain_row("w1", bounds),
+            ];
+            let first = reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-1",
+            );
+            let tiled_first = is_tiled(&engine, &domain, "w");
+            let correlation = CorrelationId::parse("release-1").expect("correlation");
+            let mut release = crate::tiling::build_reconcile_event_for_floating(
+                &owner,
+                &generation,
+                &correlation,
+                revision_of(&engine, &domain),
+                11,
+                &domain.0,
+                &domain.1,
+                8,
+                &[
+                    (
+                        WindowId("w".to_owned()),
+                        bounds,
+                        WindowSizeHints::none(),
+                        false,
+                    ),
+                    (
+                        WindowId("w1".to_owned()),
+                        bounds,
+                        WindowSizeHints::none(),
+                        false,
+                    ),
+                ],
+                Some(&WindowId("w1".to_owned())),
+            );
+            release.command = CoreCommand::ReleaseDomain;
+            assert!(matches!(engine.handle(&release), CoreReply::Released));
+            let second = reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-2",
+            );
+            let tiled_second = is_tiled(&engine, &domain, "w");
+            let auto_second = is_automatic(&engine, &domain, "w");
+            (
+                std::mem::discriminant(&first),
+                std::mem::discriminant(&second),
+                tiled_first,
+                tiled_second,
+                auto_second,
+            )
+        };
+        let plain = run(false);
+        let suppressed = run(true);
+        // Identical reply shapes, identical tiled outcomes, and no
+        // automatic mark in either leg: the signal is inert here.
+        assert_eq!(
+            plain, suppressed,
+            "suppress changes nothing for non-fixed hints"
+        );
+        assert!(plain.2 && plain.3 && !plain.4);
+    }
+
+    #[test]
+    fn override_survives_hint_loss_at_enable() {
+        // D3/D7 durability: an explicit tile win is hint-independent. After
+        // the hints are lost entirely, the stamped suppress signal still
+        // tiles the window at enable instead of floating or dropping it.
+        // (A fixed window with lost hints and no suppress tiles too, but
+        // only the suppress preserves the override identity.)
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[fixed_row("wfix", bounds), plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                fixed_hints(),
+                true,
+                FixedAdmissionFlags::default(),
+            ),
+            plain_row("w1", bounds),
+        ];
+        toggle_float(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "wfix",
+            "wfix",
+            "unfloat-1",
+            None,
+        );
+        assert!(has_override(&engine, &domain, "wfix"));
+        let correlation = CorrelationId::parse("release-1").expect("correlation");
+        let mut release = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &correlation,
+            revision_of(&engine, &domain),
+            11,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (WindowId("wfix".to_owned()), bounds, fixed_hints(), false),
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        release.command = CoreCommand::ReleaseDomain;
+        assert!(matches!(engine.handle(&release), CoreReply::Released));
+        // Enable with the hints lost AND the suppress signal: still tiled.
+        let suppress = FixedAdmissionFlags {
+            fullscreen: false,
+            fixed_auto: false,
+            fixed_suppress: true,
+        };
+        let rows = vec![
+            (
+                WindowId("wfix".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                false,
+                suppress,
+            ),
+            plain_row("w1", bounds),
+        ];
+        let reply = reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "enable-1",
+        );
+        assert!(
+            !matches!(
+                reply,
+                CoreReply::Rejected { .. }
+                    | CoreReply::Diverged(_)
+                    | CoreReply::SnapshotInvalid { .. }
+            ),
+            "enable converges, got {reply:?}"
+        );
+        assert!(
+            is_tiled(&engine, &domain, "wfix"),
+            "override persists through hint loss"
+        );
+    }
+
+    #[test]
+    fn fresh_hintless_admission_tiles_fail_closed() {
+        // Unknown hints never classify: a fresh window with no usable hints
+        // tiles, even under either-axis-fixed. Fail-closed evidence for the
+        // enable path when a query fails on the classification tick.
+        for predicate in [FixedSizePredicate::BothAxes, FixedSizePredicate::EitherAxis] {
+            let (mut engine, owner, generation, domain, bounds) = rig();
+            engine.set_fixed_size_predicate(predicate);
+            let rows = vec![
+                (
+                    WindowId("wnew".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                    FixedAdmissionFlags::default(),
+                ),
+                plain_row("w1", bounds),
+            ];
+            reconcile(
+                &mut engine,
+                &owner,
+                &generation,
+                &domain,
+                &rows,
+                "w1",
+                "reconcile-1",
+            );
+            assert!(
+                is_tiled(&engine, &domain, "wnew"),
+                "hintless fresh admission tiles under {predicate:?}"
+            );
+            assert!(engine.last_fixed_admission().is_none());
+        }
+    }
+
+    #[test]
+    fn enable_admits_brand_new_fixed_arrival_automatic() {
+        // D6 every-candidate recheck includes arrivals: a fixed window first
+        // seen on the enable observation floats automatic like any other
+        // fresh fixed admission.
+        let (mut engine, owner, generation, domain, bounds) = rig();
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &[plain_row("w1", bounds)],
+            "w1",
+            "reconcile-1",
+        );
+        let correlation = CorrelationId::parse("release-1").expect("correlation");
+        let mut release = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &correlation,
+            revision_of(&engine, &domain),
+            11,
+            &domain.0,
+            &domain.1,
+            8,
+            &[(
+                WindowId("w1".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                false,
+            )],
+            Some(&WindowId("w1".to_owned())),
+        );
+        release.command = CoreCommand::ReleaseDomain;
+        assert!(matches!(engine.handle(&release), CoreReply::Released));
+        let rows = vec![fixed_row("warr", bounds), plain_row("w1", bounds)];
+        reconcile(
+            &mut engine,
+            &owner,
+            &generation,
+            &domain,
+            &rows,
+            "w1",
+            "enable-1",
+        );
+        assert!(
+            is_automatic(&engine, &domain, "warr"),
+            "fixed arrival at enable floats automatic"
+        );
     }
 }

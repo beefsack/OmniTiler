@@ -161,7 +161,8 @@ decisions of 2026-09-24 are under
   ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)
   R-MAX-06 CHANGED 2026-10-11); (e) border radius default 6
   ([decision](decisions.md#visuals-border-underlay-and-grouping)); then
-  handoff items 13+17, 10+18, 11+15. Later: (f) Win+B default browser and
+  handoff items 10+18, 11+15 after offline-delivered 13+17. Later: (f) Win+B
+  default browser and
   Win+T Windows Terminal launchers ([decision](decisions.md#shortcuts-conflicts-and-presets));
   (g) underlay visibility: user used `#50909090`, needs a brighter default and
   research into blend options visible on black, white and grey. Win+G/F11
@@ -180,10 +181,16 @@ decisions of 2026-09-24 are under
     and working `keep-maximized-overlay`; live changes affect subsequent
     admissions only. Launch/restore, Settings and gaming live checks pending
     ([record](changes/archive/windows-born-maximized-setting.md)); R-MAX-03
-    overlay parity remains item 11, fixed detection remains item 13.
+    overlay parity remains item 11; fixed admission is delivered with 13+17 below.
   - (e) Offline-delivered: active border radius defaults to 6 in Windows
     settings and CLI/proof owners; explicit radii preserved. Settings/visual
     live check pending ([record](changes/archive/windows-border-radius-default.md)).
+  - Items 13+17 offline-delivered: bounded min/max observations, predicate
+    schema/UI, current-hint fullscreen exit/enable classification and fixed-origin
+    restart markers. Native hints/overlay/game no-touch acceptance pending;
+    hydrated fixed-override maximize routing is tentative
+    ([item 13](changes/archive/windows-fixed-size-admission.md),
+    [item 17](changes/archive/windows-per-axis-zero-predicate.md)).
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Cross-platform
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
   tile) and active border radius default 6; underlay default visibility
@@ -606,13 +613,13 @@ decisions of 2026-09-24 are under
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below), REQ-RST-01c is PROVISIONAL tentative D25 pending user review. Coordinate D7 membership with item 13. |
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Independent of items 1-5; reuses existing focus/move catalog rows, no new chords. |
-  | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Replaces one-shot admission clear; first-fullscreen-exit is separate (D5 core/KDE delivered offline, Windows pending). B9 unmaximize/fresh-admit is item 15. Independent of items 1-5. |
+  | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Replaces generic one-shot admission clear; fixed-origin override subset delivered with item 13. First-fullscreen-exit is separate (D5 Windows/core/KDE delivered offline). B9 unmaximize/fresh-admit is item 15. Independent of items 1-5. |
   | 12 | Non-local workspace modes parity (d) | Depends on handoff items 1/2 (ring + follow/stay) and the parity-queue multi-output foundation; last. |
-  | 13 | Q2 fixed-size float admission R-SPC-04 | KDE/shared offline delivery including D1 predicate setting, D5 first-fullscreen-exit, D6 tiling-enable check and D7 tile-override restart store; Windows max-track observation, predicate/schema/UI and lifetime/origin wiring before enabling the Engine opt-in. Windows D7 persistence coordinates with item 8; fixed/maximize intersection with item 11. |
+  | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Core/KDE offline delivery including D8 overlay carry under user decisions 2026-10-08 (normative as delivered); depends on item 5's multi-output foundation, item 1 history invalidation and item 12 for non-local runtime modes. Windows adapter including D8 pending; no Windows behavior delivered. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | KDE/shared-core offline evidence delivered; replace Windows maximize refusal only for ordinary floating-to-tiled toggle, clear/observe before fresh admission. Coordinate fixed tile overrides with items 8/13; independent of Q3 item 11 overlay retention. |
   | 16 | Position-based output selection | Shared core/KDE delivered offline 2026-10-09; Windows handoff only. Wire with item 5's multi-output foundation and item 14 migration, preserving arrival/current-view/lifetime fences. |
-  | 17 | G-05 per-axis-zero predicate | Shared core/KDE delivered offline 2026-10-10; Windows predicate/schema/UI wiring with item 13 pending. |
+  | 17 | G-05 per-axis-zero predicate | Windows delivered offline 2026-10-11 with item 13, shared predicate reused; converted partial-zero orientations/default/either and subsequent-admission controls pass. Native hint representation pending. [Record](changes/archive/windows-per-axis-zero-predicate.md). |
   | 18 | G-06 maximized directional focus/move | Shared opt-in fence/KDE delivered offline 2026-10-10; Windows focus fence and unmaximize-before-move pending; coordinate float half-snaps with item 10. |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
@@ -1584,7 +1591,8 @@ decisions of 2026-09-24 are under
     delivery commit ([record](changes/archive/windows-restart-intent.md));
     native gates and owned-helper double-restart/sticky-scope journeys passed.
     Physical/app dogfood pending; post-restart un-stick TBD, REQ-RST-01c OPEN;
-    D7 marker reserved for item 13. Stronger names and exact-owner float/sticky
+    D7 fixed-origin marker now delivered offline with item 13
+    ([record](changes/archive/windows-fixed-size-admission.md)). Stronger names and exact-owner float/sticky
     CLI are tentative, pending user review. Historical checklist follows.
     Restart R-RST-01 plus R-FLT-05 sticky persistence. User
     decisions 2026-10-07 (R-FLT-05, R-RST-01 float identity;
@@ -2063,17 +2071,21 @@ decisions of 2026-09-24 are under
   - Item 13: Q2 fixed-size float admission R-SPC-04. User accepted the
     ordinary fixed-size admission addition 2026-10-07; exact D1-D8 edges
     are user decisions 2026-10-08 (normative as delivered).
-    KDE/shared delivered offline; Windows behavior is unchanged in this delivery.
+    KDE/shared delivered offline; Windows delivered offline 2026-10-11,
+    prerequisite `a41fcb5` plus runtime delivery
+    ([Windows record](changes/archive/windows-fixed-size-admission.md)).
     D1 predicate setting and functional naming delivered offline
     ([record](changes/archive/admission-and-move-settings.md)); D5/D6 delivered
     offline ([record](changes/archive/fixed-size-exit-and-enable.md)); D7
     delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)).
-    Windows predicate, D5/D6 and D7 persistence wiring remain pending.
+    Windows predicate, D5/D6 and fixed-origin D7 marker wiring are complete
+    offline; native/game acceptance pending. Hydrated fixed-override maximize
+    routing under both born-maximized values is tentative; R-SPC-13 native TBD.
     [Record](changes/archive/fixed-size-admission.md),
     [decisions](decisions.md#fixed-size-admission),
     [matrix](spec/reference-outcomes/special-windows.md#q2-fixed-size-admission-discriminators-2026-10-08).
 
-    #### Item 13 behavior and reference seams
+    #### Item 13 behavior and reference seams (historical handoff)
 
     - Normative addition: REQ-SPC-04 floats ordinary fixed-size clients.
       Decided edges (user 2026-10-08/10) REQ-SPC-04a..h: equal usable bounds;
@@ -2123,7 +2135,7 @@ decisions of 2026-09-24 are under
       production-entry fixtures: `kwin/tests/fixed-size-admission.test.ts`,
       `kwin/tests/fixed-size-workspace-entry.test.ts`.
 
-    #### Item 13 Windows adapter checklist
+    #### Item 13 Windows adapter checklist (historical seams)
 
     - Max-side data is missing today: `src/tiling_sys.rs:733-817`
       `seed_minmaxinfo`, `query_outer_min_track`, `min_hint_for` extract only
@@ -2192,7 +2204,7 @@ decisions of 2026-09-24 are under
       emit bounded correlated decision evidence and cause no game geometry,
       focus, stacking/keep-above or effects/input interference. Do not call
       the explicit-float placement/focus path for automatic admission.
-    - [ ] Portable: full hint table, opt-out unchanged behavior, fresh
+    - [x] Portable/offline: full hint table, opt-out unchanged behavior, fresh
       foreground/hidden startup, both hint transitions, explicit unfloat /
       sticky overrides through hide/domain adoption, ID reuse, fixed/max
       birth and enable/native restore, born/prior-float fullscreen, first-exit
@@ -2206,13 +2218,17 @@ decisions of 2026-09-24 are under
     - [ ] Windows-only: fresh max-track/DPI/inset observations, timeout/hung
       clients, native overlay/restore and fixed borderless/exclusive games;
       user owns live Windows checks. Linux tests prove none of these.
-    - [ ] Windows: predicate default/variants/invalid and subsequent-admission
+    - [x] Windows offline: predicate default/variants/invalid and subsequent-admission
       tests, setting/schema/UI/live wiring; same-axis uses item 3's renamed
       values, with old IDs rejected and no aliases. User owns live checks.
     - DoD: decided clauses implemented with current Windows
       rules preserved; dated Ours Windows matrix/spec evidence, no native
       claim without user testing; user decisions 2026-10-08 approved, changed
-      D1/D5/D6 and D7 Windows wiring pending; KDE D7 delivered offline.
+      D1/D5/D6/D7 Windows wiring delivered offline; native checks above pending.
+      Current evidence: MSVC locked four-package build/test, format, strict
+      clippy and diff checks pass; 325 Windows library tests. Owned message-only
+      marker readback/hydration covers retained-maximized hint loss, both born
+      modes and identity failures; this is not an ordinary-app/game journey.
 
   - Item 14: Q4 whole-active-workspace output migration R-WS-12. The addition
     was accepted 2026-10-07; D1-D9 detail is user decisions 2026-10-08
@@ -2416,8 +2432,9 @@ decisions of 2026-09-24 are under
     equal partial-zero hints (640,0) and (0,480) are not fixed under
     `both-axes-fixed`, but their genuinely fixed nonzero axis makes them fixed
     under `either-axis-fixed`. Keep full-zero and unbounded-sentinel guards.
-    Shared-core predicate + KDE delivered offline 2026-10-10; Windows must wire the
-    corrected predicate with item 13's max-track/schema/UI/opt-in work.
+    Shared-core predicate + KDE delivered offline 2026-10-10; Windows delivered
+    offline 2026-10-11 with item 13's max-track/schema/UI/Engine opt-in
+    ([record](changes/archive/windows-per-axis-zero-predicate.md)).
     Exact seams: `core/size_hints.rs` `fixed_size_reason_with` /
     `is_fixed_size_with` now require equal nonzero bounds per axis;
     `kwin/src/plan-adapter.ts` `isFixedSize` mirrors it. No signature/wire
@@ -2426,9 +2443,9 @@ decisions of 2026-09-24 are under
     `Engine::set_fixed_size_predicate`; do not rebuild retained classifications.
     Port `fixed_size_admission.rs` partial-zero/admissions-only cases and
     `kwin/tests/fixed-size-admission.test.ts` real-Planner discriminators.
-    Acceptance: positive fixed, both partial-zero orientations, full-zero,
-    missing, sentinel and subsequent-admission/no-reclassification controls;
-    native hints/no-touch checks pending on each platform.
+    - [x] Offline acceptance: positive fixed, both partial-zero orientations, full-zero,
+      missing, sentinel and subsequent-admission/no-reclassification controls.
+    - [ ] Native hint representation and game no-touch checks remain pending.
 
   - Item 18: G-06 maximized directional focus/move (User 2026-10-10,
     REQ-MAX-08 NORMATIVE; resolves G-D1). Both platforms follow COSMIC:

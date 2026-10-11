@@ -240,34 +240,6 @@ pub fn hints_from_outer(
     }
 }
 
-/// Minimum-only Engine transport from fresh outer track sizes: converts through
-/// [`hints_from_outer`], then strips maximums and applies the legacy pair
-/// gate. Existing Engine observations remain unchanged: a minimum side
-/// survives only when BOTH visible axes are meaningful positives
-/// (`1..=GEOMETRY_BOUND`); a partial-zero, missing, negative, sentinel,
-/// out-of-bound, or frame-swallowed axis discards the whole minimum side,
-/// exactly as the old both-axes `normalize_min_track`/`visible_min_from_outer`
-/// did. Per-axis converted maximums are reserved for fixed-size admission;
-/// the disabled admission path does not change projection or clamp behavior.
-#[must_use]
-pub fn engine_min_hints_from_outer(
-    min_outer: Option<(i32, i32)>,
-    max_outer: Option<(i32, i32)>,
-    insets: FrameInsets,
-) -> tiler_core::size_hints::WindowSizeHints {
-    let hints = hints_from_outer(min_outer, max_outer, insets);
-    if hints.meaningful_min_w().is_some() && hints.meaningful_min_h().is_some() {
-        tiler_core::size_hints::WindowSizeHints {
-            min_w: hints.min_w,
-            min_h: hints.min_h,
-            max_w: None,
-            max_h: None,
-        }
-    } else {
-        tiler_core::size_hints::WindowSizeHints::none()
-    }
-}
-
 /// Effective native target for an overconstrained tile: planned origin with
 /// each extent raised to the known native minimum (`WM_GETMINMAXINFO` track
 /// minus frame insets; unknown minimums keep the planned rect). Explicit so
@@ -3712,63 +3684,6 @@ mod tests {
                 w: 400,
                 h: 480
             }
-        );
-    }
-
-    #[test]
-    fn engine_min_hints_keeps_legacy_pair_validity() {
-        // Commit1 Engine transport through the real conversion path: a
-        // full-pair valid minimum retains both axes (maximums stripped),
-        // while a partial-zero, negative, missing, or frame-swallowed axis
-        // discards the whole minimum side, exactly as HEAD's both-axes
-        // normalize/visible pair did. Per-axis converted hints stay
-        // available via `hints_from_outer` for commit2 admission.
-        use tiler_core::size_hints::WindowSizeHints;
-        let full = engine_min_hints_from_outer(Some((640, 480)), Some((640, 480)), no_insets());
-        assert_eq!(
-            full,
-            WindowSizeHints {
-                min_w: Some(640),
-                min_h: Some(480),
-                max_w: None,
-                max_h: None,
-            }
-        );
-        assert_eq!(
-            engine_min_hints_from_outer(Some((640, 480)), None, no_insets()),
-            full
-        );
-        for min_outer in [
-            Some((640, 0)),
-            Some((0, 480)),
-            Some((0, 0)),
-            Some((-1, 480)),
-            Some((640, -8)),
-            Some((i32::MAX, 480)),
-            None,
-        ] {
-            assert_eq!(
-                engine_min_hints_from_outer(min_outer, Some((640, 480)), no_insets()),
-                WindowSizeHints::none(),
-                "min side discarded for {min_outer:?}"
-            );
-        }
-        // A minimum swallowed by its own frame discards the whole side,
-        // even though the sibling axis stays usable per-axis.
-        let deep = FrameInsets {
-            left: 400,
-            top: 0,
-            right: 400,
-            bottom: 0,
-        };
-        assert_eq!(
-            engine_min_hints_from_outer(Some((640, 480)), Some((640, 480)), deep),
-            WindowSizeHints::none()
-        );
-        // Maximum-only queries carry no Engine minimum.
-        assert_eq!(
-            engine_min_hints_from_outer(None, Some((640, 480)), no_insets()),
-            WindowSizeHints::none()
         );
     }
 

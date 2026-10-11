@@ -620,7 +620,7 @@ platform API behavior.
     sentinels. This is not plain COSMIC parity. Setting values are
     functionally named `Width and height both fixed` (default, tooltip
     names COSMIC) and `Width or height fixed` (tooltip names Hyprland
-    (Wayland) and sway). KDE `fixedSizePredicate`, Windows handoff
+    (Wayland) and sway). KDE `fixedSizePredicate`, Windows
     `core.fixed_size_predicate`: `both-axes-fixed` default or
     `either-axis-fixed`. Zero is unset per axis (G-05, User 2026-10-10):
     a fixed axis needs equal nonzero bounds. Equal partial-zero hints such
@@ -635,7 +635,7 @@ platform API behavior.
     see item 3 under Move, Layout and Output Commands (canonical).
     Breaking configs is acceptable
     pre-release (dogfooding correctness priority), no migration.
-    Status: D1 setting delivered offline ([record](changes/archive/admission-and-move-settings.md)); G-05 shared-core predicate/KDE delivered offline ([record](changes/archive/reference-comparison-implementation.md)); Windows predicate/schema/UI and per-axis-zero wiring remain handoff-only.
+    Status: D1 setting delivered offline ([record](changes/archive/admission-and-move-settings.md)); G-05 shared-core predicate/KDE delivered offline ([record](changes/archive/reference-comparison-implementation.md)); Windows schema/UI/live predicate and per-axis-zero transport delivered offline 2026-10-11 ([item 13](changes/archive/windows-fixed-size-admission.md), [item 17](changes/archive/windows-per-axis-zero-predicate.md)). Native hints/UI journey pending.
   - D2 hint changes: admission-only in both directions as delivered;
     keep reacting to windows resizing themselves to avoid
     gaps/overlaps. No new hint-signal work requested.
@@ -656,21 +656,22 @@ platform API behavior.
     untouched float, others tile. Explicit user tile overrides stay
     tiled; intentional/sticky floats keep existing rules. COSMIC
     deviation; pending live check.
-  - D5/D6 status: shared core/KDE delivered offline ([record](changes/archive/fixed-size-exit-and-enable.md)); Windows adapter wiring and native/game checks pending.
+  - D5/D6 status: shared core/KDE delivered offline ([record](changes/archive/fixed-size-exit-and-enable.md)); Windows current-hint first exit and every-candidate enable wiring delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)); native/game checks pending.
   - D7 startup: startup adoption classifies as delivered (foreground
     and hidden) PLUS fixed-window user tile overrides persist across
     owner restart in the same intentional-float store, with recompute
     fallback if unavailable.
-  - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows handoff only, native checks pending.
+  - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows fixed-origin tile marker delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)). Only settled tile wins over known automatic fixed origin write `OmniTiler.TileOverride.v1`; generic non-fixed unfloats do not. Hydration covers visible and retained/maximized admitted lifetimes before automatic classification, without requiring hints or granting write/recovery authority.
+  - Tentative Windows D3/D4/Q3 intersection, native verification pending: hydrated fixed-origin overrides keep the reserved tiled slot beneath maximize under both `core.born_maximized` values, including hint loss. Generic non-fixed maximize routing remains unchanged; the R-SPC-13 native discriminator stays TBD.
   - D8 no-touch: automatic fixed floats are membership-only: no
     geometry, focus, stacking or keep-above writes. Manual floats
     retain keep-above because intentional floats stay above windowed
     games.
   - Status: shared core/Linux planner and KDE delivered offline
     ([record](changes/archive/fixed-size-admission.md)). Windows
-    changes are compile-only false-field plumbing, not behavior
-    delivery; native checks of every user-selected choice remain
-    pending.
+    admission D1-D8/G-05 delivered offline 2026-10-11, prerequisite `a41fcb5`
+    plus runtime delivery ([record](changes/archive/windows-fixed-size-admission.md));
+    native checks of every user-selected choice remain pending.
 ## Restart Persistence
 - Tentative 2026-10-11, pending user review: D25(a) re-observes
   membership, keeps the host-owned set and restores only provable focus.
@@ -709,7 +710,8 @@ platform API behavior.
     ([record](changes/archive/kde-intentional-float-restart.md)).
     Windows intentional/sticky identity delivered 2026-10-11 with native
     agent-owned double-restart/scope evidence ([record](changes/archive/windows-restart-intent.md));
-    Windows fixed tile overrides await item 13. Physical/app checks remain pending.
+    Windows fixed-origin tile overrides delivered offline with item 13
+    ([record](changes/archive/windows-fixed-size-admission.md)). Physical/app checks remain pending.
 - User decisions 2026-10-08 (workspace migration R-WS-12 D1-D9, outcomes
   decided): see Workspaces above.
 - Windows restart intent persistence (user 2026-10-10, handoff item 8,
@@ -725,7 +727,9 @@ platform API behavior.
   intentional float and both sticky origins survive owner restart, verified
   offline and on owned native helpers through two graceful restarts and scope
   switches. Batched hydration precedes tiling; markers grant no write/recovery
-  authority. Fixed tile-override marker reserved for item 13/D7.
+  authority. Fixed tile-override marker is now wired by item 13/D7
+  ([record](changes/archive/windows-fixed-size-admission.md)); only known
+  automatic fixed provenance permits its success-only write.
   Tentative, pending user review: dotted/versioned `OmniTiler.*.v1`
   classification names replace the old sticky name (old markers not hydrated),
   and test-needed exact-owner `workspace --float` / `--sticky` controls reuse

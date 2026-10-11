@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tiler_core::boundary::{CoreCommand, CoreReply, NoGroupReason};
+use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply, NoGroupReason};
 use tiler_core::directional::WindowId;
 use tiler_core::engine::Engine;
 use tiler_core::geometry::Rect;
@@ -714,6 +714,54 @@ impl HintCx {
     }
 }
 
+// Test-only controlled fresh-hint results, keyed by HWND (see
+// `inject_test_hints`): unit tests inject already-converted production
+// hints here so assembly exercises the real query call sites without native
+// windows; ordinary tests leave the map empty and keep the fail-closed
+// native behavior. Compiled out of non-test builds: no production path can
+// observe it.
+#[cfg(test)]
+thread_local! {
+    static INJECTED_HINTS: std::cell::RefCell<std::collections::HashMap<u64, WindowSizeHints>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Inject one controlled fresh-hint result for `hwnd` (test-only). Overwrites
+/// any previous injection for the same window; [`clear_test_hints`] resets
+/// all of them. Tests must use distinct fake HWNDs per member and clear
+/// before arranging.
+#[cfg(test)]
+fn inject_test_hints(hwnd: u64, hints: WindowSizeHints) {
+    INJECTED_HINTS.with(|map| {
+        map.borrow_mut().insert(hwnd, hints);
+    });
+}
+
+/// Drop every injected fresh-hint result (test-only).
+#[cfg(test)]
+fn clear_test_hints() {
+    INJECTED_HINTS.with(|map| {
+        map.borrow_mut().clear();
+    });
+}
+
+/// Controlled fresh-hint result for `hwnd`, if injected (test-only). The
+/// outcome mirrors the conversion rule: non-empty hints read `Hint`,
+/// empty hints read `Invalid`.
+#[cfg(test)]
+fn test_hint_for(hwnd: u64) -> Option<(WindowSizeHints, HintOutcome)> {
+    INJECTED_HINTS
+        .with(|map| map.borrow().get(&hwnd).copied())
+        .map(|hints| {
+            let outcome = if hints.is_empty() {
+                HintOutcome::Invalid
+            } else {
+                HintOutcome::Hint
+            };
+            (hints, outcome)
+        })
+}
+
 /// One system-metrics read at the window's current DPI. `GetSystemMetricsForDpi`
 /// first, plain `GetSystemMetrics` fallback: a zero read fails closed to zero
 /// and the seeder leaves that field zero rather than inventing a size.
@@ -757,8 +805,8 @@ fn seed_minmaxinfo(hwnd: HWND) -> MINMAXINFO {
 }
 
 /// Fresh outer track sizes: `(minimum, maximum, outcome)` as raw query
-/// pairs. Normalization stays in one place ([`crate::tiling::normalize_min_track`]
-/// plus [`crate::tiling::hints_from_outer`]); the query only strips
+/// pairs. Normalization stays in one place ([`crate::tiling::hints_from_outer`]
+/// and [`crate::tiling::hints_from_outer`]); the query only strips
 /// seeded-untouched maximums and reports transport outcomes. The maximum is
 /// `None` when the query failed, hung, overran the budget, or matched the
 /// seed (app-untouched, never app evidence).
@@ -776,8 +824,9 @@ type OuterTracks = (Option<(i32, i32)>, Option<(i32, i32)>, HintOutcome);
 ///
 /// The maximum side strips seeded-untouched values: an app that leaves
 /// `ptMaxTrackSize` untouched reports the system default this file seeded,
-/// which is never claimed as app evidence (it arrives as unknown). No
-/// geometry, style, or resizeable inference is involved.
+/// which is never claimed as app evidence (it arrives as unknown, and
+/// unknown maximums never classify under R-SPC-04 D1). No geometry, style,
+/// or resizeable inference is involved.
 fn query_outer_tracks(hwnd: HWND, cx: &HintCx) -> OuterTracks {
     let mut info = seed_minmaxinfo(hwnd);
     let seed_max = (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y);
@@ -827,40 +876,96 @@ fn query_outer_tracks(hwnd: HWND, cx: &HintCx) -> OuterTracks {
     (min, max, outcome)
 }
 
-/// Fresh minimum-size hint for one eligible observed window: a new
+/// Fresh fixed-size verdict for one first-seen maximized window (R-SPC-04
+/// D4): currently measured frame insets plus a fresh bounded
+/// `WM_GETMINMAXINFO` min/max query under the same aggregate budget,
+/// classified with the live predicate through the shared policy (never a
+/// copy, never style/resizeable inference). Seeded-untouched maximums stay
+/// unknown and never classify. `false` on any measurement, query, or budget
+/// failure: fail-closed to the existing clear/overlay lane, so an unknown
+/// window never claims fixed and takes no float lane.
+fn fixed_birth_for_slotless(
+    hwnd_u64: u64,
+    predicate: tiler_core::size_hints::FixedSizePredicate,
+    cx: &mut HintCx,
+) -> bool {
+    if hwnd_u64 == 0 || cx.over_budget() {
+        return false;
+    }
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    let mut outer_raw: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetWindowRect(hwnd, &mut outer_raw) } == 0 {
+        return false;
+    }
+    let Some(outer) = rect_from_win(outer_raw) else {
+        return false;
+    };
+    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
+    if unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut visible_raw as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    } != 0
+    {
+        return false;
+    }
+    let Some(visible) = rect_from_win(visible_raw) else {
+        return false;
+    };
+    if !tiler_core::bounds::valid_carried_rect(visible.x, visible.y, visible.w, visible.h) {
+        return false;
+    }
+    let insets = FrameInsets::measure(outer, visible);
+    if cx.over_budget() {
+        return false;
+    }
+    let (min_track, max_track, outcome) = query_outer_tracks(hwnd, cx);
+    if outcome != HintOutcome::Hint {
+        return false;
+    }
+    let hints = crate::tiling::hints_from_outer(min_track, max_track, insets);
+    tiler_core::size_hints::is_fixed_size_with(hints, predicate)
+}
+
+/// Fresh size hints for one eligible observed window: a new
 /// `WM_GETMINMAXINFO` query converted from outer track pixels to visible
 /// physical pixels with the window's currently measured frame insets.
 /// Unknown on any query failure, timeout, budget skip, or invalid remainder:
-/// no hint, never a reused or persistent floor.
-///
-/// The query transports both track sides with the same fresh insets, but the
-/// Engine observation preserves the existing minimum-only rows through
-/// [`crate::tiling::engine_min_hints_from_outer`] (maximums stripped plus
-/// the legacy both-axes minimum gate), so shared clamp acceptance keeps
-/// prior behavior while the fixed-size admission opt-in stays disabled.
+/// no hint, never a reused or persistent floor. Both sides convert with the
+/// same fresh insets; either side may be unknown while the other survives.
 fn min_hint_for(window: &ObservedWindow, cx: &HintCx) -> (WindowSizeHints, HintOutcome) {
+    // Test seam first: injected converted hints stand in for the OS answer
+    // (unit tests only; compiled out of production builds).
+    #[cfg(test)]
+    if let Some(injected) = test_hint_for(window.hwnd) {
+        return injected;
+    }
     let hwnd = window.hwnd as isize as HWND;
     let (min_track, max_track, outcome) = query_outer_tracks(hwnd, cx);
     if outcome != HintOutcome::Hint {
         return (WindowSizeHints::none(), outcome);
     }
-    let hints = crate::tiling::engine_min_hints_from_outer(min_track, max_track, window.insets);
+    let hints = crate::tiling::hints_from_outer(min_track, max_track, window.insets);
     if hints.is_empty() {
-        (WindowSizeHints::none(), HintOutcome::Invalid)
+        (hints, HintOutcome::Invalid)
     } else {
         (hints, HintOutcome::Hint)
     }
 }
 
-/// Fresh minimum-size hint for one verified managed hidden member without
+/// Fresh size hints for one verified managed hidden member without
 /// showing or moving it: fresh identity fenced by the existing
 /// `WindowKey` plus owned lifetime-property checks, then fresh `GetWindowRect`
 /// plus `DWMWA_EXTENDED_FRAME_BOUNDS` for current insets, then a fresh
-/// `WM_GETMINMAXINFO` query converted with those insets. The Engine
-/// observation keeps exact HEAD rows through
-/// [`crate::tiling::engine_min_hints_from_outer`] (as in [`min_hint_for`]);
-/// maximums remain outside the disabled admission path.
-/// Hidden DWM frames
+/// `WM_GETMINMAXINFO` query converted with those insets. Both minimum and
+/// maximum sides convert with the same fresh insets; either side may be
+/// unknown. Hidden DWM frames
 /// may legitimately be absent; any measurement failure is unknown (no hint),
 /// never a stale cached inset. The Engine row rectangle stays the stored
 /// snapshot: fresh frames feed insets only, never adopted geometry.
@@ -880,6 +985,14 @@ fn hidden_hint_for(
     };
     if key.hwnd == 0 {
         return (WindowSizeHints::none(), HintOutcome::Invalid);
+    }
+    // Test seam after the member-state fences (which tests populate) but
+    // before any OS handle use: injected converted hints stand in for the
+    // live measurement plus query (unit tests only; compiled out of
+    // production builds).
+    #[cfg(test)]
+    if let Some(injected) = test_hint_for(key.hwnd) {
+        return injected;
     }
     let hwnd = key.hwnd as isize as HWND;
     if unsafe { IsWindow(hwnd) } == 0 {
@@ -942,7 +1055,7 @@ fn hidden_hint_for(
     if outcome != HintOutcome::Hint {
         return (WindowSizeHints::none(), outcome);
     }
-    let hints = crate::tiling::engine_min_hints_from_outer(min_track, max_track, insets);
+    let hints = crate::tiling::hints_from_outer(min_track, max_track, insets);
     let outcome = if hints.is_empty() {
         HintOutcome::Invalid
     } else {
@@ -1516,6 +1629,51 @@ struct TileLoop {
     /// Topology fingerprint of the last pending-release retry attempt: equal
     /// fingerprints skip silently, so quiet ticks never poll or log.
     pending_retry_fp: u64,
+    /// Explicit fixed-window tile overrides by stable member key (R-SPC-04
+    /// D3/D6/D7): settled user tile wins for the same live client. The
+    /// Engine records the win transactionally at unfloat; this set plus the
+    /// on-window `OmniTiler.TileOverride.v1` marker carry it across domain
+    /// releases (workspace enable re-adopts via the stamped suppress signal)
+    /// and owner restarts. Cleared on re-float, sticky-off-to-float, verified
+    /// close, and membership prune; pruned with membership otherwise.
+    ///
+    /// The runtime set holds EVERY settled explicit win (generic non-fixed
+    /// unfloats included): core needs the suppress signal for all of them.
+    /// Only the fixed-origin subset below is durable (marker-backed).
+    fixed_tile_overrides: BTreeSet<crate::workspace::WindowKey>,
+    /// Durable fixed-origin tile overrides by stable member key (R-SPC-04
+    /// D7): the subset of [`TileLoop::fixed_tile_overrides`] whose prior
+    /// provenance was known automatic fixed at win time (Engine automatic
+    /// mark, D4 latch, hydrated fixed override, committed core override, or
+    /// a live tile-override marker). Only this set installs the on-window
+    /// marker and only it skips the admission clear, reserves the maximized
+    /// slot, and refuses automatic origin. Generic non-fixed wins stay in
+    /// the runtime set only and keep the existing clear/overlay rules. Hint
+    /// loss and predicate changes never erase entries; refloat, verified
+    /// close, and membership prune clear them with the runtime set.
+    fixed_origin_overrides: BTreeSet<crate::workspace::WindowKey>,
+    /// Adapter-asserted automatic fixed-float origins by stable member key
+    /// (R-SPC-04 D4): first-seen maximized windows whose fresh tracks are
+    /// fixed under the live predicate. They admit slotless and ride floating
+    /// beneath native maximize with no clear and no reserved tile slot; the
+    /// stamped origin lets the Engine mark them automatic. Lifetime-bound,
+    /// pruned with membership; cleared on explicit unfloat (which records an
+    /// override instead) and re-float.
+    fixed_auto_seen: BTreeSet<crate::workspace::WindowKey>,
+    /// First born-fullscreen exits by stable member key (R-SPC-04 D5): the
+    /// exit tick classifies with current hints and predicate before any
+    /// maximize-clear/restore/slot side effect. One-shot: the next
+    /// maximize-clear pass consumes the entry (fixed exits float automatic
+    /// and skip the clear via the Engine mark; non-fixed exits tile and take
+    /// the normal one-shot clear). Pruned with membership.
+    born_first_exit: BTreeSet<crate::workspace::WindowKey>,
+    /// Live native overlay flags per Engine token (`(maximized,
+    /// fullscreen)`), refreshed on every observation from observed facts
+    /// plus retained rows. Feeds the fixed-size admission stamps on Engine
+    /// events; keyed by token (never HWND alone) so recycled HWNDs never
+    /// inherit, pruned with membership. Sticky/maximized Engine flags stay
+    /// adapter-owned (false): their lanes are unchanged by this delivery.
+    overlay_now: HashMap<String, (bool, bool)>,
 }
 
 /// Armed prompt-restore wake: the restored member by full identity plus the
@@ -1753,6 +1911,27 @@ impl TileLoop {
             ));
         }
         track_fullscreen_holds(self, &out, retained);
+        // Live native overlay snapshot per Engine token for the fixed-size
+        // admission stamps: observed facts plus retained rows, refreshed on
+        // every observation. Stale entries prune below by live membership;
+        // recycled HWNDs mint fresh tokens and never inherit.
+        for window in &out {
+            self.overlay_now.insert(
+                window.token.clone(),
+                (window.facts.maximized, window.facts.captionless_fullscreen),
+            );
+        }
+        for row in retained.iter() {
+            self.overlay_now
+                .insert(row.token.clone(), (row.maximized, row.fullscreen));
+        }
+        let live_tokens: std::collections::HashSet<&String> = out
+            .iter()
+            .map(|w| &w.token)
+            .chain(retained.iter().map(|r| &r.token))
+            .collect();
+        self.overlay_now
+            .retain(|token, _| live_tokens.contains(token));
         Some(out)
     }
 
@@ -2615,7 +2794,7 @@ fn refresh_group_underlay(
             },
         )
         .collect();
-    let event = tiler_core::boundary::CoreEvent {
+    let mut event = tiler_core::boundary::CoreEvent {
         owner: state.owner.clone(),
         generation: state.generation.clone(),
         correlation: state.correlation(),
@@ -2632,7 +2811,7 @@ fn refresh_group_underlay(
         target_windows: Vec::new(),
         command: CoreCommand::ActiveGroup,
     };
-    let found = match state.engine.handle(&event) {
+    let found = match handle_engine_event(state, &mut event) {
         CoreReply::ActiveGroup(found) => found,
         CoreReply::NoGroup { reason, .. } => {
             hide_underlay(state, underlay_no_group_reason(reason));
@@ -3196,7 +3375,7 @@ fn refresh_drag_preview(
     // Correlation/domain/revision/mover fence on the reply, all START
     // bound: a stale reply after Finish, drift, or a mover swap never
     // renders.
-    match state.engine.handle(&event) {
+    match handle_engine_event(state, &mut event) {
         CoreReply::DragPreview(plan) => {
             let preview = &plan.preview;
             if preview.domain != domain_key
@@ -3914,6 +4093,12 @@ fn track_fullscreen_holds(
         .collect();
     for key in released {
         state.born_fullscreen.remove(&key);
+        // R-SPC-04 D5: the first exit classifies with current hints and
+        // predicate before maximize-clear/restore/slot side effects. The
+        // entry persists until committed classification (see
+        // `consume_classified_first_exits`): the next maximize-clear pass
+        // only peeks at it, and assembly keeps classifying while it stands.
+        state.born_first_exit.insert(key.clone());
         // Drop the hidden-snapshot seed so the first exit converges through
         // normal fresh admission (and the existing maximize clear when the
         // exit lands maximized) with no faked slot. The log below is the
@@ -3945,6 +4130,65 @@ fn track_fullscreen_holds(
     state
         .seen_nonfullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
+    state
+        .born_first_exit
+        .retain(|key| state.last_hwnds.contains(&key.hwnd));
+    consume_classified_first_exits(state);
+}
+
+/// Consume first-exit marks whose classification committed (R-SPC-04 D5).
+/// The retained Engine proves the outcome, so a classified mark must not
+/// linger into later ticks: a lingering mark would force the tiled lane
+/// again and could undo a later intentional float. Consumed when the live
+/// client is Engine-automatic, a tiled member, or intentionally
+/// floating/sticky. Anything else (no retained session yet, a refused
+/// commit, or an uncommitted hold) keeps deferring: the clear keeps peeking
+/// and assembly keeps classifying with no state reset. Runs at the end of
+/// tracking, after releases insert fresh marks (a just-inserted mark still
+/// shows its pre-commit Engine state and is never consumed here).
+fn consume_classified_first_exits(state: &mut TileLoop) {
+    let mut done = Vec::new();
+    for key in state.born_first_exit.iter() {
+        let Some(token) = state.member_tokens.get(key).cloned() else {
+            continue;
+        };
+        // Intentional lanes own the window now (settled explicit float or
+        // sticky, including restart-adopted intent): the exit already
+        // resolved through them.
+        if state.floated.contains(key) || state.sticky.contains_key(key) {
+            done.push(key.clone());
+            continue;
+        }
+        let Some(loc) = state.workspaces.member_loc(key) else {
+            continue;
+        };
+        let domain_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(loc.output.clone()),
+            workspace: tiler_core::directional::WorkspaceId(loc.workspace.clone()),
+        };
+        let Some(session) = state.engine.session(&domain_key) else {
+            continue;
+        };
+        let id = WindowId(token.clone());
+        if session.is_automatic_fixed_float(&id) {
+            done.push(key.clone());
+            continue;
+        }
+        if session
+            .snapshot()
+            .windows
+            .iter()
+            .any(|link| link.window == id)
+            && !session.is_exception(&id)
+        {
+            done.push(key.clone());
+        }
+        // An exception that is neither automatic nor intentional is
+        // uncommitted (or a foreign hold): keep deferring.
+    }
+    for key in done {
+        state.born_first_exit.remove(&key);
+    }
 }
 
 /// Otherwise-eligible check for an admission-clear candidate: every safety
@@ -3961,6 +4205,107 @@ fn admission_clear_eligible(facts: WindowFacts) -> bool {
         && !facts.owned
         && !facts.dialog
         && !facts.no_activate
+}
+
+/// D2 admission pin shared by the clear seam and the slot-deferral mirror:
+/// the live Engine snapshot proves this token was admitted ordinary/tiled
+/// (present, neither an exception nor automatic), so the required clear plans
+/// regardless of later fresh-hint changes: hint drift must never reclassify
+/// retained admission. Either override record (adapter runtime set or core
+/// committed override) carves out to fresh classification instead: with no
+/// fixed-specific signal surviving hint loss, authoritative fixed wins keep
+/// current semantics pending an explicit product decision (no new lifetime
+/// state is invented here).
+fn committed_ordinary_pin(
+    state: &TileLoop,
+    key: &crate::workspace::WindowKey,
+    token: &str,
+) -> bool {
+    let Some(loc) = state.workspaces.member_loc(key) else {
+        return false;
+    };
+    let domain_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(loc.output.clone()),
+        workspace: tiler_core::directional::WorkspaceId(loc.workspace.clone()),
+    };
+    let id = tiler_core::directional::WindowId(token.to_owned());
+    let Some(session) = state.engine.session(&domain_key) else {
+        return false;
+    };
+    if state.fixed_tile_overrides.contains(key) || session.has_fixed_tile_override(&id) {
+        return false;
+    }
+    !session.is_automatic_fixed_float(&id)
+        && !session.is_exception(&id)
+        && session
+            .snapshot()
+            .windows
+            .iter()
+            .any(|link| link.window == id)
+}
+
+/// Fresh classify-before-clear disposition for one retained maximized row
+/// (R-SPC-04 D6): the production-connected decision seam behind
+/// `clear_maximize_at_admission`, factored so adapter regressions can assert
+/// the planned CLEAR vs SKIP without native windows or writes. Mirrors every
+/// cheap pre-query gate in the production loop (first-exit deferral, D4
+/// latch plus Engine automatic, tiled-domain floating gate, eligibility,
+/// slotless one-shot, keep-overlay latch), then the D2 admission pin
+/// (committed ordinary/tiled plans the required clear despite later hint
+/// drift), then queries fresh hints under the live predicate with
+/// failure-as-unknown: fixed floats (no clear), unknown or non-fixed clears,
+/// budget defers to the next tick with no hold, no retry, and no attempt
+/// recorded. Assumes unattempted (the production loop re-checks the full
+/// attempt identity before any restore); records nothing, so repeated peeks
+/// are side-effect free.
+fn admission_clear_planned(state: &TileLoop, row: &RetainedRow, hint_cx: &HintCx) -> bool {
+    if row.fullscreen || !row.maximized {
+        return false;
+    }
+    if state.born_first_exit.contains(&row.key) {
+        return false;
+    }
+    if state.fixed_auto_seen.contains(&row.key) || member_is_automatic_fixed(state, &row.key) {
+        return false;
+    }
+    // R-SPC-04 D3/D4/D6/D7: durable fixed-origin overrides never clear.
+    // They keep their tiled base through the reserved-maximized slot lane
+    // under both `core.born_maximized` values, across hint loss and
+    // predicate changes, and never acquire automatic origin. Generic
+    // non-fixed wins keep the existing clear/overlay rules below.
+    if state.fixed_origin_overrides.contains(&row.key) {
+        return false;
+    }
+    let tiled = state
+        .workspaces
+        .member_loc(&row.key)
+        .and_then(|loc| workspace_mode_known(state, &loc.output, &loc.workspace));
+    if !matches!(tiled, Some(true)) {
+        return false;
+    }
+    if !row.facts.is_some_and(admission_clear_eligible) {
+        return false;
+    }
+    if state.member_rects.contains_key(&row.token) {
+        return false;
+    }
+    if state.born_keep_overlay.contains(&row.key) {
+        return false;
+    }
+    if committed_ordinary_pin(state, &row.key, &row.token) {
+        return true;
+    }
+    let (hints, outcome) = hidden_hint_for(state, &row.key, hint_cx);
+    if outcome == HintOutcome::Budget {
+        return false;
+    }
+    if hints.is_empty() {
+        return true;
+    }
+    !tiler_core::size_hints::is_fixed_size_with(
+        hints,
+        fixed_predicate_for(state.settings_live.as_ref()),
+    )
 }
 
 /// One-shot maximize clear at admission (KDE `clearMaximizeAtAdmission`
@@ -3994,8 +4339,51 @@ fn clear_maximize_at_admission(
     retained: &[RetainedRow],
 ) {
     let log_path = state.log_path.clone();
+    // Bounded fresh-classification budget for this pass: the same per-query
+    // timeout and aggregate constants as row assembly, spent only on slotless
+    // maximized candidates (the cheap gates above/below skip everything else
+    // before any query).
+    let hint_cx = HintCx::new();
     for row in retained {
         if row.fullscreen || !row.maximized {
+            continue;
+        }
+        // R-SPC-04 D5: a first born-fullscreen exit classifies with current
+        // hints and predicate before any maximize-clear/restore/slot side
+        // effect. Peek only: the mark is consumed after committed
+        // classification (see `consume_classified_first_exits`), never here,
+        // so a deferred tick can never lose it before assembly reads it.
+        // Fixed exits then float automatic and skip the clear via the Engine
+        // mark; non-fixed exits tile and take the normal one-shot clear on
+        // a later pass.
+        if state.born_first_exit.contains(&row.key) {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "maximize-admission-clear",
+                    "window": row.token,
+                    "outcome": "deferred-first-exit",
+                }),
+            );
+            continue;
+        }
+        // R-SPC-04 D4/D8: fixed max-births and Engine-marked automatic fixed
+        // floats never clear: they float beneath native maximize with no
+        // geometry, focus, stacking, or keep-above writes from admission.
+        // Core-fixed max birth wins over the `core.born_maximized` clear.
+        if state.fixed_auto_seen.contains(&row.key) || member_is_automatic_fixed(state, &row.key) {
+            continue;
+        }
+        // R-SPC-04 D6 classify-before-clear: query fresh hints under the live
+        // predicate before any restore. Fixed floats beneath maximize (no
+        // clear under either `core.born_maximized` value); unknown or
+        // non-fixed clears once (failure-as-unknown tiles, so a persistent
+        // query failure still clears instead of holding silently); budget
+        // defers to the next tick with no hold and no attempt recorded. The
+        // single source is `admission_clear_planned` (which re-validates the
+        // cheap gates above to stay production-connected); the gates above
+        // run first so obvious skips spend no budget.
+        if !admission_clear_planned(state, row, &hint_cx) {
             continue;
         }
         // Floating workspaces preserve the native maximum until the first
@@ -4151,6 +4539,148 @@ fn engine_is_float(state: &TileLoop, output: &str, workspace: &str, token: &str)
         .engine
         .session(&key)
         .is_some_and(|session| session.is_exception(&WindowId(token.to_owned())))
+}
+
+/// Whether one Engine token floats by automatic fixed-size classification
+/// (R-SPC-04 D8 membership-only) rather than intentional float. Automatic
+/// floats take no geometry, focus, stacking, or keep-above writes from
+/// classification; only an explicit user tile (override) may write them.
+/// `false` when the session is unknown.
+fn engine_is_automatic_fixed(state: &TileLoop, output: &str, workspace: &str, token: &str) -> bool {
+    let key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(output.to_owned()),
+        workspace: tiler_core::directional::WorkspaceId(workspace.to_owned()),
+    };
+    state
+        .engine
+        .session(&key)
+        .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
+}
+
+/// Whether one Engine token floats by automatic fixed-size classification
+/// in one domain session. `false` without a retained session.
+fn is_automatic_in(
+    state: &TileLoop,
+    domain_key: &tiler_core::session::DomainKey,
+    token: &str,
+) -> bool {
+    state
+        .engine
+        .session(domain_key)
+        .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
+}
+
+/// Whether one member key floats by automatic fixed-size classification in
+/// its workspace domain. Resolves the domain from live membership; `false`
+/// without membership or without a retained session.
+fn member_is_automatic_fixed(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+    let Some(token) = state.member_tokens.get(key).cloned() else {
+        return false;
+    };
+    let Some(loc) = state.workspaces.member_loc(key) else {
+        return false;
+    };
+    engine_is_automatic_fixed(state, &loc.output, &loc.workspace, &token)
+}
+
+/// Fixed-origin provenance for one settled user tile win (R-SPC-04 D7):
+/// true only when the prior float is known automatic fixed: the live Engine
+/// automatic mark, the D4 latch, or the durable override set (verified
+/// hydration). The committed core override is deliberately NOT consulted:
+/// core records every unfloat win including generic non-fixed ones, so it
+/// cannot prove fixed origin. The live on-window marker is deliberately NOT
+/// peeked here either: an unfenced native read in the win path could mistake
+/// a stale marker for provenance. Verified hydration already records genuine
+/// markers into the durable set under the full held fence; a stale marker
+/// with no durable record self-heals on the next restart adoption.
+/// Generic non-fixed unfloats read false here and persist no marker.
+///
+/// Call BEFORE the winning Engine assignment commits: the assignment
+/// withdraws the automatic mark, so a later read would lose the evidence.
+/// Takes no native reads and performs no writes.
+fn fixed_origin_provenance(state: &TileLoop, key: &crate::workspace::WindowKey) -> bool {
+    if state.fixed_auto_seen.contains(key) || state.fixed_origin_overrides.contains(key) {
+        return true;
+    }
+    member_is_automatic_fixed(state, key)
+}
+
+/// R-SPC-04 D1 predicate for subsequent fixed-size admissions: the last-good
+/// live setting, read per admission so a saved change applies to later
+/// admissions only and never reclassifies retained windows (D2). Proof
+/// owners carry no live settings (`None`) and keep the both-axes default.
+fn fixed_predicate_for(live: Option<&LiveSettings>) -> tiler_core::size_hints::FixedSizePredicate {
+    live.map(|live| live.settings.core.fixed_size_predicate_mode())
+        .unwrap_or_default()
+}
+
+/// Stamp the fixed-size admission observation flags onto one Engine event
+/// from live adapter state, then dispatch it. Every production Engine
+/// handle path funnels through here so the classifier sees the same
+/// lifetime-bound origin and override the adapter owns:
+///
+/// - `fullscreen` from the per-tick overlay snapshot (D5 routing and
+///   brand-new fullscreen holds; sticky/maximized keep adapter lanes);
+/// - `fixed_auto` for D4-latched fixed max-births (never inferred from an
+///   intentional flag or hints alone);
+/// - `fixed_suppress` for explicit tile overrides (D3/D6/D7).
+///
+/// Stamping changes no rectangle, focus, topology, or revision binding: with
+/// the opt-in on, only the portable floating flag binds convergence, so
+/// flag-only drift never diverges a session.
+fn handle_engine_event(state: &mut TileLoop, event: &mut CoreEvent) -> CoreReply {
+    stamp_engine_event(state, event);
+    state.engine.handle(event)
+}
+
+/// Stamp the fixed-size admission observation flags onto one Engine event
+/// from live adapter state without dispatching. Candidate-engine pre-checks
+/// (which must not commit) stamp through here, then handle on their clone.
+fn stamp_engine_event(state: &TileLoop, event: &mut CoreEvent) {
+    let by_token: std::collections::HashMap<&str, &crate::workspace::WindowKey> = state
+        .member_tokens
+        .iter()
+        .map(|(key, token)| (token.as_str(), key))
+        .collect();
+    let mut flags: std::collections::HashMap<
+        WindowId,
+        crate::workspace_owner::FixedAdmissionFlags,
+    > = std::collections::HashMap::new();
+    let mut stamp = |token: &str| {
+        let flagged = flags.entry(WindowId(token.to_owned())).or_default();
+        flagged.fullscreen = state
+            .overlay_now
+            .get(token)
+            .is_some_and(|(_, fullscreen)| *fullscreen);
+        if let Some(key) = by_token.get(token) {
+            // Sticky dominates automatic origin (core never marks automatic
+            // for a sticky observation): a sticky window never carries the
+            // fixed_auto signal, so sticky intent is never mistaken for
+            // automatic classification. Sticky/maximized Engine flags stay
+            // adapter-owned (false); see the ToggleFloat binding analysis on
+            // `stamp_fixed_admission_flags`.
+            let sticky = state.sticky.contains_key(*key);
+            // Durable fixed-origin overrides never acquire automatic origin:
+            // the explicit win dominates even if a stale D4 latch survived
+            // beside it (every lane clears the latch on win, but the stamp
+            // refuses to assert both regardless).
+            let durable = state.fixed_origin_overrides.contains(*key);
+            if !sticky && !durable && state.fixed_auto_seen.contains(*key) {
+                flagged.fixed_auto = true;
+            }
+            if state.fixed_tile_overrides.contains(*key) {
+                flagged.fixed_suppress = true;
+            }
+        }
+    };
+    for window in event.windows.iter() {
+        stamp(&window.window.0.clone());
+    }
+    for window in event.target_windows.iter() {
+        stamp(&window.window.0.clone());
+    }
+    crate::workspace_owner::stamp_fixed_admission_flags(&mut event.windows, &flags);
+    crate::workspace_owner::stamp_fixed_admission_flags(&mut event.target_windows, &flags);
 }
 
 /// Session workspace-mode gate: tiled workspaces run every Engine/geometry
@@ -4323,6 +4853,142 @@ fn install_float_mark_held(
     ok && fresh
 }
 
+/// Install one fixed-window tile-override marker (R-SPC-04 D7) under the
+/// fresh held gate with the guard kept across the write and its readback.
+/// Only call after settled unfloat verified (Engine commit plus native
+/// effects hold): success-only persistence keeps local intent (the runtime
+/// override set) and native state on failure with a degraded log from the
+/// caller. Returns true only when the install reads back consistently and
+/// the pid plus lifetime tag stay fresh after.
+fn install_tile_override_mark_held(
+    state: &TileLoop,
+    me: &ProcessIdentity,
+    key: &crate::workspace::WindowKey,
+) -> bool {
+    let Some(held) = hold_marker_target(state, me, key) else {
+        return false;
+    };
+    if !marker_tag_pid_fresh(state, key) {
+        let _ = &held;
+        return false;
+    }
+    let ok = crate::product_hide::sys::install_tile_override_marker(key.hwnd).is_ok();
+    let fresh = marker_tag_pid_fresh(state, key);
+    let _ = &held;
+    ok && fresh
+}
+
+/// Best-effort removal of one tile-override marker on settled re-float
+/// (R-SPC-04 D7: clear on re-float). Mirrors the item-8 clear shape: a
+/// verifiably absent marker needs no write; otherwise the held process is
+/// bound across the before/after freshness checks plus the effect and its
+/// readback, and any failure only logs degraded from the caller and never
+/// fails the float itself. No write runs when identity is unsafe. A stale
+/// marker stays classification-inert while its window floats (suppress
+/// consults tiled admissions only) and dies with the window; verified close
+/// and membership prune drop the runtime set.
+fn remove_tile_override_mark_best_effort(
+    state: &TileLoop,
+    me: &ProcessIdentity,
+    key: &crate::workspace::WindowKey,
+    log_path: &Path,
+    window: &str,
+) {
+    let degraded = |detail: &str| {
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "tile-override",
+                "window": window,
+                "outcome": "marker-unverified",
+                "detail": detail,
+            }),
+        );
+    };
+    let Some(held) = hold_marker_target(state, me, key) else {
+        // No hold, no write: an already-absent marker is clean; a present
+        // one stays for later recovery rather than risking a foreign write.
+        if unsafe { IsWindow(key.hwnd as isize as HWND) } == 0
+            || !crate::product_hide::sys::read_tile_override_marker(key.hwnd)
+        {
+            return;
+        }
+        degraded("identity-changed");
+        return;
+    };
+    if !marker_tag_pid_fresh(state, key) {
+        let _ = &held;
+        degraded("identity-changed");
+        return;
+    }
+    let result = crate::product_hide::sys::remove_tile_override_marker(key.hwnd);
+    let fresh = marker_tag_pid_fresh(state, key);
+    let _ = &held;
+    match result {
+        Ok(()) if fresh => {}
+        Ok(()) => degraded("identity-changed"),
+        Err(error) => degraded(&error.to_string()),
+    }
+}
+
+/// Hydrate one admitted member's surviving fixed-window tile-override marker
+/// into the runtime + durable override sets (R-SPC-04 D7). Read-only: no
+/// Engine commit, no marker write, no geometry/focus/topmost effect; the
+/// marker stays for later restarts. The full held fence owns every read:
+/// [`hold_marker_target`] binds the live process identity (pid, creation,
+/// sid/session, exe, medium integrity), scope, hosted-child, proof, and the
+/// live lifetime tag plus pid, with a freshness recheck on both sides of the
+/// shared-priority marker peeks while the guard stays retained. Anything
+/// unverifiable fails closed with no intent and no log: the window simply
+/// recomputes ordinary fixed classification with no hold or retry.
+/// Missing/degraded/unmatched records return false.
+///
+/// Returns true exactly when the durable win stands (newly affirmed or
+/// already recorded); the `tile-adopted` line logs only on first
+/// affirmation so later ticks never re-log. Shared by the slotless-maximized
+/// admission site (which must hydrate before any birth probe, latch, clear,
+/// slot, or write effect) and the restart-adoption retained pass. Neither
+/// caller grants membership, writes, or recovery authority: hydration only
+/// classifies rows the admission already accepted.
+fn hydrate_tile_override_marker(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    key: &crate::workspace::WindowKey,
+    log_path: &Path,
+    token: &str,
+) -> bool {
+    if state.fixed_origin_overrides.contains(key) {
+        return true;
+    }
+    let Some(held) = hold_marker_target(state, me, key) else {
+        return false;
+    };
+    if !marker_tag_pid_fresh(state, key) {
+        let _ = &held;
+        return false;
+    }
+    let marker = crate::workspace_owner::classify_restart_marker(
+        crate::product_hide::sys::peek_float_intent_raw(key.hwnd),
+        crate::product_hide::sys::peek_sticky_raw(key.hwnd),
+        crate::product_hide::sys::peek_tile_override_raw(key.hwnd),
+    );
+    let fresh = marker_tag_pid_fresh(state, key);
+    let _ = &held;
+    if !fresh || !matches!(marker, crate::workspace_owner::RestartMarker::TileOverride) {
+        return false;
+    }
+    state.fixed_tile_overrides.insert(key.clone());
+    state.fixed_origin_overrides.insert(key.clone());
+    log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "tile-adopted",
+            "window": token,
+        }),
+    );
+    true
+}
+
 /// Drop float and sticky runtime state whose membership is gone. No writes,
 /// no ledger; the next tick re-derives float rows from the Engine.
 /// Classification markers (window properties) are never pruned here: only
@@ -4340,6 +5006,25 @@ fn prune_float_state(state: &mut TileLoop) {
     state
         .sticky
         .retain(|key, _| state.member_tokens.contains_key(key));
+    // Fixed-size admission lanes are membership-bound like the float lanes:
+    // overrides and automatic origins never outlive their live client, and
+    // overlay snapshots never outlive their token. Markers (window
+    // properties) die with the window and are never pruned here.
+    state
+        .fixed_tile_overrides
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .fixed_origin_overrides
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .fixed_auto_seen
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .born_first_exit
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .overlay_now
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
 }
 
 /// Drop every runtime table for one dead member: tokens, rects, bands, sticky,
@@ -4351,11 +5036,16 @@ fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
         state.member_rects.remove(&token);
         state.float_rects.remove(&token);
         state.hint_logged.remove(&token);
+        state.overlay_now.remove(&token);
     }
     if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
         state.restore_wake = None;
     }
     state.born_keep_overlay.remove(key);
+    state.born_first_exit.remove(key);
+    state.fixed_auto_seen.remove(key);
+    state.fixed_origin_overrides.remove(key);
+    state.fixed_tile_overrides.remove(key);
     state.float_topmost_prev.remove(key);
     state.floated.remove(key);
     state.sticky.remove(key);
@@ -4523,12 +5213,19 @@ fn assemble_domain_rows(
                 let (hints, outcome) = hidden_hint_for(state, key, hint_cx);
                 stats.note(outcome);
                 reasons.insert(token.clone(), outcome.as_str());
+                // R-SPC-04 D5: a first exit rides tiled (`floating = false`)
+                // carrying exactly the fresh hidden query output (possibly
+                // none), like the live and retained lanes. Explicit sticky
+                // and intentional-float lanes keep their float rows.
+                let first_exit_hidden = state.born_first_exit.contains(key)
+                    && !state.sticky.contains_key(key)
+                    && !state.floated.contains(key);
                 views.push(crate::workspace_owner::MemberView {
                     key: key.clone(),
                     token,
                     rect,
                     hints,
-                    floating: born || is_float,
+                    floating: (born || is_float) && !first_exit_hidden,
                 });
             }
             continue;
@@ -4541,12 +5238,31 @@ fn assemble_domain_rows(
         if let Some(token) = state.member_tokens.get(key).cloned()
             && let Some(window) = by_token.get(token.as_str())
         {
+            // R-SPC-04 D5: a first born-fullscreen exit (non-sticky) takes
+            // the tiled lane below with exactly the fresh query output
+            // (possibly none), so the classifier floats fixed clients and
+            // tiles everything else admission-only. Sticky first exits keep
+            // the sticky float lane below. Marks are consumed only on
+            // committed classification (see
+            // `consume_classified_first_exits`), never here.
+            let first_exit = state.born_first_exit.contains(key) && !state.sticky.contains_key(key);
             // Slotless floating row on the live native frame, no hint. The
             // tiled allocation in `member_rects` stays frozen. Engine-known
-            // floats, runtime-intent floats, and sticky members ride here;
-            // adoption commits the Engine exception inline.
-            if float_tokens.contains(&token) || state.sticky.contains_key(key) {
+            // floats, runtime-intent floats, D4-latched fixed max-births, and
+            // sticky members ride here; adoption commits the Engine exception
+            // inline. D4-latched rows take no tile slot here, ever.
+            if state.sticky.contains_key(key)
+                || state.fixed_auto_seen.contains(key)
+                || (float_tokens.contains(&token) && !first_exit)
+            {
+                // Automatic fixed floats hold no reserved tile slot: drop any
+                // first-contact seed so later passes never mistake it for an
+                // allocation. Intentional floats keep their frozen slot for
+                // unfloat restore. Both ride the live frame with no hint.
                 state.float_rects.insert(token.clone(), window.visible);
+                if is_automatic_in(state, &domain_key, &token) {
+                    state.member_rects.remove(&token);
+                }
                 views.push(crate::workspace_owner::MemberView {
                     key: key.clone(),
                     token: token.clone(),
@@ -4603,11 +5319,22 @@ fn assemble_domain_rows(
                 }
                 continue;
             }
-            if float_tokens.contains(&row.token) {
+            // R-SPC-04 D5: a first born-fullscreen exit (non-sticky) takes
+            // the tiled lane below with exactly the fresh query output
+            // (possibly none), so the classifier floats fixed clients and
+            // tiles everything else admission-only. Marks are consumed only
+            // on committed classification (see
+            // `consume_classified_first_exits`), never here.
+            let first_exit = state.born_first_exit.contains(key) && !state.sticky.contains_key(key);
+            if (float_tokens.contains(&row.token) && !first_exit)
+                || (state.fixed_auto_seen.contains(key) && !first_exit)
+            {
                 // Overlaid float (user maximized/fullscreened it natively) or
                 // frameless: slotless floating row on the fresh frame, else
                 // the last float snapshot, with no hint. Unfloat refuses
-                // until the frame reads normal again.
+                // until the frame reads normal again. D4-latched fixed
+                // max-births ride here too: floating beneath native maximize
+                // with no tile slot, never a clear.
                 let snapshot = state.float_rects.get(&row.token).copied();
                 let kept = state.member_rects.get(&row.token).copied();
                 let rect = match row.rect {
@@ -4620,6 +5347,9 @@ fn assemble_domain_rows(
                 };
                 if let Some(rect) = rect {
                     state.float_rects.insert(row.token.clone(), rect);
+                    if is_automatic_in(state, &domain_key, &row.token) {
+                        state.member_rects.remove(&row.token);
+                    }
                     views.push(crate::workspace_owner::MemberView {
                         key: key.clone(),
                         token: row.token.clone(),
@@ -4636,39 +5366,86 @@ fn assemble_domain_rows(
                 Some(fresh) => Some(crate::tiling::canonical_retained_rect(overlay, fresh, kept)),
                 None => kept,
             };
+            // D5: a first exit classifies on exactly the fresh query output
+            // (possibly none, which tiles non-fixed admission-only). No
+            // fallback, no hold, no skip: unknown never classifies and the
+            // mark consumes after the committed result. A maximized row
+            // with no hint evidence at all probes the same way, so a fresh
+            // max candidate classifies before any clear; ordinary overlay
+            // rows keep their last-known hint with no probe.
+            let token_matches = state
+                .member_tokens
+                .get(key)
+                .is_some_and(|live| live == &row.token);
+            let (hints, reason) =
+                if first_exit || (row.maximized && !state.hint_logged.contains_key(&row.token)) {
+                    let (fresh, outcome) = hidden_hint_for(state, key, hint_cx);
+                    stats.note(outcome);
+                    (fresh, outcome.as_str())
+                } else {
+                    let retained = crate::tiling::retained_overlay_hint(
+                        state.hint_logged.get(&row.token).copied(),
+                        token_matches,
+                        overlay,
+                        float_tokens.contains(&row.token),
+                        born,
+                        true,
+                    );
+                    let reason = if retained.is_empty() {
+                        "retained"
+                    } else {
+                        "retained-hint"
+                    };
+                    (retained, reason)
+                };
             if let Some(rect) = rect {
                 // Slotless maxima on floating domains stay slotless (flag
-                // above); every other row seeds or refreshes as before.
+                // above); every other row seeds or refreshes as before, with
+                // one D6 exception: a slotless maximized row pending its
+                // one-shot clear must not plant a slot that disables the
+                // required clear on the next pass. While the D2 pin holds
+                // (Engine admitted it ordinary/tiled) or its fresh probe reads
+                // non-fixed/unknown (clear pending, including budget-unknown),
+                // ride slotless so the next clear still sees no slot; seed
+                // only for fresh-fixed (floats via the Engine), keep-overlay
+                // (needs the reserved slot), attempted (one-shot done),
+                // ineligible/fullscreen/floating (never clear), or rows that
+                // already hold a slot. Durable fixed-origin overrides never
+                // defer: they reserve the maximized slot up front (no clear
+                // is ever planned for them). No hold or retry is invented: a
+                // deferred row re-probes next tick.
+                let defer_for_pending_clear = row.maximized
+                    && !row.fullscreen
+                    && !state.fixed_origin_overrides.contains(key)
+                    && !state.member_rects.contains_key(&row.token)
+                    && domain_tiled
+                    && !state.born_keep_overlay.contains(key)
+                    && row.facts.is_some_and(admission_clear_eligible)
+                    && {
+                        let prefix =
+                            format!("{}:{}:{}:", row.key.hwnd, row.key.creation, row.key.pid);
+                        !state
+                            .maximize_admission_attempted
+                            .iter()
+                            .any(|attempted| attempted.starts_with(&prefix))
+                    }
+                    && (committed_ordinary_pin(state, key, &row.token)
+                        || !tiler_core::size_hints::is_fixed_size_with(
+                            hints,
+                            fixed_predicate_for(state.settings_live.as_ref()),
+                        ));
                 if crate::tiling::should_seed_member_slot(
                     domain_tiled,
                     row.maximized,
                     state.member_rects.contains_key(&row.token),
-                ) {
+                ) && !defer_for_pending_clear
+                {
                     state.member_rects.insert(row.token.clone(), rect);
                 }
                 // Retained tiled overlay keeps its last-known declared hint
                 // so min-bound siblings stay stable; minimized/frameless,
                 // cloaked, float, and born-hold rows stay hintless.
-                let token_matches = state
-                    .member_tokens
-                    .get(key)
-                    .is_some_and(|live| live == &row.token);
-                let hints = crate::tiling::retained_overlay_hint(
-                    state.hint_logged.get(&row.token).copied(),
-                    token_matches,
-                    overlay,
-                    float_tokens.contains(&row.token),
-                    born,
-                    true,
-                );
-                reasons.insert(
-                    row.token.clone(),
-                    if hints.is_empty() {
-                        "retained"
-                    } else {
-                        "retained-hint"
-                    },
-                );
+                reasons.insert(row.token.clone(), reason);
                 views.push(crate::workspace_owner::MemberView {
                     key: key.clone(),
                     token: row.token.clone(),
@@ -4997,7 +5774,7 @@ fn reconcile_tick(
         if !gaps_adopted {
             event.command = CoreCommand::UpdateGaps;
         }
-        let reply = state.engine.handle(&event);
+        let reply = handle_engine_event(state, &mut event);
         log_engine_placement_trace(state, tick, correlation.as_str(), "reconcile");
         let writable = writable_tokens(state, &output, &active, &observed);
         apply_geometry(
@@ -6343,7 +7120,7 @@ fn keyboard_tick(
                 };
                 // Single-domain observations run the local retained
                 // propose/commit path; Core owns direction semantics.
-                let reply = state.engine.handle(&event);
+                let reply = handle_engine_event(state, &mut event);
                 let outcome = match intent.op {
                     SnapOp::Focus => {
                         if let CoreReply::FocusDirectional(plan) = &reply {
@@ -7410,7 +8187,7 @@ fn dispatch_resize_intent(
     // Single-domain observations run the local retained propose/commit
     // path; Core owns direction semantics. The reply carries complete
     // desired geometry through `planned_writes`, exactly like Move.
-    let reply = state.engine.handle(&event);
+    let reply = handle_engine_event(state, &mut event);
     let outcome = if let CoreReply::Resize(_) = &reply {
         let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
         let summary = apply_geometry(
@@ -7742,6 +8519,7 @@ fn prepare_toggle_float(
         float_rect,
     };
     let mut candidate = state.engine.clone();
+    stamp_engine_event(state, &mut event);
     let reply = candidate.handle(&event);
     if !matches!(reply, CoreReply::Tiled(_)) {
         let mut line = settle(reply_outcome(&reply));
@@ -7957,6 +8735,17 @@ fn apply_float_from_tiled(
     }
     state.engine = candidate;
     state.float_rects.insert(from.to_owned(), actual);
+    // R-SPC-04 D3/D7: a settled float withdraws any explicit tile win (a
+    // later unfloat records a fresh one) and any D4 automatic latch: the
+    // window is intentionally floating now. Clear the runtime lanes and
+    // remove the on-window marker best-effort; a failed removal only logs
+    // degraded and never fails the float. A pending first exit resolves
+    // through this intentional lane too.
+    state.fixed_tile_overrides.remove(member_key);
+    state.fixed_origin_overrides.remove(member_key);
+    state.fixed_auto_seen.remove(member_key);
+    state.born_first_exit.remove(member_key);
+    remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
     // Intentional-float lifetime: row assembly rides this token floating
     // across domain releases and boundary sends even when the Engine session
     // carries no exception yet. Sticky-on keeps its own lane instead. The
@@ -8379,10 +9168,38 @@ fn apply_unfloat_to_tiled(
     ) {
         return;
     }
+    // R-SPC-04 D7 provenance: capture BEFORE the winning assignment below
+    // withdraws the automatic mark. Only a known automatic-fixed prior wins
+    // durable persistence; generic non-fixed unfloats keep runtime
+    // suppression only and install no marker.
+    let fixed_win = fixed_origin_provenance(state, member_key);
     state.engine = candidate;
     state.sticky.remove(member_key);
     state.floated.remove(member_key);
     state.float_rects.remove(from);
+    // R-SPC-04 D3/D7: a settled unfloat is an explicit user tile win for
+    // this live client. Record it in the runtime override set (survives
+    // domain releases so workspace-enable re-adoption keeps tiling it);
+    // fixed-origin wins additionally join the durable set and persist the
+    // on-window marker (survives owner restarts; recompute fallback
+    // otherwise). The D4 automatic latch withdraws: the window is
+    // explicitly tiled now. A failed marker install keeps local intent and
+    // native state with a degraded log.
+    state.fixed_auto_seen.remove(member_key);
+    state.fixed_tile_overrides.insert(member_key.clone());
+    if fixed_win {
+        state.fixed_origin_overrides.insert(member_key.clone());
+        if !install_tile_override_mark_held(state, me, member_key) {
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "tile-override",
+                    "window": from,
+                    "outcome": "marker-unverified",
+                }),
+            );
+        }
+    }
     let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
         Some(expected) => retain_float_focus_validated(state, me, fulls, expected, member_key),
         None => "float-focus-failed",
@@ -8813,7 +9630,7 @@ fn dispatch_orientation_intent(
     event.command = CoreCommand::ToggleOrientation {
         window: from.clone(),
     };
-    let reply = state.engine.handle(&event);
+    let reply = handle_engine_event(state, &mut event);
     if orientation_plan(&reply).is_none() {
         // Lone root (`unchanged`), float/no-focus (`not-tiled`), and every
         // other refusal settle here with no writes and no focus mutation.
@@ -8986,7 +9803,7 @@ fn sticky_rehome_to_current(
             .collect::<Vec<_>>(),
     );
     let mut candidate = state.engine.clone();
-    let old_event = crate::tiling::build_reconcile_event_for_floating(
+    let mut old_event = crate::tiling::build_reconcile_event_for_floating(
         &state.owner,
         &state.generation,
         correlation,
@@ -8998,6 +9815,7 @@ fn sticky_rehome_to_current(
         &old_windows,
         None,
     );
+    stamp_engine_event(state, &mut old_event);
     let old_reply = candidate.handle(&old_event);
     if matches!(
         old_reply,
@@ -9010,7 +9828,7 @@ fn sticky_rehome_to_current(
         log_json_at(log_path, line);
         return;
     }
-    let cur_event = crate::tiling::build_reconcile_event_for_floating(
+    let mut cur_event = crate::tiling::build_reconcile_event_for_floating(
         &state.owner,
         &state.generation,
         correlation,
@@ -9022,6 +9840,7 @@ fn sticky_rehome_to_current(
         &cur_windows,
         None,
     );
+    stamp_engine_event(state, &mut cur_event);
     let cur_reply = candidate.handle(&cur_event);
     if matches!(
         cur_reply,
@@ -9068,11 +9887,24 @@ fn sticky_rehome_to_current(
     {
         return;
     }
+    // R-SPC-04 D7 provenance: capture BEFORE the assignment below commits.
+    // Sticky intent withdrew latch/override lanes at sticky-on, so only a
+    // surviving durable record or marker still proves fixed origin here.
+    let fixed_win = fixed_origin_provenance(state, member_key);
     state.engine = candidate;
     if floating {
-        // Sticky-off preserving a prior float: the float marker rides on.
-        // Repair it when a foreign value crept onto our property; a failed
-        // repair keeps local intent and native state with a degraded log.
+        // Sticky-off preserving a prior float: ordinary intent rides on and
+        // any explicit tile win withdraws (R-SPC-04 D3/D7), like a settled
+        // re-float. Clear the runtime lanes and the marker best-effort.
+        // The float marker rides on: repair it when a foreign value crept
+        // onto our property; a failed repair keeps local intent and native
+        // state with a degraded log. A pending first exit resolves through
+        // this ordinary-float lane too.
+        state.fixed_tile_overrides.remove(member_key);
+        state.fixed_origin_overrides.remove(member_key);
+        state.fixed_auto_seen.remove(member_key);
+        state.born_first_exit.remove(member_key);
+        remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
         let float_ok = crate::product_hide::sys::read_float_intent_marker(member_key.hwnd)
             || install_float_mark_held(state, me, member_key);
         state.float_rects.insert(from.to_owned(), live_frame);
@@ -9102,6 +9934,25 @@ fn sticky_rehome_to_current(
         state.float_topmost_prev.remove(member_key);
         state.floated.remove(member_key);
         state.float_rects.remove(from);
+        // Settled rehome to tile is an explicit user tile win (R-SPC-04
+        // D3/D7), like a settled unfloat: record the runtime override; only
+        // a proven fixed origin joins the durable set and persists the
+        // marker; the D4 latch withdraws.
+        state.fixed_auto_seen.remove(member_key);
+        state.fixed_tile_overrides.insert(member_key.clone());
+        if fixed_win {
+            state.fixed_origin_overrides.insert(member_key.clone());
+            if !install_tile_override_mark_held(state, me, member_key) {
+                log_json_at(
+                    log_path,
+                    serde_json::json!({
+                        "event": "tile-override",
+                        "window": from,
+                        "outcome": "marker-unverified",
+                    }),
+                );
+            }
+        }
     }
     state.sticky.remove(member_key);
     state.workspaces.remove_window(member_key);
@@ -9278,13 +10129,22 @@ fn dispatch_sticky_intent(
         // Sticky-on from a normal float: no Engine change, live frame
         // preserved, only the mark. Marker install verifies before the
         // runtime map changes, so a failed write leaves no partial state.
+        // Sticky intent withdraws automatic origin and explicit tile wins
+        // adapter-side (mirroring the core intentional-float mark
+        // withdrawal): a sticky window is intentional, never automatic.
         if !install_sticky_mark_held(state, me, &member_key, true) {
             let mut line = settle("sticky-unverified");
             line["origin"] = serde_json::Value::from(origin.token.clone());
             line["window"] = serde_json::Value::from(from.clone());
+            line["target"] = serde_json::Value::from("sticky-float");
             log_json_at(&log_path, line);
             return;
         }
+        state.fixed_auto_seen.remove(&member_key);
+        state.fixed_origin_overrides.remove(&member_key);
+        state.fixed_tile_overrides.remove(&member_key);
+        state.born_first_exit.remove(&member_key);
+        remove_tile_override_mark_best_effort(state, me, &member_key, &log_path, &from);
         state.sticky.insert(member_key.clone(), true);
         let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
             Some(expected) => retain_float_focus_validated(state, me, fulls, expected, &member_key),
@@ -9384,6 +10244,15 @@ fn sticky_off_to_current(
                 state, me, member_key, true, from, "float", origin, settle, log_path,
             ) {
                 state.sticky.remove(member_key);
+                // Sticky-off settling to an ordinary float repairs ordinary
+                // intent: any explicit tile win withdraws (R-SPC-04 D3/D7).
+                // Clear the runtime lanes and the marker best-effort. A
+                // pending first exit resolves through this lane too.
+                state.fixed_tile_overrides.remove(member_key);
+                state.fixed_origin_overrides.remove(member_key);
+                state.fixed_auto_seen.remove(member_key);
+                state.born_first_exit.remove(member_key);
+                remove_tile_override_mark_best_effort(state, me, member_key, log_path, from);
                 let focus = match observed.iter().find(|w| w.hwnd == member_key.hwnd) {
                     Some(expected) => {
                         retain_float_focus_validated(state, me, fulls, expected, member_key)
@@ -9609,7 +10478,7 @@ fn adopt_gaps_for_route(
     );
     event.command = CoreCommand::UpdateGaps;
     let adopted = matches!(
-        state.engine.handle(&event),
+        handle_engine_event(state, &mut event),
         CoreReply::Projection(_) | CoreReply::Tiled(_)
     );
     adopted
@@ -9745,6 +10614,7 @@ fn admit_slotless_maximized(
     me: &ProcessIdentity,
     retained: &[RetainedRow],
     areas: &[MonitorArea],
+    hint_cx: &mut HintCx,
 ) {
     let log_path = state.log_path.clone();
     for row in retained {
@@ -9809,16 +10679,62 @@ fn admit_slotless_maximized(
             state.member_tokens.insert(row.key.clone(), token.clone());
             state.member_identity.insert(row.key.clone(), live);
             state.member_tags.insert(row.key.clone(), fresh_tag);
+            // R-SPC-04 D7: a surviving tile-override marker re-adopts the
+            // explicit tile win HERE, before any birth probe, automatic
+            // origin, clear, slot, or write effect. The helper re-verifies
+            // the admission above under the full held fence (live process
+            // identity, medium integrity, scope, hosted-child, proof, and
+            // the just-installed lifetime tag with freshness rechecks on
+            // both sides of the shared-priority marker peeks); only a
+            // TileOverride verdict hydrates, with no Engine commit and no
+            // writes. Sticky, float, corrupt, and unreadable lanes keep
+            // their existing routes. The override rides the reserved-overlay
+            // lane under both `core.born_maximized` values: no D4
+            // probe/latch, no born-overlay latch, no clear.
+            let hydrated_override =
+                hydrate_tile_override_marker(state, me, &row.key, &log_path, &token);
+            // R-SPC-04 D4: a fixed max-birth floats beneath native maximize
+            // (membership-only, no clear, no reserved tile slot), winning
+            // over the `core.born_maximized` clear below. The verdict uses
+            // fresh tracks under the live predicate with the same
+            // failure-as-unknown rules; unknown fails closed to the existing
+            // lane. The latch is lifetime-bound and pruned with membership;
+            // explicit unfloat clears it and records an override instead.
+            // `hint_cx` is the preamble-shared aggregate: many fresh
+            // maximized windows share one timer, never one per row.
+            // Hydrated overrides never probe or latch (D7 wins).
+            let fixed_birth = !hydrated_override
+                && fixed_birth_for_slotless(
+                    row.key.hwnd,
+                    fixed_predicate_for(state.settings_live.as_ref()),
+                    hint_cx,
+                );
+            if fixed_birth {
+                state.fixed_auto_seen.insert(row.key.clone());
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "maximize-admitted-slotless",
+                        "window": token,
+                        "outcome": "fixed-float",
+                    }),
+                );
+            }
             // R-MAX-06 latch, bound here after every ownership fence above
             // (exact-lifetime, scope, hosted-child, proof, fresh tag): only a
             // tiled-first admission under the live overlay value keeps the
-            // overlay. Floating-first rows take the unchanged R-MAX-03 lane
+            // overlay. Fixed births never latch (D4 wins). Floating-first rows take the unchanged R-MAX-03 lane
             // (no latch, one-shot clear on retile under both values), and a
-            // later live flip cannot move this lifetime.
-            if crate::tiling::born_keep_latch(
-                state.workspaces.is_tiled(&output, &active),
-                born_maximized_keep_overlay_for(state.settings_live.as_ref()),
-            ) {
+            // later live flip cannot move this lifetime. Hydrated tile
+            // overrides ride their own reserved-overlay lane under both
+            // values and never take this latch either.
+            if !fixed_birth
+                && !hydrated_override
+                && crate::tiling::born_keep_latch(
+                    state.workspaces.is_tiled(&output, &active),
+                    born_maximized_keep_overlay_for(state.settings_live.as_ref()),
+                )
+            {
                 state.born_keep_overlay.insert(row.key.clone());
             }
             // No tile seed here: tiled row assembly reserves the overlay slot,
@@ -9835,9 +10751,10 @@ fn admit_slotless_maximized(
 }
 
 /// Restart marker adoption: the next owner re-adopts every surviving sticky
-/// marker as sticky (keeping its pre-sticky origin) and every surviving
-/// intentional-float marker as an ordinary float, each on its current
-/// workspace with the live frame preserved, before any tiling. Runs in the
+/// marker as sticky (keeping its pre-sticky origin), every surviving
+/// intentional-float marker as an ordinary float, and every surviving
+/// fixed-window tile-override marker as an explicit tile win, each on its
+/// current workspace with the live frame preserved, before any tiling. Runs in the
 /// shared admission preamble, so every tick and chord adopts before any tile
 /// write.
 ///
@@ -9853,15 +10770,19 @@ fn admit_slotless_maximized(
 /// fences below must already hold, so a marker alone never grants
 /// membership, writes, or recovery authority. Adoption performs no native
 /// writes and keeps every durable marker for later restarts; only settled
-/// unfloat/sticky-off removes them. Missing means empty; a wrong value logs
-/// `marker-corrupt` and a failed read logs `marker-unreadable`, both with no
-/// intent. The reserved tile-override marker never adopts here.
+/// unfloat/sticky-off removes float/sticky markers, and only settled
+/// re-float/sticky-off-to-float removes tile-override markers. Missing means
+/// empty; a wrong value logs `marker-corrupt` and a failed read logs
+/// `marker-unreadable`, both with no intent. Tile-override markers hydrate
+/// the runtime override set (D7); unmatched records recompute fixed
+/// classification with no hold or retry.
 fn adopt_restart_markers(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     observed: &[ObservedWindow],
     retained: &[RetainedRow],
     areas: &[MonitorArea],
+    hint_cx: &mut HintCx,
 ) {
     /// One staged marker window: `prior` carries the pre-sticky float state
     /// for sticky markers and is `None` for an ordinary float.
@@ -9914,20 +10835,23 @@ fn adopt_restart_markers(
                 continue;
             }
         }
-        // Shared portable classifier (sticky wins over float and the
-        // reserved tile override); absent is silent, corrupt/unreadable log
-        // no intent.
+        // Shared portable classifier (sticky wins over float and the tile
+        // override); absent is silent, corrupt/unreadable log no intent.
         let marker = crate::workspace_owner::classify_restart_marker(
             crate::product_hide::sys::peek_float_intent_raw(window.hwnd),
             crate::product_hide::sys::peek_sticky_raw(window.hwnd),
-            // Reserved peek: keeps the priority honest without hydrating.
             crate::product_hide::sys::peek_tile_override_raw(window.hwnd),
         );
+        // R-SPC-04 D7: a surviving tile-override marker re-adopts the
+        // explicit tile win below (same fences, no Engine commit, no
+        // writes); missing/degraded/unmatched records fall back to ordinary
+        // fixed classification with no hold or retry.
+        let is_override = matches!(marker, crate::workspace_owner::RestartMarker::TileOverride);
         let prior = match marker {
             crate::workspace_owner::RestartMarker::Sticky(prior) => Some(prior),
             crate::workspace_owner::RestartMarker::FloatIntent => None,
-            crate::workspace_owner::RestartMarker::Absent
-            | crate::workspace_owner::RestartMarker::TileOverride => continue,
+            crate::workspace_owner::RestartMarker::TileOverride => None,
+            crate::workspace_owner::RestartMarker::Absent => continue,
             crate::workspace_owner::RestartMarker::Corrupt => {
                 log_json_at(
                     &log_path,
@@ -9958,14 +10882,43 @@ fn adopt_restart_markers(
         // Portable hydration gate: admitted (checked above) plus exact
         // identity plus live lifetime tag. A mismatch fails closed with no
         // intent and no log: the window is simply not ours.
-        let eligible = match prior {
-            Some(prior) => {
-                crate::workspace_owner::restart_sticky_eligible(true, true, lifetime_ok, marker)
-                    == Some(prior)
+        let eligible = if is_override {
+            crate::workspace_owner::restart_tile_override_eligible(true, true, lifetime_ok, marker)
+        } else {
+            match prior {
+                Some(prior) => {
+                    crate::workspace_owner::restart_sticky_eligible(true, true, lifetime_ok, marker)
+                        == Some(prior)
+                }
+                None => {
+                    crate::workspace_owner::restart_float_eligible(true, true, lifetime_ok, marker)
+                }
             }
-            None => crate::workspace_owner::restart_float_eligible(true, true, lifetime_ok, marker),
         };
         if !eligible || !lifetime_ok || !pid_current(key.hwnd, key.pid) {
+            continue;
+        }
+        if is_override {
+            // The override restores classification only: the stamped
+            // suppress signal on subsequent observations keeps tiling this
+            // live client while fixed hints would float it. No Engine
+            // commit, no marker write, no geometry/focus/topmost effect;
+            // the marker stays for later restarts. Unmatched records never
+            // reach here (fences above); recompute covers everything else.
+            // Already-hydrated rows skip silently so later ticks never
+            // re-log; hint loss and predicate changes never erase the win.
+            if state.fixed_origin_overrides.contains(&key) {
+                continue;
+            }
+            state.fixed_tile_overrides.insert(key.clone());
+            state.fixed_origin_overrides.insert(key.clone());
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "tile-adopted",
+                    "window": token,
+                }),
+            );
             continue;
         }
         if engine_is_float(state, &loc.output, &loc.workspace, &token) {
@@ -9998,6 +10951,31 @@ fn adopt_restart_markers(
             prior,
             frame: window.visible,
         });
+    }
+    // R-SPC-04 D7 retained pass: maximized/fullscreen/born members never
+    // appear in `observed`, so the loop above cannot hydrate them. A
+    // surviving tile-override marker on an admitted retained member (fresh
+    // max-birth admitted slotless this tick, born-fullscreen hold, or
+    // overlaid member) re-adopts the explicit tile win here, before any
+    // automatic origin, maximize-clear, slot, or write effect. Workspace
+    // membership plus a live-token match gate entry; the shared helper
+    // owns every identity read under the full held fence (live process
+    // identity, medium integrity, scope, hosted-child, proof, lifetime tag
+    // and pid with rechecks on both sides of the peeks). No Engine commit,
+    // no marker write, no geometry/focus/topmost effect.
+    // Missing/degraded/unmatched records recompute with no hold or retry.
+    for row in retained {
+        let key = &row.key;
+        let Some(token) = state.member_tokens.get(key).cloned() else {
+            continue;
+        };
+        if token != row.token {
+            continue;
+        }
+        if state.workspaces.member_loc(key).is_none() {
+            continue;
+        }
+        hydrate_tile_override_marker(state, me, key, &log_path, &token);
     }
     // One candidate commit per domain over the complete staged set, in
     // first-seen domain order. Every marker window rides floating in a
@@ -10036,7 +11014,6 @@ fn adopt_restart_markers(
                 state.float_rects.remove(&s.token);
             }
         };
-        let mut hint_cx = HintCx::new();
         let Some(rows) = assemble_domain_rows(
             state,
             &output,
@@ -10045,7 +11022,7 @@ fn adopt_restart_markers(
             retained,
             "restart-adopt",
             correlation.as_str(),
-            &mut hint_cx,
+            hint_cx,
         ) else {
             rollback(state);
             continue;
@@ -10071,7 +11048,7 @@ fn adopt_restart_markers(
             .find(|r| !r.floating)
             .map(|r| WindowId(r.token.clone()));
         let mut candidate = state.engine.clone();
-        let event = crate::tiling::build_reconcile_event_for_floating(
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
             &state.owner,
             &state.generation,
             &correlation,
@@ -10083,6 +11060,7 @@ fn adopt_restart_markers(
             &windows,
             focused.as_ref(),
         );
+        stamp_engine_event(state, &mut event);
         let reply = candidate.handle(&event);
         if matches!(
             reply,
@@ -10313,10 +11291,17 @@ fn ensure_workspace_assignments(
     // (floating Engine observation, no tile slot); later fullscreen on a
     // slotted or lifetime-known window stays a managed overlay transition.
     admit_born_fullscreen(state, me, retained, areas);
+    // One aggregate hint-query budget for the whole preamble (item 13):
+    // the slotless fixed verdicts and the restart-adoption assemblies below
+    // share it, so many fresh maximized windows cannot reset the timer per
+    // row or per domain. Op assemblies keep their existing per-op budget:
+    // coupling multi-intent ticks (notably keyboard_tick) to this timer
+    // would change pre-existing move/focus budget behavior.
+    let mut hint_cx = HintCx::new();
     // First-seen maximized members join slotless the same way (membership
     // without a tile slot); the mode-gated clear restores them on tiled.
-    admit_slotless_maximized(state, me, retained, areas);
-    adopt_restart_markers(state, me, observed, retained, areas);
+    admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
+    adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
     if state.active_output.is_empty()
         && let Some(first) = state.workspaces.output_keys().into_iter().next()
     {
@@ -10423,6 +11408,21 @@ fn workspace_close_cleanup(state: &mut TileLoop) {
     state
         .born_keep_overlay
         .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .fixed_tile_overrides
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .fixed_origin_overrides
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .fixed_auto_seen
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .born_first_exit
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .overlay_now
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
     state
         .seen_nonfullscreen
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
@@ -10577,6 +11577,25 @@ fn workspace_proof_reveal_gate(
     verify_proof_owned(hwnd, entry, me).map_err(|_| "identity-changed")
 }
 
+/// Reset fixed-size admission lanes for one released domain (R-SPC-04 D6):
+/// the D4 automatic latch never survives a domain release, and last-known
+/// hints for the domain's members are dropped so retained rows re-query
+/// fresh instead of riding a stale pre-release bound. The next admission
+/// therefore classifies every candidate fresh from current hints (changed
+/// ordinary hints and formerly latched maxima included) before any
+/// maximize-clear. Explicit tile overrides, intentional floats, and sticky
+/// members are preserved: their lanes re-assert on the next observation
+/// (override set/marker, runtime intent, sticky map are untouched here).
+fn reset_fixed_admission_for_domain(state: &mut TileLoop, output: &str, workspace: &str) {
+    let members = state.workspaces.workspace_members(output, workspace);
+    for key in &members {
+        state.fixed_auto_seen.remove(key);
+        if let Some(token) = state.member_tokens.get(key).cloned() {
+            state.hint_logged.remove(&token);
+        }
+    }
+}
+
 /// Dispatch one exact shared-Engine domain release for a workspace-mode
 /// toggle: the current observed rows ride the event with `ReleaseDomain`
 /// (no geometry), so nothing is written and no stale layout is retained.
@@ -10634,7 +11653,7 @@ fn dispatch_workspace_release(
         None,
     );
     event.command = CoreCommand::ReleaseDomain;
-    match state.engine.handle(&event) {
+    match handle_engine_event(state, &mut event) {
         CoreReply::Released => {
             log_json_at(
                 &state.log_path,
@@ -10646,6 +11665,17 @@ fn dispatch_workspace_release(
                     "members": rows.len(),
                 }),
             );
+            // R-SPC-04 D6: a confirmed release resets the fixed-size
+            // admission lanes for this domain's candidates, so the next
+            // admission classifies every candidate fresh from current
+            // hints (changed ordinary hints and formerly latched maxima
+            // included). Explicit tile overrides, intentional floats, and
+            // sticky members are preserved: their lanes re-assert on the
+            // next observation. Dropping last-known hints forces the
+            // retained rows to re-query fresh instead of riding a stale
+            // pre-release bound, so a fresh max candidate classifies
+            // before any clear.
+            reset_fixed_admission_for_domain(state, output, workspace);
             true
         }
         reply => {
@@ -11528,7 +12558,7 @@ fn workspace_do_select(
             );
         }
         let plan_start = Instant::now();
-        let event = crate::tiling::build_reconcile_event_for_floating(
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
             &state.owner,
             &state.generation,
             &correlation,
@@ -11540,7 +12570,7 @@ fn workspace_do_select(
             &windows,
             focused.as_ref(),
         );
-        let reply = state.engine.handle(&event);
+        let reply = handle_engine_event(state, &mut event);
         let plan_ms = plan_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let writable = writable_tokens(state, output, target, &fresh_observed);
         let geometry_start = Instant::now();
@@ -11911,7 +12941,7 @@ fn workspace_do_send_native(
                 source_fp,
                 &action_correlation,
             );
-            let event = crate::tiling::build_reconcile_event_for_floating(
+            let mut event = crate::tiling::build_reconcile_event_for_floating(
                 &state.owner,
                 &state.generation,
                 &action_correlation,
@@ -11923,7 +12953,7 @@ fn workspace_do_send_native(
                 &source_windows,
                 focused.as_ref(),
             );
-            let reply = state.engine.handle(&event);
+            let reply = handle_engine_event(state, &mut event);
             let writable = writable_tokens(state, output, &source_workspace, observed);
             state.tick += 1;
             let source_tick = state.tick;
@@ -12503,7 +13533,7 @@ fn workspace_do_send(
     };
     crate::workspace_owner::stamp_send_target(&mut event, &target_key);
     let source_plan_start = Instant::now();
-    let reply = state.engine.handle(&event);
+    let reply = handle_engine_event(state, &mut event);
     log_engine_placement_trace(
         state,
         ctx.tick,
@@ -16445,7 +17475,7 @@ fn gesture_tick(
                     hover_prior: drop_prior,
                     source: None,
                 };
-                state.engine.handle(&event)
+                handle_engine_event(state, &mut event)
             }
             GestureIntent::PointerResize {
                 direction,
@@ -16461,7 +17491,7 @@ fn gesture_tick(
                     direction2: direction2.map(str::to_owned),
                     boundary2,
                 };
-                state.engine.handle(&event)
+                handle_engine_event(state, &mut event)
             }
         };
         let op = match intent {
@@ -16951,10 +17981,27 @@ fn apply_live_settings(
     // the born-maximized policy per fresh lifetime at admission, so a
     // setting-only change adopts for subsequent first admissions with no
     // rebuild, and already-bound lifetimes plus previously admitted clients
-    // keep their slots and topology. R-SPC-04 D1 rides the same assignment:
-    // the fixed-size predicate is stored live here for subsequent admissions
-    // only; no admission lane reads it in this delivery (opt-in stays
-    // disabled), so already-admitted clients keep their classification.
+    // keep their slots and topology.
+    // R-SPC-04 D1/D2: the fixed-size predicate adopts here for subsequent
+    // admissions only. The Engine propagates the value to every retained
+    // session without touching topology, revision, or existing
+    // automatic/override marks (admission-only classification); the D4/D5
+    // admission gates read it per fresh lifetime through the same
+    // assignment. A change to only this field returns false, so no tree
+    // rebuild or resync follows.
+    let predicate = settings.core.fixed_size_predicate_mode();
+    if state.engine.fixed_size_predicate() != predicate {
+        state.engine.set_fixed_size_predicate(predicate);
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-predicate",
+                "predicate": predicate.as_wire_str(),
+                "outcome": "adopted",
+                "scope": "subsequent-admissions",
+            }),
+        );
+    }
     if let Some(live) = state.settings_live.as_mut() {
         live.settings = settings;
         live.mtime = mtime;
@@ -17246,11 +18293,27 @@ fn run_tile_loop(
         float_rects: HashMap::new(),
         floated: BTreeSet::new(),
         sticky: std::collections::BTreeMap::new(),
+        fixed_tile_overrides: BTreeSet::new(),
+        fixed_origin_overrides: BTreeSet::new(),
+        fixed_auto_seen: BTreeSet::new(),
+        born_first_exit: BTreeSet::new(),
+        overlay_now: HashMap::new(),
         pending_releases: crate::workspace::PendingReleases::new(),
         pending_retry_fp: 0,
     };
     state.engine.sync_binding(&owner, &generation);
     state.workspace_proof = workspace_proof;
+    // R-SPC-04 D1-D8 + G-05: enable the shared fixed-size admission opt-in
+    // now that the adapter wires complete observation (bounded min/max
+    // tracks with seeded-untouched stripping), lifetime-bound origin and
+    // override stamps, and no-touch admission lanes. `Engine::new` defaults
+    // OFF to preserve exact prior behavior; the predicate starts from the
+    // last-good startup settings (both-axes default, proof owners included)
+    // and later adopts live edits for subsequent admissions only.
+    state.engine.set_fixed_size_admission(true);
+    state
+        .engine
+        .set_fixed_size_predicate(fixed_predicate_for(state.settings_live.as_ref()));
     // Existing workspaces take the saved default at owner startup (initially
     // tiled); live default edits later affect only newly created workspaces.
     // Overrides reset on owner restart: nothing persists per workspace.
@@ -20348,6 +21411,2319 @@ mod same_axis_move_tests {
 }
 
 #[cfg(test)]
+mod fixed_predicate_tests {
+    use super::{fixed_predicate_for, rmax03_adapter_tests::test_state};
+    use crate::settings::{FIXED_SIZE_EITHER_AXIS, LiveSettings, Settings};
+    use tiler_core::directional::WindowId;
+    use tiler_core::geometry::Rect;
+    use tiler_core::ids::CorrelationId;
+    use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
+
+    #[test]
+    fn proof_owners_without_live_settings_keep_both_axes() {
+        assert_eq!(fixed_predicate_for(None), FixedSizePredicate::BothAxes);
+    }
+
+    #[test]
+    fn live_setting_selects_subsequent_admission_predicate() {
+        let live = LiveSettings::fresh(Settings::default(), None);
+        assert_eq!(
+            fixed_predicate_for(Some(&live)),
+            FixedSizePredicate::BothAxes
+        );
+        let mut either = Settings::default();
+        either.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
+        let live = LiveSettings::fresh(either, None);
+        assert_eq!(
+            fixed_predicate_for(Some(&live)),
+            FixedSizePredicate::EitherAxis
+        );
+    }
+
+    #[test]
+    fn fixed_birth_probe_fails_closed_without_effects() {
+        // Null handles never query: fail-closed false with no native effect.
+        // (A live maximized row always carries a real HWND; this pins the
+        // guard, not the query path.)
+        let mut cx = super::HintCx::new();
+        assert!(!super::fixed_birth_for_slotless(
+            0,
+            FixedSizePredicate::BothAxes,
+            &mut cx
+        ));
+        assert!(!super::fixed_birth_for_slotless(
+            0,
+            FixedSizePredicate::EitherAxis,
+            &mut cx
+        ));
+    }
+
+    #[test]
+    fn stamp_applies_live_fullscreen_origin_and_override() {
+        use crate::workspace::WindowKey;
+        use std::collections::HashMap;
+        let mut state = test_state();
+        let key = WindowKey {
+            hwnd: 4242,
+            pid: 4243,
+            creation: "c000000000000001".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "wfix".to_owned());
+        state.overlay_now.insert("wfix".to_owned(), (true, true));
+        state.fixed_auto_seen.insert(key.clone());
+        let other = WindowKey {
+            hwnd: 4342,
+            pid: 4343,
+            creation: "c000000000000002".to_owned(),
+        };
+        state
+            .member_tokens
+            .insert(other.clone(), "wover".to_owned());
+        state.fixed_tile_overrides.insert(other.clone());
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("stamp-1").expect("correlation"),
+            0,
+            3,
+            &crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8).0,
+            &crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8).1,
+            8,
+            &[
+                (
+                    WindowId("wfix".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    true,
+                ),
+                (
+                    WindowId("wover".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+                (
+                    WindowId("wplain".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("wfix".to_owned())),
+        );
+        super::stamp_engine_event(&state, &mut event);
+        let flagged = |id: &str| {
+            event
+                .windows
+                .iter()
+                .find(|w| w.window.0 == id)
+                .expect("row")
+                .clone()
+        };
+        let wfix = flagged("wfix");
+        assert!(wfix.fullscreen, "live fullscreen snapshot stamps");
+        assert!(wfix.fixed_auto, "D4 latch stamps the origin");
+        assert!(!wfix.fixed_suppress, "no override without a win");
+        let wover = flagged("wover");
+        assert!(!wover.fullscreen, "no snapshot without observation");
+        assert!(!wover.fixed_auto);
+        assert!(wover.fixed_suppress, "override set stamps the win");
+        let wplain = flagged("wplain");
+        assert!(!wplain.fullscreen && !wplain.fixed_auto && !wplain.fixed_suppress);
+        assert!(
+            !wplain.sticky && !wplain.maximized,
+            "adapter lanes stay false"
+        );
+        let _ = HashMap::<String, String>::new();
+    }
+
+    #[test]
+    fn apply_predicate_only_returns_false_adopts_and_reclassifies_nothing() {
+        use crate::settings::{build_disabled, build_remap, tile_options_from_settings};
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+
+        // Scratch home for the ledger lock and the owner log line: never the
+        // repo or the live product directory. No window, hook, suspend, or
+        // registry effect exists on this path; the temp dir is removed.
+        let tmp = std::env::temp_dir().join(format!(
+            "tiler-fixed-predicate-live-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.log_path = tmp.join("owner.log");
+        state.engine.set_fixed_size_admission(true);
+        let base = tile_options_from_settings(&Settings::default());
+        state.border = base.border;
+        state.underlay = base.underlay;
+        state.keyboard = crate::snapkey::KeyboardConfig {
+            takeover: true,
+            allow_win_l: false,
+        };
+        state.last_remap = build_remap(&Settings::default());
+        state.last_disabled = build_disabled(&Settings::default());
+        state.settings_live = Some(LiveSettings::fresh(Settings::default(), None));
+        let mut snap_want = true;
+        // One-axis-fixed window tiles under the default predicate.
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1600,
+            h: 900,
+        };
+        let domain = crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let one_axis = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(960),
+        };
+        let seed_fp =
+            crate::tiling::fingerprint(&[("w1".to_owned(), bounds), ("wone".to_owned(), bounds)]);
+        let seed = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("live-seed").expect("correlation"),
+            0,
+            seed_fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+                (WindowId("wone".to_owned()), bounds, one_axis, false),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        let reply = state.engine.handle(&seed);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed must converge, got {reply:?}"
+        );
+        assert!(
+            !state
+                .engine
+                .session(&domain.1)
+                .expect("session")
+                .is_automatic_fixed_float(&WindowId("wone".to_owned())),
+            "one-axis-fixed tiles under the default"
+        );
+        let before = state.engine.session(&domain.1).expect("session").snapshot();
+        let me = crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        };
+        let mut incoming = Settings::default();
+        incoming.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
+        incoming.revision = 7;
+        let changed = super::apply_live_settings(
+            &mut state,
+            &tmp,
+            &me,
+            &store,
+            &mut snap_want,
+            incoming,
+            None,
+        );
+        assert!(!changed, "predicate-only adoption reports no owner change");
+        assert_eq!(
+            state.engine.session(&domain.1).expect("session").snapshot(),
+            before,
+            "retained session untouched: no rebuild, no resync"
+        );
+        assert!(
+            !state
+                .engine
+                .session(&domain.1)
+                .expect("session")
+                .is_automatic_fixed_float(&WindowId("wone".to_owned())),
+            "retained tile never reclassifies on reload"
+        );
+        assert_eq!(
+            fixed_predicate_for(state.settings_live.as_ref()),
+            FixedSizePredicate::EitherAxis,
+            "subsequent admissions use the adopted predicate"
+        );
+        assert_eq!(
+            state.engine.fixed_size_predicate(),
+            FixedSizePredicate::EitherAxis
+        );
+        // A subsequent identical admission floats under either-axis.
+        let rows_fp = crate::tiling::fingerprint(&[
+            ("w1".to_owned(), bounds),
+            ("wone".to_owned(), bounds),
+            ("wtwo".to_owned(), bounds),
+        ]);
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("live-next").expect("correlation"),
+            state
+                .engine
+                .session(&domain.1)
+                .map(|session| session.accepted_revision())
+                .unwrap_or(0),
+            rows_fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+                (WindowId("wone".to_owned()), bounds, one_axis, false),
+                (WindowId("wtwo".to_owned()), bounds, one_axis, false),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        event.command = CoreCommand::Reconcile;
+        let reply = super::handle_engine_event(&mut state, &mut event);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "next admission converges, got {reply:?}"
+        );
+        assert!(
+            !state
+                .engine
+                .session(&domain.1)
+                .expect("session")
+                .is_automatic_fixed_float(&WindowId("wone".to_owned())),
+            "old tile stays tiled"
+        );
+        assert!(
+            state
+                .engine
+                .session(&domain.1)
+                .expect("session")
+                .is_automatic_fixed_float(&WindowId("wtwo".to_owned())),
+            "later admission floats under either-axis"
+        );
+        assert_eq!((state.inner_gap, state.outer_gap), (8, 8));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn release_resets_latch_and_hints_but_preserves_override_intent_sticky() {
+        // P1 D6: a confirmed domain release resets the D4 automatic latch
+        // and drops last-known hints for that domain's candidates (fresh
+        // classification at enable), while explicit overrides, intentional
+        // floats, sticky members, and other domains are preserved.
+        use crate::workspace::WindowKey;
+        let mut state = super::rmax03_adapter_tests::test_state();
+        let key = |hwnd: u64| WindowKey {
+            hwnd,
+            pid: 5000 + hwnd as u32,
+            creation: format!("c{hwnd:016x}"),
+        };
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let active = state.workspaces.active_id(output).expect("active");
+        let (latched, plain) = (key(11), key(12));
+        let durable = key(13);
+        for k in [&latched, &plain, &durable] {
+            assert!(state.workspaces.assign(k.clone(), output, &active, false));
+            state
+                .member_tokens
+                .insert(k.clone(), format!("w{}", k.hwnd));
+        }
+        state.fixed_auto_seen.insert(latched.clone());
+        state.fixed_tile_overrides.insert(plain.clone());
+        state.fixed_tile_overrides.insert(durable.clone());
+        state.fixed_origin_overrides.insert(durable.clone());
+        state.floated.insert(plain.clone());
+        state.sticky.insert(plain.clone(), false);
+        state.hint_logged.insert(
+            "w11".to_owned(),
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: Some(640),
+                max_h: Some(480),
+            },
+        );
+        // Another domain's latch must survive a foreign release.
+        let other = key(99);
+        state.workspaces.ensure_output("mon-b");
+        let active_b = state.workspaces.active_id("mon-b").expect("active");
+        assert!(
+            state
+                .workspaces
+                .assign(other.clone(), "mon-b", &active_b, false)
+        );
+        state.member_tokens.insert(other.clone(), "w99".to_owned());
+        state.fixed_auto_seen.insert(other.clone());
+        super::reset_fixed_admission_for_domain(&mut state, output, &active);
+        assert!(
+            !state.fixed_auto_seen.contains(&latched),
+            "released domain latch resets"
+        );
+        assert!(
+            !state.hint_logged.contains_key("w11"),
+            "released domain hints drop for fresh classification"
+        );
+        assert!(
+            state.fixed_tile_overrides.contains(&plain),
+            "explicit override preserved"
+        );
+        assert!(
+            state.fixed_origin_overrides.contains(&durable),
+            "durable fixed origin preserved for enable re-adoption"
+        );
+        assert!(state.floated.contains(&plain), "intent preserved");
+        assert!(state.sticky.contains_key(&plain), "sticky preserved");
+        assert!(
+            state.fixed_auto_seen.contains(&other),
+            "foreign domain latch untouched"
+        );
+    }
+
+    #[test]
+    fn stamp_never_asserts_automatic_origin_for_sticky() {
+        // P5 sticky-dominance: even with both the D4 latch and the override
+        // set present, a sticky member stamps no automatic origin (core
+        // never marks automatic for a sticky observation). Suppress still
+        // rides when the override set holds it.
+        use crate::workspace::WindowKey;
+        let mut state = super::rmax03_adapter_tests::test_state();
+        let key = WindowKey {
+            hwnd: 4242,
+            pid: 4243,
+            creation: "c000000000000001".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "wfix".to_owned());
+        state.fixed_auto_seen.insert(key.clone());
+        state.fixed_tile_overrides.insert(key.clone());
+        state.sticky.insert(key.clone(), false);
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let domain = crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("stamp-sticky").expect("correlation"),
+            0,
+            3,
+            &domain.0,
+            &domain.1,
+            8,
+            &[(
+                WindowId("wfix".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                true,
+            )],
+            Some(&WindowId("wfix".to_owned())),
+        );
+        super::stamp_engine_event(&state, &mut event);
+        let window = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "wfix")
+            .expect("row");
+        assert!(
+            !window.fixed_auto,
+            "sticky dominates: no automatic origin signal"
+        );
+        assert!(
+            !window.sticky && !window.maximized,
+            "adapter lanes stay false"
+        );
+        assert!(window.fixed_suppress, "override win still rides");
+        // Without the sticky entry the same latch stamps the origin.
+        state.sticky.remove(&key);
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("stamp-sticky-2").expect("correlation"),
+            0,
+            3,
+            &domain.0,
+            &domain.1,
+            8,
+            &[(
+                WindowId("wfix".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                true,
+            )],
+            Some(&WindowId("wfix".to_owned())),
+        );
+        super::stamp_engine_event(&state, &mut event);
+        let window = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "wfix")
+            .expect("row");
+        assert!(window.fixed_auto, "unstuck latch stamps the D4 origin");
+    }
+
+    #[test]
+    fn stamp_refuses_automatic_origin_for_durable_override() {
+        // D3/D7 dominance: even with a stale D4 latch beside it, a durable
+        // fixed-origin override never stamps automatic origin; the explicit
+        // win rides suppress only.
+        use crate::workspace::WindowKey;
+        let mut state = super::rmax03_adapter_tests::test_state();
+        let key = WindowKey {
+            hwnd: 4342,
+            pid: 4343,
+            creation: "c000000000000003".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "wdur".to_owned());
+        state.fixed_auto_seen.insert(key.clone());
+        state.fixed_tile_overrides.insert(key.clone());
+        state.fixed_origin_overrides.insert(key.clone());
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 800,
+            h: 600,
+        };
+        let domain = crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("stamp-durable").expect("correlation"),
+            0,
+            3,
+            &domain.0,
+            &domain.1,
+            8,
+            &[(
+                WindowId("wdur".to_owned()),
+                bounds,
+                WindowSizeHints::none(),
+                false,
+            )],
+            Some(&WindowId("wdur".to_owned())),
+        );
+        super::stamp_engine_event(&state, &mut event);
+        let window = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "wdur")
+            .expect("row");
+        assert!(
+            !window.fixed_auto,
+            "durable override never acquires automatic origin"
+        );
+        assert!(window.fixed_suppress, "explicit win still rides");
+    }
+
+    #[test]
+    fn production_handle_plans_no_writes_for_latched_max_birth() {
+        // D4/D8 through the production stamped handle (not a manual core
+        // event): a latched fixed max-birth admitted slotless rides floating
+        // with the adapter origin, the Engine marks it automatic, and the
+        // committed plan carries no geometry, focus, or stacking effect for
+        // it while the ordinary tile is placed.
+        use crate::workspace::WindowKey;
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let key = WindowKey {
+            hwnd: 4242,
+            pid: 4243,
+            creation: "c000000000000001".to_owned(),
+        };
+        state.member_tokens.insert(key.clone(), "wfix".to_owned());
+        state.fixed_auto_seen.insert(key.clone());
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let domain = crate::workspace_owner::workspace_domain("mon-a", "ws-1", bounds, 8);
+        let fixed = WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
+        };
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("latch-1").expect("correlation"),
+            0,
+            9,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (WindowId("wfix".to_owned()), bounds, fixed, true),
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("w1".to_owned())),
+        );
+        event.command = CoreCommand::Reconcile;
+        let reply = super::handle_engine_event(&mut state, &mut event);
+        let plan = match &reply {
+            CoreReply::Tiled(plan) => plan.clone(),
+            CoreReply::Projection(_) => {
+                // Single-domain seed shape: converge through one more
+                // observation carrying the same stamped rows.
+                let mut retry = event.clone();
+                retry.revision = state
+                    .engine
+                    .session(&domain.1)
+                    .map(|session| session.accepted_revision())
+                    .unwrap_or(0);
+                match super::handle_engine_event(&mut state, &mut retry) {
+                    CoreReply::Tiled(plan) => plan,
+                    other => panic!("latched birth converges, got {other:?}"),
+                }
+            }
+            other => panic!("latched birth converges, got {other:?}"),
+        };
+        assert!(
+            plan.geometry.iter().all(|g| g.window.0 != "wfix"),
+            "no geometry write planned for the automatic float"
+        );
+        assert!(
+            plan.geometry.iter().any(|g| g.window.0 == "w1"),
+            "ordinary tile still placed"
+        );
+        assert!(
+            state
+                .engine
+                .session(&domain.1)
+                .expect("session")
+                .is_automatic_fixed_float(&WindowId("wfix".to_owned())),
+            "latched origin marks automatic through the production stamp"
+        );
+        let report = state.engine.last_fixed_admission().expect("bounded report");
+        assert_eq!(report.reason, "fixed-equal");
+    }
+
+    /// D5 production-ordering member tables with distinct fake HWNDs per
+    /// token (deterministic derivation, never real windows): the cfg(test)
+    /// query seam keys injections by HWND, so members must not share one.
+    /// No test takes a native write (identity gates fail closed on invalid
+    /// handles; every real query fails closed with no effect).
+    fn d5_member(
+        state: &mut super::TileLoop,
+        output: &str,
+        ws: &str,
+        token: &str,
+    ) -> crate::workspace::WindowKey {
+        let key = crate::workspace::WindowKey {
+            hwnd: 1100 + token.bytes().map(u64::from).sum::<u64>(),
+            pid: 7000 + state.member_tokens.len() as u32,
+            creation: format!("cd5{:016x}", state.member_tokens.len()),
+        };
+        assert!(state.workspaces.assign(key.clone(), output, ws, false));
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        state.member_identity.insert(
+            key.clone(),
+            crate::model::ProcessIdentity {
+                pid: key.pid,
+                process_creation: key.creation.clone(),
+                user_sid: "S-1-5-d5".to_owned(),
+                session_id: 1,
+                exe_path: "d5.exe".to_owned(),
+            },
+        );
+        state.member_tags.insert(key.clone(), "d5-tag".to_owned());
+        state.last_hwnds.insert(key.hwnd);
+        key
+    }
+
+    fn d5_domain(
+        output: &str,
+        ws: &str,
+    ) -> (
+        tiler_core::session::OutputDomain,
+        tiler_core::session::DomainKey,
+    ) {
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        crate::workspace_owner::workspace_domain(output, ws, bounds, 8)
+    }
+
+    fn d5_retained(
+        key: &crate::workspace::WindowKey,
+        token: &str,
+        maximized: bool,
+        fullscreen: bool,
+    ) -> super::RetainedRow {
+        super::RetainedRow {
+            key: key.clone(),
+            token: token.to_owned(),
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            }),
+            maximized,
+            fullscreen,
+            facts: None,
+        }
+    }
+
+    fn d5_me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        }
+    }
+
+    /// Visible eligible observation for one member with null HWND: every
+    /// native query fails closed with no effect, so the row exercises the
+    /// visible lane with unknown fresh hints.
+    fn d5_observed(token: &str, key: &crate::workspace::WindowKey) -> super::ObservedWindow {
+        super::ObservedWindow {
+            hwnd: key.hwnd,
+            token: token.to_owned(),
+            outer: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            visible: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd: key.hwnd,
+                pid: key.pid,
+                process_creation: key.creation.clone(),
+                exe_path: "d5.exe".to_owned(),
+                user_sid: "S-1-5-d5".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    /// Inject converted production hints for one fake member HWND (clearing
+    /// any previous injection first, so legs never leak into each other).
+    /// The hints must come from [`crate::tiling::hints_from_outer`], never
+    /// hand-built, so the conversion path stays under test.
+    fn d5_inject(
+        hwnd: u64,
+        min_outer: Option<(i32, i32)>,
+        max_outer: Option<(i32, i32)>,
+    ) -> WindowSizeHints {
+        super::clear_test_hints();
+        let hints = crate::tiling::hints_from_outer(
+            min_outer,
+            max_outer,
+            crate::tiling::FrameInsets {
+                left: 8,
+                top: 8,
+                right: 8,
+                bottom: 8,
+            },
+        );
+        super::inject_test_hints(hwnd, hints);
+        hints
+    }
+
+    /// Drive one born hold through the production stamped handle: the
+    /// stamped fullscreen row floats with no automatic mark.
+    fn d5_hold(
+        state: &mut super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        token: &str,
+        focus: &str,
+    ) {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        state.overlay_now.insert(token.to_owned(), (false, true));
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("d5-hold").expect("correlation"),
+            0,
+            41,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (
+                    WindowId(token.to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    true,
+                ),
+                (
+                    WindowId(focus.to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId(focus.to_owned())),
+        );
+        event.command = CoreCommand::Reconcile;
+        let reply = super::handle_engine_event(state, &mut event);
+        assert!(
+            matches!(reply, CoreReply::Tiled(_) | CoreReply::Projection(_)),
+            "born hold converges, got {reply:?}"
+        );
+    }
+
+    fn d5_is_exception(
+        state: &super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        token: &str,
+    ) -> bool {
+        state
+            .engine
+            .session(&domain.1)
+            .is_some_and(|session| session.is_exception(&WindowId(token.to_owned())))
+    }
+
+    fn d5_is_automatic(
+        state: &super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        token: &str,
+    ) -> bool {
+        state
+            .engine
+            .session(&domain.1)
+            .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
+    }
+
+    fn d5_is_tiled(
+        state: &super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        token: &str,
+    ) -> bool {
+        state.engine.session(&domain.1).is_some_and(|session| {
+            session
+                .snapshot()
+                .windows
+                .iter()
+                .any(|link| link.window.0 == token)
+                && !session.is_exception(&WindowId(token.to_owned()))
+        })
+    }
+
+    /// Assemble one domain through production assembly and commit it
+    /// through the production stamped handle. Returns the committed rows
+    /// plus the Engine reply (for no-write planning assertions).
+    #[allow(clippy::too_many_arguments)]
+    fn d5_assemble_and_commit(
+        state: &mut super::TileLoop,
+        output: &str,
+        ws: &str,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        observed: &[super::ObservedWindow],
+        retained: &[super::RetainedRow],
+        focus: &str,
+        correlation: &str,
+    ) -> Option<(
+        Vec<crate::workspace_owner::OwnerRow>,
+        tiler_core::boundary::CoreReply,
+    )> {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        // Mirror the per-tick observe refresh: overlay snapshots are always
+        // current at stamp time in production, so tests refresh them from
+        // the same inputs here instead of carrying stale hold-time flags
+        // (a stale fullscreen stamp would pin the hold and hide the exit).
+        for window in observed {
+            state.overlay_now.insert(
+                window.token.clone(),
+                (window.facts.maximized, window.facts.captionless_fullscreen),
+            );
+        }
+        for row in retained {
+            state
+                .overlay_now
+                .insert(row.token.clone(), (row.maximized, row.fullscreen));
+        }
+        let mut hint_cx = super::HintCx::new();
+        let rows = super::assemble_domain_rows(
+            state,
+            output,
+            ws,
+            observed,
+            retained,
+            "d5-test",
+            correlation,
+            &mut hint_cx,
+        )?;
+        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    WindowId(row.token.clone()),
+                    row.rect,
+                    row.hints,
+                    row.floating,
+                )
+            })
+            .collect();
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|row| (row.token.clone(), row.rect))
+                .collect::<Vec<_>>(),
+        );
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse(correlation).expect("correlation"),
+            super::revision_for(state, output, ws),
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focus.to_owned())),
+        );
+        event.command = CoreCommand::Reconcile;
+        let reply = super::handle_engine_event(state, &mut event);
+        assert!(
+            matches!(reply, CoreReply::Tiled(_) | CoreReply::Projection(_)),
+            "d5 commit converges, got {reply:?}"
+        );
+        Some((rows, reply))
+    }
+
+    /// One real `ToggleFloat` commit through the production stamped handle:
+    /// the same converge path the float/unfloat dispatchers commit, with the
+    /// adapter's live origin/override stamps. Returns the Engine reply.
+    fn d5_toggle_float(
+        state: &mut super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        rows: &[(WindowId, Rect, WindowSizeHints, bool)],
+        focus: &str,
+        window: &str,
+        float_rect: Option<Rect>,
+        correlation: &str,
+    ) -> tiler_core::boundary::CoreReply {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|(id, rect, _, _)| (id.0.clone(), *rect))
+                .collect::<Vec<_>>(),
+        );
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse(correlation).expect("correlation"),
+            state
+                .engine
+                .session(&domain.1)
+                .map(|session| session.accepted_revision())
+                .unwrap_or(0),
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            rows,
+            Some(&WindowId(focus.to_owned())),
+        );
+        event.command = CoreCommand::ToggleFloat {
+            window: window.to_owned(),
+            float_rect,
+        };
+        let reply = super::handle_engine_event(state, &mut event);
+        assert!(
+            !matches!(
+                reply,
+                CoreReply::Rejected { .. }
+                    | CoreReply::Diverged(_)
+                    | CoreReply::SnapshotInvalid { .. }
+            ),
+            "d5 toggle converges, got {reply:?}"
+        );
+        reply
+    }
+
+    fn d5_has_core_override(
+        state: &super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        token: &str,
+    ) -> bool {
+        state
+            .engine
+            .session(&domain.1)
+            .is_some_and(|session| session.has_fixed_tile_override(&WindowId(token.to_owned())))
+    }
+
+    #[test]
+    fn maximized_fixed_first_exit_defers_clear_then_floats_automatic() {
+        // D5 maximized leg through production assembly: the exit tick
+        // defers the clear (mark peeked, never consumed) and classifies
+        // from transported hints; the committed automatic mark consumes the
+        // mark and skips every later clear. No hintless-exception stall.
+        use tiler_core::boundary::CoreReply;
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        assert!(d5_is_exception(&state, &domain, "wfix"));
+        assert!(!d5_is_automatic(&state, &domain, "wfix"));
+        // The hold observed fullscreen at admission: mirror the born lane.
+        state.born_fullscreen.insert(key.clone());
+        // Track releases the born hold into a first exit without consuming
+        // it (no commit evidence yet).
+        let retained = vec![d5_retained(&key, "wfix", true, false)];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        assert!(
+            !state.born_fullscreen.contains(&key),
+            "exit releases the hold"
+        );
+        assert!(
+            state.born_first_exit.contains(&key),
+            "exit inserts the mark"
+        );
+        // Clear defers by peek: the mark survives for assembly.
+        super::clear_maximize_at_admission(&mut state, &d5_me(), &retained);
+        assert!(
+            state.born_first_exit.contains(&key),
+            "clear peeks, never consumes pre-classification"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "no attempt recorded for unclassified rows"
+        );
+        // Converted fixed hints through the test query seam: the live
+        // probe call site transports them, proving the conversion path
+        // (outer 656x496 minus 8px frames = visible 640x480 both sides).
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((656, 496)));
+        assert_eq!(
+            (
+                converted.min_w,
+                converted.min_h,
+                converted.max_w,
+                converted.max_h
+            ),
+            (Some(640), Some(480), Some(640), Some(480))
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "first exit rides the tiled lane");
+        assert_eq!(
+            row.hints, converted,
+            "classification rides transported hints"
+        );
+        if let CoreReply::Tiled(plan) = &reply {
+            assert!(
+                plan.geometry.iter().all(|g| g.window.0 != "wfix"),
+                "no native target writes while classifying"
+            );
+        }
+        assert!(
+            d5_is_automatic(&state, &domain, "wfix"),
+            "fixed exit floats"
+        );
+        // Commit evidence consumes the mark; the next clear skips via the
+        // Engine automatic mark instead of firing.
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "committed classification consumes the mark"
+        );
+        super::clear_maximize_at_admission(&mut state, &d5_me(), &retained);
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "automatic floats never clear"
+        );
+    }
+
+    #[test]
+    fn stale_logged_fixed_with_failed_fresh_tiles() {
+        // Anti-fallback regression (D5 normative): last-known fixed bounds
+        // never stand in for a failed fresh probe. With stale fixed history
+        // present but the fresh query failing, the exit rides tiled
+        // hintless and tiles admission-only; the commit still consumes the
+        // mark. Later passes use the normal one-shot gate instead of the
+        // first-exit deferral.
+        use tiler_core::size_hints::WindowSizeHints as Hints;
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![d5_retained(&key, "wfix", true, false)];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        super::clear_maximize_at_admission(&mut state, &d5_me(), &retained);
+        assert!(state.born_first_exit.contains(&key));
+        state.hint_logged.insert(
+            "wfix".to_owned(),
+            Hints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: Some(640),
+                max_h: Some(480),
+            },
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "stale evidence never floats: tiled lane");
+        assert!(row.hints.is_empty(), "failed fresh means no hints ride");
+        assert!(
+            d5_is_tiled(&state, &domain, "wfix"),
+            "stale fixed still tiles"
+        );
+        assert!(!d5_is_automatic(&state, &domain, "wfix"));
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "tiling commit consumes the mark"
+        );
+    }
+
+    #[test]
+    fn normal_visible_exit_unknown_tiles_and_consumes() {
+        // D5 normal leg through production assembly: a visible exit whose
+        // fresh query fails rides tiled hintless (failure-as-unknown) and
+        // tiles admission-only; the commit consumes the mark (one shot,
+        // no linger). A later intentional float settles through a real
+        // ToggleFloat plus the runtime lane and is never undone: no mark
+        // remains to force the tiled lane.
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        // Visible non-fullscreen exit observation (null HWND: queries fail
+        // closed with no native effect, so no evidence transports).
+        let observed = vec![d5_observed("wfix", &key), d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(
+            state.born_first_exit.contains(&key),
+            "exit inserts the mark"
+        );
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-exit",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "first exit rides the tiled lane");
+        assert!(row.hints.is_empty(), "unknown query flows as no hints");
+        if let CoreReply::Tiled(plan) = &reply {
+            assert!(
+                plan.geometry.iter().any(|g| g.window.0 == "wfix"),
+                "tiled exit takes a tile slot"
+            );
+        }
+        assert!(d5_is_tiled(&state, &domain, "wfix"), "unknown exit tiles");
+        assert!(!d5_is_automatic(&state, &domain, "wfix"));
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "tiling commit consumes the mark: one shot only"
+        );
+        // A later intentional float settles through a real ToggleFloat plus
+        // the runtime lane (mirroring the float commit path) and is never
+        // undone: no mark remains to force the tiled lane.
+        let revision = super::revision_for(&state, output, &ws);
+        let mut float_event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &CorrelationId::parse("d5-float-commit").expect("correlation"),
+            revision,
+            77,
+            &domain.0,
+            &domain.1,
+            8,
+            &[
+                (
+                    WindowId("wfix".to_owned()),
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        w: 800,
+                        h: 600,
+                    },
+                    WindowSizeHints::none(),
+                    false,
+                ),
+                (
+                    WindowId("w1".to_owned()),
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        w: 800,
+                        h: 600,
+                    },
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ],
+            Some(&WindowId("wfix".to_owned())),
+        );
+        float_event.command = CoreCommand::ToggleFloat {
+            window: "wfix".to_owned(),
+            float_rect: None,
+        };
+        let reply = state.engine.handle(&float_event);
+        assert!(
+            matches!(reply, CoreReply::Tiled(_)),
+            "explicit float commits, got {reply:?}"
+        );
+        assert!(d5_is_exception(&state, &domain, "wfix"));
+        state.floated.insert(key.clone());
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "wfix",
+            "d5-float",
+        )
+        .expect("float rides");
+        assert!(
+            rows.iter()
+                .find(|row| row.token == "wfix")
+                .expect("row")
+                .floating,
+            "later intent keeps the float lane: no stale-mark undo"
+        );
+    }
+
+    #[test]
+    fn first_exit_unknown_tiles_and_predicate_switch_applies() {
+        // D5 current-hints/current-predicate legs through production
+        // assembly: a failed fresh probe flows as no hints with
+        // floating=false and tiles admission-only (failure-as-unknown);
+        // a predicate switch mid-hold selects the exit layer from the
+        // fresh output at exit.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![d5_retained(&key, "wfix", true, false)];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        // Failed fresh probe with no injection: unknown flows as no hints
+        // with floating=false and tiles admission-only.
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "unknown exits ride the tiled lane");
+        assert!(row.hints.is_empty(), "unknown flows as no hints");
+        assert!(d5_is_tiled(&state, &domain, "wfix"), "unknown tiles");
+        assert!(!d5_is_automatic(&state, &domain, "wfix"));
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "tiling commit consumes the mark"
+        );
+        // Predicate switch mid-hold with converted partial-zero output:
+        // the exit floats under either-axis through its nonzero axis.
+        // The injected converted hints stand in for the live probe at the
+        // real call site (outer 656x0 minus 8px frames = visible 640x0:
+        // explicit-zero outers ride unset per axis; a remainder swallowed
+        // by its frame would read unknown instead).
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        state
+            .engine
+            .set_fixed_size_predicate(FixedSizePredicate::EitherAxis);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![d5_retained(&key, "wfix", true, false)];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        let converted = d5_inject(key.hwnd, Some((656, 0)), Some((656, 0)));
+        assert_eq!(
+            (
+                converted.min_w,
+                converted.min_h,
+                converted.max_w,
+                converted.max_h
+            ),
+            (Some(640), Some(0), Some(640), Some(0))
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit",
+        )
+        .expect("exit classifies");
+        assert!(
+            d5_is_automatic(&state, &domain, "wfix"),
+            "partial-zero exit floats under the current either-axis predicate"
+        );
+    }
+
+    #[test]
+    fn repeated_fullscreen_toggles_keep_ordinary_identity() {
+        // D2 through production assembly: after a tiled exit, a later
+        // fullscreen transition is a managed overlay (never a born hold
+        // again) and the next exit retires tiled with no marks left.
+        // Exits carry unknown fresh hints and tile admission-only.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let mut retained = vec![d5_retained(&key, "wfix", true, false)];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        let observed = vec![d5_observed("w1", &w1key)];
+        d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit",
+        )
+        .expect("exit classifies");
+        assert!(d5_is_tiled(&state, &domain, "wfix"));
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(!state.born_first_exit.contains(&key));
+        // Later fullscreen transition on the lifetime-known window: a
+        // managed overlay, never a born hold (seen_nonfullscreen pins it).
+        retained[0].fullscreen = true;
+        retained[0].maximized = false;
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(
+            !state.born_fullscreen.contains(&key),
+            "lifetime-known fullscreen never re-holds"
+        );
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "no exit mark without a hold"
+        );
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-full",
+        )
+        .expect("overlay rides");
+        assert!(
+            rows.iter().any(|row| row.token == "wfix"),
+            "overlay member rides"
+        );
+        assert!(
+            d5_is_tiled(&state, &domain, "wfix"),
+            "overlay keeps the slot"
+        );
+        // Exit again: ordinary, mark-free, still tiled.
+        retained[0].fullscreen = false;
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(!state.born_first_exit.contains(&key));
+        d5_assemble_and_commit(
+            &mut state, output, &ws, &domain, &observed, &retained, "w1", "d5-exit2",
+        )
+        .expect("second exit classifies");
+        assert!(d5_is_tiled(&state, &domain, "wfix"));
+        assert!(!state.born_first_exit.contains(&key));
+        assert!(!state.born_fullscreen.contains(&key));
+    }
+
+    #[test]
+    fn hidden_fixed_first_exit_rides_tiled_and_floats_automatic() {
+        // D5 hidden leg through production assembly: a hidden first exit
+        // with converted fixed hints rides tiled (floating=false) instead
+        // of the hidden float lane, and floats automatic; the commit
+        // consumes the mark. Sticky and intentional-float lanes keep their
+        // float rows. A hidden exit with unknown hints rides tiled
+        // hintless and tiles.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.member_rects.insert(
+            "wfix".to_owned(),
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        );
+        state.workspaces.set_hidden(&key, true);
+        // Lingering mark from an exit whose commit never landed (e.g. a
+        // refused tick before the hide): the hidden lane still classifies.
+        // Production prunes hidden tokens from the overlay snapshot every
+        // tick, so hidden rows stamp no fullscreen flag: mirror that here
+        // instead of carrying the hold-time snapshot.
+        state.born_first_exit.insert(key.clone());
+        state.overlay_now.remove("wfix");
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((656, 496)));
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-hide-exit",
+        )
+        .expect("hidden exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "hidden first exit rides tiled");
+        assert_eq!(row.hints, converted);
+        assert!(d5_is_automatic(&state, &domain, "wfix"));
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "hidden commit consumes the mark"
+        );
+        // Sticky hidden exits keep the float lane.
+        state.born_first_exit.insert(key.clone());
+        state.sticky.insert(key.clone(), false);
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-hide-sticky",
+        )
+        .expect("sticky hidden rides");
+        assert!(
+            rows.iter()
+                .find(|row| row.token == "wfix")
+                .expect("row")
+                .floating,
+            "explicit sticky intent preserved while hidden"
+        );
+    }
+
+    #[test]
+    fn first_exit_without_rect_or_evidence_defers_with_mark_intact() {
+        // No-rect edge: a frameless first-exit row with no evidence and no
+        // snapshots pushes no view, so assembly defers the whole domain
+        // with retained state instead of classifying blind. The mark
+        // survives for the next pass; nothing is consumed or reset.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![super::RetainedRow {
+            key: key.clone(),
+            token: "wfix".to_owned(),
+            rect: None,
+            maximized: true,
+            fullscreen: false,
+            facts: None,
+        }];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        assert!(state.born_first_exit.contains(&key));
+        let observed = vec![d5_observed("w1", &w1key)];
+        let mut hint_cx = super::HintCx::new();
+        let rows = super::assemble_domain_rows(
+            &mut state,
+            output,
+            &ws,
+            &observed,
+            &retained,
+            "d5-test",
+            "d5-norect",
+            &mut hint_cx,
+        );
+        assert!(rows.is_none(), "no view means defer, never a blind row");
+        assert!(
+            state.born_first_exit.contains(&key),
+            "deferral consumes and resets nothing"
+        );
+        assert!(d5_is_exception(&state, &domain, "wfix"), "hold kept");
+    }
+
+    #[test]
+    fn fixed_birth_probes_share_one_preamble_budget() {
+        // Item-13 aggregate budget: sequential fixed-birth probes share the
+        // caller's HintCx (the preamble creates exactly one; the admit loop
+        // never resets per row), so many fresh maximized windows cannot
+        // restore the timer. Null probes fail closed without consuming a
+        // meaningful slice, and the shared deadline only ever advances.
+        let mut cx = super::HintCx::new();
+        let first = cx.timeout_ms();
+        for _ in 0..8 {
+            assert!(!super::fixed_birth_for_slotless(
+                0,
+                FixedSizePredicate::BothAxes,
+                &mut cx
+            ));
+            assert!(!super::fixed_birth_for_slotless(
+                0,
+                FixedSizePredicate::EitherAxis,
+                &mut cx
+            ));
+        }
+        assert!(cx.timeout_ms() <= first, "shared deadline never resets");
+    }
+
+    fn clear_retained(key: &crate::workspace::WindowKey, token: &str) -> super::RetainedRow {
+        super::RetainedRow {
+            key: key.clone(),
+            token: token.to_owned(),
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            }),
+            maximized: true,
+            fullscreen: false,
+            facts: Some(crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: true,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            }),
+        }
+    }
+
+    fn clear_assemble(
+        state: &mut super::TileLoop,
+        output: &str,
+        ws: &str,
+        observed: &[super::ObservedWindow],
+        retained: &[super::RetainedRow],
+    ) -> Vec<crate::workspace_owner::OwnerRow> {
+        let mut hint_cx = super::HintCx::new();
+        super::assemble_domain_rows(
+            state,
+            output,
+            ws,
+            observed,
+            retained,
+            "clear-test",
+            "clear",
+            &mut hint_cx,
+        )
+        .expect("rows assemble")
+    }
+
+    #[test]
+    fn slotless_nonfixed_max_plans_clear_and_defers_slot() {
+        // Core regression (tile-on-launch): a non-fixed born-max plans CLEAR
+        // dispositionally, and assembly must not plant a slot that disables
+        // the required clear on the next pass.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        // Converted non-fixed hints through the test query seam (outer
+        // 656x496 minus 8px frames = 640x480 min; 1936x1096 = 1920x1080 max).
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((1936, 1096)));
+        assert!(!converted.is_empty());
+        let retained = vec![clear_retained(&key, "wmax")];
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "non-fixed slotless max plans CLEAR"
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        let rows = clear_assemble(&mut state, output, &ws, &observed, &retained);
+        let row = rows.iter().find(|row| row.token == "wmax").expect("row");
+        assert!(!row.floating, "pending clear rides the tiled lane");
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "assembly defers the slot so the next clear still sees slotless"
+        );
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "still CLEAR after assembly: no slot was planted"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "peeking records no attempt and invents no hold"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn committed_ordinary_pin_survives_later_fixed_hints() {
+        // D2 admission-only: a nonfixed commit tiles ordinary; when current
+        // hints turn fixed before the required clear lands, the Engine
+        // admission pin (not the fresh predicate) still plans CLEAR.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_inject(key.hwnd, Some((656, 496)), Some((1936, 1096)));
+        let retained = vec![clear_retained(&key, "wmax")];
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (_, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &retained,
+            "w1",
+            "clear-pin-commit",
+        )
+        .expect("nonfixed classifies");
+        assert!(
+            d5_is_tiled(&state, &domain, "wmax"),
+            "ordinary commit tiles"
+        );
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "commit plants no slot ahead of the required clear"
+        );
+        // Current hints turn fixed with no re-commit: retained admission is
+        // pinned ordinary regardless.
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((656, 496)));
+        assert_eq!(
+            (
+                converted.min_w,
+                converted.min_h,
+                converted.max_w,
+                converted.max_h
+            ),
+            (Some(640), Some(480), Some(640), Some(480))
+        );
+        assert!(d5_is_tiled(&state, &domain, "wmax"), "no reclassification");
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "pinned ordinary admission still plans CLEAR despite fixed hints"
+        );
+        let rows = clear_assemble(&mut state, output, &ws, &observed, &retained);
+        assert!(rows.iter().any(|row| row.token == "wmax"));
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "pin mirror still defers the slot"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "peeking records no attempt"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn slotless_fixed_max_skips_clear_under_both_born_modes() {
+        // D4 wins over core.born_maximized under both values: fixed floats,
+        // never clears. Disposition asserted directly, plus the committed
+        // Engine automatic mark on the default lane.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((656, 496)));
+        assert_eq!(
+            (
+                converted.min_w,
+                converted.min_h,
+                converted.max_w,
+                converted.max_h
+            ),
+            (Some(640), Some(480), Some(640), Some(480))
+        );
+        let retained = vec![clear_retained(&key, "wmax")];
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "fixed skips by default"
+        );
+        state.settings_live = Some(LiveSettings::fresh(Settings::default(), None));
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "fixed skips under explicit tile-on-launch"
+        );
+        let mut overlay = Settings::default();
+        overlay.core.born_maximized = crate::settings::BORN_MAXIMIZED_OVERLAY.to_owned();
+        state.settings_live = Some(LiveSettings::fresh(overlay, None));
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "fixed skips under keep-overlay too"
+        );
+        state.settings_live = None;
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &retained,
+            "w1",
+            "clear-fixed",
+        )
+        .expect("fixed classifies");
+        assert!(rows.iter().any(|row| row.token == "wmax"));
+        assert!(
+            d5_is_automatic(&state, &domain, "wmax"),
+            "fixed floats automatic"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn first_exit_max_defers_clear_then_fixed_floats_unknown_pends() {
+        // D5 maximized legs: the exit tick defers the clear (mark peeked);
+        // fixed then floats automatic while unknown tiles and pends the
+        // normal one-shot clear with no slot planted ahead of it.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![clear_retained(&key, "wfix")];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        assert!(state.born_first_exit.contains(&key));
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "first exit defers the clear pre-classification"
+        );
+        let converted = d5_inject(key.hwnd, Some((656, 496)), Some((656, 496)));
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &retained,
+            "w1",
+            "d5-max-fixed",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "first exit rides the tiled lane");
+        assert_eq!(row.hints, converted, "classification rides current hints");
+        assert!(
+            d5_is_automatic(&state, &domain, "wfix"),
+            "fixed exit floats"
+        );
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(!state.born_first_exit.contains(&key));
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "committed automatic never clears"
+        );
+        super::clear_test_hints();
+
+        // Unknown leg: failed fresh probe tiles hintless, then pends clear.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wfix");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wfix", "w1");
+        state.born_fullscreen.insert(key.clone());
+        let retained = vec![clear_retained(&key, "wfix")];
+        super::track_fullscreen_holds(&mut state, &[], &retained);
+        super::clear_test_hints();
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "unknown exit still defers while marked"
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        let (rows, _) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &retained,
+            "w1",
+            "d5-max-unknown",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wfix").expect("row");
+        assert!(!row.floating, "unknown exits ride the tiled lane");
+        assert!(row.hints.is_empty(), "unknown flows as no hints");
+        assert!(d5_is_tiled(&state, &domain, "wfix"), "unknown tiles");
+        super::track_fullscreen_holds(&mut state, &observed, &retained);
+        assert!(!state.born_first_exit.contains(&key));
+        assert!(
+            !state.member_rects.contains_key("wfix"),
+            "no slot planted ahead of the pending clear"
+        );
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "tiled unknown exit pends the normal one-shot clear"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "no attempt recorded before the native gate"
+        );
+    }
+
+    #[test]
+    fn released_formerly_fixed_latch_now_plans_clear() {
+        // D6: a confirmed release resets the latch and last-known hints, so a
+        // formerly fixed maximum with current ordinary hints plans CLEAR.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        state.fixed_auto_seen.insert(key.clone());
+        state.hint_logged.insert(
+            "wmax".to_owned(),
+            WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: Some(640),
+                max_h: Some(480),
+            },
+        );
+        let retained = vec![clear_retained(&key, "wmax")];
+        let cx = super::HintCx::new();
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &cx),
+            "latched fixed never clears"
+        );
+        super::reset_fixed_admission_for_domain(&mut state, output, &ws);
+        assert!(
+            !state.fixed_auto_seen.contains(&key),
+            "release resets latch"
+        );
+        assert!(
+            !state.hint_logged.contains_key("wmax"),
+            "release drops hints for fresh classification"
+        );
+        d5_inject(key.hwnd, Some((656, 496)), Some((1936, 1096)));
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "formerly latched ordinary maximum now plans CLEAR"
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        clear_assemble(&mut state, output, &ws, &observed, &retained);
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "assembly defers the slot ahead of the pending clear"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn override_max_keeps_clear_precedence() {
+        // Explicit tile overrides keep the preexisting one-shot maximize
+        // policy: an ordinary maximized override still plans CLEAR.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        state.fixed_tile_overrides.insert(key.clone());
+        d5_inject(key.hwnd, Some((656, 496)), Some((1936, 1096)));
+        let retained = vec![clear_retained(&key, "wmax")];
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "ordinary override plans CLEAR"
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        clear_assemble(&mut state, output, &ws, &observed, &retained);
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "no slot planted ahead of the override clear"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn unknown_query_failure_plans_clear_without_hold_or_retry() {
+        // Persistent query failure is failure-as-unknown: it plans CLEAR
+        // (never an indefinite hold) and records nothing pre-gate.
+        super::clear_test_hints();
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        let retained = vec![clear_retained(&key, "wmax")];
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "failed query plans CLEAR failure-as-unknown"
+        );
+        let observed = vec![d5_observed("w1", &w1key)];
+        let rows = clear_assemble(&mut state, output, &ws, &observed, &retained);
+        let row = rows.iter().find(|row| row.token == "wmax").expect("row");
+        assert!(!row.floating, "unknown rides the tiled lane");
+        assert!(row.hints.is_empty(), "no hints invented");
+        assert!(
+            !state.member_rects.contains_key("wmax"),
+            "no slot planted for unknown"
+        );
+        let cx = super::HintCx::new();
+        assert!(
+            super::admission_clear_planned(&state, &retained[0], &cx),
+            "still pending: no hold, no retry state"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "no attempt recorded pre-gate"
+        );
+    }
+
+    #[test]
+    fn fixed_origin_provenance_needs_known_automatic_origin() {
+        // D7 provenance (R-SPC-04): only a known automatic-fixed prior
+        // proves fixed origin for a settled tile win. The D4 latch, a
+        // committed Engine automatic mark, and a hydrated durable override
+        // each prove it; a generic float with none of those reads false and
+        // persists no marker. Fake HWNDs keep every native peek fail-closed
+        // (absent), so the negative leg exercises the real reader.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let latched = d5_member(&mut state, output, &ws, "wlatched");
+        let engine = d5_member(&mut state, output, &ws, "wengine");
+        let durable = d5_member(&mut state, output, &ws, "wdurable");
+        let generic = d5_member(&mut state, output, &ws, "wgeneric");
+        // D4 latch proves origin with no Engine mark yet.
+        state.fixed_auto_seen.insert(latched.clone());
+        assert!(
+            super::fixed_origin_provenance(&state, &latched),
+            "D4 latch proves fixed origin"
+        );
+        // Committed Engine automatic proves origin after the latch
+        // withdraws. The latch stamps the origin for the commit, then the
+        // win-time capture below models the pre-commit read.
+        let converted = d5_inject(engine.hwnd, Some((656, 496)), Some((656, 496)));
+        assert!(!converted.is_empty());
+        state.fixed_auto_seen.insert(engine.clone());
+        // Every domain member must ride the observation or assembly
+        // defers with retained state; the uninvolved members ride plain
+        // tiled rows here.
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        let observed = vec![
+            d5_observed("wlatched", &latched),
+            d5_observed("wdurable", &durable),
+            d5_observed("wgeneric", &generic),
+            d5_observed("w1", &w1key),
+        ];
+        let retained = vec![clear_retained(&engine, "wengine")];
+        d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &retained,
+            "w1",
+            "provenance-commit",
+        )
+        .expect("automatic commits");
+        assert!(
+            d5_is_automatic(&state, &domain, "wengine"),
+            "automatic committed"
+        );
+        state.fixed_auto_seen.remove(&engine);
+        // Hint loss after the commit: injections cleared and no last-known
+        // hints apply to this member, yet the committed mark still proves
+        // origin. Provenance consults no hints and no native reads.
+        super::clear_test_hints();
+        assert!(
+            super::fixed_origin_provenance(&state, &engine),
+            "committed automatic proves fixed origin without the latch"
+        );
+        // Hydrated durable proves origin with no other signal.
+        state.fixed_origin_overrides.insert(durable.clone());
+        assert!(
+            super::fixed_origin_provenance(&state, &durable),
+            "hydrated override proves fixed origin"
+        );
+        // Generic float: admitted member with no latch, no mark, no
+        // override, and no Engine automatic.
+        assert!(
+            !super::fixed_origin_provenance(&state, &generic),
+            "generic unfloat persists no marker"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn generic_unfloat_cycles_record_core_override_without_fixed_provenance() {
+        // D7 negative control (R-SPC-04): core records EVERY settled
+        // unfloat win including generic non-fixed ones, so the committed
+        // core override must never prove fixed origin. Repeated generic
+        // float/unfloat/suppress cycles keep the core mark TRUE while
+        // adapter provenance stays FALSE with no durable record and no
+        // marker path. Real `ToggleFloat` converge commits through the
+        // production stamped handle with converted production hints.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wgen");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        // Converted generic hints: 640x480 min with a wider max tiles
+        // under both predicates.
+        let generic = d5_inject(key.hwnd, Some((656, 496)), Some((1936, 1096)));
+        assert!(!generic.is_empty());
+        let observed = vec![d5_observed("wgen", &key), d5_observed("w1", &w1key)];
+        d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "generic-seed",
+        )
+        .expect("generic tiles");
+        assert!(d5_is_tiled(&state, &domain, "wgen"));
+        let toggle_rows = |floating: bool| {
+            vec![
+                (WindowId("wgen".to_owned()), bounds, generic, floating),
+                (
+                    WindowId("w1".to_owned()),
+                    bounds,
+                    WindowSizeHints::none(),
+                    false,
+                ),
+            ]
+        };
+        for cycle in 1..=2 {
+            d5_toggle_float(
+                &mut state,
+                &domain,
+                &toggle_rows(false),
+                "wgen",
+                "wgen",
+                None,
+                &format!("generic-float-{cycle}"),
+            );
+            assert!(
+                d5_is_exception(&state, &domain, "wgen"),
+                "cycle {cycle}: generic floats"
+            );
+            d5_toggle_float(
+                &mut state,
+                &domain,
+                &toggle_rows(true),
+                "wgen",
+                "wgen",
+                None,
+                &format!("generic-unfloat-{cycle}"),
+            );
+            assert!(
+                d5_is_tiled(&state, &domain, "wgen"),
+                "cycle {cycle}: generic re-tiles"
+            );
+            assert!(
+                d5_has_core_override(&state, &domain, "wgen"),
+                "cycle {cycle}: core records every unfloat"
+            );
+            assert!(
+                !super::fixed_origin_provenance(&state, &key),
+                "cycle {cycle}: core mark never proves fixed origin"
+            );
+            assert!(
+                !state.fixed_origin_overrides.contains(&key),
+                "cycle {cycle}: no durable record"
+            );
+        }
+        // The production generic win-site records runtime suppression only:
+        // a suppress-stamped re-observation still tiles without provenance
+        // and without durable persistence.
+        state.fixed_tile_overrides.insert(key.clone());
+        d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "generic-suppress",
+        )
+        .expect("suppressed generic re-tiles");
+        assert!(d5_is_tiled(&state, &domain, "wgen"));
+        assert!(
+            !super::fixed_origin_provenance(&state, &key),
+            "suppressed generic still proves nothing"
+        );
+        assert!(
+            !state.fixed_origin_overrides.contains(&key),
+            "suppress alone persists nothing durable"
+        );
+        super::clear_test_hints();
+    }
+
+    #[test]
+    fn durable_override_skips_clear_and_reserves_slot_without_auto() {
+        // D3/D4/D6/Q3 (R-SPC-04): a durable fixed-origin override keeps its
+        // tiled base through the reserved-maximized slot lane under both
+        // `core.born_maximized` values, across hint loss, and never
+        // acquires automatic origin. Generic runtime-only wins keep the
+        // existing clear rules (see override_max_keeps_clear_precedence).
+        use crate::settings::{
+            BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings,
+        };
+        for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
+            let mut state = super::rmax03_adapter_tests::test_state();
+            state.engine.set_fixed_size_admission(true);
+            let mut settings = Settings::default();
+            settings.core.born_maximized = born.to_owned();
+            state.settings_live = Some(LiveSettings::fresh(settings, None));
+            let output = "mon-a";
+            state.workspaces.ensure_output(output);
+            let ws = state.workspaces.active_id(output).expect("active");
+            let domain = d5_domain(output, &ws);
+            let key = d5_member(&mut state, output, &ws, "wmax");
+            let w1key = d5_member(&mut state, output, &ws, "w1");
+            state.fixed_tile_overrides.insert(key.clone());
+            state.fixed_origin_overrides.insert(key.clone());
+            // Hint loss: no injection, so the fresh probe reads unknown.
+            super::clear_test_hints();
+            let retained = vec![clear_retained(&key, "wmax")];
+            let cx = super::HintCx::new();
+            assert!(
+                !super::admission_clear_planned(&state, &retained[0], &cx),
+                "durable override never plans CLEAR under {born}"
+            );
+            let observed = vec![d5_observed("w1", &w1key)];
+            let rows = clear_assemble(&mut state, output, &ws, &observed, &retained);
+            assert!(
+                state.member_rects.contains_key("wmax"),
+                "durable override reserves the maximized slot under {born}"
+            );
+            let row = rows.iter().find(|row| row.token == "wmax").expect("row");
+            assert!(!row.floating, "override rides the tiled lane under {born}");
+            // Commit through the stamped handle: suppress tiles, never auto.
+            d5_assemble_and_commit(
+                &mut state,
+                output,
+                &ws,
+                &domain,
+                &observed,
+                &retained,
+                "w1",
+                "durable-commit",
+            )
+            .expect("override commits");
+            assert!(
+                d5_is_tiled(&state, &domain, "wmax"),
+                "override tiles under {born}"
+            );
+            assert!(
+                !d5_is_automatic(&state, &domain, "wmax"),
+                "override never automatic under {born}"
+            );
+            // No core-mirror assert here: on a fresh domain the seed route
+            // tiles suppressed rows without mirroring the win into the
+            // session override set (the toggle-float win path mirrors it).
+            // The adapter durable set plus the per-tick suppress stamp are
+            // the source of fixed provenance every tick; the generic core
+            // override cannot prove automatic fixed origin.
+        }
+    }
+
+    #[test]
+    fn retained_adopt_without_marker_hydrates_nothing() {
+        // D7 retained pass fails closed: a retained member row with no
+        // marker installs no override, stages no Engine commit, and takes
+        // no write. Fake HWNDs keep every native peek fail-closed.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let key = d5_member(&mut state, output, &ws, "wmax");
+        let retained = vec![clear_retained(&key, "wmax")];
+        let mut hint_cx = super::HintCx::new();
+        super::adopt_restart_markers(&mut state, &d5_me(), &[], &retained, &[], &mut hint_cx);
+        assert!(
+            !state.fixed_tile_overrides.contains(&key),
+            "no marker means no runtime override"
+        );
+        assert!(
+            !state.fixed_origin_overrides.contains(&key),
+            "no marker means no durable override"
+        );
+        assert!(
+            state.floated.is_empty() && state.sticky.is_empty(),
+            "no marker stages no intent lane"
+        );
+    }
+}
+
+#[cfg(test)]
 mod born_maximized_tests {
     use super::{born_maximized_keep_overlay_for, rmax03_adapter_tests::test_state};
     use crate::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings};
@@ -21834,7 +25210,10 @@ mod rmax03_adapter_tests {
             trace: false,
             suspended: false,
             last_summary: None,
-            log_path: std::path::PathBuf::from("test"),
+            // NUL log sink: no test asserts on log bytes, and a relative
+            // file would interleave garbage across parallel tests into the
+            // crate directory on every run.
+            log_path: std::path::PathBuf::from("NUL"),
             audit_path: None,
             keyboard: crate::snapkey::KeyboardConfig::disabled(),
             inner_gap: crate::tiling::INNER_GAP,
@@ -21899,6 +25278,11 @@ mod rmax03_adapter_tests {
             float_rects: std::collections::HashMap::new(),
             floated: std::collections::BTreeSet::new(),
             sticky: std::collections::BTreeMap::new(),
+            fixed_tile_overrides: std::collections::BTreeSet::new(),
+            fixed_origin_overrides: std::collections::BTreeSet::new(),
+            fixed_auto_seen: std::collections::BTreeSet::new(),
+            born_first_exit: std::collections::BTreeSet::new(),
+            overlay_now: std::collections::HashMap::new(),
             pending_releases: crate::workspace::PendingReleases::new(),
             pending_retry_fp: 0,
         };
@@ -22602,7 +25986,15 @@ mod restart_adoption_tests {
                 state.log_path = std::path::PathBuf::from("NUL");
                 let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
                 let observed = vec![observed(win.hwnd, &token)];
-                adopt_restart_markers(&mut state, &fake_me(), &observed, &[], &areas_for(&output));
+                let mut hint_cx = super::HintCx::new();
+                adopt_restart_markers(
+                    &mut state,
+                    &fake_me(),
+                    &observed,
+                    &[],
+                    &areas_for(&output),
+                    &mut hint_cx,
+                );
                 assert_eq!(
                     state.sticky.get(&key),
                     Some(&prior),
@@ -22624,6 +26016,350 @@ mod restart_adoption_tests {
     }
 
     #[test]
+    fn tile_override_marker_hydrates_override_without_writes_or_float() {
+        // D7 through the production preamble with a real marker: a surviving
+        // tile-override marker hydrates the runtime override set with the
+        // marker kept, stages no Engine commit, floats nothing, and takes
+        // no sticky entry. A second fresh owner re-adopts off the kept
+        // marker. Unmatched records never reach the set (fences above).
+        let win = AdoptWindow::create();
+        let pid = std::process::id();
+        let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+            .expect("member tag installs on the owned window");
+        crate::product_hide::sys::install_tile_override_marker(win.hwnd)
+            .expect("tile marker installs on the owned window");
+        for restart in 1..=2 {
+            let mut state = test_state();
+            state.log_path = std::path::PathBuf::from("NUL");
+            let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
+            let observed = vec![observed(win.hwnd, &token)];
+            let mut hint_cx = super::HintCx::new();
+            adopt_restart_markers(
+                &mut state,
+                &fake_me(),
+                &observed,
+                &[],
+                &areas_for(&output),
+                &mut hint_cx,
+            );
+            assert!(
+                state.fixed_tile_overrides.contains(&key),
+                "restart {restart}: override hydrated into the runtime set"
+            );
+            assert!(
+                !state.floated.contains(&key),
+                "restart {restart}: override never floats"
+            );
+            assert!(
+                !state.sticky.contains_key(&key),
+                "restart {restart}: override takes no sticky entry"
+            );
+            assert!(
+                !is_float(&state, &output, &active, &token),
+                "restart {restart}: adoption stages no Engine commit"
+            );
+            assert!(
+                crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+                "restart {restart}: durable marker kept for later restarts"
+            );
+        }
+    }
+
+    /// Seed admitted membership for one owned window with its REAL process
+    /// identity (not the fake adoption identity): the held fence compares
+    /// live identity, sid/session, exe, and integrity against these tables,
+    /// so only the true owner passes.
+    fn seed_real_member(
+        state: &mut super::TileLoop,
+        hwnd: u64,
+        tag: &str,
+        real: &ProcessIdentity,
+    ) -> (WindowKey, String, String, String) {
+        let key = WindowKey {
+            hwnd,
+            pid: real.pid,
+            creation: real.process_creation.clone(),
+        };
+        let token = state.tokens.token_for(hwnd, &key.creation);
+        let output = "mon-restart".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        assert!(
+            state
+                .workspaces
+                .assign(key.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(key.clone(), token.clone());
+        state.member_rects.insert(token.clone(), frame());
+        state.member_identity.insert(key.clone(), real.clone());
+        state.member_tags.insert(key.clone(), tag.to_owned());
+        (key, token, output, active)
+    }
+
+    fn retained_max(key: &WindowKey, token: &str) -> super::RetainedRow {
+        super::RetainedRow {
+            key: key.clone(),
+            token: token.to_owned(),
+            rect: Some(frame()),
+            maximized: true,
+            fullscreen: false,
+            facts: Some(crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: true,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            }),
+        }
+    }
+
+    fn runner_is_medium() -> bool {
+        // Own-process windows inherit the runner integrity level, and the
+        // held fence refuses non-medium processes before any marker read.
+        // Medium runners hydrate; elevated runners stop at the gate (the
+        // existing skip contract: refusal-shaped emptiness, never success).
+        crate::native::current_integrity_level()
+            .ok()
+            .is_some_and(crate::lifecycle::is_medium_rid)
+    }
+
+    #[test]
+    fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
+        // D7 retained pass on a real owned message-only window presented as
+        // a retained maximized member with hint loss: the production held
+        // install plus readback persists the marker success-only, then the
+        // production preamble hydrates durable+runtime with no Engine
+        // commit, no native frame/focus/style writes, no D4 latch, and no
+        // clear under both born-maximized modes. Controls: corrupt value,
+        // tag mismatch, destroyed window, settled removal, and membership
+        // prune each hydrate nothing. Message-only windows are invisible
+        // and destroyed at test end; no other window is touched.
+        use crate::settings::{
+            BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings,
+        };
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetParent, GetWindowLongW, SetPropW,
+        };
+        let real = crate::native::current_identity().expect("current identity reads");
+        let medium = runner_is_medium();
+        let win = AdoptWindow::create();
+        let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
+            .expect("member tag installs on the owned window");
+        let style_before = unsafe { GetWindowLongW(win.hwnd as usize as HWND, GWL_EXSTYLE) };
+        let parent_before = unsafe { GetParent(win.hwnd as usize as HWND) };
+        for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
+            let mut state = test_state();
+            let mut settings = Settings::default();
+            settings.core.born_maximized = born.to_owned();
+            state.settings_live = Some(LiveSettings::fresh(settings, None));
+            let (key, token, output, active) = seed_real_member(&mut state, win.hwnd, &tag, &real);
+            // Success-only production install through the held wrapper.
+            let installed = super::install_tile_override_mark_held(&state, &real, &key);
+            let mut hint_cx = super::HintCx::new();
+            // Hint loss: no injection anywhere, so every fresh probe reads
+            // unknown; hydration takes no hints at all.
+            super::clear_test_hints();
+            // Maximized members never appear in `observed`.
+            let retained = vec![retained_max(&key, &token)];
+            super::adopt_restart_markers(
+                &mut state,
+                &real,
+                &[],
+                &retained,
+                &areas_for(&output),
+                &mut hint_cx,
+            );
+            if !medium {
+                assert!(
+                    !installed,
+                    "born {born}: elevated runner refuses the install"
+                );
+                assert!(
+                    !state.fixed_tile_overrides.contains(&key)
+                        && !state.fixed_origin_overrides.contains(&key),
+                    "born {born}: elevated runner hydrates nothing"
+                );
+                continue;
+            }
+            assert!(installed, "born {born}: held install reads back");
+            assert!(
+                crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+                "born {born}: marker present"
+            );
+            assert!(
+                state.fixed_tile_overrides.contains(&key),
+                "born {born}: runtime hydrated"
+            );
+            assert!(
+                state.fixed_origin_overrides.contains(&key),
+                "born {born}: durable hydrated"
+            );
+            assert!(
+                state.fixed_auto_seen.is_empty(),
+                "born {born}: no automatic origin acquired"
+            );
+            let domain = DomainKey {
+                output: OutputId(output.clone()),
+                workspace: WorkspaceId(active.clone()),
+            };
+            assert!(
+                state.engine.session(&domain).is_none(),
+                "born {born}: hydration stages no Engine commit"
+            );
+            assert_eq!(
+                unsafe { GetWindowLongW(win.hwnd as usize as HWND, GWL_EXSTYLE) },
+                style_before,
+                "born {born}: no native restyle"
+            );
+            assert_eq!(
+                unsafe { GetParent(win.hwnd as usize as HWND) },
+                parent_before,
+                "born {born}: no reparenting"
+            );
+            let cx = super::HintCx::new();
+            assert!(
+                !super::admission_clear_planned(&state, &retained[0], &cx),
+                "born {born}: durable never plans CLEAR"
+            );
+            let rows = super::assemble_domain_rows(
+                &mut state,
+                &output,
+                &active,
+                &[],
+                &retained,
+                "adopt-positive",
+                "adopt",
+                &mut hint_cx,
+            )
+            .expect("rows assemble");
+            assert!(
+                rows.iter().any(|row| row.token == token && !row.floating),
+                "born {born}: override rides the tiled lane"
+            );
+            assert!(
+                state.member_rects.contains_key(&token),
+                "born {born}: reserved maximized slot stands"
+            );
+            // Settled removal through the production wrapper clears the
+            // marker; membership prune drops both runtime lanes.
+            super::remove_tile_override_mark_best_effort(
+                &state,
+                &real,
+                &key,
+                &state.log_path.clone(),
+                &token,
+            );
+            assert!(
+                !crate::product_hide::sys::read_tile_override_marker(win.hwnd),
+                "born {born}: settled removal clears the marker"
+            );
+            state.fixed_tile_overrides.remove(&key);
+            state.fixed_origin_overrides.remove(&key);
+            super::drop_member_state(&mut state, &key);
+            assert!(
+                !state.fixed_tile_overrides.contains(&key)
+                    && !state.fixed_origin_overrides.contains(&key),
+                "born {born}: prune drops both lanes"
+            );
+            // Re-install for the next born mode (marker removal above).
+            super::install_tile_override_mark_held(&state, &real, &key);
+        }
+        if !medium {
+            return;
+        }
+        // Corrupt value on our property name: diagnosed, no intent.
+        {
+            fn wide(s: &str) -> Vec<u16> {
+                s.encode_utf16().chain([0]).collect()
+            }
+            let win = AdoptWindow::create();
+            let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
+                .expect("member tag installs");
+            let name = wide(crate::model::TILE_OVERRIDE_PROP);
+            let ok = unsafe { SetPropW(win.hwnd as usize as HWND, name.as_ptr(), 99usize as _) };
+            assert_ne!(ok, 0, "foreign value plants on the owned window");
+            let mut state = test_state();
+            let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
+            let retained = vec![retained_max(&key, &token)];
+            let mut hint_cx = super::HintCx::new();
+            super::adopt_restart_markers(
+                &mut state,
+                &real,
+                &[],
+                &retained,
+                &areas_for(&output),
+                &mut hint_cx,
+            );
+            assert!(
+                !state.fixed_tile_overrides.contains(&key)
+                    && !state.fixed_origin_overrides.contains(&key),
+                "corrupt plants no override"
+            );
+        }
+        // Tag mismatch: the held fence refuses without the install tag.
+        {
+            let win = AdoptWindow::create();
+            let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
+                .expect("member tag installs");
+            crate::product_hide::sys::install_tile_override_marker(win.hwnd)
+                .expect("tile marker installs");
+            let mut state = test_state();
+            let (key, token, output, _) =
+                seed_real_member(&mut state, win.hwnd, "deadbeefdeadbeef", &real);
+            let retained = vec![retained_max(&key, &token)];
+            let mut hint_cx = super::HintCx::new();
+            super::adopt_restart_markers(
+                &mut state,
+                &real,
+                &[],
+                &retained,
+                &areas_for(&output),
+                &mut hint_cx,
+            );
+            assert!(
+                !state.fixed_tile_overrides.contains(&key)
+                    && !state.fixed_origin_overrides.contains(&key),
+                "tag mismatch hydrates nothing"
+            );
+            let _ = tag;
+        }
+        // Destroyed window: close refuses adoption with no state change.
+        {
+            let win = AdoptWindow::create();
+            let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
+                .expect("member tag installs");
+            crate::product_hide::sys::install_tile_override_marker(win.hwnd)
+                .expect("tile marker installs");
+            let hwnd = win.hwnd;
+            drop(win);
+            let mut state = test_state();
+            let (key, token, output, _) = seed_real_member(&mut state, hwnd, &tag, &real);
+            let retained = vec![retained_max(&key, &token)];
+            let mut hint_cx = super::HintCx::new();
+            super::adopt_restart_markers(
+                &mut state,
+                &real,
+                &[],
+                &retained,
+                &areas_for(&output),
+                &mut hint_cx,
+            );
+            assert!(
+                !state.fixed_tile_overrides.contains(&key)
+                    && !state.fixed_origin_overrides.contains(&key),
+                "destroyed window hydrates nothing"
+            );
+        }
+    }
+
+    #[test]
     fn float_marker_readopts_through_real_tileloop() {
         // An intentional-float marker re-adopts as an ordinary float with
         // the marker kept and no sticky entry.
@@ -22637,7 +26373,15 @@ mod restart_adoption_tests {
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, active) = seed_member(&mut state, win.hwnd, &tag);
         let observed = vec![observed(win.hwnd, &token)];
-        adopt_restart_markers(&mut state, &fake_me(), &observed, &[], &areas_for(&output));
+        let mut hint_cx = super::HintCx::new();
+        adopt_restart_markers(
+            &mut state,
+            &fake_me(),
+            &observed,
+            &[],
+            &areas_for(&output),
+            &mut hint_cx,
+        );
         assert!(
             state.floated.contains(&key),
             "float intent re-adopted into the runtime set"
@@ -22702,7 +26446,15 @@ mod restart_adoption_tests {
             if reverse {
                 ordered.reverse();
             }
-            adopt_restart_markers(&mut state, &fake_me(), &ordered, &[], &areas_for(&output));
+            let mut hint_cx = super::HintCx::new();
+            adopt_restart_markers(
+                &mut state,
+                &fake_me(),
+                &ordered,
+                &[],
+                &areas_for(&output),
+                &mut hint_cx,
+            );
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
             let _ = std::fs::remove_file(&log_path);
             assert_eq!(
@@ -22823,7 +26575,15 @@ mod restart_adoption_tests {
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, _active) = seed_member(&mut state, win.hwnd, &tag);
         let observed = vec![observed(win.hwnd, &token)];
-        adopt_restart_markers(&mut state, &fake_me(), &observed, &[], &areas_for(&output));
+        let mut hint_cx = super::HintCx::new();
+        adopt_restart_markers(
+            &mut state,
+            &fake_me(),
+            &observed,
+            &[],
+            &areas_for(&output),
+            &mut hint_cx,
+        );
         assert!(!state.sticky.contains_key(&key), "corrupt never sticks");
         assert!(!state.floated.contains(&key), "corrupt never floats");
     }
@@ -22837,7 +26597,15 @@ mod restart_adoption_tests {
         let hwnd = 0x00BEEF42u64;
         let (key, token, output, _active) = seed_member(&mut state, hwnd, "9f2c41aa07bd33e0");
         let observed = vec![observed(hwnd, &token)];
-        adopt_restart_markers(&mut state, &fake_me(), &observed, &[], &areas_for(&output));
+        let mut hint_cx = super::HintCx::new();
+        adopt_restart_markers(
+            &mut state,
+            &fake_me(),
+            &observed,
+            &[],
+            &areas_for(&output),
+            &mut hint_cx,
+        );
         assert!(
             !state.sticky.contains_key(&key),
             "no sticky without a marker"

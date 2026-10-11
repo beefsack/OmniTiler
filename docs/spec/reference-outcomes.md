@@ -2895,17 +2895,18 @@ Legend:
   @f0969090a810ce85937728630f9b69ed2601dbe9
   (kind gate only; dialog/splash/utility type-eligibility mapping is
   untraced with no pinned KWin source in-repo, so typed fixtures stay TBD)
-- `S-ours-spc-win` Windows candidate gates at this HEAD:
-  omnitiler:crates/tiler-windows/src/tiling_sys.rs:163-166
-  (unowned `#32770` dialogs never tile targets; owned ones excluded as
-  owned) and :3656-3666 (shell/dialog-class plus owner plus
-  tool/no-activate exclusion) and :3785-3794
-  (`admission_clear_eligible` same gates) and :4216-4235 (declared
-  `WM_GETMINMAXINFO` hints carried per Engine row; no fixed-size
-  exclusion)
-  @f0969090a810ce85937728630f9b69ed2601dbe9
-  (owned/dialog/tool/no-activate exclusion plus hint carrying; PiP and
-  standalone-splash eligibility stay TBD)
+- `S-ours-spc-win` Windows candidate/admission gates:
+  omnitiler:crates/tiler-windows/src/tiling_sys.rs `admission_clear_eligible`,
+  `query_outer_tracks`, `min_hint_for`, `hidden_hint_for`, `assemble_domain_rows`,
+  `stamp_engine_event`, `hydrate_tile_override_marker`, `writable_tokens` +
+  crates/tiler-windows/src/tiling.rs `hints_from_outer` + workspace_owner.rs
+  `fixed_admission_tests`, tiling_sys.rs `fixed_predicate_tests` /
+  `restart_adoption_tests`, settings.rs `CoreSettings.fixed_size_predicate`
+  @a41fcb5 plus runtime delivery 2026-10-11
+  ([record](../changes/archive/windows-fixed-size-admission.md)). Existing
+  owned/dialog/tool/no-activate exclusions stand; shared fixed admission is
+  enabled after lifetime/origin and no-touch wiring. Native query/game journeys,
+  PiP and standalone-splash eligibility stay TBD.
 - `S-ours-resize`
   omnitiler:crates/tiler-core/src/session/ops/resize.rs:9-48
   (nearest matching-edge-axis ancestor, adjacent shares only, Unchanged
@@ -4963,7 +4964,7 @@ minimum-size stays a supplemental file (not nested in resize).
 | Close / reflow | [close.md](reference-outcomes/close.md) | R-CLOSE-01..05 (5) | none (R-CLOSE-03..05 landed with scrolling backfill) |
 | Multi-output | [multi-output.md](reference-outcomes/multi-output.md) | R-OUT-01..07 (7) | R-OUT-07 added 2026-10-07; reference source legs filled, unsupported legs TBD; KDE item 5 R-OUT-01/04/07 delivered offline; native journey/Windows wiring pending |
 | Mouse | [mouse.md](reference-outcomes/mouse.md) | R-DRAG-01..08 + R-MOU-01..03 (11) | none (R-MOU-01..03 landed with scrolling backfill) |
-| Special windows | [special-windows.md](reference-outcomes/special-windows.md) | R-SPC-01..13 (13) | R-SPC-04/06..13 KDE implemented offline under user-selected NORMATIVE D1-D8 (User 2026-10-08; D1/D5/D6 delivered offline, D7 implementation pending); R-SPC-11/12 changed-hint/predicate/repeated-toggle and maximized-enable variants discriminate readings; native, Windows wiring and unsupported reference outcomes TBD |
+| Special windows | [special-windows.md](reference-outcomes/special-windows.md) | R-SPC-01..13 (13) | R-SPC-04/06..13 KDE and Windows implemented offline under selected D1-D8/G-05; Windows prerequisite a41fcb5 plus runtime delivery 2026-10-11. R-SPC-11/12 lifecycle/enable and R-SPC-13 fixed-origin maximized restart discriminate readings; Windows hydrated-override overlay route tentative. Native and unsupported reference outcomes TBD |
 | Activation | [activation.md](reference-outcomes/activation.md) | R-ACT-01..02 (2) | none (landed; no backfill: no prior rows) |
 | Restart / persistence | [restart-persistence.md](reference-outcomes/restart-persistence.md) | R-START-01..03 + R-CTL-01..07 + R-RST-01..04 (14) | Q3 KDE intentional membership implemented offline under user-selected NORMATIVE D1-D4 (User 2026-10-08; fixed-window tile-override persistence pending); R-RST-03/04 cover frame drift and automatic-vs-intent origin; native, Windows and unsupported reference legs TBD |
 | Column mechanics | [column-mechanics.md](reference-outcomes/column-mechanics.md) | R-COL-01..10 (10) | none (landed) |
