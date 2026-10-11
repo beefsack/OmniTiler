@@ -449,6 +449,146 @@ function readDesktopNumber(desktop: object): number | null {
     return raw;
 }
 
+// KWin 6.7 introduced per-output virtual desktops: the workspace
+// currentDesktopForScreen/setCurrentDesktopForScreen methods plus the
+// migration-only options.perOutputVirtualDesktops property. KWin 6.6
+// exposes none of them; the shared workspace.currentDesktop is then current
+// on every output. This is the single feature-detection owner: every other
+// module must use these helpers and never read the 6.7-only symbols
+// directly, so the API guard can confine them here.
+export function supportsPerOutputDesktops(surface: unknown): boolean {
+    if (typeof surface !== "object" || surface === null) {
+        return false;
+    }
+    // The read method defines the capability. Real hosts always expose both
+    // methods together; write sites still guard the setter individually and
+    // keep their existing fail-closed behavior for partial shapes.
+    return typeof readProp(surface as object, "currentDesktopForScreen") === "function";
+}
+
+export interface OutputDesktopRead {
+    readonly ref: object;
+    readonly id: string;
+}
+
+// Full per-output switch pair (read and write methods). Legacy-shared hosts
+// expose neither; partial shapes keep their historical fail-closed refusals
+// at the call sites below.
+export function hasPerOutputSwitch(surface: unknown): boolean {
+    if (typeof surface !== "object" || surface === null) {
+        return false;
+    }
+    const target = surface as object;
+    return (
+        typeof readProp(target, "currentDesktopForScreen") === "function" &&
+        typeof readProp(target, "setCurrentDesktopForScreen") === "function"
+    );
+}
+
+function readSharedDesktop(surface: object): OutputDesktopRead | null {
+    const raw = readProp(surface, "currentDesktop");
+    if (typeof raw !== "object" || raw === null) {
+        return null;
+    }
+    const id = readDesktopId(raw as object);
+    if (id === null) {
+        return null;
+    }
+    return { ref: raw as object, id };
+}
+
+// Current desktop for one output: the per-output read on 6.7+, else the
+// shared currentDesktop which is current on every output on 6.6. Null when
+// unreadable; null never counts as selected downstream.
+export function readDesktopForOutput(surface: unknown, output: object): OutputDesktopRead | null {
+    if (typeof surface !== "object" || surface === null) {
+        return null;
+    }
+    const target = surface as object;
+    const fn = readProp(target, "currentDesktopForScreen");
+    if (typeof fn === "function") {
+        let current: unknown = undefined;
+        try {
+            current = Reflect.apply(fn as (...args: ReadonlyArray<never>) => unknown, target, [output]);
+        } catch (error) {
+            void error;
+            return null;
+        }
+        if (typeof current !== "object" || current === null) {
+            return null;
+        }
+        const id = readDesktopId(current as object);
+        if (id === null) {
+            return null;
+        }
+        return { ref: current as object, id };
+    }
+    return readSharedDesktop(target);
+}
+
+// Switch one output to a desktop: the per-output setter on 6.7+, else the
+// shared currentDesktop write on legacy-shared hosts where one desktop is
+// current everywhere. A present read method with a missing setter keeps the
+// historical fail-closed false; only the full legacy shape falls back.
+export function writeDesktopForOutput(surface: unknown, desktop: object, output: object): boolean {
+    if (typeof surface !== "object" || surface === null) {
+        return false;
+    }
+    const target = surface as object;
+    const fn = readProp(target, "setCurrentDesktopForScreen");
+    if (typeof fn === "function") {
+        try {
+            Reflect.apply(fn as (...args: ReadonlyArray<never>) => unknown, target, [desktop, output]);
+            return true;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    }
+    if (supportsPerOutputDesktops(target)) {
+        return false;
+    }
+    try {
+        Reflect.set(target, "currentDesktop", desktop);
+        return true;
+    } catch (error) {
+        void error;
+        return false;
+    }
+}
+
+// Effective workspace mode for a requested mode on a live surface: a saved
+// or requested per-output mode degrades predictably to shared where the
+// per-output API is unavailable. Shared passes through unchanged.
+export function resolveEffectiveWorkspaceMode(mode: WorkspaceMode, surface: unknown): WorkspaceMode {
+    if (mode === "shared") {
+        return mode;
+    }
+    return supportsPerOutputDesktops(surface) ? mode : "shared";
+}
+
+// Migration-only strict options gate source. Missing/unreadable stays null
+// so 6.7 callers keep their exact disabled/unreadable refusal; 6.6 callers
+// refuse earlier on the unsupported API and never consult this property.
+export function readPerOutputVirtualDesktopsFlag(source: unknown): boolean | null {
+    try {
+        if (typeof source !== "object" || source === null) {
+            return null;
+        }
+        const raw = readProp(source as object, "perOutputVirtualDesktops");
+        if (raw === true) {
+            return true;
+        }
+        if (raw === false) {
+            return false;
+        }
+        return null;
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
 function outputTuple(output: object): string | null {
     const name = readProp(output, "name");
     if (!isOpaqueId(name)) {
@@ -817,6 +957,19 @@ export class WorkspaceNativeAdapter {
             raw = undefined;
         }
         this.mode = parseWorkspaceMode(raw);
+        // KWin 6.6 has no per-output virtual desktops: the shared
+        // currentDesktop is current on every output, so a saved or requested
+        // per-output mode degrades predictably to shared with one honest
+        // diagnostic. 6.7+ behavior is untouched.
+        try {
+            const effective = resolveEffectiveWorkspaceMode(this.mode, this.env.getWorkspace());
+            if (effective !== this.mode) {
+                this.logToken(`workspace-mode-degraded:${this.mode}-to-shared`);
+            }
+            this.mode = effective;
+        } catch (error) {
+            void error;
+        }
         try {
             const reader = this.env.readTilingDefault;
             this.defaultTiled = reader === undefined ? DEFAULT_TILED : parseDefaultTiled(reader());
@@ -1749,25 +1902,13 @@ export class WorkspaceNativeAdapter {
         if (surface === null) {
             return null;
         }
-        const fn = readProp(surface, "currentDesktopForScreen");
-        if (typeof fn !== "function") {
+        // Per-output read on 6.7+; the shared current desktop on 6.6 where it
+        // is current on every output.
+        const read = readDesktopForOutput(surface, output);
+        if (read === null) {
             return null;
         }
-        let current: unknown = undefined;
-        try {
-            current = Reflect.apply(fn as (...args: ReadonlyArray<never>) => unknown, surface, [output]);
-        } catch (error) {
-            void error;
-            return null;
-        }
-        if (typeof current !== "object" || current === null) {
-            return null;
-        }
-        const id = readDesktopId(current as object);
-        if (id === null) {
-            return null;
-        }
-        return { ref: current as object, id, num: readDesktopNumber(current as object) };
+        return { ref: read.ref, id: read.id, num: readDesktopNumber(read.ref) };
     }
 
     private currentShared(): DesktopEntry | null {
@@ -3101,17 +3242,9 @@ export class WorkspaceNativeAdapter {
             return false;
         }
         if (output !== undefined) {
-            const fn = readProp(surface, "setCurrentDesktopForScreen");
-            if (typeof fn !== "function") {
-                return false;
-            }
-            try {
-                Reflect.apply(fn as (...args: ReadonlyArray<unknown>) => unknown, surface, [desktop, output]);
-                return true;
-            } catch (error) {
-                void error;
-                return false;
-            }
+            // Per-output setter on 6.7+; the shared currentDesktop write on
+            // legacy-shared hosts. Partial shapes stay fail-closed inside.
+            return writeDesktopForOutput(surface, desktop, output);
         }
         try {
             Reflect.set(surface, "currentDesktop", desktop);

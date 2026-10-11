@@ -345,6 +345,10 @@ interface Workspace {
     // src/scripting/workspace_wrapper.h:
     //     Q_INVOKABLE void setCurrentDesktopForScreen(VirtualDesktop *desktop,
     //                                                 Output *output)
+    // KWin 6.7+ only: absent on KWin 6.6, where the shared currentDesktop is
+    // current on every output. Runtime code must go through the
+    // workspace-native capability seam (supportsPerOutputDesktops and
+    // friends), never this declaration directly.
     setCurrentDesktopForScreen(desktop: VirtualDesktop, output: Output): void;
     // KWin 6.7.5 src/scripting/workspace_wrapper.h:614 declares the public
     // Q_SLOT `sendClientToScreen(KWin::Window *, KWin::LogicalOutput *)`.
@@ -368,6 +372,8 @@ interface Workspace {
     // at pinned v6.7.4 source tarball
     // sha256-23p9unGqyh5SGHM7gPkKmY2E4qs25NYtDj6gA3bFgC0=.
     activeWindow: Window | null;
+    // KWin 6.7+ only: absent on KWin 6.6. Same capability-seam rule as the
+    // setter above.
     currentDesktopForScreen(output: Output): VirtualDesktop | null;
     rootTile(output: Output, desktop: VirtualDesktop): Tile | null;
     // src/scripting/workspace_wrapper.h: Q_SCRIPTABLE QRectF clientArea(

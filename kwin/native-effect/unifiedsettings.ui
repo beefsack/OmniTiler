@@ -305,7 +305,7 @@
           <cstring>workspaceModeCombo</cstring>
          </property>
         <property name="text">
-         <string>The multi-output workspace model (requires session restart):</string>
+         <string>The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):</string>
         </property>
        </widget>
       </item>

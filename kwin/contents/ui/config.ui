@@ -6,7 +6,10 @@
     <item row="0" column="0">
     <widget class="QLabel" name="label_workspaceMode">
      <property name="text">
-      <string>The multi-output workspace model</string>
+      <string>The multi-output workspace model (per-output needs KWin 6.7+; 6.6 uses shared)</string>
+     </property>
+     <property name="toolTip">
+      <string>Per-output modes need KWin 6.7 or later. On KWin 6.6 the tiler uses the shared model and logs the fallback.</string>
      </property>
     </widget>
    </item>

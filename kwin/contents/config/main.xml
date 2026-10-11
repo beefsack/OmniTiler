@@ -7,6 +7,7 @@
     <group name="">
         <entry name="workspaceMode" type="Enum">
             <label>The multi-output workspace model</label>
+            <tooltip>Per-output modes need KWin 6.7 or later. On KWin 6.6 the tiler uses the shared model and logs the fallback.</tooltip>
             <default>per-output-local</default>
             <choices>
                 <choice name="per-output-local" value="per-output-local"/>

@@ -145,7 +145,9 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
     addConfig(ActiveBorderConfig::self(), widget());
 
     m_ui.workspaceModeCombo->addItem(i18n("Per output, local"), QStringLiteral("per-output-local"));
+    m_ui.workspaceModeCombo->setItemData(0, i18n("Requires KWin 6.7 or later; KWin 6.6 uses shared"), Qt::ToolTipRole);
     m_ui.workspaceModeCombo->addItem(i18n("Global, unique"), QStringLiteral("global-unique"));
+    m_ui.workspaceModeCombo->setItemData(1, i18n("Requires KWin 6.7 or later; KWin 6.6 uses shared"), Qt::ToolTipRole);
     m_ui.workspaceModeCombo->addItem(i18n("Shared"), QStringLiteral("shared"));
 
     m_ui.sameAxisMoveCombo->addItem(i18n("Group with neighbor"), QStringLiteral("group-with-neighbor"));

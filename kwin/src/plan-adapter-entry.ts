@@ -58,7 +58,7 @@ import { processGeneration } from "./tray-publisher";
 import { PLAN_SOURCE_REV } from "./source-rev";
 import { connectSignal, readSignal } from "./signal-capability";
 import { KWIN_TRACE_ENABLED } from "./trace";
-import { WorkspaceNativeAdapter, parseDefaultTiled, workspaceShortcutCatalog } from "./workspace-native";
+import { WorkspaceNativeAdapter, hasPerOutputSwitch, parseDefaultTiled, readDesktopForOutput, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops, writeDesktopForOutput, workspaceShortcutCatalog } from "./workspace-native";
 import {
     WORKSPACE_SEND_DBUS_SERVICE,
     WORKSPACE_SEND_START_FLAGS,
@@ -653,10 +653,9 @@ function readOutputTopology(liveWorkspace: unknown): OutputTopologyEntry[] | nul
         if (screens === null || screens.length === 0 || screens.length > MAX_LIST) {
             return null;
         }
-        const currentFn = readProp(surface, "currentDesktopForScreen");
-        if (typeof currentFn !== "function") {
-            return null;
-        }
+        // Current desktop per output via the workspace-native capability
+        // seam: the per-output read on 6.7+, the shared currentDesktop (then
+        // current on every output) on legacy-shared hosts. Null fail-closed.
         const entries: OutputTopologyEntry[] = [];
         for (const item of screens) {
             if (typeof item !== "object" || item === null) {
@@ -667,25 +666,12 @@ function readOutputTopology(liveWorkspace: unknown): OutputTopologyEntry[] | nul
             if (!isOpaqueId(nameRaw)) {
                 return null;
             }
-            let desktop: unknown = undefined;
-            try {
-                desktop = Reflect.apply(
-                    currentFn as (...args: ReadonlyArray<never>) => unknown,
-                    surface,
-                    [ref],
-                );
-            } catch (error) {
-                void error;
+            const read = readDesktopForOutput(surface, ref);
+            if (read === null) {
                 return null;
             }
-            if (typeof desktop !== "object" || desktop === null) {
-                return null;
-            }
-            const desktopRef = desktop as object;
-            const desktopIdRaw = readProp(desktopRef, "id");
-            if (!isOpaqueId(desktopIdRaw)) {
-                return null;
-            }
+            const desktopRef = read.ref;
+            const desktopIdRaw = read.id;
             // FULL output rectangle: panel gaps must not break adjacency.
             const bounds = readFullOutputRect(ref);
             if (bounds === null) {
@@ -927,26 +913,10 @@ function selectMigrationAdjacentOutput(
 // migration only (R-WS-12): true passes, false refuses, anything unreadable
 // refuses. Existing mode behavior is untouched and no native option/config
 // write ever happens here. The source is the override when tests supply one,
-// else the live lexical KWin `options` global.
-function readPerOutputVirtualDesktopsFlag(source: unknown): boolean | null {
-    try {
-        if (typeof source !== "object" || source === null) {
-            return null;
-        }
-        const raw = readProp(source as object, "perOutputVirtualDesktops");
-        if (raw === true) {
-            return true;
-        }
-        if (raw === false) {
-            return false;
-        }
-        return null;
-    } catch (error) {
-        void error;
-        return null;
-    }
-}
-
+// else the live lexical KWin `options` global. The reader itself lives in the
+// workspace-native capability seam (imported above) so the 6.7-only property
+// stays confined there; on legacy-shared hosts the policy gate below refuses
+// on the unsupported API before consulting it.
 export interface MigrateWorkspacePolicy {
     readonly mode: string;
     readonly perOutput: boolean | null;
@@ -1775,26 +1745,14 @@ export function observeSendTarget(
                 return null;
             }
         } else {
-            const currentFn = readProp(surface, "currentDesktopForScreen");
-            if (typeof currentFn !== "function") {
+            // Capability seam: per-output source on 6.7+, shared current on
+            // legacy-shared hosts.
+            const read = readDesktopForOutput(surface, outputRef);
+            if (read === null) {
                 return null;
             }
-            let sourceDesktop: unknown = undefined;
-            try {
-                sourceDesktop = Reflect.apply(currentFn as (...args: ReadonlyArray<never>) => unknown, surface, [outputRef]);
-            } catch (error) {
-                void error;
-                return null;
-            }
-            if (typeof sourceDesktop !== "object" || sourceDesktop === null) {
-                return null;
-            }
-            sourceDesktopRef = sourceDesktop as object;
-            const sourceIdRaw = readProp(sourceDesktopRef, "id");
-            if (!isOpaqueId(sourceIdRaw)) {
-                return null;
-            }
-            sourceWorkspace = sourceIdRaw as string;
+            sourceDesktopRef = read.ref;
+            sourceWorkspace = read.id;
         }
         let targetDesktopRef: object | null = null;
         let targetExists = false;
@@ -1916,22 +1874,11 @@ export function observeSendTarget(
                 }
             };
             if (pinnedSourceWorkspace !== undefined) {
-                const getter = readProp(surface, "currentDesktopForScreen");
-                if (typeof getter === "function") {
-                    let curRaw: unknown = undefined;
-                    try {
-                        curRaw = Reflect.apply(
-                            getter as (...args: ReadonlyArray<never>) => unknown,
-                            surface,
-                            [outputRef],
-                        );
-                    } catch (error) {
-                        void error;
-                        curRaw = undefined;
-                    }
-                    if (typeof curRaw === "object" && curRaw !== null) {
-                        resolveCurrent(curRaw as object);
-                    }
+                // Capability seam: per-output read on 6.7+, shared current
+                // on legacy-shared hosts. Diagnostic-only, never gates.
+                const read = readDesktopForOutput(surface, outputRef);
+                if (read !== null) {
+                    resolveCurrent(read.ref);
                 }
             } else if (sourceDesktopRef !== null) {
                 resolveCurrent(sourceDesktopRef);
@@ -2228,9 +2175,12 @@ export function observeHiddenDomains(
         if (screens === null || screens.length === 0 || desktops === null || desktops.length === 0) {
             return [];
         }
-        const currentFn = readProp(surface, "currentDesktopForScreen");
+        // Foreground current reads go through the workspace-native
+        // capability seam: the per-output read on 6.7+, the shared
+        // currentDesktop (then current on every output) on legacy-shared
+        // hosts.
         const lister = readProp(surface, "windowList");
-        if (typeof currentFn !== "function" || typeof lister !== "function") {
+        if (typeof lister !== "function") {
             return [];
         }
         const screenEntries: Array<{ ref: object; name: string }> = [];
@@ -2279,22 +2229,9 @@ export function observeHiddenDomains(
                 if (typeof activeWindowOutput === "object" && activeWindowOutput !== null) {
                     const activeWindowNameRaw = readProp(activeWindowOutput as object, "name");
                     if (isOpaqueId(activeWindowNameRaw)) {
-                        let activeWindowDesktop: unknown = undefined;
-                        try {
-                            activeWindowDesktop = Reflect.apply(
-                                currentFn as (...args: ReadonlyArray<never>) => unknown,
-                                surface,
-                                [activeWindowOutput],
-                            );
-                        } catch (error) {
-                            void error;
-                            activeWindowDesktop = undefined;
-                        }
-                        if (typeof activeWindowDesktop === "object" && activeWindowDesktop !== null) {
-                            const activeWindowDesktopIdRaw = readProp(activeWindowDesktop as object, "id");
-                            if (isOpaqueId(activeWindowDesktopIdRaw)) {
-                                foregroundKey = `${activeWindowNameRaw as string}\u0000${activeWindowDesktopIdRaw as string}`;
-                            }
+                        const activeWindowRead = readDesktopForOutput(surface, activeWindowOutput as object);
+                        if (activeWindowRead !== null) {
+                            foregroundKey = `${activeWindowNameRaw as string}\u0000${activeWindowRead.id}`;
                         }
                     }
                 }
@@ -2311,25 +2248,11 @@ export function observeHiddenDomains(
                 return [];
             }
             const activeName = activeNameRaw as string;
-            let activeCurrent: unknown = undefined;
-            try {
-                activeCurrent = Reflect.apply(
-                    currentFn as (...args: ReadonlyArray<never>) => unknown,
-                    surface,
-                    [activeScreenRef],
-                );
-            } catch (error) {
-                void error;
-                activeCurrent = undefined;
-            }
-            if (typeof activeCurrent !== "object" || activeCurrent === null) {
+            const activeRead = readDesktopForOutput(surface, activeScreenRef);
+            if (activeRead === null) {
                 return [];
             }
-            const activeCurrentIdRaw = readProp(activeCurrent as object, "id");
-            if (!isOpaqueId(activeCurrentIdRaw)) {
-                return [];
-            }
-            foregroundKey = `${activeName}\u0000${activeCurrentIdRaw as string}`;
+            foregroundKey = `${activeName}\u0000${activeRead.id}`;
         }
         let rawList: unknown = undefined;
         try {
@@ -2853,31 +2776,18 @@ function observeNative(
             return null;
         }
         const domainOutput = outputNameRaw as string;
-        const currentFn = readProp(surface, "currentDesktopForScreen");
+        // Capability seam: per-output desktop on 6.7+, shared current (then
+        // current on every output) on legacy-shared hosts.
         const areaFn = readProp(surface, "clientArea");
-        if (typeof currentFn !== "function" || typeof areaFn !== "function") {
+        if (typeof areaFn !== "function") {
             return null;
         }
-        let desktop: unknown = undefined;
-        try {
-            desktop = Reflect.apply(
-                currentFn as (...args: ReadonlyArray<never>) => unknown,
-                surface,
-                [activeOutput],
-            );
-        } catch (error) {
-            void error;
+        const desktopRead = readDesktopForOutput(surface, activeOutput as object);
+        if (desktopRead === null) {
             return null;
         }
-        if (typeof desktop !== "object" || desktop === null) {
-            return null;
-        }
-        const desktopRef = desktop as object;
-        const desktopIdRaw = readProp(desktopRef, "id");
-        if (!isOpaqueId(desktopIdRaw)) {
-            return null;
-        }
-        const domainWorkspace = desktopIdRaw as string;
+        const desktopRef = desktopRead.ref;
+        const domainWorkspace = desktopRead.id;
         let area: unknown = undefined;
         try {
             // PlacementArea (0): per-output usable area. WorkArea (5) is
@@ -3254,9 +3164,11 @@ export function observeDirectionalDomain(
             }
             return noTarget;
         }
-        const currentFn = readProp(surface, "currentDesktopForScreen");
+        // Per-output currents resolve inside readOutputTopology through the
+        // capability seam (shared current on legacy-shared hosts); only the
+        // area function is required here.
         const areaFn = readProp(surface, "clientArea");
-        if (typeof currentFn !== "function" || typeof areaFn !== "function") {
+        if (typeof areaFn !== "function") {
             return invalid;
         }
         const entries = readOutputTopology(liveWorkspace);
@@ -3745,31 +3657,14 @@ export function observeOutputSendTarget(
         if (targetOutputRef === null) {
             return null;
         }
-        const currentFn = readProp(surface, "currentDesktopForScreen");
-        if (typeof currentFn !== "function") {
-            return null;
-        }
+        // Capability seam: per-output currents on 6.7+, shared current on
+        // legacy-shared hosts. Null fail-closed.
         const readCurrent = (outputRef: object): { ref: object; id: string } | null => {
-            let desktop: unknown = undefined;
-            try {
-                desktop = Reflect.apply(
-                    currentFn as (...args: ReadonlyArray<never>) => unknown,
-                    surface,
-                    [outputRef],
-                );
-            } catch (error) {
-                void error;
+            const read = readDesktopForOutput(surface, outputRef);
+            if (read === null) {
                 return null;
             }
-            if (typeof desktop !== "object" || desktop === null) {
-                return null;
-            }
-            const desktopRef = desktop as object;
-            const desktopIdRaw = readProp(desktopRef, "id");
-            if (!isOpaqueId(desktopIdRaw)) {
-                return null;
-            }
-            return { ref: desktopRef, id: desktopIdRaw as string };
+            return { ref: read.ref, id: read.id };
         };
         const sourceCurrent = readCurrent(sourceOutputRef);
         const targetCurrent = readCurrent(targetOutputRef);
@@ -6016,22 +5911,18 @@ function startPlanAdapterEntryOnce(
                         break;
                     }
                 }
-                const setter = readProp(surface, "setCurrentDesktopForScreen");
-                const getter = readProp(surface, "currentDesktopForScreen");
-                if (outputRef === null || desktopRef === null || typeof setter !== "function" || typeof getter !== "function") {
+                // Capability seam: per-output switch on 6.7+, shared
+                // write/readback on legacy-shared hosts where one desktop is
+                // current everywhere. Whole-workspace migration itself is
+                // refused upstream on 6.6, so this only runs where supported.
+                if (outputRef === null || desktopRef === null) {
                     return false;
                 }
-                Reflect.apply(setter as (...args: ReadonlyArray<unknown>) => unknown, surface, [desktopRef, outputRef]);
-                let current: unknown = undefined;
-                try {
-                    current = Reflect.apply(getter as (...args: ReadonlyArray<unknown>) => unknown, surface, [outputRef]);
-                } catch (error) {
-                    void error;
+                if (!writeDesktopForOutput(surface, desktopRef, outputRef)) {
                     return false;
                 }
-                return (
-                    typeof current === "object" && current !== null && readProp(current as object, "id") === desktopId
-                );
+                const read = readDesktopForOutput(surface, outputRef);
+                return read !== null && read.id === desktopId;
             } catch (error) {
                 void error;
                 return false;
@@ -6101,8 +5992,32 @@ function startPlanAdapterEntryOnce(
                     emitNativeFollow(diagnostic, "native-switch-before", "unavailable", nativeDetail("unknown", "void", -1, -1, selection, "unknown", screens.length, -1, -1, -1, "none"));
                     return false;
                 }
-                const setter = readProp(surface, "setCurrentDesktopForScreen");
-                if (typeof setter !== "function") {
+                // Legacy-shared hosts (KWin 6.6) have no per-output switch:
+                // one shared currentDesktop write covers every output and one
+                // shared readback confirms it. Partial shapes keep the
+                // api-missing refusal below.
+                if (!supportsPerOutputDesktops(surface)) {
+                    const legacyIdRaw = readProp(desktopRef, "id");
+                    if (!isOpaqueId(legacyIdRaw)) {
+                        emitNativeFollow(diagnostic, "native-switch-before", "target-unreadable", nativeDetail("missing", "void", -1, -1, selection, "unknown", screens.length, -1, -1, -1, "none"));
+                        return false;
+                    }
+                    const legacyTargetId = legacyIdRaw as string;
+                    const legacyDesktops = decodeList(readProp(surface, "desktops"), MAX_DESKTOPS);
+                    const legacyOrdinal = legacyDesktops === null ? -1 : legacyDesktops.indexOf(desktopRef);
+                    emitNativeFollow(diagnostic, "native-switch-before", "ready", nativeDetail("missing", "void", -1, screens.length, selection, "shared", screens.length, legacyOrdinal, -1, -1, "none"));
+                    emitNativeFollow(diagnostic, "native-switch-call", "attempted", nativeDetail("missing", "void", 0, screens.length, selection, "shared", screens.length, legacyOrdinal, -1, -1, "none"));
+                    if (!writeDesktopForOutput(surface, desktopRef, activeOutput)) {
+                        emitNativeFollow(diagnostic, "native-switch-call", "unconfirmed", nativeDetail("missing", "void", 0, screens.length, selection, "shared", screens.length, legacyOrdinal, -1, -1, "none"));
+                        return false;
+                    }
+                    emitNativeFollow(diagnostic, "native-switch-call", "returned-void", nativeDetail("missing", "void", 0, screens.length, selection, "shared", screens.length, legacyOrdinal, -1, -1, "none"));
+                    const legacyRead = readDesktopForOutput(surface, activeOutput);
+                    const legacyEq = legacyRead !== null && legacyRead.id === legacyTargetId ? 1 : 0;
+                    emitNativeFollow(diagnostic, "native-switch-readback", legacyEq === 1 ? "observed" : "mismatch", nativeDetail("missing", "void", 0, screens.length, selection, "shared", screens.length, legacyOrdinal, legacyEq, -1, "none"));
+                    return legacyEq === 1;
+                }
+                if (!hasPerOutputSwitch(surface)) {
                     emitNativeFollow(diagnostic, "native-switch-before", "api-missing", nativeDetail("missing", "void", -1, -1, selection, "unknown", screens.length, -1, -1, -1, "none"));
                     return false;
                 }
@@ -6129,21 +6044,14 @@ function startPlanAdapterEntryOnce(
                 emitNativeFollow(diagnostic, "native-switch-before", "ready", nativeDetail("available", "void", -1, selected.length, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
                 const confirmCurrent = (output: object, callOrdinal: number): boolean => {
                     try {
-                        const getter = readProp(surface, "currentDesktopForScreen");
-                        if (typeof getter !== "function") {
-                            emitNativeFollow(diagnostic, "native-switch-readback", "api-missing", nativeDetail("missing", "void", callOrdinal, selected.length, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
-                            return false;
-                        }
-                        const current = Reflect.apply(
-                            getter as (...args: ReadonlyArray<unknown>) => unknown,
-                            surface,
-                            [output],
-                        );
-                        if (typeof current !== "object" || current === null) {
+                        // Capability seam (per-output on 6.7+, shared on
+                        // legacy-shared hosts, which never reach here).
+                        const read = readDesktopForOutput(surface, output);
+                        if (read === null) {
                             emitNativeFollow(diagnostic, "native-switch-readback", "unreadable", nativeDetail("available", "void", callOrdinal, selected.length, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
                             return false;
                         }
-                        const currentEq = readProp(current as object, "id") === targetId ? 1 : 0;
+                        const currentEq = read.id === targetId ? 1 : 0;
                         emitNativeFollow(diagnostic, "native-switch-readback", currentEq === 1 ? "observed" : "mismatch", nativeDetail("available", "void", callOrdinal, selected.length, selection, mode, screens.length, targetOrdinal, currentEq, -1, "none"));
                         return currentEq === 1;
                     } catch (error) {
@@ -6160,7 +6068,9 @@ function startPlanAdapterEntryOnce(
                             return false;
                         }
                         emitNativeFollow(diagnostic, "native-switch-call", "attempted", nativeDetail("available", "void", index, selected.length, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
-                        Reflect.apply(setter as (...args: ReadonlyArray<unknown>) => unknown, surface, [desktopRef, output]);
+                        if (!writeDesktopForOutput(surface, desktopRef, output as object)) {
+                            return false;
+                        }
                         emitNativeFollow(diagnostic, "native-switch-call", "returned-void", nativeDetail("available", "void", index, selected.length, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
                     }
                     for (let index = 0; index < screens.length; index += 1) {
@@ -6176,7 +6086,9 @@ function startPlanAdapterEntryOnce(
                     return true;
                 }
                 emitNativeFollow(diagnostic, "native-switch-call", "attempted", nativeDetail("available", "void", 0, 1, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
-                Reflect.apply(setter as (...args: ReadonlyArray<unknown>) => unknown, surface, [desktopRef, activeOutput]);
+                if (!writeDesktopForOutput(surface, desktopRef, activeOutput)) {
+                    return false;
+                }
                 emitNativeFollow(diagnostic, "native-switch-call", "returned-void", nativeDetail("available", "void", 0, 1, selection, mode, screens.length, targetOrdinal, -1, -1, "none"));
                 return confirmCurrent(activeOutput, 0);
             } catch (error) {
@@ -6491,9 +6403,11 @@ function startPlanAdapterEntryOnce(
             if (!moverOnDesktop(mover, targetRef)) {
                 return "arrival-unconfirmed";
             }
-            const setter = readProp(surface, "setCurrentDesktopForScreen");
-            const getter = readProp(surface, "currentDesktopForScreen");
-            if (typeof setter !== "function" || typeof getter !== "function") {
+            // Switch capability: legacy-shared hosts (KWin 6.6) use one shared
+            // write/readback; partial shapes keep native-unavailable. The
+            // helpers stay fail-closed, so 6.7+ behavior is unchanged.
+            const legacySharedSwitch = !supportsPerOutputDesktops(surface);
+            if (!legacySharedSwitch && !hasPerOutputSwitch(surface)) {
                 return "native-unavailable";
             }
             const shared = workspaceNative.getMode() === "shared";
@@ -6513,20 +6427,11 @@ function startPlanAdapterEntryOnce(
                 return "native-unavailable";
             }
             for (const output of selected) {
-                try {
-                    Reflect.apply(setter as (...args: ReadonlyArray<unknown>) => unknown, surface, [targetRef, output]);
-                } catch (error) {
-                    void error;
+                if (!writeDesktopForOutput(surface, targetRef, output)) {
                     return "switch-unconfirmed";
                 }
-                let current: unknown = undefined;
-                try {
-                    current = Reflect.apply(getter as (...args: ReadonlyArray<unknown>) => unknown, surface, [output]);
-                } catch (error) {
-                    void error;
-                    return "switch-unconfirmed";
-                }
-                if (typeof current !== "object" || current === null || readProp(current as object, "id") !== targetId) {
+                const read = readDesktopForOutput(surface, output);
+                if (read === null || read.id !== targetId) {
                     return "switch-unconfirmed";
                 }
             }
@@ -6982,20 +6887,13 @@ function startPlanAdapterEntryOnce(
                 }
                 const moved = transferred && writeMoverDesktops(mover, targetRef);
                 // Source-visibility read for the stay claim below: the live
-                // current workspace on the recording output.
+                // current workspace on the recording output (shared current
+                // on legacy-shared hosts). Unreadable never counts as stayed.
                 let sourceSelected = false;
                 try {
-                    const getter = readProp(surface, "currentDesktopForScreen");
-                    if (typeof getter === "function" && sourceOutputRef !== null) {
-                        const current = Reflect.apply(
-                            getter as (...args: ReadonlyArray<never>) => unknown,
-                            surface,
-                            [sourceOutputRef],
-                        );
-                        sourceSelected =
-                            typeof current === "object" &&
-                            current !== null &&
-                            readProp(current as object, "id") === probed.sourceWorkspace;
+                    if (sourceOutputRef !== null) {
+                        const read = readDesktopForOutput(surface, sourceOutputRef);
+                        sourceSelected = read !== null && read.id === probed.sourceWorkspace;
                     }
                 } catch (error) {
                     void error;
@@ -7119,6 +7017,18 @@ function startPlanAdapterEntryOnce(
                 }
                 return;
             }
+            // Legacy-shared hosts (KWin 6.6) expose no per-output API: refuse
+            // as unsupported without consulting the absent options property.
+            // A missing property on 6.7+ below stays a genuine unreadable.
+            if (!supportsPerOutputDesktops(liveWorkspace)) {
+                const outcome = "per-output-unsupported";
+                try {
+                    log(`omnitiler:route-diag component=workspace-migrate stage=entry correlation= generation=${String(overrides.generation)} revision=0 diag_seq=-1 event=workspace-migrate outcome=${outcome} follow=not-reached gate=pre-commit phase=entry reason=${outcome} req_ord=-1 inflight_stage=idle`);
+                } catch (error) {
+                    void error;
+                }
+                return;
+            }
             if (policy.perOutput !== true) {
                 const outcome = policy.perOutput === false ? "per-output-disabled" : "per-output-unreadable";
                 try {
@@ -7174,20 +7084,10 @@ function startPlanAdapterEntryOnce(
     ): string => {
         try {
             try {
-                const getter = readProp(surface, "currentDesktopForScreen");
-                if (typeof getter !== "function") {
-                    return "arrival-unconfirmed";
-                }
-                const current = Reflect.apply(
-                    getter as (...args: ReadonlyArray<never>) => unknown,
-                    surface,
-                    [targetOutputRef],
-                );
-                if (
-                    typeof current !== "object" ||
-                    current === null ||
-                    readProp(current as object, "id") !== targetWorkspace
-                ) {
+                // Capability seam: per-output reproof on 6.7+, shared current
+                // on legacy-shared hosts. Anything unreadable refuses.
+                const read = readDesktopForOutput(surface, targetOutputRef);
+                if (read === null || read.id !== targetWorkspace) {
                     return "arrival-unconfirmed";
                 }
             } catch (error) {

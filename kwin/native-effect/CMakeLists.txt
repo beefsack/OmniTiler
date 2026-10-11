@@ -12,15 +12,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # distro/Nix settings-only consumers configure with
 # -DOMNITILER_BUILD_EFFECT=OFF (needs only ECM 6.24 + Qt6/KF6),
 # and effect-only companions with
-# -DOMNITILER_BUILD_SETTINGS=OFF.
+# -DOMNITILER_BUILD_SETTINGS=OFF. The ECM floor is 6.24 everywhere (the
+# lowest tested extra-cmake-modules) and the effect requires KWin 6.6+
+# headers; the KWin script itself feature-detects the 6.7-only per-output
+# workspace API at runtime and degrades to shared on 6.6.
 option(OMNITILER_BUILD_EFFECT "Build the ABI-bound KWin effect" ON)
 option(OMNITILER_BUILD_SETTINGS "Build the KWin-independent settings KCMs" ON)
 
-if(OMNITILER_BUILD_EFFECT)
-    find_package(ECM 6.26.0 REQUIRED NO_MODULE)
-else()
-    find_package(ECM 6.24.0 REQUIRED NO_MODULE)
-endif()
+find_package(ECM 6.24.0 REQUIRED NO_MODULE)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH})
 
 include(KDEInstallDirs)
@@ -32,7 +31,7 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Core DBus Gui Widgets)
 
 if(OMNITILER_BUILD_EFFECT)
-    find_package(KWin REQUIRED)
+    find_package(KWin 6.6.0 REQUIRED)
 endif()
 find_package(KF6CoreAddons REQUIRED)
 find_package(KF6Config REQUIRED)

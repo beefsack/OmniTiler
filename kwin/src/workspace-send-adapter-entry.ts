@@ -27,6 +27,7 @@ import { normalizeNativeId } from "./native-id";
 import { decodeList } from "./qml-list";
 import { readDomainGaps } from "./domain-gap";
 import { connectSignal, readSignal } from "./signal-capability";
+import { hasPerOutputSwitch, readDesktopForOutput, writeDesktopForOutput } from "./workspace-native";
 import {
     WORKSPACE_SEND_DBUS_SERVICE,
     WORKSPACE_SEND_START_METHOD,
@@ -268,25 +269,14 @@ function observeNative(
                 return null;
             }
         } else {
-            const currentFn = readProp(surface, "currentDesktopForScreen");
-            if (typeof currentFn !== "function") {
+            // Capability seam: per-output source on 6.7+, shared current on
+            // legacy-shared hosts.
+            const read = readDesktopForOutput(surface, outputRef);
+            if (read === null) {
                 return null;
             }
-            let sourceDesktop: unknown = undefined;
-            try {
-                sourceDesktop = Reflect.apply(currentFn as (...args: ReadonlyArray<never>) => unknown, surface, [outputRef]);
-            } catch (error) {
-                void error;
-                return null;
-            }
-            if (typeof sourceDesktop !== "object" || sourceDesktop === null) {
-                return null;
-            }
-            sourceDesktopRef = sourceDesktop as object;
-            sourceWorkspace = readDesktopId(sourceDesktopRef);
-            if (sourceWorkspace === null) {
-                return null;
-            }
+            sourceDesktopRef = read.ref;
+            sourceWorkspace = read.id;
         }
         let targetDesktopRef: object | null = null;
         let targetExists = false;
@@ -323,21 +313,11 @@ function observeNative(
         // null never counts as selected downstream.
         let currentWorkspace: string | null = null;
         try {
-            const getter = readProp(surface, "currentDesktopForScreen");
-            if (typeof getter === "function") {
-                let curRaw: unknown = undefined;
-                try {
-                    curRaw = Reflect.apply(getter as (...args: ReadonlyArray<never>) => unknown, surface, [outputRef]);
-                } catch (error) {
-                    void error;
-                    curRaw = undefined;
-                }
-                if (typeof curRaw === "object" && curRaw !== null) {
-                    const curIdRaw = readDesktopId(curRaw as object);
-                    if (curIdRaw !== null) {
-                        currentWorkspace = curIdRaw;
-                    }
-                }
+            // Capability seam: per-output read on 6.7+, shared current on
+            // legacy-shared hosts. Null never counts as selected downstream.
+            const read = readDesktopForOutput(surface, outputRef);
+            if (read !== null) {
+                currentWorkspace = read.id;
             }
         } catch (error) {
             void error;
@@ -669,16 +649,14 @@ export function startWorkspaceSendAdapterEntry(
         switchToTarget: (desktopRef) => {
             try {
                 const surface = liveWorkspace as Record<string, unknown>;
-                const setter = readProp(surface, "setCurrentDesktopForScreen");
+                const screens = decodeList(readProp(surface, "screens"), MAX_LIST);
+                const first = screens?.[0];
+                const output = typeof first === "object" && first !== null ? (first as object) : null;
                 // Dev-only harnesses often lack per-screen setters; fall back
-                // to the shared currentDesktop write when present.
-                if (typeof setter === "function") {
-                    const screens = decodeList(readProp(surface, "screens"), MAX_LIST);
-                    const first = screens?.[0];
-                    if (typeof first === "object" && first !== null) {
-                        Reflect.apply(setter as (...args: ReadonlyArray<unknown>) => unknown, surface, [desktopRef, first]);
-                        return true;
-                    }
+                // to the shared currentDesktop write when present. Capability
+                // seam owns the 6.7-only method reads.
+                if (output !== null && hasPerOutputSwitch(surface)) {
+                    return writeDesktopForOutput(surface, desktopRef, output);
                 }
                 if (Object.prototype.hasOwnProperty.call(surface, "currentDesktop")) {
                     Reflect.set(surface, "currentDesktop", desktopRef);
