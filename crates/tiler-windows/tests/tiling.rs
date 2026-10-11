@@ -2242,37 +2242,46 @@ fn live_overlay_flags_on_a_null_handle_fall_back_without_touching_windows() {
 }
 
 #[test]
-fn default_seeded_track_converts_but_zero_query_stays_unknown() {
+fn default_seeded_track_converts_and_zero_bounds_ride_unset_per_axis() {
     // A correctly seeded system-default track (positive, in-bound) converts
     // 1:1 with zero insets: an app that leaves the seeded default untouched
     // reports a usable hint, never a fabricated absence. A zero return (query
     // failure) stays unknown: the native path ignores the struct entirely.
+    // Explicit zero bounds ride as unset per axis (G-05), never as unknown:
+    // per-axis normalization keeps the usable sibling and transports the
+    // zero so the shared predicate tells partial-zero from missing.
     let zero = FrameInsets {
         left: 0,
         top: 0,
         right: 0,
         bottom: 0,
     };
-    assert_eq!(visible_min_from_outer(160, 40, zero), Some((160, 40)));
-    assert_eq!(normalize_min_track(160, 40), Some((160, 40)));
-    assert_eq!(visible_min_from_outer(0, 0, zero), None);
-    assert!(min_hints_from_outer(0, 0, zero).is_empty());
+    assert_eq!(visible_min_from_outer(160, 40, zero), (Some(160), Some(40)));
+    assert_eq!(normalize_min_track(160, 40), (Some(160), Some(40)));
+    assert_eq!(visible_min_from_outer(0, 0, zero), (Some(0), Some(0)));
+    let hints = min_hints_from_outer(0, 0, zero);
+    assert_eq!((hints.min_w, hints.min_h), (Some(0), Some(0)));
+    assert_eq!((hints.max_w, hints.max_h), (None, None));
 }
 
 #[test]
-fn min_track_normalization_rejects_invalid() {
+fn min_track_normalization_rejects_invalid_per_axis() {
     // Valid outer track sizes pass through untouched.
-    assert_eq!(normalize_min_track(880, 625), Some((880, 625)));
-    assert_eq!(normalize_min_track(1, 1), Some((1, 1)));
-    assert_eq!(normalize_min_track(16384, 16384), Some((16384, 16384)));
-    // Zero, negative, and absurd values mean no usable minimum: unknown, not
-    // a zero floor.
-    assert_eq!(normalize_min_track(0, 625), None);
-    assert_eq!(normalize_min_track(880, 0), None);
-    assert_eq!(normalize_min_track(-8, 625), None);
-    assert_eq!(normalize_min_track(880, -8), None);
-    assert_eq!(normalize_min_track(16385, 625), None);
-    assert_eq!(normalize_min_track(880, i32::MAX), None);
+    assert_eq!(normalize_min_track(880, 625), (Some(880), Some(625)));
+    assert_eq!(normalize_min_track(1, 1), (Some(1), Some(1)));
+    assert_eq!(
+        normalize_min_track(16384, 16384),
+        (Some(16384), Some(16384))
+    );
+    // Explicit zeros ride as unset per axis (G-05), never discarded.
+    assert_eq!(normalize_min_track(0, 625), (Some(0), Some(625)));
+    assert_eq!(normalize_min_track(880, 0), (Some(880), Some(0)));
+    // Negative, sentinel, and absurd values mean unknown on that axis only:
+    // the usable sibling still converts.
+    assert_eq!(normalize_min_track(-8, 625), (None, Some(625)));
+    assert_eq!(normalize_min_track(880, -8), (Some(880), None));
+    assert_eq!(normalize_min_track(16385, 625), (None, Some(625)));
+    assert_eq!(normalize_min_track(880, i32::MAX), (Some(880), None));
 }
 
 #[test]
@@ -2285,7 +2294,10 @@ fn visible_min_conversion_matches_known_apps() {
         right: 8,
         bottom: 4,
     };
-    assert_eq!(visible_min_from_outer(880, 625, paint), Some((864, 617)));
+    assert_eq!(
+        visible_min_from_outer(880, 625, paint),
+        (Some(864), Some(617))
+    );
     let hints = min_hints_from_outer(880, 625, paint);
     assert_eq!(hints.min_w, Some(864));
     assert_eq!(hints.min_h, Some(617));
@@ -2299,27 +2311,33 @@ fn visible_min_conversion_matches_known_apps() {
         right: 7,
         bottom: 4,
     };
-    assert_eq!(visible_min_from_outer(415, 253, notepad), Some((401, 246)));
+    assert_eq!(
+        visible_min_from_outer(415, 253, notepad),
+        (Some(401), Some(246))
+    );
     let hints = min_hints_from_outer(415, 253, notepad);
     assert_eq!(hints.min_w, Some(401));
     assert_eq!(hints.min_h, Some(246));
 }
 
 #[test]
-fn visible_min_unknown_when_invalid_or_swallowed_by_frame() {
+fn visible_min_unknown_axes_convert_independently() {
     let insets = FrameInsets {
         left: 8,
         top: 4,
         right: 8,
         bottom: 4,
     };
-    // Invalid track sizes carry no hint.
-    assert_eq!(visible_min_from_outer(0, 625, insets), None);
-    assert!(min_hints_from_outer(0, 625, insets).is_empty());
+    // An explicit-zero axis rides unset while its usable sibling converts;
+    // only fully unknown pairs stay empty.
+    assert_eq!(visible_min_from_outer(0, 625, insets), (Some(0), Some(617)));
+    let hints = min_hints_from_outer(0, 625, insets);
+    assert_eq!((hints.min_w, hints.min_h), (Some(0), Some(617)));
     // A minimum that vanishes inside its own frame carries no usable visible
-    // constraint: unknown, never a zero or negative floor.
-    assert_eq!(visible_min_from_outer(16, 8, insets), None);
-    assert_eq!(visible_min_from_outer(10, 4, insets), None);
+    // constraint on that axis: unknown, never a zero or negative floor. The
+    // usable sibling axis still converts.
+    assert_eq!(visible_min_from_outer(16, 8, insets), (None, None));
+    assert_eq!(visible_min_from_outer(10, 4, insets), (None, None));
     assert!(min_hints_from_outer(16, 8, insets).is_empty());
 }
 

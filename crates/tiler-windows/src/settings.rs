@@ -125,6 +125,22 @@ pub const BORN_MAXIMIZED_OVERLAY_LABEL: &str = "Keep maximized overlay";
 /// Reference WMs named by the alternative's tooltip (KCM parity).
 pub const BORN_MAXIMIZED_OVERLAY_TIP: &str = "COSMIC, Hyprland";
 
+/// R-SPC-04 D1 fixed-size admission predicate wire values (user 2026-10-08,
+/// functional IDs delivered offline; G-05 per-axis-zero user 2026-10-10).
+/// Exact tokens only: no aliases, no migration; unknown or mistyped values
+/// refuse through the existing invalid-file/last-good path.
+pub const FIXED_SIZE_BOTH_AXES: &str = "both-axes-fixed";
+/// R-SPC-04 D1 either-axis alternative wire value.
+pub const FIXED_SIZE_EITHER_AXIS: &str = "either-axis-fixed";
+/// Functional label for the default (KCM parity).
+pub const FIXED_SIZE_BOTH_AXES_LABEL: &str = "Width and height both fixed";
+/// Reference WM named by the default's tooltip (KCM parity: never a setting id).
+pub const FIXED_SIZE_BOTH_AXES_TIP: &str = "COSMIC";
+/// Functional label for the either-axis alternative (KCM parity).
+pub const FIXED_SIZE_EITHER_AXIS_LABEL: &str = "Width or height fixed";
+/// Reference WMs named by the alternative's tooltip (KCM parity).
+pub const FIXED_SIZE_EITHER_AXIS_TIP: &str = "Hyprland (Wayland), sway";
+
 /// R-MAX-06 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
 pub const fn born_maximized_options() -> [(&'static str, &'static str, &'static str); 2] {
@@ -167,6 +183,27 @@ fn default_same_axis_move() -> String {
     SAME_AXIS_MOVE_GROUP.to_owned()
 }
 
+/// R-SPC-04 D1 two-choice control rows: `(wire token, functional label, WM tooltip)`.
+#[must_use]
+pub const fn fixed_size_predicate_options() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        (
+            FIXED_SIZE_BOTH_AXES,
+            FIXED_SIZE_BOTH_AXES_LABEL,
+            FIXED_SIZE_BOTH_AXES_TIP,
+        ),
+        (
+            FIXED_SIZE_EITHER_AXIS,
+            FIXED_SIZE_EITHER_AXIS_LABEL,
+            FIXED_SIZE_EITHER_AXIS_TIP,
+        ),
+    ]
+}
+
+fn default_fixed_size_predicate() -> String {
+    FIXED_SIZE_BOTH_AXES.to_owned()
+}
+
 /// Core tiling/visual/takeover settings. All values are validated on load
 /// and on save; out-of-range values refuse instead of clamping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +222,13 @@ pub struct CoreSettings {
     /// besides the two exact tokens refuses in [`validate_settings`].
     #[serde(default = "default_born_maximized")]
     pub born_maximized: String,
+    /// R-SPC-04 D1 fixed-size admission predicate. Additive schema-v1 field:
+    /// a missing value defaults to [`FIXED_SIZE_BOTH_AXES`]; any other value
+    /// besides the two exact tokens refuses in [`validate_settings`].
+    /// Changes apply to subsequent admissions only, never to retained
+    /// classifications (D2).
+    #[serde(default = "default_fixed_size_predicate")]
+    pub fixed_size_predicate: String,
     #[serde(default)]
     pub border: BorderSettings,
     #[serde(default)]
@@ -212,6 +256,7 @@ impl Default for CoreSettings {
             outer_gap: DEFAULT_OUTER_GAP,
             same_axis_move: default_same_axis_move(),
             born_maximized: default_born_maximized(),
+            fixed_size_predicate: default_fixed_size_predicate(),
             border: BorderSettings::default(),
             underlay: UnderlaySettings::default(),
             keyboard: KeyboardSettings::default(),
@@ -238,6 +283,18 @@ impl CoreSettings {
     #[must_use]
     pub fn born_maximized_keep_overlay(&self) -> bool {
         self.born_maximized == BORN_MAXIMIZED_OVERLAY
+    }
+
+    /// Typed R-SPC-04 D1 predicate for subsequent fixed-size admissions.
+    /// Shared policy only: the exact tokens parse through
+    /// [`tiler_core::size_hints::FixedSizePredicate::parse_wire`], so
+    /// per-axis-zero handling (G-05) is never copied here. Live settings are
+    /// always validated, so the fallback only covers hand-built defaults;
+    /// invalid files never become live (they keep last-good instead).
+    #[must_use]
+    pub fn fixed_size_predicate_mode(&self) -> tiler_core::size_hints::FixedSizePredicate {
+        tiler_core::size_hints::FixedSizePredicate::parse_wire(&self.fixed_size_predicate)
+            .unwrap_or_default()
     }
 }
 
@@ -1907,6 +1964,13 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
             "core.born_maximized needs tile-on-launch|keep-maximized-overlay".to_owned(),
         ));
     }
+    if tiler_core::size_hints::FixedSizePredicate::parse_wire(&settings.core.fixed_size_predicate)
+        .is_none()
+    {
+        return Err(SettingsError::Invalid(
+            "core.fixed_size_predicate needs both-axes-fixed|either-axis-fixed".to_owned(),
+        ));
+    }
     validate_border(&settings.core.border)?;
     validate_underlay(&settings.core.underlay)?;
     validate_bindings(settings)?;
@@ -2484,6 +2548,11 @@ mod tests {
         );
         assert_eq!(settings.core.born_maximized, BORN_MAXIMIZED_TILE);
         assert!(!settings.core.born_maximized_keep_overlay());
+        assert_eq!(settings.core.fixed_size_predicate, FIXED_SIZE_BOTH_AXES);
+        assert_eq!(
+            settings.core.fixed_size_predicate_mode(),
+            tiler_core::size_hints::FixedSizePredicate::BothAxes
+        );
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -2555,6 +2624,77 @@ mod tests {
             settings.core.same_axis_move = SAME_AXIS_MOVE_SWAP.to_owned();
             apply_preset(&mut settings, preset);
             assert_eq!(settings.core.same_axis_move, SAME_AXIS_MOVE_SWAP);
+            assert!(validate_settings(&settings).is_ok());
+        }
+    }
+
+    #[test]
+    fn fixed_size_predicate_tokens_map_exactly_with_both_axes_default() {
+        use tiler_core::size_hints::FixedSizePredicate::{BothAxes, EitherAxis};
+        assert_eq!(
+            tiler_core::size_hints::FixedSizePredicate::parse_wire(FIXED_SIZE_BOTH_AXES),
+            Some(BothAxes)
+        );
+        assert_eq!(
+            tiler_core::size_hints::FixedSizePredicate::parse_wire(FIXED_SIZE_EITHER_AXIS),
+            Some(EitherAxis)
+        );
+        assert_eq!(BothAxes.as_wire_str(), FIXED_SIZE_BOTH_AXES);
+        assert_eq!(EitherAxis.as_wire_str(), FIXED_SIZE_EITHER_AXIS);
+        // No aliases, no case folding, no empty token, no retired IDs.
+        for bad in [
+            "",
+            "both",
+            "either",
+            "BOTH-AXES-FIXED",
+            "width-and-height",
+            "fixed",
+        ] {
+            assert!(
+                tiler_core::size_hints::FixedSizePredicate::parse_wire(bad).is_none(),
+                "{bad}"
+            );
+        }
+        let mut settings = Settings::default();
+        settings.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
+        assert_eq!(settings.core.fixed_size_predicate_mode(), EitherAxis);
+        assert!(validate_settings(&settings).is_ok());
+        // Hand-built unknown values fail closed to the default mode but
+        // refuse through validation (last-good on disk, never live).
+        settings.core.fixed_size_predicate = "either".to_owned();
+        assert_eq!(settings.core.fixed_size_predicate_mode(), BothAxes);
+        assert!(matches!(
+            validate_settings(&settings),
+            Err(SettingsError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn fixed_size_predicate_options_carry_functional_labels_and_wm_tips() {
+        assert_eq!(
+            fixed_size_predicate_options(),
+            [
+                (
+                    FIXED_SIZE_BOTH_AXES,
+                    "Width and height both fixed",
+                    "COSMIC"
+                ),
+                (
+                    FIXED_SIZE_EITHER_AXIS,
+                    "Width or height fixed",
+                    "Hyprland (Wayland), sway"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn fixed_size_predicate_presets_leave_core_field_unchanged() {
+        for preset in [Preset::Authentic, Preset::Compatible] {
+            let mut settings = Settings::default();
+            settings.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
+            apply_preset(&mut settings, preset);
+            assert_eq!(settings.core.fixed_size_predicate, FIXED_SIZE_EITHER_AXIS);
             assert!(validate_settings(&settings).is_ok());
         }
     }

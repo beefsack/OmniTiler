@@ -91,62 +91,180 @@ impl FrameInsets {
     }
 }
 
-/// Validate one raw outer minimum-track extent (`ptMinTrackSize`) in physical
-/// pixels. `Some` only when both axes carry a positive, in-bound size; zero,
-/// negative, or absurd values mean the app declares no usable minimum and
-/// map to unknown (`None`), never to a zero floor.
+/// Validate one raw outer bound (`ptMinTrackSize`/`ptMaxTrackSize` axis) in
+/// physical pixels, independently per axis (R-SPC-04 D1, G-05):
+/// - `None` when the app declares nothing usable there: negative,
+///   unbounded-sentinel (`i32::MAX`), or absurd out-of-bound values all map
+///   to unknown, never to a floor or cap;
+/// - `Some(0)` for an explicit zero: unset per axis, transported (not
+///   dropped) so the shared predicate distinguishes partial-zero vectors
+///   such as min=max=(640,0) from missing bounds;
+/// - otherwise the positive in-bound size.
+///
+/// Minimum projection behavior is unchanged: the shared
+/// [`tiler_core::size_hints`] `meaningful` filter treats `Some(0)` exactly
+/// like absent everywhere except the fixed-size predicate.
 #[must_use]
-pub fn normalize_min_track(outer_w: i32, outer_h: i32) -> Option<(i32, i32)> {
-    if (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_w)
-        && (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_h)
-    {
-        Some((outer_w, outer_h))
-    } else {
-        None
+pub fn normalize_outer_bound(value: i32) -> Option<i32> {
+    match value {
+        v if v < 0 => None,
+        0 => Some(0),
+        v if (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&v) => Some(v),
+        _ => None,
+    }
+}
+
+/// Validate one raw outer minimum-track extent (`ptMinTrackSize`) in physical
+/// pixels, independently per axis. Each axis maps through
+/// [`normalize_outer_bound`]: usable sizes and explicit zeros survive per
+/// axis, unknown axes map to `None` without discarding the usable sibling.
+#[must_use]
+pub fn normalize_min_track(outer_w: i32, outer_h: i32) -> (Option<i32>, Option<i32>) {
+    (
+        normalize_outer_bound(outer_w),
+        normalize_outer_bound(outer_h),
+    )
+}
+
+/// Convert one normalized outer bound into visible physical pixels by
+/// subtracting the frame extent on its axis. Unknown stays unknown; an
+/// explicit zero stays unset (`Some(0)`, no subtraction is meaningful); a
+/// positive bound whose visible remainder vanishes inside its own frame maps
+/// to unknown (`None`), never to a zero floor.
+fn visible_bound(outer: Option<i32>, frame: i32) -> Option<i32> {
+    match outer {
+        None => None,
+        Some(0) => Some(0),
+        Some(v) => {
+            let remainder = v.checked_sub(frame)?;
+            if remainder >= 1 {
+                Some(remainder)
+            } else {
+                None
+            }
+        }
     }
 }
 
 /// Convert a raw outer minimum-track size into visible physical pixels by
-/// subtracting the currently measured frame insets. `None` when the track
-/// size is invalid or the visible remainder is not a positive size: an app
-/// minimum that vanishes inside its own frame carries no usable constraint.
+/// subtracting the currently measured frame insets, independently per axis.
+/// An axis whose remainder vanishes inside its own frame carries no usable
+/// constraint on that axis; the usable sibling axis still converts.
 #[must_use]
 pub fn visible_min_from_outer(
     outer_w: i32,
     outer_h: i32,
     insets: FrameInsets,
-) -> Option<(i32, i32)> {
-    let (outer_w, outer_h) = normalize_min_track(outer_w, outer_h)?;
-    let frame_w = insets.left.checked_add(insets.right)?;
-    let frame_h = insets.top.checked_add(insets.bottom)?;
-    let visible_w = outer_w.checked_sub(frame_w)?;
-    let visible_h = outer_h.checked_sub(frame_h)?;
-    if visible_w >= 1 && visible_h >= 1 {
-        Some((visible_w, visible_h))
-    } else {
-        None
-    }
+) -> (Option<i32>, Option<i32>) {
+    let frame_w = insets.left.checked_add(insets.right).unwrap_or(i32::MAX);
+    let frame_h = insets.top.checked_add(insets.bottom).unwrap_or(i32::MAX);
+    let (outer_w, outer_h) = normalize_min_track(outer_w, outer_h);
+    (
+        visible_bound(outer_w, frame_w),
+        visible_bound(outer_h, frame_h),
+    )
 }
 
 /// Portable minimum-size hint for one window from its fresh outer
 /// minimum-track size and currently measured frame insets. Timeout, failure,
 /// or invalid data already maps to unknown at the native query, which lands
 /// here as no hint: unknown means no hint, never a learned or persistent
-/// floor. Only minimum bounds are ever set; maximums stay absent.
+/// floor. Only minimum bounds are ever set; maximums stay absent. Kept for
+/// the minimum-only call sites; [`hints_from_outer`] carries both sides for
+/// fixed-size admission.
 #[must_use]
 pub fn min_hints_from_outer(
     outer_w: i32,
     outer_h: i32,
     insets: FrameInsets,
 ) -> tiler_core::size_hints::WindowSizeHints {
-    match visible_min_from_outer(outer_w, outer_h, insets) {
-        Some((w, h)) => tiler_core::size_hints::WindowSizeHints {
-            min_w: Some(w),
-            min_h: Some(h),
+    hints_from_outer(Some((outer_w, outer_h)), None, insets)
+}
+
+/// Validate one raw outer maximum-track extent (`ptMaxTrackSize`) in physical
+/// pixels. Same per-axis rule as [`normalize_min_track`]. A seeded but
+/// app-untouched maximum never reaches here: the native query strips values
+/// identical to the seed before conversion, so a system default is never
+/// claimed as app evidence and no style/resizeable inference is involved.
+#[must_use]
+pub fn normalize_max_track(outer_w: i32, outer_h: i32) -> (Option<i32>, Option<i32>) {
+    (
+        normalize_outer_bound(outer_w),
+        normalize_outer_bound(outer_h),
+    )
+}
+
+/// Convert a raw outer maximum-track size into visible physical pixels by
+/// subtracting the currently measured frame insets, independently per axis.
+/// Same rule as [`visible_min_from_outer`].
+#[must_use]
+pub fn visible_max_from_outer(
+    outer_w: i32,
+    outer_h: i32,
+    insets: FrameInsets,
+) -> (Option<i32>, Option<i32>) {
+    let frame_w = insets.left.checked_add(insets.right).unwrap_or(i32::MAX);
+    let frame_h = insets.top.checked_add(insets.bottom).unwrap_or(i32::MAX);
+    let (outer_w, outer_h) = normalize_max_track(outer_w, outer_h);
+    (
+        visible_bound(outer_w, frame_w),
+        visible_bound(outer_h, frame_h),
+    )
+}
+
+/// Portable size hints for one window from its fresh outer minimum/maximum
+/// track sizes and currently measured frame insets. Each side converts
+/// independently with the same fresh DPI/frame-inset conversion, and each
+/// axis converts independently within its side: a usable bound sets its
+/// hint, an explicit zero rides as unset (`Some(0)`), and an unknown axis
+/// stays unknown without discarding its usable sibling. Either side may be
+/// unknown (`None`, timeout, failure, budget skip, or invalid remainders).
+/// Unknown maximums never classify: the shared
+/// [`tiler_core::size_hints::is_fixed_size_with`] predicate requires both
+/// sides present, usable, and equal (nonzero per axis under G-05).
+#[must_use]
+pub fn hints_from_outer(
+    min_outer: Option<(i32, i32)>,
+    max_outer: Option<(i32, i32)>,
+    insets: FrameInsets,
+) -> tiler_core::size_hints::WindowSizeHints {
+    let (min_w, min_h) =
+        min_outer.map_or((None, None), |(w, h)| visible_min_from_outer(w, h, insets));
+    let (max_w, max_h) =
+        max_outer.map_or((None, None), |(w, h)| visible_max_from_outer(w, h, insets));
+    tiler_core::size_hints::WindowSizeHints {
+        min_w,
+        min_h,
+        max_w,
+        max_h,
+    }
+}
+
+/// Minimum-only Engine transport from fresh outer track sizes: converts through
+/// [`hints_from_outer`], then strips maximums and applies the legacy pair
+/// gate. Existing Engine observations remain unchanged: a minimum side
+/// survives only when BOTH visible axes are meaningful positives
+/// (`1..=GEOMETRY_BOUND`); a partial-zero, missing, negative, sentinel,
+/// out-of-bound, or frame-swallowed axis discards the whole minimum side,
+/// exactly as the old both-axes `normalize_min_track`/`visible_min_from_outer`
+/// did. Per-axis converted maximums are reserved for fixed-size admission;
+/// the disabled admission path does not change projection or clamp behavior.
+#[must_use]
+pub fn engine_min_hints_from_outer(
+    min_outer: Option<(i32, i32)>,
+    max_outer: Option<(i32, i32)>,
+    insets: FrameInsets,
+) -> tiler_core::size_hints::WindowSizeHints {
+    let hints = hints_from_outer(min_outer, max_outer, insets);
+    if hints.meaningful_min_w().is_some() && hints.meaningful_min_h().is_some() {
+        tiler_core::size_hints::WindowSizeHints {
+            min_w: hints.min_w,
+            min_h: hints.min_h,
             max_w: None,
             max_h: None,
-        },
-        None => tiler_core::size_hints::WindowSizeHints::none(),
+        }
+    } else {
+        tiler_core::size_hints::WindowSizeHints::none()
     }
 }
 
@@ -3486,6 +3604,244 @@ mod tests {
             min_h,
             max_w: None,
             max_h: None,
+        }
+    }
+
+    fn no_insets() -> FrameInsets {
+        FrameInsets {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        }
+    }
+
+    #[test]
+    fn hints_from_outer_carries_both_sides_with_shared_inset_conversion() {
+        // Fresh outer tracks convert with the same frame-inset subtraction:
+        // a 640x480 client with an 8px frame on every side carries visible
+        // 624x464 on both sides.
+        let insets = FrameInsets {
+            left: 8,
+            top: 8,
+            right: 8,
+            bottom: 8,
+        };
+        let got = hints_from_outer(Some((640, 480)), Some((640, 480)), insets);
+        assert_eq!(
+            got,
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(624),
+                min_h: Some(464),
+                max_w: Some(624),
+                max_h: Some(464),
+            }
+        );
+        // Minimum-only queries keep the historical shape (maximums absent).
+        assert_eq!(
+            hints_from_outer(Some((640, 480)), None, no_insets()),
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: None,
+                max_h: None,
+            }
+        );
+        assert_eq!(
+            min_hints_from_outer(640, 480, no_insets()),
+            hints_from_outer(Some((640, 480)), None, no_insets())
+        );
+        // Maximum-only queries carry no minimum.
+        assert_eq!(
+            hints_from_outer(None, Some((640, 480)), no_insets()),
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: None,
+                min_h: None,
+                max_w: Some(640),
+                max_h: Some(480),
+            }
+        );
+        // Each axis converts independently: an invalid minimum axis keeps a
+        // valid maximum axis and vice versa. Explicit zeros ride as unset
+        // (G-05); negatives, sentinels, and absurd values map to unknown.
+        let partial = hints_from_outer(Some((640, 0)), Some((640, 480)), no_insets());
+        assert_eq!(
+            (partial.min_w, partial.min_h, partial.max_w, partial.max_h),
+            (Some(640), Some(0), Some(640), Some(480))
+        );
+        let negative = hints_from_outer(Some((-1, 480)), Some((640, 480)), no_insets());
+        assert_eq!(
+            (
+                negative.min_w,
+                negative.min_h,
+                negative.max_w,
+                negative.max_h
+            ),
+            (None, Some(480), Some(640), Some(480))
+        );
+        assert!(hints_from_outer(Some((-1, -2)), Some((-3, -4)), no_insets()).is_empty());
+        // A bound that vanishes inside its own frame maps to unknown on that
+        // axis only; the usable sibling axis still converts.
+        let deep = FrameInsets {
+            left: 400,
+            top: 0,
+            right: 400,
+            bottom: 0,
+        };
+        let got = hints_from_outer(Some((640, 480)), Some((640, 480)), deep);
+        assert_eq!(
+            (got.min_w, got.min_h, got.max_w, got.max_h),
+            (None, Some(480), None, Some(480))
+        );
+        // Minimum projection behavior is unchanged: explicit zeros behave
+        // exactly like absent bounds outside the fixed-size predicate.
+        let zero_min = hints_from_outer(Some((0, 480)), None, no_insets());
+        assert_eq!(
+            overconstrained_effective(
+                Rect {
+                    x: 8,
+                    y: 8,
+                    w: 400,
+                    h: 300,
+                },
+                zero_min
+            ),
+            Rect {
+                x: 8,
+                y: 8,
+                w: 400,
+                h: 480
+            }
+        );
+    }
+
+    #[test]
+    fn engine_min_hints_keeps_legacy_pair_validity() {
+        // Commit1 Engine transport through the real conversion path: a
+        // full-pair valid minimum retains both axes (maximums stripped),
+        // while a partial-zero, negative, missing, or frame-swallowed axis
+        // discards the whole minimum side, exactly as HEAD's both-axes
+        // normalize/visible pair did. Per-axis converted hints stay
+        // available via `hints_from_outer` for commit2 admission.
+        use tiler_core::size_hints::WindowSizeHints;
+        let full = engine_min_hints_from_outer(Some((640, 480)), Some((640, 480)), no_insets());
+        assert_eq!(
+            full,
+            WindowSizeHints {
+                min_w: Some(640),
+                min_h: Some(480),
+                max_w: None,
+                max_h: None,
+            }
+        );
+        assert_eq!(
+            engine_min_hints_from_outer(Some((640, 480)), None, no_insets()),
+            full
+        );
+        for min_outer in [
+            Some((640, 0)),
+            Some((0, 480)),
+            Some((0, 0)),
+            Some((-1, 480)),
+            Some((640, -8)),
+            Some((i32::MAX, 480)),
+            None,
+        ] {
+            assert_eq!(
+                engine_min_hints_from_outer(min_outer, Some((640, 480)), no_insets()),
+                WindowSizeHints::none(),
+                "min side discarded for {min_outer:?}"
+            );
+        }
+        // A minimum swallowed by its own frame discards the whole side,
+        // even though the sibling axis stays usable per-axis.
+        let deep = FrameInsets {
+            left: 400,
+            top: 0,
+            right: 400,
+            bottom: 0,
+        };
+        assert_eq!(
+            engine_min_hints_from_outer(Some((640, 480)), Some((640, 480)), deep),
+            WindowSizeHints::none()
+        );
+        // Maximum-only queries carry no Engine minimum.
+        assert_eq!(
+            engine_min_hints_from_outer(None, Some((640, 480)), no_insets()),
+            WindowSizeHints::none()
+        );
+    }
+
+    #[test]
+    fn normalize_outer_bound_keeps_zero_unset_and_rejects_unusable() {
+        assert_eq!(normalize_outer_bound(0), Some(0));
+        assert_eq!(normalize_outer_bound(1), Some(1));
+        assert_eq!(
+            normalize_outer_bound(tiler_core::bounds::GEOMETRY_BOUND),
+            Some(tiler_core::bounds::GEOMETRY_BOUND)
+        );
+        // Negative, sentinel, and absurd values are unknown, never a floor.
+        assert_eq!(normalize_outer_bound(-1), None);
+        assert_eq!(normalize_outer_bound(i32::MIN), None);
+        assert_eq!(normalize_outer_bound(i32::MAX), None);
+        assert_eq!(
+            normalize_outer_bound(tiler_core::bounds::GEOMETRY_BOUND + 1),
+            None
+        );
+        // Pairs validate per axis: one bad axis never discards its sibling.
+        assert_eq!(normalize_min_track(640, 0), (Some(640), Some(0)));
+        assert_eq!(normalize_min_track(-5, 480), (None, Some(480)));
+        assert_eq!(normalize_min_track(0, 0), (Some(0), Some(0)));
+        assert_eq!(normalize_max_track(i32::MAX, 480), (None, Some(480)));
+    }
+
+    #[test]
+    fn converted_hints_classify_like_outer_tracks_under_both_predicates() {
+        // Production-connected parity (no speculative helper): converted
+        // visible hints classify exactly as the shared predicate decides on
+        // the same vectors, because frame insets shift both sides of an axis
+        // equally and preserve equality. Covers the G-05 partial-zero table,
+        // guards, and one-axis cases through the real conversion path.
+        use tiler_core::size_hints::FixedSizePredicate::{BothAxes, EitherAxis};
+        use tiler_core::size_hints::is_fixed_size_with;
+        let cases = [
+            (Some((640, 480)), Some((640, 480)), true, true),
+            (Some((640, 480)), None, false, false),
+            (Some((640, 0)), Some((640, 0)), false, true),
+            (Some((0, 480)), Some((0, 480)), false, true),
+            (Some((0, 0)), Some((0, 0)), false, false),
+            (None, None, false, false),
+            (Some((640, 480)), Some((i32::MAX, i32::MAX)), false, false),
+            (Some((640, 480)), Some((640, 960)), false, true),
+            (Some((-1, 480)), Some((-1, 480)), false, false),
+        ];
+        for (min_outer, max_outer, both, either) in cases {
+            for insets in [
+                FrameInsets {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                FrameInsets {
+                    left: 8,
+                    top: 8,
+                    right: 8,
+                    bottom: 8,
+                },
+            ] {
+                let hints = hints_from_outer(min_outer, max_outer, insets);
+                assert_eq!(
+                    is_fixed_size_with(hints, BothAxes),
+                    both,
+                    "both-axes {min_outer:?}/{max_outer:?} insets {insets:?}"
+                );
+                assert_eq!(
+                    is_fixed_size_with(hints, EitherAxis),
+                    either,
+                    "either-axis {min_outer:?}/{max_outer:?} insets {insets:?}"
+                );
+            }
         }
     }
 

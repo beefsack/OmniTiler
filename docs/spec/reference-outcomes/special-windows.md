@@ -860,6 +860,13 @@ All fresh variants below reset the client and WM state independently.
   not match E. Each restarts independently. Hint-loss/enable and non-fixed
   controls are in R-RST-04. Reference outcomes for all added legs remain TBD;
   native Ours outcomes remain TBD.
+- Windows marker discriminator: explicitly tile fixed E and an intentional
+  resizable float N; remove E's maximum hints, natively maximize both, restart
+  the owner, then disable/enable tiling. Observe override hydration, automatic
+  origin, reserved-slot versus maximize-clear routing, and native writes.
+  Reference outcomes and Ours Windows observed outcomes remain TBD; Windows
+  fixed-origin marker coverage and retained-maximized hydration remain pending
+  implementation edges ([active record](../../changes/windows-fixed-size-admission.md)).
 - Observe: fixed classification at adoption vs open-only classification;
   previous explicit tile override vs recomputed automatic identity.
   Reference outcomes for the unavailable-store variant are TBD.

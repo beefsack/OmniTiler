@@ -756,21 +756,35 @@ fn seed_minmaxinfo(hwnd: HWND) -> MINMAXINFO {
     info
 }
 
-/// Fresh outer minimum-track size for one window in physical pixels plus its
-/// outcome.
+/// Fresh outer track sizes: `(minimum, maximum, outcome)` as raw query
+/// pairs. Normalization stays in one place ([`crate::tiling::normalize_min_track`]
+/// plus [`crate::tiling::hints_from_outer`]); the query only strips
+/// seeded-untouched maximums and reports transport outcomes. The maximum is
+/// `None` when the query failed, hung, overran the budget, or matched the
+/// seed (app-untouched, never app evidence).
+type OuterTracks = (Option<(i32, i32)>, Option<(i32, i32)>, HintOutcome);
+
+/// Fresh outer minimum/maximum track sizes for one window in physical pixels
+/// plus its outcome.
 ///
 /// `SendMessageTimeoutW` with `WM_GETMINMAXINFO`, `SMTO_ABORTIFHUNG`, and
 /// [`MIN_HINT_TIMEOUT_MS`] over the correctly seeded struct above. A zero
 /// return means failure or timeout and the struct is ignored entirely (never
 /// read); `ERROR_TIMEOUT` distinguishes hung aborts from other failures.
-/// Success with an invalid track size is `Invalid`. Requires the loop's
-/// verified PMv2 awareness so the track size is physical pixels.
-fn query_outer_min_track(hwnd: HWND, cx: &HintCx) -> (Option<(i32, i32)>, HintOutcome) {
+/// Success with no usable track size is `Invalid`. Requires the loop's
+/// verified PMv2 awareness so the track sizes are physical pixels.
+///
+/// The maximum side strips seeded-untouched values: an app that leaves
+/// `ptMaxTrackSize` untouched reports the system default this file seeded,
+/// which is never claimed as app evidence (it arrives as unknown). No
+/// geometry, style, or resizeable inference is involved.
+fn query_outer_tracks(hwnd: HWND, cx: &HintCx) -> OuterTracks {
     let mut info = seed_minmaxinfo(hwnd);
+    let seed_max = (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y);
     let mut result: usize = 0;
     let timeout_ms = cx.timeout_ms();
     if timeout_ms == 0 {
-        return (None, HintOutcome::Budget);
+        return (None, None, HintOutcome::Budget);
     }
     let sent = unsafe {
         SetLastError(0);
@@ -787,14 +801,30 @@ fn query_outer_min_track(hwnd: HWND, cx: &HintCx) -> (Option<(i32, i32)>, HintOu
     if sent == 0 {
         let code = unsafe { GetLastError() };
         if code == ERROR_TIMEOUT {
-            return (None, HintOutcome::Timeout);
+            return (None, None, HintOutcome::Timeout);
         }
-        return (None, HintOutcome::Failed);
+        return (None, None, HintOutcome::Failed);
     }
-    match crate::tiling::normalize_min_track(info.ptMinTrackSize.x, info.ptMinTrackSize.y) {
-        Some(track) => (Some(track), HintOutcome::Hint),
-        None => (None, HintOutcome::Invalid),
-    }
+    let min = Some((info.ptMinTrackSize.x, info.ptMinTrackSize.y));
+    let live_max = (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y);
+    let max = if live_max == seed_max {
+        None
+    } else {
+        Some(live_max)
+    };
+    // Per-axis outcomes: any usable or explicitly-unset bound on either side
+    // is a hint; only a fully unknown query is invalid. Explicit zeros ride
+    // (unset per axis, G-05) rather than failing the whole query; validity
+    // itself is decided once at conversion
+    // ([`crate::tiling::hints_from_outer`]).
+    let norm = |(w, h)| crate::tiling::normalize_min_track(w, h);
+    let min_norm = min.map_or((None, None), norm);
+    let max_norm = max.map_or((None, None), norm);
+    let outcome = match (min_norm, max_norm) {
+        ((None, None), (None, None)) => HintOutcome::Invalid,
+        _ => HintOutcome::Hint,
+    };
+    (min, max, outcome)
 }
 
 /// Fresh minimum-size hint for one eligible observed window: a new
@@ -802,16 +832,21 @@ fn query_outer_min_track(hwnd: HWND, cx: &HintCx) -> (Option<(i32, i32)>, HintOu
 /// physical pixels with the window's currently measured frame insets.
 /// Unknown on any query failure, timeout, budget skip, or invalid remainder:
 /// no hint, never a reused or persistent floor.
+///
+/// The query transports both track sides with the same fresh insets, but the
+/// Engine observation preserves the existing minimum-only rows through
+/// [`crate::tiling::engine_min_hints_from_outer`] (maximums stripped plus
+/// the legacy both-axes minimum gate), so shared clamp acceptance keeps
+/// prior behavior while the fixed-size admission opt-in stays disabled.
 fn min_hint_for(window: &ObservedWindow, cx: &HintCx) -> (WindowSizeHints, HintOutcome) {
     let hwnd = window.hwnd as isize as HWND;
-    let (track, outcome) = query_outer_min_track(hwnd, cx);
+    let (min_track, max_track, outcome) = query_outer_tracks(hwnd, cx);
     if outcome != HintOutcome::Hint {
         return (WindowSizeHints::none(), outcome);
     }
-    let (outer_w, outer_h) = track.expect("hint outcome carries a track");
-    let hints = crate::tiling::min_hints_from_outer(outer_w, outer_h, window.insets);
+    let hints = crate::tiling::engine_min_hints_from_outer(min_track, max_track, window.insets);
     if hints.is_empty() {
-        (hints, HintOutcome::Invalid)
+        (WindowSizeHints::none(), HintOutcome::Invalid)
     } else {
         (hints, HintOutcome::Hint)
     }
@@ -821,7 +856,11 @@ fn min_hint_for(window: &ObservedWindow, cx: &HintCx) -> (WindowSizeHints, HintO
 /// showing or moving it: fresh identity fenced by the existing
 /// `WindowKey` plus owned lifetime-property checks, then fresh `GetWindowRect`
 /// plus `DWMWA_EXTENDED_FRAME_BOUNDS` for current insets, then a fresh
-/// `WM_GETMINMAXINFO` query converted with those insets. Hidden DWM frames
+/// `WM_GETMINMAXINFO` query converted with those insets. The Engine
+/// observation keeps exact HEAD rows through
+/// [`crate::tiling::engine_min_hints_from_outer`] (as in [`min_hint_for`]);
+/// maximums remain outside the disabled admission path.
+/// Hidden DWM frames
 /// may legitimately be absent; any measurement failure is unknown (no hint),
 /// never a stale cached inset. The Engine row rectangle stays the stored
 /// snapshot: fresh frames feed insets only, never adopted geometry.
@@ -899,12 +938,11 @@ fn hidden_hint_for(
     if cx.over_budget() {
         return (WindowSizeHints::none(), HintOutcome::Budget);
     }
-    let (track, outcome) = query_outer_min_track(hwnd, cx);
+    let (min_track, max_track, outcome) = query_outer_tracks(hwnd, cx);
     if outcome != HintOutcome::Hint {
         return (WindowSizeHints::none(), outcome);
     }
-    let (outer_w, outer_h) = track.expect("hint outcome carries a track");
-    let hints = crate::tiling::min_hints_from_outer(outer_w, outer_h, insets);
+    let hints = crate::tiling::engine_min_hints_from_outer(min_track, max_track, insets);
     let outcome = if hints.is_empty() {
         HintOutcome::Invalid
     } else {
@@ -16913,7 +16951,10 @@ fn apply_live_settings(
     // the born-maximized policy per fresh lifetime at admission, so a
     // setting-only change adopts for subsequent first admissions with no
     // rebuild, and already-bound lifetimes plus previously admitted clients
-    // keep their slots and topology.
+    // keep their slots and topology. R-SPC-04 D1 rides the same assignment:
+    // the fixed-size predicate is stored live here for subsequent admissions
+    // only; no admission lane reads it in this delivery (opt-in stays
+    // disabled), so already-admitted clients keep their classification.
     if let Some(live) = state.settings_live.as_mut() {
         live.settings = settings;
         live.mtime = mtime;
