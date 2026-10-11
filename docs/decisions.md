@@ -1189,6 +1189,9 @@ platform API behavior.
 - User decision 2026-10-11: active border outline radius defaults to 6 on
   all platforms (looked right in Windows dogfood); revisit per platform if
   it does not suit a host. Other border defaults unchanged.
+  - Windows offline-delivered: settings and CLI/proof defaults, missing-field
+    handling and Apply/Revert coverage; visual acceptance pending
+    ([record](changes/archive/windows-border-radius-default.md)).
 - Windows active border (selected 2026-10-02): default-on owned per-pixel-alpha layered,
   click-through, nonactivating tool-window surface. Do not mutate foreign
   window attributes. `DWMWA_BORDER_COLOR` controls colour only and cannot

@@ -15,10 +15,47 @@ fn border_defaults_on_with_kde_accent_fallback() {
     assert!(options.border.enabled);
     assert_eq!(options.border.style.width, 3.0);
     assert_eq!(options.border.style.gap, 0.0);
-    assert_eq!(options.border.style.radius, 0.0);
+    assert_eq!(options.border.style.radius, 6.0);
     assert_eq!(options.border.style.color, DEFAULT_COLOR_RGB);
     assert_eq!(render_color(options.border.style.color), "#2a82da");
     assert!(options.border.style.use_theme);
+}
+
+#[test]
+fn border_explicit_zero_radius_stays_square_on_all_commands() {
+    // The 6.0 default never overwrites an explicit radius: `--active-border-radius 0`
+    // keeps square corners reachable on every command.
+    let tile =
+        parse_tile_args(&strings(&["--user-start", "--active-border-radius", "0"])).expect("tile");
+    assert_eq!(tile.border.style.radius, 0.0);
+    let options = parse_tile_proof_args(&strings(&[
+        "--allowlist",
+        "a.json",
+        "--active-border-radius",
+        "0",
+    ]))
+    .expect("tile-proof");
+    assert_eq!(options.border.style.radius, 0.0);
+    let options = parse_workspace_proof_args(&strings(&[
+        "--allowlist",
+        "a.json",
+        "--active-border-radius",
+        "0",
+    ]))
+    .expect("workspace-proof");
+    assert_eq!(options.border.style.radius, 0.0);
+    let options = parse_shortcut_proof_args(&strings(&[
+        "--allowlist",
+        "a.json",
+        "--active-border-radius",
+        "0",
+    ]))
+    .expect("shortcut-proof");
+    assert_eq!(options.border.style.radius, 0.0);
+    // Explicit zero round-trips through argv consistency.
+    let raw = strings(&["--allowlist", "a.json", "--active-border-radius", "0"]);
+    let parsed = parse_tile_proof_args(&raw).expect("parsed");
+    verify_proof_argv_consistency(&raw, &parsed).expect("consistent");
 }
 
 #[test]

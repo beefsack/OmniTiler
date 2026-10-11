@@ -1368,6 +1368,90 @@ fn same_axis_move_schema_v1_missing_field_defaults_to_group() {
 }
 
 #[test]
+fn border_radius_default_six_and_flows_to_tile_options() {
+    use tiler_windows::settings::{tile_options_from_settings, validate_settings};
+    // Windows-only default (2026-10-11); other border defaults unchanged.
+    let settings = Settings::default();
+    assert_eq!(settings.core.border.width, 3.0);
+    assert_eq!(settings.core.border.gap, 0.0);
+    assert_eq!(settings.core.border.radius, 6.0);
+    assert!(validate_settings(&settings).is_ok());
+    // The saved-default base reaches the owner unchanged (Apply path).
+    let options = tile_options_from_settings(&settings);
+    assert_eq!(options.border.style.width, 3.0);
+    assert_eq!(options.border.style.gap, 0.0);
+    assert_eq!(options.border.style.radius, 6.0);
+}
+
+#[test]
+fn border_radius_missing_field_defaults_to_six() {
+    use tiler_windows::settings::validate_settings;
+    let temp = Temp::new("border-radius-missing");
+    // Old file without any border section: serde defaults supply radius 6.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"inner_gap":8,"outer_gap":8},"bindings":{}}"#,
+    )
+    .expect("write");
+    let LoadOutcome::Loaded(settings) = load_from_dir(&temp.path) else {
+        panic!("old file loads");
+    };
+    assert_eq!(settings.core.border.radius, 6.0);
+    assert!(validate_settings(&settings).is_ok());
+    // Old file with an explicit border section but no radius key: explicit
+    // width/gap stay, missing radius takes the new default.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"border":{"width":4.5,"gap":2.0}},"bindings":{}}"#,
+    )
+    .expect("write");
+    let LoadOutcome::Loaded(settings) = load_from_dir(&temp.path) else {
+        panic!("old file loads");
+    };
+    assert_eq!(settings.core.border.width, 4.5);
+    assert_eq!(settings.core.border.gap, 2.0);
+    assert_eq!(settings.core.border.radius, 6.0);
+    assert!(validate_settings(&settings).is_ok());
+}
+
+#[test]
+fn border_radius_explicit_values_survive_reload() {
+    // Stored explicit radii remain: save/load round-trips 0 and a custom
+    // value without rewriting them to the default.
+    let temp = Temp::new("border-radius-explicit");
+    for radius in [0.0, 2.5, 6.0] {
+        let mut settings = Settings::default();
+        settings.core.border.radius = radius;
+        save_to_dir(&temp.path, &mut settings).expect("save");
+        let LoadOutcome::Loaded(back) = load_from_dir(&temp.path) else {
+            panic!("reloads radius {radius}");
+        };
+        assert_eq!(back.core.border.radius, radius);
+    }
+}
+
+#[test]
+fn border_radius_reload_discards_unsaved_edits() {
+    use tiler_windows::settings::tile_options_from_settings;
+    // Revert semantics: reloading the saved file discards unsaved in-memory
+    // edits and restores the saved radius; nothing is written.
+    let temp = Temp::new("border-radius-revert");
+    let mut settings = Settings::default();
+    save_to_dir(&temp.path, &mut settings).expect("save");
+    let saved_bytes = std::fs::read(temp.file()).expect("saved bytes");
+    settings.core.border.radius = 0.0;
+    let LoadOutcome::Loaded(reverted) = load_from_dir(&temp.path) else {
+        panic!("reloads");
+    };
+    assert_eq!(reverted.core.border.radius, 6.0);
+    assert_eq!(
+        tile_options_from_settings(&reverted).border.style.radius,
+        6.0
+    );
+    assert_eq!(std::fs::read(temp.file()).expect("bytes"), saved_bytes);
+}
+
+#[test]
 fn same_axis_move_both_tokens_round_trip() {
     use tiler_windows::settings::{SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP};
     let temp = Temp::new("same-axis-roundtrip");

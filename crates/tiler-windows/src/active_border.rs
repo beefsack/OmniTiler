@@ -1,9 +1,10 @@
 //! Portable Windows active-border policy, settings, and raster math.
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
-//! (width 3.0, gap 0.0, radius 0.0, `UseThemeColor` true, fallback `#2a82da`)
+//! (width 3.0, gap 0.0, `UseThemeColor` true, fallback `#2a82da`)
 //! and `tiler-core::visual` (`active_border_state`, `active_border_inner_rect`,
-//! `active_border_use_theme`). The border is independent of Engine
+//! `active_border_use_theme`). Outline radius defaults to 6.0 per the
+//! 2026-10-11 decision. The border is independent of Engine
 //! tiling/floating membership: eligibility never consults a tiled token.
 //!
 //! Theme colour mapping (confirmed in source): KDE selects the Plasma
@@ -18,10 +19,10 @@
 use tiler_core::geometry::Rect;
 use tiler_core::visual::{VisualRect, active_border_inner_rect, active_border_state};
 
-/// KDE-parity defaults.
+/// Windows border defaults.
 pub const DEFAULT_WIDTH: f64 = 3.0;
 pub const DEFAULT_GAP: f64 = 0.0;
-pub const DEFAULT_RADIUS: f64 = 0.0;
+pub const DEFAULT_RADIUS: f64 = 6.0;
 /// Fallback border colour (`#2a82da`, KDE `BorderColor` parity), used when
 /// the system accent is unavailable or theming is off.
 pub const DEFAULT_COLOR_HEX: &str = "#2a82da";
@@ -461,7 +462,7 @@ mod tests {
         assert!(options.enabled);
         assert_eq!(options.style.width, 3.0);
         assert_eq!(options.style.gap, 0.0);
-        assert_eq!(options.style.radius, 0.0);
+        assert_eq!(options.style.radius, 6.0);
         assert_eq!(options.style.color, (0x2a, 0x82, 0xda));
         assert!(options.style.use_theme);
         assert_eq!(render_color(options.style.color), "#2a82da");

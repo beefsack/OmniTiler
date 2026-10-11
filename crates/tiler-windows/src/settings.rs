@@ -42,13 +42,14 @@ pub const DEFAULT_OUTER_GAP: i32 = 8;
 pub const MAX_GAP: i32 = 64;
 
 /// Border defaults: KDE `activeborderconfig.kcfg` parity (width 3, gap 0,
-/// radius 0, theme on with the configured `#2a82da` fallback). The Windows
+/// theme on with the configured `#2a82da` fallback) except radius, which
+/// defaults to 6 per 2026-10-11. The Windows
 /// analogue of the Plasma highlight colour is the live system accent; the
 /// configured colour wins only when theming is off or the accent query is
 /// unavailable (see [`crate::active_border::effective_color`]).
 pub const DEFAULT_BORDER_WIDTH: f64 = 3.0;
 pub const DEFAULT_BORDER_GAP: f64 = 0.0;
-pub const DEFAULT_BORDER_RADIUS: f64 = 0.0;
+pub const DEFAULT_BORDER_RADIUS: f64 = 6.0;
 pub const DEFAULT_BORDER_COLOR_HEX: &str = "#2a82da";
 pub const DEFAULT_BORDER_USE_THEME: bool = true;
 pub const MAX_BORDER_WIDTH: f64 = 32.0;
@@ -198,7 +199,7 @@ pub struct BorderSettings {
     pub width: f64,
     #[serde(default)]
     pub gap: f64,
-    #[serde(default)]
+    #[serde(default = "default_border_radius")]
     pub radius: f64,
     #[serde(default = "default_border_color")]
     pub color: String,
@@ -208,6 +209,10 @@ pub struct BorderSettings {
 
 fn default_border_width() -> f64 {
     DEFAULT_BORDER_WIDTH
+}
+
+fn default_border_radius() -> f64 {
+    DEFAULT_BORDER_RADIUS
 }
 
 fn default_border_color() -> String {
@@ -2401,6 +2406,8 @@ mod tests {
         assert_eq!(settings.core.outer_gap, 8);
         assert!(settings.core.border.enabled);
         assert_eq!(settings.core.border.width, 3.0);
+        assert_eq!(settings.core.border.gap, 0.0);
+        assert_eq!(settings.core.border.radius, 6.0);
         assert_eq!(settings.core.border.color, "#2a82da");
         assert!(settings.core.border.use_theme);
         assert!(settings.core.underlay.enabled);
