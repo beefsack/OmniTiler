@@ -2017,38 +2017,51 @@ fn serialize_resize_reply(
 /// [`tiler_core::boundary::SendWorkspacePlan`] (single source). Detail key
 /// order (`kind`, `policy_version`, `capability`), the `move-tiled` operation
 /// echo (plus the explicit `follow` selection), and precondition tokens match
-/// the legacy shape plus the follow extension. The plan
-/// constructor guarantees the `MoveTiled` operation, so the legacy
+/// the legacy shape plus the follow extension. The slotless `move-deferred`
+/// transfer (D28 born-fullscreen carry) echoes window plus source/target
+/// identities with NO leaf under its own op token; capability stays
+/// `move-tiled` (the operation reuses that capability). The plan
+/// constructor guarantees one of the two send operations, so the legacy
 /// `move-op-invalid` fallback stays with the caller at its exact position.
 fn serialize_send_workspace_reply(
     correlation_id: &str,
     plan: &tiler_core::boundary::SendWorkspacePlan,
 ) -> String {
-    let tiler_core::boundary::SendWorkspacePlan {
-        operation:
-            LifecycleOperation::MoveTiled {
-                window,
-                leaf,
-                source_output,
-                source_workspace,
-                target_output,
-                target_workspace,
-            },
-        ..
-    } = &plan
-    else {
-        unreachable!("SendWorkspacePlan always carries MoveTiled");
+    let operation_value = match &plan.operation {
+        LifecycleOperation::MoveTiled {
+            window,
+            leaf,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-tiled",
+            "window": window.0,
+            "leaf": leaf.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        LifecycleOperation::MoveDeferred {
+            window,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-deferred",
+            "window": window.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        _ => unreachable!("SendWorkspacePlan always carries a send move operation"),
     };
-    let operation_value = serde_json::json!({
-        "op": "move-tiled",
-        "window": window.0,
-        "leaf": leaf.0,
-        "source_output": source_output.0,
-        "source_workspace": source_workspace.0,
-        "target_output": target_output.0,
-        "target_workspace": target_workspace.0,
-        "follow": plan.follow,
-    });
     // Keep the legacy wire token for exact reply binding, not as a native
     // verification or committed-native-success assertion. KWin reconciles
     // both domains after the immediate planned-topology commit.
@@ -2093,31 +2106,41 @@ fn serialize_send_output_reply(
     correlation_id: &str,
     plan: &tiler_core::boundary::SendWorkspacePlan,
 ) -> String {
-    let tiler_core::boundary::SendWorkspacePlan {
-        operation:
-            LifecycleOperation::MoveTiled {
-                window,
-                leaf,
-                source_output,
-                source_workspace,
-                target_output,
-                target_workspace,
-            },
-        ..
-    } = &plan
-    else {
-        unreachable!("SendWorkspacePlan always carries MoveTiled");
+    let operation_value = match &plan.operation {
+        LifecycleOperation::MoveTiled {
+            window,
+            leaf,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-tiled",
+            "window": window.0,
+            "leaf": leaf.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        LifecycleOperation::MoveDeferred {
+            window,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-deferred",
+            "window": window.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        _ => unreachable!("SendWorkspacePlan always carries a send move operation"),
     };
-    let operation_value = serde_json::json!({
-        "op": "move-tiled",
-        "window": window.0,
-        "leaf": leaf.0,
-        "source_output": source_output.0,
-        "source_workspace": source_workspace.0,
-        "target_output": target_output.0,
-        "target_workspace": target_workspace.0,
-        "follow": plan.follow,
-    });
     // Same binding posture as workspace send: the wire token binds the reply
     // for exact matching, not as a native-verification or
     // committed-native-success assertion. The adapter reconciles both domains

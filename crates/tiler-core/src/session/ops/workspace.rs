@@ -123,16 +123,32 @@ impl super::super::Session {
         if observed_ids != known {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
+        // A held born-fullscreen exception member carries through the
+        // slotless deferred transfer (D28 option (a)): it rides the native
+        // send-route flags (never floating, still fullscreen) while the
+        // retained record holds the synthetic floating shape, so the
+        // ordinary exact matcher below cannot bind it. Route before that
+        // matcher; the deferred path binds the rest exactly plus the held
+        // exemption for the mover only.
+        if self.exceptions.contains_key(window) {
+            return self.propose_deferred_send(
+                window,
+                target_output,
+                target_workspace,
+                follow,
+                allow_cross_output,
+                session_observation,
+                correlation_id,
+                capabilities,
+            );
+        }
         if !self.observed_known_match(&session_observation.windows, None) {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // Exact propose_move-style focus gate: only the keyboard-focused
-        // tiled element moves.
+        // tiled element moves through the ordinary transfer below.
         if !self.windows.contains_key(window) && !self.exceptions.contains_key(window) {
             return Err(ProposeError::Refused(RefusalKind::UnknownWindow));
-        }
-        if self.exceptions.contains_key(window) {
-            return Err(ProposeError::Refused(RefusalKind::NotTiled));
         }
         let link = self.windows.get(window).cloned().expect("tiled link");
         let source_key = DomainKey {
@@ -358,6 +374,234 @@ impl super::super::Session {
             anchor: remembered.clone(),
             axis,
             projected,
+            target_leaves,
+        });
+        Ok(SessionPlan {
+            dispatch,
+            desired_snapshot,
+            desired_focus_domain,
+            desired_focus_leaf,
+            desired_geometry,
+        })
+    }
+
+    /// Slotless deferred send transfer for a held born-fullscreen
+    /// exception member (D28 option (a)).
+    ///
+    /// Eligibility is exactly [`Session::deferred_send_eligible`]: any
+    /// other exception (plain intentional float, sticky, maximized,
+    /// exited mover, wrong homing) refuses as `NotTiled`, so the D16
+    /// intentional-float gap stays refused. The transfer adds/removes no
+    /// window identity: the rest-match binds every non-mover plus the
+    /// mover exemption and rejects extras by count. Trees, tiled links, and allocations are untouched:
+    /// the mover exception simply rehomes to the target while staying
+    /// slotless and fullscreen-held. Follow selects the target MRU tiled
+    /// fallback for bookkeeping (native follow runs adapter-side on the
+    /// mover ref); stay falls back through the source MRU exactly like
+    /// the ordinary transfer. Plans commit only
+    /// via acknowledge-then-[`Session::verify_lifecycle`].
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    fn propose_deferred_send(
+        &mut self,
+        window: &WindowId,
+        target_output: &OutputId,
+        target_workspace: &WorkspaceId,
+        follow: bool,
+        allow_cross_output: bool,
+        session_observation: &SessionObservation,
+        correlation_id: &CorrelationId,
+        capabilities: &LifecycleCapabilities,
+    ) -> Result<SessionPlan, ProposeError> {
+        let record = self
+            .exceptions
+            .get(window)
+            .cloned()
+            .expect("exception mover");
+        let source_key = DomainKey {
+            output: record.output.clone(),
+            workspace: record.workspace.clone(),
+        };
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: target_workspace.clone(),
+        };
+        // Held exemption for the mover only; every other member binds
+        // exactly like the ordinary transfer (same refusal on mismatch).
+        // The rest-match below also proves completeness: it binds every
+        // non-mover plus the mover exemption, and rejects any extra
+        // observed identity by count.
+        if !self.deferred_send_eligible(window, &source_key, &session_observation.windows) {
+            return Err(ProposeError::Refused(RefusalKind::NotTiled));
+        }
+        if !self.observed_rest_match(&session_observation.windows, window) {
+            return Err(ProposeError::Refused(RefusalKind::PartialObservation));
+        }
+        if allow_cross_output {
+            if target_key.output == source_key.output {
+                return Err(ProposeError::Refused(RefusalKind::CrossDomainMismatch));
+            }
+        } else {
+            if target_key == source_key {
+                return Err(ProposeError::Refused(RefusalKind::Unchanged));
+            }
+            if target_key.output != source_key.output {
+                return Err(ProposeError::Refused(RefusalKind::CrossDomainMismatch));
+            }
+        }
+        if self
+            .domains
+            .iter()
+            .find(|d| d.key() == target_key)
+            .is_none()
+        {
+            return Err(ProposeError::Refused(RefusalKind::UnknownDomain));
+        }
+        // No tree mutation: desired trees and tiled links are exactly the
+        // retained ones. Only the mover exception rehomes; its flags
+        // (floating-only hold shape) are preserved verbatim.
+        let desired_trees = self.trees.clone();
+        let desired_windows = self.windows.clone();
+        let mut desired_exceptions = self.exceptions.clone();
+        desired_exceptions.insert(
+            window.clone(),
+            ExceptionRecord {
+                window: window.clone(),
+                output: target_key.output.clone(),
+                workspace: target_key.workspace.clone(),
+                flags: record.flags,
+                floating_geometry: record.floating_geometry,
+            },
+        );
+        // Follow selects the target MRU tiled fallback (never the mover:
+        // the slotless mover has no leaf to name, and native follow runs
+        // adapter-side on the mover ref). A target with no focus history yet (fresh/empty-target sends are the norm) falls
+        // back to the window-id-first retained tile so the committed
+        // focus stays resolvable; a member-less target leaves follow
+        // focus null. Stay falls back through the source MRU exactly
+        // like the ordinary transfer, never selecting the target.
+        // Either way the committed focus stays a resolvable tiled leaf
+        // (or null), so later reconciles keep working.
+        let (desired_focus_domain, desired_focus_leaf) = if follow {
+            match self.focus_stack_fallback(&target_key, &desired_trees, &desired_windows) {
+                Some(next) => (Some(target_key.clone()), Some(next)),
+                None => match desired_windows
+                    .iter()
+                    .find(|(_, link)| {
+                        link.output == target_key.output && link.workspace == target_key.workspace
+                    })
+                    .map(|(_, link)| link.leaf.clone())
+                {
+                    Some(first) => (Some(target_key.clone()), Some(first)),
+                    None => (None, None),
+                },
+            }
+        } else {
+            match self.focus_stack_fallback(&source_key, &desired_trees, &desired_windows) {
+                Some(next) => (Some(source_key.clone()), Some(next)),
+                None => (None, None),
+            }
+        };
+        if !validate_topology(
+            &self.domains,
+            &desired_trees,
+            &desired_windows,
+            &desired_exceptions,
+            &desired_focus_domain,
+            &desired_focus_leaf,
+        ) {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        // Projected affected geometry must still cover the retained tiled
+        // members exactly: with no tree change the allocations are
+        // retained, never reflowed (the slotless mover takes none).
+        let affected = vec![source_key.clone(), target_key.clone()];
+        let desired_geometry = project_affected_geometry(
+            &self.domains,
+            &desired_trees,
+            &desired_windows,
+            &affected,
+            &hints_from_observed(&session_observation.windows),
+        )
+        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        if desired_geometry.iter().any(|g| &g.window == window) {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        let desired_snapshot = self.snapshot_for(&desired_trees, &desired_windows);
+        let intent = if allow_cross_output {
+            LifecycleIntent::MoveToOutput {
+                window: window.clone(),
+                target_output: target_key.output.clone(),
+                target_workspace: target_key.workspace.clone(),
+                follow,
+            }
+        } else {
+            LifecycleIntent::MoveToWorkspace {
+                window: window.clone(),
+                target_output: target_key.output.clone(),
+                target_workspace: target_key.workspace.clone(),
+                follow,
+            }
+        };
+        let operation = LifecycleOperation::MoveDeferred {
+            window: window.clone(),
+            source_output: source_key.output.clone(),
+            source_workspace: source_key.workspace.clone(),
+            target_output: target_key.output.clone(),
+            target_workspace: target_key.workspace.clone(),
+        };
+        let plan = LifecyclePlan::for_operation(intent, operation);
+        let dispatch = match self.reconciler.propose_lifecycle(
+            &plan,
+            &session_observation.observation,
+            correlation_id,
+            capabilities,
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(crate::reconcile::ProposeError::PendingExists) => {
+                return Err(ProposeError::PendingExists);
+            }
+            Err(crate::reconcile::ProposeError::Diverged(reason)) => {
+                self.pending_desired = None;
+                self.drag = None;
+                return Err(ProposeError::Diverged(reason));
+            }
+        };
+        self.pending_desired = Some(PendingDesired {
+            trees: desired_trees.clone(),
+            windows: desired_windows.clone(),
+            focused_domain: desired_focus_domain.clone(),
+            focused_leaf: desired_focus_leaf.clone(),
+            last_active: self.updated_last_active(
+                &desired_focus_domain,
+                &desired_focus_leaf,
+                &desired_trees,
+                &desired_windows,
+            ),
+            exceptions: desired_exceptions,
+            retained_float_geometry: self.retained_float_geometry.clone(),
+            automatic_fixed: self.automatic_fixed.clone(),
+            fixed_tile_override: self.fixed_tile_override.clone(),
+        });
+        let target_bounds = self
+            .domains
+            .iter()
+            .find(|d| d.key() == target_key)
+            .map(|d| d.bounds)
+            .expect("deferred target domain");
+        let target_leaves = desired_trees
+            .get(&target_key)
+            .cloned()
+            .flatten()
+            .map(|tree| collect_leaves(&tree).len())
+            .unwrap_or(0);
+        self.last_send_placement = Some(crate::session::SendPlacementTrace {
+            anchor_kind: "deferred",
+            anchor: None,
+            axis: self.policy().admission_axis_for_rect(&target_bounds),
+            projected: target_bounds,
             target_leaves,
         });
         Ok(SessionPlan {

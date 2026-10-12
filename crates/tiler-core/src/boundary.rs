@@ -326,7 +326,8 @@ impl TiledPlan {
 
 /// Typed workspace-send success plan: base revision, policy version, full
 /// desired geometry, retained focus, follow/stay selection, and the exact
-/// `MoveTiled` operation plus lifecycle preconditions for native assignment.
+/// `MoveTiled` (or slotless `MoveDeferred`) operation plus lifecycle
+/// preconditions for native assignment.
 /// Construction is fallible (`None` unless the dispatch carries both the
 /// `MoveTiled` operation and an explicit send intent with its
 /// follow/stay selection); the caller maps that to its existing
@@ -349,9 +350,10 @@ pub struct SendWorkspacePlan {
 impl SendWorkspacePlan {
     /// Typed construction from an authoritative workspace [`SessionPlan`]:
     /// requires an explicit send intent (which carries the
-    /// follow/stay selection) alongside the `MoveTiled` operation. A
-    /// `MoveTiled` operation under any other intent is not a send
-    /// and refuses.
+    /// follow/stay selection) alongside the `MoveTiled` operation or the
+    /// slotless `MoveDeferred` operation (D28 born-fullscreen carry: window
+    /// plus source/target identities, no leaf). A move operation under any
+    /// other intent is not a send and refuses.
     #[must_use]
     pub fn from_session(plan: &SessionPlan) -> Option<Self> {
         let follow = match &plan.dispatch.intent {
@@ -360,16 +362,18 @@ impl SendWorkspacePlan {
             _ => return None,
         };
         match &plan.dispatch.operation {
-            LifecycleOperation::MoveTiled { .. } => Some(Self {
-                base_revision: plan.dispatch.base_revision,
-                policy_version: plan.dispatch.policy_version,
-                geometry: plan.desired_geometry.clone(),
-                focus_domain: plan.desired_focus_domain.clone(),
-                focus_leaf: plan.desired_focus_leaf.clone(),
-                follow,
-                operation: plan.dispatch.operation.clone(),
-                preconditions: plan.dispatch.preconditions.clone(),
-            }),
+            LifecycleOperation::MoveTiled { .. } | LifecycleOperation::MoveDeferred { .. } => {
+                Some(Self {
+                    base_revision: plan.dispatch.base_revision,
+                    policy_version: plan.dispatch.policy_version,
+                    geometry: plan.desired_geometry.clone(),
+                    focus_domain: plan.desired_focus_domain.clone(),
+                    focus_leaf: plan.desired_focus_leaf.clone(),
+                    follow,
+                    operation: plan.dispatch.operation.clone(),
+                    preconditions: plan.dispatch.preconditions.clone(),
+                })
+            }
             _ => None,
         }
     }

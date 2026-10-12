@@ -1347,6 +1347,54 @@ impl Session {
         (source_focus, target_focus)
     }
 
+    /// Deferred-transfer rest matching: like [`Session::observed_known_match`]
+    /// but exempting exactly the held mover `except`, whose native
+    /// send-route flags bind through [`Session::deferred_send_eligible`]
+    /// instead. Every other tiled link and exception binds exactly, and
+    /// any extra observed identity refuses by count, so this also proves
+    /// the completeness the ordinary transfer checks separately (the
+    /// transfer adds/removes no window identity).
+    fn observed_rest_match(&self, observed: &[ObservedWindow], except: &WindowId) -> bool {
+        let by_id: BTreeMap<&WindowId, &ObservedWindow> =
+            observed.iter().map(|w| (&w.window, w)).collect();
+        for (id, link) in &self.windows {
+            let Some(entry) = by_id.get(id) else {
+                return false;
+            };
+            if entry.output != link.output || entry.workspace != link.workspace {
+                return false;
+            }
+            if self.fixed_admission {
+                if entry.floating {
+                    return false;
+                }
+            } else if entry.flags().any() {
+                return false;
+            }
+        }
+        for (id, record) in &self.exceptions {
+            if id == except {
+                continue;
+            }
+            let Some(entry) = by_id.get(id) else {
+                return false;
+            };
+            if entry.output != record.output || entry.workspace != record.workspace {
+                return false;
+            }
+            if self.fixed_admission {
+                if entry.floating != record.flags.floating {
+                    return false;
+                }
+            } else if entry.flags() != record.flags {
+                return false;
+            }
+        }
+        // No extra observed identity beyond the known set (duplicate
+        // window ids collapse in the map above, so count exactly).
+        observed.len() == self.windows.len() + self.exceptions.len()
+    }
+
     fn observed_known_match(
         &self,
         observed: &[ObservedWindow],

@@ -2437,11 +2437,22 @@ impl Engine {
             }
         };
         if !session.sync_focus_from_window(&source_key, &event.focused_window) {
-            let kind = RefusalKind::FocusMismatch;
-            return CoreReply::Rejected {
-                kind: kind.as_str(),
-                message: kind.message(),
-            };
+            // D28 slotless carry: an explicit focused mover that is a held
+            // born-fullscreen exception transfers without a tiled link.
+            // Bookkeeping focus falls back to a tiled MRU (never the
+            // mover); native follow/stay runs adapter-side while the
+            // exception rehomes through the deferred transfer below.
+            // Anything else still refuses as `FocusMismatch`.
+            let mover = WindowId(window.clone());
+            if window != &event.focused_window.0
+                || !session.deferred_send_eligible(&mover, &source_key, &observation.windows)
+            {
+                let kind = RefusalKind::FocusMismatch;
+                return CoreReply::Rejected {
+                    kind: kind.as_str(),
+                    message: kind.message(),
+                };
+            }
         }
         let session_command = if output_send {
             SessionCommand::MoveToOutput {

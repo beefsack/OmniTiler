@@ -457,6 +457,19 @@ pub enum LifecycleOperation {
         target_output: OutputId,
         target_workspace: WorkspaceId,
     },
+    /// Slotless exception-member transfer (D28 born-fullscreen carry): the
+    /// mover keeps its held exception record with only the homing
+    /// output/workspace retargeted. No leaf exists (never fabricated), no
+    /// tree mutation, no allocation change. The explicit send intent
+    /// (`MoveToWorkspace`/`MoveToOutput` with follow/stay) carries the
+    /// follow selection exactly like [`LifecycleOperation::MoveTiled`].
+    MoveDeferred {
+        window: WindowId,
+        source_output: OutputId,
+        source_workspace: WorkspaceId,
+        target_output: OutputId,
+        target_workspace: WorkspaceId,
+    },
     ToggleOrientation {
         window: WindowId,
         leaf: NodeId,
@@ -473,7 +486,7 @@ impl LifecycleOperation {
         match self {
             Self::Admit { .. } | Self::AdmitDeferred { .. } => LifecycleCapability::AdmitTiled,
             Self::Remove { .. } | Self::RemoveDeferred { .. } => LifecycleCapability::RemoveTiled,
-            Self::MoveTiled { .. } => LifecycleCapability::MoveTiled,
+            Self::MoveTiled { .. } | Self::MoveDeferred { .. } => LifecycleCapability::MoveTiled,
             Self::ToggleOrientation { .. } => LifecycleCapability::ToggleOrientation,
         }
     }

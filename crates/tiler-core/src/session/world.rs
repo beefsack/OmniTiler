@@ -428,6 +428,52 @@ impl super::Session {
         true
     }
 
+    /// Whether an exception member is eligible for the slotless deferred
+    /// send transfer (D28 born-fullscreen carry, option (a)).
+    ///
+    /// Only the held born-fullscreen shape carries: a retained
+    /// floating-only exception (the synthetic initial hold, never an
+    /// intentional float/sticky/maximized record) homed on `source`,
+    /// observed still fullscreen with the native send-route flags
+    /// (never floating there, never maximized/sticky, no fixed-size
+    /// origin signals). Hints are advisory and never gate. Anything
+    /// else (tiled members, unknown windows, plain floats, sticky,
+    /// maximized, exited movers, wrong homing) is ineligible, so the
+    /// D16 intentional-float gap stays refused elsewhere.
+    pub fn deferred_send_eligible(
+        &self,
+        window: &WindowId,
+        source: &DomainKey,
+        observed: &[ObservedWindow],
+    ) -> bool {
+        let Some(record) = self.exceptions.get(window) else {
+            return false;
+        };
+        if record.output != source.output || record.workspace != source.workspace {
+            return false;
+        }
+        if !(record.flags.floating
+            && !record.flags.fullscreen
+            && !record.flags.maximized
+            && !record.flags.sticky)
+        {
+            return false;
+        }
+        let Some(entry) = observed.iter().find(|w| &w.window == window) else {
+            return false;
+        };
+        if entry.output != source.output || entry.workspace != source.workspace {
+            return false;
+        }
+        if entry.floating || !entry.fullscreen || entry.maximized || entry.sticky {
+            return false;
+        }
+        if entry.fixed_auto || entry.fixed_suppress {
+            return false;
+        }
+        true
+    }
+
     /// Number of tracked exception windows.
     #[must_use]
     pub fn exception_count(&self) -> usize {
