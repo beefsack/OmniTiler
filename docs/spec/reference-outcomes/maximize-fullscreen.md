@@ -536,17 +536,23 @@ rectangles where geometry is load-bearing.
   NORMATIVE KDE fullscreen carry D28 (b) User 2026-10-12
   ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)):
   explicit numbered/relative follow/stay send moves the window to the target
-  workspace still fullscreen. NEEDS CODE at `fafcd31`: current refusal at
-  `workspace-send-adapter.ts:488-490` and
-  `workspace-send-adapter-entry.ts:459-471` is the gap. Tier basis (original
+  workspace still fullscreen. Delivered offline: shared MoveDeferred slotless
+  hold (window plus source/target, no leaf) with no tree mutation or
+  geometry writes to mover or survivors, source admission absent, native
+  desktop move only, still-fullscreen slotless target until D5 first exit
+  destination admission; tiled send contracts and overlay
+  identity/flag/scope/correlation/arrival/follow/stay fences intact.
+  Production-path cross-output integration not covered, wire plus mock-output
+  covered. Tier basis (original
   triage tally): i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm
   context, COSMIC/Hyprland untraced in that tally, no evidenced alternative,
   no setting. Gaming: explicit commands honoured;
   no unsolicited fullscreen writes; preserve the flag, avoid tiling geometry
   writes beyond native move requirements. Native fullscreen-send journey
-  including a real game is a must-pass live check, outcome TBD; if native
+  including a real game is a must-pass live check, outcome TBD, user-owned; if native
   shows KWin cannot carry without dropping/corrupting fullscreen, stop and
-  return to the user. Separate from whole-workspace output migration D8.
+  return to the user ([record](../../changes/archive/kde-fullscreen-activation-and-send.md)).
+  Separate from whole-workspace output migration D8.
 - Then Ours Windows: a tiled maximized B sends through the retained
   Engine route (flag recheck, target allocation kept, overlay geometry
   never writes) with explicit follow/stay. Same-output numbered/relative

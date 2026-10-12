@@ -286,8 +286,10 @@ is the observation-driven proposal, never the native verb.
   leg applicable (fullscreen strip marker) but close-from-fullscreen
   journey untraced. `S(S-pan-axfs)` + `S(S-pan-fsfocus)`; queued.
 - Then Ours KDE: Engine removes the tile with desired focus A;
-  portables keep overlays tiled so no restore exists; native overlay
-  cleanup TBD. `S(S-ours-close)`; selected removal plus survivor refill/focus
+  portables keep overlays tiled so no restore exists; delivered offline with
+  exact full-domain survivor geometry plus focus; native overlay cleanup TBD,
+  user-owned ([record](../../changes/archive/kde-fullscreen-activation-and-send.md)).
+  `S(S-ours-close)`; selected removal plus survivor refill/focus
   (User 2026-10-12 D01 / CLOSE-05 (a), [decision](../../decisions.md#placement-minimums-and-startup-adoption)); queued.
 - Then Ours Windows: same Engine removal and desired focus A; native
   cleanup TBD. `S(S-ours-close)`; same CLOSE-05 selection, queued.

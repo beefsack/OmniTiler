@@ -1105,9 +1105,12 @@ platform API behavior.
   host-approved activation, host denial and explicit user switching (e.g.
   Alt+Tab). Never write B's fullscreen geometry; OmniTiler never actuates focus
   while a fullscreen window is involved. The native activation ownership rule
-  also applies to maximized B. KDE convergence needs a fullscreen focus fence;
-  [research](research/d01-fullscreen-admission.md). CLOSE-05 (a): removal plus
-  survivor refill and focus; native cleanup remains live-pending.
+  also applies to maximized B. KDE convergence's automatic focus fence is
+  delivered offline, including a foreground re-read after geometry application;
+  explicit focus shortcuts and send-follow/stay remain effective. CLOSE-05 (a)
+  removal/refill/focus is verified offline; native cleanup remains live-pending
+  ([record](changes/archive/kde-fullscreen-activation-and-send.md);
+  [research](research/d01-fullscreen-admission.md)).
 - User decision 2026-10-12, D03: INS-01b uses After focused; INS-04 (a)
   reapplies the policy per admission leg (legs 2-3 live-pending).
   No `New window position` setting: Before focused is held only by Tier 2
@@ -1924,8 +1927,9 @@ platform API behavior.
   workspace and it remains fullscreen there, matching maximized carry G-D2
   and approved Windows carry (handoff item 9). The user rejected the recommended
   refusal hold: sending a fullscreen window, e.g. a game, is an explicit user
-  action and should be honoured. Replacing the current refusal needs code;
-  it is no longer a listed 0.1 known issue.
+  action and should be honoured. The refusal is replaced offline for both
+  retained tiles and never-tiled born-fullscreen members; it is no longer a
+  listed 0.1 known issue ([record](changes/archive/kde-fullscreen-activation-and-send.md)).
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User clarification 2026-10-12, D28 born-fullscreen option (a): explicit
   numbered/relative follow/stay sends also carry never-tiled born-fullscreen
@@ -1934,9 +1938,8 @@ platform API behavior.
   source admission before transfer. On its first fullscreen exit, apply the
   existing D5 fresh-admission rule on the destination workspace. Preserve the
   fullscreen flag and geometry protections; focus writes are limited to the
-  established explicit follow/stay semantics. Prefer shared exception-member
-  send/focus support; a required architectural change needs review before
-  implementation. This clarification does not alter Windows delivery claims.
+  established explicit follow/stay semantics. Shared exception-member send/focus
+  support is selected below. This clarification does not alter Windows delivery claims.
 - Deferred-transfer extension selected 2026-10-12: add a shared slotless-member
   operation with window/source/target identities and no leaf; extend shared
   exception-member send/focus handling without mutating either tree. KDE applies
@@ -1944,6 +1947,15 @@ platform API behavior.
   existing fences. This is an additive extension within the existing
   architecture. Existing tiled contracts remain intact; Windows changes are
   limited to compilation support for the added variant.
+- Delivered offline: shared `MoveDeferred` carries the window/source/target
+  without a leaf, preserving the held exception and both trees. KDE accepts
+  empty affected geometry for this operation, verifies the captured mover and
+  native arrival, and performs no geometry setters for deferred sends. Shared
+  follow focus retains a resolvable target tiled MRU (or null for an empty
+  target) as bookkeeping; native follow focuses the moved window, while stay
+  uses the source MRU. Initial hold/send/destination hold/first-exit coverage
+  uses one real Planner instance; native/game acceptance remains pending
+  ([record](changes/archive/kde-fullscreen-activation-and-send.md)).
 - D28 [tier basis](#reference-tiers), original triage tally: i3/sway (Tier 1)
   plus qtile/awesome (Tier 2) carry; bspwm is context. COSMIC/Hyprland were
   untraced in that tally; no evidenced alternative, no setting. Detailed
@@ -1955,8 +1967,8 @@ platform API behavior.
   the native workspace move requires. Native KDE fullscreen-send acceptance,
   including a real game, is a must-pass live check. If native observation
   during implementation shows KWin cannot carry without dropping or corrupting
-  fullscreen, stop and return to the user. Current refusal paths are a
-  [revision-bound implementation gap](backlog.md); native outcome remains TBD.
+  fullscreen, stop and return to the user. Implementation gaps are closed
+  offline; [native verification](backlog.md) remains pending, outcome TBD.
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
 - R-FLT-12: focusing an overlapping float raises it; no project lower verb for now (User 2026-10-10, 0.1 triage D20).

@@ -115,8 +115,9 @@ decisions of 2026-09-24 are under
 - P1 | 0.1 triage decisions - implementation and verification (KDE/shared) |
   D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 approved by
   User 2026-10-12. Historical gap assessment at `fafcd31`, D01 refined by
-  [research](research/d01-fullscreen-admission.md) at `01be284`; no behavior
-  implemented by this record. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
+  [research](research/d01-fullscreen-admission.md) at `01be284`. D01 and D28
+  are delivered offline ([record](changes/archive/kde-fullscreen-activation-and-send.md));
+  native acceptance remains pending. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
   Verification-only means a matching mechanism exists, not native acceptance.
   Approved units include contingent fixes if live outcomes differ, subject to
   their recorded return-to-user conditions.
@@ -124,7 +125,7 @@ decisions of 2026-09-24 are under
 
   | Unit | Gap assessment | One-line reason / source |
   | --- | --- | --- |
-  | D01 | approved; needs code (fullscreen focus fence); close verification-only | KDE convergence must preserve native activation/denial and explicit switching, never actuating focus while fullscreen is involved. Slots/geometry guards exist, divergent focus writes are unfenced ([source assessment](research/d01-fullscreen-admission.md#current-omnitiler-kde-behavior)); joint native admission/overlay-close cleanup pending. |
+  | D01 | delivered offline; native verification pending | KDE automatic convergence re-observes before focus and fences overlay/native-focus races; admission retains slots/state and explicit switching/shortcuts remain effective. Shared fixtures verify host-approved/denied admission and exact CLOSE-05 removal/refill/focus. Joint native admission/overlay-close cleanup pending ([record](changes/archive/kde-fullscreen-activation-and-send.md)). |
   | D03 | verification-only | After-focused `[old,new]` and per-admission focus anchor exist (`crates/tiler-core/src/session.rs:2218-2231`, `crates/tiler-core/src/session/ops/lifecycle.rs:374-384`); chained legs 2-3 need live pointer/focus proof. |
   | D09 | verification-only | R-MOV-06 two-child neighbor uses middle index `len/2` (`crates/tiler-core/src/directional.rs:907-918`, `crates/tiler-core/src/session/ops/move.rs:897-905`); exact native fixture pending. |
   | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
@@ -136,7 +137,7 @@ decisions of 2026-09-24 are under
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D27 | approved; KDE trace-first, then verification-only or contingent code | Default Mark urgent only, no workspace/focus change; fullscreen/game-focused guard urgency-only in both modes. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin and conflict with D01, so stop and return to the user before code. Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
-  | D28 | approved (b); needs KDE code for 0.1 | Honour explicit fullscreen send (follow/stay, numbered/relative), arriving still fullscreen. Current refusal is the gap (`kwin/src/workspace-send-adapter.ts:488-490`, `kwin/src/workspace-send-adapter-entry.ts:459-471` at `fafcd31`, revision-bound), not a listed 0.1 known issue. Preserve fullscreen flag; no unsolicited writes or tiling geometry writes beyond native move requirements. Native KDE journey including a real game is must-pass; if KWin drops/corrupts fullscreen during native observation, stop and return to user. No setting; native outcome TBD. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
+  | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
   - D16 implementation queue: first verify the untested native R-WS-05
     roundtrip (WS1 -> WS2 -> WS1); then shared-core float transfer eligibility/
@@ -158,12 +159,15 @@ decisions of 2026-09-24 are under
     reloads persisted gaps/settings and observes host set/membership/maximize;
     cross-login intentional-float loss is the approved 0.1 limitation.
     Verification-only; no saved-layout restore or D26 code work.
-  - D28 implementation queue: KDE fullscreen carry for explicit workspace
-    sends in 0.1, with existing arrival/lifetime/follow/stay fences and the
-    fullscreen flag retained. Avoid tiling geometry writes beyond native
-    movement and unsolicited fullscreen writes. Must-pass native acceptance
-    covers numbered/relative follow/stay and a real game; stop and return to
-    user if native KWin cannot carry without dropping/corrupting fullscreen.
+  - D01/D28 verification queue: compare tiler-off/on native admission over
+    maximized/fullscreen B, host-approved/denied activation and explicit
+    switching; verify overlay-close cleanup. D28 must-pass native acceptance
+    covers numbered/relative follow/stay and a real game, both retained and
+    never-tiled born-fullscreen. The latter stays slotless with neither source
+    nor target reflow until D5 exit admits on the destination; include sole
+    held source and empty target. Record native flag/membership/view/focus,
+    geometry and visible/input state; stop and return to the user if KWin
+    drops/corrupts fullscreen.
   - Windows impact: shared core fixes serve Windows; Linux work owns KDE/core,
     Windows adapter/settings/native work goes to handoff item 22 below.
     D23 Windows retained allocation is a divergence to change to the approved
@@ -2725,15 +2729,15 @@ decisions of 2026-09-24 are under
     follow/stay without restoring the mover. Native-boundary sends use
     `workspace_do_send_native`. KDE reference:
     `observeSendTarget` / `observeOutputSendTarget` and same-output
-    `workspace-send-adapter-entry.ts` observer admit maximize while refusing
-    fullscreen/float/sticky/independent fit exclusions;
+    `workspace-send-adapter-entry.ts` observer admit maximize/fullscreen while
+    refusing float/sticky/independent fit exclusions;
     `WorkspaceSendAdapter.crossOutputMoverLive` / `apply` require flag-stable
     arrival and skip overlay geometry. Port
     `workspace-send-maximized-carry.test.ts` follow/stay and `output-send.test.ts`
     cross-output carry/flag races. Actual KDE native maximize carry is pending
     observation; no restore/remaximize workaround was inferred offline.
-    Fullscreen stays item 9/Table A 2026-10-07; KDE D28 carry needs code
-    and whole-workspace D8 carry remain distinct. Acceptance: maximize on
+    Fullscreen stays item 9/Table A 2026-10-07; KDE D28 carry is delivered
+    offline and whole-workspace D8 carry remains distinct. Acceptance: maximize on
     arrival, source reflow/target slot and follow/stay, native unmaximize on
     target; live checks pending, fullscreen controls unchanged.
 
@@ -2752,8 +2756,8 @@ decisions of 2026-09-24 are under
     D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 are approved;
     no triage units remain tentative.
     Shared core delivery serves Windows; Windows adapter/native work follows
-    the shared contract. D01's fullscreen focus fence is shared/KDE
-    focus-path work; Windows has its own foreground rules. Consider native
+    the shared contract. D01's fullscreen focus fence is delivered in KDE
+    with shared verification; Windows has its own foreground rules. Consider native
     approval/denial and explicit switching in the Windows handoff, without
     importing KWin stacking or asserting a Windows fence gap. D03/D09/D10/
     D12/D13 use existing shared defaults, with native verification pending.
@@ -3154,7 +3158,10 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
     no unsolicited fullscreen writes. Record flag, source/target membership,
     view/focus, visible/input state and native geometry/write behavior. If
     KWin cannot carry without dropping/corrupting fullscreen, stop and return
-    to the user. Implementation and native/game acceptance remain pending.
+    to the user. Implementation is delivered offline; native/game acceptance
+    remains pending. Repeat with a never-tiled born-fullscreen B: no source
+    admission or source/target reflow, slotless target hold retained, first
+    exit admits at destination. Include a sole held source and empty target.
 
 - KDE two-candidate output move/send/migration (offline delivered 2026-10-09):
   use one wide source and two outputs touching the requested edge. Exhaust local
@@ -3586,7 +3593,8 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
   requirement rows; no PROVISIONAL requirement rows remain. KDE fullscreen
-  carry is selected under NORMATIVE REQ-MAX-09b (D28 (b)); code/native gaps remain.
+  carry is delivered offline under NORMATIVE REQ-MAX-09b (D28 (b), with
+  born-fullscreen option (a)); native acceptance remains pending.
   Design questions remain distinct from delivered implementation/live gaps.
 
 ## Known issues and risks
