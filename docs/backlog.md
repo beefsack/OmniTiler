@@ -261,8 +261,11 @@ decisions of 2026-09-24 are under
   observation/Engine/recovery owner remains. User selected target C
   2026-10-12: stage 1 (complete A) first, then stage 2 (B) early. Selected for
   latency only; parked Win+G/F11 containment is not
-  claimed. Trace-off and release-build drag comparison is still useful as a
-  baseline. [Design](research/windows-port/owner-threading.md),
+  claimed. Stage 1 offline-delivered 2026-10-12 (`ba2eb66`, CI green): both
+  LL hooks and classifiers on a dedicated input pump; physical drag
+  smoothness (dev/release, trace on/off), chord/Win+drag/Esc and stop/restore
+  checks pending before stage 2
+  ([record](changes/archive/windows-input-thread.md)). [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Cross-platform
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
