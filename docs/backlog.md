@@ -41,10 +41,11 @@ decisions of 2026-09-24 are under
     ([evidence](changes/archive/release-0.1-core-settings.md)); effect companion
     is effect-only. Remaining: OBS tag-to-stable source/checksum handoff, accounts/provisioning,
     license audit/CI gate, runtime/solver validation. OBS/AUR names are
-    `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). Ubuntu native ECM
-    floor (effect only) has a verified lower-floor build route; follow-up
-    found a separate KWin 6.7 script API floor blocking stock Ubuntu tiling.
-    Support scope awaits decision; neon provisioning remains blocked.
+    `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). KWin 6.6 support
+    delivered offline: both Debian packages built from one archive on Ubuntu
+    26.04 release/updates and 26.10; effect exactly pins its KWin distro build.
+    Ubuntu live/solver acceptance remains; neon provisioning remains blocked.
+    [Compatibility delivery](changes/archive/kwin-6.6-support.md).
     [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
   - External NixOS/Home Manager validation (P1 gate).
@@ -57,16 +58,14 @@ decisions of 2026-09-24 are under
   ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
-- P1 | Ubuntu native effect research | research done, awaiting user decision
-  (2026-10-11, support-floor follow-up complete). Ubuntu base KWin 6.6.4 and
-  updates 6.6.6 effect builds pass with ECM 6.24, including six offline checks;
-  full-product support is separately blocked by required KWin 6.7 scripting
-  APIs (shared mode does not repair observation). Debian 13 Settings build
-  on ECM 6.13; core needs newer Rust, and effect still lacks a KWin header
-  after ECM/Rust workarounds. Recommend KWin 6.7 for unchanged 0.1 scope,
-  or a separate older-KWin compatibility decision before Ubuntu delivery.
-  Plasma 5 is unsupported as-is; runtime/solver/OBS acceptance remains open.
-  [Compatibility table, evidence and recommendation](research/distribution-package-feasibility/ubuntu-native-effect.md#support-floor-and-older-distributions).
+- P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
+  2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
+  6.7.5 two-package builds passed. Remaining: full apt install/upgrade solver
+  checks, user-owned shared-workspace/Settings/native-visual journeys on 6.6
+  and per-output regression on 6.7+, OBS target provisioning/source handoff.
+  Plasma 5 and KWin <= 6.5 remain unsupported.
+  [Decision](decisions.md#kde-support-floor),
+  [evidence and live checks](changes/archive/kwin-6.6-support.md).
 - P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
   GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
   [Research and dependency inventory](research/licensing.md). Remaining:
@@ -2693,14 +2692,14 @@ decisions of 2026-09-24 are under
   GitHub Release and OBS distro packages (user 2026-10-10; KDE Store excluded).
   OBS builds release tags only into one stable repository: openSUSE Tumbleweed,
   Fedora 43/44 with updates repos; Arch via AUR PKGBUILD, not OBS pacman.
-  Attempt Ubuntu 26.04 and KDE neon; return to the user for a decision if too
-  challenging. Ubuntu blockers: ECM 6.24 below our 6.26 floor, Node 22 below
-  our 24 floor (pre-built JS bundle in source archive may remove Node need as
-  ordinary engineering); neon OBS provisioning unverified. User creates OBS
+  Ubuntu 26.04/26.10 support delivered offline under the KWin 6.6 floor;
+  [evidence](changes/archive/kwin-6.6-support.md). KDE neon OBS provisioning
+  remains unverified. User creates OBS
   account/project, GitHub-to-OBS token and AUR account next; spec, PKGBUILD
   and OBS service prep may proceed offline.
   Acceptance: core script/planner/tray independent of optional ABI-bound effect;
-  never block KWin updates; mismatched/absent effect degrades borders/drag preview
+  KWin updates remain possible without the companion (Debian exactly pins the
+  compiled-against KWin build); mismatched/absent effect degrades borders/drag preview
   until rebuild. Must-pass missing/failed/removed effect check keeps tiling working
   and KWin stable. Install/uninstall docs, package descriptions and a post-removal
   package note say "press Revert in Settings before removing".
@@ -2712,12 +2711,12 @@ decisions of 2026-09-24 are under
   and Revert guidance. Exact scratch-tag archive built without networking in
   Tumbleweed/Fedora 44 RPM, Arch split and Ubuntu 26.04 Debian containers;
   Fedora 43 passed an earlier source-contract probe. External Nix validation
-  remains separate. Packaging item remains P1: decide Settings ownership
-  when native companion absent (recommend KWin-independent KCMs in core),
-  resolve automated OBS stable-source/checksum update before enabling token,
+  remains separate. Settings ownership is delivered: both KCMs remain in core
+  when the effect is absent. Packaging item remains P1: resolve automated
+  OBS stable-source/checksum update before enabling token,
   confirm first-party licensing/vendor inventory, provision accounts/targets
-  and prove real dependency-solver/live-session behavior. Ubuntu native ECM
-  blocker and neon target provisioning return to the user.
+  and prove real dependency-solver/live-session behavior. Neon target
+  provisioning remains open.
   [Preparation](changes/archive/release-0.1-offline-packaging.md)
 - P2 | Simplify drag preview + cross-output drop code | Post-live cleanup only:
   cut advisory `hover_prior` validation, lag-only fences, verbose comments;

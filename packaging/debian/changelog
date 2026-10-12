@@ -1,8 +1,12 @@
 omnitiler (0.1.0-1) unstable; urgency=medium
 
-  * Tentative 0.1 core-with-Settings recipe for Ubuntu 26.04 offline preparation.
-    Core ships both native settings pages (settings-only CMake build, ECM 6.24
-    floor, no kwin-dev). Native effect still omitted (needs the 6.26 floor
-    plus ABI-matched KWin headers).
+  * 0.1 two-package recipe for Ubuntu 26.04/26.10, offline from the release
+    tarball. Core ships the KWin script, the Rust planner/tray binary, and
+    both native settings pages (settings-only CMake build, ECM 6.24 floor,
+    no kwin-dev; KWin host lower bound 4:6.6). New omnitiler-native-effect
+    companion holds only the ABI-bound active-border effect, built
+    effect-only against the target's own KWin headers and exactly pinned to
+    the libkwin6 distro build compiled against. DEB_BUILD_PROFILES=noeffect
+    keeps a core-only path with no KWin build dependencies.
 
  -- OmniTiler Contributors <noreply@example.com>  Sat, 10 Oct 2026 00:00:00 +0000

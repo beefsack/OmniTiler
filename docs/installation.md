@@ -8,9 +8,10 @@ Package names and repository contents marked "verified Oct 2026"
 were checked against the live distro repositories from disposable
 containers.
 
-Build evidence: the real archive builder ran against an isolated scratch
-tag containing the source changes. The archives built with fresh
-Cargo homes in disposable Docker containers using `--network none`:
+Build evidence: disposable Docker containers built source archives containing
+the revision-stamped JS bundle and vendored Rust crates. Earlier scratch-tag
+builds used fresh Cargo homes with `--network none`; the current Ubuntu and
+Fedora 43 snapshot builds used offline Cargo after distro dependency preparation.
 
 - Tumbleweed and Fedora 43/44: `rpmbuild -bb` produced core and native RPMs.
   Generated KWin dependencies were unversioned names and
@@ -19,9 +20,17 @@ Cargo homes in disposable Docker containers using `--network none`:
   dependencies. `makepkg --printsrcinfo` matched `.SRCINFO`; `namcap`
   found no PKGBUILD errors. Shipping-package dependency warnings remain;
   the generated debug package also has symlink diagnostics.
-- Ubuntu 26.04: `dpkg-buildpackage -us -uc` produced the core-with-Settings `.deb`
-  and source-package metadata. Vendored manifest backups survived cleaning;
-  the tray unit is not automatically enabled.
+- Ubuntu 26.04 release (KWin `4:6.6.4-0ubuntu1`), 26.04 updates
+  (`4:6.6.6-0ubuntu0.1`) and 26.10 (`4:6.7.5-0ubuntu1`): the same exact
+  source archive produced both core-with-Settings and effect-only `.deb`
+  packages with `dpkg-buildpackage -us -uc`. Each effect exactly depends on
+  its compiled-against `libkwin6` build and has the matching factory IID.
+  The `noeffect` profile also built core with both KCMs without `kwin-dev`.
+  Vendored manifest backups survived cleaning; the tray unit is not
+  automatically enabled. [Current evidence](changes/archive/kwin-6.6-support.md).
+- Fedora 43 also rebuilt both RPMs from that same current snapshot with the
+  revised ECM 6.24 requirement. Arch's unchanged recipe parsed successfully;
+  the full Arch build evidence above predates this compatibility delivery.
 - RPM/Ubuntu install probes used `--nodeps`/`--force-depends`, so they
   establish payload installation and binary execution, not full dependency
   solver acceptance. No desktop, D-Bus activation or compositor was started.
@@ -32,6 +41,14 @@ builds use ECM/KF6 6.24 without `kwin-dev`. Detailed evidence is in the
 [archived change record](changes/archive/release-0.1-core-settings.md). Package binaries are
 verification artifacts, not published releases; only the source archive's
 reproducibility is claimed, not identical RPM/DEB payloads.
+
+## Supported KDE versions
+
+KDE 0.1 supports KWin 6.6 and later, including tiling, Settings and the native
+effect. On 6.6 one current desktop applies to every output; a saved per-output
+workspace request degrades to shared with a diagnostic. Per-output workspaces
+require KWin 6.7+. Plasma 5, Debian 13's KWin 6.3.6, and KWin 6.4/6.5 remain
+unsupported. [Support decision](decisions.md#kde-support-floor).
 
 ## Recipe layout (tentative)
 
@@ -47,7 +64,7 @@ per-distro native closure checks before publishing
 | --- | --- |
 | `packaging/rpm/omnitiler.spec` | One spec, two binaries: `omnitiler` (core with Settings) and `omnitiler-native-effect` (effect only). Conditionals cover openSUSE Tumbleweed and Fedora 43/44. |
 | `packaging/arch/PKGBUILD`, `.SRCINFO`, `omnitiler*.install` | Split package (`omnitiler` with Settings, `omnitiler-native-effect` effect only) for AUR-only consumption. No OBS pacman repo: Arch scope is AUR. |
-| `packaging/debian/` | Core-with-Settings `debian/` source dir for Ubuntu 26.04. Native effect intentionally absent (blocker below). |
+| `packaging/debian/` | Two-package `debian/` source dir for Ubuntu 26.04/26.10: core with Settings and an exactly KWin-pinned effect companion. Optional `noeffect` build profile. |
 | `packaging/obs/_service` | Pins the immutable GitHub Release tarball per version and its SHA-256; never a raw git checkout. |
 | `packaging/systemd/` | `omnitiler-tray.service` and `omnitiler-planner.service` user units, mirroring `home-manager-module.nix`. Never auto-enabled by any recipe. |
 | `packaging/bump-version.sh` | Rewrites the pinned version across all recipes for a release (`--version X.Y.Z [--sha256 ...]`). |
@@ -108,12 +125,18 @@ on remove/purge).
 
 ## KWin upgrades: policy and limitation
 
-Core never pins KWin, and the native package depends on KWin unversioned.
-This is deliberate: an exact `Requires` would hold host KWin security
-updates back (zypper proposes keeping the old KWin or removing the effect;
-dnf errors on the transaction; `pacman -Su` fails with a dependency
-break; apt holds the upgrade), while still not proving the loaded `.so`
-matches the running KWin. So:
+Core does not exactly pin KWin; Debian core requires KWin >= 6.6. Debian's
+effect companion depends on the exact `libkwin6` package version it was built
+against, including the distro revision. It must be rebuilt for every KWin
+package update. Until a matching rebuild is available, remove the companion
+to allow the KWin update; core tiling and Settings remain installed. An exact
+dependency can hold an upgrade, and does not prove the running compositor has
+restarted into the installed version. Full apt upgrade-solver acceptance is
+pending.
+
+RPM and Arch retain their unversioned KWin dependencies. Their loader check
+rejects different-version effects; same-version distro ABI patches still
+require rebuilding. For all recipes:
 
 - After every KWin/Plasma upgrade, update the native-effect package to the
   rebuild against the new headers before relying on the effect. Core tiling
@@ -166,27 +189,26 @@ the NixOS module).
   with `cmake(KWin)`, `extra-cmake-modules` 6.30.0, `kf6-*-devel` 6.30.0,
   `qt6-qtbase-devel`, `rust`/`cargo` 1.98.1, `systemd-rpm-macros`). Base
   repos alone may carry older ECM/KDE stacks, so the OBS target must
-  resolve the updates repository; the spec's `>= 6.26.0` ECM floor fails
+  resolve the updates repository; the spec's `>= 6.24.0` ECM floor fails
   closed otherwise. Same spec as Tumbleweed via `%suse_version`/`%fedora`
   conditionals.
 - Arch, AUR only (verified Oct 2026: `kwin` 6.7.5 ships headers, ECM
   6.30.0, unprefixed `kconfig`/`kcmutils`/etc., `rust` 1.99 shipping cargo).
   Split PKGBUILD; local AUR-shaped builds see the user's own KWin. There is
   no OBS pacman repo and none is planned.
-- Ubuntu 26.04 core with Settings (target stack, Oct 2026 apt candidates:
-  `rustc`/`cargo` 1.93.1,
-  `debhelper` 13.31, `extra-cmake-modules` 6.24 with the settings-only 6.24
-  CMake floor, `libkf6*-dev` 6.24, `qt6-base-dev` 6.10, no `kwin-dev`
-  needed for the settings build; end-to-end offline `.deb` build verified).
-  Native effect blocked only by its 6.26 CMake floor (resolute ships
-  extra-cmake-modules 6.24); the distro `kwin-dev` 6.6.x headers match the
-  distro runtime and are not themselves the blocker. The `Recommends:
-  omnitiler-native-effect` in
-  `debian/control` is aspirational until an effect package exists; apt
-  ignores unresolvable Recommends. Runtime KF dependencies for the
-  core-shipped KCMs resolve via shlibdeps into `${shlibs:Depends}`, and the
-  enable/Settings helpers are hard dependencies
-  (`libkf6config-bin`, `libkf6kcmutils-bin`).
+- Ubuntu 26.04 LTS: stock `kwin-dev` 6.6.4 release / 6.6.6 updates,
+  `rustc`/`cargo` 1.93.1, `extra-cmake-modules` and KF6 6.24, Qt6 6.10.
+  Both packages build with the native tree's ECM 6.24 / KWin 6.6 floors;
+  core recommends the effect companion. The single current desktop applies
+  to every output; per-output workspace modes degrade to shared. Core's
+  Settings-only build does not need KWin headers, and
+  `DEB_BUILD_PROFILES=noeffect` builds only core without `kwin-dev`.
+  Runtime KF dependencies resolve through `${shlibs:Depends}`; Settings
+  helpers are hard dependencies (`libkf6config-bin`, `libkf6kcmutils-bin`).
+- Ubuntu 26.10 (release scheduled 2026-10-15): the same Debian recipe built
+  both packages against KWin 6.7.5, ECM 6.29 and stock Rust 1.97.1 in the
+  available image. Per-output workspaces are supported. Each Ubuntu release
+  and KWin package update needs its own matching effect rebuild.
 - KDE neon: no OBS target provisioning exists (upstream
   openSUSE/open-build-service#19317); do not promise it.
 
@@ -225,8 +247,9 @@ and [source-service guide](https://www.open-build-service.org/help/manuals/obs-u
 Rebuild timing honesty: OBS rebuilds after it sees new KWin build
 dependencies (default transitive rebuild), but DoD polling, queue, build,
 and publish latency are unbounded here, so a same-day distro KWin release
-can precede its rebuilt effect. The loose dependency plus the
-versioned-IID check allows version updates without an exact package pin.
+can precede its rebuilt effect. RPM/Arch's loose dependency plus the
+versioned-IID check allows version updates without an exact package pin;
+Debian's exact pin requires a matching rebuild or companion removal first.
 SONAME-breaking host changes and same-version ABI patches still need distro
 transaction/rebuild verification; no solver simulation of those cases was run.
 

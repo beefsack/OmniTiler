@@ -1,10 +1,17 @@
 #!/usr/bin/make -f
-# Tentative 0.1 core-with-Settings recipe for Ubuntu 26.04 (see
-# docs/installation.md). Core ships both native settings pages, built
-# settings-only (OMNITILER_BUILD_EFFECT=OFF): no kwin-dev, no Cargo
-# effect staticlib, ECM floor 6.24 matching resolute's extra-cmake-modules
-# and KF6 6.24 stack. The native effect itself stays absent (needs the 6.26
-# CMake floor plus ABI-matched KWin headers).
+# 0.1 two-package recipe for Ubuntu 26.04/26.10 (see docs/installation.md).
+# Core (omnitiler) ships the KWin script, the Rust planner/tray binary, and
+# both native settings pages, built settings-only
+# (OMNITILER_BUILD_EFFECT=OFF): no kwin-dev, ECM floor 6.24 matching the
+# tested extra-cmake-modules and KF6 stacks. The companion
+# (omnitiler-native-effect) is the ABI-bound active-border effect only,
+# built effect-only (OMNITILER_BUILD_SETTINGS=OFF) against this target's own
+# KWin headers and exactly pinned to the libkwin6 distro build compiled
+# against (see override_dh_gencontrol).
+#
+# Core-only profile: DEB_BUILD_PROFILES=noeffect skips the effect build and
+# drops its Build-Depends (kwin-dev, colorscheme, libdrm, pkg-config), so
+# core-only builders never need KWin headers.
 #
 # Source contract: build from the immutable GitHub Release tarball produced
 # by release.yml (scripts/build-source-archive.sh), which already contains
@@ -32,7 +39,7 @@ override_dh_installsystemduser:
 # the source package clean.
 override_dh_clean:
 	dh_clean -Xvendor
-	rm -rf target build-settings
+	rm -rf target build-settings build-effect
 
 override_dh_auto_build:
 	# Fail closed: the recipe version must match the release tarball.
@@ -55,6 +62,19 @@ override_dh_auto_build:
 	      -DOMNITILER_BUILD_SETTINGS=ON \
 	      -DCMAKE_INSTALL_PREFIX=/usr
 	cmake --build build-settings
+	# ABI-bound effect, effect-only (no Settings rebuild): needs this
+	# target's own KWin headers (find_package(KWin 6.6.0 REQUIRED) fails
+	# closed below that) plus the same offline vendor tree via
+	# OMNITILER_VENDOR_DIR. Skipped under the noeffect profile.
+	if [ -z "$(filter noeffect,$(DEB_BUILD_PROFILES))" ]; then \
+	  OMNITILER_VENDOR_DIR="$$PWD/vendor" cmake -S kwin/native-effect -B build-effect \
+	    -DCMAKE_BUILD_TYPE=Release \
+	    -DBUILD_TESTING=OFF \
+	    -DOMNITILER_BUILD_EFFECT=ON \
+	    -DOMNITILER_BUILD_SETTINGS=OFF \
+	    -DCMAKE_INSTALL_PREFIX=/usr; \
+	  cmake --build build-effect; \
+	fi
 
 override_dh_auto_install:
 	install -Dm755 target/release/omnitiler debian/omnitiler/usr/bin/omnitiler
@@ -77,3 +97,20 @@ override_dh_auto_install:
 	# .so files at compile time, so no .json ships alongside). Runtime KF
 	# dependencies resolve via shlibdeps into ${shlibs:Depends}.
 	DESTDIR=$$(pwd)/debian/omnitiler cmake --install build-settings
+	# Effect plugin only (effect-only build installs just the plugin, so no
+	# Settings files need pruning). Skipped under the noeffect profile.
+	if [ -z "$(filter noeffect,$(DEB_BUILD_PROFILES))" ]; then \
+	  DESTDIR=$$(pwd)/debian/omnitiler-native-effect cmake --install build-effect; \
+	fi
+
+# The effect companion must depend on the exact libkwin6 distro build it was
+# compiled against, including the Debian revision (not only the upstream
+# version): kwin-dev depends on that exact libkwin6, so the installed
+# libkwin6 version at build time is the compiled-against build. Record it as
+# the kwin:Version substvar used in debian/control. Core stays lower-bounded
+# (kwin-wayland|kwin-x11 >= 4:6.6) with no exact pin.
+override_dh_gencontrol:
+	if [ -z "$(filter noeffect,$(DEB_BUILD_PROFILES))" ]; then \
+	  echo "kwin:Version=$$(dpkg-query -W -f='$${Version}' libkwin6)" >> debian/omnitiler-native-effect.substvars; \
+	fi
+	dh_gencontrol

@@ -64,8 +64,9 @@ platform API behavior.
     validation stays P1 in the gate; mainstream packaging becomes P1.
   - OBS builds release tags only into one stable repository. Targets:
     openSUSE Tumbleweed, Fedora 43/44 with updates repos, and Arch via an AUR
-    PKGBUILD (not an OBS pacman repo). Attempt Ubuntu 26.04 and KDE neon;
-    return to the user for a decision if too challenging.
+    PKGBUILD (not an OBS pacman repo). Ubuntu 26.04/26.10 support was selected
+    on 2026-10-11 under [KDE Support Floor](#kde-support-floor). Attempt KDE
+    neon; return to the user for a decision if too challenging.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
@@ -1424,6 +1425,27 @@ platform API behavior.
   after drag finish. AR8 closed 2026-09-24 with the shipped integration kept;
   no endpoint rewrite is selected.
 
+## KDE Support Floor
+
+- User decision 2026-10-11: KDE 0.1 supports KWin 6.6+, including tiling,
+  Settings and the native effect, so stock Ubuntu 26.04 LTS is supported.
+  Plasma 5, Debian 13 (KWin 6.3.6), and KWin 6.4/6.5 remain unsupported.
+- KWin 6.6 has one current desktop on every output. Per-output workspace
+  modes are unavailable: saved/requested per-output modes resolve to shared
+  with an honest diagnostic; migration refuses as unsupported. KWin 6.7+
+  retains its per-output behavior. Detect scripting capability at the narrow
+  workspace seam; native builds require KWin >= 6.6 and ECM >= 6.24.
+- The same Debian source recipe covers Ubuntu 26.04 release/updates and
+  Ubuntu 26.10 (KWin 6.7.5, release scheduled 2026-10-15). Core owns both
+  Settings KCMs and does not exactly pin KWin. The effect companion depends
+  on the exact compiled-against `libkwin6` distro build, including revision,
+  and is rebuilt per KWin package update. Remove the companion if a matching
+  rebuild is unavailable when upgrading KWin; core tiling/Settings remain.
+  RPM/Arch's existing loose KWin dependencies remain unchanged.
+- [Offline delivery and pending live checks](changes/archive/kwin-6.6-support.md),
+  [workspace discriminator](spec/reference-outcomes.md#kwin-66-shared-workspace-fallback),
+  [installation](installation.md).
+
 ## Delivery and Installation
 
 - Unified Settings page: see Settings above. The script KPackage still needs
@@ -1431,35 +1453,35 @@ platform API behavior.
   enabled. Existing live border updates remain live.
 - Release/install paths and targets are selected under
   [Scope and Platform Goals](#scope-and-platform-goals).
-- Split packages (user 2026-10-10): core (KWin script, planner, tray) is
-  independent of an optional ABI-bound native-effect package. Never block KWin
-  updates; when the effect mismatches, fails or is absent/removed, tiling
+- Split packages (user 2026-10-10, Settings ownership 2026-10-11): core
+  (KWin script, planner, tray, both Settings KCMs) is independent of an optional
+  ABI-bound native-effect package. KWin updates must remain possible without
+  the companion; Debian's exact-pin policy is selected above. When the effect
+  mismatches, fails or is absent/removed, tiling
   continues and KWin stays stable, while borders/drag preview degrade until
   rebuild. Missing, failed and removed effect cases are must-pass 0.1 checks.
 - OBS attempt constraints ([research](research/distribution-package-feasibility/obs.md)):
-  Ubuntu 26.04 has ECM 6.24 below our 6.26 floor and Node 22 below our 24
-  floor. A pre-built JS bundle in the source archive may remove the Node
-  build requirement as ordinary engineering during the attempt. KDE neon
-  needs OBS provisioning, which is unverified.
+  the source archive's pre-built JS bundle removes the distro Node build
+  requirement. Ubuntu's ECM/API floors are resolved by the KWin 6.6 delivery
+  above. KDE neon still needs OBS provisioning, which is unverified.
 - Next, the user creates the OBS
   account/project, GitHub-to-OBS token and AUR account. Packaging prep (spec,
   PKGBUILD, OBS service files) may proceed offline before then.
-- Tentative 2026-10-11, pending user review: offline packaging uses
+- Offline packaging uses
   `omnitiler` for core and `omnitiler-native-effect` for the
-  effect plus both native KCMs, with recipes under `packaging/`. Release
+  effect only, with both KCMs in core and recipes under `packaging/`. Release
   archives include the tagged-SHA JS bundle and vendored Rust crates; distro
   builds consume them without Node or network access. User units install
-  inertly, with the tray explicitly enabled by the user. Native dependencies
-  do not pin the KWin package version; KWin's versioned factory IID rejects
+  inertly, with the tray explicitly enabled by the user. RPM/Arch native
+  dependencies do not pin the KWin package version; Debian pins the exact
+  build as selected above. KWin's versioned factory IID rejects
   different-version effects before instantiation. SONAME changes and
   same-version distro ABI patches still need transaction/rebuild validation.
   [Preparation and evidence](changes/archive/release-0.1-offline-packaging.md).
-- Open product question from the split: without the companion, core tiles but
-  Settings/Configure and its Revert actions are unavailable. Recommendation:
-  move the KWin-independent KCMs into core or a non-effect settings companion,
-  leaving only the effect ABI-bound. Not approved or implemented. Ubuntu's
-  core-only package builds offline; its native companion remains blocked by
-  ECM 6.24 below 6.26, and neon provisioning remains unresolved.
+- Settings ownership is resolved under [Settings, Tray and First-Run](#settings-tray-and-first-run):
+  removing only the companion preserves Settings/Configure/Revert in core.
+  Ubuntu's core and effect packages build offline; neon provisioning remains
+  unresolved.
 - Offline preparation does not complete OBS delivery: the guarded post-release
   tag webhook exists, but `trigger_services` cannot update the stable
   package's pinned source URL/checksum. Keep `OBS_TOKEN` unset until that

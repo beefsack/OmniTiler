@@ -92,6 +92,14 @@ lifetime, linking existing fixtures:
 | --- | --- | --- | --- |
 | Native companion removed | Install core and companion; use Settings Fix once; close Settings; remove only the companion; open another ordinary window; choose tray Settings or KWin Scripts Configure | Core owns script/planner/tray; the script's `X-KDE-ConfigModule` and tray Settings depend on the companion KCM. Removal does not restore prior host keys. [Packaging record](../changes/archive/release-0.1-offline-packaging.md) | Tiling must continue and KWin remain stable per approved 0.1 gate; physical outcome TBD. Settings/Revert availability is a product decision, TBD; recommendation is a KWin-independent KCM in core or a non-effect settings companion. Reference-WM equivalents TBD, not inferred |
 
+### KWin 6.6 shared-workspace fallback
+
+User decision 2026-10-11; [support floor](../decisions.md#kde-support-floor).
+
+| Variant | Minimal action sequence | Ours KDE offline outcome | Unsupported / physical outcomes |
+| --- | --- | --- | --- |
+| Saved per-output mode on 6.6 | On two outputs with WS1 current, start with a saved per-output mode; switch to WS2 from one output | Effective mode is shared with a degradation diagnostic; WS2 is current on both outputs. Migration refuses `per-output-unsupported`. [Legacy fixtures](../../kwin/tests/kwin-66-compat.test.ts) also cover cross-output send/follow and stay | KWin 6.7+ keeps per-output behavior; native focus/visibility and Settings journey TBD, user-owned. Plasma 5 / KWin <= 6.5 unsupported; exact reference-WM sequence TBD |
+
 ## Notation
 
 - `H[a,b,c]` horizontal split, children left to right.
@@ -131,7 +139,7 @@ lifetime, linking existing fixtures:
 | PaperWM | Source `8bf6dd264f60d6c0c402b63df7b424b888959a48` | Shipped schema: `open-window-position` 0 (RIGHT of current window), `default-focus-mode` 0 (DEFAULT) (`S(S-pap-base)` plus README corroboration); verify per-case option overrides |
 | karousel | Source `8b9f0b62b2922703d7c25a79d5d49ae93cd3f93b` | Shipped `src/lib/config/definition.ts`: widths 50%/100%, Lazy scrolling on, Centered/Grouped off, no default stack (`S(S-kar-base)`); single-screen profile |
 | paneru | Source `b1b6abbd3f1a4be138152b6f0389c9ff1b27a269` | Shipped config defaults (`S(S-pan-base)`); no custom rules; freeze virtual-workspace/native-tab options per case; macOS live evidence unavailable on this host |
-| Ours KDE | Current `kwin/` adapter + shared Engine (`cosmic_v1`) | `per-output-local` default; gaps 8/8 |
+| Ours KDE | Current `kwin/` adapter + shared Engine (`cosmic_v1`) | Requested `per-output-local` default; effective shared on KWin 6.6, per-output on 6.7+; gaps 8/8 |
 | Ours Windows | Current `tiler-windows` + shared Engine | One 2560x1440 output, DPI 120/125%, gaps 8 |
 
 Existing user tests often have unknown tested versions/config. Where

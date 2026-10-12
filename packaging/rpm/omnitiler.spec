@@ -28,17 +28,17 @@ BuildRequires:  systemd-rpm-macros
 # recipe independent of the kwin6-devel (openSUSE) / kwin-devel (Fedora)
 # package-name split; both providers were verified to supply cmake(KWin).
 BuildRequires:  cmake(KWin)
-# ECM floor is the effect's hard CMake requirement
-# (kwin/native-effect/CMakeLists.txt: find_package(ECM 6.26.0 REQUIRED) when
-# the effect builds; the KWin-independent settings KCMs need only 6.24.0).
-# This recipe always builds the full native tree, so the 6.26.0 floor stays.
+# ECM floor is the native tree's tested CMake requirement
+# (kwin/native-effect/CMakeLists.txt: find_package(ECM 6.24.0 REQUIRED);
+# the KWin-independent settings KCMs need only the same 6.24.0).
+# This recipe always builds the full native tree, so the 6.24.0 floor stays.
 %if 0%{?suse_version}
-BuildRequires:  kf6-extra-cmake-modules >= 6.26.0
+BuildRequires:  kf6-extra-cmake-modules >= 6.24.0
 BuildRequires:  qt6-base-devel
 # KWin's CMake config pulls Qt6Quick (not required by kwin6-devel itself).
 BuildRequires:  qt6-quick-devel
 %else
-BuildRequires:  extra-cmake-modules >= 6.26.0
+BuildRequires:  extra-cmake-modules >= 6.24.0
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
 %endif

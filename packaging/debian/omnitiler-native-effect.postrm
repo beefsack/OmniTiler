@@ -1,0 +1,14 @@
+#!/bin/sh
+# Effect companion removal never touches Settings: the settings pages (with
+# Revert) live in the core omnitiler package.
+set -e
+
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+  echo "omnitiler-native-effect removed. Settings and Revert remain"
+  echo "available in the core package: removal does not restore host keys or"
+  echo "shortcut overrides, so press Revert in the core Settings if needed."
+fi
+
+#DEBHELPER#
+
+exit 0
