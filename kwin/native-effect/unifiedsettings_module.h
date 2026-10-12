@@ -40,11 +40,18 @@ public:
 
     void setShortcutStores(ShortcutStore *store, ClearedActionsStore *cleared);
     void setShortcutConfirmHandler(std::function<bool(const QString &, const QString &)> handler);
+    // Modal dialog hooks below the widget layer (tests inject these;
+    // production shows the scrollable conflict QDialog and QMessageBox
+    // result dialogs). Force prompt returns true for Force Apply, false
+    // for Cancel; forceEnabled false renders Force disabled.
+    void setShortcutInformationHandler(std::function<void(const QString &, const QString &)> handler);
+    void setShortcutErrorHandler(std::function<void(const QString &, const QString &)> handler);
+    void setShortcutForcePromptHandler(std::function<bool(const QString &, const QString &, bool)> handler);
     QString shortcutStatusText() const;
     QString shortcutErrorText() const;
+    // Last conflict dialog text (empty when no conflicts). This is the
+    // exact plain-text list shown in the scrollable conflict dialog.
     QString shortcutForcePreviewText() const;
-    bool isShortcutForceApplyVisible() const;
-    bool isShortcutForceCancelVisible() const;
     // Staged Keep/Disable draft as sorted catalog IDs ("component/action").
     // Empty means Keep every binding. The Authentic preset additionally
     // stages canonical assignment for every enabled binding; otherwise
@@ -53,6 +60,15 @@ public:
     bool shortcutAuthenticStaged() const;
     void refreshShortcutState();
     virtual bool confirmShortcutAction(const QString &title, const QString &text);
+
+    // Ordered conflict dialog text over the reconciler-owned combined
+    // order (blockers first, then clear rows). Lists every holder with
+    // chord, display names, removed/retained keys, and the actual lock
+    // relocation carried by the preview.
+    static QString buildConflictDialogText(const ShortcutForcePreview &preview, bool authenticStaged);
+    virtual void showShortcutInformation(const QString &title, const QString &text);
+    virtual void showShortcutError(const QString &title, const QString &text);
+    virtual bool askShortcutForce(const QString &title, const QString &text, bool forceEnabled);
 
     QString scriptStatusText() const;
     bool isScriptRestartRequired() const;
@@ -68,16 +84,15 @@ public Q_SLOTS:
     void defaults() override;
     void requestShortcutApply();
     void requestShortcutRevert();
-    void requestShortcutForceApply();
-    void requestShortcutForceCancel();
     void requestShortcutPresetAuthentic();
     void requestShortcutPresetCompatible();
 
 private:
     void runShortcutApply(const char *operation);
     void runShortcutRevert(const char *operation);
-    void clearForcePreview();
-    static QString buildForcePreviewText(const ShortcutForcePreview &preview);
+    // Force runs only on the accepted-modal path with the exact preview the
+    // modal showed; revalidation inside fails stale with zero writes.
+    void applyConfirmedForcePreview(const ShortcutForcePreview &preview);
     static QString buildConflictRowText(const ShortcutRowDisplay &row, bool disabled, bool authenticStaged);
     void updateShortcutPresentation();
     void refreshShortcutConflictList(const QList<ShortcutRowDisplay> &rows);
@@ -98,12 +113,12 @@ private:
     ClearedActionsStore *m_clearedStore = nullptr;
     bool m_ownsShortcutStores = false;
     std::function<bool(const QString &, const QString &)> m_shortcutConfirm;
+    std::function<void(const QString &, const QString &)> m_shortcutInformation;
+    std::function<void(const QString &, const QString &)> m_shortcutErrorHandler;
+    std::function<bool(const QString &, const QString &, bool)> m_shortcutForcePrompt;
     QString m_shortcutStatus;
     QString m_shortcutError;
-    // Pending confirmed-force preview: shown with Force Apply/Cancel, never
-    // applied without a second explicit Force confirmation + revalidation.
-    ShortcutForcePreview m_forcePreview;
-    bool m_forcePreviewValid = false;
+    // Last conflict dialog text shown in the scrollable modal.
     QString m_forcePreviewText;
     // Staged Keep/Disable draft as catalog IDs ("component/action").
     // Checked list rows are kept; unchecked rows are disabled. Staged only:

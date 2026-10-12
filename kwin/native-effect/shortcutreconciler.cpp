@@ -1787,6 +1787,8 @@ bool ShortcutReconciler::holdersFromInfoFields(const QList<ShortcutInfoFields> &
         holder.action = info.action;
         holder.active = info.active;
         holder.defaults = info.defaults;
+        holder.componentFriendly = info.compFriendly;
+        holder.friendly = info.friendly;
         parsed.append(holder);
         if (parsed.size() > SHORTCUT_MAX_TUPLES) {
             return fail(QStringLiteral("unexpected globalShortcutsByKey reply: too many holders"));
@@ -1944,125 +1946,28 @@ KeyedOccupancyResult ShortcutReconciler::checkKeyedForeignOccupancyDetailedFor(S
     if (!store) {
         return unavailable(QStringLiteral("reconciler is not configured"));
     }
-    {
-        QString idError;
-        if (!disabledIdsValid(disabledIds, &idError)) {
-            return unavailable(idError);
-        }
+    // Single reconciler-owned collection/ordering below the UI: the same
+    // holder snapshot (sorted blockers then sorted rows) drives both this
+    // status check and the apply refusal, so the first conflict matches.
+    ShortcutReconciler reconciler(store, nullptr);
+    HolderSnapshot snap;
+    QString error;
+    if (!reconciler.collectHolderSnapshotFor(&snap, disabledIds, authenticStaged, &error)) {
+        return unavailable(error.isEmpty() ? QStringLiteral("allShortcutInfos call failed") : error);
     }
-    // Keep rows contribute their live actual chords (customized chords
-    // included); Authentic-enabled rows contribute canonical chords. A
-    // failed tuple read reports unavailable honestly instead of claiming
-    // clarity from a partial image.
-    QList<ShortcutTuple> tuples;
-    QString readError;
-    if (!store->readAll(&tuples, &readError)) {
-        return unavailable(readError.isEmpty() ? QStringLiteral("allShortcutInfos call failed") : readError);
+    if (!snap.blocked.isEmpty()) {
+        const Blocker &first = snap.blocked.first();
+        return conflict(QStringLiteral("refusing to apply: %1 is claimed by %2/%3")
+                            .arg(keyDisplayName(first.key), first.component, first.action));
     }
-    QList<QList<int>> actives;
-    {
-        const QList<ShortcutCatalogEntry> &catalog = shortcutProjectCatalog();
-        actives.reserve(catalog.size());
-        for (const ShortcutCatalogEntry &entry : catalog) {
-            QList<int> active;
-            for (const ShortcutTuple &tuple : tuples) {
-                if (tuple.component == entry.component && tuple.action == entry.action) {
-                    active = tuple.active;
-                    break;
-                }
-            }
-            actives.append(active);
+    if (!snap.rows.isEmpty()) {
+        const ClearRow &first = snap.rows.first();
+        const int key = first.removals.isEmpty() ? 0 : first.removals.first();
+        if (key == 0) {
+            return unavailable(QStringLiteral("holder state is inconsistent"));
         }
-    }
-    const QList<int> keepKeys = keepKeysForImages(actives, disabledIds, authenticStaged);
-    const QList<int> keys = enabledRequiredKeys(disabledIds, authenticStaged, keepKeys);
-    for (int key : keys) {
-        // Disjoint single-key range checks without duplicate validation:
-        // negative first, then zero (non-positive), then over-max. The
-        // list-bound predicate is unreachable for a single element and has
-        // no token here; it is covered by the list classifiers elsewhere.
-        // Shared helper preserves the same order and exact occupancy tokens.
-        QString keyError;
-        if (!checkOccupancyKeyRange(key, &keyError)) {
-            return unavailable(keyError);
-        }
-        QList<ShortcutKeyHolder> holders;
-        QString storeError;
-        if (!store->shortcutsByKey(key, &holders, &storeError)) {
-            return unavailable(storeError.isEmpty() ? QStringLiteral("globalShortcutsByKey call failed") : storeError);
-        }
-        bool available = false;
-        if (!store->shortcutAvailable(key, QString(), &available, &storeError)) {
-            return unavailable(storeError.isEmpty() ? QStringLiteral("globalShortcutAvailable call failed") : storeError);
-        }
-        if (holders.size() > SHORTCUT_MAX_TUPLES) {
-            return unavailable(QStringLiteral("unexpected globalShortcutsByKey reply: too many occupancy holders"));
-        }
-        for (const ShortcutKeyHolder &holder : holders) {
-            // Holder identity strict, each elementary predicate distinct:
-            // component empty/oversized then action empty/oversized. Direct
-            // checks so the branch identifies the field without duplicate
-            // validation. The "holder" qualifier keeps these full tokens
-            // distinct from the shared-seam field tokens above.
-            if (holder.component.isEmpty()) {
-                return unavailable(QStringLiteral("unexpected globalShortcutsByKey reply: empty holder component"));
-            }
-            if (holder.component.size() > SHORTCUT_MAX_STRING_LEN) {
-                return unavailable(QStringLiteral("unexpected globalShortcutsByKey reply: oversized holder component"));
-            }
-            if (holder.action.isEmpty()) {
-                return unavailable(QStringLiteral("unexpected globalShortcutsByKey reply: empty holder action"));
-            }
-            if (holder.action.size() > SHORTCUT_MAX_STRING_LEN) {
-                return unavailable(QStringLiteral("unexpected globalShortcutsByKey reply: oversized holder action"));
-            }
-            switch (classifyKeyList(holder.active)) {
-            case KeyListFailure::TooMany:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: too many holder active keys"));
-            case KeyListFailure::Negative:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: negative holder active key"));
-            case KeyListFailure::Oversized:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: oversized holder active key"));
-            case KeyListFailure::None:
-                break;
-            }
-            switch (classifyKeyList(holder.defaults)) {
-            case KeyListFailure::TooMany:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: too many holder default keys"));
-            case KeyListFailure::Negative:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: negative holder default key"));
-            case KeyListFailure::Oversized:
-                return unavailable(
-                    QStringLiteral("unexpected globalShortcutsByKey reply: oversized holder default key"));
-            case KeyListFailure::None:
-                break;
-            }
-            if (isHolderExempt(holder.component, holder.action, key)) {
-                continue;
-            }
-            return conflict(QStringLiteral("refusing to apply: %1 is claimed by %2/%3")
-                                .arg(keyDisplayName(key), holder.component, holder.action));
-        }
-        // Whole-key consistency, fail closed both directions:
-        // globalShortcutAvailable(key, "") reports whole-key availability,
-        // so empty holders must report available and non-empty holders
-        // must report unavailable. Exempt (project/lock/authorized)
-        // holders count as occupying the key, so they keep the
-        // non-empty/unavailable expectation and stay Clear after the
-        // skips above.
-        if (holders.isEmpty() != available) {
-            if (holders.isEmpty()) {
-                return unavailable(QStringLiteral(
-                    "unexpected globalShortcutAvailable reply: empty holders report unavailable"));
-            }
-            return unavailable(QStringLiteral(
-                "unexpected globalShortcutAvailable reply: occupied holders report available"));
-        }
+        return conflict(QStringLiteral("refusing to apply: %1 is claimed by %2/%3")
+                            .arg(keyDisplayName(key), first.component, first.action));
     }
     return result;
 }
@@ -2161,6 +2066,16 @@ bool ShortcutReconciler::collectRowDisplays(ShortcutStore *store, QList<Shortcut
             }
             row.holdersKnown = queriesOk;
             if (queriesOk) {
+                // Reconciler-owned deterministic order: every current holder
+                // appears sorted by component/action so status, error, and
+                // row text share one ordering with the snapshot scan.
+                std::sort(holders.begin(), holders.end(),
+                          [](const ShortcutKeyHolder &a, const ShortcutKeyHolder &b) {
+                              if (a.component != b.component) {
+                                  return a.component < b.component;
+                              }
+                              return a.action < b.action;
+                          });
                 row.holders = holders;
             }
         }
@@ -3157,9 +3072,10 @@ void ShortcutDiag::log(QtMsgType type, const char *operation, const char *stage,
     // Logging never affects behavior: void return, bounded message, all
     // exceptions swallowed, no caller branches on this path.
     try {
-        // Foreign keyed occupants are useful to the KCM but must never enter
-        // diagnostics. All other backend errors are fixed bounded tokens.
-        QString bounded = detail.contains(QStringLiteral(" claimed by ")) ? QStringLiteral("reason=key-conflict") : detail;
+        // Reconstructible conflict diagnostics: callers pass only bounded
+        // component/action IDs and key images (raw ints or display names).
+        // Friendly labels and user paths never enter here; truncate only.
+        QString bounded = detail;
         if (bounded.size() > 512) {
             bounded.truncate(512);
         }
@@ -3475,6 +3391,19 @@ bool ShortcutReconciler::collectHolderSnapshotFor(HolderSnapshot *snapshot, cons
                 break;
             }
             if (isHolderExempt(holder.component, holder.action, key)) {
+                // Record the authorized relocation-target displacement while
+                // in scope so the preview describes it honestly. Project and
+                // lock holders stay silent; nothing here is writable.
+                if (snap.lockResolved && isAuthorizedDisplacement(key, holder.component, holder.action)
+                    && shortcutConflictTable().at(0).resolutionTarget.contains(key)
+                    && !snap.authorizedTargetPresent) {
+                    snap.authorizedTargetPresent = true;
+                    snap.authorizedTargetComponent = holder.component;
+                    snap.authorizedTargetAction = holder.action;
+                    snap.authorizedTargetActive = holder.active;
+                    snap.authorizedTargetComponentFriendly = holder.componentFriendly;
+                    snap.authorizedTargetFriendly = holder.friendly;
+                }
                 continue;
             }
             const QString id = holder.component + QStringLiteral("/") + holder.action;
@@ -3489,16 +3418,39 @@ bool ShortcutReconciler::collectHolderSnapshotFor(HolderSnapshot *snapshot, cons
                     blocker.component = holder.component;
                     blocker.action = holder.action;
                     blocker.key = key;
+                    blocker.active = holder.active;
+                    if (!holder.componentFriendly.isEmpty() || !holder.friendly.isEmpty()) {
+                        blocker.componentFriendly = holder.componentFriendly;
+                        blocker.friendly = holder.friendly;
+                    } else {
+                        const auto cosmeticBlock = cosmetics.find(id);
+                        if (cosmeticBlock != cosmetics.end()) {
+                            blocker.componentFriendly = cosmeticBlock->first;
+                            blocker.friendly = cosmeticBlock->second;
+                        }
+                    }
                     snap.blocked.append(blocker);
+                    if (snap.blocked.size() > SHORTCUT_MAX_TUPLES) {
+                        if (error) {
+                            *error = QStringLiteral(
+                                "unexpected globalShortcutsByKey reply: too many occupancy holders");
+                        }
+                        return false;
+                    }
                     continue;
                 }
                 ClearRow row;
                 row.component = holder.component;
                 row.action = holder.action;
-                const auto cosmetic = cosmetics.find(id);
-                if (cosmetic != cosmetics.end()) {
-                    row.componentFriendly = cosmetic->first;
-                    row.friendly = cosmetic->second;
+                if (!holder.componentFriendly.isEmpty() || !holder.friendly.isEmpty()) {
+                    row.componentFriendly = holder.componentFriendly;
+                    row.friendly = holder.friendly;
+                } else {
+                    const auto cosmetic = cosmetics.find(id);
+                    if (cosmetic != cosmetics.end()) {
+                        row.componentFriendly = cosmetic->first;
+                        row.friendly = cosmetic->second;
+                    }
                 }
                 row.active = holder.active;
                 row.removals = removals;
@@ -3535,13 +3487,23 @@ bool ShortcutReconciler::collectHolderSnapshotFor(HolderSnapshot *snapshot, cons
             return false;
         }
     }
-    // Deterministic row order regardless of daemon reply order, so a fresh
-    // re-preview compares exactly against the confirmed snapshot.
+    // Deterministic row/blocker order regardless of daemon reply order,
+    // so status, error, preview, and re-preview share one ordering and a
+    // fresh re-preview compares exactly against the confirmed snapshot.
     std::sort(snap.rows.begin(), snap.rows.end(), [](const ClearRow &a, const ClearRow &b) {
         if (a.component != b.component) {
             return a.component < b.component;
         }
         return a.action < b.action;
+    });
+    std::sort(snap.blocked.begin(), snap.blocked.end(), [](const Blocker &a, const Blocker &b) {
+        if (a.component != b.component) {
+            return a.component < b.component;
+        }
+        if (a.action != b.action) {
+            return a.action < b.action;
+        }
+        return a.key < b.key;
     });
     // Lock preconditions are relocate logic and apply only while focus-right
     // is Authentic-enabled: without the preimage to replace and without the
@@ -3625,6 +3587,7 @@ ShortcutApplyResult ShortcutReconciler::writeProjectKeysFor(const char *operatio
                                    .arg(keyDisplayName(key), first.component, first.action);
             }
         }
+        result.conflictRefused = true;
         ShortcutDiag::log(QtWarningMsg, operation, "preflight", "refused", result.error);
         return result;
     }
@@ -4296,37 +4259,165 @@ ShortcutForcePreview ShortcutReconciler::buildForcePreviewFor(const QSet<QString
     preview.disabledIds = QStringList(disabledIds.begin(), disabledIds.end());
     preview.disabledIds.sort();
     preview.authenticStaged = authenticStaged;
-    if (!snap.blocked.isEmpty()) {
-        const Blocker &first = snap.blocked.first();
-        return refuse(QStringLiteral("refusing force: %1 is claimed by %2/%3 with no active binding to clear")
-                          .arg(keyDisplayName(first.key), first.component, first.action));
-    }
-    if (snap.rows.isEmpty()) {
-        return refuse(QStringLiteral("no forced override applies: no holder claims a project-required key"));
+    preview.lock.inScope = snap.lockResolved;
+    if (snap.lockResolved) {
+        const ShortcutConflictRow &lockRow = shortcutConflictTable().at(0);
+        preview.lock.component = lockRow.foreignComponent;
+        preview.lock.action = lockRow.foreignAction;
+        preview.lock.actual = snap.lock.active;
+        preview.lock.post = lockPostFor(snap.lock.active);
+        for (int key : lockRow.foreignExpectedPre) {
+            if (snap.lock.active.contains(key)) {
+                preview.lock.hasPre = true;
+            }
+        }
+        for (int key : lockRow.resolutionTarget) {
+            if (snap.lock.active.contains(key)) {
+                preview.lock.hasTarget = true;
+            }
+        }
+        preview.lock.authorizedHolderPresent = snap.authorizedTargetPresent;
+        preview.lock.authorizedComponent = snap.authorizedTargetComponent;
+        preview.lock.authorizedAction = snap.authorizedTargetAction;
+        preview.lock.authorizedActive = snap.authorizedTargetActive;
+        preview.lock.authorizedComponentFriendly = snap.authorizedTargetComponentFriendly;
+        preview.lock.authorizedFriendly = snap.authorizedTargetFriendly;
     }
     for (const ClearRow &row : snap.rows) {
         ShortcutForceMismatch mismatch;
         forceMismatchFromRow(row, &mismatch);
         preview.mismatches.append(mismatch);
     }
+    for (const Blocker &blocker : snap.blocked) {
+        ShortcutForceBlocker out;
+        out.component = blocker.component;
+        out.action = blocker.action;
+        out.key = blocker.key;
+        out.active = blocker.active;
+        out.componentFriendly = blocker.componentFriendly;
+        out.friendly = blocker.friendly;
+        preview.blockers.append(out);
+    }
+    if (!snap.blocked.isEmpty()) {
+        const Blocker &first = snap.blocked.first();
+        preview.forceable = false;
+        preview.error = QStringLiteral("refusing force: %1 is claimed by %2/%3 with no active binding to clear")
+                            .arg(keyDisplayName(first.key), first.component, first.action);
+        return preview;
+    }
+    if (snap.rows.isEmpty()) {
+        return refuse(QStringLiteral("no forced override applies: no holder claims a project-required key"));
+    }
     preview.forceable = true;
     return preview;
+}
+
+QList<ShortcutOrderedConflict> ShortcutReconciler::orderedConflicts(const ShortcutForcePreview &preview)
+{
+    QList<ShortcutOrderedConflict> out;
+    out.reserve(preview.blockers.size() + preview.mismatches.size());
+    for (int i = 0; i < preview.blockers.size(); ++i) {
+        ShortcutOrderedConflict entry;
+        entry.isBlocker = true;
+        entry.index = i;
+        out.append(entry);
+    }
+    for (int i = 0; i < preview.mismatches.size(); ++i) {
+        ShortcutOrderedConflict entry;
+        entry.isBlocker = false;
+        entry.index = i;
+        out.append(entry);
+    }
+    return out;
+}
+
+namespace
+{
+
+// Bounded per-row emission: one line when the full row fits, otherwise one
+// line per key image with the shared index prefix so the tail is never
+// dropped. IDs plus raw key ints only; never friendly labels.
+void logConflictRow(QtMsgType type, const char *operation, const QString &prefix, const QString &row)
+{
+    constexpr int kChunkBound = 400;
+    if (row.size() <= kChunkBound) {
+        ShortcutDiag::log(type, operation, "conflict", "row", prefix + row);
+        return;
+    }
+    int start = 0;
+    int chunk = 0;
+    while (start < row.size()) {
+        const QString part = row.mid(start, kChunkBound);
+        ShortcutDiag::log(type, operation, "conflict", "row",
+                          QStringLiteral("%1 part=%2/%3 %4")
+                              .arg(prefix)
+                              .arg(chunk + 1)
+                              .arg((row.size() + kChunkBound - 1) / kChunkBound)
+                              .arg(part));
+        start += kChunkBound;
+        ++chunk;
+    }
+}
+
+} // namespace
+
+void ShortcutReconciler::logForcePreview(const char *operation, const ShortcutForcePreview &preview)
+{
+    const QtMsgType rowType = preview.forceable ? QtInfoMsg : QtWarningMsg;
+    const char *outcome = preview.forceable ? "forceable" : "not-forceable";
+    const int total = preview.mismatches.size() + preview.blockers.size();
+    ShortcutDiag::log(rowType, operation, "preview", outcome,
+                      QStringLiteral("conflicts=%1 blocked=%2 clearable=%3 disabled=%4 authentic=%5")
+                          .arg(total)
+                          .arg(preview.blockers.size())
+                          .arg(preview.mismatches.size())
+                          .arg(preview.disabledIds.size())
+                          .arg(preview.authenticStaged ? 1 : 0));
+    int at = 0;
+    for (const ShortcutOrderedConflict &entry : orderedConflicts(preview)) {
+        ++at;
+        const QString prefix =
+            QStringLiteral("i=%1/%2 ").arg(at).arg(total);
+        if (entry.isBlocker) {
+            const ShortcutForceBlocker &blocker = preview.blockers.at(entry.index);
+            logConflictRow(rowType, operation, prefix,
+                           QStringLiteral("%1/%2 blocker-key=%3 found=%4 remove=none keep=%5")
+                               .arg(blocker.component, blocker.action,
+                                    keysDisplay(QList<int>{blocker.key}),
+                                    keysDisplay(blocker.active),
+                                    keysDisplay(blocker.active)));
+        } else {
+            const ShortcutForceMismatch &mismatch = preview.mismatches.at(entry.index);
+            logConflictRow(rowType, operation, prefix,
+                           QStringLiteral("%1/%2 actual=%3 remove=%4 keep=%5")
+                               .arg(mismatch.component, mismatch.action,
+                                    keysDisplay(mismatch.actual),
+                                    keysDisplay(mismatch.expectedPre),
+                                    keysDisplay(mismatch.post)));
+        }
+    }
+    if (!preview.forceable && !preview.error.isEmpty()) {
+        ShortcutDiag::log(rowType, operation, "preview", outcome, preview.error);
+    }
+    if (preview.lock.inScope) {
+        ShortcutDiag::log(rowType, operation, "lock", "relocate",
+                          QStringLiteral("%1/%2 actual=%3 post=%4 pre=%5 target=%6 authorized=%7")
+                              .arg(preview.lock.component, preview.lock.action,
+                                   keysDisplay(preview.lock.actual),
+                                   keysDisplay(preview.lock.post))
+                              .arg(preview.lock.hasPre ? 1 : 0)
+                              .arg(preview.lock.hasTarget ? 1 : 0)
+                              .arg(preview.lock.authorizedHolderPresent
+                                       ? preview.lock.authorizedComponent + QStringLiteral("/")
+                                           + preview.lock.authorizedAction
+                                       : QStringLiteral("none")));
+    }
 }
 
 ShortcutForcePreview ShortcutReconciler::previewForceApply()
 {
     ShortcutForcePreview preview = buildForcePreview();
-    if (preview.forceable) {
-        QStringList rows;
-        for (const ShortcutForceMismatch &mismatch : preview.mismatches) {
-            rows.append(QStringLiteral("%1/%2 actual=%3 remove=%4 keep=%5")
-                            .arg(mismatch.component, mismatch.action, keysDisplay(mismatch.actual),
-                                 keysDisplay(mismatch.expectedPre), keysDisplay(mismatch.post)));
-        }
-        ShortcutDiag::log(QtInfoMsg, "force-preview", "preview", "forceable", rows.join(QStringLiteral("; ")));
-    } else {
-        ShortcutDiag::log(QtDebugMsg, "force-preview", "preview", "not-forceable", preview.error);
-    }
+    logForcePreview("force-preview", preview);
     return preview;
 }
 
@@ -4339,20 +4430,7 @@ ShortcutForcePreview ShortcutReconciler::previewForceApplySelected(const QSet<QS
                                                                   bool authenticStaged)
 {
     ShortcutForcePreview preview = buildForcePreviewFor(disabledIds, authenticStaged);
-    if (preview.forceable) {
-        QStringList rows;
-        for (const ShortcutForceMismatch &mismatch : preview.mismatches) {
-            rows.append(QStringLiteral("%1/%2 actual=%3 remove=%4 keep=%5")
-                            .arg(mismatch.component, mismatch.action, keysDisplay(mismatch.actual),
-                                 keysDisplay(mismatch.expectedPre), keysDisplay(mismatch.post)));
-        }
-        rows.prepend(QStringLiteral("disabled=%1 authentic=%2")
-                         .arg(preview.disabledIds.size())
-                         .arg(preview.authenticStaged ? 1 : 0));
-        ShortcutDiag::log(QtInfoMsg, "force-preview", "preview", "forceable", rows.join(QStringLiteral("; ")));
-    } else {
-        ShortcutDiag::log(QtDebugMsg, "force-preview", "preview", "not-forceable", preview.error);
-    }
+    logForcePreview("force-preview", preview);
     return preview;
 }
 
@@ -4396,6 +4474,12 @@ ShortcutForceApplyResult ShortcutReconciler::applyForcedSelected(const ShortcutF
     }
     if (confirmed.mismatches.isEmpty() || confirmed.mismatches.size() > SHORTCUT_MAX_TUPLES) {
         return fail(QStringLiteral("forced override is unbounded"), "unbounded");
+    }
+    if (!confirmed.blockers.isEmpty()) {
+        return fail(confirmed.error.isEmpty()
+                        ? QStringLiteral("refusing force: default-only claimant blocks force")
+                        : confirmed.error,
+                    "blocked");
     }
     // The preview binds its exact staged draft and Authentic intent: a
     // draft edit cancels the pending preview, and any residual mismatch
@@ -4447,7 +4531,8 @@ ShortcutForceApplyResult ShortcutReconciler::applyForcedSelected(const ShortcutF
     if (current.owner != confirmed.owner || current.uid != confirmed.uid
         || current.liveImages != confirmed.liveImages || current.livePresent != confirmed.livePresent
         || current.authenticStaged != confirmed.authenticStaged
-        || current.mismatches.size() != confirmed.mismatches.size()) {
+        || current.mismatches.size() != confirmed.mismatches.size()
+        || current.blockers.size() != confirmed.blockers.size()) {
         return fail(QStringLiteral("confirmed force image is stale; re-preview before forcing"), "stale");
     }
     for (int i = 0; i < current.mismatches.size(); ++i) {
@@ -4456,6 +4541,25 @@ ShortcutForceApplyResult ShortcutReconciler::applyForcedSelected(const ShortcutF
         if (a.component != b.component || a.action != b.action || a.expectedPre != b.expectedPre
             || a.actual != b.actual || a.post != b.post || a.componentFriendly != b.componentFriendly
             || a.friendly != b.friendly) {
+            return fail(QStringLiteral("confirmed force image is stale; re-preview before forcing"), "stale");
+        }
+    }
+    for (int i = 0; i < current.blockers.size(); ++i) {
+        const ShortcutForceBlocker &a = current.blockers.at(i);
+        const ShortcutForceBlocker &b = confirmed.blockers.at(i);
+        if (a.component != b.component || a.action != b.action || a.key != b.key || a.active != b.active) {
+            return fail(QStringLiteral("confirmed force image is stale; re-preview before forcing"), "stale");
+        }
+    }
+    {
+        const ShortcutLockRelocation &a = current.lock;
+        const ShortcutLockRelocation &b = confirmed.lock;
+        if (a.inScope != b.inScope || a.actual != b.actual || a.post != b.post || a.hasPre != b.hasPre
+            || a.hasTarget != b.hasTarget || a.authorizedHolderPresent != b.authorizedHolderPresent
+            || a.authorizedComponent != b.authorizedComponent || a.authorizedAction != b.authorizedAction
+            || a.authorizedActive != b.authorizedActive
+            || a.authorizedComponentFriendly != b.authorizedComponentFriendly
+            || a.authorizedFriendly != b.authorizedFriendly) {
             return fail(QStringLiteral("confirmed force image is stale; re-preview before forcing"), "stale");
         }
     }

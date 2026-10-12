@@ -10,13 +10,17 @@
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusMessage>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QVBoxLayout>
 
 Q_LOGGING_CATEGORY(lcScriptConfig, "omnitiler.script-config", QtInfoMsg)
 Q_LOGGING_CATEGORY(lcWindowConflicts, "omnitiler.window-conflicts", QtInfoMsg)
@@ -186,8 +190,6 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
     m_ownsShortcutStores = true;
     connect(m_ui.shortcutApplyButton, &QPushButton::clicked, this, &UnifiedSettingsModule::requestShortcutApply);
     connect(m_ui.shortcutRevertButton, &QPushButton::clicked, this, &UnifiedSettingsModule::requestShortcutRevert);
-    connect(m_ui.shortcutForceApplyButton, &QPushButton::clicked, this, &UnifiedSettingsModule::requestShortcutForceApply);
-    connect(m_ui.shortcutForceCancelButton, &QPushButton::clicked, this, &UnifiedSettingsModule::requestShortcutForceCancel);
     if (m_ui.shortcutAuthenticButton != nullptr) {
         connect(m_ui.shortcutAuthenticButton, &QPushButton::clicked, this,
                 &UnifiedSettingsModule::requestShortcutPresetAuthentic);
@@ -343,13 +345,30 @@ void UnifiedSettingsModule::setShortcutStores(ShortcutStore *store, ClearedActio
             }
         }
     }
-    clearForcePreview();
     refreshShortcutState();
 }
 
 void UnifiedSettingsModule::setShortcutConfirmHandler(std::function<bool(const QString &, const QString &)> handler)
 {
     m_shortcutConfirm = std::move(handler);
+}
+
+void UnifiedSettingsModule::setShortcutInformationHandler(
+    std::function<void(const QString &, const QString &)> handler)
+{
+    m_shortcutInformation = std::move(handler);
+}
+
+void UnifiedSettingsModule::setShortcutErrorHandler(
+    std::function<void(const QString &, const QString &)> handler)
+{
+    m_shortcutErrorHandler = std::move(handler);
+}
+
+void UnifiedSettingsModule::setShortcutForcePromptHandler(
+    std::function<bool(const QString &, const QString &, bool)> handler)
+{
+    m_shortcutForcePrompt = std::move(handler);
 }
 
 QString UnifiedSettingsModule::shortcutStatusText() const
@@ -367,14 +386,62 @@ QString UnifiedSettingsModule::shortcutForcePreviewText() const
     return m_forcePreviewText;
 }
 
-bool UnifiedSettingsModule::isShortcutForceApplyVisible() const
+void UnifiedSettingsModule::showShortcutInformation(const QString &title, const QString &text)
 {
-    return m_ui.shortcutForceApplyButton != nullptr && !m_ui.shortcutForceApplyButton->isHidden();
+    if (m_shortcutInformation) {
+        m_shortcutInformation(title, text);
+        return;
+    }
+    QMessageBox::information(widget(), title, text);
 }
 
-bool UnifiedSettingsModule::isShortcutForceCancelVisible() const
+void UnifiedSettingsModule::showShortcutError(const QString &title, const QString &text)
 {
-    return m_ui.shortcutForceCancelButton != nullptr && !m_ui.shortcutForceCancelButton->isHidden();
+    if (m_shortcutErrorHandler) {
+        m_shortcutErrorHandler(title, text);
+        return;
+    }
+    QMessageBox::critical(widget(), title, text);
+}
+
+bool UnifiedSettingsModule::askShortcutForce(const QString &title, const QString &text, bool forceEnabled)
+{
+    m_forcePreviewText = text;
+    if (m_shortcutForcePrompt) {
+        return m_shortcutForcePrompt(title, text, forceEnabled);
+    }
+    // One minimal dialog: read-only scrollable plain-text conflict list
+    // with the buttons always visible. Blocked previews carry the reason
+    // in the text with Force Apply disabled.
+    QDialog dialog(widget());
+    dialog.setObjectName(QStringLiteral("shortcutConflictDialog"));
+    dialog.setWindowTitle(title);
+    dialog.setModal(true);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *view = new QPlainTextEdit(&dialog);
+    view->setObjectName(QStringLiteral("shortcutConflictText"));
+    view->setPlainText(text);
+    view->setReadOnly(true);
+    view->setMinimumSize(560, 320);
+    layout->addWidget(view);
+    auto *buttons = new QDialogButtonBox(&dialog);
+    buttons->setObjectName(QStringLiteral("shortcutConflictButtons"));
+    QPushButton *force = buttons->addButton(QStringLiteral("Force Apply"), QDialogButtonBox::AcceptRole);
+    force->setObjectName(QStringLiteral("shortcutConflictForceButton"));
+    force->setEnabled(forceEnabled);
+    QPushButton *cancel = buttons->addButton(QStringLiteral("Cancel"), QDialogButtonBox::RejectRole);
+    cancel->setObjectName(QStringLiteral("shortcutConflictCancelButton"));
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (!forceEnabled) {
+        // A disabled Force button cannot be the default; Cancel takes it.
+        cancel->setDefault(true);
+    } else {
+        force->setDefault(true);
+    }
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    return accepted && forceEnabled;
 }
 
 QStringList UnifiedSettingsModule::shortcutDisabledIds() const
@@ -397,7 +464,6 @@ void UnifiedSettingsModule::requestShortcutPresetAuthentic()
     m_shortcutDisabledDraft.clear();
     m_shortcutAuthenticStaged = true;
     ShortcutDiag::log(QtDebugMsg, "preset", "authentic", "staged", QStringLiteral("disabled=0 authentic=1"));
-    clearForcePreview();
     refreshShortcutState();
 }
 
@@ -454,7 +520,6 @@ void UnifiedSettingsModule::requestShortcutPresetCompatible()
     m_shortcutAuthenticStaged = false;
     ShortcutDiag::log(QtDebugMsg, "preset", "compatible", "staged",
                       QStringLiteral("disabled=%1 authentic=0").arg(disabled.size()));
-    clearForcePreview();
     refreshShortcutState();
 }
 
@@ -479,18 +544,16 @@ void UnifiedSettingsModule::onShortcutDraftChanged()
     if (draft == m_shortcutDisabledDraft) {
         return;
     }
-    // Any draft edit cancels the pending preview: the preview binds its
-    // exact draft and intent and a changed draft must re-preview before
-    // forcing. The state refresh is queued: rebuilding the list here would
+    // The state refresh is queued: rebuilding the list here would
     // delete the edited item while its change signal is still on the stack.
     // Manual edits preserve the staged Authentic intent for the rows that
-    // stay enabled.
+    // stay enabled. Conflict previews are built fresh on each Apply, so
+    // there is no pending preview to cancel here.
     m_shortcutDisabledDraft = draft;
     ShortcutDiag::log(QtDebugMsg, "preset", "draft", "edited",
                       QStringLiteral("disabled=%1 authentic=%2")
                           .arg(draft.size())
                           .arg(m_shortcutAuthenticStaged ? 1 : 0));
-    clearForcePreview();
     updateShortcutPresentation();
     QMetaObject::invokeMethod(this, &UnifiedSettingsModule::refreshShortcutState, Qt::QueuedConnection);
 }
@@ -513,46 +576,26 @@ void UnifiedSettingsModule::requestShortcutRevert()
     runShortcutRevert("revert");
 }
 
-void UnifiedSettingsModule::requestShortcutForceApply()
+void UnifiedSettingsModule::applyConfirmedForcePreview(const ShortcutForcePreview &preview)
 {
-    // Never force without a pending exact preview.
-    if (!m_forcePreviewValid || !m_forcePreview.forceable) {
-        return;
-    }
-    // The preview binds its exact staged draft and Authentic intent; a draft
-    // edit since cancels the preview, and this residual check fails closed
-    // as stale.
-    {
-        QStringList draftNow(m_shortcutDisabledDraft.begin(), m_shortcutDisabledDraft.end());
-        draftNow.sort();
-        if (draftNow != m_forcePreview.disabledIds
-            || m_shortcutAuthenticStaged != m_forcePreview.authenticStaged) {
-            m_shortcutError =
-                QStringLiteral("confirmed force image is stale; re-preview before forcing");
-            ShortcutDiag::log(QtWarningMsg, "force-apply", "result", "failed",
-                              QStringLiteral("reason=stale-intent writes=0"));
-            clearForcePreview();
-            refreshShortcutState();
-            return;
-        }
-    }
-    if (!confirmShortcutAction(QStringLiteral("Force Apply Shortcuts"), m_forcePreviewText)) {
+    // The modal already confirmed this exact preview. Revalidation inside
+    // applyForcedSelected compares the full live snapshot (owner, images,
+    // holder rows, blockers, lock relocation) and the staged draft/intent;
+    // stale state fails with zero writes and a result error.
+    if (!preview.forceable) {
         return;
     }
     if (m_shortcutStore == nullptr || m_clearedStore == nullptr) {
         m_shortcutError = QStringLiteral("reconciler is not configured");
         ShortcutDiag::log(QtWarningMsg, "force-apply", "result", "failed",
                           QStringLiteral("reason=reconciler-unconfigured writes=0"));
+        showShortcutError(QStringLiteral("Force Apply Shortcuts"), m_shortcutError);
         updateShortcutPresentation();
         return;
     }
     ShortcutReconciler reconciler(m_shortcutStore, m_clearedStore);
-    // applyForced revalidates the confirmed snapshot, the staged draft, and
-    // the staged Authentic intent against fresh live state before any write
-    // (including cleared-list writes); stale snapshots fail with zero
-    // writes.
     const ShortcutForceApplyResult result =
-        reconciler.applyForcedSelected(m_forcePreview, m_shortcutDisabledDraft, m_shortcutAuthenticStaged);
+        reconciler.applyForcedSelected(preview, m_shortcutDisabledDraft, m_shortcutAuthenticStaged);
     if (result.ok) {
         m_shortcutError.clear();
     } else {
@@ -573,112 +616,116 @@ void UnifiedSettingsModule::requestShortcutForceApply()
     if (result.ok) {
         m_shortcutAuthenticStaged = false;
     }
-    // A consumed or stale confirmation never persists: the next Force needs
-    // a fresh preview.
-    clearForcePreview();
     refreshShortcutState();
-}
-
-void UnifiedSettingsModule::requestShortcutForceCancel()
-{
-    if (!m_forcePreviewValid) {
-        return;
+    if (result.ok) {
+        showShortcutInformation(
+            QStringLiteral("Force Apply Shortcuts"),
+            QStringLiteral("Shortcuts force-applied and active immediately. "
+                           "No further Settings Apply or OK is needed."));
+    } else {
+        showShortcutError(QStringLiteral("Force Apply Shortcuts"), m_shortcutError);
     }
-    ShortcutDiag::log(QtDebugMsg, "force-preview", "cancel", "cancelled", QStringLiteral("rows=preview"));
-    clearForcePreview();
-    refreshShortcutState();
 }
 
-void UnifiedSettingsModule::clearForcePreview()
+static QString holderDisplayLabel(const QString &component, const QString &action,
+                                  const QString &componentFriendly, const QString &friendly)
 {
-    m_forcePreview = ShortcutForcePreview();
-    m_forcePreviewValid = false;
-    m_forcePreviewText.clear();
+    const QString id = QStringLiteral("%1/%2").arg(component, action);
+    const bool hasFriendly = !componentFriendly.isEmpty() || !friendly.isEmpty();
+    if (!hasFriendly) {
+        return id;
+    }
+    const QString display = QStringLiteral("%1/%2").arg(
+        componentFriendly.isEmpty() ? component : componentFriendly,
+        friendly.isEmpty() ? action : friendly);
+    if (display == id) {
+        return id;
+    }
+    return QStringLiteral("%1 (%2)").arg(id, display);
 }
 
-QString UnifiedSettingsModule::buildForcePreviewText(const ShortcutForcePreview &preview)
+QString UnifiedSettingsModule::buildConflictDialogText(const ShortcutForcePreview &preview, bool authenticStaged)
 {
     QStringList lines;
-    lines.append(QStringLiteral("Force Apply will clear %1 binding(s) with %2 disabled binding(s) kept out of scope "
+    lines.append(QStringLiteral("Apply found %1 conflicting binding(s) with %2 disabled binding(s) kept out of scope "
                                 "while enabled bindings %3. "
-                                "Each row shows the exact required keys removed and the unrelated keys kept. "
-                                "Revalidation runs again after confirmation against the same staged selection; "
-                                "stale state aborts without writes.")
-                     .arg(preview.mismatches.size())
+                                "Each row shows the chord, the holder, the exact keys removed, and the keys kept. "
+                                "Force Apply revalidates the same staged selection; stale state aborts without writes.")
+                     .arg(preview.mismatches.size() + preview.blockers.size())
                      .arg(preview.disabledIds.size())
-                     .arg(preview.authenticStaged ? QStringLiteral("take their canonical chords")
-                                                  : QStringLiteral("stay at their current assignments")));
-    for (const ShortcutForceMismatch &mismatch : preview.mismatches) {
-        lines.append(QStringLiteral("- %1/%2: found %3; will remove %4 and keep %5.")
-                         .arg(mismatch.component, mismatch.action,
+                     .arg(authenticStaged ? QStringLiteral("take their canonical chords")
+                                          : QStringLiteral("stay at their current assignments")));
+    // Reconciler-owned combined order: blockers first, then clear rows.
+    for (const ShortcutOrderedConflict &entry : ShortcutReconciler::orderedConflicts(preview)) {
+        if (entry.isBlocker) {
+            const ShortcutForceBlocker &blocker = preview.blockers.at(entry.index);
+            lines.append(QStringLiteral("- %1 chord %2: found %3; removes none and keeps %4 "
+                                        "(default-only claimant with no required binding to clear; "
+                                        "unbind it manually before forcing).")
+                             .arg(holderDisplayLabel(blocker.component, blocker.action,
+                                                     blocker.componentFriendly, blocker.friendly),
+                                  ShortcutReconciler::keyDisplayName(blocker.key),
+                                  ShortcutReconciler::keysDisplayNames(blocker.active),
+                                  ShortcutReconciler::keysDisplayNames(blocker.active)));
+            continue;
+        }
+        const ShortcutForceMismatch &mismatch = preview.mismatches.at(entry.index);
+        const QString chord = ShortcutReconciler::keysDisplayNames(mismatch.expectedPre);
+        lines.append(QStringLiteral("- %1 chord %2: found %3; will remove %4 and keep %5.")
+                         .arg(holderDisplayLabel(mismatch.component, mismatch.action,
+                                                 mismatch.componentFriendly, mismatch.friendly),
+                              chord,
                               ShortcutReconciler::keysDisplayNames(mismatch.actual),
                               ShortcutReconciler::keysDisplayNames(mismatch.expectedPre),
                               ShortcutReconciler::keysDisplayNames(mismatch.post)));
+    }
+    // Exemptions exactly as the preview carries them: the in-scope lock
+    // relocation with its actual target image, or an honest out-of-scope
+    // line. Nothing is inferred here.
+    if (preview.lock.inScope) {
+        QString lockLine =
+            QStringLiteral("Exempt: %1/%2 found %3 will move to %4.")
+                .arg(preview.lock.component, preview.lock.action,
+                     ShortcutReconciler::keysDisplayNames(preview.lock.actual),
+                     ShortcutReconciler::keysDisplayNames(preview.lock.post));
+        if (preview.lock.authorizedHolderPresent) {
+            lockLine += QStringLiteral(" Authorized %1 retains its binding %2; after relocation %3 delivers "
+                                       "to Lock Session.")
+                            .arg(holderDisplayLabel(preview.lock.authorizedComponent,
+                                                    preview.lock.authorizedAction,
+                                                    preview.lock.authorizedComponentFriendly,
+                                                    preview.lock.authorizedFriendly),
+                                 ShortcutReconciler::keysDisplayNames(preview.lock.authorizedActive),
+                                 ShortcutReconciler::keyDisplayName(
+                                     preview.lock.post.isEmpty() ? 0 : preview.lock.post.first()));
+        }
+        lines.append(lockLine);
+    } else {
+        lines.append(QStringLiteral("Exempt: Lock Session untouched (focus-right is not taking canonical)."));
+    }
+    if (!preview.forceable && !preview.error.isEmpty()) {
+        lines.append(QStringLiteral("Force unavailable: %1.").arg(preview.error));
     }
     return lines.join(QStringLiteral("\n"));
 }
 
 void UnifiedSettingsModule::runShortcutApply(const char *operation)
 {
-    const QList<ShortcutCatalogEntry> &catalog = shortcutProjectCatalog();
-    const QString focusId = shortcutCatalogId(shortcutFocusComponent(), shortcutFocusAction());
-    const bool focusEnabled = !m_shortcutDisabledDraft.contains(focusId);
-    int enabled = 0;
-    for (const ShortcutCatalogEntry &entry : catalog) {
-        if (!m_shortcutDisabledDraft.contains(shortcutCatalogId(entry.component, entry.action))) {
-            ++enabled;
-        }
-    }
-    const int disabled = catalog.size() - enabled;
-    QString confirmText;
-    if (m_shortcutAuthenticStaged) {
-        confirmText = QStringLiteral("Assign %1 enabled binding(s) to their canonical chords").arg(enabled);
-    } else {
-        confirmText =
-            QStringLiteral("Preserve %1 enabled binding(s) at their current assignments").arg(enabled);
-    }
-    if (focusEnabled && m_shortcutAuthenticStaged) {
-        confirmText += QStringLiteral("; focus-right takes Meta+L and Lock Session moves to Meta+Esc");
-    } else if (!focusEnabled) {
-        confirmText += QStringLiteral("; focus-right stays disabled and Lock Session is untouched");
-    } else {
-        confirmText += QStringLiteral("; focus-right keeps its current assignment and Lock Session is untouched");
-    }
-    if (disabled > 0) {
-        confirmText += QStringLiteral("; clear %1 disabled own binding(s)").arg(disabled);
-    }
-    confirmText += QStringLiteral("? Kept conflicting bindings refuse Apply; Force lists each holder "
-                                   "with the exact keys removed and kept.");
-    if (!confirmShortcutAction(QStringLiteral("Apply Shortcuts"), confirmText)) {
-        return;
-    }
+    // Direct Apply without a preliminary confirmation. Conflicts surface
+    // once through the conflict modal (Force Apply/Cancel); that modal is
+    // the sole Force confirmation and reuses the force revalidation path.
+    m_forcePreviewText.clear();
     if (m_shortcutStore == nullptr || m_clearedStore == nullptr) {
         m_shortcutError = QStringLiteral("reconciler is not configured");
         ShortcutDiag::log(QtWarningMsg, operation, "result", "failed",
                           QStringLiteral("reason=reconciler-unconfigured writes=0"));
         updateShortcutPresentation();
+        showShortcutError(QStringLiteral("Apply Shortcuts"), m_shortcutError);
         return;
     }
     ShortcutReconciler reconciler(m_shortcutStore, m_clearedStore);
     const ShortcutApplyResult result =
         reconciler.applySelected(m_shortcutDisabledDraft, m_shortcutAuthenticStaged);
-    if (result.ok) {
-        m_shortcutError.clear();
-        clearForcePreview();
-    } else {
-        m_shortcutError = result.error.isEmpty() ? QStringLiteral("Apply failed") : result.error;
-        // Explicit Force preview only when a holder claims a required key;
-        // every other refusal clears any pending preview.
-        const ShortcutForcePreview preview =
-            reconciler.previewForceApplySelected(m_shortcutDisabledDraft, m_shortcutAuthenticStaged);
-        if (preview.forceable) {
-            m_forcePreview = preview;
-            m_forcePreviewValid = true;
-            m_forcePreviewText = buildForcePreviewText(preview);
-        } else {
-            clearForcePreview();
-        }
-    }
     ShortcutDiag::log(result.ok ? QtInfoMsg : QtWarningMsg, operation, "result", result.ok ? "ok" : "failed",
                       result.ok ? QStringLiteral("writes=%1 authentic=%2")
                                       .arg(result.writes)
@@ -687,13 +734,52 @@ void UnifiedSettingsModule::runShortcutApply(const char *operation)
                                        .arg(result.error)
                                        .arg(result.writes)
                                        .arg(m_shortcutAuthenticStaged ? 1 : 0));
-    // Staged Authentic reset intent is committed by a successful Apply and
-    // consumed here; failed or declined attempts retain it. Logging above
-    // uses the original staged intent.
     if (result.ok) {
+        m_shortcutError.clear();
+        // Staged Authentic reset intent is committed by a successful Apply.
         m_shortcutAuthenticStaged = false;
+        refreshShortcutState();
+        showShortcutInformation(
+            QStringLiteral("Apply Shortcuts"),
+            QStringLiteral("Shortcuts applied and active immediately. "
+                           "No further Settings Apply or OK is needed."));
+        return;
     }
+    m_shortcutError = result.error.isEmpty() ? QStringLiteral("Apply failed") : result.error;
+    if (result.conflictRefused && result.writes == 0) {
+        const ShortcutForcePreview preview =
+            reconciler.previewForceApplySelected(m_shortcutDisabledDraft, m_shortcutAuthenticStaged);
+        if (preview.mismatches.isEmpty() && preview.blockers.isEmpty()) {
+            // The holder vanished between refusal and preview: report the
+            // original refusal with no empty conflict dialog.
+            refreshShortcutState();
+            showShortcutError(QStringLiteral("Apply Shortcuts"), m_shortcutError);
+            return;
+        }
+        // Per-row reconstructible conflict logging is owned by the
+        // reconciler; the dialog text below is the same combined order.
+        ShortcutReconciler::logForcePreview(operation, preview);
+        const QString dialogText = buildConflictDialogText(preview, m_shortcutAuthenticStaged);
+        if (!preview.forceable) {
+            // Blocked: the modal itself carries the reason with Force Apply
+            // disabled. No redundant error afterwards.
+            askShortcutForce(QStringLiteral("Apply Shortcuts: conflicts found"), dialogText, false);
+            refreshShortcutState();
+            return;
+        }
+        if (askShortcutForce(QStringLiteral("Apply Shortcuts: conflicts found"), dialogText, true)) {
+            applyConfirmedForcePreview(preview);
+            return;
+        }
+        // Explicit Cancel: no writes, no followup error dialog. The status
+        // label keeps showing the conflict honestly after refresh.
+        refreshShortcutState();
+        return;
+    }
+    // Operational or partial-apply failure: report the original error with
+    // no further Force confirmation.
     refreshShortcutState();
+    showShortcutError(QStringLiteral("Apply Shortcuts"), m_shortcutError);
 }
 
 QString UnifiedSettingsModule::buildConflictRowText(const ShortcutRowDisplay &row, bool disabled,
@@ -729,28 +815,26 @@ QString UnifiedSettingsModule::buildConflictRowText(const ShortcutRowDisplay &ro
         QStringList own;
         QStringList foreign;
         for (const ShortcutKeyHolder &holder : row.holders) {
-            const QString id = QStringLiteral("%1/%2").arg(holder.component, holder.action);
+            const QString label = holderDisplayLabel(holder.component, holder.action, holder.componentFriendly,
+                                                     holder.friendly);
             if (ShortcutReconciler::isHolderExempt(holder.component, holder.action, row.catalog.canonicalKey)) {
                 if (holder.component == row.catalog.component && holder.action == row.catalog.action) {
-                    own.append(QStringLiteral("own %1").arg(id));
+                    own.append(QStringLiteral("own %1").arg(label));
                 } else {
-                    own.append(id);
+                    own.append(label);
                 }
             } else {
-                foreign.append(QStringLiteral("conflict %1").arg(id));
+                foreign.append(QStringLiteral("conflict %1").arg(label));
             }
         }
+        // No truncation: every current holder appears in reconciler
+        // order (already sorted by component/action in collectRowDisplays).
         QStringList parts;
         if (!own.isEmpty()) {
             parts.append(QStringLiteral("own [%1]").arg(own.join(QStringLiteral(", "))));
         }
         if (!foreign.isEmpty()) {
-            const int shown = qMin(static_cast<int>(foreign.size()), 5);
-            QStringList shownForeign = foreign.mid(0, shown);
-            if (static_cast<int>(foreign.size()) > shown) {
-                shownForeign.append(QStringLiteral("(+%1 more)").arg(static_cast<int>(foreign.size()) - shown));
-            }
-            parts.append(QStringLiteral("foreign [%1]").arg(shownForeign.join(QStringLiteral(", "))));
+            parts.append(QStringLiteral("foreign [%1]").arg(foreign.join(QStringLiteral(", "))));
         }
         holders = parts.isEmpty() ? QStringLiteral("none") : parts.join(QStringLiteral("; "));
     }
@@ -802,6 +886,7 @@ void UnifiedSettingsModule::runShortcutRevert(const char *operation)
         ShortcutDiag::log(QtWarningMsg, operation, "result", "failed",
                           QStringLiteral("reason=reconciler-unconfigured writes=0"));
         updateShortcutPresentation();
+        showShortcutError(QStringLiteral("Revert Shortcuts"), m_shortcutError);
         return;
     }
     ShortcutReconciler reconciler(m_shortcutStore, m_clearedStore);
@@ -816,8 +901,15 @@ void UnifiedSettingsModule::runShortcutRevert(const char *operation)
                                 : QStringLiteral("reason=%1 writes=%2")
                                       .arg(result.error)
                                       .arg(result.writes));
-    clearForcePreview();
     refreshShortcutState();
+    if (result.ok) {
+        showShortcutInformation(
+            QStringLiteral("Revert Shortcuts"),
+            QStringLiteral("Shortcuts reverted and active immediately. "
+                           "No further Settings Apply or OK is needed."));
+    } else {
+        showShortcutError(QStringLiteral("Revert Shortcuts"), m_shortcutError);
+    }
 }
 
 void UnifiedSettingsModule::updateShortcutPresentation()
@@ -827,16 +919,6 @@ void UnifiedSettingsModule::updateShortcutPresentation()
     }
     if (m_ui.shortcutErrorLabel != nullptr) {
         m_ui.shortcutErrorLabel->setText(m_shortcutError);
-    }
-    if (m_ui.shortcutForcePreviewLabel != nullptr) {
-        m_ui.shortcutForcePreviewLabel->setText(m_forcePreviewText);
-        m_ui.shortcutForcePreviewLabel->setVisible(m_forcePreviewValid);
-    }
-    if (m_ui.shortcutForceApplyButton != nullptr) {
-        m_ui.shortcutForceApplyButton->setVisible(m_forcePreviewValid);
-    }
-    if (m_ui.shortcutForceCancelButton != nullptr) {
-        m_ui.shortcutForceCancelButton->setVisible(m_forcePreviewValid);
     }
 }
 
@@ -1191,7 +1273,6 @@ void UnifiedSettingsModule::load()
             }
         }
     }
-    clearForcePreview();
     refreshShortcutState();
     m_windowConflictError.clear();
     refreshWindowConflicts();
@@ -1506,7 +1587,6 @@ void UnifiedSettingsModule::defaults()
     // persisting still never writes shortcuts.
     m_shortcutDisabledDraft.clear();
     m_shortcutAuthenticStaged = false;
-    clearForcePreview();
     refreshShortcutState();
     updateScriptState();
 }

@@ -3277,8 +3277,11 @@ void diagPrefixAndForeignDataAreSafe()
                       QStringLiteral("Meta+G claimed by org.example.foreign/Untrusted Action"));
     ShortcutDiag::resetSink();
     CHECK(message.startsWith(QStringLiteral("omnitiler.shortcut op=apply stage=preflight outcome=refused")));
-    CHECK(message.contains(QStringLiteral("reason=key-conflict")));
-    CHECK(!message.contains(QStringLiteral("org.example.foreign")));
+    // Reconstructible: chord plus holder IDs stay; user paths never enter.
+    CHECK(message.contains(QStringLiteral("org.example.foreign")));
+    CHECK(message.contains(QStringLiteral("Untrusted Action")));
+    CHECK(!message.contains(QStringLiteral("/home")));
+    CHECK(!message.contains(QStringLiteral(".config")));
 }
 
 void diagThrowingSinkPreservesBehavior()
@@ -5085,6 +5088,241 @@ void selectionRowDisplayShowsActualHolders()
     CHECK(found);
 }
 
+void orderedConflictCompletenessAndBlocker()
+{
+    // >5 holders across multiple chords stay complete and consistently
+    // ordered: every current foreign holder appears once in
+    // component/action order with exact removals/remainder, status first
+    // matches the preview first, and a default-only claimant blocks Force
+    // while the available conflicts stay listed.
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    // Seven distinct foreign holders on distinct required chords.
+    const QList<std::pair<QString, int>> holders = {
+        {QStringLiteral("zeta-app"), META_G},
+        {QStringLiteral("alpha-app"), META_M},
+        {QStringLiteral("mid-app"), META_LEFT},
+        {QStringLiteral("beta-app"), META_RIGHT},
+        {QStringLiteral("gamma-app"), META_UP},
+        {QStringLiteral("delta-app"), META_DOWN},
+        {QStringLiteral("epsilon-app"), META_ALT_K},
+    };
+    for (const auto &[action, key] : holders) {
+        store.tuples.append(makeTuple(QStringLiteral("org.example"), action, QList<int>{key, 9000}));
+    }
+    // Multi-chord holder: two required chords plus one unrelated key.
+    store.tuples.append(
+        makeTuple(QStringLiteral("org.example"), QStringLiteral("multi-app"), QList<int>{META_G, META_M, 9001}));
+    FakeClearedActions cleared;
+    ShortcutReconciler reconciler(&store, &cleared);
+    const QSet<QString> disabled;
+    ShortcutForcePreview preview = reconciler.previewForceApplySelected(disabled, true);
+    CHECK(preview.forceable);
+    // 7 single + 1 multi = 8 distinct holder IDs, no truncation.
+    CHECK(preview.mismatches.size() == 8);
+    QStringList ids;
+    for (const ShortcutForceMismatch &mismatch : preview.mismatches) {
+        ids.append(mismatch.component + QStringLiteral("/") + mismatch.action);
+    }
+    QStringList sorted = ids;
+    sorted.sort();
+    CHECK(ids == sorted);
+    for (const auto &[action, key] : holders) {
+        const QString id = QStringLiteral("org.example/") + action;
+        CHECK(ids.contains(id));
+    }
+    CHECK(ids.contains(QStringLiteral("org.example/multi-app")));
+    for (const ShortcutForceMismatch &mismatch : preview.mismatches) {
+        if (mismatch.action == QStringLiteral("multi-app")) {
+            CHECK(mismatch.expectedPre.contains(META_G));
+            CHECK(mismatch.expectedPre.contains(META_M));
+            CHECK(mismatch.post == (QList<int>{9001}));
+            CHECK(mismatch.actual == (QList<int>{META_G, META_M, 9001}));
+        } else {
+            CHECK(mismatch.expectedPre.size() == 1);
+            CHECK(mismatch.post == (QList<int>{9000}));
+        }
+        // Reconstructible diagnostics: raw chord ints plus holder IDs.
+        CHECK(ShortcutReconciler::keysDisplay(mismatch.actual).contains(QStringLiteral(",")) || !mismatch.actual.isEmpty());
+    }
+    // Status first conflict uses the same ordering as the preview first.
+    const KeyedOccupancyResult keyed =
+        ShortcutReconciler::checkKeyedForeignOccupancyDetailedFor(&store, disabled, true);
+    CHECK(keyed.status == KeyedOccupancy::Conflict);
+    const ShortcutForceMismatch &first = preview.mismatches.first();
+    CHECK(keyed.detail.contains(first.component));
+    CHECK(keyed.detail.contains(first.action));
+    // Default-only claimant: listed for the key with nothing to clear.
+    // Force becomes unavailable but still lists every available conflict.
+    ShortcutKeyHolder defaultOnly;
+    defaultOnly.component = QStringLiteral("org.example");
+    defaultOnly.action = QStringLiteral("default-only");
+    defaultOnly.active = QList<int>{424242};
+    defaultOnly.defaults = QList<int>{424242};
+    store.extraByKey[META_CTRL_LEFT].append(defaultOnly);
+    ShortcutForcePreview blocked = reconciler.previewForceApplySelected(disabled, true);
+    CHECK(!blocked.forceable);
+    CHECK(!blocked.blockers.isEmpty());
+    CHECK(!blocked.mismatches.isEmpty());
+    CHECK(blocked.mismatches.size() == preview.mismatches.size());
+    CHECK(blocked.error.contains(QStringLiteral("default-only")));
+    bool sawBlocker = false;
+    for (const ShortcutForceBlocker &blocker : blocked.blockers) {
+        if (blocker.action == QStringLiteral("default-only")) {
+            sawBlocker = true;
+            CHECK(blocker.key == META_CTRL_LEFT);
+        }
+    }
+    CHECK(sawBlocker);
+}
+
+void orderedConflictsBlockerFirstEverywhere()
+{
+    // Mixed blockers plus clear rows: status first, refusal first, and the
+    // combined dialog order all agree on the blocker-first order. The
+    // blocker sorts before every clear row by component/action/key.
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    store.tuples.append(makeTuple(QStringLiteral("org.example"), QStringLiteral("zzz-clear"),
+                                  QList<int>{META_G, 9000}));
+    ShortcutKeyHolder blocker;
+    blocker.component = QStringLiteral("aaa-block");
+    blocker.action = QStringLiteral("aaa-action");
+    blocker.active = QList<int>{424242};
+    store.extraByKey[META_CTRL_LEFT].append(blocker);
+    FakeClearedActions cleared;
+    ShortcutReconciler reconciler(&store, &cleared);
+    const QSet<QString> disabled;
+    const KeyedOccupancyResult keyed =
+        ShortcutReconciler::checkKeyedForeignOccupancyDetailedFor(&store, disabled, true);
+    CHECK(keyed.status == KeyedOccupancy::Conflict);
+    CHECK(keyed.detail.contains(QStringLiteral("aaa-block/aaa-action")));
+    const ShortcutApplyResult refused = reconciler.applySelected(disabled, true);
+    CHECK(!refused.ok);
+    CHECK(refused.error.contains(QStringLiteral("aaa-block/aaa-action")));
+    CHECK(refused.error == keyed.detail);
+    const ShortcutForcePreview preview = reconciler.previewForceApplySelected(disabled, true);
+    CHECK(!preview.forceable);
+    CHECK(!preview.blockers.isEmpty());
+    CHECK(!preview.mismatches.isEmpty());
+    const QList<ShortcutOrderedConflict> ordered = ShortcutReconciler::orderedConflicts(preview);
+    CHECK(ordered.size() == preview.blockers.size() + preview.mismatches.size());
+    CHECK(ordered.first().isBlocker);
+    // Every blocker precedes every clear row in the combined order.
+    int lastBlocker = -1;
+    int firstClear = ordered.size();
+    for (int i = 0; i < ordered.size(); ++i) {
+        if (ordered.at(i).isBlocker) {
+            lastBlocker = i;
+        } else if (firstClear == ordered.size()) {
+            firstClear = i;
+        }
+    }
+    CHECK(lastBlocker >= 0);
+    CHECK(lastBlocker < firstClear);
+}
+
+void forcePreviewLogsEveryRowReconstructible()
+{
+    // >26 holders: per-row logging keeps every ID plus raw chord images
+    // without dropping the tail; the final holder and chord are present.
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    const int total = 30;
+    for (int i = 0; i < total; ++i) {
+        store.tuples.append(makeTuple(QStringLiteral("org.example"),
+                                      QStringLiteral("bulk-%1").arg(i, 2, 10, QChar::fromLatin1('0')),
+                                      QList<int>{META_G, 90000 + i}));
+    }
+    FakeClearedActions cleared;
+    ShortcutReconciler reconciler(&store, &cleared);
+    QStringList messages;
+    ShortcutDiag::setSink([&](QtMsgType, const QString &message) {
+        messages.append(message);
+    });
+    const ShortcutForcePreview preview =
+        reconciler.previewForceApplySelected(QSet<QString>(), true);
+    ShortcutDiag::resetSink();
+    CHECK(preview.forceable);
+    CHECK(preview.mismatches.size() == total);
+    // Every holder ID appears across the captured messages.
+    for (int i = 0; i < total; ++i) {
+        const QString id =
+            QStringLiteral("org.example/bulk-%1").arg(i, 2, 10, QChar::fromLatin1('0'));
+        bool saw = false;
+        for (const QString &message : messages) {
+            if (message.contains(id)) {
+                saw = true;
+                break;
+            }
+        }
+        CHECK(saw);
+    }
+    // The final holder and its raw chord image are present untruncated.
+    bool sawFinal = false;
+    for (const QString &message : messages) {
+        if (message.contains(QStringLiteral("org.example/bulk-29"))
+            && message.contains(QStringLiteral("90029"))) {
+            sawFinal = true;
+            break;
+        }
+    }
+    CHECK(sawFinal);
+}
+
+void blockerCarriesActiveImage()
+{
+    // Default-only claimants retain unrelated actives: the preview carries
+    // the full active image, the chunked log shows found/remove-none/keep,
+    // and revalidation compares the image.
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    ShortcutKeyHolder blocker;
+    blocker.component = QStringLiteral("org.example");
+    blocker.action = QStringLiteral("default-only");
+    blocker.active = QList<int>{424242, 424243};
+    blocker.defaults = QList<int>{META_CTRL_LEFT};
+    store.extraByKey[META_CTRL_LEFT].append(blocker);
+    FakeClearedActions cleared;
+    ShortcutReconciler reconciler(&store, &cleared);
+    const ShortcutForcePreview preview =
+        reconciler.previewForceApplySelected(QSet<QString>(), true);
+    CHECK(!preview.forceable);
+    CHECK(preview.blockers.size() == 1);
+    CHECK(preview.blockers.first().active == (QList<int>{424242, 424243}));
+    CHECK(preview.blockers.first().key == META_CTRL_LEFT);
+    QStringList messages;
+    ShortcutDiag::setSink([&](QtMsgType, const QString &message) {
+        messages.append(message);
+    });
+    ShortcutReconciler::logForcePreview("force-preview", preview);
+    ShortcutDiag::resetSink();
+    bool sawFound = false;
+    bool sawKeep = false;
+    for (const QString &message : messages) {
+        if (message.contains(QStringLiteral("org.example/default-only"))
+            && message.contains(QStringLiteral("424242"))) {
+            sawFound = true;
+        }
+        if (message.contains(QStringLiteral("org.example/default-only"))
+            && message.contains(QStringLiteral("remove=none"))
+            && message.contains(QStringLiteral("424243"))) {
+            sawKeep = true;
+        }
+    }
+    CHECK(sawFound);
+    CHECK(sawKeep);
+    // A blocked preview never forces: zero writes with the refusal
+    // reason, even for a drifted blocker image.
+    ShortcutForcePreview drifted = preview;
+    drifted.blockers[0].active = QList<int>{424242};
+    const ShortcutForceApplyResult refused =
+        reconciler.applyForcedSelected(drifted, QSet<QString>(), true);
+    CHECK(!refused.ok);
+    CHECK(!refused.error.isEmpty());
+    CHECK(refused.writes == 0);
+}
+
 void workspaceRelativeDesktopSwitchRows()
 {
     // Item 1 catalog: previous toggle plus four prev and four next relative
@@ -6174,6 +6412,10 @@ int main(int argc, char **argv)
         selectionKeepOccupancyGate();
         selectionRequiredKeysKeepVsAuthentic();
         selectionRowDisplayShowsActualHolders();
+        orderedConflictCompletenessAndBlocker();
+        orderedConflictsBlockerFirstEverywhere();
+        blockerCarriesActiveImage();
+        forcePreviewLogsEveryRowReconstructible();
         toggleOrientationCatalogPresetRows();
         workspaceTilingToggleCatalogPresetRows();
     }

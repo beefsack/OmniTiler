@@ -194,6 +194,12 @@ decisions of 2026-09-24 are under
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
   tile) and active border radius default 6; underlay default visibility
   review shared with Windows (g).
+- P1 | Windows handoff: shortcut settings dialogs | Match KDE's modal
+  conflict preview and Apply/Revert success/error dialogs in
+  `crates/tiler-windows`; show immediate activation without a second settings
+  Apply, avoid stacked confirmations (tentative, user review pending), and
+  retain required data-loss safety. KDE delivered offline 2026-10-12;
+  [flow and evidence](changes/archive/kde-shortcut-result-dialogs.md).
 - P0 | Windows port | KDE-first core extraction finished at K1 (user
   2026-09-30; K2/K3 revisit when macOS starts, see
   [extraction](research/cross-platform-core/extraction.md),

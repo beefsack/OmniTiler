@@ -480,6 +480,10 @@ struct ShortcutKeyHolder
     // holder may have empty active with defaults containing the key.
     QList<int> active;
     QList<int> defaults;
+    // Display labels carried on the wire (ssssss). Empty when the holder
+    // reports none; never part of identity, never persisted.
+    QString componentFriendly;
+    QString friendly;
 };
 
 // Plain KGlobalShortcutInfo fields (ssssss + ai + ai) shared by the
@@ -518,6 +522,10 @@ struct ShortcutApplyResult
     bool ok = false;
     QString error;
     int writes = 0;
+    // True only for the zero-write preflight conflict refusal (a holder
+    // claims a required chord). Operational and partial-apply failures
+    // leave this false so callers never offer Force for them.
+    bool conflictRefused = false;
 };
 
 // Explicit confirmed override for holders of project-required chords.
@@ -543,11 +551,59 @@ struct ShortcutForceMismatch
     QString friendly;
 };
 
+struct ShortcutForceBlocker
+{
+    QString component;
+    QString action;
+    int key = 0;
+    // Full live active list observed for the holder. The required chord is
+    // claimed without appearing here, so Force removes nothing and retains
+    // all of these keys.
+    QList<int> active;
+    QString componentFriendly;
+    QString friendly;
+};
+
+// Actual in-scope Lock Session relocation carried by the preview, so the
+// dialog describes the exemption honestly without inferring policy.
+struct ShortcutLockRelocation
+{
+    bool inScope = false;
+    QString component;
+    QString action;
+    QList<int> actual;
+    QList<int> post;
+    bool hasPre = false;
+    bool hasTarget = false;
+    // Authorized displacement observed on the relocation target.
+    bool authorizedHolderPresent = false;
+    QString authorizedComponent;
+    QString authorizedAction;
+    QList<int> authorizedActive;
+    QString authorizedComponentFriendly;
+    QString authorizedFriendly;
+};
+
+// One reconciler-owned combined conflict entry: blockers first, then clear
+// rows, each subsequence in component/action/key order. Status, refusal,
+// dialog, and logs all share this order; the UI never re-sorts.
+struct ShortcutOrderedConflict
+{
+    bool isBlocker = false;
+    int index = -1;
+};
+
 struct ShortcutForcePreview
 {
     bool forceable = false;
     QString error;
     QList<ShortcutForceMismatch> mismatches;
+    // Default-only claimants with nothing Force can clear, in
+    // component/action/key order. Populated even when forceable is false
+    // so the conflict dialog can list every available conflict with Force
+    // disabled and an explicit reason.
+    QList<ShortcutForceBlocker> blockers;
+    ShortcutLockRelocation lock;
     // Full bounded preflight image. Force accepts only this exact live image,
     // not merely the rows that initially needed clearing.
     QString owner;
@@ -913,6 +969,15 @@ public:
     // Human-readable chord image for UI rows: "none" for empty, otherwise
     // comma-joined keyDisplayName values. Diagnostics keep keysDisplay raw.
     static QString keysDisplayNames(const QList<int> &keys);
+    // Combined blocker-first conflict order for one preview. Both lists
+    // are already sorted; this only concatenates blockers then mismatches
+    // so status, refusal, dialog, and logs cannot diverge.
+    static QList<ShortcutOrderedConflict> orderedConflicts(const ShortcutForcePreview &preview);
+    // Per-row reconstructible conflict logging owned here: one summary plus
+    // one bounded line per conflict row (chunked when a row exceeds the
+    // bound), Info when forceable, Warning otherwise. IDs plus raw key
+    // images only; never friendly labels.
+    static void logForcePreview(const char *operation, const ShortcutForcePreview &preview);
     // Unknown disabled IDs fail closed before any write.
     static bool disabledIdsValid(const QSet<QString> &disabledIds, QString *error);
     // Non-project foreign tuple IDs whose wire defaults contain the key.
@@ -1026,6 +1091,9 @@ private:
         QString component;
         QString action;
         int key = 0;
+        QList<int> active;
+        QString componentFriendly;
+        QString friendly;
     };
     struct HolderSnapshot
     {
@@ -1033,6 +1101,14 @@ private:
         uint uid = 0;
         ShortcutTuple lock;
         bool lockResolved = false;
+        // Authorized displacement observed on the relocation target while
+        // in scope (never writable, never cleared).
+        bool authorizedTargetPresent = false;
+        QString authorizedTargetComponent;
+        QString authorizedTargetAction;
+        QList<int> authorizedTargetActive;
+        QString authorizedTargetComponentFriendly;
+        QString authorizedTargetFriendly;
         QList<ShortcutTuple> projects;
         // Full-catalog actives in catalog order (empty when the entry is
         // missing live). The confirmed Force image binds this snapshot.

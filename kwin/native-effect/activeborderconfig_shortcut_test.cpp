@@ -5,14 +5,18 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMimeData>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include <cstdio>
 #include <cstdlib>
@@ -89,6 +93,8 @@ public:
     QMap<int, bool> availableOverride;
     bool failByKey = false;
     bool failAvailable = false;
+    // Fail the Nth project write (0-based) to simulate a partial apply.
+    int failWriteAt = -1;
     struct WriteRecord
     {
         QString component;
@@ -242,6 +248,12 @@ public:
         if (writeLog.size() >= 64) {
             if (error) {
                 *error = QStringLiteral("refusing write beyond the lifetime bound");
+            }
+            return false;
+        }
+        if (failWriteAt >= 0 && writeLog.size() + foreignWriteLog.size() == failWriteAt) {
+            if (error) {
+                *error = QStringLiteral("simulated project write failure");
             }
             return false;
         }
@@ -480,6 +492,32 @@ void addForeignHolder(FakeShortcutStore &store, const QString &component, const 
     }
 }
 
+struct ForceCapture
+{
+    int calls = 0;
+    bool enabled = false;
+    QString text;
+    bool allow = false;
+};
+
+void wireForceCapture(ActiveBorderConfigModule &module, ForceCapture &capture)
+{
+    module.setShortcutForcePromptHandler([&](const QString &, const QString &text, bool enabled) {
+        ++capture.calls;
+        capture.enabled = enabled;
+        capture.text = text;
+        return capture.allow;
+    });
+    module.setShortcutInformationHandler([](const QString &, const QString &) {});
+    module.setShortcutErrorHandler([](const QString &, const QString &) {});
+}
+
+void wireQuietResults(ActiveBorderConfigModule &module)
+{
+    module.setShortcutInformationHandler([](const QString &, const QString &) {});
+    module.setShortcutErrorHandler([](const QString &, const QString &) {});
+}
+
 void ordinarySettingsApplyNeverMutatesShortcuts()
 {
     FakeShortcutStore store;
@@ -566,7 +604,7 @@ void selectionPresetsAndDraft()
                                   QList<int>{SHORTCUT_META_1}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(module.shortcutDisabledIds().isEmpty());
@@ -699,7 +737,6 @@ void selectionPresetsAndDraft()
     CHECK(!draft.contains(QStringLiteral("kwin/omnitiler-migrate-workspace-down")));
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
-    CHECK(!module.isShortcutForceApplyVisible());
     CHECK(!module.shortcutAuthenticStaged());
     if (authentic != nullptr) {
         authentic->click();
@@ -729,7 +766,8 @@ void selectionDisabledApplyIgnoresForeign()
                                   QList<int>{SHORTCUT_META_1}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(module.shortcutStatusText().contains(QStringLiteral("Conflict")));
@@ -753,18 +791,17 @@ void selectionDisabledApplyIgnoresForeign()
 
 void selectionDraftEditCancelsPreview()
 {
-    // An enabled-row conflict raises a Force preview; any draft edit after
-    // cancels it with zero writes and no confirmation.
+    // A declined conflict modal leaves zero writes and the refusal error;
+    // a later draft edit only refreshes state, still with zero writes.
     FakeShortcutStore store;
     seedReady(store);
     store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("Grid View"), QList<int>{META_G}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    int confirms = 0;
-    module.setShortcutConfirmHandler([&](const QString &, const QString &) {
-        ++confirms;
-        return true;
-    });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForDraft = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -773,27 +810,28 @@ void selectionDraftEditCancelsPreview()
         authenticForDraft->click();
     }
     module.requestShortcutApply();
-    CHECK(confirms == 1);
-    CHECK(module.isShortcutForceApplyVisible());
+    CHECK(force.calls == 1);
     CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("Grid View")));
+    CHECK(module.shortcutErrorText().contains(QStringLiteral("Meta+G")));
     setRowDisabled(module, QStringLiteral("kwin/omnitiler-workspace-1"), true);
-    CHECK(!module.isShortcutForceApplyVisible());
-    CHECK(confirms == 1);
+    CHECK(force.calls == 1);
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
 }
 
 void selectionStaleDraftRefusesForce()
 {
-    // Preview, then a draft edit: the edit cancels the preview, so Force
-    // has nothing to apply and zero writes happen. The Apply refusal error
-    // is preserved.
+    // Declined modal, then a draft edit: the next Apply re-refuses under
+    // the new draft with zero writes. The Apply refusal error is preserved.
     FakeShortcutStore store;
     seedReady(store);
     store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("Grid View"), QList<int>{META_G}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForStale = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -802,9 +840,10 @@ void selectionStaleDraftRefusesForce()
         authenticForStale->click();
     }
     module.requestShortcutApply();
-    CHECK(module.isShortcutForceApplyVisible());
+    CHECK(force.calls == 1);
     setRowDisabled(module, QStringLiteral("kwin/omnitiler-workspace-1"), true);
-    CHECK(!module.isShortcutForceApplyVisible());
+    module.requestShortcutApply();
+    CHECK(force.calls == 2);
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
     CHECK(module.shortcutErrorText().contains(QStringLiteral("Meta+G")));
@@ -818,7 +857,7 @@ void selectionSaveIsolationWithDraft()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     setRowDisabled(module, QStringLiteral("kwin/omnitiler-workspace-1"), true);
@@ -835,8 +874,9 @@ void selectionSaveIsolationWithDraft()
 
 void selectionRevertKeepsOwnAssignment()
 {
-    // Force clears the holder and assigns the project row; Revert restores
-    // the foreign default while the project assignment stays in place.
+    // Accepted conflict modal clears the holder and assigns the project
+    // row in one step; Revert restores the foreign default while the
+    // project assignment stays in place.
     FakeShortcutStore store;
     seedReady(store);
     addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
@@ -844,6 +884,9 @@ void selectionRevertKeepsOwnAssignment()
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
     module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    ForceCapture forceRevert;
+    forceRevert.allow = true;
+    wireForceCapture(module, forceRevert);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForRevert = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -852,8 +895,7 @@ void selectionRevertKeepsOwnAssignment()
         authenticForRevert->click();
     }
     module.requestShortcutApply();
-    CHECK(module.isShortcutForceApplyVisible());
-    module.requestShortcutForceApply();
+    CHECK(forceRevert.calls == 1);
     CHECK(module.shortcutErrorText().isEmpty());
     for (const ShortcutTuple &tuple : store.tuples) {
         if (tuple.action == QStringLiteral("other-launch")) {
@@ -894,7 +936,7 @@ void selectionLiveDisabledReopen()
     }
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(module.shortcutDisabledIds().contains(QStringLiteral("kwin/omnitiler-workspace-1")));
@@ -915,7 +957,7 @@ void selectionMissingEnabledStatus()
         }
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
         module.setShortcutStores(&store, &cleared);
         module.load();
         CHECK(module.shortcutStatusText().contains(QStringLiteral("unavailable"))
@@ -932,7 +974,7 @@ void selectionMissingEnabledStatus()
         }
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
         module.setShortcutStores(&store, &cleared);
         // Stage the absent row as disabled before load completes: absent
         // disabled is allowed, so seeding the draft directly then refreshing
@@ -952,7 +994,7 @@ void selectionDisabledLockAbsentShowsRows()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     // Lock vanishes live after open; disabling focus-right then leaves it
@@ -977,7 +1019,7 @@ void selectionCompatibleQueryFailurePreservesDraft()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(module.shortcutDisabledIds().isEmpty());
@@ -1002,7 +1044,8 @@ void selectionForeignDefaultCompatibleAfterClear()
     store.tuples.append(foreign);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *compatible = presetButtonByModule(module, "shortcutCompatibleButton");
@@ -1019,7 +1062,7 @@ void selectionReadableRowText()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     QListWidget *list = conflictListByModule(module);
@@ -1045,12 +1088,20 @@ void selectionReadableRowText()
 
 void confirmationGatesEveryMutation()
 {
+    // Apply needs no preliminary confirmation; Revert keeps its data-loss
+    // confirmation. Result dialogs are modal in both cases.
     FakeShortcutStore store;
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
     int confirms = 0;
     bool allow = false;
+    ForceCapture force;
+    wireForceCapture(module, force);
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
     module.setShortcutConfirmHandler([&](const QString &title, const QString &text) {
         ++confirms;
         CHECK(!title.isEmpty());
@@ -1059,14 +1110,8 @@ void confirmationGatesEveryMutation()
     });
     module.setShortcutStores(&store, &cleared);
     module.load();
-    // Declined Apply: no writes, no cleared saves.
-    module.requestShortcutApply();
-    CHECK(confirms == 1);
-    CHECK(store.totalWrites() == 0);
-    CHECK(cleared.saves == 0);
-    // Accepted Apply with zero holders: succeeds. Canonical assignment
-    // requires staged Authentic; plain Keep would preserve with zero
-    // writes.
+    // Direct Apply without conflicts: no confirmation of any kind, success
+    // dialog, writes happen. Canonical assignment requires staged Authentic.
     allow = true;
     QPushButton *authenticForConfirm = presetButtonByModule(module, "shortcutAuthenticButton");
     CHECK(authenticForConfirm != nullptr);
@@ -1075,23 +1120,20 @@ void confirmationGatesEveryMutation()
     }
     CHECK(module.shortcutAuthenticStaged());
     module.requestShortcutApply();
-    CHECK(confirms == 2);
+    CHECK(confirms == 0);
+    CHECK(force.calls == 0);
     CHECK(store.totalWrites() > 0);
     CHECK(module.shortcutErrorText().isEmpty());
-    // Revert needs its own confirmation; decline first.
+    CHECK(infos == 1);
+    CHECK(errors == 0);
+    // Revert needs its own data-loss confirmation; decline first.
     allow = false;
     const int writesBeforeRevert = store.totalWrites();
     const int savesBeforeRevert = cleared.saves;
     module.requestShortcutRevert();
-    CHECK(confirms == 3);
+    CHECK(confirms == 1);
     CHECK(store.totalWrites() == writesBeforeRevert);
     CHECK(cleared.saves == savesBeforeRevert);
-    // Force Cancel needs no confirmation.
-    allow = true;
-    CHECK(!module.isShortcutForceApplyVisible());
-    module.requestShortcutForceCancel();
-    CHECK(confirms == 3);
-    CHECK(store.totalWrites() == writesBeforeRevert);
 }
 
 void stateAndErrorPresentation()
@@ -1104,7 +1146,7 @@ void stateAndErrorPresentation()
         seedReady(store);
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
         module.setShortcutStores(&store, &cleared);
         module.load();
         CHECK(module.shortcutStatusText().contains(QStringLiteral("preserved")));
@@ -1135,7 +1177,8 @@ void stateAndErrorPresentation()
         seedReady(store);
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        wireQuietResults(module);
         module.setShortcutStores(&store, &cleared);
         module.load();
         QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1157,7 +1200,10 @@ void stateAndErrorPresentation()
         store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("other-action"), QList<int>{META_ESC}));
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture forceEsc;
+        forceEsc.allow = false;
+        wireForceCapture(module, forceEsc);
         module.setShortcutStores(&store, &cleared);
         module.load();
         QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1168,6 +1214,7 @@ void stateAndErrorPresentation()
         CHECK(module.shortcutStatusText().contains(QStringLiteral("Conflict")));
         CHECK(module.shortcutStatusText().contains(QStringLiteral("Meta+Esc")));
         module.requestShortcutApply();
+        CHECK(forceEsc.calls == 1);
         CHECK(store.writeLog.empty());
         CHECK(store.foreignWriteLog.empty());
         CHECK(!module.shortcutErrorText().isEmpty());
@@ -1184,7 +1231,7 @@ void stateAndErrorPresentation()
         store.failByKey = true;
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
         module.setShortcutStores(&store, &cleared);
         module.load();
         CHECK(!module.shortcutStatusText().contains(QStringLiteral("Conflict")));
@@ -1202,12 +1249,16 @@ void stateAndErrorPresentation()
             "</method></interface></node>");
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        int contractErrors = 0;
+        module.setShortcutInformationHandler([](const QString &, const QString &) {});
+        module.setShortcutErrorHandler([&](const QString &, const QString &) { ++contractErrors; });
         module.setShortcutStores(&store, &cleared);
         module.load();
         CHECK(module.shortcutStatusText().contains(QStringLiteral("as,a(ai),u -> a(ai)")));
         CHECK(!module.shortcutStatusText().contains(QStringLiteral("asa(ai)u")));
         module.requestShortcutApply();
+        CHECK(contractErrors == 1);
         CHECK(store.totalWrites() == 0);
         CHECK(module.shortcutErrorText().contains(QStringLiteral("as,a(ai),u -> a(ai)")));
         CHECK(!module.shortcutErrorText().contains(QStringLiteral("asa(ai)u")));
@@ -1220,10 +1271,13 @@ void stateAndErrorPresentation()
         sysmon.component = shortcutAuthorizedEscComponent();
         sysmon.action = shortcutAuthorizedEscAction();
         sysmon.active = QList<int>{META_ESC};
+        sysmon.componentFriendly = QStringLiteral("System Monitor");
+        sysmon.friendly = QStringLiteral("Launch System Monitor");
         store.extraByKey[META_ESC].append(sysmon);
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        wireQuietResults(module);
         module.setShortcutStores(&store, &cleared);
         module.load();
         // Stage Authentic before asserting: the authorized displacement is
@@ -1251,76 +1305,55 @@ void forcePreviewAcceptCancelRevert()
 {
     FakeShortcutStore store;
     seedReady(store);
-    // Holder with one required key plus one unrelated key.
     addForeignHolder(store, QStringLiteral("org.kde.unknown"), QStringLiteral("other-launch"),
                      QList<int>{META_G, 999}, QList<int>{1111});
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    int confirms = 0;
-    bool allow = true;
-    module.setShortcutConfirmHandler([&](const QString &title, const QString &text) {
-        ++confirms;
-        CHECK(!title.isEmpty());
-        CHECK(!text.isEmpty());
-        return allow;
-    });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
     module.setShortcutStores(&store, &cleared);
     module.load();
-    CHECK(!module.isShortcutForceApplyVisible());
-    CHECK(!module.isShortcutForceCancelVisible());
-    // Canonical assignment requires staged Authentic: the foreign holder
-    // claims the canonical chord while the own row is customized.
     QPushButton *authenticForForce = presetButtonByModule(module, "shortcutAuthenticButton");
     CHECK(authenticForForce != nullptr);
     if (authenticForForce != nullptr) {
         authenticForForce->click();
     }
-    // Apply refuses with zero mutation and raises the exact preview.
+    // Declined conflict modal: zero mutation, refusal kept, no followup
+    // error dialog for the explicit Cancel.
     module.requestShortcutApply();
-    CHECK(confirms == 1);
+    CHECK(force.calls == 1);
+    CHECK(force.enabled);
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
     CHECK(module.shortcutErrorText().contains(QStringLiteral("Meta+G")));
-    CHECK(module.isShortcutForceApplyVisible());
-    CHECK(module.isShortcutForceCancelVisible());
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("org.kde.unknown")));
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("other-launch")));
-    CHECK(module.shortcutForcePreviewText().contains(ShortcutReconciler::keyDisplayName(META_G)));
-    CHECK(module.shortcutForcePreviewText().contains(ShortcutReconciler::keyDisplayName(999)));
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("will remove")));
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("keep")));
-    QLabel *preview = labelByName(module, "shortcutForcePreviewLabel");
-    CHECK(preview != nullptr);
-    if (preview) {
-        CHECK(preview->text() == module.shortcutForcePreviewText());
-        CHECK(!preview->isHidden());
-    }
-    // Cancel clears the preview with no mutation, no confirmation.
-    module.requestShortcutForceCancel();
-    CHECK(confirms == 1);
-    CHECK(store.totalWrites() == 0);
-    CHECK(cleared.saves == 0);
-    CHECK(!module.isShortcutForceApplyVisible());
-    CHECK(!module.isShortcutForceCancelVisible());
-    // Preview again, decline at the Force confirmation: retained, unmutated.
+    CHECK(errors == 0);
+    CHECK(infos == 0);
+    CHECK(force.text.contains(QStringLiteral("org.kde.unknown")));
+    CHECK(force.text.contains(QStringLiteral("other-launch")));
+    CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(META_G)));
+    CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(999)));
+    CHECK(force.text.contains(QStringLiteral("will remove")));
+    CHECK(force.text.contains(QStringLiteral("keep")));
+    CHECK(module.shortcutForcePreviewText() == force.text);
+    CHECK(labelByName(module, "shortcutForcePreviewLabel") == nullptr);
+    CHECK(buttonByName(module, "shortcutForceApplyButton") == nullptr);
+    CHECK(buttonByName(module, "shortcutForceCancelButton") == nullptr);
+    // A second Apply shows the modal again; accepting forces in one step
+    // with revalidation and a success dialog.
     module.requestShortcutApply();
-    CHECK(confirms == 2);
-    CHECK(module.isShortcutForceApplyVisible());
-    allow = false;
-    module.requestShortcutForceApply();
-    CHECK(confirms == 3);
-    CHECK(store.totalWrites() == 0);
-    CHECK(cleared.saves == 0);
-    CHECK(module.isShortcutForceApplyVisible());
-    // Accept: only the required key is removed, the unrelated key is kept,
-    // and the cleared ID is persisted before clearing.
-    allow = true;
-    module.requestShortcutForceApply();
-    CHECK(confirms == 4);
+    CHECK(force.calls == 2);
+    force.allow = true;
+    module.requestShortcutApply();
+    CHECK(force.calls == 3);
     CHECK(module.shortcutErrorText().isEmpty());
-    CHECK(!module.isShortcutForceApplyVisible());
-    CHECK(!module.isShortcutForceCancelVisible());
     CHECK(cleared.saves == 1);
+    CHECK(infos == 1);
     bool foundHolder = false;
     for (const ShortcutTuple &tuple : store.tuples) {
         if (tuple.component == QStringLiteral("org.kde.unknown") && tuple.action == QStringLiteral("other-launch")) {
@@ -1329,40 +1362,45 @@ void forcePreviewAcceptCancelRevert()
         }
     }
     CHECK(foundHolder);
-    // Stale preview: mutate the holder after a fresh preview, then force.
-    module.requestShortcutApply();
-    // Holder is now at the kept value {999} with no required key, so Apply
-    // may proceed on project rows; force a new conflict instead.
+    // Mutation while the accepted modal runs: the hook drifts the holder
+    // after the preview is built, so revalidation fails stale with zero
+    // further writes and a result error dialog. No Force runs outside the
+    // accepted modal path.
     for (ShortcutTuple &tuple : store.tuples) {
         if (tuple.component == QStringLiteral("org.kde.unknown")) {
-            tuple.active = QList<int>{META_M, 4242};
+            tuple.active = QList<int>{META_M, 5555};
         }
     }
-    store.defaultKeysById[QStringLiteral("org.kde.unknown/other-launch")] = QList<int>{1111};
-    module.requestShortcutApply();
-    const int confirmsBeforeStale = confirms;
     const int writesBeforeStale = store.totalWrites();
     const int savesBeforeStale = cleared.saves;
-    if (module.isShortcutForceApplyVisible()) {
+    const int errorsBeforeStale = errors;
+    const int infosBeforeStale = infos;
+    int modalRuns = 0;
+    module.setShortcutForcePromptHandler([&](const QString &, const QString &text, bool enabled) {
+        ++modalRuns;
+        CHECK(enabled);
+        CHECK(text.contains(QStringLiteral("other-launch")));
+        // Drift the holder mid-modal: the confirmed preview no longer
+        // matches live state.
         for (ShortcutTuple &tuple : store.tuples) {
             if (tuple.component == QStringLiteral("org.kde.unknown")) {
-                tuple.active = QList<int>{META_M, 5555};
+                tuple.active = QList<int>{META_M, 6666};
             }
         }
-        module.requestShortcutForceApply();
-        CHECK(confirms == confirmsBeforeStale + 1);
-        CHECK(!module.shortcutErrorText().isEmpty());
-        CHECK(store.totalWrites() == writesBeforeStale);
-        CHECK(cleared.saves == savesBeforeStale);
-    } else {
-        CHECK(module.shortcutErrorText().isEmpty());
-    }
+        return true;
+    });
+    module.requestShortcutApply();
+    CHECK(modalRuns == 1);
+    CHECK(!module.shortcutErrorText().isEmpty());
+    CHECK(module.shortcutErrorText().contains(QStringLiteral("stale")));
+    CHECK(store.totalWrites() == writesBeforeStale);
+    CHECK(cleared.saves == savesBeforeStale);
+    CHECK(errors == errorsBeforeStale + 1);
+    CHECK(infos == infosBeforeStale);
 }
 
 void recoveryVisibilityAndRouting()
 {
-    // Revert restores KDE defaults for cleared bindings, empties the list,
-    // and leaves project-owned IDs cleared.
     FakeShortcutStore store;
     seedReady(store);
     addForeignHolder(store, QStringLiteral("org.kde.unknown"), QStringLiteral("other-launch"),
@@ -1374,23 +1412,34 @@ void recoveryVisibilityAndRouting()
         ++confirms;
         return true;
     });
+    ForceCapture force;
+    force.allow = true;
+    wireForceCapture(module, force);
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(buttonByName(module, "shortcutFinishApplyButton") == nullptr);
     CHECK(buttonByName(module, "shortcutRestoreButton") == nullptr);
+    CHECK(buttonByName(module, "shortcutForceApplyButton") == nullptr);
+    CHECK(buttonByName(module, "shortcutForceCancelButton") == nullptr);
     QPushButton *authenticForRecovery = presetButtonByModule(module, "shortcutAuthenticButton");
     CHECK(authenticForRecovery != nullptr);
     if (authenticForRecovery != nullptr) {
         authenticForRecovery->click();
     }
+    // Accepted conflict modal applies in one step with revalidation and a
+    // success dialog; no second Force step exists.
     module.requestShortcutApply();
-    CHECK(confirms == 1);
-    CHECK(module.isShortcutForceApplyVisible());
-    module.requestShortcutForceApply();
-    CHECK(confirms == 2);
+    CHECK(force.calls == 1);
+    CHECK(confirms == 0);
     CHECK(module.shortcutErrorText().isEmpty());
+    CHECK(infos == 1);
+    CHECK(errors == 0);
     CHECK(cleared.stored.size() == 1);
-    // Revert confirm mentions KDE defaults.
+    // Revert confirm mentions KDE defaults and reports via result dialog.
     bool revertTextSawDefaults = false;
     module.setShortcutConfirmHandler([&](const QString &title, const QString &text) {
         ++confirms;
@@ -1400,9 +1449,10 @@ void recoveryVisibilityAndRouting()
         return true;
     });
     module.requestShortcutRevert();
-    CHECK(confirms == 3);
+    CHECK(confirms == 1);
     CHECK(revertTextSawDefaults);
     CHECK(module.shortcutErrorText().isEmpty());
+    CHECK(infos == 2);
     CHECK(cleared.stored.isEmpty());
     bool foundHolder = false;
     for (const ShortcutTuple &tuple : store.tuples) {
@@ -1412,11 +1462,12 @@ void recoveryVisibilityAndRouting()
         }
     }
     CHECK(foundHolder);
-    // Empty-list Revert is a no-op success.
+    // Empty-list Revert is a no-op success with a result dialog.
     const int writesAfter = store.totalWrites();
     module.requestShortcutRevert();
-    CHECK(confirms == 4);
+    CHECK(confirms == 2);
     CHECK(module.shortcutErrorText().isEmpty());
+    CHECK(infos == 3);
     CHECK(store.totalWrites() == writesAfter);
 }
 
@@ -1465,7 +1516,12 @@ void knownForeignStatusAlignsWithApply()
     store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("Grid View"), QList<int>{META_G}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture forceKnown;
+    forceKnown.allow = false;
+    wireForceCapture(module, forceKnown);
+    int knownErrors = 0;
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++knownErrors; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForKnown = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1477,11 +1533,15 @@ void knownForeignStatusAlignsWithApply()
     CHECK(module.shortcutStatusText().contains(QStringLiteral("Meta+G")));
     CHECK(!module.shortcutStatusText().contains(QStringLiteral("Ready")));
     module.requestShortcutApply();
+    CHECK(forceKnown.calls == 1);
+    CHECK(forceKnown.enabled);
     CHECK(store.writeLog.empty());
     CHECK(store.foreignWriteLog.empty());
     CHECK(!module.shortcutErrorText().isEmpty());
     CHECK(module.shortcutErrorText().contains(QStringLiteral("Grid View")));
-    CHECK(module.isShortcutForceApplyVisible());
+    // Explicit Cancel shows no followup error dialog.
+    CHECK(knownErrors == 0);
+    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("Grid View")));
 }
 
 void growArrowStatusAlignsWithApply()
@@ -1495,7 +1555,10 @@ void growArrowStatusAlignsWithApply()
         makeTuple(QStringLiteral("kwin"), QStringLiteral("Switch Window Left"), QList<int>{META_ALT_LEFT}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture forceGrow;
+    forceGrow.allow = false;
+    wireForceCapture(module, forceGrow);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForGrow = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1507,11 +1570,11 @@ void growArrowStatusAlignsWithApply()
     CHECK(module.shortcutStatusText().contains(QStringLiteral("Meta+Alt+Left")));
     CHECK(!module.shortcutStatusText().contains(QStringLiteral("Ready")));
     module.requestShortcutApply();
+    CHECK(forceGrow.calls == 1);
     CHECK(store.writeLog.empty());
     CHECK(store.foreignWriteLog.empty());
     CHECK(!module.shortcutErrorText().isEmpty());
     CHECK(module.shortcutErrorText().contains(QStringLiteral("Switch Window Left")));
-    CHECK(module.isShortcutForceApplyVisible());
     CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("Switch Window Left")));
     CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("Meta+Alt+Left")));
 }
@@ -1544,7 +1607,10 @@ void focusMoveArrowStatusAlignsWithApply()
         store.tuples.append(makeTuple(QStringLiteral("kwin"), actions.at(i), QList<int>{keys.at(i)}));
         FakeClearedStore cleared;
         ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture forceFocusMove;
+        forceFocusMove.allow = false;
+        wireForceCapture(module, forceFocusMove);
         module.setShortcutStores(&store, &cleared);
         module.load();
         QPushButton *authenticForFocusMove = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1556,11 +1622,11 @@ void focusMoveArrowStatusAlignsWithApply()
         CHECK(module.shortcutStatusText().contains(displays.at(i)));
         CHECK(!module.shortcutStatusText().contains(QStringLiteral("Ready")));
         module.requestShortcutApply();
+        CHECK(forceFocusMove.calls == 1);
         CHECK(store.writeLog.empty());
         CHECK(store.foreignWriteLog.empty());
         CHECK(!module.shortcutErrorText().isEmpty());
         CHECK(module.shortcutErrorText().contains(actions.at(i)));
-        CHECK(module.isShortcutForceApplyVisible());
         CHECK(module.shortcutForcePreviewText().contains(actions.at(i)));
         CHECK(module.shortcutForcePreviewText().contains(displays.at(i)));
     }
@@ -1574,9 +1640,8 @@ void terminalFailureLogIncludesReason()
                      QList<int>{META_G, 999}, QList<int>{1111});
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) {
-        return true;
-    });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authenticForLog = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1588,22 +1653,32 @@ void terminalFailureLogIncludesReason()
     ShortcutDiag::setSink([&](QtMsgType, const QString &message) {
         messages.append(message);
     });
-    module.requestShortcutApply();
-    for (ShortcutTuple &tuple : store.tuples) {
-        if (tuple.component == QStringLiteral("org.kde.unknown")) {
-            tuple.active = QList<int>{META_G, 1000};
+    // Drift inside the accepted modal: the preview is built, then live
+    // state moves, so Force fails stale with zero writes.
+    module.setShortcutForcePromptHandler([&](const QString &, const QString &, bool enabled) {
+        CHECK(enabled);
+        for (ShortcutTuple &tuple : store.tuples) {
+            if (tuple.component == QStringLiteral("org.kde.unknown")) {
+                tuple.active = QList<int>{META_G, 1000};
+            }
         }
-    }
-    module.requestShortcutForceApply();
+        return true;
+    });
+    module.requestShortcutApply();
     ShortcutDiag::resetSink();
     bool sawTerminalFailure = false;
+    bool sawConflictRow = false;
     bool sawStaleForceFailure = false;
     for (const QString &message : messages) {
-        // Backend diagnostics redact foreign identities: any "claimed by"
-        // detail becomes reason=key-conflict (writes count redacted with it).
+        // Reconstructible diagnostics keep holder IDs plus chord images.
         if (message.contains(QStringLiteral("omnitiler.shortcut op=apply stage=result outcome=failed"))
-            && message.contains(QStringLiteral("reason=key-conflict"))) {
+            && message.contains(QStringLiteral("org.kde.unknown"))
+            && message.contains(QStringLiteral("other-launch"))) {
             sawTerminalFailure = true;
+        }
+        if (message.contains(QStringLiteral("stage=conflict"))
+            && message.contains(QStringLiteral("org.kde.unknown"))) {
+            sawConflictRow = true;
         }
         if (message.contains(QStringLiteral("omnitiler.shortcut op=force-apply stage=result outcome=failed"))
             && message.contains(QStringLiteral("confirmed force image is stale"))
@@ -1612,6 +1687,7 @@ void terminalFailureLogIncludesReason()
         }
     }
     CHECK(sawTerminalFailure);
+    CHECK(sawConflictRow);
     CHECK(sawStaleForceFailure);
     CHECK(cleared.saves == 0);
 }
@@ -1633,7 +1709,8 @@ void selectionKeepPreservesCustomCanonicalEmpty()
     }
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(!module.shortcutAuthenticStaged());
@@ -1644,7 +1721,6 @@ void selectionKeepPreservesCustomCanonicalEmpty()
     CHECK(!module.shortcutDisabledIds().contains(QStringLiteral("kwin/omnitiler-workspace-1")));
     module.requestShortcutApply();
     CHECK(module.shortcutErrorText().isEmpty());
-    CHECK(!module.isShortcutForceApplyVisible());
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
     for (const ShortcutTuple &tuple : store.tuples) {
@@ -1674,7 +1750,8 @@ void selectionAuthenticAssignsCanonical()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1721,7 +1798,8 @@ void selectionCompatibleKeepsCustomNonconflict()
     store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("Grid View"), QList<int>{META_G}));
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *compatible = presetButtonByModule(module, "shortcutCompatibleButton");
@@ -1751,9 +1829,8 @@ void selectionCompatibleKeepsCustomNonconflict()
 void selectionKeepCustomConflictPreviewForce()
 {
     // A Keep-customized chord claimed by a foreign holder refuses Apply
-    // naming the actual chord. Force previews the actual removal and clears
-    // only the foreign holder, preserving the custom chord with zero
-    // project writes.
+    // naming the actual chord. Accepting the modal clears only the foreign
+    // holder, preserving the custom chord with zero project writes.
     FakeShortcutStore store;
     seedReady(store);
     for (ShortcutTuple &tuple : store.tuples) {
@@ -1765,22 +1842,20 @@ void selectionKeepCustomConflictPreviewForce()
                     QList<int>{5555});
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = true;
+    wireForceCapture(module, force);
     module.setShortcutStores(&store, &cleared);
     module.load();
     CHECK(!module.shortcutAuthenticStaged());
     module.requestShortcutApply();
-    CHECK(store.totalWrites() == 0);
-    CHECK(!module.shortcutErrorText().isEmpty());
+    CHECK(force.calls == 1);
+    CHECK(force.enabled);
     // The refusal names the live actual chord, never a silent canonical.
-    CHECK(module.shortcutErrorText().contains(ShortcutReconciler::keyDisplayName(777001)));
-    CHECK(!module.shortcutErrorText().contains(QStringLiteral("Meta+G")));
-    CHECK(module.isShortcutForceApplyVisible());
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("other-app")));
-    CHECK(module.shortcutForcePreviewText().contains(QStringLiteral("stay at their current assignments")));
-    module.requestShortcutForceApply();
     CHECK(module.shortcutErrorText().isEmpty());
-    CHECK(!module.isShortcutForceApplyVisible());
+    CHECK(force.text.contains(QStringLiteral("other-app")));
+    CHECK(force.text.contains(QStringLiteral("stay at their current assignments")));
     CHECK(store.writeLog.isEmpty());
     CHECK(!store.foreignWriteLog.isEmpty());
     CHECK(cleared.saves == 1);
@@ -1796,8 +1871,9 @@ void selectionKeepCustomConflictPreviewForce()
 
 void selectionForceRevalidationKeepDrift()
 {
-    // A Keep-actual drift after preview fails Force as stale with zero
-    // writes and zero cleared-list persists.
+    // A Keep-actual drift inside the accepted modal fails Force as stale
+    // with zero writes and zero cleared-list persists. No Force runs
+    // outside the accepted modal path.
     FakeShortcutStore store;
     seedReady(store);
     for (ShortcutTuple &tuple : store.tuples) {
@@ -1809,26 +1885,31 @@ void selectionForceRevalidationKeepDrift()
                     QList<int>{5555});
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int errors = 0;
+    module.setShortcutInformationHandler([](const QString &, const QString &) {});
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
     module.setShortcutStores(&store, &cleared);
     module.load();
-    module.requestShortcutApply();
-    CHECK(module.isShortcutForceApplyVisible());
-    // Drift the Keep row to a superset: the conflicting chord stays claimed
-    // so revalidation still sees a holder, but the live image differs and
-    // Force must refuse as stale before any persist.
-    for (ShortcutTuple &tuple : store.tuples) {
-        if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
-            tuple.active = QList<int>{777001, 888002};
+    // Drift the Keep row mid-modal: the conflicting chord stays claimed so
+    // a preview still builds, but the live image differs and Force must
+    // refuse as stale before any persist.
+    module.setShortcutForcePromptHandler([&](const QString &, const QString &, bool enabled) {
+        CHECK(enabled);
+        for (ShortcutTuple &tuple : store.tuples) {
+            if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
+                tuple.active = QList<int>{777001, 888002};
+            }
         }
-    }
-    module.requestShortcutForceApply();
+        return true;
+    });
+    module.requestShortcutApply();
     CHECK(!module.shortcutErrorText().isEmpty());
     CHECK(module.shortcutErrorText().contains(QStringLiteral("stale")));
     CHECK(store.totalWrites() == 0);
     CHECK(cleared.saves == 0);
     CHECK(cleared.stored.isEmpty());
-    CHECK(!module.isShortcutForceApplyVisible());
+    CHECK(errors == 1);
 }
 
 void selectionSaveIsolationWithAuthentic()
@@ -1839,7 +1920,8 @@ void selectionSaveIsolationWithAuthentic()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1872,7 +1954,8 @@ void selectionAuthenticApplyConsumesPreservesLaterCustom()
     seedReady(store);
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    module.setShortcutConfirmHandler([](const QString &, const QString &) { return true; });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    wireQuietResults(module);
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1903,7 +1986,6 @@ void selectionAuthenticApplyConsumesPreservesLaterCustom()
     module.requestShortcutApply();
     CHECK(module.shortcutErrorText().isEmpty());
     CHECK(!module.shortcutAuthenticStaged());
-    CHECK(!module.isShortcutForceApplyVisible());
     CHECK(store.totalWrites() == writesAfterFirst);
     CHECK(cleared.saves == 0);
     for (const ShortcutTuple &tuple : store.tuples) {
@@ -1916,22 +1998,22 @@ void selectionAuthenticApplyConsumesPreservesLaterCustom()
 
 void selectionAuthenticForceConsumesRetainsOnFailure()
 {
-    // Force lifecycle: a refused Apply and a declined Force retain the
-    // staged Authentic intent; a confirmed successful Force consumes it, so
-    // a later external customization with the still-open KCM is preserved
-    // by the next confirmed Apply.
+    // Force lifecycle: a declined modal retains the staged Authentic
+    // intent; an accepted modal consumes it on success, so a later
+    // external customization with the still-open KCM is preserved by the
+    // next Apply.
     FakeShortcutStore store;
     seedReady(store);
     addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
                      QList<int>{META_G, 999}, QList<int>{1111});
     FakeClearedStore cleared;
     ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-    bool allow = true;
-    int confirms = 0;
-    module.setShortcutConfirmHandler([&](const QString &, const QString &) {
-        ++confirms;
-        return allow;
-    });
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
+    int infos = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
     module.setShortcutStores(&store, &cleared);
     module.load();
     QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
@@ -1941,27 +2023,18 @@ void selectionAuthenticForceConsumesRetainsOnFailure()
     }
     CHECK(module.shortcutAuthenticStaged());
     module.requestShortcutApply();
-    CHECK(confirms == 1);
+    CHECK(force.calls == 1);
     CHECK(store.totalWrites() == 0);
     CHECK(!module.shortcutErrorText().isEmpty());
     CHECK(module.shortcutAuthenticStaged());
-    CHECK(module.isShortcutForceApplyVisible());
-    // Declined Force retains the staged intent with the preview kept.
-    allow = false;
-    module.requestShortcutForceApply();
-    CHECK(confirms == 2);
-    CHECK(store.totalWrites() == 0);
-    CHECK(cleared.saves == 0);
-    CHECK(module.shortcutAuthenticStaged());
-    CHECK(module.isShortcutForceApplyVisible());
-    // Accepted Force succeeds and consumes the staged intent.
-    allow = true;
-    module.requestShortcutForceApply();
-    CHECK(confirms == 3);
+    // Accepted modal consumes the staged intent on success.
+    force.allow = true;
+    module.requestShortcutApply();
+    CHECK(force.calls == 2);
     CHECK(module.shortcutErrorText().isEmpty());
     CHECK(!module.shortcutAuthenticStaged());
-    CHECK(!module.isShortcutForceApplyVisible());
     CHECK(cleared.saves == 1);
+    CHECK(infos == 1);
     for (const ShortcutTuple &tuple : store.tuples) {
         if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
             CHECK(tuple.active == (QList<int>{META_G}));
@@ -1970,8 +2043,8 @@ void selectionAuthenticForceConsumesRetainsOnFailure()
             CHECK(tuple.active == (QList<int>{999}));
         }
     }
-    // Still-open KCM: external customization then a confirmed Keep Apply
-    // preserves it with no additional writes and no reset.
+    // Still-open KCM: external customization then a Keep Apply preserves it
+    // with no additional writes and no reset.
     for (ShortcutTuple &tuple : store.tuples) {
         if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
             tuple.active = QList<int>{777002};
@@ -1979,7 +2052,6 @@ void selectionAuthenticForceConsumesRetainsOnFailure()
     }
     const int writesAfterForce = store.totalWrites();
     module.requestShortcutApply();
-    CHECK(confirms == 4);
     CHECK(module.shortcutErrorText().isEmpty());
     CHECK(!module.shortcutAuthenticStaged());
     CHECK(store.totalWrites() == writesAfterForce);
@@ -1987,6 +2059,558 @@ void selectionAuthenticForceConsumesRetainsOnFailure()
         if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
             CHECK(tuple.active == (QList<int>{777002}));
         }
+    }
+}
+
+void dialogApplySuccessNoPreliminaryConfirm()
+{
+    // Direct Apply without conflicts: no preliminary confirmation, success
+    // dialog states active-immediately with no Settings Apply/OK needed.
+    FakeShortcutStore store;
+    seedReady(store);
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    int confirms = 0;
+    module.setShortcutConfirmHandler([&](const QString &, const QString &) {
+        ++confirms;
+        return true;
+    });
+    ForceCapture force;
+    wireForceCapture(module, force);
+    int infos = 0;
+    QString infoTitle;
+    QString infoText;
+    module.setShortcutInformationHandler([&](const QString &title, const QString &text) {
+        ++infos;
+        infoTitle = title;
+        infoText = text;
+    });
+    module.setShortcutErrorHandler([](const QString &, const QString &) { CHECK(false); });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    module.requestShortcutApply();
+    CHECK(confirms == 0);
+    CHECK(force.calls == 0);
+    CHECK(infos == 1);
+    CHECK(infoTitle.contains(QStringLiteral("Apply")));
+    CHECK(infoText.contains(QStringLiteral("active immediately")));
+    CHECK(infoText.contains(QStringLiteral("No further Settings Apply")));
+    CHECK(module.shortcutErrorText().isEmpty());
+}
+
+void dialogConflictCompletenessAndOrder()
+{
+    // >5 holders across multiple chords all appear once in reconciler order
+    // with chord, display names, removed/retained keys; status first matches
+    // dialog first; no truncation.
+    FakeShortcutStore store;
+    seedReady(store);
+    const QList<std::pair<QString, int>> holders = {
+        {QStringLiteral("zeta-app"), META_G},
+        {QStringLiteral("alpha-app"), META_M},
+        {QStringLiteral("mid-app"), META_LEFT},
+        {QStringLiteral("beta-app"), META_RIGHT},
+        {QStringLiteral("gamma-app"), META_UP},
+        {QStringLiteral("delta-app"), META_DOWN},
+    };
+    for (const auto &[action, key] : holders) {
+        addForeignHolder(store, action, action, QList<int>{key, 9000});
+        // Fix component to org.example for determinism.
+        store.tuples.last().component = QStringLiteral("org.example");
+    }
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    const QString statusBefore = module.shortcutStatusText();
+    CHECK(statusBefore.contains(QStringLiteral("Conflict")));
+    module.requestShortcutApply();
+    CHECK(force.calls == 1);
+    CHECK(force.enabled);
+    // Every holder appears exactly once; dialog order is sorted.
+    for (const auto &[action, key] : holders) {
+        CHECK(force.text.contains(action));
+        CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(key)));
+    }
+    CHECK(force.text.contains(QStringLiteral("will remove")));
+    CHECK(force.text.contains(QStringLiteral("keep")));
+    CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(9000)));
+    QStringList ids;
+    for (const auto &[action, key] : holders) {
+        Q_UNUSED(key);
+        ids.append(QStringLiteral("org.example/") + action);
+    }
+    // Sorted order: first dialog row matches status first conflict.
+    QStringList sorted = ids;
+    sorted.sort();
+    const QString firstId = sorted.first();
+    const QString firstAction = firstId.split(QStringLiteral("/")).last();
+    CHECK(force.text.indexOf(firstAction) < force.text.indexOf(sorted.last().split(QStringLiteral("/")).last()));
+    CHECK(statusBefore.contains(firstAction) || module.shortcutErrorText().contains(firstAction));
+    // Row list shows every holder with no "(+N more)" truncation.
+    QListWidget *list = conflictListByModule(module);
+    CHECK(list != nullptr);
+    if (list != nullptr) {
+        bool sawTruncation = false;
+        for (int i = 0; i < list->count(); ++i) {
+            QListWidgetItem *item = list->item(i);
+            if (item != nullptr && item->text().contains(QStringLiteral("more)"))) {
+                sawTruncation = true;
+            }
+        }
+        CHECK(!sawTruncation);
+    }
+}
+
+void dialogBlockerForceDisabledWithReason()
+{
+    // Default-only claimant blocks Force: dialog still lists available
+    // conflicts with Force disabled and an explicit reason.
+    FakeShortcutStore store;
+    seedReady(store);
+    addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("clearable-app"),
+                     QList<int>{META_G, 9000}, QList<int>{1111});
+    // Default-only holder: active without the required chord, retaining
+    // unrelated bindings the dialog must show as found and kept.
+    ShortcutKeyHolder blocker;
+    blocker.component = QStringLiteral("org.example");
+    blocker.action = QStringLiteral("default-only");
+    blocker.active = QList<int>{424242, 424243};
+    store.extraByKey[META_CTRL_LEFT].append(blocker);
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = true;
+    wireForceCapture(module, force);
+    int errors = 0;
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    module.requestShortcutApply();
+    CHECK(force.calls == 1);
+    CHECK(!force.enabled);
+    CHECK(force.text.contains(QStringLiteral("clearable-app")));
+    CHECK(force.text.contains(QStringLiteral("default-only")));
+    CHECK(force.text.contains(QStringLiteral("removes none and keeps")));
+    CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(424242)));
+    CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(424243)));
+    CHECK(force.text.contains(QStringLiteral("Force unavailable")));
+    CHECK(store.totalWrites() == 0);
+    CHECK(cleared.saves == 0);
+    // The blocked modal itself carries the reason; no redundant error.
+    CHECK(errors == 0);
+}
+
+void dialogOperationalFailureErrorDialog()
+{
+    // Transport failure surfaces an error dialog with the reason, no force
+    // prompt, zero writes.
+    FakeShortcutStore store;
+    seedReady(store);
+    store.failByKey = true;
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    wireForceCapture(module, force);
+    int errors = 0;
+    QString errorText;
+    module.setShortcutErrorHandler([&](const QString &, const QString &text) {
+        ++errors;
+        errorText = text;
+    });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    store.failByKey = true;
+    module.requestShortcutApply();
+    CHECK(errors == 1);
+    CHECK(!errorText.isEmpty());
+    CHECK(store.totalWrites() == 0);
+    CHECK(cleared.saves == 0);
+}
+
+void dialogRevertResultDialogs()
+{
+    // Revert retains its data-loss confirmation, then reports success or
+    // failure modally. Force runs only through the accepted conflict modal.
+    FakeShortcutStore store;
+    seedReady(store);
+    addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
+                     QList<int>{META_G, 999}, QList<int>{2222});
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    int confirms = 0;
+    module.setShortcutConfirmHandler([&](const QString &title, const QString &) {
+        ++confirms;
+        CHECK(title.contains(QStringLiteral("Revert")));
+        return true;
+    });
+    ForceCapture force;
+    force.allow = true;
+    wireForceCapture(module, force);
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    module.requestShortcutApply();
+    CHECK(force.calls == 1);
+    CHECK(cleared.stored.size() == 1);
+    const int confirmsBeforeRevert = confirms;
+    module.requestShortcutRevert();
+    CHECK(confirms == confirmsBeforeRevert + 1);
+    CHECK(infos == 2);
+    CHECK(errors == 0);
+    CHECK(cleared.stored.isEmpty());
+    // Failing revert reports an error dialog and retains the list.
+    cleared.stored.append(ClearedAction{QStringLiteral("org.example"), QStringLiteral("missing-action")});
+    module.requestShortcutRevert();
+    CHECK(errors == 1);
+    CHECK(!cleared.stored.isEmpty());
+}
+
+void dialogRealConflictModalForce()
+{
+    // Real scrollable conflict dialog offscreen: the list is read-only and
+    // complete, Force Apply applies with revalidation, and the result
+    // wording states active-immediately with no Settings Apply needed.
+    FakeShortcutStore store;
+    seedReady(store);
+    addForeignHolder(store, QStringLiteral("org.kde.unknown"), QStringLiteral("other-launch"),
+                     QList<int>{META_G, 999}, QList<int>{1111});
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int infos = 0;
+    QString infoText;
+    module.setShortcutInformationHandler([&](const QString &, const QString &text) {
+        ++infos;
+        infoText = text;
+    });
+    module.setShortcutErrorHandler([](const QString &, const QString &) { CHECK(false); });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    QTimer::singleShot(0, [&] {
+        auto *dialog = module.widget()->findChild<QDialog *>(QStringLiteral("shortcutConflictDialog"));
+        CHECK(dialog != nullptr);
+        if (dialog == nullptr) {
+            return;
+        }
+        auto *view = dialog->findChild<QPlainTextEdit *>(QStringLiteral("shortcutConflictText"));
+        CHECK(view != nullptr);
+        if (view != nullptr) {
+            CHECK(view->isReadOnly());
+            CHECK(view->toPlainText().contains(QStringLiteral("other-launch")));
+            CHECK(view->toPlainText().contains(ShortcutReconciler::keyDisplayName(META_G)));
+        }
+        auto *force = dialog->findChild<QPushButton *>(QStringLiteral("shortcutConflictForceButton"));
+        auto *cancel = dialog->findChild<QPushButton *>(QStringLiteral("shortcutConflictCancelButton"));
+        CHECK(force != nullptr);
+        CHECK(cancel != nullptr);
+        if (force != nullptr) {
+            CHECK(force->isEnabled());
+            CHECK(force->text().contains(QStringLiteral("Force Apply")));
+            force->click();
+        }
+    });
+    module.requestShortcutApply();
+    CHECK(infos == 1);
+    CHECK(infoText.contains(QStringLiteral("active immediately")));
+    CHECK(infoText.contains(QStringLiteral("No further Settings Apply")));
+    CHECK(module.shortcutErrorText().isEmpty());
+    CHECK(cleared.saves == 1);
+    for (const ShortcutTuple &tuple : store.tuples) {
+        if (tuple.component == QStringLiteral("org.kde.unknown")) {
+            CHECK(tuple.active == (QList<int>{999}));
+        }
+    }
+}
+
+void dialogRealConflictModalCancel()
+{
+    // Real dialog Cancel: no writes, no result dialogs either way.
+    FakeShortcutStore store;
+    seedReady(store);
+    addForeignHolder(store, QStringLiteral("org.kde.unknown"), QStringLiteral("other-launch"),
+                     QList<int>{META_G, 999}, QList<int>{1111});
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    QTimer::singleShot(0, [&] {
+        auto *dialog = module.widget()->findChild<QDialog *>(QStringLiteral("shortcutConflictDialog"));
+        CHECK(dialog != nullptr);
+        if (dialog == nullptr) {
+            return;
+        }
+        auto *cancel = dialog->findChild<QPushButton *>(QStringLiteral("shortcutConflictCancelButton"));
+        CHECK(cancel != nullptr);
+        if (cancel != nullptr) {
+            cancel->click();
+        }
+    });
+    module.requestShortcutApply();
+    CHECK(store.totalWrites() == 0);
+    CHECK(cleared.saves == 0);
+    CHECK(infos == 0);
+    CHECK(errors == 0);
+    // The refusal reason stays on the error label; the status still shows
+    // the conflict honestly.
+    CHECK(module.shortcutErrorText().contains(QStringLiteral("Meta+G")));
+    CHECK(module.shortcutStatusText().contains(QStringLiteral("Conflict")));
+}
+
+void dialogRealBlockedModalForceDisabled()
+{
+    // Real blocked dialog: Force Apply is disabled with the reason in the
+    // list; Cancel leaves no writes and no redundant error.
+    FakeShortcutStore store;
+    seedReady(store);
+    addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("clearable-app"),
+                     QList<int>{META_G, 9000}, QList<int>{1111});
+    ShortcutKeyHolder blocker;
+    blocker.component = QStringLiteral("org.example");
+    blocker.action = QStringLiteral("default-only");
+    blocker.active = QList<int>{424242};
+    store.extraByKey[META_CTRL_LEFT].append(blocker);
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    QTimer::singleShot(0, [&] {
+        auto *dialog = module.widget()->findChild<QDialog *>(QStringLiteral("shortcutConflictDialog"));
+        CHECK(dialog != nullptr);
+        if (dialog == nullptr) {
+            return;
+        }
+        auto *view = dialog->findChild<QPlainTextEdit *>(QStringLiteral("shortcutConflictText"));
+        CHECK(view != nullptr);
+        if (view != nullptr) {
+            CHECK(view->toPlainText().contains(QStringLiteral("clearable-app")));
+            CHECK(view->toPlainText().contains(QStringLiteral("default-only")));
+            CHECK(view->toPlainText().contains(QStringLiteral("Force unavailable")));
+        }
+        auto *force = dialog->findChild<QPushButton *>(QStringLiteral("shortcutConflictForceButton"));
+        auto *cancel = dialog->findChild<QPushButton *>(QStringLiteral("shortcutConflictCancelButton"));
+        CHECK(force != nullptr);
+        CHECK(cancel != nullptr);
+        if (force != nullptr) {
+            CHECK(!force->isEnabled());
+        }
+        if (cancel != nullptr) {
+            cancel->click();
+        }
+    });
+    module.requestShortcutApply();
+    CHECK(store.totalWrites() == 0);
+    CHECK(cleared.saves == 0);
+    CHECK(infos == 0);
+    CHECK(errors == 0);
+}
+
+void dialogLockRelocationDescribed()
+{
+    // The dialog carries the actual in-scope lock relocation, the
+    // authorized displacement when observed, and an honest out-of-scope
+    // line otherwise. Nothing is inferred in the UI.
+    {
+        FakeShortcutStore store;
+        seedReady(store);
+        addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
+                         QList<int>{META_G, 999}, QList<int>{1111});
+        ShortcutKeyHolder sysmon;
+        sysmon.component = shortcutAuthorizedEscComponent();
+        sysmon.action = shortcutAuthorizedEscAction();
+        sysmon.active = QList<int>{META_ESC};
+        sysmon.componentFriendly = QStringLiteral("System Monitor");
+        sysmon.friendly = QStringLiteral("Launch System Monitor");
+        store.extraByKey[META_ESC].append(sysmon);
+        FakeClearedStore cleared;
+        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture force;
+        force.allow = false;
+        wireForceCapture(module, force);
+        module.setShortcutStores(&store, &cleared);
+        module.load();
+        QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+        if (authentic != nullptr) {
+            authentic->click();
+        }
+        module.requestShortcutApply();
+        CHECK(force.calls == 1);
+        CHECK(force.text.contains(QStringLiteral("Exempt: ksmserver/Lock Session found")));
+        CHECK(force.text.contains(QStringLiteral("will move to")));
+        CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(META_ESC)));
+        CHECK(force.text.contains(QStringLiteral("retains its binding")));
+        CHECK(force.text.contains(QStringLiteral("delivers to Lock Session")));
+        CHECK(!force.text.contains(QStringLiteral("and stays")));
+        CHECK(force.text.contains(QStringLiteral("System Monitor")));
+    }
+    {
+        FakeShortcutStore store;
+        seedReady(store);
+        addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
+                         QList<int>{777001}, QList<int>{1111});
+        for (ShortcutTuple &tuple : store.tuples) {
+            if (tuple.action == QStringLiteral("omnitiler-toggle-float")) {
+                tuple.active = QList<int>{777001};
+            }
+        }
+        FakeClearedStore cleared;
+        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture force;
+        force.allow = false;
+        wireForceCapture(module, force);
+        module.setShortcutStores(&store, &cleared);
+        module.load();
+        // Keep focus: the lock stays out of scope and the dialog says so.
+        CHECK(!module.shortcutAuthenticStaged());
+        module.requestShortcutApply();
+        CHECK(force.calls == 1);
+        CHECK(force.text.contains(QStringLiteral("Exempt: Lock Session untouched")));
+    }
+}
+
+void dialogKeyedHolderFriendlyLabels()
+{
+    // Keyed-only foreign holders expose wire display labels through the
+    // store interface; the dialog shows them next to the IDs.
+    FakeShortcutStore store;
+    seedReady(store);
+    ShortcutKeyHolder holder;
+    holder.component = QStringLiteral("org.example");
+    holder.action = QStringLiteral("keyed-app");
+    holder.active = QList<int>{META_G, 9000};
+    holder.componentFriendly = QStringLiteral("Example Component");
+    holder.friendly = QStringLiteral("Keyed App");
+    store.extraByKey[META_G].append(holder);
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    ForceCapture force;
+    force.allow = false;
+    wireForceCapture(module, force);
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+    if (authentic != nullptr) {
+        authentic->click();
+    }
+    module.requestShortcutApply();
+    CHECK(force.calls == 1);
+    CHECK(force.text.contains(QStringLiteral("org.example/keyed-app")));
+    CHECK(force.text.contains(QStringLiteral("Example Component")));
+    CHECK(force.text.contains(QStringLiteral("Keyed App")));
+}
+
+void dialogPartialApplyFailureReportsOriginal()
+{
+    // A failure after writes began (and an inconsistent availability
+    // gate with holders present) reports the original error with no
+    // Force confirmation, even though a later preview could list holders.
+    {
+        FakeShortcutStore store;
+        seedReady(store);
+        store.failWriteAt = 1;
+        FakeClearedStore cleared;
+        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture force;
+        wireForceCapture(module, force);
+        int errors = 0;
+        QString errorText;
+        module.setShortcutErrorHandler([&](const QString &, const QString &text) {
+            ++errors;
+            errorText = text;
+        });
+        module.setShortcutStores(&store, &cleared);
+        module.load();
+        QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+        if (authentic != nullptr) {
+            authentic->click();
+        }
+        module.requestShortcutApply();
+        CHECK(force.calls == 0);
+        CHECK(errors == 1);
+        CHECK(errorText.contains(QStringLiteral("simulated project write failure")));
+        CHECK(store.totalWrites() > 0);
+        CHECK(cleared.saves == 0);
+    }
+    {
+        // Holders exist but the availability gate fails: operational, not
+        // a conflict refusal, so no Force modal follows.
+        FakeShortcutStore store;
+        seedReady(store);
+        store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("Grid View"), QList<int>{META_G}));
+        store.availableOverride[META_G] = true;
+        FakeClearedStore cleared;
+        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture force;
+        wireForceCapture(module, force);
+        int errors = 0;
+        module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+        module.setShortcutStores(&store, &cleared);
+        module.load();
+        QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+        if (authentic != nullptr) {
+            authentic->click();
+        }
+        module.requestShortcutApply();
+        CHECK(force.calls == 0);
+        CHECK(errors == 1);
+        CHECK(store.totalWrites() == 0);
+        CHECK(cleared.saves == 0);
     }
 }
 
@@ -2047,6 +2671,17 @@ int main(int argc, char **argv)
         selectionSaveIsolationWithAuthentic();
         selectionAuthenticApplyConsumesPreservesLaterCustom();
         selectionAuthenticForceConsumesRetainsOnFailure();
+        dialogApplySuccessNoPreliminaryConfirm();
+        dialogConflictCompletenessAndOrder();
+        dialogBlockerForceDisabledWithReason();
+        dialogOperationalFailureErrorDialog();
+        dialogRevertResultDialogs();
+        dialogRealConflictModalForce();
+        dialogRealConflictModalCancel();
+        dialogRealBlockedModalForceDisabled();
+        dialogPartialApplyFailureReportsOriginal();
+        dialogLockRelocationDescribed();
+        dialogKeyedHolderFriendlyLabels();
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", argv[1]);
         return EXIT_FAILURE;

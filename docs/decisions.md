@@ -183,6 +183,15 @@ platform API behavior.
   profiles exist; its saved value and startup read remain untouched.
   Launch blocker: every user-facing setting must apply live, except
   startup-only `workspaceMode`.
+- KDE shortcut dialogs (user 2026-10-12): explicit Apply Shortcuts applies
+  immediately; conflicts open one modal, scrollable preview with Force Apply
+  and Cancel. Successful Apply/Force/Revert shows a result dialog; operational
+  failures show the reason in an error dialog. No overall Settings Apply/OK is
+  needed for shortcut operations. Tentative, pending user review: no preliminary
+  Apply confirmation and no second Force confirmation; the conflict dialog is
+  the single Force confirmation. Revert retains its custom-binding-loss
+  confirmation. [Flow](#shortcuts-conflicts-and-presets),
+  [delivery](changes/archive/kde-shortcut-result-dialogs.md).
 - KDE tray carrier: portable Rust StatusNotifierItem, KWin backend first;
   stays alive without a watcher, registers on live-confirmed watcher owner;
   outbound state-snapshot bridge, reconnecting, idempotent, no KWin executable
@@ -875,10 +884,10 @@ platform API behavior.
   Keep/Disable and Authentic/Compatible choices (see the shortcut catalog in
   `kwin/native-effect/shortcutreconciler.cpp`: `shortcutProjectCatalog` and
   `shortcutConflictTable`) over one selection-scoped Apply/Force/Revert flow;
-  explicit confirmed Apply or confirmed and revalidated Force commits them.
+  explicit Apply or confirmed and revalidated Force commits them.
   Ordinary settings Save stays isolated. Project Apply preserves the current
   assignment for Keep, including custom chords; Authentic explicitly resets to
-  the canonical catalog, staged until confirmed Apply/Force and consumed on
+  the canonical catalog, staged until explicit Apply/confirmed Force and consumed on
   success (failed/declined attempts retain intent). Delivered offline
   2026-10-09: Keep preserves custom, canonical, and empty assignments; conflicts
   on custom assignments show their actual chords without a silent reset.
@@ -897,11 +906,28 @@ platform API behavior.
   model](changes/kde-shortcut-conflicts.md) and [M13 delivery](changes/archive/kde-keep-preserving-shortcut-apply.md).
 - Force/Revert contract (applying the user's 2026-09-26 Delivery 2 direction):
   Force may clear ANY holder of a project-required chord after listing and
-  confirmation. The preview lists every active holder with found keys, exact
+  confirmation. User 2026-10-12: Apply Shortcuts acts directly when conflict-free;
+  a zero-write holder refusal opens a modal conflict dialog, replacing inline
+  refusal/Force controls. It lists all current conflicts with chords,
+  component/action display names (IDs as fallback), found keys, exact
   required keys removed, and unrelated keys kept, including unknown and legacy
-  project-owned IDs; project actions, Lock Session, and the authorized System
-  Monitor `Meta+Esc` holder are exempt. A holder claiming a chord with no
-  required key in its active list blocks Force until unbound manually.
+  project-owned IDs. Ordering belongs to the reconciler: default-only blockers
+  first, then clearable holders, sorted by component/action (blocker chord as
+  tie-breaker); status, refusal and dialog agree on the first conflict. No
+  foreign-holder summary truncation. Project actions, Lock Session, and the
+  authorized System Monitor `Meta+Esc` holder are exempt; the dialog describes
+  the actual in-scope Lock relocation and authorized delivery displacement,
+  or states that Lock is untouched. A holder claiming a chord with no
+  required key in its active list is listed with its retained keys and blocks
+  Force until unbound manually; Force Apply is disabled with the reason shown.
+  Force Apply and Cancel are the dialog's actions. Cancel discards the preview
+  without writes or another dialog. Tentative, pending user review: no stacked
+  confirmations, so Apply has no preliminary prompt and this dialog is the
+  sole Force confirmation. Successful Apply/Force reports shortcuts applied
+  and active immediately, with no need for overall Settings Apply/OK;
+  operational/partial failures report their original reason, without offering
+  Force as recovery. Revert retains one custom-binding-loss confirmation and
+  then shows a success/error result dialog, including empty-list success.
   Confirmed Force revalidates owner, live images, and the full holder snapshot
   before persist; stale confirmations fail closed with zero writes. After
   persist, each holder is re-read immediately before its foreign setter and
@@ -1715,9 +1741,13 @@ platform API behavior.
   redacted high-volume per-window, hook, and bounded structural request/reply
   detail, never raw native D-Bus payloads.
 - Shortcut operations emit bounded structured diagnostics on
-  `omnitiler.shortcut` (operation, stage, outcome, allowlisted
-  identity, key images, cleared count/writes only; foreign occupants
-  redacted); query with
+  `omnitiler.shortcut` (operation, stage, outcome, shortcut component/action
+  IDs, key images, cleared count/writes). User 2026-10-12: conflict records
+  include every holder ID and chord at normal info/warning levels, with counts,
+  row indices and bounded chunks for long rows, so journal records reconstruct
+  the full list. Friendly labels and user content remain excluded; this narrow
+  shortcut-identity exception does not permit native window IDs or raw payloads.
+  Query with
   `journalctl --user --no-pager -g "omnitiler.shortcut op="`.
   Operational warnings and info are enabled by default with debug-only
   records; logging never affects behavior.

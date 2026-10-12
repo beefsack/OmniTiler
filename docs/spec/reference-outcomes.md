@@ -54,6 +54,19 @@ Minimal variants of [R-CTL-05/06](reference-outcomes/restart-persistence.md#r-ct
 | Keep custom conflict | Give a project and foreign action the same custom chord; Keep; Apply; preview Force; confirm | Actual custom chord shown; Apply refuses; confirmed/revalidated Force removes only that chord from the foreign holder and preserves project assignment | No counterpart: no Keep/preview/Force foreign-clearing model in any pinned shortcut inventory (mask/unbind verbs only, no draft preview); outcome TBD (owner-specific, project-only Keep/Force). `S(S-cos-shortcut)` + `S(S-hyp-shortcut)` + `S(S-bsp-ctl)` + `S(S-i3-bind)` + `S(S-xmo-ctl)` + `S(S-sway-bind)` + `S(S-qti-keys)` + `S(S-awe-keys)` + `S(S-nir-acts)` + `S(S-pap-acts)` + `S(S-kar-acts)` + `S(S-pan-cmds)` |
 | Stale Force / write drift | Preview custom conflict; change project/foreign assignment or staged intent; confirm Force (separately: change Keep during a selected write) | Stale confirmation refuses before writes; post-write drift fails verification without canonical reset | No counterpart: no stale-preview/write-drift revalidation model in any pinned shortcut inventory; outcome TBD (owner-specific, project-only Force; live timing-dependent). `S(S-cos-shortcut)` + `S(S-hyp-shortcut)` + `S(S-bsp-ctl)` + `S(S-i3-bind)` + `S(S-xmo-ctl)` + `S(S-sway-bind)` + `S(S-qti-keys)` + `S(S-awe-keys)` + `S(S-nir-acts)` + `S(S-pap-acts)` + `S(S-kar-acts)` + `S(S-pan-cmds)` |
 
+### R-CTL-05 KDE modal-flow discriminators (2026-10-12)
+
+The preceding M13 readings describe the earlier confirmed-Apply presentation;
+Keep/Authentic semantics remain unchanged. The [current dialog flow](../decisions.md#shortcuts-conflicts-and-presets)
+supersedes that presentation. No-stacked-confirmations is tentative, pending
+user review. [Offline evidence](../changes/archive/kde-shortcut-result-dialogs.md).
+
+| Variant | Minimal action sequence | Ours KDE offline outcome | Unsupported / physical outcomes |
+| --- | --- | --- | --- |
+| Direct Apply | Stage a conflict-free choice; click Apply Shortcuts; use its chord before overall Settings Apply/OK | No preliminary question; one success result says applied and active immediately; ordinary Save remains isolated | Physical delivery and new KCM loading TBD, user-owned. Windows matching dialogs pending; exact reference-WM sequence TBD |
+| Complete modal / Cancel / Force | Stage conflicts across several chords with more than 26 holders and one default-only blocker retaining an unrelated chord; Apply; Cancel; remove blocker; Apply; Force | Complete scrollable blocker-first list, stable holder ordering, full indexed diagnostics; blocked Force disabled, retained keys shown; Cancel writes nothing and opens no second dialog; fresh Force is the sole confirmation and revalidates | Exact native many-holder list, physical delivery and timing-dependent stale refusal TBD, user-owned. Windows/reference outcomes TBD |
+| Revert result | After Force, Revert; accept custom-binding-loss warning; repeat with empty cleared list | One loss confirmation followed by success/error result; foreign defaults restored, custom preimages not restored; empty list succeeds | Native default restoration and physical delivery TBD, user-owned; Windows settings Revert is a separate implementation |
+
 ### 2026-10-10 reference comparison discriminators
 
 Minimal variants of existing R-MAX-08 and R-WS-23. Selected intent is recorded

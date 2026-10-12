@@ -201,16 +201,6 @@
         </widget>
        </item>
          <item>
-          <widget class="QLabel" name="shortcutForcePreviewLabel">
-           <property name="text">
-            <string></string>
-           </property>
-           <property name="wordWrap">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
           <widget class="QLabel" name="shortcutConflictHintLabel">
            <property name="text">
             <string>Per-binding conflicts (checked = Keep, unchecked = Disable). Staged only until Apply Shortcuts.</string>
@@ -264,26 +254,12 @@
            </property>
           </widget>
          </item>
-          <item>
-           <widget class="QPushButton" name="shortcutForceApplyButton">
-            <property name="text">
-             <string>Force Apply</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QPushButton" name="shortcutForceCancelButton">
-            <property name="text">
-             <string>Cancel</string>
-            </property>
-           </widget>
-          </item>
          </layout>
         </item>
         <item>
          <widget class="QLabel" name="shortcutDescription">
           <property name="text">
-             <string>The full project catalog (directional, toggle, and workspace bindings) lists each canonical chord with its current assignment and known/current holders; unavailable queries are reported honestly. Checked rows are kept at their current assignments, unchecked rows are disabled. Authentic stages canonical assignments for enabled bindings; Compatible resets to Keep then disables known-conflicting rows and current holder collisions without replacement chords. Settings Apply never changes shortcuts; use Apply Shortcuts with confirmation. Disabling clears only the project's own assignment. Force Apply appears only for a pending preview that lists every holder with the exact keys removed and kept. Cancel discards the preview without writes. Revert restores KDE defaults for cleared bindings.</string>
+             <string>The full project catalog (directional, toggle, and workspace bindings) lists each canonical chord with its current assignment and known/current holders; unavailable queries are reported honestly. Checked rows are kept at their current assignments, unchecked rows are disabled. Authentic stages canonical assignments for enabled bindings; Compatible resets to Keep then disables known-conflicting rows and current holder collisions without replacement chords. Settings Apply never changes shortcuts; Apply Shortcuts applies immediately without an extra confirmation. Disabling clears only the project's own assignment. Conflicts surface once in a modal dialog listing every holder with the exact keys removed and kept; Force Apply there revalidates and applies. Revert restores KDE defaults for cleared bindings.</string>
           </property>
          <property name="wordWrap">
           <bool>true</bool>
