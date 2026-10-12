@@ -1193,9 +1193,45 @@ describe("observeOutputSendTarget (cross-output send observation)", () => {
         // D28: the production cross-output observer binds a retained
         // fullscreen mover exactly like a maximized one.
         const observed = observeOutputSendTarget(fakeSendWorkspace({ fullscreenActive: true }), new Map(), "out-2", new Set());
-        assert.notEqual(observed, null);
-        assert.equal(observed?.focusedId, "b");
-        assert.notEqual(observed?.moverRef, null);
+        assert.ok(observed !== null);
+        assert.equal(observed.focusedId, "b");
+        assert.notEqual(observed.moverRef, null);
+    });
+
+    it("admits an intentional float as the cross-output mover", () => {
+        // D16: the production cross-output observer admits an intentional
+        // float mover for the slotless deferred transfer, still floating.
+        const observed = observeOutputSendTarget(fakeSendWorkspace(), new Map(), "out-2", new Set(["b"]));
+        assert.ok(observed !== null);
+        const mover = observed.sourceWindows.find((entry) => entry.id === "b");
+        assert.ok(mover !== undefined);
+        assert.equal(mover.floating, true);
+        assert.equal(mover.sticky, false);
+        assert.equal(observed.focusedId, "b");
+        assert.notEqual(observed.moverRef, null);
+    });
+
+    it("leaves the mover empty for sticky and maximized floats", () => {
+        const sticky = observeOutputSendTarget(fakeSendWorkspace({ stickyActive: true }), new Map(), "out-2", new Set(["b"]));
+        assert.ok(sticky !== null);
+        assert.equal(sticky.focusedId, "");
+        assert.equal(sticky.moverRef, null);
+        const maximized = fakeSendWorkspace() as Record<string, unknown>;
+        const wins = (maximized["windowList"] as () => Array<Record<string, unknown>>)();
+        const mover = wins.find((entry) => entry["internalId"] === "b");
+        assert.ok(mover !== undefined);
+        mover["maximizeMode"] = 3;
+        const refused = observeOutputSendTarget(maximized, new Map(), "out-2", new Set(["b"]));
+        assert.ok(refused !== null);
+        assert.equal(refused.focusedId, "");
+        assert.equal(refused.moverRef, null);
+    });
+
+    it("leaves the mover empty for a floating fullscreen mover", () => {
+        const observed = observeOutputSendTarget(fakeSendWorkspace({ fullscreenActive: true }), new Map(), "out-2", new Set(["b"]));
+        assert.ok(observed !== null);
+        assert.equal(observed.focusedId, "");
+        assert.equal(observed.moverRef, null);
     });
 
     it("returns null for unknown or same-output targets", () => {

@@ -924,7 +924,7 @@ interface WorkspacePlanned {
     // Explicit follow/stay selection echoed by the Rust move operation.
     // Legacy replies omit it and default to follow.
     readonly follow: boolean;
-    // True for the slotless deferred transfer (`move-deferred`, D28): the
+    // True for the slotless deferred transfer (`move-deferred`, D28/D16): the
     // operation names no leaf and the reply geometry covers tiled survivors
     // only (empty when neither side has tiled members). Follow carries the
     // target bookkeeping MRU or null (native follow addresses the mover
@@ -1020,10 +1020,11 @@ function validateMoveTiledOperation(value: unknown): { record: Record<string, un
     return { record: value, follow };
 }
 
-// Slotless deferred-transfer operation (D28 born-fullscreen carry): window
-// plus source/target identities with NO leaf (never fabricated). Exact keys
-// plus the same optional explicit follow echo as the tiled operation; a
-// deferred operation carrying a leaf is malformed and never actuates.
+// Slotless deferred-transfer operation (D28 born-fullscreen carry, D16
+// ordinary-float carry): window plus source/target identities with NO leaf
+// (never fabricated). Exact keys plus the same optional explicit follow
+// echo as the tiled operation; a deferred operation carrying a leaf is
+// malformed and never actuates.
 function validateMoveDeferredOperation(value: unknown): { record: Record<string, unknown>; follow: boolean } | null {
     if (!isRecord(value)) {
         return null;
@@ -1459,22 +1460,32 @@ function snapshotsEqual(a: WorkspaceSendSnapshot, b: WorkspaceSendSnapshot): boo
 }
 
 // Deferred-operation snapshot eligibility: the dispatch snapshot mover
-// must carry the held overlay flags (fullscreen, never
-// floating/sticky/maximized, fit-excluded). Test shape only proves the
-// flags; the actual held topology stays shared Engine ownership, with no
-// new state or provenance schema on this side.
+// must carry a slotless-transfer shape: the D28 held overlay (fullscreen,
+// never floating/sticky/maximized, fit-excluded) or the D16 ordinary
+// intentional float (floating, never fullscreen/sticky/maximized,
+// fit-excluded). Sticky, maximized, and other shapes never carry, so an
+// ordinary tiled mover still cannot sneak a leafless transfer and drop
+// its own allocation. Test shape only proves the flags; the actual held
+// topology stays shared Engine ownership, with no new state or provenance
+// schema on this side.
 function snapshotMoverHeld(snapshot: WorkspaceSendSnapshot, moverId: string): boolean {
     for (const entry of [...snapshot.sourceWindows, ...snapshot.targetWindows]) {
         if (entry.id !== moverId) {
             continue;
         }
-        return (
+        const heldFullscreen =
             entry.fullscreen === true &&
             entry.floating !== true &&
             entry.sticky !== true &&
             entry.maximized !== true &&
-            entry.fitExcluded === true
-        );
+            entry.fitExcluded === true;
+        const ordinaryFloat =
+            entry.floating === true &&
+            entry.fullscreen !== true &&
+            entry.sticky !== true &&
+            entry.maximized !== true &&
+            entry.fitExcluded === true;
+        return heldFullscreen || ordinaryFloat;
     }
     return false;
 }
@@ -2083,10 +2094,12 @@ export class WorkspaceSendAdapter {
         // the focused mover only. The mover flag lets the shared Engine
         // preserve a held born-fullscreen exception across the combined
         // convergence instead of retiling it on the source (D28 slotless
-        // carry); every other member keeps the exact legacy encoding, so
-        // tiled fullscreen survivors and all existing transfers are
-        // unchanged. Native maximized/sticky never ride the wire; they
-        // stay local snapshot semantics for the dispatch-frozen fence.
+        // carry); an intentional-float mover rides `floating` from the
+        // observer (D16 slotless carry, same deferred route). Every other
+        // member keeps the exact legacy encoding, so tiled fullscreen
+        // survivors and all existing transfers are unchanged. Native
+        // maximized/sticky never ride the wire; they stay local snapshot
+        // semantics for the dispatch-frozen fence.
         const wireFlags = (entry: WorkspaceSendObservedWindow): Record<string, boolean> => ({
             ...(entry.floating === true ? { floating: true } : {}),
             ...(entry.floating === true || entry.fitExcluded === true || entry.fit_excluded === true
@@ -2567,10 +2580,10 @@ export class WorkspaceSendAdapter {
     // echoed follow selection must equal the flight's requested selection.
     // Any other target/object/selection is a mismatched reply and never
     // actuates. A deferred operation additionally requires the snapshot
-    // mover to carry the held overlay flags (fullscreen, never
-    // floating/sticky/maximized, fit-excluded): an ordinary tiled or
-    // non-fullscreen mover can never sneak a leafless transfer and drop
-    // its own allocation. Focus binding is selection-aware: tiled follow
+    // mover to carry a slotless-transfer shape (D28 held fullscreen or D16
+    // ordinary float, never sticky/maximized): an ordinary tiled mover can
+    // never sneak a leafless transfer and drop its own allocation. Focus
+    // binding is selection-aware: tiled follow
     // names the mover in the target; deferred follow is null
     // (member-less target) or a target-domain bookkeeping MRU; stay is
     // null (emptied source) or names the source domain with a non-mover
@@ -3029,13 +3042,24 @@ export class WorkspaceSendAdapter {
         ) {
             return false;
         }
-        if (live.floating || live.sticky) {
+        // D16 ordinary-float carry: a floating mover travels with its float
+        // state untouched, but only when flag-stable against the dispatch
+        // snapshot. A tiled mover that toggled floating mid-flight still
+        // fails closed here; sticky never carries.
+        let snapshotFloating: { floating: boolean } | null = null;
+        for (const entry of [...pending.snapshot.sourceWindows, ...pending.snapshot.targetWindows]) {
+            if (entry.id === pending.moverId) {
+                snapshotFloating = { floating: entry.floating };
+                break;
+            }
+        }
+        if (snapshotFloating === null || live.floating !== snapshotFloating.floating || live.sticky) {
             return false;
         }
         // G-D2/D28 overlay carry (REQ-MAX-09): a maximized/fullscreen mover
         // travels with its native state untouched, but only when flag-stable
         // against the dispatch snapshot; a mid-flight overlay change fails
-        // closed. Floating/sticky never carry here.
+        // closed. Sticky never carries here.
         let snapshotOverlay: { maximized: boolean; fullscreen: boolean } | null = null;
         for (const entry of [...pending.snapshot.sourceWindows, ...pending.snapshot.targetWindows]) {
             if (entry.id === pending.moverId) {

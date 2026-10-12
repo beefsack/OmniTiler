@@ -52,6 +52,13 @@ export interface WorkspaceSendEntryOverrides {
     readonly generation?: unknown;
     readonly readInnerGapFn?: () => unknown;
     readonly readOuterGapFn?: () => unknown;
+    // Engine-owned intentional-float membership, mirroring the plan entry
+    // floatingIds convention. KWin native state carries no float flag, so
+    // without this input an intentional float observes as tiled and its
+    // send wire omits `floating`. Callers that track float state pass the
+    // live set here; absent means no Engine floats (sticky still observes
+    // floating). Read per observation so mid-flight toggles stay visible.
+    readonly floatingIds?: ReadonlySet<string>;
 }
 
 export interface WorkspaceSendEntryHandle {
@@ -203,6 +210,7 @@ function observeNative(
     cache: Map<string, string>,
     targetWorkspace: string,
     pinnedSourceWorkspace?: string,
+    floatingIds?: ReadonlySet<string>,
 ): WorkspaceSendObserved | null {
     try {
         if (typeof liveWorkspace !== "object" || liveWorkspace === null) {
@@ -404,10 +412,20 @@ function observeNative(
                 return null;
             }
             // Local flags only; the adapter normalizes fitExcluded to wire fit_excluded.
+            // Engine-owned float intent rides through the floatingIds input
+            // (same convention as the plan entry observers); sticky always
+            // observes floating.
             const sticky = readProp(ref, "onAllDesktops") === true;
             const fullscreen = readProp(ref, "fullScreen") !== false;
             const maximized = readProp(ref, "maximizeMode") !== 0;
-            const floating = sticky;
+            let intentionalFloat = false;
+            try {
+                intentionalFloat = floatingIds !== undefined && floatingIds.has(id);
+            } catch (error) {
+                void error;
+                intentionalFloat = false;
+            }
+            const floating = intentionalFloat || sticky;
             const fitExcluded = floating || sticky || fullscreen || maximized;
             const flags = {
                 fullscreen,
@@ -436,17 +454,24 @@ function observeNative(
                 const activeId = cache.get(activeNative) ?? (cache.set(activeNative, activeNative), activeNative);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover; maximized and fullscreen movers
-                        // carry under G-D2/D28 (REQ-MAX-09) with native state
-                        // untouched, while floating/sticky keep "" / null and
-                        // refuse downstream. An otherwise unexplained fit
-                        // exclusion (fitExcluded without an overlay) also
-                        // refuses: overlays are admitted only while otherwise
-                        // valid.
+                        // Tiled-only mover, plus the D16 ordinary-float carry:
+                        // an intentional float (floating without sticky)
+                        // dispatches like a tiled mover and rides the shared
+                        // slotless deferred transfer with native state
+                        // untouched, while sticky and maximized floats keep
+                        // "" / null and refuse downstream. Maximized and
+                        // fullscreen tiled movers carry under G-D2/D28
+                        // (REQ-MAX-09) with native state untouched. An
+                        // otherwise unexplained fit exclusion (fitExcluded
+                        // without an overlay or float intent) also refuses:
+                        // overlays are admitted only while otherwise valid.
+                        const entryIntentionalFloat = entry.floating && !entry.sticky;
                         if (
-                            entry.floating ||
                             entry.sticky ||
-                            (entry.fitExcluded && !entry.maximized && !entry.fullscreen)
+                            (entryIntentionalFloat && (entry.maximized || entry.fullscreen)) ||
+                            (!entryIntentionalFloat &&
+                                (entry.floating ||
+                                    (entry.fitExcluded && !entry.maximized && !entry.fullscreen)))
                         ) {
                             break;
                         }
@@ -606,7 +631,7 @@ export function startWorkspaceSendAdapterEntry(
         scheduleOnce,
         log,
         observe: (targetWorkspace, pinnedSourceWorkspace?) =>
-            observeNative(liveWorkspace, nativeIds, targetWorkspace, pinnedSourceWorkspace),
+            observeNative(liveWorkspace, nativeIds, targetWorkspace, pinnedSourceWorkspace, overrides.floatingIds),
         setGeometry: (target, rect) => {
             try {
                 return Reflect.set(target, "frameGeometry", {

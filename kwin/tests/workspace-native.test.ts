@@ -1100,8 +1100,29 @@ describe("workspace production entry routing and handoff", () => {
         const focusedFloat = observeSendTarget(world.workspace, cache, "ws-2", floating);
         assert.ok(focusedFloat !== null);
         assert.ok(focusedFloat.sourceWindows.some((entry) => entry.id === "win-b"), "focused float stays observed");
-        assert.equal(focusedFloat.focusedId, "");
-        assert.equal(focusedFloat.moverRef, null);
+        // D16: the production same-output gate admits an intentional float
+        // mover for the slotless deferred transfer.
+        assert.equal(focusedFloat.focusedId, "win-b");
+        assert.notEqual(focusedFloat.moverRef, null);
+    });
+
+    it("production send gate still refuses sticky and maximized floats", () => {
+        const { world } = startRichEntry("per-output-local");
+        const cache = new Map<string, string>();
+        const stickyWin = world.wins.find((win) => win.internalId === "win-b");
+        assert.ok(stickyWin !== undefined);
+        (world.workspace["activeWindow"] as unknown) = stickyWin;
+        stickyWin.onAllDesktops = true;
+        const stickyObserved = observeSendTarget(world.workspace, cache, "ws-2", new Set<string>(["win-b"]));
+        assert.ok(stickyObserved !== null);
+        assert.equal(stickyObserved.focusedId, "");
+        assert.equal(stickyObserved.moverRef, null);
+        stickyWin.onAllDesktops = false;
+        stickyWin.maximizeMode = 3;
+        const maximizedObserved = observeSendTarget(world.workspace, cache, "ws-2", new Set<string>(["win-b"]));
+        assert.ok(maximizedObserved !== null);
+        assert.equal(maximizedObserved.focusedId, "");
+        assert.equal(maximizedObserved.moverRef, null);
     });
 
     it("observes live current-vs-target diagnostics while source is pinned", () => {
