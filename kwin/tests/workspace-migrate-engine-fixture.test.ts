@@ -1213,7 +1213,7 @@ describe("migrate engine fixture", () => {
         }
     });
 
-    it("refuses a stale minimized core link until ordinary reconcile", async () => {
+    it("minimized member converges via ordinary reconcile before migrate (D23)", async () => {
         const harness = await makeHarness({
             wins: [
                 { id: "m-win-1", output: "left", desktop: "ws-1" },
@@ -1223,15 +1223,38 @@ describe("migrate engine fixture", () => {
         });
         try {
             await harness.settlePlan();
+            const min2 = harness.winById("m-win-2");
+            const min2Frame = { ...min2.frameGeometry };
             harness.handle.requestWorkspaceMigrate("right");
             const flushed = await harness.flushOp("migrate-workspace");
-            // The retained session still links the minimized client as
-            // tiled while the wire filters it: the core refuses partial
-            // observation and the adapter performs zero native writes.
-            assert.equal(flushed.reply["outcome"], "rejected", JSON.stringify(flushed.reply));
-            assert.equal(flushed.reply["kind"], "partial-observation");
-            assert.equal((harness.winById("m-win-1").output as FakeOutput).name, "out-left");
-            assert.equal(harness.currentByOutput.get(harness.outputs.right)?.id, "ws-9");
+            // D23 (REQ-MNZ-01): the foreground observation omits the
+            // minimized client, so ordinary settle already converged it
+            // into a stored old slot and the session no longer links it
+            // as tiled. The migrate wire still carries no minimized
+            // client, but the observation is now complete, so the core
+            // plans the tiled survivors without touching the minimized
+            // client (pre-D23 this refused partial-observation).
+            assert.equal(flushed.reply["outcome"], "planned", JSON.stringify(flushed.reply));
+            const geometry = flushed.reply["desired_geometry"] as Array<Record<string, unknown>>;
+            assert.ok(
+                geometry.every((entry) => entry["window"] !== "m-win-2"),
+                "planned geometry never covers the minimized client",
+            );
+            assert.equal(min2.minimized, true, "minimized state untouched");
+            assert.deepEqual({ ...min2.frameGeometry }, min2Frame, "minimized frame untouched");
+            assert.equal(
+                (harness.workspace["activeWindow"] as FakeWindow).internalId,
+                "m-win-1",
+                "focus retained on the tiled active",
+            );
+            assert.equal((harness.winById("m-win-1").output as FakeOutput).name, "out-right", "tiled survivor migrates");
+            assert.equal((harness.winById("m-win-2").output as FakeOutput).name, "out-right", "minimized client rides its workspace");
+            assert.deepEqual(
+                (harness.winById("m-win-2").desktops as FakeDesktop[]).map((d) => d.id),
+                ["ws-1"],
+                "minimized client keeps its desktop",
+            );
+            assert.equal(harness.currentByOutput.get(harness.outputs.right)?.id, "ws-1", "target shows the migrated workspace");
         } finally {
             await harness.stop();
         }

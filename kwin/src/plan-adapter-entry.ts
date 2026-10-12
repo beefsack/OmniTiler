@@ -2751,17 +2751,39 @@ function observeNative(
             void error;
             return null;
         }
-        if (typeof active !== "object" || active === null) {
-            return null;
+        // D23 MNZ-03: a null active window (sole minimize empties native
+        // focus) still resolves the domain below via the active screen
+        // instead of failing closed here. Anything unreadable there stays
+        // null.
+        let activeRef: object | null = null;
+        if (typeof active === "object" && active !== null) {
+            activeRef = active as object;
+            if (readProp(activeRef, "normalWindow") !== true) {
+                reportEligibility?.(activeRef, "active-normal-window");
+                return null;
+            }
         }
-        const activeRef = active as object;
-        if (readProp(activeRef, "normalWindow") !== true) {
-            reportEligibility?.(activeRef, "active-normal-window");
-            return null;
-        }
-        const activeOutput = readProp(activeRef, "output");
-        if (typeof activeOutput !== "object" || activeOutput === null) {
-            return null;
+        // Domain output: the active window's output when focused, else the
+        // active screen (sole-minimize null focus retains the workspace).
+        let activeOutput: object;
+        if (activeRef !== null) {
+            const output = readProp(activeRef, "output");
+            if (typeof output !== "object" || output === null) {
+                return null;
+            }
+            activeOutput = output as object;
+        } else {
+            let screen: unknown = undefined;
+            try {
+                screen = Reflect.get(surface, "activeScreen");
+            } catch (error) {
+                void error;
+                return null;
+            }
+            if (typeof screen !== "object" || screen === null) {
+                return null;
+            }
+            activeOutput = screen as object;
         }
         const lister = readProp(surface, "windowList");
         if (typeof lister !== "function") {
@@ -2778,7 +2800,7 @@ function observeNative(
         if (windows === null) {
             return null;
         }
-        const outputNameRaw = readProp(activeOutput as object, "name");
+        const outputNameRaw = readProp(activeOutput, "name");
         if (!isOpaqueId(outputNameRaw)) {
             return null;
         }
@@ -2789,7 +2811,7 @@ function observeNative(
         if (typeof areaFn !== "function") {
             return null;
         }
-        const desktopRead = readDesktopForOutput(surface, activeOutput as object);
+        const desktopRead = readDesktopForOutput(surface, activeOutput);
         if (desktopRead === null) {
             return null;
         }
@@ -2826,6 +2848,10 @@ function observeNative(
         }
         const domainBounds = { x: bx, y: by, w: bw, h: bh };
         const seen = new Set<string>();
+        // D23: whether an in-scope minimized frame was omitted below. Only
+        // with such evidence does an emptied domain converge explicitly;
+        // without it the domain stays unknown, as before.
+        let minimizedEvidence = false;
         const entries: Array<{
             id: string;
             ref: object;
@@ -2873,6 +2899,17 @@ function observeNative(
             }
             if (!onDesktop && !allDesktops) {
                 reportEligibility?.(ref, "desktop-mismatch");
+                continue;
+            }
+            // D23 MNZ-01: minimized frames are omitted from the converged
+            // observation so a native minimize reaches core as an omission
+            // (stored old slot, sibling reflow). Omitted before id/frame
+            // reads, so a stale or unreadable minimized frame can never
+            // fail the whole domain closed; a native restore re-observes
+            // the live frame for the old-slot restore leg.
+            if (readProp(ref, "minimized") === true) {
+                minimizedEvidence = true;
+                reportEligibility?.(ref, "minimized-omitted");
                 continue;
             }
             // Read and normalize the native id while the object is live;
@@ -2924,6 +2961,50 @@ function observeNative(
             reportEligibility?.(ref, null);
         }
         if (entries.length === 0) {
+            // D23 MNZ-03: an emptied domain with minimize evidence converges
+            // explicitly (retain workspace, focus none, stored slot) instead
+            // of failing closed. Without such evidence the domain stays
+            // unknown, as before (empty startup awaits the next window).
+            if (!minimizedEvidence) {
+                return null;
+            }
+            const emptyFingerprint = String(planFingerprint(domainOutput, domainWorkspace, "", []));
+            const emptyActiveRef: object = activeRef ?? desktopRef;
+            const emptyExpected = emptyFingerprint;
+            return {
+                domainOutput,
+                domainWorkspace,
+                domainBounds: Object.freeze({ x: domainBounds.x, y: domainBounds.y, w: domainBounds.w, h: domainBounds.h }),
+                domainGap: gaps.innerGap,
+                domainOuterGap: gaps.outerGap,
+                focusedId: "",
+                activeExcluded: true,
+                windows: Object.freeze([]),
+                activeRef: emptyActiveRef,
+                fingerprint: emptyExpected,
+                revalidate: () => {
+                    try {
+                        const fresh = observeNative(liveWorkspace, cache, floatingIds, gaps, reportEligibility, owners);
+                        if (
+                            fresh === null ||
+                            fresh.fingerprint !== emptyExpected ||
+                            fresh.activeRef !== emptyActiveRef ||
+                            fresh.activeExcluded !== true
+                        ) {
+                            return false;
+                        }
+                        return fresh.windows.length === 0 && fresh.focusedId === "";
+                    } catch (error) {
+                        void error;
+                        return false;
+                    }
+                },
+            };
+        }
+        if (activeRef === null) {
+            // Null focus with surviving members stays unknown until the
+            // host refocuses (fail closed, as before); the emptied sole
+            // case converged above.
             return null;
         }
         const activeNative = readNativeId(activeRef);
@@ -2940,7 +3021,15 @@ function observeNative(
             }
         }
         if (activeId === null) {
-            return null;
+            // D23: the active window was omitted as minimized. Name it
+            // truthfully: core holds no membership for it and falls back
+            // to retained/MRU focus. Anything else unnamed stays
+            // fail-closed, as before.
+            if (readProp(activeRef, "minimized") === true) {
+                activeId = activeNativeId;
+            } else {
+                return null;
+            }
         }
         const sortedIds = entries.map((entry) => entry.id).sort();
         const fingerprint = String(planFingerprint(domainOutput, domainWorkspace, activeId, sortedIds));
