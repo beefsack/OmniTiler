@@ -131,7 +131,7 @@ decisions of 2026-09-24 are under
   | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
   | D12 | verification-only | Same-axis escape inserts into the ancestor axis (`crates/tiler-core/src/directional.rs:993-1002`, `crates/tiler-core/src/session/ops/move.rs:1080-1087`). |
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
-  | D16 | approved; needs code, native roundtrip first | Floating send retains float and size on arrival, destination tiles untouched, for follow/stay and numbered/relative sends; no setting. Core exceptions refuse `NotTiled` and KDE refuses non-tiled movers (`crates/tiler-core/src/session/ops/workspace.rs:131-136`, `kwin/src/workspace-send-adapter.ts:1701,1841` at `fafcd31`); float-preserving transfer absent, unlike floating-workspace boundary sends. Verify untested native WS1 -> WS2 -> WS1 roundtrip first, then shared core first (serves Windows), then KDE adapter; Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
+  | D16 | delivered offline; native verification pending | Ordinary intentional floats transfer slotless deferred retaining float and size, follow/stay and numbered/relative, no source/destination tile reflow; sticky, maximized-float, floating+fullscreen and automatic-fixed floats still refuse. Shared `deferred_send_eligible` D16 arm plus KDE adapter/real-observer gates ([record](changes/d16-floating-transfer.md)). Native WS1 -> WS2 -> WS1 roundtrip pending. Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D23 | approved; needs code, shared core first | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Valid minimize omission can collapse/reflow (`kwin/src/plan-adapter-entry.ts:2003,3876`, `crates/tiler-core/src/session/world.rs:850-868` at `fafcd31`, revision-bound), but old-slot storage/no-focus-write restore absent and sole null-focus can fail closed. Shared core first, then KDE; Windows retained allocation is divergence to change later via item 22, not an approved exception. Native journeys pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
@@ -139,11 +139,20 @@ decisions of 2026-09-24 are under
   | D27 | approved; KDE trace-first, then verification-only or contingent code | Default Mark urgent only, no workspace/focus change; fullscreen/game-focused guard urgency-only in both modes. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin and conflict with D01, so stop and return to the user before code. Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
   | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
-  - D16 implementation queue: first verify the untested native R-WS-05
-    roundtrip (WS1 -> WS2 -> WS1); then shared-core float transfer eligibility/
-    retention, then KDE send adapter. Acceptance: follow/stay, numbered/relative,
-    retained float/size, destination tiles unchanged; no setting. Shared delivery
-    serves Windows; Windows adapter/native acceptance follows in item 22.
+  - D16 verification queue: shared-core float transfer eligibility/retention
+    and KDE send adapter delivered offline ([record](changes/d16-floating-transfer.md)).
+    Acceptance: follow/stay, numbered/relative,
+    retained float/size, destination tiles unchanged; no setting. Native
+    R-WS-05 roundtrip (WS1 -> WS2 -> WS1) verification pending.
+    Shared delivery serves Windows; Windows adapter/native acceptance follows in item 22.
+  - D16 follow-up gaps (tentative scope questions, no implementation):
+    (i) a floating window that is also fullscreen still refuses explicit send,
+    which appears to conflict with D28 (explicit fullscreen sends are honoured);
+    (ii) a maximized float still refuses send under D16. Either could
+    mechanically ride the same slotless deferred path (it carries flags
+    verbatim), but the arrival state (fullscreen, floating, maximized, or a
+    combination) needs a product decision first; stop and return to the user
+    before code.
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
@@ -2769,9 +2778,14 @@ decisions of 2026-09-24 are under
     D12/D13 use existing shared defaults, with native verification pending.
     D22 survivor-share preservation is verification-only under shared removal,
     no setting; Windows native float-out reflow remains pending.
-    Approved D16 needs Windows adapter float transfer eligibility/class/size
-    preservation after shared-core delivery, keeping destination tiles untouched
-    with existing follow/stay fences for numbered/relative sends; no setting.
+    Approved D16 shared delivery is complete (ordinary intentional floats
+    transfer slotless deferred with float class and size preserved verbatim,
+    destination tiles untouched, sticky still refused; [record](changes/d16-floating-transfer.md)).
+    Windows adapter/native acceptance remains: admit ordinary intentional floats
+    through the Engine send route at `src/tiling_sys.rs` `workspace_do_send`
+    (current `send-refused-floating` gate), keeping float+size retention with no
+    destination reflow, existing follow/stay fences for numbered/relative sends,
+    and restart-store memory following by window id; no setting.
     Untested native WS1 -> WS2 -> WS1 roundtrip is verified first.
     Approved D23 follows later after shared-core delivery: replace retained
     Windows minimize allocation (divergence, not an approved exception) with
