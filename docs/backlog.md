@@ -292,7 +292,15 @@ decisions of 2026-09-24 are under
   ([record](changes/archive/windows-input-thread.md),
   [wake fix](changes/archive/windows-input-owner-wake.md)). Release and
   trace-off comparison, Win+drag/Esc and preheld-modifier checks pending.
-  Next: stage 2 render thread. [Design](research/windows-port/owner-threading.md),
+  Stage 2 offline-delivered 2026-10-12 (`8fe0224`, CI green): border,
+  underlay and drop preview on a dedicated render thread with latest-wins
+  generations, safety epochs and acknowledged hide before drop actuation;
+  agent live evidence on scoped Notepad/Calculator/Paint (carrier placement,
+  preview hide-before-drop, clean stop). Tentative: 500 ms hide-proof timeout
+  refuses that drop without writes. User physical check pending (pixels,
+  follow, z-order, cross-slot drop, Esc, stale-show, edge-resize, Win+arrow)
+  ([record](changes/archive/windows-render-thread.md)). Next: stage 3
+  hardening. [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
 - P1 | Rust `unsafe` policy | User request 2026-10-12: avoid `unsafe`
   entirely where possible, especially with multithreading. Audit at `2af85a7`:
