@@ -168,7 +168,7 @@
 
 - Recommend option 1 for KDE, with maximize and fullscreen separate in evidence
   but the same native activation ownership principle. Keep explicit selection
-  separate from unsolicited activation (D27's tentative guard is not an
+  separate from unsolicited activation (D27's approved guard is not an
   Alt+Tab policy). No approval, setting or shared-core rule is inferred.
 - Verification needed before implementation claims: compare tiler-off/on on
   the same host configuration for native Wayland open at Low/Medium, Xwayland

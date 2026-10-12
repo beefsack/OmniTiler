@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 129 NORMATIVE, 28 OPEN, 9 PROVISIONAL requirement rows (166 rows);
+Draft totals: 130 NORMATIVE, 28 OPEN, 8 PROVISIONAL requirement rows (166 rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -67,10 +67,11 @@ User 2026-10-10 0.1 triage batch 1 selects 15 units / 16 rows
 ([report](../research/release-0.1-triage.md#user-decisions-2026-10-10)):
 float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
-behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12
-and D13 (eight formerly PROVISIONAL rows); nine 2026-10-11 tentative rows
+behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
+D13 and D27 (nine formerly PROVISIONAL rows); eight 2026-10-11 tentative rows
 remain pending review, including KDE fullscreen-send refusal REQ-MAX-09b.
-D09/D10 settings are post-0.1; D27 remains tentative and needs tier rescoring.
+D09/D10/D27 settings are post-0.1; D27 tier-rescored under reference tiers
+(Hyprland/i3/sway Tier 1 against COSMIC).
 [Gap assessment](../backlog.md) separates code work from verification-only
 defaults and D26's cross-login known-limitation fallback.
 Windows wiring and item-2/3/4/5/Q4 native journeys
@@ -343,7 +344,7 @@ Hooks: V-DRAG-ZONE (32px edges, 80px sticky prior). PROVISIONAL indexing, not ch
 
 | Req | Scenario | Requirement / current | KDE | Win | macOS | Status | Source |
 |---|---|---|---|---|---|---|---|
-| REQ-ACT-01 | [R-ACT-01](reference-outcomes/activation.md#r-act-01-hidden-window-sends-an-unsolicited-activation-request) unsolicited activation request | PROVISIONAL tentative default Switch and focus with a fullscreen/game-focused urgency-only guard; setting deferred to P2 `0.1 triage settings follow-up`, not a 0.1 gap | NEEDS CODE at HEAD `fafcd31`: no activation-request/attention signal or guarded switch-focus path; native journey pending | current: TBD | provisional target; implementation absent | PROVISIONAL | [tentative D27](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-ACT-01 | [R-ACT-01](reference-outcomes/activation.md#r-act-01-hidden-window-sends-an-unsolicited-activation-request) unsolicited hidden-workspace activation request | Default `Mark urgent only`: mark urgent, no workspace switch or focus change. Post-0.1 `Activation request` setting (not a 0.1 gap): `Mark urgent only` default (tooltip Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad); functional names/options, WM names tooltips only. Fullscreen/game-focused requests are urgency-only in both modes. Tier-1 agreement reverses tentative Switch and focus; alternative qualifies via COSMIC Tier 1 plus xmonad Tier 2. INS-07 no-steal covers tiling admission into inactive workspaces only, not existing-window activation; explicit Alt+Tab/taskbar selection is separate | native journey pending; request/urgency signal handling absent at `fafcd31`. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin/D01 native ownership, so stop and return to the user before code. Otherwise needs code per gap assessment | current: TBD; native journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#activation-requests) User 2026-10-12, D27 (a) |
 | REQ-ACT-02 | [R-ACT-02](reference-outcomes/activation.md#r-act-02-urgency-marker-set-then-user-focuses-the-window) urgency marker then focus | current: native mark/clear journeys TBD; no attention signal in either adapter | current: TBD | current: TBD | behavior OPEN; implementation absent | OPEN | Table U; no selection |
 
 <a id="startup"></a>
@@ -546,20 +547,19 @@ marked with literal status in-row):
 - [Minimize](#minimize): none (REQ-MNZ-01/02/03 are PROVISIONAL tentative D23).
 - [Close](#close): none.
 - [Output](#output): none.
-- [Activation](#activation): REQ-ACT-02 (REQ-ACT-01 is PROVISIONAL tentative D27).
+- [Activation](#activation): REQ-ACT-02.
 - [Restart/control](#startup): none (REQ-RST-01c tentative D25 and REQ-RST-02 tentative D26 are PROVISIONAL).
 - [Special](#special): REQ-SPC-02, REQ-SPC-03, REQ-SPC-05b.
   Q2 edge clauses REQ-SPC-04a..h are NORMATIVE (User 2026-10-08), not OPEN rows.
 - [Columns](#columns): REQ-COL-01, REQ-COL-02, REQ-COL-03, REQ-COL-04, REQ-COL-05, REQ-COL-06, REQ-COL-07, REQ-COL-08, REQ-COL-09, REQ-COL-10.
 
-PROVISIONAL discussion group: 9 rows, all
+PROVISIONAL discussion group: 8 rows, all
 [tentative 2026-10-11](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
 pending user review; no implementation authorization:
 
 - [Workspaces](#workspaces): REQ-WS-05 (D16).
 - [Floating](#floating): REQ-FLT-03 (D22).
 - [Minimize](#minimize): REQ-MNZ-01, REQ-MNZ-02, REQ-MNZ-03 (D23).
-- [Activation](#activation): REQ-ACT-01 (D27).
 - [Restart](#startup): REQ-RST-01c (D25); REQ-RST-02 (D26, fallback (b) and
   REQ-RST-01d cross-login limitation).
 - [Maximize](#maximize): REQ-MAX-09b (D28 KDE fullscreen-send refusal).

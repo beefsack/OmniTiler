@@ -136,10 +136,17 @@ sandboxed route exposes the workspace-level marker only.
 - Then Ours KDE: TBD (Engine `sync_focus_from_window` covers
   ordinary activation of a known window; unsolicited
   cross-workspace request routing, switch vs marker, untraced;
-  native journey TBD). `S(S-ours-act)`; queued.
+  native journey TBD). `S(S-ours-act)`; selected default Mark urgent
+  only with post-0.1 Activation request setting and both-modes
+  fullscreen/game guard ([User 2026-10-12 D27](../../decisions.md#activation-requests));
+  first trace native KWin Wayland xdg-activation and Xwayland under default
+  focus-stealing prevention. Attention-only means verification-only; native
+  workspace/focus switching would make urgency-only override KWin/D01, so
+  stop and return to the user before code. Otherwise request/urgency handling
+  needs code per gap assessment; queued.
 - Then Ours Windows: TBD (same Engine observation path; host
   foreground-request journey and marker policy untraced).
-  `S(S-ours-act)`; queued.
+  `S(S-ours-act)`; same D27 selection, queued.
 - Variant hook: provisional/TBD (activation-routing hook, to discuss).
 
 ### R-ACT-02: urgency marker set, then user focuses the window

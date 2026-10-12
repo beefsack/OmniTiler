@@ -1,7 +1,7 @@
 # Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 21 units approved by User (15 on 2026-10-10, six on 2026-10-12);
-seven units plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: 22 units approved by User (15 on 2026-10-10, seven on 2026-10-12);
+six units plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes eight rows: current spec
-129 NORMATIVE / 9 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes nine rows: current spec
+130 NORMATIVE / 8 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -47,13 +47,29 @@ REQ-MAX-09b. User 2026-10-12 promotes eight rows: current spec
   middle and D10 Wrap, each with a two-option post-0.1 setting; D12 Extract
   to same axis and D13 Wrap locally, no settings.
 - The [tier rule](../decisions.md#reference-tiers) amends the 2026-10-07 rule.
-  P2 settings now contain D09, D10 and tentative D27; D27 remains pending user
-  review and will be rescored under that rule. D03/D12/D13 settings and
+  P2 settings now contain approved D09, D10 and D27. D03/D12/D13 settings and
   D09/D10 swap-target-leaf options are dropped.
-- D01 needs a KDE convergence fullscreen focus fence; close and the other
-  approved defaults are verification-only. [Gap assessment](../backlog.md).
+- D27 (a) / REQ-ACT-01 / R-ACT-01 is user-decided: default `Mark urgent only`
+  for unsolicited activation from an existing hidden-workspace window, with
+  no workspace switch or focus change. This reverses tentative `Switch and
+  focus`: Hyprland, i3 and sway (all Tier 1) agree against COSMIC under the
+  tier rule. Fullscreen/game-focused requests are urgency-only in both modes.
+  Post-0.1 `Activation request` setting: `Mark urgent only` (default; tooltip
+  Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad); the
+  alternative qualifies via COSMIC Tier 1 plus xmonad Tier 2. Functional
+  names/options; WM names only in tooltips. INS-07 no-steal covers tiling
+  admission into inactive workspaces only, not existing-window activation;
+  explicit Alt+Tab/taskbar selection is separate. [Decision](../decisions.md#activation-requests).
+- D27 KDE first step: trace KWin's native Wayland xdg-activation and Xwayland
+  behavior under default focus-stealing prevention. Attention-only means
+  verification-only; native workspace/focus switching would make urgency-only
+  an override conflicting with D01 native activation ownership, so stop and
+  return to the user before code. Otherwise request/urgency handling needs code
+  per the gap row; selection supplies no native evidence.
+- D01 needs a KDE convergence fullscreen focus fence; close and the
+  D03/D09/D10/D12/D13 defaults are verification-only. [Gap assessment](../backlog.md).
   Native outcomes remain TBD; selection does not establish implementation.
-- Remaining tentative units: D16, D22, D23, D25, D26, D27, D28;
+- Remaining tentative units: D16, D22, D23, D25, D26, D28;
   Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
@@ -81,8 +97,6 @@ unchanged; source observations are not marked as approved.
   intent cannot currently restore; no implicit namespace expansion. Tentative
   fallback (b) applies to that leg unless the user authorizes a later design.
   Settings/gaps and host re-observe legs verify.
-- D27 default Switch and focus; fullscreen/game-focused urgency-only guard.
-  Tentative setting retained; rescoring under the tier rule pending.
 - D28 (a) keep the KDE fullscreen-send refusal as a listed 0.1 known issue
   pending the G-D2 native observation; no carry selected.
 - Proposal B tentatively adopted as the original 53-check classification
@@ -97,6 +111,9 @@ unchanged; source observations are not marked as approved.
   D03 proposed After focused plus per-leg re-application; D09/D10/D12/D13
   proposed the now-approved defaults. Native activation ownership supersedes
   D01's forced-retention wording.
+- D27 proposed default Switch and focus plus a fullscreen/game-focused
+  urgency-only guard. User 2026-10-12 selected Mark urgent only after tier
+  rescoring, retaining the guard in both modes and a two-option post-0.1 setting.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -355,6 +372,11 @@ await approval. Current implementation status is in the spec/backlog.
 | RST-02 ([spec](../spec/functional-spec.md#L340)) | gaps/settings restore; host-max TBD | TBD (no established end-to-end outcome; consensus C audit-only supersedes the stale spec Table-U label - spec not edited here) | C audit-only; [R-RST-02](../spec/reference-outcomes/restart-persistence.md#r-rst-02-end-session-restore-session-and-apps) | (a) restore owned state (gaps/settings/intent), re-observe host set/membership/max, no invented layout restore; (b) hold end-session restore past 0.1 as listed known limitation (needs approval). -> (a) with (b) as explicit fallback; no reference support invented either way |
 
 ### D27 activation request (ACT-01)
+
+User 2026-10-12 selected option (a) with the tier-rescored default Mark urgent
+only, both-modes gaming guard and two-option post-0.1 setting; see
+[current approval and KDE trace-first condition](#user-decisions-2026-10-12).
+The original proposal/tally below is historical, not the current default.
 
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|

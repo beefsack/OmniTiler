@@ -70,12 +70,12 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Remaining seven 0.1 triage units and Proposal B / N1-N4 are tentative,
+- Remaining six 0.1 triage units and Proposal B / N1-N4 are tentative,
   pending user review (updated 2026-10-12). Proposed classification: 39
   must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
   Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  The seven units are PROVISIONAL, distinct from batch 1 and the six units
+  The six units are PROVISIONAL, distinct from batch 1 and the seven units
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
   native evidence and implementation gaps remain separate.
 
@@ -165,9 +165,9 @@ platform API behavior.
   leaves Settings/Revert available; recovery after removing core requires
   reinstalling core. [Delivery](changes/archive/release-0.1-core-settings.md).
 - User decision 2026-10-12: P2 `0.1 triage settings follow-up` contains
-  D09 and D10 only as approved settings, with names/options/WM tooltips under
-  [Move commands](#move-layout-and-output-commands). D27 remains tentative,
-  pending user review and rescoring under the [tier rule](#reference-tiers).
+  approved post-0.1 D09, D10 and D27 settings, with names/options/WM tooltips
+  under [Move commands](#move-layout-and-output-commands) and
+  [Activation requests](#activation-requests).
   D03, D12 and D13 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
@@ -763,7 +763,7 @@ platform API behavior.
 ## Reference Matrix and Spec Authority
 
 - Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
-  D10, D12 and D13 are now user-decided 2026-10-12.
+  D10, D12, D13 and D27 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of
@@ -1792,6 +1792,35 @@ platform API behavior.
   correlation fence; distinct unauthorized observability is intentionally
   not selected.
 
+## Activation Requests
+
+- User decision 2026-10-12, D27 / REQ-ACT-01 / R-ACT-01, option (a): an
+  unsolicited activation request from an existing window on a hidden workspace
+  defaults to `Mark urgent only`: mark urgent without switching workspace or
+  changing focus. This reverses the tentative `Switch and focus` default:
+  Hyprland, i3 and sway (all Tier 1) agree against COSMIC under the
+  [reference tier rule](#reference-tiers).
+- While a fullscreen/game window is focused, requests are urgency-only in
+  both modes. Explicit user selection (Alt+Tab/taskbar) is separate from
+  unsolicited activation. INS-07 no-steal covers tiling admission into
+  inactive workspaces only; it is not an existing-window activation rule.
+- Post-0.1 setting `Activation request` has two options: `Mark urgent only`
+  (default; tooltip Hyprland, i3, sway) and `Switch and focus` (tooltip
+  COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad
+  (Tier 2). Functional names/options; WM names only in tooltips. Retained in
+  P2 `0.1 triage settings follow-up` alongside D09/D10.
+- KDE first step: trace native KWin behavior for Wayland xdg-activation and
+  Xwayland requests under default focus-stealing prevention. If KWin already
+  only marks attention, this is verification-only. If KWin natively switches
+  workspace or focuses, implementing urgency-only would override KWin and
+  conflict with [D01 native activation ownership](#placement-minimums-and-startup-adoption):
+  stop and return to the user before writing code. Otherwise request/urgency
+  handling needs code per the [gap assessment](backlog.md); no native outcome
+  or implementation is established by this selection.
+- [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12),
+  [requirement](spec/functional-spec.md#activation),
+  [reference evidence](spec/reference-outcomes/activation.md#r-act-01-hidden-window-sends-an-unsolicited-activation-request).
+
 ## Window State: Float, Sticky, Maximize, Fullscreen
 
 - Tentative 2026-10-11, pending user review: D22(a) ratio-preserved
@@ -1799,10 +1828,9 @@ platform API behavior.
   corroboration disclosed. D23(a) releases minimized allocation with stored
   old-slot/no-focus-steal restore; sole minimize retains workspace, focus none.
   Windows retains allocation, an observed divergence from this tentative target.
-  D27 Switch and focus defaults to urgency-only while fullscreen/game-focused;
-  its setting is deferred. D28(a) lists KDE fullscreen-send refusal as a 0.1
+  D28(a) lists KDE fullscreen-send refusal as a 0.1
   known issue pending observation, without altering approved Windows carry.
-  [D22/D23/D27/D28](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+  [D22/D23/D28](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
 - R-FLT-12: focusing an overlapping float raises it; no project lower verb for now (User 2026-10-10, 0.1 triage D20).
