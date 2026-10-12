@@ -24,16 +24,18 @@ decisions of 2026-09-24 are under
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
     verb for now), D21, D24; 16 rows approved. User 2026-10-12 also approved
     D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 (seventeen rows).
-    All 28 triage units decided; only Proposal B / N1-N4 classification pending.
+    All 28 units and Proposal B / N1-N4 classification approved; triage review complete.
     Spec now 138 NORMATIVE / 0 PROVISIONAL / 28 OPEN; verification and
     implementation gaps are below.
-  - Proposal B classification (39 must-pass / 12 known-issue-allowed / 2
-    Windows-release) and new must-pass checks N1-N4 are tentative, awaiting
-    user review. Original 53-check classification remains separate from the
-    four additions (57 total: 43 must-pass / 12 known-issue-allowed / 2 Windows).
+  - Proposal B classification approved exactly User 2026-10-12: original 53
+    checks = 39 must-pass / 12 known-issue-allowed / 2 Windows-release; N1-N4
+    add four must-pass checks, total 57 = 43 / 12 / 2. K checks: 5, 24, 26,
+    29, 35, 36, 37, 38, 40, 41, 52, 53; W checks: 3, 4; all others M.
     D28 KDE fullscreen-send acceptance including a real game is explicitly
     must-pass (User 2026-10-12), a sub-leg of the reference-comparison check;
-    the rest of the classification remains pending.
+    counted once within original check 1. Multi-output must-pass checks require
+    a two-output setup (VM or hardware) and must pass before 0.1 can ship.
+    Implementation and native/live acceptance remain pending.
   - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
     contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23/D25/D28
     have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
@@ -3030,24 +3032,27 @@ Unprioritised ideas; not scheduled.
 Items below retain their stated pending scope; dated user confirmations are
 recorded separately from unexercised legs. Reference-WM checks test other compositors.
 
-- Proposal B classification: tentative, awaiting user review
-  (2026-10-11): original 53 checks = 39 must-pass / 12 known-issue-allowed /
-  2 Windows-release. Per-check classifications remain in
+- Proposal B classification approved exactly User 2026-10-12: original 53
+  checks = 39 must-pass / 12 known-issue-allowed / 2 Windows-release. K checks:
+  5, 24, 26, 29, 35, 36, 37, 38, 40, 41, 52, 53; W checks: 3, 4; all others M.
+  Per-check classifications are in
   [Proposal B](research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2).
   Known-issue-allowed still requires a listed issue and no crash/silent tiling
-  stop. Four new user-owned must-pass checks below are additional legs, not
-  a new release gate; original inventory plus these = 43/12/2. Batch-1 extras
-  remain separate. No live mutation authorization is granted by this queue.
+  stop. Four approved new must-pass checks below give 57 total = 43/12/2;
+  D28's native fullscreen-send/game journey stays a must-pass sub-leg of check 1,
+  not a separately counted check. Multi-output must-pass checks require a
+  two-output setup (VM or hardware) and must pass before 0.1 can ship.
+  Batch-1 extras remain outside this inventory; native/live evidence is pending.
 
-  | Check | Tentative classification | Action | Expected result |
+  | Check | Approved classification | Action | Expected result |
   | --- | --- | --- | --- |
   | N1 effect-absent | must-pass | Start with effect missing/disabled; disable mid-session; remove optional effect package; exercise failed endpoint with existing resilience check 28. | Tiling keeps working throughout; KWin stable. |
   | N2 external config | must-pass | Change host configuration outside Settings, then reconfigure. | Validated reconcile without unintended writes; Fix/Revert ownership respected; no crash or silent stop. |
   | N3 sleep + gaming | must-pass | Sleep/wake with fullscreen game and tiled session. | Game unimpeded; tiling recovers; no stuck holds. |
   | N4 scaling + overlays | must-pass | Change scale with maximized/fullscreen/fixed-float windows. | Overlays retained; no fullscreen geometry writes; quiet settlement. |
 
-- 0.1 triage batch 1 (User 2026-10-10; user-owned KDE checks, no Proposal B
-  classification user-approved; tentative classification above). These are
+- 0.1 triage batch 1 (User 2026-10-10; native KDE checks outside the original
+  Proposal B inventory). These are
   verification-only, with D06/D17
   observe-first; record actual outcomes in existing
   [reference scenarios](spec/reference-outcomes.md), leaving unsupported legs TBD.
@@ -3558,11 +3563,6 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   and recommendation for hidden-workspace Alt+Tab/taskbar semantics plus
   taskbar workspace indicator (parity 10), as a Windows release gate.
   [note](research/windows-port/alt-tab-hidden-workspaces.md)
-- 0.1 Proposal B / N1-N4 live-check classification remains tentative,
-  awaiting user review; all 28 triage units are decided. Review
-  [tentative decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
-  M39/K12/W2 plus N1-N4 classification. D28's fullscreen-send/game live check
-  is explicitly must-pass (User 2026-10-12).
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
   requirement rows; no PROVISIONAL requirement rows remain. KDE fullscreen

@@ -1,10 +1,15 @@
 # Release 0.1 Triage Decisions And Reference Tiers
 
+Status: complete - triage review recorded 2026-10-12; implementation
+and native acceptance remain in the [backlog](../../backlog.md).
+
 ## Goal And Scope
 
 - Record the user's 2026-10-12 reference tiers and D01, D03, D09, D10,
   D12, D13, D16, D22, D23, D25, D26, D27 and D28 selections in decisions, triage,
   spec, outcome cells and backlog.
+- Record the user's 2026-10-12 approval of Proposal B and N1-N4, completing
+  triage review with the multi-output acceptance prerequisite.
 - Preserve historical proposals and untested outcomes; update the Windows
   handoff and existing shortcut-dialog parity item.
 - Documentation only; D01's KDE fullscreen focus fence remains code work,
@@ -16,7 +21,10 @@
 ## Acceptance And Approach
 
 - Promote seventeen selected requirement rows to NORMATIVE with decision links.
-- All 28 triage units decided; Proposal B / N1-N4 classification remains pending.
+- All 28 triage units and Proposal B / N1-N4 classification user-approved.
+  Verify original 53 M39/K12/W2 plus four M additions = 57 M43/K12/W2;
+  D28 remains a check-1 sub-leg, counted once. Multi-output must-pass checks
+  require a two-output setup (VM or hardware) before 0.1 ships.
   P2 settings stay limited to approved D09, D10 and D27.
 - Reconcile current summaries and indexes, verify changed local links and
   anchors, and run `git diff --check`.
@@ -102,6 +110,15 @@
   beyond native workspace movement. Native fullscreen send including a real
   game is must-pass; stop and return to user if native observation shows KWin
   cannot carry without dropping/corrupting fullscreen.
+- [Proposal B](../../research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2)
+  and N1-N4 approved exactly User 2026-10-12: original 53 checks M39/K12/W2;
+  K = 5, 24, 26, 29, 35, 36, 37, 38, 40, 41, 52, 53; W = 3, 4; all others M.
+  Four new must-pass N1-N4 give 57 total = M43/K12/W2. D28 native fullscreen
+  send with a real game stays within original check 1, counted once.
+- Multi-output must-pass checks require a two-output setup (VM or hardware)
+  and must pass before 0.1 ships. Known-issue-allowed checks require a listed
+  issue and no crash or silent tiling stop; Windows-release checks are outside
+  KDE 0.1. Classification approval is separate from native/live evidence.
 
 ## Evidence And Outcome
 
@@ -114,8 +131,8 @@
   (137 NORMATIVE / 1 PROVISIONAL / 28 OPEN). D28 promotes stable REQ-MAX-09b
   from refusal hold to KDE carry, yielding verified current totals of
   138 NORMATIVE / 0 PROVISIONAL / 28 OPEN (166 rows).
-- All 28 triage units decided; only Proposal B / N1-N4 classification remains
-  pending. Historical options/tallies and unsupported reference
+- All 28 triage units and Proposal B / N1-N4 classification approved; triage
+  review complete. Historical options/tallies and unsupported reference
   outcomes are retained; approvals and their rationale are recorded.
 - Windows item 22 updated for approved defaults/settings and native foreground
   considerations; existing shortcut-dialog parity item updated to P2, with
@@ -141,7 +158,12 @@
   backlog gap/implementation queue, Windows handoff and Pending live checks.
   Refusal removed from listed known issues. Proposal B check 1 now includes
   the approved must-pass fullscreen/game sub-leg; original 53-check tally
-  and proposed M39/K12/W2 counts unchanged. No product code or live tests.
+  and then-proposed M39/K12/W2 counts unchanged. No product code or live tests.
+- Proposal B approval recorded in triage, release gate, Pending live checks,
+  decisions and spec summary. Exact K/W IDs, four new M checks, M43/K12/W2
+  total and D28 single counting verified; generic two-output prerequisite
+  recorded. This change record is complete and archived; remaining delivery
+  and native/live checks stay in the backlog.
 - Requirement counts, changed local link targets/anchors, ASCII additions,
   requirement table structure, unchanged foreign reference outcomes and
   `git diff --check` passed. Native outcomes remain TBD; D01's fullscreen focus

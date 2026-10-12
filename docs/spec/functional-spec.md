@@ -69,7 +69,8 @@ float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
 behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
 D13, D16, D22, D23, D25, D26, D27 and D28 (seventeen formerly PROVISIONAL rows across thirteen units);
-all 28 triage units decided, only Proposal B / N1-N4 classification pending.
+all 28 triage units and Proposal B / N1-N4 classification approved User 2026-10-12.
+Triage review complete; implementation and native/live acceptance remain pending.
 D09/D10/D27 settings are post-0.1; D16, D22, D23, D25 and D28 have no setting. D16 tier-rescored
 under reference tiers (Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
 Tier 2 retain float against COSMIC fresh re-tile); D22 tier basis is COSMIC observed

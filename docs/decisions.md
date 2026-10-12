@@ -53,7 +53,7 @@ platform API behavior.
     may ship as listed known issues provided none crashes or silently stops
     tiling. No separate dogfood period.
   - Classification of pending live checks into must-pass versus
-    known-issue-allowed is a separate follow-up piece.
+    known-issue-allowed was a separate follow-up piece, approved 2026-10-12 below.
   - The original 60 OPEN requirements get a separate triage into 0.1-relevant
     (touches a must-pass core journey, or current behavior is undefined,
     refusal or surprising) versus post-0.1. Only the 0.1-relevant set is
@@ -70,11 +70,17 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- All 28 0.1 triage units are user-decided. Proposal B / N1-N4 is tentative,
-  pending user review (updated 2026-10-12). Proposed classification: 39
-  must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
-  Recorded in
-  [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User approval 2026-10-12: all 28 triage units and Proposal B / N1-N4
+  classification are decided; triage review complete. Original 53 checks:
+  39 must-pass / 12 known-issue-allowed / 2 Windows-release. K checks:
+  5, 24, 26, 29, 35, 36, 37, 38, 40, 41, 52, 53; W checks: 3, 4; all others M.
+  N1-N4 add four must-pass checks: total 57 = 43 / 12 / 2.
+  [Approved inventory](research/release-0.1-triage.md#proposal-b---pending-live-checks-53-top-level-m39--k12--w2).
+  D28 native fullscreen send including a real game is must-pass within check 1,
+  counted once. Multi-output must-pass checks require a two-output setup
+  (VM or hardware) and must pass before 0.1 ships. Known-issue-allowed checks
+  may ship only with a listed issue and no crash or silent tiling stop;
+  Windows-release checks remain outside KDE 0.1.
   Batch 1 and the thirteen units
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12)
   are NORMATIVE;

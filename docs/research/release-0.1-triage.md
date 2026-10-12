@@ -1,7 +1,8 @@
-# Release 0.1 triage - user decisions and pending live-check classification
+# Release 0.1 triage - user decisions and approved live-check classification
 
 Status: all 28 units approved by User (15 on 2026-10-10, thirteen on 2026-10-12);
-only Proposal B / N1-N4 classification remains pending user review.
+Proposal B / N1-N4 classification approved 2026-10-12. Triage review complete;
+implementation and native/live acceptance remain pending.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -30,10 +31,11 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   distinct ([batch-1 work](../backlog.md)).
 - At that review, remaining 13 units pending: D01, D03, D09, D10, D12, D13,
   D16, D22, D23, D25, D26, D27, D28. Later selections are recorded below.
-- Proposal B live-check classification (39 must-pass / 12 known-issue-allowed /
-  2 Windows-release) and proposed new checks N1-N4 remain pending approval.
+- At that review, Proposal B live-check classification (39 must-pass / 12
+  known-issue-allowed / 2 Windows-release) and new checks N1-N4 were pending;
+  User 2026-10-12 approved them below.
   Batch-1 verification checks added to the backlog are outside that original
-  53-check inventory and are not classified by this unapproved proposal.
+  53-check inventory and are not included in its approved 57-check tally.
 - Historical meta-question to raise with D03: do new settings (D03, D09, D10, D12,
   D13, D27) ship in 0.1, or ship defaults-only with settings later?
 
@@ -132,20 +134,31 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   including a real game is must-pass; if native observation during implementation
   shows KWin cannot carry without dropping/corrupting fullscreen, stop and
   return to the user. [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
-- No triage units remain tentative; only Proposal B / N1-N4 classification
-  remains pending. D28's fullscreen-send live check is explicitly must-pass.
+- User 2026-10-12 approved Proposal B exactly as listed: original 53 checks
+  M39 / K12 / W2. K checks: 5, 24, 26, 29, 35, 36, 37, 38, 40, 41, 52, 53;
+  W checks: 3, 4; all other original checks are M. N1-N4 are four new
+  must-pass checks, giving 57 total = 43 must-pass / 12 known-issue-allowed /
+  2 Windows-release. D28 native fullscreen send with a real game remains
+  must-pass within original check 1, not an additional counted check.
+- Multi-output must-pass checks require a two-output setup (VM or hardware)
+  and passing native/live acceptance before 0.1 can ship. This is a generic
+  test condition, separate from implementation/offline evidence.
+- Triage review is complete: all units and live-check classifications approved;
+  implementation and native/live checks remain in the backlog.
 
-## Tentative decisions 2026-10-11 (pending user review)
+<a id="tentative-decisions-2026-10-11-pending-user-review"></a>
+## Historical tentative decisions 2026-10-11 (review complete)
 
-No triage units remain tentative. Only Proposal B / N1-N4 classification
-remains pending, distinct from the approved D28 must-pass fullscreen-send check.
+No triage units or Proposal B / N1-N4 classifications remain tentative.
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- Proposal B tentatively adopted as the original 53-check classification
+- Proposal B was tentatively adopted as the original 53-check classification
   M39/K12/W2 plus N1-N4 as M checks. With distinct N1-N4 additions the
   inventory is 57 checks => M43/K12/W2. Batch-1 verification extras remain
   outside that original inventory and are not classified here.
+  User 2026-10-12 approved the listed classification and N1-N4 exactly;
+  see [current approval](#user-decisions-2026-10-12).
 
 ### Historical tentative selections superseded 2026-10-12
 
@@ -534,8 +547,11 @@ crash or silent tiling stop; W = Windows-release, outside KDE 0.1.
 
 D28 (b), User 2026-10-12, adds the KDE fullscreen-send/game leg to check 1 as
 an explicitly approved must-pass check; refusal is not a listed known issue.
-The rest of Proposal B / N1-N4 classification remains pending. This sub-leg
-does not change the original 53-check tally or proposed M39/K12/W2 counts.
+User 2026-10-12 approved Proposal B exactly as listed: M39/K12/W2, plus
+N1-N4 as four M checks = 57 total, M43/K12/W2. D28 is counted within check 1,
+not again. Multi-output must-pass checks require a two-output setup (VM or
+hardware) and must pass before 0.1 can ship. Classification approval does
+not establish completed native/live evidence.
 
 | # | Check ([backlog](../backlog.md#pending-live-checks)) | V | One-line reason |
 |---|---|---|---|
@@ -609,7 +625,8 @@ P1 in gate; mainstream packaging P1 per 2026-10-10 scope.
 | tiling/focus/move/ws/multi/border/shortcuts/settings/restart | 1, 2, 6-8, 10-23, 25-27, 31-33, 39, 42-49 | covered |
 | FX missing/failed/removed effect | 28 (failed endpoints), 53 (partial) | missing-at-startup, explicit disable, package remove untested: N1 |
 
-Proposed new checks (user-owned; additional legs, not a new release gate):
+Approved must-pass additions N1-N4 (User 2026-10-12; four checks in the
+57-check inventory):
 
 | Check | Verdict | Action | Expected result |
 |---|---|---|---|
