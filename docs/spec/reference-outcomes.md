@@ -142,9 +142,10 @@ No target writes while fullscreen. [Offline record](../changes/archive/windows-f
   Existing ordinary B9 native evidence remains distinct from physical item-11
   acceptance.
 
-### Triage discriminators 2026-10-11 (D01, D27 selected 2026-10-12)
+### Triage discriminators 2026-10-11 (D01, D26, D27 selected 2026-10-12)
 
-User 2026-10-12 selected D01 and D27; D26 remains tentative, pending user review.
+User 2026-10-12 selected D01, D26 (b) and D27; D26 lists cross-login
+intentional-float memory loss as a 0.1 known limitation.
 Ours and reference/native outcome cells below are TBD; no native
 evidence is fabricated. These rows discriminate focus/visibility and store
 lifetime, linking existing fixtures:
@@ -158,7 +159,7 @@ lifetime, linking existing fixtures:
 | Maximize admission plus overlay close (D01) | Maximize focused B over survivor A; open C; close B | Selected: structural admission behind retained maximize state/slot, host-owned activation/focus/stacking; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | Ours native TBD; reference sources in R-INS-06/R-CLOSE-05, native cleanup TBD |
 | Fullscreen admission plus overlay close (D01) | Fullscreen focused B over survivor A; open C; close B | Selected: native activation ownership, no B fullscreen geometry writes or tiler focus actuation while fullscreen is involved; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | KDE fullscreen focus fence needs code; native outcomes TBD; reference sources in R-INS-06/R-CLOSE-05 |
 | Ordinary activation vs fullscreen/game-focused guard (D27) | From an ordinary hidden window, send one unsolicited activation; repeat while a fullscreen/game window is focused | Selected: default Mark urgent only (urgency only, no switch or focus); post-0.1 Activation request setting with Switch and focus alternative; fullscreen/game-focused guard urgency-only in both modes ([decision](../decisions.md#activation-requests), User 2026-10-12) | Ours TBD; first trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention. Attention-only means verification-only; native workspace/focus switching conflicts with D01 if overridden, so stop for user review before code. Otherwise request/urgency handling needs code per gap table. Reference evidence in R-ACT-01; unsupported/native outcomes TBD |
-| New-login intent scoped-store vs fallback (D26) | End session; start a new login and observe owned intent | Session-scoped store (REQ-RST-01d) cannot restore cross-login intent with no implicit namespace expansion; tentative fallback (b) listed known limitation applies to that leg unless a later design is authorized | Ours TBD; ref/native TBD beyond linked R-RST-02 |
+| New-login intentional-float memory (D26) | End session; start a new login and observe owned intent | Selected (b) listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d; reopened apps have new identities. Revisit after 0.1 with shared restart store ([decision](../decisions.md#restart-persistence), User 2026-10-12) | Ours TBD; ref/native TBD beyond linked R-RST-02; native dogfood/live check pending, verification-only |
 
 ### D01 native-activation discriminators (selected 2026-10-12)
 

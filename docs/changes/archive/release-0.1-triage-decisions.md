@@ -3,7 +3,8 @@
 ## Goal And Scope
 
 - Record the user's 2026-10-12 reference tiers and D01, D03, D09, D10,
-  D12, D13, D16, D22, D23 and D27 selections in decisions, triage, spec, outcome cells and backlog.
+  D12, D13, D16, D22, D23, D25, D26 and D27 selections in decisions, triage,
+  spec, outcome cells and backlog.
 - Preserve historical proposals and untested outcomes; update the Windows
   handoff and existing shortcut-dialog parity item.
 - Documentation only; D01's KDE fullscreen focus fence remains code work,
@@ -13,8 +14,8 @@
 
 ## Acceptance And Approach
 
-- Promote fourteen selected requirement rows to NORMATIVE with decision links.
-- Retain three pending units (D25, D26, D28) plus Proposal B /
+- Promote sixteen selected requirement rows to NORMATIVE with decision links.
+- Retain D28 as the only pending unit plus Proposal B /
   N1-N4; limit the P2 settings list to approved D09, D10 and D27.
 - Reconcile current summaries and indexes, verify changed local links and
   anchors, and run `git diff --check`.
@@ -72,6 +73,20 @@
   allocation is divergence to change, not an approved exception. Native
   outcomes remain TBD; earlier restore "no focus steal" wording is superseded
   by no OmniTiler focus write with host focus left native.
+- [D25 owner restart](../../decisions.md#restart-persistence), approved option
+  (a): keep host workspace set; re-observe membership, no moves; restore focus
+  only where provable; rebuild layout by re-adoption, no saved-layout restore;
+  intentional floats stay floating via existing restart store. No setting.
+  Tier basis: i3 Tier 1 plus xmonad Tier 2 membership/focus, set kept 5/8,
+  COSMIC no counterpart, no evidenced alternative. Verification-only.
+- [D26 end-session restore](../../decisions.md#restart-persistence), approved
+  option (b): restore persisted owned gaps/settings; re-observe host workspace
+  set/membership/maximize; no invented layout restore. Listed 0.1 known
+  limitation: intentional-float memory does not survive logout/login under
+  unchanged REQ-RST-01d lifetime; reopened apps have new identities. Cross-login
+  memory revisited after 0.1 with shared restart store. No code; verification-only.
+- Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
+  selection is not native acceptance.
 
 ## Evidence And Outcome
 
@@ -79,11 +94,12 @@
   28 OPEN). D27 approval promoted REQ-ACT-01 (130 NORMATIVE / 8 PROVISIONAL /
   28 OPEN). D16 approval promoted REQ-WS-05 (131 NORMATIVE / 7 PROVISIONAL /
   28 OPEN). D22 approval promoted REQ-FLT-03 (132 NORMATIVE / 6 PROVISIONAL /
-  28 OPEN). D23 approval promotes REQ-MNZ-01/02/03, yielding verified current
-  totals of 135 NORMATIVE / 3 PROVISIONAL / 28 OPEN (166 rows).
-- Three pending units (D25, D26, D28) and Proposal B / N1-N4
+  28 OPEN). D23 approval promoted REQ-MNZ-01/02/03 (135 NORMATIVE /
+  3 PROVISIONAL / 28 OPEN). D25/D26 promote REQ-RST-01c/REQ-RST-02, yielding
+  verified current totals of 137 NORMATIVE / 1 PROVISIONAL / 28 OPEN (166 rows).
+- D28 only and Proposal B / N1-N4
   remain tentative. Historical options/tallies and unsupported reference
-  outcomes are retained; D16/D22/D23/D27 tier rationale and user approval are recorded.
+  outcomes are retained; approvals and their rationale are recorded.
 - Windows item 22 updated for approved defaults/settings and native foreground
   considerations; existing shortcut-dialog parity item updated to P2, with
   KDE user live review linked. No duplicate item added.
@@ -99,7 +115,12 @@
   targets, backlog approved gap/implementation queue and Windows item 22.
   Existing minimize/restore/sole-window scenarios discriminate the selected
   behavior; no product code or live tests.
+- D25/D26 updated in decisions, triage, spec/counts/index, restart Ours targets,
+  backlog approved verification rows/queue, Windows items 8/22 and known
+  limitations. Existing R-RST-01/02 and the new-login discriminator are reused;
+  no product code or live tests. Membership/set/focus native acceptance remains
+  pending, distinct from existing float/sticky identity evidence.
 - Requirement counts, changed local link targets/anchors, ASCII additions,
-  unchanged foreign activation/workspace/floating/minimize outcomes and
+  requirement table structure, unchanged foreign reference outcomes and
   `git diff --check` passed. Native outcomes remain TBD; D01's fullscreen focus
   fence remains implementation work.

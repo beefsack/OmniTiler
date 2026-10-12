@@ -23,16 +23,16 @@ decisions of 2026-09-24 are under
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
     verb for now), D21, D24; 16 rows approved. User 2026-10-12 also approved
-    D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 (fourteen rows).
-    Remaining tentative units: D25, D26, D28.
-    Spec now 135 NORMATIVE / 3 PROVISIONAL / 28 OPEN; verification and
+    D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27 (sixteen rows).
+    Remaining tentative unit: D28.
+    Spec now 137 NORMATIVE / 1 PROVISIONAL / 28 OPEN; verification and
     implementation gaps are below.
   - Proposal B classification (39 must-pass / 12 known-issue-allowed / 2
     Windows-release) and new must-pass checks N1-N4 are tentative, awaiting
     user review. Original 53-check classification remains separate from the
     four additions (57 total: 43 must-pass / 12 known-issue-allowed / 2 Windows).
   - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
-    contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23
+    contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23/D25
     have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
   - P1 0.1 packaging: offline recipes/archive/tag workflows and
     Revert-before-removal guidance prepared 2026-10-11; distro offline
@@ -108,8 +108,8 @@ decisions of 2026-09-24 are under
     exclusion is the approved divergence; D17 remembered focus and D19 hide/
     reveal are already wired. No new Windows-specific handoff item warranted.
 - P1 | 0.1 triage decisions - implementation and verification (KDE/shared) |
-  D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 approved by User 2026-10-12; the other units
-  remain tentative. Historical gap assessment at `fafcd31`, D01 refined by
+  D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27 approved by User
+  2026-10-12; D28 remains tentative. Historical gap assessment at `fafcd31`, D01 refined by
   [research](research/d01-fullscreen-admission.md) at `01be284`; no behavior
   implemented by this record. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
   Verification-only means a matching mechanism exists, not native acceptance.
@@ -128,8 +128,8 @@ decisions of 2026-09-24 are under
   | D16 | approved; needs code, native roundtrip first | Floating send retains float and size on arrival, destination tiles untouched, for follow/stay and numbered/relative sends; no setting. Core exceptions refuse `NotTiled` and KDE refuses non-tiled movers (`crates/tiler-core/src/session/ops/workspace.rs:131-136`, `kwin/src/workspace-send-adapter.ts:1701,1841` at `fafcd31`); float-preserving transfer absent, unlike floating-workspace boundary sends. Verify untested native WS1 -> WS2 -> WS1 roundtrip first, then shared core first (serves Windows), then KDE adapter; Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D23 | approved; needs code, shared core first | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Valid minimize omission can collapse/reflow (`kwin/src/plan-adapter-entry.ts:2003,3876`, `crates/tiler-core/src/session/world.rs:850-868` at `fafcd31`, revision-bound), but old-slot storage/no-focus-write restore absent and sole null-focus can fail closed. Shared core first, then KDE; Windows retained allocation is divergence to change later via item 22, not an approved exception. Native journeys pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
-  | D25 | verification-only | Generic fresh snapshot/rebuild/converge re-observes host membership and provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799`); native orderly restart pending, no layout restore. |
-  | D26 | needs code for full (a); fallback (b) and remaining legs verification-only | Gaps/settings reload exists (`kwin/src/domain-gap.ts:90`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). List that known limitation under tentative (b); no expansion of approved REQ-RST-01d lifetime. |
+  | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
+  | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D27 | approved; KDE trace-first, then verification-only or contingent code | Default Mark urgent only, no workspace/focus change; fullscreen/game-focused guard urgency-only in both modes. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin and conflict with D01, so stop and return to the user before code. Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
   | D28 | verification-only | Existing fullscreen-send refusal matches the tentative hold (`kwin/src/workspace-send-adapter.ts:488-490`, `kwin/src/workspace-send-adapter-entry.ts:459-471`); G-D2 native observation pending. |
 
@@ -146,6 +146,13 @@ decisions of 2026-09-24 are under
     sole-minimize null focus. Acceptance: old-slot restore with no OmniTiler
     focus write (host handles restore focus); sole minimize retains workspace,
     focus none, stored slot. No setting; Windows adapter follows in item 22.
+  - D25/D26 verification queue: native dogfood/live checks will assess orderly
+    owner restart with apps alive and end-session restore. D25 keeps host set,
+    observes membership without moves, restores only provable focus and
+    intentional floats via existing store; re-adoption rebuilds layout. D26
+    reloads persisted gaps/settings and observes host set/membership/maximize;
+    cross-login intentional-float loss is the approved 0.1 limitation.
+    Verification-only; no saved-layout restore or D26 code work.
   - Windows impact: shared core fixes serve Windows; Linux work owns KDE/core,
     Windows adapter/settings/native work goes to handoff item 22 below.
     D23 Windows retained allocation is a divergence to change to the approved
@@ -720,7 +727,7 @@ decisions of 2026-09-24 are under
   | 5 | Unparked parity-queue multi-output foundation after single-output items 1-4, 6, 7, 9-11, 13, 15, 17, 18, 20 (18 before 10/11), then handoff items 5, 12, 14, 16, 19 | Per-monitor current-view observation, membership/geometry/visibility/recovery fences first; user live checks need a multi-output Windows setup. Offline topology/Engine tests can precede that. |
   | 6 | Keyboard resize R-RSZ-01 (parity d) | Independent; needs fresh Alt-capable trigger plus dedicated resize intent. No dependency on items 1-5 except shared modifier routing. |
   | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
-  | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below), REQ-RST-01c is PROVISIONAL tentative D25 pending user review. Coordinate D7 membership with item 13. |
+  | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below). REQ-RST-01c is NORMATIVE D25 (User 2026-10-12), membership/set/focus native acceptance pending. Coordinate D7 membership with item 13. |
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
   | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
@@ -1700,7 +1707,8 @@ decisions of 2026-09-24 are under
   - Item 8: R-RST-01/R-FLT-05 delivered 2026-10-11, base `e48aed1` plus
     delivery commit ([record](changes/archive/windows-restart-intent.md));
     native gates and owned-helper double-restart/sticky-scope journeys passed.
-    Physical/app dogfood pending; post-restart un-stick TBD, REQ-RST-01c OPEN;
+    Physical/app dogfood pending; post-restart un-stick TBD;
+    REQ-RST-01c NORMATIVE D25, membership/set/focus native acceptance pending;
     D7 fixed-origin marker now delivered offline with item 13
     ([record](changes/archive/windows-fixed-size-admission.md)). Stronger names and exact-owner float/sticky
     CLI are tentative, pending user review. Historical checklist follows.
@@ -1721,7 +1729,8 @@ decisions of 2026-09-24 are under
     restores classification only, never authorizes writes or recovery
     ownership; written after native success, removed on unfloat/sticky-off/
     re-float; unreadable means no intent, logged. No separate store file and
-    no recovery-ledger change. Post-restart un-stick and REQ-RST-01c stay TBD/OPEN.
+    no recovery-ledger change. Post-restart un-stick remains TBD;
+    REQ-RST-01c is NORMATIVE D25 with native acceptance pending.
 
     #### Item 8 behavior and reference seams
 
@@ -1732,7 +1741,8 @@ decisions of 2026-09-24 are under
       runtime store resets while settings persist without layout restore) and
       [matrix](spec/reference-outcomes/floating.md) R-FLT-05. Sticky stays
       sticky and intentional floats survive owner restart. REQ-RST-01c
-      membership/set/focus remains OPEN. KDE's selected private runtime store
+      membership/set/focus is NORMATIVE D25, native acceptance pending.
+      KDE's selected private runtime store
       is not a selected Windows storage scheme.
     - Core seams (verified 2026-10-08 at `db31234`): `core/session.rs:546`
       `exceptions` map, `core/session/world.rs:433` `is_exception` (Engine
@@ -1792,7 +1802,7 @@ decisions of 2026-09-24 are under
       `visible_lifetime_ok`, `reused_hwnd_stale`) and independent recovery.
       Do not authorize writes from a marker or guessed HWND alone.
       Mechanism: prefixed on-window markers (user decision 2026-10-10 above).
-      REQ-RST-01c membership/set/focus remains OPEN. Existing
+      REQ-RST-01c membership/set/focus is NORMATIVE D25, native acceptance pending. Existing
       live sticky toggles retain the two pre-sticky origins; the exact
       post-restart un-stick result is not selected by R-FLT-05 and stays TBD.
       No new shortcut/catalog row or preset is selected.
@@ -1813,9 +1823,10 @@ decisions of 2026-09-24 are under
       restart owner; both sticky windows remain sticky and the ordinary
       float remains floating. Observe and record un-stick results for both
       origins without selecting a post-restart outcome; membership/focus
-      stays TBD under REQ-RST-01c. No layout-restoration claim.
+      native acceptance stays TBD under NORMATIVE REQ-RST-01c (D25).
+      No saved-layout restoration.
     - DoD: sticky/intentional floats survive restart without identity
-      guessing; undecided post-restart outcomes remain TBD; REQ-RST-01c OPEN;
+      guessing; post-restart un-stick remains TBD; REQ-RST-01c native acceptance pending;
       matrix `R-RST-01` and `R-FLT-05` Ours Windows cells updated with
       dated offline evidence, native journey TBD.
 
@@ -2707,7 +2718,8 @@ decisions of 2026-09-24 are under
     physical/restart/preset checks remain below.
 
   - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-12).
-    D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 are approved; other units remain tentative.
+    D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27 are approved;
+    D28 remains tentative.
     Shared core delivery serves Windows; Windows adapter/native work follows
     the shared contract. D01's fullscreen focus fence is shared/KDE
     focus-path work; Windows has its own foreground rules. Consider native
@@ -2729,9 +2741,16 @@ decisions of 2026-09-24 are under
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.
     KDE's KWin trace-first condition is host-specific, not Windows evidence.
-    D25 restart and D26 owned-state/host re-observation need Windows
-    journey assessment with item 8; no cross-login identity recovery inferred
-    from on-window markers. D28 KDE refusal does not alter item 9 Windows carry.
+    Approved D25 (a) keeps host workspace set, re-observes membership without
+    moves, restores focus only where provable, rebuilds layout via re-adoption
+    and keeps intentional floats via existing restart store; no setting.
+    Approved D26 (b) restores persisted owned gaps/settings and re-observes host
+    set/membership/maximize. Intentional-float memory is lost on logout/login
+    (reopened apps new identities), a listed 0.1 known limitation; revisit
+    cross-login memory after 0.1 with shared restart store. Native dogfood/live
+    checks will assess both with item 8; membership/set/focus acceptance remains
+    pending, no saved-layout restore or new cross-login identity recovery.
+    D28 KDE refusal does not alter item 9 Windows carry.
     Post-0.1 schema/UI/live wiring follows P2 `0.1 triage settings follow-up`:
     approved D09/D10/D27 two-option settings, including D27's default Mark urgent
     only / Switch and focus. See [current settings scope](decisions.md#settings-tray-and-first-run).
@@ -2770,9 +2789,9 @@ decisions of 2026-09-24 are under
   [grouped open-decisions index](spec/functional-spec.md#open-index).
   Current review 2026-10-12: all nine prior provisional requirements ratified;
   B9 no-refusal sub-leg selected; R-LAY-04 parked OPEN; G-06 makes
-  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; ten units / fourteen rows
-  approved 2026-10-12, three units awaiting review. Totals: 135 NORMATIVE,
-  28 OPEN, 3 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
+  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; twelve units / sixteen rows
+  approved 2026-10-12, D28 awaiting review. Totals: 137 NORMATIVE,
+  28 OPEN, 1 PROVISIONAL requirement row; 156 scenarios including R-WS-27 with TBD
   reference outcomes. Platform implementation/native gaps stay
   distinct from selected intent; Windows control cells now cite Windows evidence.
   [Cross-WM consensus analysis](research/reference-wm-consensus.md) Table A
@@ -3522,15 +3541,15 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   and recommendation for hidden-workspace Alt+Tab/taskbar semantics plus
   taskbar workspace indicator (parity 10), as a Windows release gate.
   [note](research/windows-port/alt-tab-hidden-workspaces.md)
-- 0.1 remaining three triage units (D25, D26, D28)
+- 0.1 remaining triage unit D28
   plus Proposal B / N1-N4: tentative, awaiting user review, distinct from
-  batch 1 and the ten units approved 2026-10-12. Review
+  batch 1 and the twelve units approved 2026-10-12. Review
   [tentative decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
-  especially D26 cross-login fallback, D28 listed refusal,
+  especially D28 listed refusal,
   and M39/K12/W2 plus N1-N4 classification.
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
-  requirement rows; 3 PROVISIONAL rows await tentative-decision review.
+  requirement rows; 1 PROVISIONAL row awaits tentative-decision review.
   KDE fullscreen carry policy remains observe-first, distinct from tentative
   REQ-MAX-09b refusal hold.
   Design questions remain distinct from delivered implementation/live gaps.
@@ -3540,10 +3559,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 - Tentative 0.1 known issue D28 (pending user review): KDE fullscreen sends
   currently refuse; hold fail-closed until G-D2 native observation, with no
   KDE carry policy inferred. Approved Windows carry remains handoff item 9.
-- Tentative D26(b) known limitation (pending user review): cross-login intent
-  restoration is unavailable under the approved session-bus/KWin-owner runtime
-  store lifetime. Restore/re-read gaps/settings and re-observe host state;
-  no layout restore or expanded identity namespace is selected.
+- Approved 0.1 known limitation D26(b) (User 2026-10-12): intentional-float
+  memory does not survive logout/login under unchanged session-scoped
+  REQ-RST-01d lifetime; reopened apps have new identities. Restore persisted
+  gaps/settings and re-observe host set/membership/maximize; no invented layout
+  restore. Verification-only; native dogfood/live checks will assess. Cross-login
+  memory is revisited after 0.1 with the shared restart store.
 - Borderless-windowed fullscreen heuristic (born-fullscreen option 3):
   watched, conditional (user 2026-10-10). The user watches for borderless
   games during dogfooding; pursue only if games arrive non-fullscreen.

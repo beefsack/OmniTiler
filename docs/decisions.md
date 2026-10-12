@@ -70,12 +70,12 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Remaining three 0.1 triage units and Proposal B / N1-N4 are tentative,
+- Remaining 0.1 triage unit D28 and Proposal B / N1-N4 are tentative,
   pending user review (updated 2026-10-12). Proposed classification: 39
   must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
   Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  The three units are PROVISIONAL, distinct from batch 1 and the ten units
+  D28 is PROVISIONAL, distinct from batch 1 and the twelve units
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
   native evidence and implementation gaps remain separate.
 
@@ -168,7 +168,7 @@ platform API behavior.
   approved post-0.1 D09, D10 and D27 settings, with names/options/WM tooltips
   under [Move commands](#move-layout-and-output-commands) and
   [Activation requests](#activation-requests).
-  D03, D12, D13, D16, D22 and D23 have no setting.
+  D03, D12, D13, D16, D22, D23 and D25 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
     mutates shortcuts or host keys, and installation/startup never mutates
@@ -706,13 +706,26 @@ platform API behavior.
     plus runtime delivery ([record](changes/archive/windows-fixed-size-admission.md));
     native checks of every user-selected choice remain pending.
 ## Restart Persistence
-- Tentative 2026-10-11, pending user review: D25(a) re-observes
-  membership, keeps the host-owned set and restores only provable focus.
-  D26(a) restores owned gaps/settings/intent and re-observes host set/membership/
-  maximize; D26(b) permits a listed known limitation if nontrivial. Cross-login
-  intent restoration already exceeds approved D1 lifetime below; disclose that
-  leg under tentative (b), without expanding the namespace or selecting layout
-  restoration. [D25/D26](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+
+- User decision 2026-10-12, D25 / REQ-RST-01c / R-RST-01, option (a):
+  orderly owner restart with apps kept alive retains the host-owned workspace
+  set; re-observe membership from the host without moves; restore focus only
+  where provable. Layout is rebuilt by re-adoption, with no saved-layout
+  restore; intentional floats stay floating via the existing restart store.
+  No setting. [Tier basis](#reference-tiers): i3 (Tier 1) plus xmonad (Tier 2)
+  support membership/focus, set kept 5/8; COSMIC has no counterpart, no
+  evidenced alternative. Verification-only; native outcomes remain pending.
+- User decision 2026-10-12, D26 / REQ-RST-02 / R-RST-02, option (b):
+  end-session restore reloads already-persisted OmniTiler gaps/settings and
+  re-observes host workspace set/membership/maximize state; no invented layout
+  restore. Listed 0.1 known limitation: intentional-float memory does not
+  survive logout/login. Reopened apps have new identities; approved
+  session-scoped REQ-RST-01d lifetime remains unchanged. Cross-login memory is
+  revisited after 0.1 with the shared restart store. No code; verification-only.
+- Native dogfood/live checks will assess D25/D26, per the user's 2026-10-12
+  decision. Selection does not establish native acceptance.
+  [Approvals](research/release-0.1-triage.md#user-decisions-2026-10-12),
+  [gap assessment](backlog.md).
 - User decisions 2026-10-08 (intentional-float restart R-RST-01 D1-D4,
   outcomes decided, delivered offline; native checks pending):
   - D1 storage: Rust planner-owned private runtime store under
@@ -754,8 +767,9 @@ platform API behavior.
   never authorizes writes or recovery ownership; written after native
   success, removed on unfloat/sticky-off/re-float; unreadable means no
   intent, logged. No separate store file and no recovery-ledger change.
-  REQ-RST-01c membership/set/focus is now PROVISIONAL tentative D25 pending
-  user review; post-restart un-stick remains TBD.
+  REQ-RST-01c membership/set/focus is NORMATIVE D25 (User 2026-10-12),
+  verification-only with native acceptance pending; post-restart un-stick
+  remains TBD.
 - Windows item 8 delivery 2026-10-11 ([record](changes/archive/windows-restart-intent.md)):
   intentional float and both sticky origins survive owner restart, verified
   offline and on owned native helpers through two graceful restarts and scope
@@ -768,13 +782,14 @@ platform API behavior.
   and test-needed exact-owner `workspace --float` / `--sticky` controls reuse
   normal dispatch. Native `GetPropW` NULL cannot distinguish every unreadable
   read from absence; it means no intent, while invalid nonzero values diagnose.
-  REQ-RST-01c is unresolved OPEN for this delivery; tentative D25 remains
-  pending review. Post-restart un-stick remains TBD.
+  REQ-RST-01c is NORMATIVE D25 (User 2026-10-12); this delivery establishes
+  float/sticky identity, with membership/set/focus native acceptance pending.
+  Post-restart un-stick remains TBD.
 
 ## Reference Matrix and Spec Authority
 
 - Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
-  D10, D12, D13, D16, D22, D23 and D27 are now user-decided 2026-10-12.
+  D10, D12, D13, D16, D22, D23, D25, D26 and D27 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of

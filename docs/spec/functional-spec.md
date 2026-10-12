@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 135 NORMATIVE, 28 OPEN, 3 PROVISIONAL requirement rows (166 rows);
+Draft totals: 137 NORMATIVE, 28 OPEN, 1 PROVISIONAL (166 requirement rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -68,10 +68,9 @@ User 2026-10-10 0.1 triage batch 1 selects 15 units / 16 rows
 float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
 behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
-D13, D16, D22, D23 and D27 (fourteen formerly PROVISIONAL rows across ten units);
-three rows/units D25, D26, D28 remain pending review, including KDE
-fullscreen-send refusal REQ-MAX-09b.
-D09/D10/D27 settings are post-0.1; D16, D22 and D23 have no setting. D16 tier-rescored
+D13, D16, D22, D23, D25, D26 and D27 (sixteen formerly PROVISIONAL rows across twelve units);
+D28 / REQ-MAX-09b KDE fullscreen-send refusal remains pending review.
+D09/D10/D27 settings are post-0.1; D16, D22, D23 and D25 have no setting. D16 tier-rescored
 under reference tiers (Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
 Tier 2 retain float against COSMIC fresh re-tile); D22 tier basis is COSMIC observed
 (not source-proven) plus i3/sway Tier 1 agree with no evidenced alternative,
@@ -85,7 +84,9 @@ not an approved exception. KDE/shared-core old-slot storage, no-focus-write
 restore and sole-minimize null focus need code per gap assessment at `fafcd31`,
 shared core first.
 [Gap assessment](../backlog.md) separates code work from verification-only
-defaults and D26's cross-login known-limitation fallback.
+defaults; selected D26 (b) lists cross-login intentional-float memory loss as a
+0.1 known limitation. Native dogfood/live checks will assess D25/D26;
+outcomes remain pending.
 Windows wiring and item-2/3/4/5/Q4 native journeys
 pending. The macOS
 adapter gap counts once platform-wide. Coverage: 156 scenarios (R-WS-27 added User decision 2026-10-09), 24 Table A predicates.
@@ -380,11 +381,11 @@ Hooks: V-FIRST-RUN, V-TRAY-LIFECYCLE, V-SHORTCUT-CONFLICT. PROVISIONAL indexing,
 | REQ-CTL-07 | [R-CTL-07](reference-outcomes/restart-persistence.md#r-ctl-07-revert-restores-defaults) revert restores defaults | Force clears any holder after listing+confirmation with durable cleared-ID list; Revert restores defaults (KDE-only) | current: contract | n/a (KDE-only) | applicability OPEN | NORMATIVE | [decisions](../decisions.md#shortcuts-conflicts-and-presets) Force/Revert contract 2026-09-26 |
 | REQ-RST-01 | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) owner restart, apps kept | Keep intentional floats floating across owner restart; Windows sticky floats stay sticky (REQ-FLT-05). Supersedes session-local reset; no layout restoration selected | implemented offline with a healthy intent store; NORMATIVE D4 (User 2026-10-08) degraded restart can lose intent; native TBD ([record](../changes/archive/kde-intentional-float-restart.md)) | delivered 2026-10-11, base e48aed1 + delivery commit: marker-based intentional/sticky identity, two graceful restarts agent-observed on owned helpers; no layout-restoration claim ([record](../changes/archive/windows-restart-intent.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [backlog](../backlog.md) Table A R-RST-01 accepted 2026-10-07; [decisions](../decisions.md#restart-persistence) R-RST-01 2026-10-07 |
 | REQ-RST-01b | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) float identity | Preserve intentional-float identity across owner restart, including Windows sticky state; fixed-window user tile overrides persist in the same store; automatic fixed origin is recomputed, not persisted | implemented offline: intentional identity and fixed-window tile overrides hydrate before planning; automatic origin recomputed; native TBD ([D7 record](../changes/archive/fixed-window-tile-override-restart.md)) | intentional/sticky identity delivered 2026-10-11 with owned-helper restart evidence ([item 8](../changes/archive/windows-restart-intent.md)); fixed-origin tile markers/automatic recomputation delivered offline with item 13, held visible/retained hydration tested, ordinary restart TBD ([item 13](../changes/archive/windows-fixed-size-admission.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [backlog](../backlog.md) Table A R-RST-01 accepted 2026-10-07; [decisions](../decisions.md#restart-persistence) R-RST-01 / R-FLT-05; [fixed-size admission](../decisions.md#fixed-size-admission) D7 / restart D1-D4 User 2026-10-08 |
-| REQ-RST-01c | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) set/membership/focus | PROVISIONAL tentative (a) re-observe membership, keep the host-owned set, restore focus only where provable; no layout restore | current: verification-only via generic live snapshot/rebuild/converge and observed-focus; native journey pending | OPEN/TBD: item 8 proves float/sticky identity only; membership/set/focus acceptance remains unresolved | provisional target; implementation absent | PROVISIONAL | [tentative D25](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-RST-01c | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) set/membership/focus | Selected User 2026-10-12 D25 (a): host workspace set kept; membership re-observed from host with no moves; focus restored only where provable; layout rebuilt via re-adoption with no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Tier basis: i3 Tier 1 plus xmonad Tier 2 for membership/focus, set kept 5/8, COSMIC no counterpart, no evidenced alternative | current: selected target verification-only via generic live snapshot/rebuild/converge and observed-focus; native journey pending, verification-only | current: TBD; item 8 proves float/sticky identity only; membership/set/focus native journey pending, verification-only | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#restart-persistence) User 2026-10-12, D25 (a) |
 | REQ-RST-01d | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive), [R-RST-02](reference-outcomes/restart-persistence.md#r-rst-02-end-session-restore-session-and-apps) intent-store lifetime | KDE D1: private, atomic, bounded, versioned runtime membership store under `$XDG_RUNTIME_DIR`; no symlink following; bus ID + KWin owner namespace; no new-login/KWin adoption; architecture boundary: planner gains a session-scoped runtime store for this store only | implemented offline: file gates and private-bus fixtures; native/logout TBD | namespaced window-lifetime markers delivered 2026-10-11, base e48aed1 + delivery commit; admission fences/recycled-HWND refusal tested, no store file/recovery ownership ([record](../changes/archive/windows-restart-intent.md)) | applicability OPEN; adapter absent | NORMATIVE | [decisions](../decisions.md#restart-persistence) intentional-float restart D1, User 2026-10-08 |
 | REQ-RST-01e | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive), [R-RST-04](reference-outcomes/restart-persistence.md#r-rst-04-distinguish-intentional-and-automatic-fixed-floats-on-restart) settlement/origin | KDE D3/D7: persist settled explicit float/fixed-window tile intent after native success; clear float on unfloat, tile on re-float, both on verified close; prune only complete live inventory; separate storage ACK; automatic fixed origin recomputed, not persisted | implemented offline: real Planner commands, close/bootstrap races, scoped relocation, full-snapshot ordering and fixed-window tile lifecycle; native TBD ([D7 record](../changes/archive/fixed-window-tile-override-restart.md)) | item 8 float/sticky settlement unchanged; item 13 success-only tile marker requires known automatic fixed origin, generic repeated unfloats write none; re-float clears, properties die on close, lifetime-bound prune/hint-loss controls pass offline; native journey TBD ([record](../changes/archive/windows-fixed-size-admission.md)) | applicability OPEN; adapter absent | NORMATIVE | [decisions](../decisions.md#restart-persistence) intentional-float restart D3, User 2026-10-08; fixed-size admission D7 User 2026-10-08 |
 | REQ-RST-01f | [R-RST-01](reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) store availability | KDE D4: missing empty; unreadable/corrupt/mismatch diagnosed degraded empty; write failure keeps local intent/native state and next settled membership update rewrites full set; no hold/retry machinery | implemented offline: degraded reads, transport deadlines, failed write then full rewrite; native corruption journey TBD | delivered 2026-10-11, base e48aed1 + delivery commit: missing/NULL no intent, invalid nonzero diagnosed; native GetProp NULL cannot distinguish every unreadable read; degraded writes keep local/native state ([record](../changes/archive/windows-restart-intent.md)) | applicability OPEN; adapter absent | NORMATIVE | [decisions](../decisions.md#restart-persistence) intentional-float restart D4, User 2026-10-08 |
-| REQ-RST-02 | [R-RST-02](reference-outcomes/restart-persistence.md#r-rst-02-end-session-restore-session-and-apps) session restore | PROVISIONAL tentative (a) restore owned gaps/settings/intent and re-observe host set/membership/max with no invented layout restore; fallback (b) is a listed known limitation if nontrivial. Cross-login intent cannot currently restore under approved session-scoped REQ-RST-01d (no new-login/KWin hydration, no implicit namespace expansion); tentative fallback (b) applies to that leg unless the user authorizes a later design | NEEDS CODE for full (a); existing gaps/settings/re-observe legs verify; no scoped-store change | current: TBD | provisional target; implementation absent | PROVISIONAL | [tentative D26](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-RST-02 | [R-RST-02](reference-outcomes/restart-persistence.md#r-rst-02-end-session-restore-session-and-apps) session restore | Selected User 2026-10-12 D26 (b): restore owned already-persisted gaps/settings; re-observe host workspace set/membership/maximize state; no invented layout restore. Listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d lifetime; reopened apps are new identities. Cross-login memory revisit post-0.1 with shared restart store; no setting; verification-only | current: selected target verification-only via existing gaps/settings/re-observe legs; native dogfood/live check pending; no scoped-store change | current: TBD; native dogfood/live check pending, verification-only | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#restart-persistence) User 2026-10-12, D26 (b) |
 | REQ-RST-03 | [R-RST-03](reference-outcomes/restart-persistence.md#r-rst-03-native-float-geometry-changes-while-the-owner-is-stopped) float-frame drift | KDE D2: recover membership only with current live frame; no saved geometry/focus/stacking/pre-sticky history and no hydration writes to recovered floats; sticky semantics unchanged | implemented offline: counted production-entry setters and real Planner; native stopped-owner journey TBD | drift outcome TBD; handoff item 8 design seam | applicability OPEN; adapter absent | NORMATIVE | [decisions](../decisions.md#restart-persistence) intentional-float restart D2, User 2026-10-08 |
 
 <a id="special"></a>
@@ -560,17 +561,15 @@ marked with literal status in-row):
 - [Close](#close): none.
 - [Output](#output): none.
 - [Activation](#activation): REQ-ACT-02.
-- [Restart/control](#startup): none (REQ-RST-01c tentative D25 and REQ-RST-02 tentative D26 are PROVISIONAL).
+- [Restart/control](#startup): none.
 - [Special](#special): REQ-SPC-02, REQ-SPC-03, REQ-SPC-05b.
   Q2 edge clauses REQ-SPC-04a..h are NORMATIVE (User 2026-10-08), not OPEN rows.
 - [Columns](#columns): REQ-COL-01, REQ-COL-02, REQ-COL-03, REQ-COL-04, REQ-COL-05, REQ-COL-06, REQ-COL-07, REQ-COL-08, REQ-COL-09, REQ-COL-10.
 
-PROVISIONAL discussion group: 3 rows, all
+PROVISIONAL discussion group: 1 row,
 [tentative 2026-10-11](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
 pending user review; no implementation authorization:
 
-- [Restart](#startup): REQ-RST-01c (D25); REQ-RST-02 (D26, fallback (b) and
-  REQ-RST-01d cross-login limitation).
 - [Maximize](#maximize): REQ-MAX-09b (D28 KDE fullscreen-send refusal).
 
 All nine prior PROVISIONAL rows remain

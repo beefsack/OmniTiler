@@ -1,7 +1,7 @@
 # Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 25 units approved by User (15 on 2026-10-10, ten on 2026-10-12);
-three units plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: 27 units approved by User (15 on 2026-10-10, twelve on 2026-10-12);
+D28 only plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes fourteen rows: current spec
-135 NORMATIVE / 3 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes sixteen rows: current spec
+137 NORMATIVE / 1 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -101,7 +101,22 @@ REQ-MAX-09b. User 2026-10-12 promotes fourteen rows: current spec
   and sole-minimize null focus. Shared core first; Windows follows later via
   handoff item 22. Current Windows retained allocation is a divergence to be
   changed, not an approved exception; approval establishes no native evidence.
-- Remaining tentative units: D25, D26, D28;
+- D25 (a) / REQ-RST-01c is user-decided: orderly owner restart with apps
+  alive keeps the host-owned workspace set; re-observes membership from the
+  host (no moves); restores focus only where provable. Layout rebuilt by
+  re-adoption, no saved-layout restore; intentional floats stay floating via
+  the existing restart store. No setting. Tier basis: i3 Tier 1 plus xmonad
+  Tier 2 membership/focus, set kept 5/8, COSMIC no counterpart, no evidenced
+  alternative. Verification-only.
+- D26 (b) / REQ-RST-02 is user-decided: restore already-persisted owned
+  gaps/settings; re-observe host workspace set/membership/maximize state;
+  no invented layout restore. Listed 0.1 known limitation: intentional-float
+  memory does not survive logout/login under unchanged REQ-RST-01d lifetime;
+  reopened apps have new identities. Revisit cross-login memory after 0.1 with
+  the shared restart store. No code; verification-only.
+- Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
+  outcomes remain pending. [Decisions](../decisions.md#restart-persistence).
+- Remaining tentative unit: D28;
   Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
@@ -111,15 +126,6 @@ No selection is approved until user review. No implementation is authorized by t
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D25 (a) re-observe membership, keep the host-owned set, restore focus only
-  where provable.
-- D26 (a) restore owned gaps/settings/intent and re-observe host
-  set/membership/max; fallback (b) is a listed known limitation if the full
-  leg proves nontrivial. Cross-login disclosure: approved REQ-RST-01d
-  session-scoped store prohibits new-login/KWin hydration, so cross-login
-  intent cannot currently restore; no implicit namespace expansion. Tentative
-  fallback (b) applies to that leg unless the user authorizes a later design.
-  Settings/gaps and host re-observe legs verify.
 - D28 (a) keep the KDE fullscreen-send refusal as a listed 0.1 known issue
   pending the G-D2 native observation; no carry selected.
 - Proposal B tentatively adopted as the original 53-check classification
@@ -148,6 +154,10 @@ unchanged; source observations are not marked as approved.
   Restore means no OmniTiler focus write, with host restore focus left native;
   minimize uses MRU focus, sole minimize retains workspace/focus none and
   stored slot. Windows retained allocation must change; no setting.
+- D25 (a) is approved, verification-only. D26's tentative (a) intent restore
+  is superseded by approved (b): persisted gaps/settings and host re-observation,
+  with cross-login intentional-float loss a listed 0.1 known limitation.
+  Native dogfood/live checks will assess both; no saved-layout restore.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -411,11 +421,21 @@ observations and the original proposal/tallies below remain evidence/history.
 
 ### D25 restart set/membership/focus (RST-01c)
 
+User 2026-10-12 selected option (a), verification-only, no setting; see
+[current approval and native dogfood/live assessment](#user-decisions-2026-10-12).
+The original proposal/tally below is historical; actual native outcomes stay TBD.
+
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|
 | RST-01c ([spec](../spec/functional-spec.md#L336)) | set/membership/focus TBD | n/a (host set persists independently) | U: set 5/8, membership 3/3ev (B/I/X), focus 3/3ev (B/I/X), scoped; [R-RST-01](../spec/reference-outcomes/restart-persistence.md#r-rst-01-orderly-owner-restart-with-apps-kept-alive) | (a) re-observe membership, keep host-owned set, restore focus where provable; (b) persist/restore layouts (rejected: never selected). -> (a) bounded 0.1 position; legs need Ours journey checks |
 
 ### D26 session restore (RST-02)
+
+User 2026-10-12 selected option (b), verification-only: persisted gaps/settings
+and host re-observation, with cross-login intentional-float memory loss a listed
+0.1 known limitation under unchanged REQ-RST-01d lifetime. Revisit after 0.1
+with the shared restart store. See [current approval](#user-decisions-2026-10-12).
+The original (a) recommendation/fallback wording below is historical.
 
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|
