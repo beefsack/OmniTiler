@@ -133,7 +133,7 @@ decisions of 2026-09-24 are under
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
   | D16 | delivered offline; native verification pending | Ordinary intentional floats transfer slotless deferred retaining float and size, follow/stay and numbered/relative, no source/destination tile reflow; sticky, maximized-float, floating+fullscreen and automatic-fixed floats still refuse. Shared `deferred_send_eligible` D16 arm plus KDE adapter/real-observer gates ([record](changes/d16-floating-transfer.md)). Native WS1 -> WS2 -> WS1 roundtrip pending. Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
-  | D23 | approved; needs code, shared core first | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Valid minimize omission can collapse/reflow (`kwin/src/plan-adapter-entry.ts:2003,3876`, `crates/tiler-core/src/session/world.rs:850-868` at `fafcd31`, revision-bound), but old-slot storage/no-focus-write restore absent and sole null-focus can fail closed. Shared core first, then KDE; Windows retained allocation is divergence to change later via item 22, not an approved exception. Native journeys pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
+  | D23 | delivered offline; native journeys pending | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Shared-core MinimizedSlot plus engine retire fix and KDE omission/null-focus wiring delivered offline; regressions pass. Native journeys pending. Windows adapter follows in item 22. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D27 | approved; KDE trace-first, then verification-only or contingent code | Default Mark urgent only, no workspace/focus change; fullscreen/game-focused guard urgency-only in both modes. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin and conflict with D01, so stop and return to the user before code. Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
@@ -156,9 +156,9 @@ decisions of 2026-09-24 are under
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
-  - D23 implementation queue: shared-core stored restore slots and minimize
-    release/reflow/MRU first, then KDE observation/restore wiring including
-    sole-minimize null focus. Acceptance: old-slot restore with no OmniTiler
+  - D23 delivered offline, pending native: shared-core stored restore slots with minimize
+    release/reflow/MRU plus KDE observation/restore wiring including
+    sole-minimize null focus delivered offline; regressions pass. Acceptance: old-slot restore with no OmniTiler
     focus write (host handles restore focus); sole minimize retains workspace,
     focus none, stored slot. No setting; Windows adapter follows in item 22.
   - D25/D26 verification queue: native dogfood/live checks will assess orderly
@@ -2789,9 +2789,39 @@ decisions of 2026-09-24 are under
     Untested native WS1 -> WS2 -> WS1 roundtrip is verified first.
     Approved D23 follows later after shared-core delivery: replace retained
     Windows minimize allocation (divergence, not an approved exception) with
-    release/reflow/MRU and stored old slot. Restore to stored slot with no
-    OmniTiler focus write, leaving host restore focus native; sole minimize
-    retains workspace, focus none, stored slot. No setting. Approved D27
+    release/reflow/MRU and stored old slot. Current retained-allocation sites:
+    `crates/tiler-windows/src/tiling_sys.rs` `observe_window` (iconic returns
+    `ObserveFailure::Known(.., SkipReason::Minimized)` with no frame),
+    `TileLoop::observe` (that arm pushes a frameless `RetainedRow { rect: None,
+    .. }`), `assemble_domain_rows` (the retained-occupancy lane rides the
+    `member_rects` last-known rect as a tiled `floating: false` `MemberView`),
+    `crates/tiler-windows/src/workspace_owner.rs` `domain_rows` (keeps the
+    observation complete so Engine membership survives), and
+    `workspace_close_cleanup` (retained members stay enumerated; only absent
+    HWNDs drop). Adapter steps: (1) drop the minimized window from the carried
+    Engine observation on minimize so `Session::converge_observation` releases
+    its leaf via `remove_leaf_from_tree`, reflows survivors, resolves focus via
+    retained/MRU-or-none, and stores the `MinimizedSlot` (homing domain + leaf
+    id + pre-minimize tree); (2) on native restore, re-carry it purely tiled so
+    convergence validates the slot (domain exists, homing matches, leaf unused,
+    `remove_leaf(stored) == current`) and reinstates the old tree, else falls
+    through to fresh admission with the slot consumed; (3) never write focus on
+    restore - the core keeps pre-restore MRU focus (the converge focus arm skips
+    `observed_focus` when it names a just-restored window), leaving host restore
+    focus native; (4) sole-minimize keeps the workspace via
+    `Engine::committed_session_is_empty` honoring `has_live_minimized_slot`,
+    with focus none; (5) native reveal stays in
+    `crates/tiler-windows/src/model.rs` the `show.minimized` lane
+    (nonactivating restore), unchanged. Shared contract: `MinimizedSlot` docs
+    plus `minimized_slot`/`minimized_count`/`has_live_minimized_slot` accessors
+    (`crates/tiler-core/src/session/world.rs`), slot-aware
+    `committed_session_is_empty` and the disjoint-reseed guard treating a stored
+    slot as known (`crates/tiler-core/src/engine.rs`). Test hooks: portable
+    Engine minimize/restore convergence tests run on Linux
+    (`crates/tiler-core/tests/minimize_restore.rs`); `cfg(windows)` owner wiring
+    (`observe`/`assemble_domain_rows`/`domain_rows` carry) needs Windows CI plus
+    user-owned native minimize/restore journeys (tile, minimize, sibling reflow,
+    restore to old slot, sole-minimize empty workspace). No setting. Approved D27
     needs supported activation-request/urgency observation, default Mark urgent
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.
