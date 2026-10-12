@@ -94,6 +94,23 @@ jobs:
       - name: Native settings tests
         run: nix build -j1 --cores 4 .#checks.x86_64-linux.native-settings-tests --print-build-logs
 
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          name: devenv
+      - name: Install devenv
+        run: nix profile add github:cachix/devenv/v2.4.0
+      - name: License gate
+        run: devenv shell --impure -- cargo deny --locked check licenses
+      - name: Dependency bans gate
+        run: devenv shell --impure -- cargo deny --locked check bans
+      - name: Sources gate
+        run: devenv shell --impure -- cargo deny --locked check sources
+
   windows:
     runs-on: windows-latest
     defaults:

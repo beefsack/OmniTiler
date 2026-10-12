@@ -75,7 +75,9 @@ decisions of 2026-09-24 are under
   [Research and dependency inventory](research/licensing.md). Remaining:
   reload the development environment, run the tool-based audit and add a CI
   license gate; complete native linked-library/closure checks per distro and
-  vendored attribution inventory.
+  vendored attribution inventory. Audit gate delivered 2026-10-12: deny
+  licenses/bans/sources pass, CI gate added, per-distro closure and vendored
+  inventory recorded, no THIRD-PARTY file required; [evidence](changes/archive/licensing-audit-gate.md).
 - P1 | OBS release handoff redesign | Pre-0.1 research: narrow OBS tokens
   (`runservice`, `rebuild`, `release`, `workflow`) cannot upload new sources or
   checksums. Compare full-credential `osc commit` from GitHub Actions with

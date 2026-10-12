@@ -227,6 +227,103 @@ The script `kwin/metadata.json` and both Settings KCM metadata files
 (`activeborderconfig_module.json`, `scriptconfig_module.json`) declare MIT.
 Only `kwin/native-effect/metadata.json` declares GPL-2.0-or-later.
 
+### 4.4 Per-distro native closure (source-based, no installs)
+
+Source scope: `packaging/debian/control`, `packaging/debian/rules`,
+`packaging/debian/copyright`, `packaging/rpm/omnitiler.spec`,
+`packaging/arch/PKGBUILD`, `packaging/arch/.SRCINFO`,
+`packaging/obs/_service`, plus the link lines in section 4
+(`kwin/native-effect/CMakeLists.txt`: effect 148-159, KCMs 181-191
+and 206-216; `find_package` floors: ECM 6.24.0, KWin 6.6.0) and the
+license facts in sections 4.1-4.3 and 6. No distro packages were
+installed; no live builds were run. Anything not determinable from
+these sources is marked pending. Transitive `.so` closure per distro
+(`readelf -d NEEDED` on distro-built artifacts) is pending for all
+four targets.
+
+Recipe-to-link mapping used below:
+
+- KWin effect link (`KWin::kwin`): Debian `kwin-dev` / `libkwin6`;
+  RPM `cmake(KWin)` plus `kwin6` (SUSE family) / `kwin` (Fedora family);
+  Arch `kwin` (headers ship in the main package, no `-dev` split).
+- Qt6 link (`Qt6::Core/Gui/DBus/Widgets`): Debian `qt6-base-dev`;
+  RPM `qt6-base-devel` (SUSE) / `qt6-qtbase-devel` (Fedora);
+  Arch `qt6-base`.
+- KF6 link (`ConfigCore/ConfigGui/ColorScheme/CoreAddons/I18n/KCMUtils/WidgetsAddons`):
+  Debian `libkf6config-dev`, `libkf6coreaddons-dev`, `libkf6kcmutils-dev`,
+  `libkf6i18n-dev`, `libkf6widgetsaddons-dev`, `libkf6colorscheme-dev`;
+  RPM `kf6-kconfig-devel`, `kf6-kcoreaddons-devel`, `kf6-kcmutils-devel`,
+  `kf6-ki18n-devel`, `kf6-kwidgetsaddons-devel`, `kf6-kcolorscheme-devel`;
+  Arch `kconfig`, `kcoreaddons`, `kcmutils`, `ki18n`, `kwidgetsaddons`,
+  `kcolorscheme`.
+- C/C++ runtime (`libc/libm/libdl/pthreads` via `Threads` +
+  `${CMAKE_DL_LIBS}`; `libstdc++/libgcc_s` via the C++ toolchain):
+  Debian `build-essential` toolchain plus `libc`/`libstdc++` via
+  `${shlibs:Depends}`; RPM `gcc-c++` plus RPM auto-requires;
+  Arch `gcc` plus pacman dependencies. License facts from section 4.3.
+- Build-only, not linked into the plugins: `extra-cmake-modules`
+  (all targets), `cmake`, `cargo`/`rustc`/`rust`, `pkg-config`,
+  `libdrm-dev`/`libdrm-devel`, `libepoxy-devel`, Qt Quick/Declarative
+  devel (`qt6-quick-devel` / `qt6-qtdeclarative-devel`, pulled by KWin
+  CMake config), Vulkan headers (`vulkan-headers`), `systemd-rpm-macros`,
+  `hicolor-icon-theme`, `kf6-kwindowsystem-devel` (RPM only, no matching
+  `KF6::WindowSystem` link line), D-Bus helpers (`libkf6config-bin`,
+  `libkf6kcmutils-bin`, `kf6-kconfig`, `kf6-kcmutils`, `kcmshell6` /
+  `kwriteconfig6` flows).
+
+Declared version pins and floors (source-evidenced):
+
+| Target | KWin floor/pin | ECM floor | Qt/KF6 floor |
+| --- | --- | --- | --- |
+| Debian (`packaging/debian/control`, `rules`) | `kwin-dev (>= 4:6.6)` build; core runtime `kwin-wayland (>= 4:6.6) \| kwin-x11 (>= 4:6.6)`; effect runtime exact `libkwin6 (= ${kwin:Version})` recorded at build time from the installed `libkwin6` including Debian revision; CMake `find_package(KWin 6.6.0 REQUIRED)` fails closed below 6.6 | `extra-cmake-modules (>= 6.24)` | None beyond the CMake `find_package` names; `noeffect` profile drops `kwin-dev`, colorscheme, libdrm, pkg-config for settings-only core builds |
+| RPM (`packaging/rpm/omnitiler.spec`) | `cmake(KWin)` virtual (provider name split noted in recipe); runtime unversioned `kwin6` / `kwin`; effect `Requires` deliberately unversioned so upgrades are never held back; build is always the full native tree | `kf6-extra-cmake-modules >= 6.24.0` (SUSE) / `extra-cmake-modules >= 6.24.0` (Fedora) | None named; full-tree build keeps the 6.24.0 floor |
+| Arch (`packaging/arch/PKGBUILD`, `.SRCINFO`) | `kwin` makedepends and runtime depends, both deliberately unversioned; effect `depends=("omnitiler=$pkgver-$pkgrel" kwin)` | `extra-cmake-modules` unversioned | All Qt/KF6 makedepends and core depends unversioned |
+| OBS (`packaging/obs/_service`) | No separate dependency list; consumes the release tarball that the RPM recipe builds, so the RPM row applies; KWin upgrade policy and manual source update are documented in the recipe and `docs/installation.md` | Same as RPM | Same as RPM |
+
+Per-distro linked-library license and compatibility. License column
+reuses the section 4.1/4.2/4.3 source facts; it is not a per-distro
+re-audit of upstream sources. Compatibility column is against the
+section 8 decision (effect GPL-2.0-or-later, KCMs MIT).
+
+| Distro target | Linked library (distro package) | License (source) | Compatible with effect GPL-2.0-or-later / KCM MIT |
+| --- | --- | --- | --- |
+| Debian | KWin (`kwin-dev` / `libkwin6`) | GPL-2.0-or-later (section 4.1 headers) | Yes: same license family for the effect; KCMs do not link KWin |
+| Debian | KF6 ConfigCore/ConfigGui/ColorScheme/CoreAddons/I18n/KCMUtils/WidgetsAddons (`libkf6*-dev`) | LGPL (LGPL-2.0-or-later per file, ConfigGui either file LGPL; section 4.2, use LGPL alternative) | Yes: dynamic link, both effect and MIT KCMs |
+| Debian | Qt6 Core/Gui/DBus/Widgets (`qt6-base-dev`) | LGPL-3.0-only alternative (section 4.2); absent from Qt GPL-only module list | Yes: effect via v3 election for the combination (section 6); MIT KCMs directly |
+| Debian | glibc `libc/libm/libdl`/pthreads (`Threads`, `CMAKE_DL_LIBS`, `${shlibs:Depends}`) | LGPL-2.1-or-later (section 4.3) | Yes: dynamic link, no project copyleft |
+| Debian | libstdc++/libgcc (`build-essential` toolchain, `${shlibs:Depends}`) | GPL-3.0-or-later WITH GCC-exception-3.1 (section 4.3) | Yes: exception covers eligible compilation, does not force project GPL |
+| RPM (SUSE/Fedora) | KWin (`cmake(KWin)`; runtime `kwin6` / `kwin`) | GPL-2.0-or-later (section 4.1 headers) | Yes: same as Debian row |
+| RPM (SUSE/Fedora) | KF6 set (`kf6-*-devel`) | LGPL as above (section 4.2) | Yes: dynamic link |
+| RPM (SUSE/Fedora) | Qt6 Core/Gui/DBus/Widgets (`qt6-base-devel` / `qt6-qtbase-devel`) | LGPL-3.0-only alternative (section 4.2) | Yes: effect via v3 election (section 6); MIT KCMs directly |
+| RPM (SUSE/Fedora) | glibc / pthreads / libdl (`gcc-c++`, RPM auto-requires) | LGPL-2.1-or-later (section 4.3) | Yes: dynamic link |
+| RPM (SUSE/Fedora) | libstdc++/libgcc (`gcc-c++`, RPM auto-requires) | GPL-3.0 WITH GCC-exception-3.1 (section 4.3) | Yes: exception, same as Debian row |
+| Arch | KWin (`kwin`) | GPL-2.0-or-later (section 4.1 headers) | Yes: same as above |
+| Arch | KF6 set (`kconfig`, `kcoreaddons`, `kcmutils`, `ki18n`, `kwidgetsaddons`, `kcolorscheme`) | LGPL as above (section 4.2) | Yes: dynamic link |
+| Arch | Qt6 Core/Gui/DBus/Widgets (`qt6-base`) | LGPL-3.0-only alternative (section 4.2) | Yes: effect via v3 election (section 6); MIT KCMs directly |
+| Arch | glibc / pthreads / libdl (`gcc` toolchain, pacman deps) | LGPL-2.1-or-later (section 4.3) | Yes: dynamic link |
+| Arch | libstdc++/libgcc (`gcc` toolchain, pacman deps) | GPL-3.0 WITH GCC-exception-3.1 (section 4.3) | Yes: exception |
+| OBS | Same as RPM (service consumes the release tarball built by the RPM recipe) | Same as RPM rows | Yes, subject to the same pending items below |
+
+Pending / unknown (not asserted):
+
+- Distro-transitive closure for every target: distro-built `.so`
+  NEEDED audit (e.g. KF6 GuiAddons/XmlGui/ConfigWidgets, Qt Qml/Quick,
+  icu/glib/zlib/systemd/double-conversion/b2/pcre2 noted in section 4.2),
+  distro patch deltas to upstream license headers, and static-embedding
+  review beyond NEEDED entries. Section 4.2 direct-link table stays the
+  complete audited set.
+- Distro compiler-runtime version output (`libstdc++`/`libgcc_s`/`libc`
+  SONAMEs per built artifact) and the KWin exact-build identity behind
+  each unversioned RPM/Arch depends (Debian records it via
+  `kwin:Version`; RPM/Arch deliberately do not pin).
+- Non-linked recipe entries need no compatibility claim:
+  `kf6-kwindowsystem-devel`, `libdrm`/`libepoxy`, Qt Quick/Declarative
+  devel, Vulkan headers, ECM/CMake/Cargo/Rust, `hicolor-icon-theme`,
+  config-bin helpers. Listed here only to keep the inventory honest.
+- OBS provisioning itself (no account/project/package yet; checksum
+  placeholder fails closed) is a release-process pending item, not a
+  license finding.
+
 ## 5. Reference-WM reuse
 
 Checked October 2026 against upstream license declarations. "Only/later
@@ -425,3 +522,30 @@ texts, GPL source headers and manifest/package declarations are complete.
 Rectangle Pro internals remain Unknown.
 Unsettled: GPL Custom-EULA acceptance in practice; sandboxed full-tiler
 feasibility; Installation-Information mapping for direct downloads.
+
+## 11. Vendored attribution inventory (2026-10-12)
+
+Bounded search (not proof of absence) over tracked sources for copied
+third-party code that ships in a distributed artifact. No THIRD-PARTY,
+NOTICE or ATTRIBUTION file exists in the repo root or docs.
+
+| Item | Ships? | Attribution needed? |
+| --- | --- | --- |
+| Checked-in `vendor/` tree | No: no `vendor/` dir exists; the only `vendored-sources` hit is Cargo offline-build source-replacement (`kwin/native-effect/CMakeLists.txt:100-105`), repeated in the packaging recipes | No |
+| Third-party license headers / SPDX in shipped sources | None: the only SPDX headers are the four first-party GPL-2.0-or-later effect files (section 8); `crates/` carries no third-party headers (the sole `copied` hit is an English doc word in `crates/tiler-core/src/contract.rs:113`) | No |
+| KWin script bundle (`contents/code/main.js`) | Built at build time by esbuild from first-party `kwin/src` (all imports relative; no npm runtime imports); git-ignored build output, never checked in | No |
+| npm package code in `main.js` | None: direct devDeps are `esbuild 0.28.2` (bundler), `typescript 7.0.2` (compiler), `@types/node 26.2.0` (types only), all `dev: true` in `kwin/package-lock.json`; the artifact-smoke test asserts no `__esm`/`__commonJS` helpers and no `import`/`export`/`node:` markers in the bundle | No |
+| Fonts / icons / assets in the bundle | None bundled: the only shipped icon is first-party `assets/icons/omnitiler.svg`, installed to hicolor by all three recipes | No |
+| Build-time `vendor/` tree (cargo vendor output in the release tarball) | Created by the packaging recipes at build time, not checked in; upstream crate sources travel with their own license files, all inside the `deny.toml` allow set (section 2.3; `cargo deny check licenses` passes) | Covered by the Debian `copyright` vendor comment (line 8) plus each crate's own license files; no separate notice file |
+| Package payload notices | All three recipes install the first-party texts (`LICENSE`, `LICENSES/GPL-2.0-or-later.txt`): RPM `%license`, Arch `/usr/share/licenses`, Debian `copyright` | No third-party notice owed beyond the rows above |
+
+Required attributions: first-party MIT/GPL texts via the payload row above;
+Debian `copyright` lines 4-8 record the MIT default, the GPL effect files
+and the vendor-tree comment.
+
+Tentative decision (pending user review): do NOT add a THIRD-PARTY notice
+file. No checked-in third-party code ships in any distributed artifact, so
+no vendored attribution is owed; permissive dependency sources travel with
+their own license texts in the build-time vendor tree; generated per-crate
+binary attribution (`cargo-about`) stays an optional follow-up (section 9),
+not a gate.
