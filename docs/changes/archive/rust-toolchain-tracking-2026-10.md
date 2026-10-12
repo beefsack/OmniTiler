@@ -133,3 +133,18 @@ derivation. Record their separate version baselines and host-check limits.
   `e7439b6b` (2026-10-08) still 1.98.1 with no `1_99.nix`.
 - No bump; the flake input lags devenv as fact only, no pin change. The
   recurring backlog item stays open; no live desktop tests ran.
+
+## Recheck 2026-10-12 (read-only)
+
+- Latest stable remains Rust 1.99.0 (released 2026-10-01; newest release
+  post on blog.rust-lang.org, stable channel manifest dated 2026-10-01).
+- `nixos-unstable` HEAD `6510408d147d8c5e6d76043e899e9251756f6a75`
+  (2026-10-10) still defaults to `rust_1_98` with `rustcVersion = "1.98.1"`;
+  no `1_99.nix` at that revision (raw fetch 404). KWin/Qt/KF unchanged at
+  6.7.5 / 6.11.2 / 6.30.0.
+- Rust 1.99.0 has reached `staging-next` (HEAD `2d26d089`, default
+  `rust_1_99`); `master` still selects 1.98.1. Per the documented
+  procedure the staging route needs a separate decision, so the bump stays
+  parked on unstable availability. No gates ran (no new toolchain), no
+  session restart needed. Next: recheck unstable for the staging-next
+  merge-down, then follow the existing pin-bump procedure.

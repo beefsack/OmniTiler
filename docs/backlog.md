@@ -2942,7 +2942,11 @@ decisions of 2026-09-24 are under
   1.98.1 and native CI flake at 1.97.1 until 1.99.0 reaches nixos-unstable
   (read-only recheck 2026-10-09: devenv `e554fab7` 1.98.1; native flake
   `54ba4bce` 1.97.1, lagging devenv; latest stable 1.99.0 dated 2026-10-01;
-  unstable HEAD `e7439b6b` dated 2026-10-08 still 1.98.1, no `1_99.nix`).
+   unstable HEAD `e7439b6b` dated 2026-10-08 still 1.98.1, no `1_99.nix`;
+2945:   read-only recheck 2026-10-12: latest stable still 1.99.0 dated 2026-10-01;
+2946:   unstable HEAD `6510408d` dated 2026-10-10 still defaults to 1.98.1, no
+2947:   `1_99.nix`, KWin/Qt/KF unchanged at 6.7.5 / 6.11.2 / 6.30.0; 1.99.0 has
+2948:   reached `staging-next` but per procedure that route needs a separate decision).
   No bump. Next: recheck, then bump devenv and native flake
   pins; user re-enters devenv after the bump.
   [record](changes/archive/rust-toolchain-tracking-2026-10.md)
