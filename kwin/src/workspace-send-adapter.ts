@@ -2872,21 +2872,25 @@ export class WorkspaceSendAdapter {
         ) {
             return false;
         }
-        if (live.floating || live.sticky || live.fullscreen) {
+        if (live.floating || live.sticky) {
             return false;
         }
-        // G-D2 maximized carry (REQ-MAX-09): a maximized mover travels
-        // with its native state untouched, but only when flag-stable
-        // against the dispatch snapshot; a mid-flight maximize change
-        // fails closed. Fullscreen/floating/sticky never carry here.
-        let snapshotMaximized: boolean | null = null;
+        // G-D2/D28 overlay carry (REQ-MAX-09): a maximized/fullscreen mover
+        // travels with its native state untouched, but only when flag-stable
+        // against the dispatch snapshot; a mid-flight overlay change fails
+        // closed. Floating/sticky never carry here.
+        let snapshotOverlay: { maximized: boolean; fullscreen: boolean } | null = null;
         for (const entry of [...pending.snapshot.sourceWindows, ...pending.snapshot.targetWindows]) {
             if (entry.id === pending.moverId) {
-                snapshotMaximized = entry.maximized;
+                snapshotOverlay = { maximized: entry.maximized, fullscreen: entry.fullscreen };
                 break;
             }
         }
-        if (snapshotMaximized === null || live.maximized !== snapshotMaximized) {
+        if (
+            snapshotOverlay === null ||
+            live.maximized !== snapshotOverlay.maximized ||
+            live.fullscreen !== snapshotOverlay.fullscreen
+        ) {
             return false;
         }
         return true;
@@ -3753,9 +3757,9 @@ export class WorkspaceSendAdapter {
             if (moverSeen === undefined) {
                 return false;
             }
-            // G-D2 maximized carry (REQ-MAX-09): a homed mover must
-            // flag-match its dispatch snapshot entry; fullscreen, floating
-            // and sticky never carry, while a stable maximized flag travels
+            // G-D2/D28 overlay carry (REQ-MAX-09): a homed mover must
+            // flag-match its dispatch snapshot entry; floating and sticky
+            // never carry, while a stable maximized/fullscreen flag travels
             // with the window (geometry writes already skip overlays).
             let snapshotMover: WorkspaceSendSnapshotWindow | null = null;
             for (const entry of [...snapshot.sourceWindows, ...snapshot.targetWindows]) {
@@ -3767,7 +3771,7 @@ export class WorkspaceSendAdapter {
             if (snapshotMover === null || !flagsEqual(moverSeen, snapshotMover)) {
                 return false;
             }
-            if (moverSeen.fullscreen || moverSeen.floating === true || moverSeen.sticky === true) {
+            if (moverSeen.floating === true || moverSeen.sticky === true) {
                 return false;
             }
             // A homed mover must be the dispatch-retained live object: a

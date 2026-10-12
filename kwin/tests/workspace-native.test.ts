@@ -675,6 +675,43 @@ describe("workspace production entry routing and handoff", () => {
         });
     }
 
+    function plannedStayReply(correlation: string, targetWorkspace = "ws-2"): string {
+        // Same retained geometry as the follow reply; the stay focus names
+        // the source-MRU survivor instead of the mover.
+        return JSON.stringify({
+            v: 1,
+            correlation_id: correlation,
+            outcome: "planned",
+            kind: "send-to-workspace",
+            base_revision: 0,
+            desired_geometry: [
+                { window: "win-a", leaf: "leaf-win-a", output: "out-1", workspace: targetWorkspace, rect: { x: 0, y: 0, w: 600, h: 800 } },
+                { window: "win-b", leaf: "leaf-win-b", output: "out-1", workspace: "ws-1", rect: { x: 0, y: 0, w: 1200, h: 800 } },
+                { window: "win-t", leaf: "leaf-win-t", output: "out-1", workspace: targetWorkspace, rect: { x: 600, y: 0, w: 600, h: 800 } },
+            ],
+            desired_focus: { domain_output: "out-1", domain_workspace: "ws-1", leaf: "leaf-win-b" },
+            preconditions: ["window-observed", "desired-topology-valid", "adapter-must-verify-postconditions"],
+            operation: {
+                op: "move-tiled",
+                window: "win-a",
+                leaf: "leaf-win-a",
+                source_output: "out-1",
+                source_workspace: "ws-1",
+                target_output: "out-1",
+                target_workspace: targetWorkspace,
+                follow: false,
+            },
+        });
+    }
+
+    function fullscreenMover(world: FakeWorld): { mover: FakeWindow; frameBefore: { x: number; y: number; width: number; height: number } } {
+        const mover = world.wins.find((win) => win.internalId === "win-a") as FakeWindow | undefined;
+        assert.ok(mover !== undefined, "rich world holds win-a");
+        mover.fullScreen = true;
+        assert.equal(world.workspace["activeWindow"], mover, "fullscreen mover stays natively focused");
+        return { mover, frameBefore: { ...mover.frameGeometry } };
+    }
+
     it("routes exact send chords and shifted-symbol aliases through the Rust send transport", () => {
         const { handle, mocks } = startRichEntry("per-output-local");
         assert.ok(handle !== null);
@@ -777,6 +814,113 @@ describe("workspace production entry routing and handoff", () => {
         assert.ok(sourceDesktop !== undefined);
         handle?.requestWorkspacePrevious();
         assert.equal(world.currentByOutput.get(world.outputs[0] as never), sourceDesktop);
+        handle?.stop();
+    });
+
+    it("carries a fullscreen mover on numbered follow with flag and frame untouched", () => {
+        // D28 entry route: Meta+Shift+2 with a retained fullscreen mover
+        // resolves ws-2 through the real numbered target resolution, then
+        // the validated carry keeps fullscreen and the native frame.
+        const { handle, world, mocks } = startRichEntry("per-output-local");
+        assert.ok(handle !== null);
+        const { mover, frameBefore } = fullscreenMover(world);
+        const targetDesktop = world.desktops[1];
+        assert.ok(targetDesktop !== undefined);
+        const byAction = new Map(mocks.shortcuts.map((row) => [row.action, row]));
+        byAction.get("omnitiler-move-workspace-2")?.callback();
+        mocks.callbacks[0]?.(":1.7");
+        const request = mocks.dbusCalls.find((call) => call.payload.includes("send-to-workspace"));
+        assert.ok(request !== undefined);
+        const payload = JSON.parse(request.payload) as Record<string, unknown>;
+        assert.equal((payload["command"] as Record<string, unknown>)["target_workspace"], "ws-2");
+        const correlation = payload["correlation_id"] as string;
+        mocks.callbacks[mocks.callbacks.length - 1]?.(plannedReply(correlation));
+        assert.ok((mover.desktops as unknown[]).includes(targetDesktop), "mover lands on the target");
+        assert.equal(mover.fullScreen, true, "no gratuitous fullscreen drop");
+        assert.deepEqual({ ...mover.frameGeometry }, frameBefore, "no geometry write to the mover");
+        assert.equal(world.workspace["activeWindow"], mover, "follow focuses the carried mover");
+        assert.equal(world.currentByOutput.get(world.outputs[0] as never), targetDesktop);
+        assert.ok(
+            mocks.logs.some((l) => l.includes("event=follow") && l.includes("outcome=state-confirmed")),
+            mocks.logs.join("\n"),
+        );
+        handle?.stop();
+    });
+
+    it("carries a fullscreen mover on numbered stay with source MRU focus", () => {
+        const { handle, world, mocks } = startRichEntry("per-output-local");
+        assert.ok(handle !== null);
+        const { mover, frameBefore } = fullscreenMover(world);
+        const sourceDesktop = world.desktops[0];
+        assert.ok(sourceDesktop !== undefined);
+        const byAction = new Map(mocks.shortcuts.map((row) => [row.action, row]));
+        byAction.get("omnitiler-stay-workspace-2")?.callback();
+        mocks.callbacks[0]?.(":1.7");
+        const request = mocks.dbusCalls.find((call) => call.payload.includes("send-to-workspace"));
+        assert.ok(request !== undefined);
+        const payload = JSON.parse(request.payload) as Record<string, unknown>;
+        assert.equal((payload["command"] as Record<string, unknown>)["follow"], false);
+        const correlation = payload["correlation_id"] as string;
+        mocks.callbacks[mocks.callbacks.length - 1]?.(plannedStayReply(correlation));
+        const targetDesktop = world.desktops[1];
+        assert.ok(targetDesktop !== undefined);
+        assert.ok((mover.desktops as unknown[]).includes(targetDesktop), "mover lands on the target");
+        assert.equal(mover.fullScreen, true, "no gratuitous fullscreen drop");
+        assert.deepEqual({ ...mover.frameGeometry }, frameBefore, "no geometry write to the mover");
+        assert.equal(world.currentByOutput.get(world.outputs[0] as never), sourceDesktop, "stay never switches");
+        const survivor = world.wins.find((win) => win.internalId === "win-b");
+        assert.equal(world.workspace["activeWindow"], survivor, "stay focuses the source MRU survivor");
+        handle?.stop();
+    });
+
+    it("carries a fullscreen mover on relative next follow through real ring resolution", () => {
+        const { handle, world, mocks } = startRichEntry("per-output-local");
+        assert.ok(handle !== null);
+        const { mover, frameBefore } = fullscreenMover(world);
+        const targetDesktop = world.desktops[1];
+        assert.ok(targetDesktop !== undefined);
+        const byAction = new Map(mocks.shortcuts.map((row) => [row.action, row]));
+        byAction.get("omnitiler-send-next-l")?.callback();
+        mocks.callbacks[0]?.(":1.7");
+        const request = mocks.dbusCalls.find((call) => call.payload.includes("send-to-workspace"));
+        assert.ok(request !== undefined, "relative next resolves a real target");
+        const payload = JSON.parse(request.payload) as Record<string, unknown>;
+        assert.equal((payload["command"] as Record<string, unknown>)["target_workspace"], "ws-2");
+        const correlation = payload["correlation_id"] as string;
+        mocks.callbacks[mocks.callbacks.length - 1]?.(plannedReply(correlation));
+        assert.ok((mover.desktops as unknown[]).includes(targetDesktop), "mover lands on the target");
+        assert.equal(mover.fullScreen, true, "no gratuitous fullscreen drop");
+        assert.deepEqual({ ...mover.frameGeometry }, frameBefore, "no geometry write to the mover");
+        assert.equal(world.workspace["activeWindow"], mover, "relative follow focuses the mover");
+        handle?.stop();
+    });
+
+    it("carries a fullscreen mover on relative next stay with source focus", () => {
+        // Relative previous from ws-1 wraps into the trailing empty, which
+        // needs an empty-target reply shape; the occupied-target relative
+        // stay is covered here through next (same entry resolution path,
+        // which is overlay-independent).
+        const { handle, world, mocks } = startRichEntry("per-output-local");
+        assert.ok(handle !== null);
+        const { mover, frameBefore } = fullscreenMover(world);
+        const sourceDesktop = world.desktops[0];
+        assert.ok(sourceDesktop !== undefined);
+        const byAction = new Map(mocks.shortcuts.map((row) => [row.action, row]));
+        byAction.get("omnitiler-send-stay-next-j")?.callback();
+        mocks.callbacks[0]?.(":1.7");
+        const request = mocks.dbusCalls.find((call) => call.payload.includes("send-to-workspace"));
+        assert.ok(request !== undefined, "relative next resolves a real target");
+        const payload = JSON.parse(request.payload) as Record<string, unknown>;
+        assert.equal((payload["command"] as Record<string, unknown>)["target_workspace"], "ws-2");
+        assert.equal((payload["command"] as Record<string, unknown>)["follow"], false);
+        const correlation = payload["correlation_id"] as string;
+        mocks.callbacks[mocks.callbacks.length - 1]?.(plannedStayReply(correlation));
+        const targetDesktop = world.desktops[1];
+        assert.ok(targetDesktop !== undefined);
+        assert.ok((mover.desktops as unknown[]).includes(targetDesktop), "mover lands on the target");
+        assert.equal(mover.fullScreen, true, "no gratuitous fullscreen drop");
+        assert.deepEqual({ ...mover.frameGeometry }, frameBefore, "no geometry write to the mover");
+        assert.equal(world.currentByOutput.get(world.outputs[0] as never), sourceDesktop, "stay never switches");
         handle?.stop();
     });
 
@@ -1035,10 +1179,16 @@ describe("workspace production entry routing and handoff", () => {
         assert.ok(focusedOverlay !== null);
         assert.ok(focusedOverlay.sourceWindows.some((entry) => entry.id === "win-b"), "focused overlay stays observed");
         // G-D2 (REQ-MAX-09 maximize leg): a focused maximized window is the
-        // send mover with its state carried; fullscreen movers stay refused
-        // observe-first (covered by the fullscreen send path).
+        // send mover with its state carried; D28 admits a focused
+        // fullscreen mover the same way.
         assert.equal(focusedOverlay.focusedId, "win-b", "maximized mover admitted for carry");
         assert.equal(focusedOverlay.moverRef, b, "maximized mover ref rides for the membership write");
+        b.maximizeMode = 0;
+        b.fullScreen = true;
+        const focusedFullscreen = observeSendTarget(world.workspace, new Map(), "ws-2", new Set());
+        assert.ok(focusedFullscreen !== null);
+        assert.equal(focusedFullscreen.focusedId, "win-b", "fullscreen mover admitted for carry");
+        assert.equal(focusedFullscreen.moverRef, b, "fullscreen mover ref rides for the membership write");
     });
 
     it("matches desktop membership by validated id, not wrapper identity", () => {

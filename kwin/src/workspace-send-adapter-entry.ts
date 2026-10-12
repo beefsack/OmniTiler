@@ -436,19 +436,17 @@ function observeNative(
                 const activeId = cache.get(activeNative) ?? (cache.set(activeNative, activeNative), activeNative);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover; maximized movers carry under G-D2
-                        // (REQ-MAX-09) with native state untouched, while
-                        // fullscreen/floating/sticky keep "" / null and
-                        // refuse downstream (fullscreen stays observe-first).
-                        // An otherwise unexplained fit exclusion (fitExcluded
-                        // without a maximized overlay) also refuses: the
-                        // maximize overlay is admitted only while otherwise
+                        // Tiled-only mover; maximized and fullscreen movers
+                        // carry under G-D2/D28 (REQ-MAX-09) with native state
+                        // untouched, while floating/sticky keep "" / null and
+                        // refuse downstream. An otherwise unexplained fit
+                        // exclusion (fitExcluded without an overlay) also
+                        // refuses: overlays are admitted only while otherwise
                         // valid.
                         if (
-                            entry.fullscreen ||
                             entry.floating ||
                             entry.sticky ||
-                            (entry.fitExcluded && !entry.maximized)
+                            (entry.fitExcluded && !entry.maximized && !entry.fullscreen)
                         ) {
                             break;
                         }

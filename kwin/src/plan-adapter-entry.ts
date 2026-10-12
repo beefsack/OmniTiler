@@ -2034,17 +2034,16 @@ export function observeSendTarget(
                 const activeId = internNativeId(cache, activeNative, activeRef, owners);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover; maximized movers carry under G-D2
-                        // (REQ-MAX-09) with native state untouched, while
-                        // fullscreen/floating/sticky keep "" / null and
-                        // refuse downstream (fullscreen stays observe-first).
-                        // An otherwise unexplained fit exclusion (fitExcluded
-                        // without a maximized overlay) also refuses.
+                        // Tiled-only mover; maximized and fullscreen movers
+                        // carry under G-D2/D28 (REQ-MAX-09) with native state
+                        // untouched, while floating/sticky keep "" / null and
+                        // refuse downstream. An otherwise unexplained fit
+                        // exclusion (fitExcluded without an overlay) also
+                        // refuses.
                         if (
-                            entry.fullscreen ||
                             entry.floating ||
                             entry.sticky ||
-                            (entry.fitExcluded && !entry.maximized)
+                            (entry.fitExcluded && !entry.maximized && !entry.fullscreen)
                         ) {
                             break;
                         }
@@ -3847,18 +3846,16 @@ export function observeOutputSendTarget(
                 const activeId = internNativeId(cache, activeNative, activeRef, owners);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover; maximized movers carry under G-D2
-                        // (REQ-MAX-09) with native state untouched, while
-                        // fullscreen, sticky and intentional floats keep
-                        // "" / null and refuse downstream as non-tiled-focus
-                        // (fullscreen stays observe-first). An otherwise
-                        // unexplained fit exclusion (fitExcluded without a
-                        // maximized overlay) also refuses.
+                        // Tiled-only mover; maximized and fullscreen movers
+                        // carry under G-D2/D28 (REQ-MAX-09) with native state
+                        // untouched, while sticky and intentional floats keep
+                        // "" / null and refuse downstream as non-tiled-focus.
+                        // An otherwise unexplained fit exclusion (fitExcluded
+                        // without an overlay) also refuses.
                         if (
-                            entry.fullscreen ||
                             entry.floating ||
                             entry.sticky ||
-                            (entry.fitExcluded && !entry.maximized)
+                            (entry.fitExcluded && !entry.maximized && !entry.fullscreen)
                         ) {
                             break;
                         }

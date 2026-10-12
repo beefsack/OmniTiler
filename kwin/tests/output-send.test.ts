@@ -123,17 +123,16 @@ function mockAdapter(world: AdapterWorld): AdapterMocks {
         if (targetOutput === "out-1") {
             const wins = world.wins.filter((win) => win.output === "out-1" && win.desktops.includes("ws-a"));
             const mover = wins.find((win) => win.id === world.activeId) ?? null;
-            // Mirrors the production observer gate: maximized movers carry
-            // (G-D2), fullscreen/floating/sticky and otherwise unexplained
-            // fit exclusions refuse.
+            // Mirrors the production observer gate: maximized/fullscreen
+            // movers carry (G-D2/D28), floating/sticky and otherwise
+            // unexplained fit exclusions refuse.
             const fitExcluded =
                 mover !== null && (mover.floating || mover.sticky || mover.fullscreen || mover.maximized);
             const tiled =
                 mover !== null &&
                 !mover.floating &&
                 !mover.sticky &&
-                !mover.fullscreen &&
-                (!fitExcluded || mover.maximized);
+                (!fitExcluded || mover.maximized || mover.fullscreen);
             return {
                 sourceOutput: "out-1",
                 sourceWorkspace: "ws-a",
@@ -179,8 +178,8 @@ function mockAdapter(world: AdapterWorld): AdapterMocks {
             .map(toObservedWindow);
         const focused = active;
         // Mirrors the production observer gate (see the same-output probe
-        // above): maximized movers carry, everything else exceptional
-        // refuses.
+        // above): maximized/fullscreen movers carry, everything else
+        // exceptional refuses.
         const focusedFitExcluded =
             focused !== null &&
             (focused.floating || focused.sticky || focused.fullscreen || focused.maximized);
@@ -190,8 +189,7 @@ function mockAdapter(world: AdapterWorld): AdapterMocks {
             focused.desktops.includes(sourceWorkspace) &&
             !focused.floating &&
             !focused.sticky &&
-            !focused.fullscreen &&
-            (!focusedFitExcluded || focused.maximized);
+            (!focusedFitExcluded || focused.maximized || focused.fullscreen);
         const sourceIds = sourceWindows.map((entry) => entry.id).sort().join(",");
         const targetIds = targetWindows.map((entry) => entry.id).sort().join(",");
         return {
@@ -570,17 +568,73 @@ describe("output-send adapter (explicit send-to-output)", () => {
         assert.equal(adapter.isInFlight, false);
     });
 
-    it("refuses a fullscreen mover cross-output with no dispatch", () => {
-        // Fullscreen stays observe-first: the observer admits no mover, so
-        // the request refuses before any flight.
+    it("carries a fullscreen mover cross-output with follow and no overlay geometry write", () => {
+        // D28 (REQ-MAX-09 fullscreen leg): the fullscreen mover transfers
+        // with its native state untouched (no drop, no geometry write to
+        // the overlay) and arrives fullscreen; follow focuses the mover.
+        const world = makeAdapterWorld();
+        const mover = world.wins.find((win) => win.id === "win-2") as FakeWin;
+        mover.fullscreen = true;
+        const moverBefore = { ...mover.rect };
+        const mocks = mockAdapter(world);
+        const adapter = enableAdapter(mocks);
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true, 2), true);
+        const body = sendPayload(mocks, 0);
+        assert.equal((body["command"] as Record<string, unknown>)["follow"], true);
+        mocks.callbacks[0]?.(
+            plannedOutputReply(body["correlation_id"] as string, {
+                follow: true,
+                focusLeaf: "leaf-win-2",
+                focusOutput: "out-2",
+                focusWorkspace: "ws-b",
+            }),
+        );
+        assert.equal(mocks.transfers.length, 1, "output transfer runs once");
+        assert.equal(mover.output, "out-2");
+        assert.deepEqual(mover.desktops, ["ws-b"], "mover membership lands on the target");
+        assert.equal(mover.fullscreen, true, "no gratuitous fullscreen drop");
+        assert.deepEqual(mover.rect, moverBefore, "arrival keeps the native frame: no overlay geometry write");
+        assert.ok(
+            !mocks.geometries.some((entry) => entry.target === mover.ref),
+            "geometry writes skip the overlaid mover",
+        );
+        assert.equal(mocks.switches.length, 0, "cross-output follow never switches desktops");
+        assert.equal(mocks.focuses.length, 1);
+        assert.equal(mocks.focuses[0], mover.ref, "follow focuses the carried mover");
+        assert.equal(adapter.isInFlight, false);
+    });
+
+    it("fails a mid-flight fullscreen change with no membership write", () => {
+        // Flag-stability fence: a mover un-fullscreened after dispatch
+        // (snapshot fullscreen) fails closed at the reply-boundary scope
+        // fence before any setter.
         const world = makeAdapterWorld();
         const mover = world.wins.find((win) => win.id === "win-2") as FakeWin;
         mover.fullscreen = true;
         const mocks = mockAdapter(world);
         const adapter = enableAdapter(mocks);
-        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), false);
-        assert.equal(mocks.dbusCalls.length, 0, "refused fullscreen send dispatches nothing");
-        assert.deepEqual(mover.desktops, ["ws-a"], "nothing moves");
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), true);
+        const body = sendPayload(mocks, 0);
+        mover.fullscreen = false;
+        mocks.callbacks[0]?.(
+            plannedOutputReply(body["correlation_id"] as string, {
+                follow: true,
+                focusLeaf: "leaf-win-2",
+                focusOutput: "out-2",
+                focusWorkspace: "ws-b",
+            }),
+        );
+        assert.deepEqual(
+            mover.desktops,
+            ["ws-a"],
+            "unstable mover never receives the membership write",
+        );
+        assert.deepEqual(mocks.transfers, [], "no output transfer after the flag change");
+        assert.deepEqual(mocks.focuses, [], "no follow after a failed write");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("outcome=stale-revision")),
+            "scope fence settles terminal without follow",
+        );
         assert.equal(adapter.isInFlight, false);
     });
 
@@ -1067,7 +1121,7 @@ describe("output-send adapter (explicit send-to-output)", () => {
 // ---------- observation ----------
 
 describe("observeOutputSendTarget (cross-output send observation)", () => {
-    function fakeSendWorkspace(opts: { stickyActive?: boolean; unknownTarget?: boolean } = {}): unknown {
+    function fakeSendWorkspace(opts: { stickyActive?: boolean; unknownTarget?: boolean; fullscreenActive?: boolean } = {}): unknown {
         const out1 = { name: "out-1", geometry: { x: 0, y: 0, width: 800, height: 600 } };
         const out2 = { name: "out-2", geometry: { x: 800, y: 0, width: 800, height: 600 } };
         const wsA = { id: "ws-a" };
@@ -1089,7 +1143,7 @@ describe("observeOutputSendTarget (cross-output send observation)", () => {
             desktops: [wsA],
             internalId: "b",
             frameGeometry: { x: 120, y: 10, width: 100, height: 80 },
-            fullScreen: false,
+            fullScreen: opts.fullscreenActive === true,
             maximizeMode: 0,
         };
         const winT = {
@@ -1133,6 +1187,15 @@ describe("observeOutputSendTarget (cross-output send observation)", () => {
         assert.notEqual(observed, null);
         assert.equal(observed?.focusedId, "");
         assert.equal(observed?.moverRef, null);
+    });
+
+    it("admits a fullscreen active window as the cross-output mover", () => {
+        // D28: the production cross-output observer binds a retained
+        // fullscreen mover exactly like a maximized one.
+        const observed = observeOutputSendTarget(fakeSendWorkspace({ fullscreenActive: true }), new Map(), "out-2", new Set());
+        assert.notEqual(observed, null);
+        assert.equal(observed?.focusedId, "b");
+        assert.notEqual(observed?.moverRef, null);
     });
 
     it("returns null for unknown or same-output targets", () => {

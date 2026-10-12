@@ -19,12 +19,12 @@ import {
 import { startWorkspaceSendAdapterEntry } from "../src/workspace-send-adapter-entry";
 
 // G-D2 maximized workspace-send carry (REQ-MAX-09 maximize leg,
-// User 2026-10-10): a maximized window sent to another workspace keeps
-// maximize on arrival with no gratuitous unmaximize/remaximize and no
-// geometry writes to the overlaid subject. Fullscreen sends stay
-// observe-first (refused). Offline only: fake KWin surface plus the real
-// Planner via planner_eval for the follow path, canned Engine replies
-// for the stay path.
+// User 2026-10-10) plus D28 fullscreen carry (User 2026-10-12): a
+// maximized or fullscreen window sent to another workspace keeps its
+// overlay on arrival with no gratuitous unmaximize/remaximize and no
+// geometry writes to overlaid subjects. Offline only: fake KWin surface
+// plus the real Planner via planner_eval for the follow path, canned
+// Engine replies for the stay path.
 
 // ---- Real-Engine bridge (mirrors workspace-send-engine-fixture). ----
 
@@ -327,13 +327,23 @@ describe("G-D2 maximized send carry (real Planner)", () => {
         }
     });
 
-    it("refuses a fullscreen mover while the maximized path stays open", async () => {
+    it("sends a fullscreen mover with follow and keeps fullscreen on arrival", async () => {
         const h = await makeSurfaceHarness();
         try {
             h.win.wa.fullScreen = true;
-            assert.equal(h.requestSend("ws-2"), false, "fullscreen send still refused observe-first");
-            assert.equal(h.isInFlight(), false, "no flight starts");
-            assert.deepEqual(h.win.wa.desktops, [h.desk.d1], "nothing moves");
+            const moverBefore = { ...h.win.wa.frameGeometry };
+            assert.equal(h.requestSend("ws-2"), true, "fullscreen send accepted as explicit carry");
+            await waitFor(() => h.queued() > 0, "observer request");
+            await h.flush();
+            const planned = JSON.parse(h.calls[0]?.reply ?? "{}") as Record<string, unknown>;
+            assert.equal(planned["outcome"], "planned", "real Engine plans the fullscreen send");
+            await settle(100);
+            assert.deepEqual(h.win.wa.desktops, [h.desk.d2], "mover natively on exact target, absent source");
+            assert.equal(h.win.wa.fullScreen, true, "no gratuitous fullscreen drop: flag untouched");
+            assert.deepEqual({ ...h.win.wa.frameGeometry }, moverBefore, "no geometry write to the fullscreen mover");
+            assert.deepEqual(h.switches, [h.desk.d2], "follow switches exactly once");
+            assert.equal(h.surface["activeWindow"], h.win.wa, "mover focused after proof");
+            assert.equal(h.isInFlight(), false, "flight released after arrival");
         } finally {
             h.stop();
             await h.bridge.close();
@@ -516,5 +526,277 @@ describe("G-D2 maximized send carry (stay path)", () => {
             logs.join("\n"),
         );
         assert.equal(adapter.isInFlight, false);
+    });
+});
+
+// ---- D28 fullscreen send carry (numbered/relative follow/stay, same
+// output). Adapter-level harness with canned Engine replies: the mover is
+// fullscreen with a retained tile slot, so dispatch binds it and geometry
+// writes skip every overlay. ----
+
+interface CarryWorld {
+    readonly windows: Array<{
+        id: string;
+        ref: object;
+        rect: { x: number; y: number; w: number; h: number };
+        workspace: string;
+        fullscreen: boolean;
+        maximized: boolean;
+    }>;
+}
+
+function carryWorld(refs: { a: object; b: object; t: object; desktop: object }): CarryWorld {
+    return {
+        windows: [
+            { id: "win-a", ref: refs.a, rect: rect(0, 0, 100, 100), workspace: "ws-1", fullscreen: true, maximized: false },
+            { id: "win-b", ref: refs.b, rect: rect(100, 0, 100, 100), workspace: "ws-1", fullscreen: false, maximized: false },
+            // Destination overlay: fullscreen-but-ordinary target tile whose
+            // retained allocation must never take a geometry write.
+            { id: "win-t", ref: refs.t, rect: rect(0, 0, 100, 100), workspace: "ws-2", fullscreen: true, maximized: false },
+        ],
+    };
+}
+
+function carryObserved(
+    world: CarryWorld,
+    refs: { a: object; b: object; t: object; desktop: object },
+    activeRef: object | null,
+): WorkspaceSendObserved {
+    const flagged = (entry: CarryWorld["windows"][number]): Record<string, unknown> =>
+        Object.freeze({
+            id: entry.id,
+            ref: entry.ref,
+            rect: Object.freeze({ ...entry.rect }),
+            fullscreen: entry.fullscreen,
+            maximized: entry.maximized,
+            floating: false,
+            sticky: false,
+            fitExcluded: entry.fullscreen || entry.maximized,
+            fit_excluded: entry.fullscreen || entry.maximized,
+        });
+    const source = world.windows.filter((entry) => entry.workspace === "ws-1");
+    const activeId = world.windows.find((entry) => entry.ref === activeRef)?.id ?? "";
+    const focused = source.some((entry) => entry.id === activeId) ? activeId : "";
+    const moverEntry = source.find((entry) => entry.id === activeId);
+    return {
+        sourceOutput: "out-1",
+        sourceWorkspace: "ws-1",
+        sourceBounds: Object.freeze(rect(0, 0, 1200, 800)),
+        targetOutput: "out-1",
+        targetWorkspace: "ws-2",
+        targetBounds: Object.freeze(rect(0, 0, 1200, 800)),
+        focusedId: focused,
+        sourceWindows: Object.freeze(source.map(flagged)),
+        targetWindows: Object.freeze(world.windows.filter((entry) => entry.workspace === "ws-2").map(flagged)),
+        activeRef,
+        moverRef: moverEntry === undefined ? null : moverEntry.ref,
+        targetDesktopRef: refs.desktop,
+        targetExists: true,
+        desktopCount: 2,
+        sourceFingerprint: "sfp-1",
+        targetFingerprint: "tfp-1",
+        currentWorkspace: "ws-1",
+    } as unknown as WorkspaceSendObserved;
+}
+
+function carryReply(correlation: string, follow: boolean): string {
+    return JSON.stringify({
+        v: WORKSPACE_SEND_CONTRACT_VERSION,
+        correlation_id: correlation,
+        outcome: "planned",
+        kind: "send-to-workspace",
+        base_revision: 0,
+        detail: { kind: "send-to-workspace", policy_version: 1, capability: "move-tiled" },
+        desired_geometry: [
+            { window: "win-a", leaf: "leaf-win-a", output: "out-1", workspace: "ws-2", rect: { x: 0, y: 0, w: 600, h: 800 } },
+            { window: "win-b", leaf: "leaf-win-b", output: "out-1", workspace: "ws-1", rect: { x: 0, y: 0, w: 1200, h: 800 } },
+            { window: "win-t", leaf: "leaf-win-t", output: "out-1", workspace: "ws-2", rect: { x: 600, y: 0, w: 600, h: 800 } },
+        ],
+        desired_focus: follow
+            ? { domain_output: "out-1", domain_workspace: "ws-2", leaf: "leaf-win-a" }
+            : { domain_output: "out-1", domain_workspace: "ws-1", leaf: "leaf-win-b" },
+        preconditions: ["window-observed", "desired-topology-valid", "adapter-must-verify-postconditions"],
+        operation: follow
+            ? {
+                  op: "move-tiled",
+                  window: "win-a",
+                  leaf: "leaf-win-a",
+                  source_output: "out-1",
+                  source_workspace: "ws-1",
+                  target_output: "out-1",
+                  target_workspace: "ws-2",
+              }
+            : {
+                  op: "move-tiled",
+                  window: "win-a",
+                  leaf: "leaf-win-a",
+                  source_output: "out-1",
+                  source_workspace: "ws-1",
+                  target_output: "out-1",
+                  target_workspace: "ws-2",
+                  follow: false,
+              },
+    });
+}
+
+interface CarryFlight {
+    readonly refs: { a: object; b: object; t: object; desktop: object };
+    readonly world: CarryWorld;
+    readonly geometries: object[];
+    readonly moverWrites: object[];
+    readonly switches: object[];
+    readonly focuses: object[];
+    readonly logs: string[];
+    readonly dbusCalls: Array<{ method: string; payload: string }>;
+    readonly callbacks: Array<(reply: unknown) => void>;
+    readonly adapter: WorkspaceSendAdapter;
+    activeRef: object | null;
+}
+
+function startCarryFlight(): CarryFlight {
+    const refs = { a: {}, b: {}, t: {}, desktop: {} };
+    const world = carryWorld(refs);
+    const geometries: object[] = [];
+    const moverWrites: object[] = [];
+    const switches: object[] = [];
+    const focuses: object[] = [];
+    const logs: string[] = [];
+    const dbusCalls: CarryFlight["dbusCalls"] = [];
+    const callbacks: CarryFlight["callbacks"] = [];
+    const flight: CarryFlight = {
+        refs,
+        world,
+        geometries,
+        moverWrites,
+        switches,
+        focuses,
+        logs,
+        dbusCalls,
+        callbacks,
+        adapter: null as unknown as WorkspaceSendAdapter,
+        activeRef: refs.a,
+    };
+    const env: WorkspaceSendAdapterEnv = {
+        callDbus: (_service, _path, _iface, method, payload, callback) => {
+            if (method === WORKSPACE_SEND_HAS_OWNER_METHOD) {
+                callback(true);
+                return;
+            }
+            dbusCalls.push({ method, payload });
+            callbacks.push(callback);
+        },
+        scheduleOnce: (): (() => void) => (): void => {},
+        log: (message) => {
+            logs.push(message);
+        },
+        observe: () => carryObserved(world, refs, flight.activeRef),
+        onSettled: () => {},
+        setGeometry: (target) => {
+            geometries.push(target);
+            return true;
+        },
+        setDesktops: (target) => {
+            moverWrites.push(target);
+            for (const entry of world.windows) {
+                if (entry.ref === target) {
+                    entry.workspace = "ws-2";
+                }
+            }
+            return true;
+        },
+        switchToTarget: (desktopRef) => {
+            switches.push(desktopRef);
+            return true;
+        },
+        focusWindow: (windowRef) => {
+            focuses.push(windowRef);
+            flight.activeRef = windowRef;
+            return true;
+        },
+    };
+    (flight as { adapter: WorkspaceSendAdapter }).adapter = new WorkspaceSendAdapter(env);
+    assert.equal(flight.adapter.enable({ owner: "owner-1", generation: "gen-1" }), true);
+    return flight;
+}
+
+function dispatchCarry(flight: CarryFlight, ordinal: unknown, follow: unknown): string {
+    assert.equal(flight.adapter.requestSend("ws-2", ordinal, follow), true, "fullscreen carry must dispatch");
+    assert.equal(flight.dbusCalls[0]?.method, WORKSPACE_SEND_GET_OWNER_METHOD);
+    flight.callbacks[0]?.(":1.7");
+    const body = JSON.parse(flight.dbusCalls[1]?.payload ?? "{}") as Record<string, unknown>;
+    return body["correlation_id"] as string;
+}
+
+describe("D28 fullscreen send carry (adapter follow/stay)", () => {
+    it("numbered stay carries fullscreen with source MRU focus and no overlay writes", () => {
+        const flight = startCarryFlight();
+        const correlation = dispatchCarry(flight, 2, false);
+        flight.callbacks[1]?.(carryReply(correlation, false));
+        assert.equal(flight.moverWrites.length, 1, "mover membership written once");
+        assert.deepEqual(flight.moverWrites[0], flight.refs.a);
+        assert.ok(!flight.geometries.includes(flight.refs.a), "no geometry write to the fullscreen mover");
+        assert.ok(!flight.geometries.includes(flight.refs.t), "no geometry write to the destination overlay");
+        assert.deepEqual(flight.switches, [], "stay never switches desktops");
+        assert.deepEqual(flight.focuses, [flight.refs.b], "stay focuses the source MRU survivor");
+        assert.ok(
+            flight.logs.some((l) => l.includes("event=follow") && l.includes("outcome=stay-confirmed")),
+            flight.logs.join("\n"),
+        );
+        assert.equal(flight.adapter.isInFlight, false);
+    });
+
+    it("numbered follow carries fullscreen, switches, and focuses the mover", () => {
+        const flight = startCarryFlight();
+        const correlation = dispatchCarry(flight, 2, true);
+        flight.callbacks[1]?.(carryReply(correlation, true));
+        assert.equal(flight.moverWrites.length, 1, "mover membership written once");
+        assert.ok(!flight.geometries.includes(flight.refs.a), "no geometry write to the fullscreen mover");
+        assert.ok(!flight.geometries.includes(flight.refs.t), "no geometry write to the destination overlay");
+        assert.deepEqual(flight.switches, [flight.refs.desktop], "follow switches exactly once");
+        assert.deepEqual(flight.focuses, [flight.refs.a], "follow focuses the fullscreen mover");
+        assert.equal(flight.adapter.isInFlight, false);
+    });
+
+    it("follow with diagnostic ordinal -1 carries fullscreen like the numbered route", () => {
+        // Adapter-level ordinal only (-1 is diagnostic-only here, never
+        // entry ring resolution): real relative shortcuts are covered at
+        // the production entry route.
+        const flight = startCarryFlight();
+        const correlation = dispatchCarry(flight, -1, true);
+        flight.callbacks[1]?.(carryReply(correlation, true));
+        assert.equal(flight.moverWrites.length, 1, "mover membership written once");
+        assert.ok(!flight.geometries.includes(flight.refs.a), "no geometry write to the fullscreen mover");
+        assert.deepEqual(flight.switches, [flight.refs.desktop], "relative follow switches exactly once");
+        assert.deepEqual(flight.focuses, [flight.refs.a], "relative follow focuses the mover");
+        assert.equal(flight.adapter.isInFlight, false);
+    });
+
+    it("stay with diagnostic ordinal -1 carries fullscreen with source MRU focus", () => {
+        // Adapter-level ordinal only (see above): real relative shortcuts
+        // are covered at the production entry route.
+        const flight = startCarryFlight();
+        const correlation = dispatchCarry(flight, -1, false);
+        flight.callbacks[1]?.(carryReply(correlation, false));
+        assert.equal(flight.moverWrites.length, 1, "mover membership written once");
+        assert.deepEqual(flight.switches, [], "relative stay never switches desktops");
+        assert.deepEqual(flight.focuses, [flight.refs.b], "relative stay focuses the source MRU survivor");
+        assert.equal(flight.adapter.isInFlight, false);
+    });
+
+    it("a mover fullscreen flag race refuses without setters or follow", () => {
+        const flight = startCarryFlight();
+        const correlation = dispatchCarry(flight, 2, true);
+        // The mover exits fullscreen after dispatch: the homed flag fence
+        // must refuse the carry instead of moving a changed window.
+        for (const entry of flight.world.windows) {
+            if (entry.ref === flight.refs.a) {
+                entry.fullscreen = false;
+            }
+        }
+        flight.callbacks[1]?.(carryReply(correlation, true));
+        assert.deepEqual(flight.moverWrites, [], "flag-changed mover takes no membership write");
+        assert.deepEqual(flight.geometries, [], "flag-changed mover takes no geometry writes");
+        assert.deepEqual(flight.switches, [], "flag-changed mover never switches");
+        assert.deepEqual(flight.focuses, [], "flag-changed mover never focuses");
     });
 });
