@@ -1353,9 +1353,66 @@ fn present_pixels(
     Ok(checksum)
 }
 
+/// `PRIME^exp mod 2^64` by wrapping binary exponentiation. One FNV-1a step
+/// over a zero byte is `hash = hash * PRIME` (xor with 0 is the identity),
+/// so a run of `exp` zero bytes collapses to a single multiply by this.
+fn fnv_prime_pow(mut exp: usize) -> u64 {
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut base = FNV_PRIME;
+    let mut acc = 1u64;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            acc = acc.wrapping_mul(base);
+        }
+        base = base.wrapping_mul(base);
+        exp >>= 1;
+    }
+    acc
+}
+
+/// One FNV-1a mix step over an owned byte.
+#[inline]
+fn fnv_mix(hash: &mut u64, byte: u8) {
+    *hash ^= u64::from(byte);
+    *hash = hash.wrapping_mul(0x100000001b3);
+}
+
+/// Paint one already-evaluated pixel: ring bytes plus four FNV-1a mixes when
+/// covered, otherwise a single `PRIME^4` advance over the four zero bytes
+/// left by the bulk clear. Byte- and checksum-identical to the old
+/// evaluate-and-write-everything walk.
+#[inline]
+fn paint_ring_pixel(
+    pixels: &mut [u8],
+    hash: &mut u64,
+    zero4: u64,
+    idx: usize,
+    covered: bool,
+    color: (u8, u8, u8),
+) {
+    if covered {
+        let (r, g, b) = color;
+        pixels[idx] = b;
+        pixels[idx + 1] = g;
+        pixels[idx + 2] = r;
+        pixels[idx + 3] = 255;
+        for byte in [b, g, r, 255] {
+            fnv_mix(hash, byte);
+        }
+    } else {
+        *hash = hash.wrapping_mul(zero4);
+    }
+}
+
 /// Fill a BGRA buffer with the ring: colour with full alpha on the ring,
 /// fully transparent elsewhere. Returns the FNV-1a checksum over the owned
-/// bytes in the same pass (no second buffer walk).
+/// bytes without a separate hash walk.
+///
+/// Cost: the backing store is cleared in bulk and only the ring bands are
+/// evaluated per pixel. Middle rows skip their known-transparent center hole
+/// (`x` in `[width, w - width)`) with one hash multiply per row, so large
+/// default surfaces do O(perimeter) coverage/hash work (the bulk clear
+/// itself stays one O(area) memset).
 fn paint_ring(
     pixels: &mut [u8],
     w: i32,
@@ -1364,28 +1421,93 @@ fn paint_ring(
     radius_px: i32,
     color: (u8, u8, u8),
 ) -> u64 {
-    let (r, g, b) = color;
     let mut hash: u64 = 0xcbf29ce484222325;
-    let mut mix = |byte: u8| {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    };
+    if w <= 0 || h <= 0 {
+        // Matches the old walk: no pixel is visited, the buffer is untouched.
+        return hash;
+    }
+    let total = w as usize * h as usize * 4;
+    if width_px <= 0 {
+        // ring_covers is false everywhere: bulk clear, one hash multiply.
+        pixels[..total].fill(0);
+        return hash.wrapping_mul(fnv_prime_pow(total));
+    }
+    pixels[..total].fill(0);
+    let zero4 = fnv_prime_pow(4);
+    let inner_w = w - 2 * width_px;
+    let inner_h = h - 2 * width_px;
+    if inner_w <= 0 || inner_h <= 0 {
+        // Thick border with no inner hole: the center may paint, so every
+        // pixel is still evaluated (same bytes and hash order as before).
+        for y in 0..h {
+            let row = y as usize * w as usize * 4;
+            for x in 0..w {
+                let covered = ring_covers(x, y, w, h, width_px, radius_px);
+                paint_ring_pixel(
+                    pixels,
+                    &mut hash,
+                    zero4,
+                    row + x as usize * 4,
+                    covered,
+                    color,
+                );
+            }
+        }
+        return hash;
+    }
+    // Clamped inner radius, mirroring point_in_rounded_rect's
+    // `radius.max(0).min(inner_w / 2).min(inner_h / 2)`.
+    let inner_r = radius_px.max(0).min(inner_w / 2).min(inner_h / 2);
+    // One exponentiation shared by every middle row: the skipped hole below
+    // is `inner_w` pixels (four zero bytes each) wide on each such row.
+    let gap_pow = fnv_prime_pow(inner_w as usize * 4);
+    // Middle rows whose full center span lies inside the inner hole and is
+    // therefore transparent whatever the outer corner rounding does: for
+    // `y` in this band and `x` in `[width, w - width)`, the inner
+    // point-in-rect hits either its horizontal straight section or (in the
+    // side columns) its vertical straight section, so `ring_covers` is false
+    // and the inner `!...` term decides without consulting the outer rect.
+    // Top/bottom rows evaluate the full width.
+    let mid_start = width_px + inner_r;
+    let mid_end = h - width_px - inner_r;
     for y in 0..h {
-        for x in 0..w {
-            let idx = (y as usize * w as usize + x as usize) * 4;
-            let (bb, gg, rr, aa) = if ring_covers(x, y, w, h, width_px, radius_px) {
-                (b, g, r, 255)
-            } else {
-                (0, 0, 0, 0)
-            };
-            pixels[idx] = bb;
-            pixels[idx + 1] = gg;
-            pixels[idx + 2] = rr;
-            pixels[idx + 3] = aa;
-            mix(bb);
-            mix(gg);
-            mix(rr);
-            mix(aa);
+        let row = y as usize * w as usize * 4;
+        if y >= mid_start && y < mid_end {
+            for x in 0..width_px {
+                let covered = ring_covers(x, y, w, h, width_px, radius_px);
+                paint_ring_pixel(
+                    pixels,
+                    &mut hash,
+                    zero4,
+                    row + x as usize * 4,
+                    covered,
+                    color,
+                );
+            }
+            hash = hash.wrapping_mul(gap_pow);
+            for x in w - width_px..w {
+                let covered = ring_covers(x, y, w, h, width_px, radius_px);
+                paint_ring_pixel(
+                    pixels,
+                    &mut hash,
+                    zero4,
+                    row + x as usize * 4,
+                    covered,
+                    color,
+                );
+            }
+        } else {
+            for x in 0..w {
+                let covered = ring_covers(x, y, w, h, width_px, radius_px);
+                paint_ring_pixel(
+                    pixels,
+                    &mut hash,
+                    zero4,
+                    row + x as usize * 4,
+                    covered,
+                    color,
+                );
+            }
         }
     }
     hash
@@ -1480,5 +1602,155 @@ mod tests {
         );
         assert!(!overlay.is_visible());
         assert!(overlay.hwnd().is_none());
+    }
+
+    /// Verbatim pre-optimization exhaustive painter: evaluates `ring_covers`
+    /// and mixes four bytes per pixel. Test oracle only (no Win32 calls);
+    /// `paint_ring` must stay byte- and checksum-identical to this.
+    fn paint_ring_oracle(
+        pixels: &mut [u8],
+        w: i32,
+        h: i32,
+        width_px: i32,
+        radius_px: i32,
+        color: (u8, u8, u8),
+    ) -> u64 {
+        let (r, g, b) = color;
+        let mut hash: u64 = 0xcbf29ce484222325;
+        let mut mix = |byte: u8| {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let idx = (y as usize * w as usize + x as usize) * 4;
+                let (bb, gg, rr, aa) = if ring_covers(x, y, w, h, width_px, radius_px) {
+                    (b, g, r, 255)
+                } else {
+                    (0, 0, 0, 0)
+                };
+                pixels[idx] = bb;
+                pixels[idx + 1] = gg;
+                pixels[idx + 2] = rr;
+                pixels[idx + 3] = aa;
+                mix(bb);
+                mix(gg);
+                mix(rr);
+                mix(aa);
+            }
+        }
+        hash
+    }
+
+    fn check_paint_ring_matches_oracle(
+        w: i32,
+        h: i32,
+        width_px: i32,
+        radius_px: i32,
+        color: (u8, u8, u8),
+    ) {
+        // Dirty nonzero start: a missed clear shows up as a byte mismatch.
+        let total = w.max(0) as usize * h.max(0) as usize * 4;
+        let mut got = vec![0xA5u8; total + 16];
+        let mut want = vec![0xA5u8; total + 16];
+        let got_sum = paint_ring(&mut got, w, h, width_px, radius_px, color);
+        let want_sum = paint_ring_oracle(&mut want, w, h, width_px, radius_px, color);
+        assert_eq!(
+            got_sum, want_sum,
+            "checksum {w}x{h} bw{width_px} r{radius_px}"
+        );
+        assert_eq!(got, want, "bytes {w}x{h} bw{width_px} r{radius_px}");
+    }
+
+    #[test]
+    fn paint_ring_matches_exhaustive_oracle_small_matrix() {
+        // Broad small matrix: degenerate dims, border width 0 / negative /
+        // thick (no inner hole), radius 0 / negative / oversized (clamped),
+        // narrow surfaces, and color variations.
+        let dims = [-1, 0, 1, 2, 3, 4, 7, 8, 11, 16];
+        let borders = [-1, 0, 1, 2, 3, 5, 8, 20];
+        let radii = [-2, 0, 1, 6, 40];
+        let colors = [(0u8, 0u8, 0u8), (42, 130, 218), (255, 255, 255)];
+        for w in dims {
+            for h in dims {
+                for width_px in borders {
+                    for radius_px in radii {
+                        for color in colors {
+                            check_paint_ring_matches_oracle(w, h, width_px, radius_px, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paint_ring_matches_oracle_at_typical_sizes() {
+        // Sensible larger surfaces incl. defaults (width 3, radius 6).
+        for (w, h, width_px, radius_px) in [
+            (320, 200, 3, 6),
+            (320, 200, 1, 0),
+            (800, 600, 3, 6),
+            (800, 600, 8, 12),
+            (1920, 1080, 3, 6),
+            (1920, 1080, 1, 0),
+            (320, 200, 200, 6),
+        ] {
+            check_paint_ring_matches_oracle(w, h, width_px, radius_px, (42, 130, 218));
+        }
+    }
+
+    /// Offline microbenchmark: old exhaustive vs new banded painter over
+    /// identical dirty buffers. Ignored by default; run explicitly in dev
+    /// and release with `-- --ignored --nocapture`. No Win32 calls, no
+    /// asserted timing thresholds; prints wall time only.
+    #[test]
+    #[ignore]
+    fn paint_ring_bench_old_vs_new() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        const REPS: u32 = 3;
+        let color = (42u8, 130u8, 218u8);
+        for (label, w, h, width_px, radius_px) in
+            [("medium", 800, 600, 3, 6), ("large", 1920, 1080, 3, 6)]
+        {
+            let total = w as usize * h as usize * 4;
+            let dirt = vec![0xA5u8; total];
+            let mut new_elapsed = std::time::Duration::ZERO;
+            let mut old_elapsed = std::time::Duration::ZERO;
+            for _ in 0..REPS {
+                let mut buf = dirt.clone();
+                let start = Instant::now();
+                let new_sum = paint_ring(
+                    black_box(buf.as_mut_slice()),
+                    w,
+                    h,
+                    width_px,
+                    radius_px,
+                    color,
+                );
+                new_elapsed += start.elapsed();
+                black_box(new_sum);
+                let mut expect = dirt.clone();
+                let start = Instant::now();
+                let old_sum = paint_ring_oracle(
+                    black_box(expect.as_mut_slice()),
+                    w,
+                    h,
+                    width_px,
+                    radius_px,
+                    color,
+                );
+                old_elapsed += start.elapsed();
+                black_box(old_sum);
+                assert_eq!(new_sum, old_sum, "bench checksum {label}");
+                assert_eq!(buf, expect, "bench bytes {label}");
+            }
+            println!(
+                "paint_ring {label} {w}x{h} bw{width_px} r{radius_px}: new {:?}/rep old {:?}/rep ({REPS} reps)",
+                new_elapsed / REPS,
+                old_elapsed / REPS,
+            );
+        }
     }
 }
