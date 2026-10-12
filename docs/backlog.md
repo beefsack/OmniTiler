@@ -262,11 +262,28 @@ decisions of 2026-09-24 are under
   2026-10-12: stage 1 (complete A) first, then stage 2 (B) early. Selected for
   latency only; parked Win+G/F11 containment is not
   claimed. Stage 1 offline-delivered 2026-10-12 (`ba2eb66`, CI green): both
-  LL hooks and classifiers on a dedicated input pump; physical drag
-  smoothness (dev/release, trace on/off), chord/Win+drag/Esc and stop/restore
-  checks pending before stage 2
-  ([record](changes/archive/windows-input-thread.md)). [Design](research/windows-port/owner-threading.md),
+  LL hooks and classifiers on a dedicated input pump. User physical
+  2026-10-12 (dev, trace, Notepad scope): edge drag-resize much faster, still
+  short of tiler-off; graceful stop clean. Win+arrow felt slightly slower; cause
+  was a missing owner wake (up to 100 ms poll), fixed in `21a9e58` and
+  user-confirmed physically
+  ([record](changes/archive/windows-input-thread.md),
+  [wake fix](changes/archive/windows-input-owner-wake.md)). Release and
+  trace-off comparison, Win+drag/Esc and preheld-modifier checks pending.
+  Next: stage 2 render thread. [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
+- P1 | Rust `unsafe` policy | User request 2026-10-12: avoid `unsafe`
+  entirely where possible, especially with multithreading. Audit at `2af85a7`:
+  `tiler-core` and `tiler-protocol` have none; stage 1 thread handoff
+  (`input_handoff.rs`) has none and uses no `unsafe impl Send/Sync`,
+  `static mut`, `UnsafeCell` or cross-thread raw pointers; remaining
+  `tiler-windows` and `tiler-kwin-effect-ffi` uses are Win32/C FFI calls and
+  hook/window procedures, which Rust cannot express without `unsafe`.
+  Tentative guardrail (pending user review): `#![forbid(unsafe_code)]` on
+  `tiler-core`, `tiler-protocol` and unsafe-free Windows modules; new
+  threading code shares state only through safe std primitives; FFI `unsafe`
+  stays at call sites. Consolidating existing Windows FFI behind a small safe
+  wrapper layer (or another crate choice) is a user decision.
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Cross-platform
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
   tile) and active border radius default 6; underlay default visibility
