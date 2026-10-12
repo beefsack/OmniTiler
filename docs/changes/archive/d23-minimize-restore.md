@@ -75,6 +75,20 @@ Tentative decisions (pending user review, recorded here):
 - Restart: stored slot is session-runtime only, not persisted.
 - Known risks: close-all retains slot-only sessions until restart; sole-restore
   operation reports Rejected focus-mismatch while converged state persists.
+- Follow-up delivered: sole-restore focus-none convergence whose observed
+  focus names a converged same-domain tile now projects with focus none and
+  no mismatch diagnostic; genuine mismatches (unknown focus, cross-domain,
+  other focus-none) still report Rejected focus-mismatch. Regression:
+  `mnz_03_sole_minimize_retained_through_engine_reconcile_and_restores_old_slot`
+  asserts projection plus new
+  `mnz_sole_restore_with_unknown_focus_still_reports_mismatch`.
+  Close-all assessed only: memory-only retention (one small slot per distinct
+  closed id per session lifetime plus one retained session per
+  emptied-with-slots domain); no wrong restore (restore validation, disjoint
+  reset, fresh ids; KWin per-instance ids; Windows adapter not on minimize
+  paths). No uncontentious minimal fix exists (core cannot distinguish close
+  from minimize; explicit destroyed-signal needs protocol plus both-adapter
+  changes); deferred.
 
 Pending live checks (user-owned): native MNZ-01 release/frames/focus, MNZ-02
 slot/focus, MNZ-03 occupancy/focus, WS1->WS2->WS1 style native journeys.

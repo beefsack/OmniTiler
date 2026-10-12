@@ -1792,7 +1792,9 @@ impl Engine {
     /// rollback; retained targets ride the pre-request convergence),
     /// empty-domain projection (retire a fully empty slot, else reproject on
     /// bounds change, else `malformed-topology`), focus binding
-    /// (`focus-mismatch`), pure projection (`malformed-topology` on shape
+    /// (`focus-mismatch`, except a focus-none convergence whose observed
+    /// focus names a converged tile: the D23 no-focus-write restore, which
+    /// projects with focus none), pure projection (`malformed-topology` on shape
     /// failure), then work-area reprojection on bounds change. The projection
     /// honors carried client size hints (AR12: satisfiable minimums take
     /// sibling slack, unsatisfiable windows flag `overconstrained`) and
@@ -1949,20 +1951,35 @@ impl Engine {
             };
         }
         let (focus_domain, focus_leaf) = session.focus();
-        let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) else {
-            restore(self, &backup, relocated_here);
-            return CoreReply::Rejected {
-                kind: RefusalKind::FocusMismatch.as_str(),
-                message: RefusalKind::FocusMismatch.message(),
-            };
+        let focus = match (focus_domain, focus_leaf) {
+            (Some(focus_domain), Some(focus_leaf)) if focus_domain == event.domain_key => {
+                Some((focus_domain, focus_leaf))
+            }
+            (None, None)
+                if !event.focused_window.0.is_empty()
+                    && snapshot.windows.iter().any(|link| {
+                        link.window == event.focused_window
+                            && link.output == event.domain_key.output
+                            && link.workspace == event.domain_key.workspace
+                    }) =>
+            {
+                // D23 MNZ-02 no-focus-write restore: a just-restored
+                // minimized window never takes focus, so a sole-minimize
+                // restore converges to focus none with the old-slot tree
+                // back. The observed focus names that restored tile, which
+                // is the correct converged state rather than a mismatch,
+                // so project it with focus none. Any other focus-none
+                // state still refuses below, as does a cross-domain focus.
+                None
+            }
+            _ => {
+                restore(self, &backup, relocated_here);
+                return CoreReply::Rejected {
+                    kind: RefusalKind::FocusMismatch.as_str(),
+                    message: RefusalKind::FocusMismatch.message(),
+                };
+            }
         };
-        if focus_domain != event.domain_key {
-            restore(self, &backup, relocated_here);
-            return CoreReply::Rejected {
-                kind: RefusalKind::FocusMismatch.as_str(),
-                message: RefusalKind::FocusMismatch.message(),
-            };
-        }
         let hints = event
             .windows
             .iter()
@@ -1973,7 +1990,7 @@ impl Engine {
             &event.domain_key,
             event.domain.bounds,
             retained_domain.gap,
-            Some((focus_domain.clone(), focus_leaf.clone())),
+            focus,
             ProjectionKind::Reconcile,
             &hints,
             &event.windows,

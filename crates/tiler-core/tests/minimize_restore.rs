@@ -15,11 +15,14 @@
 
 use std::collections::BTreeMap;
 
+use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply};
 use tiler_core::contract::Observation;
-use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
+use tiler_core::engine::Engine;
 use tiler_core::geometry::Rect;
-use tiler_core::ids::{GenerationId, OwnerId};
-use tiler_core::session::{ObservedWindow, OutputDomain, Session, SessionObservation};
+use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
+use tiler_core::seed::EngineWindow;
+use tiler_core::session::{DomainKey, ObservedWindow, OutputDomain, Session, SessionObservation};
 use tiler_core::size_hints::WindowSizeHints;
 
 fn owner() -> OwnerId {
@@ -129,6 +132,107 @@ fn seed_mru() -> Session {
     );
     assert_eq!(focused_window(&session).as_deref(), Some("win-b"));
     session
+}
+
+fn engine_window(name: &str) -> EngineWindow {
+    EngineWindow {
+        window: WindowId(name.to_owned()),
+        output: OutputId("out-1".to_owned()),
+        workspace: WorkspaceId("ws-1".to_owned()),
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        },
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    }
+}
+
+fn engine_reconcile(
+    engine: &mut Engine,
+    key: &DomainKey,
+    windows: Vec<EngineWindow>,
+    focused: &str,
+    fingerprint: u64,
+) -> CoreReply {
+    engine.handle(&CoreEvent {
+        owner: owner(),
+        generation: generation(),
+        correlation: CorrelationId::parse(&format!("corr-mnz-03-{fingerprint}")).expect("valid"),
+        revision: 0,
+        fingerprint,
+        domain: domain(),
+        domain_key: key.clone(),
+        outer_gap: 0,
+        focused_window: WindowId(focused.to_owned()),
+        windows,
+        directional: None,
+        directional_target_outer_gap: None,
+        target_domain: None,
+        target_windows: vec![],
+        command: CoreCommand::Reconcile,
+    })
+}
+
+/// Seed a sole window, hand it to a real engine, and drive the
+/// sole-minimize reconcile leg: the session is retained (not retired) with
+/// an emptied tiling layer, focus none, and a stored restore slot. Returns
+/// the engine plus the pre-minimize tree/leaf for the restore legs below.
+fn sole_minimized_engine() -> (Engine, DomainKey, Node, NodeId) {
+    // Seed the sole window through the converge primitive, then hand the
+    // session to a real engine so the reconcile path (converge, empty
+    // retire check, projection) runs exactly as the adapters drive it.
+    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
+    converge(&mut session, &["win-a"], Some("win-a"), 31);
+    let pre_tree = session
+        .snapshot()
+        .domains
+        .into_iter()
+        .next()
+        .expect("domain")
+        .tree
+        .expect("tree");
+    let pre_leaf = leaf_of(&session, "win-a");
+    let key = domain().key();
+    let mut engine = Engine::new();
+    engine.sync_binding(session.owner(), session.generation());
+    engine.store_committed(key.clone(), session, 0);
+
+    // Sole minimize arrives as explicit empty evidence with focus none.
+    // The retire check must retain the slot (not retire it), reporting an
+    // empty projection at the converged revision.
+    let pre_revision = engine.session(&key).expect("seeded").accepted_revision();
+    match engine_reconcile(&mut engine, &key, vec![], "", 32) {
+        CoreReply::Projection(plan) => {
+            assert!(plan.geometry.is_empty());
+            assert_eq!((plan.focus_domain, plan.focus_leaf), (None, None));
+            assert_eq!(plan.base_revision, pre_revision + 1);
+        }
+        other => panic!("sole minimize must project empty, got {other:?}"),
+    }
+    assert!(
+        engine.contains(&key),
+        "sole-minimized session retained, not retired"
+    );
+    let kept = engine.session(&key).expect("retained");
+    assert!(
+        kept.tree_for(&domain().key()).is_none(),
+        "tiling layer emptied"
+    );
+    assert_eq!(kept.focus(), (None, None), "focus none");
+    assert!(
+        kept.minimized_slot(&WindowId("win-a".to_owned())).is_some(),
+        "restore slot survives the retire check"
+    );
+    (engine, key, pre_tree, pre_leaf)
 }
 
 #[test]
@@ -266,112 +370,14 @@ fn mnz_03_sole_minimize_retains_workspace_with_focus_none_and_stored_slot() {
 
 #[test]
 fn mnz_03_sole_minimize_retained_through_engine_reconcile_and_restores_old_slot() {
-    use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply};
-    use tiler_core::engine::Engine;
-    use tiler_core::ids::CorrelationId;
-    use tiler_core::seed::EngineWindow;
-
-    fn engine_window(name: &str) -> EngineWindow {
-        EngineWindow {
-            window: WindowId(name.to_owned()),
-            output: OutputId("out-1".to_owned()),
-            workspace: WorkspaceId("ws-1".to_owned()),
-            rect: Rect {
-                x: 0,
-                y: 0,
-                w: 10,
-                h: 10,
-            },
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: WindowSizeHints::none(),
-        }
-    }
-
-    fn reconcile(
-        engine: &mut Engine,
-        key: &tiler_core::session::DomainKey,
-        windows: Vec<EngineWindow>,
-        focused: &str,
-        fingerprint: u64,
-    ) -> CoreReply {
-        engine.handle(&CoreEvent {
-            owner: owner(),
-            generation: generation(),
-            correlation: CorrelationId::parse(&format!("corr-mnz-03-{fingerprint}"))
-                .expect("valid"),
-            revision: 0,
-            fingerprint,
-            domain: domain(),
-            domain_key: key.clone(),
-            outer_gap: 0,
-            focused_window: WindowId(focused.to_owned()),
-            windows,
-            directional: None,
-            directional_target_outer_gap: None,
-            target_domain: None,
-            target_windows: vec![],
-            command: CoreCommand::Reconcile,
-        })
-    }
-
-    // Seed the sole window through the converge primitive, then hand the
-    // session to a real engine so the reconcile path (converge, empty
-    // retire check, projection) runs exactly as the adapters drive it.
-    let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("session");
-    converge(&mut session, &["win-a"], Some("win-a"), 31);
-    let pre_tree = session
-        .snapshot()
-        .domains
-        .into_iter()
-        .next()
-        .expect("domain")
-        .tree
-        .expect("tree");
-    let pre_leaf = leaf_of(&session, "win-a");
-    let key = domain().key();
-    let mut engine = Engine::new();
-    engine.sync_binding(session.owner(), session.generation());
-    engine.store_committed(key.clone(), session, 0);
-
-    // Sole minimize arrives as explicit empty evidence with focus none.
-    // The retire check must retain the slot (not retire it), reporting an
-    // empty projection at the converged revision.
-    let pre_revision = engine.session(&key).expect("seeded").accepted_revision();
-    match reconcile(&mut engine, &key, vec![], "", 32) {
-        CoreReply::Projection(plan) => {
-            assert!(plan.geometry.is_empty());
-            assert_eq!((plan.focus_domain, plan.focus_leaf), (None, None));
-            assert_eq!(plan.base_revision, pre_revision + 1);
-        }
-        other => panic!("sole minimize must project empty, got {other:?}"),
-    }
-    assert!(
-        engine.contains(&key),
-        "sole-minimized session retained, not retired"
-    );
-    let kept = engine.session(&key).expect("retained");
-    assert!(
-        kept.tree_for(&domain().key()).is_none(),
-        "tiling layer emptied"
-    );
-    assert_eq!(kept.focus(), (None, None), "focus none");
-    assert!(
-        kept.minimized_slot(&WindowId("win-a".to_owned())).is_some(),
-        "restore slot survives the retire check"
-    );
+    let (mut engine, key, pre_tree, pre_leaf) = sole_minimized_engine();
 
     // A later native restore re-observes the sole window (host-focused, as
     // on the realistic taskbar path). The stored-slot converge must win
     // over the all-new-IDs fresh-admission route: the tree and leaf come
     // back exactly, the core still writes no focus, and the slot is
     // consumed.
-    let reply = reconcile(&mut engine, &key, vec![engine_window("win-a")], "win-a", 33);
+    let reply = engine_reconcile(&mut engine, &key, vec![engine_window("win-a")], "win-a", 33);
     let restored = engine.session(&key).expect("retained after restore");
     let restored_tree = restored
         .snapshot()
@@ -393,16 +399,62 @@ fn mnz_03_sole_minimize_retained_through_engine_reconcile_and_restores_old_slot(
             .is_none(),
         "slot consumed by restore"
     );
-    // The operation phase still binds focus for non-empty projections, so
-    // a focus-none restore reports focus-mismatch while the converged
-    // old-slot state above persists; a follow-up observation adopts the
-    // host focus through the ordinary focus sync.
+    // The no-focus-write restore converges to focus none with the old-slot
+    // tree back; the reconcile operation projects that converged state
+    // instead of reporting a focus mismatch.
+    match reply {
+        CoreReply::Projection(plan) => {
+            assert_eq!(plan.geometry.len(), 1);
+            assert_eq!(
+                plan.geometry[0].window,
+                WindowId("win-a".to_owned()),
+                "restored tile projected"
+            );
+            assert_eq!(
+                (plan.focus_domain, plan.focus_leaf),
+                (None, None),
+                "no focus fabricated"
+            );
+            assert_eq!(plan.base_revision, restored.accepted_revision());
+        }
+        other => panic!("sole restore must project old-slot geometry, got {other:?}"),
+    }
+}
+
+#[test]
+fn mnz_sole_restore_with_unknown_focus_still_reports_mismatch() {
+    let (mut engine, key, pre_tree, _) = sole_minimized_engine();
+
+    // The same restore observation, but the observed focus names a window
+    // that is not a converged tile: the converged old-slot state still
+    // persists, yet the operation reports the genuine focus mismatch.
+    let reply = engine_reconcile(
+        &mut engine,
+        &key,
+        vec![engine_window("win-a")],
+        "win-ghost",
+        33,
+    );
     match reply {
         CoreReply::Rejected { kind, .. } => {
             assert_eq!(kind, "focus-mismatch");
         }
-        other => panic!("sole restore reply must be focus-mismatch, got {other:?}"),
+        other => panic!("unknown-focus restore must report focus-mismatch, got {other:?}"),
     }
+    let restored = engine.session(&key).expect("retained after restore");
+    let restored_tree = restored
+        .snapshot()
+        .domains
+        .into_iter()
+        .next()
+        .expect("domain")
+        .tree
+        .expect("tree");
+    assert_eq!(
+        restored_tree, pre_tree,
+        "converged old-slot state persists past the refusal"
+    );
+    assert_eq!(restored.focus(), (None, None));
 }
 
 #[test]
