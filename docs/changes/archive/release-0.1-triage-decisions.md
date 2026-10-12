@@ -3,20 +3,21 @@
 ## Goal And Scope
 
 - Record the user's 2026-10-12 reference tiers and D01, D03, D09, D10,
-  D12, D13, D16, D22, D23, D25, D26 and D27 selections in decisions, triage,
+  D12, D13, D16, D22, D23, D25, D26, D27 and D28 selections in decisions, triage,
   spec, outcome cells and backlog.
 - Preserve historical proposals and untested outcomes; update the Windows
   handoff and existing shortcut-dialog parity item.
 - Documentation only; D01's KDE fullscreen focus fence remains code work,
   D16 needs shared-core/KDE float transfer after native roundtrip verification,
   D23 needs shared-core/KDE minimize storage/restore and null-focus handling,
-  and D27 requires a native KWin trace before implementation assessment.
+  D27 requires a native KWin trace before implementation assessment, and D28
+  needs KDE fullscreen carry plus must-pass native acceptance including a game.
 
 ## Acceptance And Approach
 
-- Promote sixteen selected requirement rows to NORMATIVE with decision links.
-- Retain D28 as the only pending unit plus Proposal B /
-  N1-N4; limit the P2 settings list to approved D09, D10 and D27.
+- Promote seventeen selected requirement rows to NORMATIVE with decision links.
+- All 28 triage units decided; Proposal B / N1-N4 classification remains pending.
+  P2 settings stay limited to approved D09, D10 and D27.
 - Reconcile current summaries and indexes, verify changed local links and
   anchors, and run `git diff --check`.
 
@@ -87,6 +88,20 @@
   memory revisited after 0.1 with shared restart store. No code; verification-only.
 - Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
   selection is not native acceptance.
+- [D28 fullscreen send](../../decisions.md#window-state-float-sticky-maximize-fullscreen),
+  selected option (b) for 0.1, rejecting the recommended hold: an explicit
+  send of a fullscreen window, e.g. a game, is a user action and should be
+  honoured. KDE carries fullscreen on numbered/relative follow/stay sends,
+  matching G-D2 maximized carry and Windows item 9. No setting. Original
+  triage tier tally: i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm
+  context, COSMIC/Hyprland untraced in that tally, no evidenced alternative.
+  Detailed source evidence is retained separately from the approval tally.
+- D28 needs KDE code: existing fullscreen-send refusal becomes a gap, removed
+  as a listed 0.1 known issue. Explicit commands honoured; no unsolicited
+  fullscreen writes; preserve fullscreen flag with no tiling geometry writes
+  beyond native workspace movement. Native fullscreen send including a real
+  game is must-pass; stop and return to user if native observation shows KWin
+  cannot carry without dropping/corrupting fullscreen.
 
 ## Evidence And Outcome
 
@@ -95,10 +110,12 @@
   28 OPEN). D16 approval promoted REQ-WS-05 (131 NORMATIVE / 7 PROVISIONAL /
   28 OPEN). D22 approval promoted REQ-FLT-03 (132 NORMATIVE / 6 PROVISIONAL /
   28 OPEN). D23 approval promoted REQ-MNZ-01/02/03 (135 NORMATIVE /
-  3 PROVISIONAL / 28 OPEN). D25/D26 promote REQ-RST-01c/REQ-RST-02, yielding
-  verified current totals of 137 NORMATIVE / 1 PROVISIONAL / 28 OPEN (166 rows).
-- D28 only and Proposal B / N1-N4
-  remain tentative. Historical options/tallies and unsupported reference
+  3 PROVISIONAL / 28 OPEN). D25/D26 promoted REQ-RST-01c/REQ-RST-02
+  (137 NORMATIVE / 1 PROVISIONAL / 28 OPEN). D28 promotes stable REQ-MAX-09b
+  from refusal hold to KDE carry, yielding verified current totals of
+  138 NORMATIVE / 0 PROVISIONAL / 28 OPEN (166 rows).
+- All 28 triage units decided; only Proposal B / N1-N4 classification remains
+  pending. Historical options/tallies and unsupported reference
   outcomes are retained; approvals and their rationale are recorded.
 - Windows item 22 updated for approved defaults/settings and native foreground
   considerations; existing shortcut-dialog parity item updated to P2, with
@@ -120,6 +137,11 @@
   limitations. Existing R-RST-01/02 and the new-login discriminator are reused;
   no product code or live tests. Membership/set/focus native acceptance remains
   pending, distinct from existing float/sticky identity evidence.
+- D28 updated in decisions, triage, spec/counts/index, R-MAX-09 Ours target,
+  backlog gap/implementation queue, Windows handoff and Pending live checks.
+  Refusal removed from listed known issues. Proposal B check 1 now includes
+  the approved must-pass fullscreen/game sub-leg; original 53-check tally
+  and proposed M39/K12/W2 counts unchanged. No product code or live tests.
 - Requirement counts, changed local link targets/anchors, ASCII additions,
   requirement table structure, unchanged foreign reference outcomes and
   `git diff --check` passed. Native outcomes remain TBD; D01's fullscreen focus

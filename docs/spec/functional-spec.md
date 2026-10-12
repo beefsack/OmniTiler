@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 137 NORMATIVE, 28 OPEN, 1 PROVISIONAL (166 requirement rows);
+Draft totals: 138 NORMATIVE, 28 OPEN, 0 PROVISIONAL (166 requirement rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -68,9 +68,9 @@ User 2026-10-10 0.1 triage batch 1 selects 15 units / 16 rows
 float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
 behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
-D13, D16, D22, D23, D25, D26 and D27 (sixteen formerly PROVISIONAL rows across twelve units);
-D28 / REQ-MAX-09b KDE fullscreen-send refusal remains pending review.
-D09/D10/D27 settings are post-0.1; D16, D22, D23 and D25 have no setting. D16 tier-rescored
+D13, D16, D22, D23, D25, D26, D27 and D28 (seventeen formerly PROVISIONAL rows across thirteen units);
+all 28 triage units decided, only Proposal B / N1-N4 classification pending.
+D09/D10/D27 settings are post-0.1; D16, D22, D23, D25 and D28 have no setting. D16 tier-rescored
 under reference tiers (Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
 Tier 2 retain float against COSMIC fresh re-tile); D22 tier basis is COSMIC observed
 (not source-proven) plus i3/sway Tier 1 agree with no evidenced alternative,
@@ -267,8 +267,8 @@ is separate from the user physical owned-exit results below
 | REQ-MAX-07 | [R-MAX-07](reference-outcomes/maximize-fullscreen.md#r-max-07-captionless-full-monitor-cover) captionless cover | KDE uses native fullscreen flags; Windows keeps inferring fullscreen for captionless full-monitor windows for borderless-game compatibility; intentional platform difference for now | current: flag-based, no inference | intentional difference: containment classifies fullscreen | applicability OPEN | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) R-MAX-07 USER 2026-10-07 |
 | REQ-MAX-07b | [R-MAX-07](reference-outcomes/maximize-fullscreen.md#r-max-07-captionless-full-monitor-cover) Windows state basis | Retain Windows captionless full-monitor inference, despite 8/8 references tiling the cover; gaming compatibility must be flawless | n/a | current: containment | applicability OPEN | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) R-MAX-07 USER 2026-10-07; [principle](../principles.md#gaming-compatibility) |
 | REQ-MAX-08 | [R-MAX-08](reference-outcomes/maximize-fullscreen.md#r-max-08-focus-and-move-while-maximized) focus/move while maximized | Both platforms follow COSMIC: directional focus is fenced while the focused window is maximized (no-op; leave via unmaximize or Alt+Tab); directional move of a maximized window unmaximizes first, then moves. One native clear attempt, continue only after observed clear with fresh direction/reference/focus/domain guards in the same invocation; otherwise log refusal with no structural move or delayed retry. Eligible floats use ordinary half-snaps after clear. Existing maximized-subject pointer refusals and fullscreen precedence unchanged | shared opt-in focus fence/KDE delivered offline ([record](../changes/archive/reference-comparison-implementation.md)); native clear/focus timing TBD | tiled maximum keeps Win+arrow focus; Win+Shift+arrow clears then tiled-moves or float-snaps all four halves: physically user-accepted 2026-10-12 under conditions above; failure/race/held-repeat/preset/fixed/game/DPI/multi-output TBD ([record](../changes/archive/windows-maximized-directional-navigation.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) G-06 User 2026-10-10; resolves G-D1 |
-| REQ-MAX-09 | [R-MAX-09](reference-outcomes/maximize-fullscreen.md#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace) send maximized/fullscreen | Maximized leg: cross-platform workspace send keeps maximize on arrival (existing Windows policy; Hyprland/qtile/awesome agree). Deliberate COSMIC/niri deviation: a send relocates the whole window/state, unlike an in-layout move. Fullscreen Table A 2026-10-07 unchanged: Windows same-output single-window carry without restoring first; observe KDE native fullscreen send before selecting its carry policy. KDE fullscreen refusal is PROVISIONAL REQ-MAX-09b below | KDE flag-stable native maximize carry delivered offline without restore/remaximize or overlay geometry writes ([record](../changes/archive/reference-comparison-implementation.md)); actual native arrival carry TBD; fullscreen behavior PROVISIONAL REQ-MAX-09b (currently refuses fullscreen sends) | maximized follow/stay agent-observed 2026-10-11 ([record](../changes/archive/windows-workspace-send-follow-stay.md)); fullscreen numbered follow/stay and relative follow, source MRU/reflow and exit to target allocation agent-observed 2026-10-11, base `6b76589` plus delivery commit ([record](../changes/archive/windows-fullscreen-workspace-carry.md)); native gates passed; fullscreen follow suppresses explicit focus writes (tentative, pending user review); physical/flag-race/app-owned/game/cross-output pending | same-output Windows delivered; KDE fullscreen observe-first | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) G-D2 User 2026-10-10; [backlog](../backlog.md) Table A fullscreen carry accepted 2026-10-07 |
-| REQ-MAX-09b | [R-MAX-09](reference-outcomes/maximize-fullscreen.md#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace) KDE fullscreen-send refusal | PROVISIONAL tentative (a) keep the KDE fullscreen-send refusal as a listed 0.1 known issue pending the G-D2 native observation; no carry selected | current: refusal hold to verify; native observation pending | n/a (Windows carry unchanged in REQ-MAX-09) | applicability OPEN (KDE-only hold) | PROVISIONAL | [tentative D28](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-MAX-09 | [R-MAX-09](reference-outcomes/maximize-fullscreen.md#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace) send maximized/fullscreen | Maximized leg: cross-platform workspace send keeps maximize on arrival (existing Windows policy; Hyprland/qtile/awesome agree). Deliberate COSMIC/niri deviation: a send relocates the whole window/state, unlike an in-layout move. Fullscreen leg NORMATIVE D28 (b) User 2026-10-12: explicit numbered/relative follow/stay send carries the fullscreen window to the target workspace still fullscreen, matching maximized G-D2 and Windows Table A item 9 carry. Tier basis (original triage tally): i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm context, COSMIC/Hyprland untraced in that tally, no evidenced alternative, no setting. Gaming: explicit commands honoured; no unsolicited fullscreen writes; preserve fullscreen flag, avoid tiling geometry writes beyond native move requirements. If native shows KWin cannot carry without dropping/corrupting fullscreen, stop and return to user; native outcome TBD. Detail in NORMATIVE REQ-MAX-09b | NEEDS CODE at `fafcd31`: existing KDE fullscreen-send refusal (`workspace-send-adapter.ts:488-490`, `workspace-send-adapter-entry.ts:459-471`); maximized flag-stable carry delivered offline without restore/remaximize or overlay geometry writes ([record](../changes/archive/reference-comparison-implementation.md)); actual native arrival carry TBD; native fullscreen-send journey including a real game is a must-pass live check, outcome TBD | maximized follow/stay agent-observed 2026-10-11 ([record](../changes/archive/windows-workspace-send-follow-stay.md)); fullscreen numbered follow/stay and relative follow, source MRU/reflow and exit to target allocation agent-observed 2026-10-11, base `6b76589` plus delivery commit ([record](../changes/archive/windows-fullscreen-workspace-carry.md)); native gates passed; fullscreen follow suppresses explicit focus writes (tentative, pending user review); physical/flag-race/app-owned/game/cross-output pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) G-D2 User 2026-10-10; D28 (b) User 2026-10-12; [backlog](../backlog.md) Table A fullscreen carry accepted 2026-10-07 |
+| REQ-MAX-09b | [R-MAX-09](reference-outcomes/maximize-fullscreen.md#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace) KDE fullscreen carry | NORMATIVE D28 (b) User 2026-10-12: explicit numbered/relative follow/stay send moves the fullscreen window to the target workspace still fullscreen; user action honoured. Tier basis (original triage tally): i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm context, COSMIC/Hyprland untraced in that tally, no evidenced alternative, no setting. Gaming: explicit commands honoured; no unsolicited fullscreen writes; preserve fullscreen flag, avoid tiling geometry writes beyond native move requirements | NEEDS CODE at `fafcd31`: KDE refuses fullscreen sends (`workspace-send-adapter.ts:488-490`, `workspace-send-adapter-entry.ts:459-471`); current refusal is the gap, not the policy; native fullscreen-send journey including a real game is a must-pass live check, outcome TBD; if native shows KWin cannot carry without dropping/corrupting fullscreen, stop and return to user | n/a (Windows carry unchanged in REQ-MAX-09) | applicability OPEN (KDE-only carry) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) D28 (b) User 2026-10-12 |
 
 <a id="minimize"></a>
 ## 9. Minimize ([R-MNZ](reference-outcomes/minimize.md#minimize-native-icon-minimize-reference-outcomes))
@@ -540,8 +540,8 @@ out-of-recording-output-scope previous IDs clear.
 - T-05 resolved: User 2026-10-10 G-06 makes REQ-MAX-08 NORMATIVE:
   COSMIC focus fence and unmaximize-before-directional-move replace the
   Windows parity focus-permit/movement-refusal text (review G-D1).
-  G-D2 selects cross-platform maximized-send carry; KDE fullscreen
-  observe-first remains separate and unchanged.
+  G-D2 selects cross-platform maximized-send carry; D28 (b) User 2026-10-12
+  selects NORMATIVE KDE fullscreen carry, replacing observe-first.
 
 <a id="open-index"></a>
 ## 21. Open-decisions index
@@ -556,7 +556,7 @@ marked with literal status in-row):
 - [Layout](#layout): REQ-LAY-02, REQ-LAY-03, REQ-LAY-04 (parked User decision 2026-10-09).
 - [Workspaces](#workspaces): REQ-WS-07, REQ-WS-10.
 - [Floating](#floating): none.
-- [Maximize](#maximize): no OPEN requirement row; KDE carry policy remains unselected/observe-first under PROVISIONAL REQ-MAX-09b refusal hold (D28). REQ-MAX-09 maximize/Windows carry and REQ-MAX-08 remain NORMATIVE.
+- [Maximize](#maximize): no OPEN requirement row; KDE fullscreen carry is NORMATIVE under REQ-MAX-09b (D28 (b)). REQ-MAX-09 maximize/Windows carry and REQ-MAX-08 remain NORMATIVE.
 - [Minimize](#minimize): none.
 - [Close](#close): none.
 - [Output](#output): none.
@@ -566,11 +566,10 @@ marked with literal status in-row):
   Q2 edge clauses REQ-SPC-04a..h are NORMATIVE (User 2026-10-08), not OPEN rows.
 - [Columns](#columns): REQ-COL-01, REQ-COL-02, REQ-COL-03, REQ-COL-04, REQ-COL-05, REQ-COL-06, REQ-COL-07, REQ-COL-08, REQ-COL-09, REQ-COL-10.
 
-PROVISIONAL discussion group: 1 row,
-[tentative 2026-10-11](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
-pending user review; no implementation authorization:
+PROVISIONAL discussion group: 0 rows; all 28 triage units decided User 2026-10-12
+(seventeen formerly PROVISIONAL rows across thirteen units now NORMATIVE):
 
-- [Maximize](#maximize): REQ-MAX-09b (D28 KDE fullscreen-send refusal).
+- [Maximize](#maximize): none; REQ-MAX-09b (D28 (b) KDE fullscreen carry) is NORMATIVE.
 
 All nine prior PROVISIONAL rows remain
 NORMATIVE (User 2026-10-08): REQ-FLT-06 (plus the selected REQ-FLT-06b

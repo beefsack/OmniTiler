@@ -532,9 +532,21 @@ rectangles where geometry is load-bearing.
   their established view/focus rules. [Real-Planner follow and native-mock stay fixtures](../../../kwin/tests/workspace-send-maximized-carry.test.ts),
   [cross-output carry/race fixtures](../../../kwin/tests/output-send.test.ts).
   Actual native maximize preservation on arrival, source reflow and later
-  restore into the target slot remain user-owned checks;
-  fullscreen remains observe-first (currently refuses fullscreen sends),
-  separate from whole-workspace output migration D8.
+  restore into the target slot remain user-owned checks.
+  NORMATIVE KDE fullscreen carry D28 (b) User 2026-10-12
+  ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)):
+  explicit numbered/relative follow/stay send moves the window to the target
+  workspace still fullscreen. NEEDS CODE at `fafcd31`: current refusal at
+  `workspace-send-adapter.ts:488-490` and
+  `workspace-send-adapter-entry.ts:459-471` is the gap. Tier basis (original
+  triage tally): i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm
+  context, COSMIC/Hyprland untraced in that tally, no evidenced alternative,
+  no setting. Gaming: explicit commands honoured;
+  no unsolicited fullscreen writes; preserve the flag, avoid tiling geometry
+  writes beyond native move requirements. Native fullscreen-send journey
+  including a real game is a must-pass live check, outcome TBD; if native
+  shows KWin cannot carry without dropping/corrupting fullscreen, stop and
+  return to the user. Separate from whole-workspace output migration D8.
 - Then Ours Windows: a tiled maximized B sends through the retained
   Engine route (flag recheck, target allocation kept, overlay geometry
   never writes) with explicit follow/stay. Same-output numbered/relative
@@ -567,5 +579,13 @@ rectangles where geometry is load-bearing.
   native send outcome TBD. Fresh slotless born-fullscreen B -> send cannot
   obtain a retained tile allocation; native outcome TBD. Unsupported reference
   outcomes for these ownership/focus variants remain TBD.
-- Variant hook: NORMATIVE maximized carry (G-D2 User 2026-10-10);
-  fullscreen KDE native policy remains observe-first/TBD.
+- Variant hook: NORMATIVE maximized carry (G-D2 User 2026-10-10) and NORMATIVE
+  KDE fullscreen carry (D28 (b) User 2026-10-12); existing R-MAX-09 follow/stay
+  sequence reused, game leg is the must-pass live check with outcome TBD.
+- Discriminating KDE game variant (User 2026-10-12 D28 (b)): fullscreen game
+  B on WS1, occupied WS2; explicitly send B to WS2, repeating fresh for
+  numbered/relative and follow/stay. Selected target: B remains fullscreen
+  on WS2, with no tiling geometry writes beyond native workspace movement;
+  follow/stay view semantics are honoured. Record flag, membership, view/focus
+  and visible/input state. Native outcome TBD, must-pass; stop and return to
+  the user if KWin drops or corrupts fullscreen during native observation.

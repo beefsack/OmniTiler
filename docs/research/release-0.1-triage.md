@@ -1,7 +1,7 @@
-# Release 0.1 triage - user decisions and remaining tentative units
+# Release 0.1 triage - user decisions and pending live-check classification
 
-Status: 27 units approved by User (15 on 2026-10-10, twelve on 2026-10-12);
-D28 only plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: all 28 units approved by User (15 on 2026-10-10, thirteen on 2026-10-12);
+only Proposal B / N1-N4 classification remains pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes sixteen rows: current spec
-137 NORMATIVE / 1 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
+138 NORMATIVE / 0 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -116,18 +116,32 @@ REQ-MAX-09b. User 2026-10-12 promotes sixteen rows: current spec
   the shared restart store. No code; verification-only.
 - Native dogfood/live checks will assess D25/D26, per User 2026-10-12;
   outcomes remain pending. [Decisions](../decisions.md#restart-persistence).
-- Remaining tentative unit: D28;
-  Proposal B / N1-N4 remain pending user review.
+- D28 (b) / REQ-MAX-09 fullscreen leg / REQ-MAX-09b / R-MAX-09 is
+  user-decided for 0.1: explicit numbered/relative follow/stay send carries a
+  fullscreen window to the target workspace still fullscreen, matching G-D2
+  maximized carry and Windows approved carry (item 9). The user rejected the
+  recommended (a) hold: an explicit send of a fullscreen window, e.g. a game,
+  is a user action and should be honoured. No setting. Tier basis from the
+  original triage tally: i3/sway Tier 1 plus qtile/awesome Tier 2 carry, bspwm
+  context; COSMIC/Hyprland untraced in that tally, no evidenced alternative.
+  Detailed reference source cells remain separate, unchanged evidence.
+- D28 needs KDE code at the existing fullscreen-send refusals, not a listed
+  0.1 known issue. Explicit commands are honoured; no unsolicited fullscreen
+  writes. Preserve the fullscreen flag, with no tiling geometry writes beyond
+  what native workspace movement requires. Native KDE fullscreen-send journey
+  including a real game is must-pass; if native observation during implementation
+  shows KWin cannot carry without dropping/corrupting fullscreen, stop and
+  return to the user. [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
+- No triage units remain tentative; only Proposal B / N1-N4 classification
+  remains pending. D28's fullscreen-send live check is explicitly must-pass.
 
 ## Tentative decisions 2026-10-11 (pending user review)
 
-Remaining tentative units only, distinct from the user decisions above.
-No selection is approved until user review. No implementation is authorized by this section.
+No triage units remain tentative. Only Proposal B / N1-N4 classification
+remains pending, distinct from the approved D28 must-pass fullscreen-send check.
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D28 (a) keep the KDE fullscreen-send refusal as a listed 0.1 known issue
-  pending the G-D2 native observation; no carry selected.
 - Proposal B tentatively adopted as the original 53-check classification
   M39/K12/W2 plus N1-N4 as M checks. With distinct N1-N4 additions the
   inventory is 57 checks => M43/K12/W2. Batch-1 verification extras remain
@@ -158,6 +172,9 @@ unchanged; source observations are not marked as approved.
   is superseded by approved (b): persisted gaps/settings and host re-observation,
   with cross-login intentional-float loss a listed 0.1 known limitation.
   Native dogfood/live checks will assess both; no saved-layout restore.
+- D28's recommended refusal hold (a) was rejected. User 2026-10-12 selected
+  (b) fullscreen carry for explicit sends in 0.1, with native/game acceptance
+  must-pass and a return-to-user condition if KWin cannot preserve fullscreen.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -454,6 +471,13 @@ The original proposal/tally below is historical, not the current default.
 
 ### D28 fullscreen send observe-first (MAX-09, separate)
 
+User 2026-10-12 selected option (b), not the recommended hold: explicit
+fullscreen sends are user actions and should be honoured. KDE carry needs
+code for 0.1; native acceptance including a real game is must-pass. See
+[current approval, gaming constraints and stop condition](#user-decisions-2026-10-12).
+The proposal/tally below is historical. Its H/C untraced tally remains the
+approval basis; the detailed R-MAX-09 source cells are retained separately.
+
 MAX-09 maximized leg NORMATIVE (flag-stable carry delivered offline;
 [spec](../spec/functional-spec.md#L223)); fullscreen leg OPEN observe-first,
 currently refuses fullscreen sends. Table A carry-5/8 (B,I,S,Q,A) 3fam
@@ -508,9 +532,14 @@ FX = missing/failed/removed effect keeps tiling working + KWin stable.
 Verdicts: M = MUST-PASS; K = KNOWN-ISSUE-ALLOWED, only if listed and no
 crash or silent tiling stop; W = Windows-release, outside KDE 0.1.
 
+D28 (b), User 2026-10-12, adds the KDE fullscreen-send/game leg to check 1 as
+an explicitly approved must-pass check; refusal is not a listed known issue.
+The rest of Proposal B / N1-N4 classification remains pending. This sub-leg
+does not change the original 53-check tally or proposed M39/K12/W2 counts.
+
 | # | Check ([backlog](../backlog.md#pending-live-checks)) | V | One-line reason |
 |---|---|---|---|
-| 1 | Reference comparison G-05/G-06/G-37/G-D2 | M | all four normative-selected core legs: G-06 focus/move mutex, G-D2 maximized carry, G-05 predicate, G-37 source refill |
+| 1 | Reference comparison G-05/G-06/G-37/G-D2 plus D28 fullscreen carry | M | G-06 focus/move mutex, G-D2 maximized carry, G-05 predicate, G-37 source refill; D28 KDE explicit fullscreen carry including a real game is user-approved must-pass, not a refusal known issue |
 | 2 | Two-candidate output move/send/migration | M | multi-output core (selection + arrival + fences) |
 | 3 | Placement physical acceptance | W | Windows session dogfood (Windows gate) |
 | 4 | Windows parity/settings/tray physical | W | Windows session incl Snap/Explorer/DPI (Windows gate) |
@@ -574,9 +603,9 @@ P1 in gate; mainstream packaging P1 per 2026-10-10 scope.
 | sleep/wake | 30, 50 | covered (add game-present combo only: N3) |
 | plug/unplug | 51 (+14 hotplug legs) | covered |
 | resolution/scaling | 34 (work-area gate), 44 | covered; overlay interplay untested: N4 |
-| fullscreen apps | 9, 13, 45, 34 | covered |
+| fullscreen apps | 1 (D28 game send), 9, 13, 45, 34 | covered |
 | underlying config | 22 (Fix/Revert flow), 12 (Save path) | external/bypass edits untested: N2 |
-| gaming non-interference | 9, 31, 34, 45 | covered (+N3 combo) |
+| gaming non-interference | 1 (D28 explicit game send), 9, 31, 34, 45 | covered (+N3 combo) |
 | tiling/focus/move/ws/multi/border/shortcuts/settings/restart | 1, 2, 6-8, 10-23, 25-27, 31-33, 39, 42-49 | covered |
 | FX missing/failed/removed effect | 28 (failed endpoints), 53 (partial) | missing-at-startup, explicit disable, package remove untested: N1 |
 
@@ -596,5 +625,5 @@ action rows. Thin/disclosed: FLT-03 (COSMIC-observed, 1-family source),
 MNZ-02 (2/2ev scoped), MNZ-03 (COSMIC source-proven, no multi tally),
 INS-07b (0/8, post). Surprises: WS-05 COSMIC-outlier (majority exception);
 MNZ-01 direction corrected (release, not retain); OUT-02 COSMIC-observed
-wrap (not cross); RST-02 consensus C audit-only, with the new tentative clause
+wrap (not cross); RST-02 consensus C audit-only, with the user-selected clause
 recorded separately from reference evidence.

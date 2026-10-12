@@ -70,13 +70,14 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Remaining 0.1 triage unit D28 and Proposal B / N1-N4 are tentative,
+- All 28 0.1 triage units are user-decided. Proposal B / N1-N4 is tentative,
   pending user review (updated 2026-10-12). Proposed classification: 39
   must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
   Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  D28 is PROVISIONAL, distinct from batch 1 and the twelve units
-  [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
+  Batch 1 and the thirteen units
+  [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12)
+  are NORMATIVE;
   native evidence and implementation gaps remain separate.
 
 ## Project Name
@@ -168,7 +169,7 @@ platform API behavior.
   approved post-0.1 D09, D10 and D27 settings, with names/options/WM tooltips
   under [Move commands](#move-layout-and-output-commands) and
   [Activation requests](#activation-requests).
-  D03, D12, D13, D16, D22, D23 and D25 have no setting.
+  D03, D12, D13, D16, D22, D23, D25 and D28 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
     mutates shortcuts or host keys, and installation/startup never mutates
@@ -788,8 +789,8 @@ platform API behavior.
 
 ## Reference Matrix and Spec Authority
 
-- Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
-  D10, D12, D13, D16, D22, D23, D25, D26 and D27 are now user-decided 2026-10-12.
+- The 2026-10-11 tentative triage units D01, D03, D09,
+  D10, D12, D13, D16, D22, D23, D25, D26, D27 and D28 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of
@@ -1874,10 +1875,28 @@ platform API behavior.
   Shared core first. Windows follows later in handoff item 22: its current
   retained allocation is a divergence to change, not an approved exception.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
-- Tentative 2026-10-11, pending user review: D28(a) lists KDE fullscreen-send
-  refusal as a 0.1
-  known issue pending observation, without altering approved Windows carry.
-  [D28](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
+  R-MAX-09, option (b): KDE fullscreen carry ships in 0.1. An explicit send
+  (follow/stay, numbered/relative) moves a fullscreen window to the target
+  workspace and it remains fullscreen there, matching maximized carry G-D2
+  and approved Windows carry (handoff item 9). The user rejected the recommended
+  refusal hold: sending a fullscreen window, e.g. a game, is an explicit user
+  action and should be honoured. Replacing the current refusal needs code;
+  it is no longer a listed 0.1 known issue.
+  [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
+- D28 [tier basis](#reference-tiers), original triage tally: i3/sway (Tier 1)
+  plus qtile/awesome (Tier 2) carry; bspwm is context. COSMIC/Hyprland were
+  untraced in that tally; no evidenced alternative, no setting. Detailed
+  [R-MAX-09 source evidence](spec/reference-outcomes/maximize-fullscreen.md#r-max-09-send-a-maximizedfullscreen-window-to-another-workspace)
+  is retained separately from the approval tally and native KDE acceptance.
+- D28 gaming interpretation: honour explicit user commands; OmniTiler must
+  not make unsolicited writes to fullscreen windows. Preserve the fullscreen
+  flag and avoid tiling geometry writes to the fullscreen window beyond what
+  the native workspace move requires. Native KDE fullscreen-send acceptance,
+  including a real game, is a must-pass live check. If native observation
+  during implementation shows KWin cannot carry without dropping or corrupting
+  fullscreen, stop and return to the user. Current refusal paths are a
+  [revision-bound implementation gap](backlog.md); native outcome remains TBD.
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
 - R-FLT-12: focusing an overlapping float raises it; no project lower verb for now (User 2026-10-10, 0.1 triage D20).
@@ -2084,14 +2103,14 @@ platform API behavior.
   leg): sending a maximized window to another workspace keeps it maximized
   on arrival, cross-platform. Deliberate COSMIC/niri deviation (they
   unmaximize): a send relocates the whole window so its state travels,
-  unlike an in-layout move; Hyprland/qtile/awesome agree. Fullscreen carry
-  selected in Table A 2026-10-07 is unchanged, including the separate KDE
-  fullscreen observe-first status; whole-workspace output migration D8
+  unlike an in-layout move; Hyprland/qtile/awesome agree. Windows fullscreen
+  carry selected in Table A 2026-10-07 remains; KDE fullscreen carry is now
+  selected by D28 (b) User 2026-10-12. Whole-workspace output migration D8
   remains its own carried-overlay rule.
   KDE allows flag-stable maximized tiled sends through native membership/
   output transfer, without unmaximize/remaximize or overlay geometry writes.
   Existing arrival/current-view/lifetime/follow/stay fences still apply.
-  Status: KDE maximize carry delivered offline ([record](changes/archive/reference-comparison-implementation.md)); KDE native arrival preservation pending. Windows same-output numbered/relative follow/stay, source MRU and native target unmaximize agent-observed 2026-10-11 ([record](changes/archive/windows-workspace-send-follow-stay.md)); physical/cross-output pending. KDE fullscreen native send still observe-first (currently refuses fullscreen sends).
+  Status: KDE maximize carry delivered offline ([record](changes/archive/reference-comparison-implementation.md)); KDE native arrival preservation pending. Windows same-output numbered/relative follow/stay, source MRU and native target unmaximize agent-observed 2026-10-11 ([record](changes/archive/windows-workspace-send-follow-stay.md)); physical/cross-output pending. KDE fullscreen carry needs code (currently refuses fullscreen sends); D28's native journey including a real game is must-pass.
 - Windows fullscreen workspace carry R-MAX-09 delivered 2026-10-11,
   base `6b76589` plus delivery commit ([record](changes/archive/windows-fullscreen-workspace-carry.md)).
   Same-output numbered follow/stay and relative follow, source reflow/MRU,
