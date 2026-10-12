@@ -201,6 +201,12 @@ decisions of 2026-09-24 are under
   (g) underlay visibility: user used `#50909090`, needs a brighter default and
   research into blend options visible on black, white and grey. Win+G/F11
   leakage observed again (known, parked under gaming coexistence).
+  - (f) Offline-delivered 2026-10-12 (`b8edd14`, `8e56546`, CI green):
+    Win+B opens the system-default browser via shell `open` of bare
+    `https://`, Win+T launches `wt.exe` (missing Terminal logs and
+    continues); both tentative, pending user review. Physical check pending:
+    Authentic launches, Compatible inert, rebind/disable
+    ([record](changes/archive/windows-launcher-shortcuts.md)).
   - (a) Offline-delivered: pending first-run prompt cancels on graceful stop,
     with no settings publication; native dismissal/teardown live check pending
     ([record](changes/archive/windows-first-run-stop.md)).
@@ -759,7 +765,7 @@ decisions of 2026-09-24 are under
   | 2 | Item 2 explicit follow/stay, then relative sends | Reuse item 1 ring/action routing, not MRU target selection. |
   | 3 | Item 3 live same-axis setting | Independent; replace compile constant without rebuilding trees. |
   | 4 | Item 4 orientation action | Reuse input/catalog/live settings infrastructure. |
-  | 5 | Unparked parity-queue multi-output foundation after single-output items 1-4, 6, 7, 9-11, 13, 15, 17, 18, 20 (18 before 10/11), then handoff items 5, 12, 14, 16, 19 | Per-monitor current-view observation, membership/geometry/visibility/recovery fences first; user live checks need a multi-output Windows setup. Offline topology/Engine tests can precede that. |
+  | 5 | Unparked parity-queue multi-output foundation after single-output items 1-4, 6, 7, 9-11, 13, 15, 17, 18, 20 (18 before 10/11), then handoff items 5, 12, 14, 16, 19 | Per-monitor current-view observation, membership/geometry/visibility/recovery fences first; user live checks need a multi-output Windows setup. Offline topology/Engine tests can precede that. User physical 2026-10-12 on a two-output host (primary left, secondary right): repeated Win+Shift+Right stopped at the primary's right edge and a mouse drag would not drop on the secondary; consistent with the absent foundation, trace logs held outside the repo. |
   | 6 | Keyboard resize R-RSZ-01 (parity d) | Independent; needs fresh Alt-capable trigger plus dedicated resize intent. No dependency on items 1-5 except shared modifier routing. |
   | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below). REQ-RST-01c is NORMATIVE D25 (User 2026-10-12), membership/set/focus native acceptance pending. Coordinate D7 membership with item 13. |
