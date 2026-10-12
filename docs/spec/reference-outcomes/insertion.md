@@ -40,8 +40,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then PaperWM: C inserts as a new column at selected+1 (after B) under the shipped RIGHT default, activated on show; existing columns keep widths (per-column targetWidth, no rescale), C takes its own frame/preferred width; viewport keeps C visible via minimal ensuredX scroll under DEFAULT. `S(S-pap-ins)` + `S(S-pap-layout)` + `S(S-pap-view)`.
 - Then karousel/Lazy: C opens a new column after the last-focused column (B's column under the B* tiled focus), appended at the bottom; existing columns keep widths (new-column width from the newcomer preferred width clamped into [min,max]; `columnsSetX` repositions only); newcomer focus TBD (fixture states no protocol, X11 user-time/startup/session, Wayland token/app-id/transient-serial, or FSP/rules inputs selecting the host activation fork); viewport is a deterministic conditional (Lazy minimal scroll toward the last-focused column: moves only if the newcomer is accepted and not contained, else stays on B); exact settled widths TBD (fixture states no newcomer frame/min/max inputs for the clamp). `S(S-kar-ins)` + `S(S-kar-fltanchor)` + `S(S-kar-scroll)` + `S(S-kar-min)` + `S(S-kwin-manage)` + `S(S-kwin-add)`.
 - Then paneru: ordinary C takes the fresh path as a new Single column appended at the end after B (no rule index under shipped defaults; focused B holds the last index so the after-focus slot misses and it appends); newcomer focus is synthesized to C (`dont_focus` false); existing columns keep widths with no rescale; the strip reshuffles minimally to bring C into view with no centering (`auto_center` off). `S(S-pan-fresh)` + `S(S-pan-base)` + `S(S-pan-stripwidth)` + `S(S-pan-colops)`.
-- Then Ours KDE: Long-edge split at focused leaf; `D(D-dec-x)` (user statement); order TBD
-- Then Ours Windows: Long-edge split at focused leaf; `D(D-dec-x)` (user statement); order TBD
+- Then Ours KDE: Long-edge split at focused leaf; `D(D-dec-x)`. Selected After focused, no setting (User 2026-10-12 D03, [decision](../../decisions.md#placement-minimums-and-startup-adoption)); native order/journey TBD.
+- Then Ours Windows: same selected long-edge / After focused policy, no setting; native order/journey TBD ([D03 decision](../../decisions.md#placement-minimums-and-startup-adoption)).
 - Variant hook: V-INS-AXIS.
 
 <a id="r-ins-02-backfill-stack-admission-scrolling-profiles"></a>
@@ -162,8 +162,8 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then PaperWM: each leg inserts at selected+1 under the shipped RIGHT default with the newcomer activated on show (selection follows the newcomer, so D follows C and E follows D); existing columns keep widths per the column layout and each newcomer is kept visible; the anchor is the selected window, so the fixed pointer is irrelevant. `S(S-pap-ins)` + `S(S-pap-layout)` + `S(S-pap-view)`.
 - Then karousel/Lazy: leg 1 per R-INS-01 (new column after B's column, appended at the bottom; existing widths stable; focus and exact widths TBD for that row's missing activation and frame/min/max inputs); legs 2-3 TBD (each anchor follows the last-focused column, which turns on whether the prior newcomer was accepted under those same missing inputs). `S(S-kar-ins)` + `S(S-kar-fltanchor)` + `S(S-kar-scroll)` + `S(S-kwin-manage)` + `S(S-kwin-add)`; links R-COL-01.
 - Then paneru: leg 1 per R-INS-01 (C appended after B with synthesized focus); D then appends after C and E after D the same way, each anchor following the last-synthesized focus with newcomer focus synthesized; existing widths stay stable with no rescale and each leg reshuffles minimally with no centering. `S(S-pan-fresh)` + `S(S-pan-base)` + `S(S-pan-stripwidth)` + `S(S-pan-colops)`; links R-COL-01.
-- Then Ours KDE: leg-1 topology per `S(S-ours-ins)` (focused-leaf wrap old/new, admission-axis split, equal shares), newcomer desired focus; legs 2-3 TBD.
-- Then Ours Windows: leg-1 topology per `S(S-ours-ins)` (same old/new wrap), newcomer desired focus; legs 2-3 TBD.
+- Then Ours KDE: leg-1 topology per `S(S-ours-ins)` (focused-leaf wrap old/new, admission-axis split, equal shares), newcomer desired focus; selected re-application per leg (User 2026-10-12 D03 (a), [decision](../../decisions.md#placement-minimums-and-startup-adoption)); legs 2-3 native outcomes TBD.
+- Then Ours Windows: leg-1 topology per `S(S-ours-ins)` (same old/new wrap), newcomer desired focus; same selected per-leg policy, legs 2-3 native outcomes TBD ([D03 decision](../../decisions.md#placement-minimums-and-startup-adoption)).
 - Variant hook: V-INS-AXIS.
 
 ### R-INS-05: admission while an ordinary float has focus
@@ -245,7 +245,8 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then karousel/Lazy: C opens a new column after B's column, appended at the bottom; existing widths stable; B's max/fullscreen overlay is retained on admission with no clear path (existing-member `skipArrange`), and a later focus change restores the old focus-taker to tiled; whether C is accepted (and thus whether B is cleared and the viewport moves under the Lazy conditional) stays TBD (fixture states no protocol, X11 user-time/startup/session, Wayland token/app-id/transient-serial, or FSP/rules inputs selecting the host activation fork). `S(S-kar-ins)` + `S(S-kar-maxfs)` + `S(S-kar-fltanchor)` + `S(S-kar-scroll)` + `S(S-kwin-manage)` + `S(S-kwin-add)`.
 - Then paneru: TBD (both legs; `Fullscren` is a column kind per `S(S-pan-model)`, native preparation requires confirmation). `B:max` preparation is host zoom with no paneru counterpart (AX observes `AXFullScreen` only per `S(S-pan-axfs)`; no public macOS source). Fresh `B:full` pins a host `Fullscren` strip per `S(S-pan-fsfocus)`; ordinary admission over that pinned strip inserts as a Single column per the fresh path (`S(S-pan-fresh)`), with native-Space visibility/focus TBD.
 - Then Ours KDE: at `01be284`, C structurally admits; B keeps its slot and fullscreen/maximized geometry writes are skipped. Convergence follows valid observed tiled focus (B if native kept B, C if native activated C), otherwise retained focus/MRU; it does not unconditionally focus C. Apply writes focus only when reply target differs from live active, with no fullscreen-specific fence on that divergent path. Stable native B/C cases normally issue no focus write. Final native focus/stacking/input and overlay-close cleanup TBD; [current-source chain](../../research/d01-fullscreen-admission.md#current-omnitiler-kde-behavior). Overlay-unfloat `S(S-ours-overlay-unfloat)` is not admission evidence.
-- Then Ours Windows: TBD, same split as Ours KDE.
+- Then Ours Windows: TBD, same split as Ours KDE; native foreground rules remain host-specific.
+- Selected Ours (User 2026-10-12 D01 (a)): [native activation ownership](../../decisions.md#placement-minimums-and-startup-adoption) for both overlay legs; KDE fullscreen focus fence needs code. This selection does not establish runtime focus/visibility.
 - Variant hook: V-MAX-MODEL for the `B:max` leg; V-FS-SLOT for the fresh
   `B:full` leg.
 
@@ -256,7 +257,7 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   Directional navigation is recorded separately; it is not the same action.
 - Observe: A focus and visibility, B fullscreen flag versus stacking/viewport.
 - Evidence: source-only [per-WM citations](../../research/d01-fullscreen-admission.md#reference-source-evidence);
-  game/runtime settlement unverified. This discriminator selects no Ours policy.
+  game/runtime settlement unverified. Selected Ours policy is linked below.
 
 | Profile | Sourced explicit-selection outcome / uncertainty |
 |---|---|
@@ -269,8 +270,8 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 | awesome | Shipped focus.byidx raises A above retained B; focus-only without raise differs |
 | qtile | A group-focused, B fullscreen retained; final cover backend-dependent/TBD. X11 layer demotion can keep B atop shared layer |
 | niri (non-voting) | View moves to A; B remains fullscreen offscreen |
-| Ours KDE | Explicit focus uses the host active-window setter; native settled result TBD, not an admission-policy vote |
-| Ours Windows | TBD |
+| Ours KDE | Selected: honor explicit native switching, no tiler focus actuation while fullscreen is involved ([D01 decision](../../decisions.md#placement-minimums-and-startup-adoption)); native settled result TBD |
+| Ours Windows | Same native-ownership consideration under Windows foreground rules; runtime TBD, no KWin-layering claim |
 
 ### R-INS-07: open with a destination rule into an inactive workspace/output
 

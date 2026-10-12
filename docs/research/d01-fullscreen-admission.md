@@ -1,7 +1,9 @@
 # D01 / INS-06: admission and explicit focus over fullscreen
 
-- Status: research recommendation, pending user review, 2026-10-12. No policy
-  approval or product implementation. Source analysis only; no runtime tests.
+- Status: native activation ownership selected by User 2026-10-12;
+  [current rule and KDE focus-fence gap](../decisions.md#placement-minimums-and-startup-adoption).
+  Research below records the pre-decision assessment. Source analysis only;
+  no runtime tests or product implementation by this report.
 - Finding: "keep the game shown and focused" is not synonymous with native
   gaming compatibility. KWin 6.6.3 normally activates new Wayland windows at
   shipped Low focus-stealing prevention, and Alt+Tab brings the chosen window

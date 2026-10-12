@@ -1,23 +1,23 @@
-# Release 0.1 triage - batch 1 approved, remaining decisions tentative
+# Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 15 units approved by User 2026-10-10; remaining 13 units, settings scope
-and Proposal B tentative 2026-10-11, pending user review.
+Status: 21 units approved by User (15 on 2026-10-10, six on 2026-10-12);
+seven units plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
 undefined/refusal/no-op/inconsistent/surprising; post-0.1 = niche,
 scrolling-only/COL, Windows/macOS-only, already acceptable, parked (LAY-04).
-COSMIC default unless references agree extremely strongly otherwise; user may
-take a clear majority over a worse COSMIC mechanism. Alternatives shared by
->1 non-scrolling references get functional settings (WMs in tooltip); single
-outliers, scrolling-only and model-only differences skipped with reason.
+Current defaults/settings follow the user's 2026-10-12
+[reference tiers](../decisions.md#reference-tiers); historical tallies below
+are evidence, not tier-weighted selections. Earlier decisions stand unless revisited.
 Gaming safety wins; overlap last resort; simplicity. TBD never invented.
 
 Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
-Tentative decisions move 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b: current spec 121 NORMATIVE / 17 PROVISIONAL / 28 OPEN.
+Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
+REQ-MAX-09b. User 2026-10-12 promotes eight rows: current spec
+129 NORMATIVE / 9 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -28,33 +28,41 @@ REQ-MAX-09b: current spec 121 NORMATIVE / 17 PROVISIONAL / 28 OPEN.
   D24 (CLOSE-04). These 15 units / 16 rows are now NORMATIVE in the
   [spec](../spec/functional-spec.md); implementation and native evidence remain
   distinct ([batch-1 work](../backlog.md)).
-- Remaining 13 units pending: D01, D03, D09, D10, D12, D13, D16, D22, D23,
-  D25, D26, D27, D28. No selection is implied by the recommendations below.
+- At that review, remaining 13 units pending: D01, D03, D09, D10, D12, D13,
+  D16, D22, D23, D25, D26, D27, D28. Later selections are recorded below.
 - Proposal B live-check classification (39 must-pass / 12 known-issue-allowed /
   2 Windows-release) and proposed new checks N1-N4 remain pending approval.
   Batch-1 verification checks added to the backlog are outside that original
   53-check inventory and are not classified by this unapproved proposal.
-- Open meta-question to raise with D03: do new settings (D03, D09, D10, D12,
+- Historical meta-question to raise with D03: do new settings (D03, D09, D10, D12,
   D13, D27) ship in 0.1, or ship defaults-only with settings later?
+
+## User decisions 2026-10-12
+
+- D01, D03, D09, D10, D12 and D13 are user-decided (eight NORMATIVE rows).
+  Current rules are recorded once in [admission decisions](../decisions.md#placement-minimums-and-startup-adoption)
+  and [move decisions](../decisions.md#move-layout-and-output-commands):
+  D01 (a) native activation ownership plus CLOSE-05 (a) removal/refill/focus;
+  D03 After focused plus per-leg re-application, no setting; D09 Geometric
+  middle and D10 Wrap, each with a two-option post-0.1 setting; D12 Extract
+  to same axis and D13 Wrap locally, no settings.
+- The [tier rule](../decisions.md#reference-tiers) amends the 2026-10-07 rule.
+  P2 settings now contain D09, D10 and tentative D27; D27 remains pending user
+  review and will be rescored under that rule. D03/D12/D13 settings and
+  D09/D10 swap-target-leaf options are dropped.
+- D01 needs a KDE convergence fullscreen focus fence; close and the other
+  approved defaults are verification-only. [Gap assessment](../backlog.md).
+  Native outcomes remain TBD; selection does not establish implementation.
+- Remaining tentative units: D16, D22, D23, D25, D26, D27, D28;
+  Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
 
-Tentative only, distinct from approved batch 1 above. No selection is
-approved until user review. No implementation is authorized by this section.
+Remaining tentative units only, distinct from the user decisions above.
+No selection is approved until user review. No implementation is authorized by this section.
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D01 (a) tile behind overlay with explicit focus/visibility: maximize overlay
-  retained with no forced clear, structural admission behind the overlay;
-  C gets ordinary newcomer focus, with visibility governed by native stacking
-  while B's maximize flag/reserved slot remain retained. In the fullscreen leg,
-  fullscreen remains shown/focused with no overlay writes or focus steal.
-  CLOSE-05 (a) removal with survivor refill/focus; joint native-cleanup live
-  leg for both states.
-- D03 default After focused. INS-04 (a) reapply the current policy each leg;
-  legs 2-3 via the user live route.
-- D09 default Geometric middle. D10 default Wrap. D12 default Extract to same
-  axis. D13 default Wrap locally.
 - D16 (a) retain float on transfer: 7/8 majority exception over COSMIC
   fresh-readmit for continuity/predictability; native host float roundtrip is
   the live leg.
@@ -74,16 +82,24 @@ unchanged; source observations are not marked as approved.
   fallback (b) applies to that leg unless the user authorizes a later design.
   Settings/gaps and host re-observe legs verify.
 - D27 default Switch and focus; fullscreen/game-focused urgency-only guard.
+  Tentative setting retained; rescoring under the tier rule pending.
 - D28 (a) keep the KDE fullscreen-send refusal as a listed 0.1 known issue
   pending the G-D2 native observation; no carry selected.
-- Meta defaults-only 0.1: six settings (D03, D09, D10, D12, D13, D27) deferred
-  to P2 `0.1 triage settings follow-up`; existing names/options/tooltips
-  unchanged. Small-scope reason: defaults-only keeps 0.1 small; meaningful
-  alternatives are still honored post-0.1.
 - Proposal B tentatively adopted as the original 53-check classification
   M39/K12/W2 plus N1-N4 as M checks. With distinct N1-N4 additions the
   inventory is 57 checks => M43/K12/W2. Batch-1 verification extras remain
   outside that original inventory and are not classified here.
+
+### Historical tentative selections superseded 2026-10-12
+
+- On 2026-10-11 D01 proposed ordinary newcomer focus over maximize and B
+  remaining shown/focused over fullscreen; CLOSE-05 proposed removal/refill/focus.
+  D03 proposed After focused plus per-leg re-application; D09/D10/D12/D13
+  proposed the now-approved defaults. Native activation ownership supersedes
+  D01's forced-retention wording.
+- The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
+  is superseded by the current P2 list above. Original options/tallies in A2/A3
+  below remain historical proposals, not current settings commitments.
 
 Reference key: C = COSMIC, H = Hyprland, B = bspwm, I = i3, X = xmonad,
 S = sway, Q = qtile, A = awesome; `ev` = evidenced profiles, `fam` = families.
@@ -176,8 +192,8 @@ await approval. Current implementation status is in the spec/backlog.
   records pinned defaults, the tally, native KWin/Windows baselines, current
   convergence behavior and four options. It recommends native activation
   ownership rather than forcing fullscreen B to remain shown/focused. This
-  challenges the historical tentative (a) above; it is not an approval or a
-  change to REQ-INS-06. CLOSE-05's proposal is unaffected by this research.
+  challenged the historical tentative (a). User 2026-10-12 selected native
+  activation ownership and CLOSE-05 (a); see [current decisions](#user-decisions-2026-10-12).
 
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|

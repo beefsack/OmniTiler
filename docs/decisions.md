@@ -70,12 +70,14 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Tentative 2026-10-11, pending user review: remaining 13 0.1
-  triage units and Proposal B (original 39 must-pass / 12 known-issue-allowed /
-  2 Windows-release, plus must-pass N1-N4) are recorded in
+- Remaining seven 0.1 triage units and Proposal B / N1-N4 are tentative,
+  pending user review (updated 2026-10-12). Proposed classification: 39
+  must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
+  Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  They are PROVISIONAL, distinct from the user-approved batch 1; native evidence
-  and implementation gaps remain separate.
+  The seven units are PROVISIONAL, distinct from batch 1 and the six units
+  [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
+  native evidence and implementation gaps remain separate.
 
 ## Project Name
 
@@ -162,11 +164,11 @@ platform API behavior.
   the NixOS module installs both alongside the script. Removing the effect
   leaves Settings/Revert available; recovery after removing core requires
   reinstalling core. [Delivery](changes/archive/release-0.1-core-settings.md).
-- Tentative 2026-10-11, pending user review: defaults-only in
-  0.1 for D03, D09, D10, D12, D13, D27; defer their already-proposed functional
-  settings/options/WM tooltips to P2 `0.1 triage settings follow-up` after 0.1.
-  This keeps release scope small while honoring meaningful alternatives later.
-  [Tentative scope](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User decision 2026-10-12: P2 `0.1 triage settings follow-up` contains
+  D09 and D10 only as approved settings, with names/options/WM tooltips under
+  [Move commands](#move-layout-and-output-commands). D27 remains tentative,
+  pending user review and rescoring under the [tier rule](#reference-tiers).
+  D03, D12 and D13 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
     mutates shortcuts or host keys, and installation/startup never mutates
@@ -524,9 +526,16 @@ platform API behavior.
 
 ## Move, Layout and Output Commands
 
-- Tentative 2026-10-11, pending user review: D09 Geometric middle,
-  D10 Wrap, D12 Extract to same axis and D13 Wrap locally are the 0.1 defaults;
-  their settings are post-0.1. [Tentative defaults](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User decisions 2026-10-12 (0.1 triage): D09 / MOV-06 defaults to Geometric
+  middle; post-0.1 `Nested move entry` has only Geometric middle (COSMIC) /
+  Remembered child (i3, sway). D10 / MOV-07 defaults to Wrap; post-0.1
+  `Orthogonal escape` has only Wrap (COSMIC) / Escape outward (i3, sway).
+  Swap-target-leaf options are dropped (bspwm/awesome only).
+- User decisions 2026-10-12: D12 / MOV-04 defaults to Extract to same axis,
+  no setting (Retain nesting has Hyprland + bspwm only); D13 / OUT-02 defaults
+  to Wrap locally, no setting (Cross output has bspwm/awesome only). These
+  alternatives fail the [tier rule](#reference-tiers).
+  [Triage selections](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - R-MOV-01: perpendicular flat-triple move restructures via COSMIC R1, changing root orientation to V[H[A,C],B] in the fixture rather than refusing (User 2026-10-10, 0.1 triage D11).
 - R-RSZ-02/03: outward work-area-edge resize is a no-op; nested resize adjusts adjacent shares at the nearest matching-edge-axis split (User 2026-10-10, 0.1 triage D14).
 - Delivery coordination (user 2026-10-07; [implementation order and Windows
@@ -753,10 +762,9 @@ platform API behavior.
 
 ## Reference Matrix and Spec Authority
 
-- Tentative clauses dated 2026-10-11 are PROVISIONAL pending user
-  review, not NORMATIVE selections. Their defaults-only settings schedule is a
-  tentative deferral of meaningful alternatives, not a permanent exemption.
-  [Triage authority](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
+  D10, D12 and D13 are now user-decided 2026-10-12.
+  [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of
   truth feeding the cross-platform functional specification. Existing selections
@@ -774,14 +782,9 @@ platform API behavior.
   Reference baselines use pinned shipped defaults and named discriminating
   variants. PaperWM.spoon is corroboration only. Evidence expands the corpus,
   not the selected product behavior or consensus denominator.
-- User decision 2026-10-07 (reference default rule): where the reference
-  WMs do not show extremely strong agreement against COSMIC, COSMIC's
-  behavior stays our default. Where references meaningfully differ, the
-  alternative is offered as a setting; configurability may be deferred or
-  skipped when only one outlier differs or only the scrolling-column
-  (PaperWM-style) WMs differ. The shared functional spec governs; COSMIC is
-  the default-selection yardstick with explicitly recorded host, game, and
-  capability exceptions.
+- User decision 2026-10-07 (reference default rule), amended by the user's
+  2026-10-12 [reference tiers](#reference-tiers) below. Earlier decisions stand
+  unless revisited; gaming-safety and host/capability exceptions are unchanged.
 - User decision 2026-10-07 (functional spec format): keep
   [the functional spec](spec/functional-spec.md) as a single file; revisit
   splitting if it grows much larger. Requirements are normative only where a
@@ -810,6 +813,27 @@ platform API behavior.
   2026-10-10). Revisit when a specific decision needs live reference evidence
   or when tabbed stacks are designed; the
   [proposal](research/live-test-vms/proposal.md) stays parked research.
+
+### Reference tiers
+
+- User decision 2026-10-12:
+  - Tier 1 (decide defaults and settings): COSMIC, Hyprland, i3, sway.
+  - Tier 2 (supporting/tie-break, cannot carry a change alone): awesome,
+    qtile, xmonad.
+  - Tier 3 (context only): bspwm, niri, PaperWM, karousel, paneru,
+    Windows/macOS tilers.
+  - Default: COSMIC unless the other Tier 1 references (Hyprland, i3, sway)
+    broadly agree against it (all three, or two plus Tier 2 support).
+    Gaming-safety and host/capability exceptions are unchanged.
+  - Setting: only when the alternative is held by at least one Tier 1 plus
+    at least one more Tier 1 or Tier 2 reference.
+  - Earlier decisions stand unless revisited.
+- User's reasoning (2026-10-12):
+  - Tiering reflects popularity/reach.
+  - COSMIC ships in Pop!_OS with broad reach and modern design choices.
+  - xmonad is less popular.
+  - bspwm is declining, X11-only, and older style.
+
 ## Shortcuts, Conflicts and Presets
 
 - Shared defaults (user 2026-10-01 option A): Meta/Win shortcuts are defaults
@@ -1005,14 +1029,20 @@ platform API behavior.
 
 ## Placement, Minimums and Startup Adoption
 
-- Tentative 2026-10-11, pending user review: D03 uses After
-  focused, reapplying admission policy per chained leg (legs 2-3 live-pending).
-  D01(a) admits behind an overlay without forcing its clear; fullscreen remains
-  shown/focused with no overlay writes or focus steal. Close removes the overlay
-  member and refills/focuses survivors; native cleanup is a joint live leg.
-  Maximized admission uses ordinary newcomer focus and native stacking for
-  visibility while retaining the overlay flag/slot.
-  [D01/D03](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User decision 2026-10-12, D01 / INS-06 (a): native activation ownership.
+  Admit C structurally into the layout behind B's retained maximize/fullscreen
+  state and reserved slot. KWin decides activation/focus and stacking: honor
+  host-approved activation, host denial and explicit user switching (e.g.
+  Alt+Tab). Never write B's fullscreen geometry; OmniTiler never actuates focus
+  while a fullscreen window is involved. The native activation ownership rule
+  also applies to maximized B. KDE convergence needs a fullscreen focus fence;
+  [research](research/d01-fullscreen-admission.md). CLOSE-05 (a): removal plus
+  survivor refill and focus; native cleanup remains live-pending.
+- User decision 2026-10-12, D03: INS-01b uses After focused; INS-04 (a)
+  reapplies the policy per admission leg (legs 2-3 live-pending).
+  No `New window position` setting: Before focused is held only by Tier 2
+  xmonad/qtile and fails the [tier rule](#reference-tiers).
+  [Triage selections](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - R-INS-03: first admission fills the work area as a single tile and natively activates the newcomer (User 2026-10-10, 0.1 triage D04).
 - R-INS-05: admission with an ordinary float focused anchors at the nearest tiling neighbor (B, prior tiled focus in the fixture), using ordinary long-edge admission instead of root-wrap (User 2026-10-10, 0.1 triage D05).
   Verification-only with unchanged admission policy (2026-10-11):

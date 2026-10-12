@@ -22,19 +22,18 @@ decisions of 2026-09-24 are under
   - [OPEN-requirement triage and live-check gate](research/release-0.1-triage.md):
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
-    verb for now), D21, D24; 16 rows approved. Remaining 13 units are
-    tentative, awaiting user review (2026-10-11): D01, D03,
-    D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28.
-    Spec now 121 NORMATIVE / 17 PROVISIONAL / 28 OPEN; batch-1 verification
-    and tentative implementation gaps are below.
+    verb for now), D21, D24; 16 rows approved. User 2026-10-12 also approved
+    D01, D03, D09, D10, D12, D13 (eight rows). Remaining tentative units:
+    D16, D22, D23, D25, D26, D27, D28.
+    Spec now 129 NORMATIVE / 9 PROVISIONAL / 28 OPEN; verification and
+    implementation gaps are below.
   - Proposal B classification (39 must-pass / 12 known-issue-allowed / 2
     Windows-release) and new must-pass checks N1-N4 are tentative, awaiting
     user review. Original 53-check classification remains separate from the
     four additions (57 total: 43 must-pass / 12 known-issue-allowed / 2 Windows).
-  - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. Tentative
-    defaults-only 0.1 for D03, D09, D10, D12, D13, D27; meaningful alternative
-    settings deferred to P2 `0.1 triage settings follow-up`, awaiting review.
-    [Tentative decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+  - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
+    contain D09/D10 plus tentative D27 (tier rescoring pending); D03/D12/D13
+    have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
   - P1 0.1 packaging: offline recipes/archive/tag workflows and
     Revert-before-removal guidance prepared 2026-10-11; distro offline
     builds passed. Core Settings ownership approved and delivered 2026-10-11
@@ -108,16 +107,19 @@ decisions of 2026-09-24 are under
     handoff item 6 (include R-RSZ-02/03 acceptance there). D02's owned-dialog
     exclusion is the approved divergence; D17 remembered focus and D19 hide/
     reveal are already wired. No new Windows-specific handoff item warranted.
-- P1 | 0.1 triage tentative decisions - implementation (KDE/shared) |
-  Tentative, awaiting user review; docs-only assessment at `fafcd31`, no behavior
-  implemented by this record. [Selections and caveats](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  Verification-only means a matching mechanism exists, not native acceptance;
-  implement only after review, including contingent fixes if live outcomes differ.
+- P1 | 0.1 triage decisions - implementation and verification (KDE/shared) |
+  D01, D03, D09, D10, D12, D13 approved by User 2026-10-12; the other units
+  remain tentative. Historical gap assessment at `fafcd31`, D01 refined by
+  [research](research/d01-fullscreen-admission.md) at `01be284`; no behavior
+  implemented by this record. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
+  Verification-only means a matching mechanism exists, not native acceptance.
+  Tentative units need user decision before implementation; approved units
+  include contingent fixes if live outcomes differ.
   Paths below are repository-relative; line locators are revision-bound.
 
   | Unit | Gap assessment | One-line reason / source |
   | --- | --- | --- |
-  | D01 | needs code (admission); close verification-only | Overlay slots/write skips exist, but admission focus has no fullscreen fence (`kwin/src/plan-adapter.ts:9952-9992`); close removes/refills with fallback focus (`crates/tiler-core/src/session/ops/lifecycle.rs:589-601`). Joint native admission/overlay-close cleanup leg pending. |
+  | D01 | approved; needs code (fullscreen focus fence); close verification-only | KDE convergence must preserve native activation/denial and explicit switching, never actuating focus while fullscreen is involved. Slots/geometry guards exist, divergent focus writes are unfenced ([source assessment](research/d01-fullscreen-admission.md#current-omnitiler-kde-behavior)); joint native admission/overlay-close cleanup pending. |
   | D03 | verification-only | After-focused `[old,new]` and per-admission focus anchor exist (`crates/tiler-core/src/session.rs:2218-2231`, `crates/tiler-core/src/session/ops/lifecycle.rs:374-384`); chained legs 2-3 need live pointer/focus proof. |
   | D09 | verification-only | R-MOV-06 two-child neighbor uses middle index `len/2` (`crates/tiler-core/src/directional.rs:907-918`, `crates/tiler-core/src/session/ops/move.rs:897-905`); exact native fixture pending. |
   | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
@@ -136,16 +138,12 @@ decisions of 2026-09-24 are under
     D23 Windows retained allocation is an observed divergence from the tentative
     release/reflow target, not an approved exception. D28's KDE hold does not
     revoke approved Windows carry (item 9). No Windows code changes here.
-- P2 | 0.1 triage settings follow-up | Tentative, awaiting user review;
-  post-0.1 settings for D03, D09, D10, D12, D13, D27. Keep functional names,
-  options and WM tooltips already proposed in
-  [D03-D27](research/release-0.1-triage.md#proposal-a2---original-decision-units-one-row-per-then-open-row):
-  `New window position` (After/Before focused), `Nested move entry` (Geometric
-  middle/Remembered child/Swap target leaf), `Orthogonal escape` (Wrap/Escape
-  outward/Swap target leaf), `Same-axis escape` (Extract to same axis/Retain
-  nesting), `Perpendicular edge move` (Wrap locally/Cross output), `Activation
-  request` (Switch and focus/Mark urgent only, gaming guard in both modes).
-  Defaults-only keeps 0.1 small while honoring meaningful alternatives later.
+- P2 | 0.1 triage settings follow-up | User 2026-10-12 approved post-0.1
+  D09/D10 with two options each; functional names/options/WM tooltips are in
+  [Move decisions](decisions.md#move-layout-and-output-commands).
+  D27 `Activation request` (Switch and focus/Mark urgent only, gaming guard
+  in both modes) remains tentative, pending user review and rescoring under
+  the [tier rule](decisions.md#reference-tiers).
   Shared core policy settings serve Windows; Windows schema/UI/live wiring
   belongs to handoff item 22, coordinated after shared delivery.
 - P0 | Windows dogfood 2026-10-11 | User live run `tile --user-start --trace`
@@ -194,11 +192,13 @@ decisions of 2026-09-24 are under
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
   tile) and active border radius default 6; underlay default visibility
   review shared with Windows (g).
-- P1 | Windows handoff: shortcut settings dialogs | Match KDE's modal
+- P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
-  `crates/tiler-windows`; show immediate activation without a second settings
-  Apply, avoid stacked confirmations (tentative, user review pending), and
-  retain required data-loss safety. KDE delivered offline 2026-10-12;
+  `crates/tiler-windows`; use the short result wording in
+  [Settings decisions](decisions.md#settings-tray-and-first-run). Shortcuts
+  apply immediately; avoid stacked confirmations (tentative, user review pending) and
+  retain required data-loss safety. KDE user-tested live 2026-10-12: dialogs
+  worked; result text shortened in `b718987` (short-text recheck pending).
   [flow and evidence](changes/archive/kde-shortcut-result-dialogs.md).
 - P0 | Windows port | KDE-first core extraction finished at K1 (user
   2026-09-30; K2/K3 revisit when macOS starts, see
@@ -2566,20 +2566,25 @@ decisions of 2026-09-24 are under
     ([record](changes/archive/kde-workspace-tiling-shortcut.md)); user-owned
     physical/restart/preset checks remain below.
 
-  - Item 22: tentative 0.1 triage Windows follow-ups (2026-10-11,
-    awaiting user review; not an approved implementation queue). Shared core
-    delivery serves Windows; Windows work owns adapter/native work after the
-    shared contract is available. D01 needs fullscreen admission focus/visibility
-    verification and any adapter guard; D16 needs ordinary float transfer
-    eligibility/class preservation with existing follow/stay fences; D23 needs
+  - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-12).
+    D01, D03, D09, D10, D12, D13 are approved; other units remain tentative.
+    Shared core delivery serves Windows; Windows adapter/native work follows
+    the shared contract. D01's fullscreen focus fence is shared/KDE
+    focus-path work; Windows has its own foreground rules. Consider native
+    approval/denial and explicit switching in the Windows handoff, without
+    importing KWin stacking or asserting a Windows fence gap. D03/D09/D10/
+    D12/D13 use existing shared defaults, with native verification pending.
+    Pending decision: D16 needs ordinary float transfer eligibility/class
+    preservation with existing follow/stay fences; D23 needs
     review of retained Windows minimize allocation against the tentative shared
     release/reflow plus stored old-slot/no-steal restore target. D27 needs a
     supported activation-request/urgency observation and fullscreen/game-focused
     guard. D25 restart and D26 owned-state/host re-observation need Windows
     journey assessment with item 8; no cross-login identity recovery inferred
     from on-window markers. D28 KDE refusal does not alter item 9 Windows carry.
-    Post-0.1 six-setting schema/UI/live wiring follows P2 `0.1 triage settings
-    follow-up`, retaining the proposed functional names/options/WM tooltips.
+    Post-0.1 schema/UI/live wiring follows P2 `0.1 triage settings follow-up`:
+    D09/D10 only as approved two-option settings, plus tentative D27 pending
+    tier rescoring. See [current settings scope](decisions.md#settings-tray-and-first-run).
     No Windows behavior is claimed inspected or delivered by this docs change.
 
   ### Source discrepancies to preserve and report
@@ -2613,11 +2618,11 @@ decisions of 2026-09-24 are under
   [archived ledger](changes/archive/reference-source-fill-remaining.md).
   [Functional spec](spec/functional-spec.md) remains single-file with a
   [grouped open-decisions index](spec/functional-spec.md#open-index).
-  Current review 2026-10-11: all nine prior provisional requirements ratified;
+  Current review 2026-10-12: all nine prior provisional requirements ratified;
   B9 no-refusal sub-leg selected; R-LAY-04 parked OPEN; G-06 makes
-  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; remaining 13 units
-  tentative, awaiting user review. Totals: 121 NORMATIVE, 28 OPEN,
-  17 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
+  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; six units / eight rows
+  approved 2026-10-12, seven units awaiting review. Totals: 129 NORMATIVE,
+  28 OPEN, 9 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
   reference outcomes. Platform implementation/native gaps stay
   distinct from selected intent; Windows control cells now cite Windows evidence.
   [Cross-WM consensus analysis](research/reference-wm-consensus.md) Table A
@@ -3349,16 +3354,16 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   and recommendation for hidden-workspace Alt+Tab/taskbar semantics plus
   taskbar workspace indicator (parity 10), as a Windows release gate.
   [note](research/windows-port/alt-tab-hidden-workspaces.md)
-- 0.1 remaining 13 triage units, settings meta-question and Proposal B:
-  tentative, awaiting user review (2026-10-11), distinct from
-  the 15 user-approved batch-1 units. Review
+- 0.1 remaining seven triage units (D16, D22, D23, D25, D26, D27, D28)
+  plus Proposal B / N1-N4: tentative, awaiting user review, distinct from
+  batch 1 and the six units approved 2026-10-12. Review
   [tentative decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
-  especially D01 focus/visibility, D16 majority exception, D23 Windows
+  especially D16 majority exception, D23 Windows
   divergence, D26 cross-login fallback, D27 gaming guard, D28 listed refusal,
-  defaults-only scope and M39/K12/W2 plus N1-N4 classification.
+  D27 tier rescoring and M39/K12/W2 plus N1-N4 classification.
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
-  requirement rows; 17 PROVISIONAL rows await tentative-decision review.
+  requirement rows; 9 PROVISIONAL rows await tentative-decision review.
   KDE fullscreen carry policy remains observe-first, distinct from tentative
   REQ-MAX-09b refusal hold.
   Design questions remain distinct from delivered implementation/live gaps.

@@ -287,7 +287,8 @@ is the observation-driven proposal, never the native verb.
   journey untraced. `S(S-pan-axfs)` + `S(S-pan-fsfocus)`; queued.
 - Then Ours KDE: Engine removes the tile with desired focus A;
   portables keep overlays tiled so no restore exists; native overlay
-  cleanup TBD. `S(S-ours-close)`; queued.
+  cleanup TBD. `S(S-ours-close)`; selected removal plus survivor refill/focus
+  (User 2026-10-12 D01 / CLOSE-05 (a), [decision](../../decisions.md#placement-minimums-and-startup-adoption)); queued.
 - Then Ours Windows: same Engine removal and desired focus A; native
-  cleanup TBD. `S(S-ours-close)`; queued.
+  cleanup TBD. `S(S-ours-close)`; same CLOSE-05 selection, queued.
 - Variant hook: provisional/TBD (overlay-close hook, to discuss).

@@ -7,6 +7,8 @@ are provisional, to discuss. Recorded decisions in
 [decisions.md](../decisions.md) select supported variants and pending
 configuration; a foreign outcome here does not automatically become
 supported, and variants are spec hooks only, not implemented settings.
+Defaults/settings selection uses the user's 2026-10-12
+[reference tiers](../decisions.md#reference-tiers); evidence tallies are retained.
 
 Row addition rule: add the shortest action sequence for an uncovered
 behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
@@ -81,10 +83,10 @@ outcomes remain pending ([record](../changes/archive/reference-comparison-implem
 | Unconfirmed maximize clear (G-06, R-MAX-08) | Maximize B; move right while native clear refuses or remains unobserved; later press after restore | One attempt per invocation; log refusal, keep structural state, no delayed move. Later press can move. KDE refusal fixtures delivered offline | Exact reference and native failure-timing outcomes TBD |
 | Surviving-empty MRU (G-37, R-WS-23) | Visit empty WS1 then occupied WS2 on L; keep WS1 live, migrate WS2 right with MRU | WS1 qualifies while still in the remaining source ring, even empty. If lifecycle removes it, fall back to last remaining; never recreate. Shared/KDE selector fixtures delivered offline | Exact reference outcomes and native lifecycle timing TBD |
 
-### Tentative discriminators 2026-10-11 (pending user review)
+### Triage discriminators 2026-10-11 (D01 selected 2026-10-12)
 
-Tentative expected targets only, pending user review; no implementation
-authorized. Ours and reference/native outcome cells below are TBD; no native
+User 2026-10-12 selected D01; D26/D27 remain tentative, pending user review.
+Ours and reference/native outcome cells below are TBD; no native
 evidence is fabricated. These rows discriminate focus/visibility and store
 lifetime, linking existing fixtures:
 [R-INS-06](reference-outcomes/insertion.md#r-ins-06-open-over-an-overlay-maximized-plus-fresh-fullscreen-variant),
@@ -92,19 +94,21 @@ lifetime, linking existing fixtures:
 [R-ACT-01](reference-outcomes/activation.md#r-act-01-hidden-window-sends-an-unsolicited-activation-request),
 [R-RST-02](reference-outcomes/restart-persistence.md#r-rst-02-end-session-restore-session-and-apps).
 
-| Variant | Minimal action sequence | Tentative expected target | Ours / ref outcomes |
+| Variant | Minimal action sequence | Selected / tentative target | Ours / ref outcomes |
 | --- | --- | --- | --- |
-| Maximize admission plus overlay close (D01) | Maximize focused B over survivor A; open C; close B | Admit C structurally behind retained overlay, ordinary newcomer focus; native stacking governs visibility, no forced unmaximize. Closing B removes its slot and refills/focuses survivors | Ours TBD; ref/native TBD beyond linked R-INS-06/R-CLOSE-05 |
-| Fullscreen admission plus overlay close (D01) | Fullscreen focused B over survivor A; open C; close B | C admitted behind B without overlay writes or focus steal; B remains shown/focused until close. Closing B removes its slot and refills/focuses survivors | Ours TBD; ref/native TBD beyond linked R-INS-06/R-CLOSE-05 |
+| Maximize admission plus overlay close (D01) | Maximize focused B over survivor A; open C; close B | Selected: structural admission behind retained maximize state/slot, host-owned activation/focus/stacking; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | Ours native TBD; reference sources in R-INS-06/R-CLOSE-05, native cleanup TBD |
+| Fullscreen admission plus overlay close (D01) | Fullscreen focused B over survivor A; open C; close B | Selected: native activation ownership, no B fullscreen geometry writes or tiler focus actuation while fullscreen is involved; closing B removes its slot and refills/focuses survivors ([decision](../decisions.md#placement-minimums-and-startup-adoption)) | KDE fullscreen focus fence needs code; native outcomes TBD; reference sources in R-INS-06/R-CLOSE-05 |
 | Ordinary activation vs fullscreen/game-focused guard (D27) | From an ordinary hidden window, send one unsolicited activation; repeat while a fullscreen/game window is focused | Ordinary: switch and focus; fullscreen/game-focused: urgency-only guard | Ours TBD; ref/native TBD beyond linked R-ACT-01 |
 | New-login intent scoped-store vs fallback (D26) | End session; start a new login and observe owned intent | Session-scoped store (REQ-RST-01d) cannot restore cross-login intent with no implicit namespace expansion; tentative fallback (b) listed known limitation applies to that leg unless a later design is authorized | Ours TBD; ref/native TBD beyond linked R-RST-02 |
 
-### D01 native-activation discriminators (research, no selected target)
+### D01 native-activation discriminators (selected 2026-10-12)
 
-Source-only update 2026-10-12; [D01 research](../research/d01-fullscreen-admission.md)
-reassesses the tentative fullscreen rule above. These fresh sequences
+Source-only [D01 research](../research/d01-fullscreen-admission.md) informed the
+user's 2026-10-12 [native activation ownership decision](../decisions.md#placement-minimums-and-startup-adoption).
+These fresh sequences
 distinguish native activation ownership from blanket retention or forced
-newcomer activation; no Ours target is approved.
+newcomer activation. Selected Ours: honor host approval/denial and explicit
+switching, with no focus actuation while fullscreen is involved; runtime TBD.
 
 | Variant | Minimal action sequence | Source evidence | Native / Ours runtime |
 | --- | --- | --- | --- |
