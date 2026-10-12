@@ -122,6 +122,43 @@ platform API behavior.
   [stage 1 record](changes/archive/windows-input-thread.md);
   [owner-wake correction](changes/archive/windows-input-owner-wake.md);
   [thread contracts and stage 2 design](research/windows-port/owner-threading.md).
+- Stage 2 implementation, 2026-10-13: one dedicated renderer creates, pumps,
+  paints, places and destroys border, group underlay and drop-preview carriers.
+  Owner retains observation, Engine, foreign actuation, services and recovery;
+  input classifiers remain on their dedicated pump. Existing owned proof paths
+  keep same-thread carriers.
+- Three bounded latest-wins frame slots carry desired geometry and lifetime
+  facts; retained safety watermarks invalidate old Shows. Renderer rechecks
+  fresh native identity/foreground/visibility/band/fullscreen facts and reports
+  actual applied pixels/proof or unknown state, never desired-as-rendered.
+  Versioned immutable overlay-ID snapshots exclude carriers from observation
+  and WinEvents. Tagged identities prove window lifetime; untagged targets
+  retain the existing process-fenced native race, reported as unproven.
+- Renderer work and owner acknowledgement events have safe owned-handle
+  lifetime on both threads. Acknowledgement-only owner turns service applied
+  outcomes/pending finish without reposting frames; input events retain their
+  immediate outer-wait wake. Logging stays on owner, with separate render queue
+  age and present spans. Readiness requires hidden carrier creation; clean stop
+  requires creator-side native destruction and successful thread exit. Missing
+  completion prevents overlapping replacement, using existing process recovery.
+- Preview finish is a bounded pending owner operation: creator-verified hide
+  acknowledgement precedes fresh owner revalidation and actuation. Tentative,
+  pending user review: no hide proof within 500 ms refuses that finish without
+  drop/snap-back writes; an overlapping pending finish refuses narrowly.
+- Stage 2 native offline and scoped agent live evidence, with physical checks
+  still pending: [render-thread record](changes/archive/windows-render-thread.md).
+
+### Rust unsafe guardrail
+
+- Tentative, pending user review: `forbid(unsafe_code)` on `tiler-core` and
+  `tiler-protocol` crate roots and existing unsafe-free Windows modules
+  `active_border`, `group_underlay`, `input_handoff`, `model`, `settings`,
+  `tiling`, `tray`, `workspace`, `workspace_owner`; new `render_handoff` also
+  forbids unsafe. Broader Rust unsafe policy remains pending.
+- Stage 2 cross-thread state uses safe standard primitives and owned handles;
+  no unsafe Send/Sync, mutable statics, UnsafeCell or cross-thread pointer
+  dereferencing. Native Win32 unsafe remains at minimal FFI call sites; no broad
+  refactor of existing FFI. [Delivery evidence](changes/archive/windows-render-thread.md).
 
 ## Project Name
 

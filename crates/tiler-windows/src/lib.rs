@@ -10,6 +10,8 @@ pub mod mouse_snap;
 #[cfg(windows)]
 pub mod native;
 pub mod product_hide;
+pub mod render_handoff;
+pub mod render_pump;
 pub mod settings;
 #[cfg(windows)]
 pub mod settings_ui;

@@ -48,7 +48,35 @@
   or unclean stop and dropped handles, preventing overlapping replacements.
 - Input timing summaries go to the owner writer. Native timestamp-to-callback
   gap, message dispatch span and queue/transport age have separate exclusions;
-  none is end-to-end physical input latency. Stage 2 has not started.
+  none is end-to-end physical input latency. Stage 1 physical input improvement
+  and the owner-wake correction were subsequently user-accepted.
+
+## Implemented stage 2, 2026-10-13
+
+- Option B reaches target C: `render_pump.rs` creates, pumps and owns all three
+  carriers, including accent queries, native presentation and verified cleanup.
+  Owner retains Engine/observation/foreign writes and recovery; input stays on
+  its separate pump. Owned proof commands retain their same-thread path.
+- `render_handoff.rs` forbids unsafe code and carries latest-wins geometry,
+  retained safety watermarks, versioned immutable carrier IDs and acknowledged
+  actual color/geometry/checksum/proof. Fresh tagged identities are enforced;
+  untagged targets report process-only proof honestly. Native visibility,
+  foreground, band and applicable fullscreen checks run before presenting.
+- Auto-reset events wake renderer for work and owner for acknowledgements.
+  Acknowledgement-only owner turns drain applied state/service pending finish,
+  avoiding a repost feedback loop; normal refresh preserves follow/reassertion.
+- Preview finish waits as one bounded pending owner operation, outside callbacks;
+  verified hidden acknowledgement precedes fresh revalidation and actuation.
+  Missing hide proof refuses narrowly, never executes an unproven drop. This
+  bounded failure reading is tentative, pending user review.
+- Hidden carrier creation precedes readiness/ID publication. Failed hides keep
+  their safety obligation; verified destruction and successful exit are required
+  for clean stop. Missing completion retains the process slot. No new recovery
+  ledger, generic actor framework or independent owner authority.
+- Native gates, checksum fixtures and scoped agent live carrier/finish/restore
+  evidence are in the [Stage 2 record](../../changes/archive/windows-render-thread.md).
+  Physical visuals, settings/DPI journeys and latency acceptance remain pending.
+  Stage 3 has not started; this is not gaming-cost or containment acceptance.
 
 ## Options
 
@@ -173,10 +201,11 @@ If B-first is preferred, retain those residual input costs explicitly.
 
 ## Selection and remaining acceptance
 
-- Target C, A then B early, was selected on 2026-10-12. Stage 1 is complete
-  offline; scoped physical input/profile comparisons remain pending. Preserve
-  the contracts above during stage 2 rather than changing consumption, visual
-  follow, fullscreen policy or recovery behavior as part of thread placement.
+- Target C, A then B early, was selected on 2026-10-12. Stage 1 physical input
+  improvement was user-accepted; Stage 2 is delivered offline with scoped agent
+  live evidence. Stage 2 physical visual/follow and latency checks remain pending.
+  Preserve the contracts above rather than changing consumption, fullscreen
+  policy or recovery behavior as part of thread placement.
 - A latency threading selection does not select a Win+G/F11 containment remedy.
   New behavior tradeoffs discovered in implementation require their own outcome
   discriminator; do not resolve them by weakening pairing or game safety.

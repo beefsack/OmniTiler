@@ -11,7 +11,7 @@
 //! Production log vocabulary is structured JSON with opaque window tokens
 //! only: no HWNDs, pids, process creation strings, SIDs, paths, or titles.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::os::windows::io::{AsHandle as _, AsRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -79,6 +79,12 @@ use crate::lifecycle::{
 };
 use crate::model::ProcessIdentity;
 use crate::native::HeldProcess;
+use crate::render_handoff::{
+    BorderDesired, CarrierAck, DesiredFrame, PreviewDesired, RenderCarrier, RenderChannels,
+    RenderOutcome, UnderlayCandidate, UnderlayDesired, WindowLifetime,
+};
+use crate::render_pump::native::{RenderFailEvent, RenderHandle};
+use crate::render_pump::{FINISH_WAIT, RENDER_READY_WAIT, RENDER_STOP_WAIT};
 use crate::settings::LiveSettings;
 use crate::snapkey::{
     KeyboardConfig, LaunchKind, MAX_DISPATCH_PER_TICK, OriginVerdict, QueuedFloatIntent,
@@ -370,11 +376,20 @@ unsafe extern "system" fn winevent_proc(
 }
 
 /// Product outer wait: pump loop-thread messages (delivering hook callbacks)
-/// then wait for more plus the input-pump intent wake. A pending wake
-/// (offered before this wait) returns immediately; bursts coalesce to one
-/// wake; the timeout keeps the periodic fallback. One thread owns install,
-/// pump, and uninstall: no join, no hang.
-fn pump_wait_with_intent(timeout_ms: u32, wake: Option<&OwnedHandle>) {
+/// then wait for more plus the input-pump intent wake and the renderer ack
+/// wake. Returns what woke the wait so the loop can drain an ack-only wake
+/// without reposting frames, reconciling, or polling settings: renderer acks
+/// wake the owner immediately with no polling latency, but an ack alone
+/// never triggers owner work by itself, so the ack wake cannot feed back
+/// into a post/ack/post busy loop. A pending wake (offered before this wait)
+/// returns immediately; bursts coalesce to one wake; the timeout keeps the
+/// periodic follow cadence (timed native reassert included). One thread owns
+/// install, pump, and uninstall: no join, no hang.
+fn pump_wait_with_intent(
+    timeout_ms: u32,
+    wake: Option<&OwnedHandle>,
+    ack_wake: Option<&OwnedHandle>,
+) -> WaitWake {
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
@@ -386,15 +401,47 @@ fn pump_wait_with_intent(timeout_ms: u32, wake: Option<&OwnedHandle>) {
             DispatchMessageW(&msg);
         }
     }
+    let mut woke = WaitWake {
+        input: false,
+        ack: false,
+        message: false,
+        timeout: false,
+    };
     unsafe {
-        match wake {
-            Some(handle) => {
-                let raw = handle.as_handle().as_raw_handle();
-                MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0);
+        let mut handles = [std::ptr::null_mut(); 2];
+        let mut count: u32 = 0;
+        if let Some(handle) = wake {
+            handles[0] = handle.as_handle().as_raw_handle();
+            count = 1;
+        }
+        if let Some(handle) = ack_wake {
+            handles[count as usize] = handle.as_handle().as_raw_handle();
+            count += 1;
+        }
+        let result = if count == 0 {
+            MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0)
+        } else {
+            MsgWaitForMultipleObjectsEx(count, handles.as_ptr(), timeout_ms, QS_ALLINPUT, 0)
+        };
+        const WAIT_OBJECT_0: u32 = 0;
+        const WAIT_TIMEOUT: u32 = 258;
+        if result == WAIT_TIMEOUT {
+            woke.timeout = true;
+        } else if result < WAIT_OBJECT_0 + count {
+            // A satisfied wait object: index 0 is the input wake when
+            // present, else the ack wake; index 1 is the ack wake.
+            let has_input = wake.is_some();
+            if result == WAIT_OBJECT_0 && has_input {
+                woke.input = true;
+            } else {
+                woke.ack = true;
             }
-            None => {
-                MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0);
-            }
+        } else if result == WAIT_OBJECT_0 + count {
+            woke.message = true;
+        } else {
+            // WAIT_FAILED or abandoned: fall through to the periodic work
+            // below rather than spinning or stalling.
+            woke.timeout = true;
         }
     }
     loop {
@@ -402,18 +449,47 @@ fn pump_wait_with_intent(timeout_ms: u32, wake: Option<&OwnedHandle>) {
         if has == 0 {
             break;
         }
+        // Dispatched callbacks below may queue hook events: once any
+        // message flows, this turn does full owner work even when the wait
+        // itself returned an ack or timeout reason.
+        woke.message = true;
         unsafe {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+    woke
+}
+
+/// What woke the product outer wait: any combination may hold (an ack plus
+/// queued messages is common). Ack-only turns drain acks and service the
+/// pending finish without reposting, reconciling, or settings/input work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WaitWake {
+    input: bool,
+    ack: bool,
+    message: bool,
+    timeout: bool,
+}
+
+impl WaitWake {
+    /// Full owner turn: fresh input, real messages, or the periodic timeout
+    /// (which preserves the timed follow/reassert cadence). Hook-callback
+    /// events collected after the wait also force a full turn at the call
+    /// site, so no input starves behind ack traffic.
+    #[must_use]
+    const fn full_turn(self) -> bool {
+        self.input || self.message || self.timeout
+    }
 }
 
 /// Message-only wait for the focus-settle and proof paths: the same pump as
-/// [`pump_wait_with_intent`] with no intent wake, so those paths never
-/// consume or spin on the owner-intent event.
+/// [`pump_wait_with_intent`] with no intent or ack wake, so those paths never
+/// consume or spin on the owner wakes. The recursive focus-settle pump
+/// deliberately excludes the ack wake: ack accounting runs on the outer
+/// loop, never inside nested settlement.
 fn pump_wait(timeout_ms: u32) {
-    pump_wait_with_intent(timeout_ms, None);
+    pump_wait_with_intent(timeout_ms, None, None);
 }
 
 #[derive(Debug, Clone)]
@@ -470,6 +546,26 @@ fn window_identity(hwnd: HWND, hwnd_u64: u64, me: &ProcessIdentity) -> Option<Ob
         user_sid: ident.user_sid,
         session_id: ident.session_id,
         tag: owned_tag(hwnd),
+    })
+}
+
+/// Fresh foreground lifetime for renderer-posted frames: pid/creation plus
+/// the visible-membership tag, or `None` when the foreground is missing,
+/// ours, or unreadable. The renderer refuses narrowly on `None` per the
+/// binding contract (no unprovable stale show); readable unchanged
+/// foregrounds keep ordinary unfocused-hold behavior. The target/mover
+/// fence still applies independently, and the owner re-fences on its next
+/// refresh.
+fn foreground_lifetime(me: &ProcessIdentity) -> Option<WindowLifetime> {
+    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    if foreground == 0 {
+        return None;
+    }
+    let identity = window_identity(foreground as isize as HWND, foreground, me)?;
+    Some(WindowLifetime {
+        pid: identity.pid,
+        creation: identity.process_creation,
+        member_tag: crate::product_hide::sys::read_member_tag(foreground),
     })
 }
 
@@ -788,6 +884,141 @@ fn test_hint_for(hwnd: u64) -> Option<(WindowSizeHints, HintOutcome)> {
             };
             (hints, outcome)
         })
+}
+
+// Pending-drop owner-integration seams (test-only, offline, native-free).
+// Each injector is `None` in ordinary tests (fail-closed native behavior);
+// pending fixtures set them to script deterministic owner reads/effects
+// without creating windows, hooks, or mutating the desktop. All use safe
+// `std` only, mirroring the existing `INJECTED_HINTS` pattern.
+#[cfg(test)]
+thread_local! {
+    #[allow(clippy::type_complexity)]
+    static INJECTED_OBSERVE: std::cell::RefCell<
+        Option<(Vec<ObservedWindow>, Vec<RetainedRow>, bool)>,
+    > = const { std::cell::RefCell::new(None) };
+    #[allow(clippy::missing_const_for_thread_local)]
+    static INJECTED_TAGS: std::cell::RefCell<std::collections::HashMap<u64, Option<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_TAGS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INJECTED_SUSPEND: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static INJECTED_ELEVATED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    static INJECTED_FOCUS: std::cell::RefCell<Option<&'static str>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECTED_STOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PENDING_COUNTERS: std::cell::RefCell<PendingCounters> =
+        const { std::cell::RefCell::new(PendingCounters::new()) };
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct PendingCounters {
+    focus: usize,
+    engine: usize,
+    apply: usize,
+    reconcile: usize,
+}
+
+#[cfg(test)]
+impl PendingCounters {
+    const fn new() -> Self {
+        Self {
+            focus: 0,
+            engine: 0,
+            apply: 0,
+            reconcile: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+fn inject_pending_observe(
+    observed: Vec<ObservedWindow>,
+    retained: Vec<RetainedRow>,
+    enum_failed: bool,
+) {
+    INJECTED_OBSERVE.with(|slot| {
+        *slot.borrow_mut() = Some((observed, retained, enum_failed));
+    });
+}
+
+#[cfg(test)]
+fn inject_pending_tag(hwnd: u64, tag: Option<String>) {
+    INJECTED_TAGS.with(|map| {
+        map.borrow_mut().insert(hwnd, tag);
+    });
+    INJECTED_TAGS_ACTIVE.with(|active| active.set(true));
+}
+
+#[cfg(test)]
+fn inject_pending_suspend(blocked: Option<bool>) {
+    INJECTED_SUSPEND.with(|slot| slot.set(blocked));
+}
+
+#[cfg(test)]
+fn inject_pending_elevated(elevated: Option<bool>) {
+    INJECTED_ELEVATED.with(|slot| slot.set(elevated));
+}
+
+#[cfg(test)]
+fn inject_pending_focus(outcome: Option<&'static str>) {
+    INJECTED_FOCUS.with(|slot| {
+        *slot.borrow_mut() = outcome;
+    });
+}
+
+#[cfg(test)]
+fn inject_pending_stop(stopped: bool) {
+    INJECTED_STOP.with(|slot| slot.set(stopped));
+}
+
+#[cfg(test)]
+fn pending_counters() -> PendingCounters {
+    PENDING_COUNTERS.with(|slot| {
+        let counters = slot.borrow();
+        PendingCounters {
+            focus: counters.focus,
+            engine: counters.engine,
+            apply: counters.apply,
+            reconcile: counters.reconcile,
+        }
+    })
+}
+
+#[cfg(test)]
+fn clear_pending_seams() {
+    INJECTED_OBSERVE.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+    INJECTED_TAGS.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_TAGS_ACTIVE.with(|active| active.set(false));
+    INJECTED_SUSPEND.with(|slot| slot.set(None));
+    INJECTED_ELEVATED.with(|slot| slot.set(None));
+    INJECTED_FOCUS.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+    INJECTED_STOP.with(|slot| slot.set(false));
+    PENDING_COUNTERS.with(|slot| {
+        *slot.borrow_mut() = PendingCounters::new();
+    });
+    clear_test_hints();
+}
+
+/// Test-aware live member-tag read: injected tags stand in for the OS
+/// property read when the pending fixture activated them (unit tests only;
+/// compiled out of production builds). When active but unscripted for an
+/// HWND, returns `None` without a native call so fixtures stay native-free.
+/// Otherwise the production read runs.
+fn live_member_tag(hwnd: u64) -> Option<String> {
+    #[cfg(test)]
+    {
+        if INJECTED_TAGS_ACTIVE.with(|active| active.get()) {
+            return INJECTED_TAGS.with(|map| map.borrow().get(&hwnd).cloned().unwrap_or(None));
+        }
+    }
+    crate::product_hide::sys::read_member_tag(hwnd)
 }
 
 /// One system-metrics read at the window's current DPI. `GetSystemMetricsForDpi`
@@ -1875,6 +2106,12 @@ struct TileLoop {
     /// owner-side generation/ack/carry bookkeeping; all owner control calls
     /// route through it so nothing touches input TLS from this thread.
     input_bridge: Option<InputBridge>,
+    /// Dedicated-render bridge for the product path (`None` on proof paths,
+    /// which keep same-thread overlays, and when the renderer spawn fails).
+    /// Carries the render channels plus the owner-side generation/applied
+    /// bookkeeping; all owner overlay calls route through it so nothing
+    /// touches renderer windows from this thread.
+    render_bridge: Option<RenderBridge>,
 }
 
 /// Owner-side dedicated-input bridge (product path only). The pump owns both
@@ -2146,6 +2383,1063 @@ fn poll_input_ack(state: &mut TileLoop) {
     }
 }
 
+/// Owner-side dedicated-render bridge (product path only). The renderer
+/// thread creates, pumps, presents and destroys all three overlay carriers;
+/// the owner posts versioned desired frames plus safety epochs and consumes
+/// acknowledged applied state. Proof paths keep `None` and stay same-thread.
+/// All owner control calls route through the bridge so nothing touches
+/// renderer state from this thread; renderer windows are data (HWND `u64`)
+/// here, never dereferenced.
+struct RenderBridge {
+    /// Shared handoff channels (desired slots, safety epochs, acks, IDs).
+    channels: Arc<RenderChannels>,
+    /// Renderer thread handle (lifecycle + bounded join). `None` only in
+    /// `#[cfg(test)]` offline fixtures, which post through channels without
+    /// a live renderer thread; production always holds `Some`.
+    handle: Option<RenderHandle>,
+    /// Next per-carrier generation (monotonic; pairs frames with acks).
+    gens: [u64; 3],
+    /// Hide already posted and unanswered per carrier (transition-only posts;
+    /// quiet ticks send nothing).
+    hide_posted: [bool; 3],
+    /// Reason stashed for the pending hide acknowledgement log line.
+    hide_reason: [Option<String>; 3],
+    /// Verified hidden pairs per carrier: the last `(generation, safety)`
+    /// acknowledged with a `Hidden` outcome. Lets the finish wait succeed
+    /// immediately when its hide ack was already consumed by the ack poll,
+    /// instead of timing out on an already-proven hide.
+    hidden_ack: [Option<(u64, u64)>; 3],
+    /// Last acknowledged applied note per carrier (the posted context paired
+    /// at ack time: diagnostics payloads, sample correlation, hover prior).
+    /// Content truth (geometry/colour/target) comes from the ack applied
+    /// payload itself, never from this pairing.
+    applied_note: [Option<PostedNote>; 3],
+    /// Last acknowledged applied ack per carrier (generation, outcome,
+    /// checksum). Updated on every ack even when the note pairing aged out,
+    /// so visibility and the stop snapshot stay truthful regardless.
+    applied_ack: [Option<CarrierAck>; 3],
+    /// Whether the current applied mirror is a known state. A proven
+    /// `Hidden`, a `Refused`, or a show-family ack is known; an unverified
+    /// `Hidden` or any `Unknown` outcome is unknown and must never report a
+    /// known visibility, satisfy a hide wait, or arm an actuation.
+    applied_known: [bool; 3],
+    /// Admission open: closed at graceful shutdown before the input stop
+    /// wait so no stale show can enter while the input thread winds down.
+    admission_open: bool,
+    /// Recently posted log notes per carrier by generation (bounded history;
+    /// pairs arriving acks with the geometry/signature context the ack
+    /// itself does not carry).
+    posted: [VecDeque<(u64, PostedNote)>; 3],
+    /// Last acknowledged visibility per carrier (from acks, never desired).
+    /// Lets owner logic that reasons about a shown carrier (underlay anchor
+    /// candidates, cancel fallbacks) read applied state with the bridge.
+    applied_visible: [bool; 3],
+    /// Bounded pending gesture drop (bridged finish only): the preview hide
+    /// is posted with its safety epoch, and the Engine drop waits for the
+    /// proven `Hidden` acknowledgement, serviced from render acks at loop
+    /// level. Re-entered with fresh observations and gates before every
+    /// focus/Engine/foreign write; refused narrowly on timeout with no
+    /// drop and no reconcile. Single slot: one gesture settles at a time.
+    pending: Option<PendingDrop>,
+}
+
+/// Bounded pending gesture drop for the bridged finish path. Owns every
+/// input the deferred settle needs (END-time intent, START snapshots,
+/// membership routing, carried hover prior, hide pair, deadline) so the
+/// service revalidates against fresh observations instead of trusting
+/// pre-wait facts. No callbacks, no Engine, no framework: one struct, one
+/// service function on the owner loop.
+struct PendingDrop {
+    hwnd: u64,
+    producer: String,
+    intent: GestureIntent,
+    mover_token: String,
+    start_key: Option<crate::workspace::WindowKey>,
+    start_tag: Option<Option<String>>,
+    member_key: crate::workspace::WindowKey,
+    output: String,
+    workspace: String,
+    drop_prior: Option<tiler_core::session::DragHoverPrior>,
+    hide_gen: u64,
+    hide_safety: u64,
+    deadline: Instant,
+}
+
+/// Log extras stashed at post time for one desired frame: diagnostics
+/// payloads, sample correlation, and hover-prior descriptor. Content truth
+/// (geometry/colour/target) rides the ack applied payload, never this
+/// pairing, so a missing pairing logs extras-free lines or nothing rather
+/// than an older payload as new. Bounded and numeric/opaque-only.
+#[derive(Debug, Clone)]
+struct PostedNote {
+    debug: Option<serde_json::Value>,
+    correlation: String,
+    prior: String,
+}
+
+/// Acknowledged carrier visibility: the last acked applied state with the
+/// bridge, else the same-thread carrier state. Owner logic that reasons
+/// about a shown carrier reads this, never desired state.
+fn render_carrier_visible(state: &TileLoop, carrier: RenderCarrier) -> bool {
+    if let Some(bridge) = state.render_bridge.as_ref() {
+        return bridge.applied_visible[carrier.index()];
+    }
+    match carrier {
+        RenderCarrier::Border => state.border_overlay.is_visible(),
+        RenderCarrier::Underlay => state.underlay_overlay.is_visible(),
+        RenderCarrier::Preview => state.preview_overlay.is_visible(),
+    }
+}
+
+/// Owned overlay window for exclusion checks: the renderer-published
+/// immutable identity when the bridge is active, else the same-thread
+/// carrier window. Owner observation and WinEvents exclude exactly these, so
+/// our own move/paint events can never retarget tiling or the overlays.
+fn owned_overlay_hwnd(state: &TileLoop, carrier: RenderCarrier) -> Option<u64> {
+    if let Some(bridge) = state.render_bridge.as_ref() {
+        return bridge.channels.overlay_ids()[carrier.index()];
+    }
+    match carrier {
+        RenderCarrier::Border => state.border_overlay.hwnd(),
+        RenderCarrier::Underlay => state.underlay_overlay.hwnd(),
+        RenderCarrier::Preview => state.preview_overlay.hwnd(),
+    }
+}
+
+/// Next per-carrier generation for one post or hide.
+fn render_next_gen(bridge: &mut RenderBridge, carrier: RenderCarrier) -> u64 {
+    bridge.gens[carrier.index()] += 1;
+    bridge.gens[carrier.index()]
+}
+
+/// Remember one posted note, keeping a bounded per-carrier history.
+fn render_remember(
+    bridge: &mut RenderBridge,
+    carrier: RenderCarrier,
+    generation: u64,
+    note: PostedNote,
+) {
+    let history = &mut bridge.posted[carrier.index()];
+    history.push_back((generation, note));
+    while history.len() > 8 {
+        history.pop_front();
+    }
+}
+
+/// Signal the renderer work wake after an owner post/hide/stop so the
+/// renderer pump breaks its quantum early instead of idling the full 10ms.
+/// Best-effort: a missing wake keeps the periodic fallback.
+fn signal_render_work(state: &TileLoop) {
+    if let Some(bridge) = state.render_bridge.as_ref()
+        && let Some(handle) = bridge.handle.as_ref()
+    {
+        handle.notify_work();
+    }
+}
+
+/// Post one border frame every owner refresh (latest-wins coalesces bursts
+/// on the renderer, so reposting unchanged content costs one slot, never a
+/// backlog). Unchanged reposts are required, not redundant: the renderer
+/// re-probes the live surface on every present (visibility, rect, z against
+/// the fresh target) and reasserts follow/z drift plus fresh suppression,
+/// exactly like the same-thread cached-equality probe. A refused or
+/// present-failed frame therefore retries on the next refresh with no
+/// separate backoff. Colour carries the configured fallback plus the theme
+/// choice; the renderer owns the live accent query and resolves the painted
+/// colour itself, so no owner-side accent FFI runs per tick.
+#[allow(clippy::too_many_arguments)]
+fn post_border_frame(
+    state: &mut TileLoop,
+    outer: Rect,
+    style_px: (i32, i32, i32),
+    fallback: (u8, u8, u8),
+    use_theme: bool,
+    token: &str,
+    target_hwnd: u64,
+    lifetime: WindowLifetime,
+    foreground: WindowLifetime,
+    fulls: Vec<Rect>,
+    topmost: bool,
+) {
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    if !bridge.admission_open {
+        return;
+    };
+    let safety = bridge.channels.safety();
+    let generation = render_next_gen(bridge, RenderCarrier::Border);
+    let frame = BorderDesired {
+        generation,
+        safety,
+        outer,
+        style_px,
+        color: fallback,
+        use_theme,
+        target_token: token.to_owned(),
+        target_hwnd,
+        lifetime,
+        foreground,
+        fulls,
+        // No managed-fullscreen bypass rule exists for overlay display:
+        // the suspend-write bypasses stay owner-side. Carried explicitly
+        // (false) so the renderer never invents an exemption.
+        fullscreen_bypass: false,
+        topmost,
+    };
+    bridge.channels.post(DesiredFrame::Border(frame));
+    bridge.hide_posted[RenderCarrier::Border.index()] = false;
+    render_remember(
+        bridge,
+        RenderCarrier::Border,
+        generation,
+        PostedNote {
+            debug: None,
+            correlation: String::new(),
+            prior: String::new(),
+        },
+    );
+    signal_render_work(state);
+}
+
+/// Post one underlay frame every owner refresh (latest-wins, like the
+/// border): unchanged reposts re-probe the live surface and re-resolve the
+/// fresh lowest-in-z anchor, so follow/z drift and fresh suppression never
+/// stall on an unchanged frame. `candidates` carry their own lifetime
+/// identities for individual renderer-side validation; the owner-chosen
+/// anchor rides along as the unreadable-order fallback only. The renderer's
+/// own border surface sorts into the anchor comparison renderer-side, so the
+/// owner never pushes a possibly stale border HWND through the handoff.
+#[allow(clippy::too_many_arguments)]
+fn post_underlay_frame(
+    state: &mut TileLoop,
+    outer: Rect,
+    color: (u8, u8, u8, u8),
+    token: &str,
+    topmost: bool,
+    anchor: u64,
+    anchor_lifetime: WindowLifetime,
+    candidates: Vec<UnderlayCandidate>,
+    foreground: WindowLifetime,
+    fulls: Vec<Rect>,
+    debug: serde_json::Value,
+) {
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    if !bridge.admission_open {
+        return;
+    }
+    let safety = bridge.channels.safety();
+    let generation = render_next_gen(bridge, RenderCarrier::Underlay);
+    let frame = UnderlayDesired {
+        generation,
+        safety,
+        outer,
+        color,
+        anchor_token: token.to_owned(),
+        anchor_hwnd: anchor,
+        anchor_lifetime,
+        candidates,
+        foreground,
+        fulls,
+        topmost,
+    };
+    bridge.channels.post(DesiredFrame::Underlay(frame));
+    bridge.hide_posted[RenderCarrier::Underlay.index()] = false;
+    render_remember(
+        bridge,
+        RenderCarrier::Underlay,
+        generation,
+        PostedNote {
+            debug: Some(debug),
+            correlation: String::new(),
+            prior: String::new(),
+        },
+    );
+    signal_render_work(state);
+}
+
+/// Post one preview frame every owner refresh (latest-wins, like the
+/// border): unchanged reposts re-probe the live surface, so a hidden,
+/// misplaced, refused, or present-failed preview retries on the next sample
+/// with no separate backoff. The mover lifetime identity fences the present;
+/// the mover band is never carried (the preview plane is always topmost).
+#[allow(clippy::too_many_arguments)]
+fn post_preview_frame(
+    state: &mut TileLoop,
+    outer: Rect,
+    color: (u8, u8, u8, u8),
+    token: &str,
+    anchor_hwnd: u64,
+    lifetime: WindowLifetime,
+    foreground: Option<WindowLifetime>,
+    correlation: &str,
+    prior: &str,
+) {
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    if !bridge.admission_open {
+        return;
+    }
+    let safety = bridge.channels.safety();
+    let generation = render_next_gen(bridge, RenderCarrier::Preview);
+    let frame = PreviewDesired {
+        generation,
+        safety,
+        outer,
+        color,
+        anchor_token: token.to_owned(),
+        anchor_hwnd,
+        lifetime,
+        foreground,
+    };
+    bridge.channels.post(DesiredFrame::Preview(frame));
+    bridge.hide_posted[RenderCarrier::Preview.index()] = false;
+    render_remember(
+        bridge,
+        RenderCarrier::Preview,
+        generation,
+        PostedNote {
+            debug: None,
+            correlation: correlation.to_owned(),
+            prior: prior.to_owned(),
+        },
+    );
+    signal_render_work(state);
+}
+
+/// Hide one carrier through the bridge (transition-only): bump the safety
+/// epoch, stamp the watermark and drop any queued Show so no late frame can
+/// resurrect this carrier. The `Hidden` log line fires on the renderer
+/// acknowledgement in [`poll_render_acks`], never here. Cancel, suspend,
+/// finish and reset share this ordering with their reason logged there.
+/// A repeated hide with the same reason stays idempotent (no new epoch);
+/// a changed reason posts one new hide generation/epoch so the ack logs the
+/// true transition instead of silently keeping the old reason. Visibility is
+/// never forged here and the pending finish slot is untouched: only the
+/// renderer ack proves hidden.
+fn hide_render_carrier(state: &mut TileLoop, carrier: RenderCarrier, reason: &str) {
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    if bridge.hide_posted[carrier.index()]
+        && bridge.hide_reason[carrier.index()].as_deref() == Some(reason)
+    {
+        return;
+    }
+    // Reason transition (or first hide): fall through to post one new hide
+    // epoch below. A repeated reason stays idempotent above.
+    let generation = render_next_gen(bridge, carrier);
+    bridge.channels.hide(carrier, generation);
+    bridge.hide_posted[carrier.index()] = true;
+    bridge.hide_reason[carrier.index()] = Some(reason.to_owned());
+    signal_render_work(state);
+}
+
+/// Preview-finish hide for the same-thread path only (proof paths and the
+/// degraded same-thread fallback): the bridged product path never blocks
+/// here. It hides through [`hide_render_carrier`] and queues the drop as a
+/// bounded pending owner operation serviced from render acks at loop level
+/// (see `service_pending_drop`), so this function stays inline-hide only.
+/// True after the inline hide; the caller refuses the drop narrowly on its
+/// own timeout path via the pending service.
+fn hide_preview_finish(state: &mut TileLoop, reason: &str) -> bool {
+    hide_preview(state, reason);
+    true
+}
+
+/// Drain renderer lifecycle events for the owner writer (owner tick).
+fn drain_render_failures(state: &mut TileLoop) {
+    let log_path = state.log_path.clone();
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    let Some(handle) = bridge.handle.as_mut() else {
+        return;
+    };
+    handle.drain_failures(&mut |event: &RenderFailEvent| {
+        log_json_at(
+            &log_path,
+            if event.recovered {
+                serde_json::json!({
+                    "event": "render-available",
+                    "op": event.op,
+                    "producer": "render-thread",
+                })
+            } else {
+                let mut line = serde_json::json!({
+                    "event": "render-unavailable",
+                    "op": event.op,
+                    "attempt": event.attempt,
+                    "retry_secs": event.retry_secs,
+                    "producer": "render-thread",
+                });
+                if let Some(detail) = event.detail.as_ref() {
+                    line["cause"] = serde_json::Value::from(detail.clone());
+                }
+                line
+            },
+        );
+    });
+}
+
+/// Record one acknowledgement into the applied mirror (bridge only). Runs on
+/// every ack, even when the posted-note pairing aged out: visibility,
+/// known-ness, and the last applied payload/checksum/generation stay
+/// truthful regardless of log pairing. Only a proven `Hidden` records its
+/// pair for the finish service; an unverified `Hidden` or any `Unknown`
+/// outcome marks the carrier unknown without touching the last-known
+/// visibility, so no log, snapshot, or actuation can mistake it for a known
+/// state.
+fn render_record_applied(
+    state: &mut TileLoop,
+    carrier: RenderCarrier,
+    ack: &crate::render_handoff::CarrierAck,
+) {
+    let Some(bridge) = state.render_bridge.as_mut() else {
+        return;
+    };
+    let index = carrier.index();
+    bridge.applied_ack[index] = Some(ack.clone());
+    match &ack.outcome {
+        RenderOutcome::Hidden if ack.hidden_proven => {
+            bridge.applied_visible[index] = false;
+            bridge.applied_known[index] = true;
+            bridge.hidden_ack[index] = Some((ack.generation, ack.safety));
+            bridge.applied_note[index] = None;
+        }
+        RenderOutcome::Hidden | RenderOutcome::Unknown(_) => {
+            bridge.applied_known[index] = false;
+        }
+        RenderOutcome::Refused(_) => {
+            bridge.applied_visible[index] = false;
+            bridge.applied_known[index] = true;
+            bridge.applied_note[index] = None;
+        }
+        _ => {
+            bridge.applied_visible[index] = true;
+            bridge.applied_known[index] = true;
+            if let Some((_, note)) = bridge.posted[index]
+                .iter()
+                .find(|(posted_gen, _)| *posted_gen == ack.generation)
+                .cloned()
+            {
+                bridge.applied_note[index] = Some(note);
+            }
+        }
+    }
+}
+
+/// Hide reason for one ack: a present failure (`Hidden` with renderer error
+/// detail) reports `present-failed` truthfully with the error, never the
+/// hide-transition reason. An actual hide ack keeps the posted reason.
+fn render_hide_reason(
+    state: &TileLoop,
+    carrier: RenderCarrier,
+    ack: &crate::render_handoff::CarrierAck,
+) -> String {
+    if ack.last_error.is_some() {
+        return "present-failed".to_owned();
+    }
+    state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.hide_reason[carrier.index()].clone())
+        .unwrap_or_else(|| "hidden".to_owned())
+}
+
+/// Poll renderer acknowledgements once per owner tick and log applied
+/// outcomes from acknowledged state only: every line below consumes the ack
+/// (generation, outcome, checksum, span, failure) plus the posted note for
+/// that generation, never desired state as rendered. Change-only signatures
+/// ride the existing `border_last`/`underlay_last`/`preview_last` so the
+/// bridged vocabulary matches the same-thread vocabulary line for line.
+fn poll_render_acks(state: &mut TileLoop) {
+    for carrier in RenderCarrier::all() {
+        poll_render_carrier(state, carrier);
+    }
+}
+
+fn poll_render_carrier(state: &mut TileLoop, carrier: RenderCarrier) {
+    let ack = state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.channels.take_ack(carrier));
+    let Some(ack) = ack else {
+        return;
+    };
+    // Applied mirror first, independently of log pairing: visibility and the
+    // stop snapshot stay truthful even when the posted note aged out.
+    render_record_applied(state, carrier, &ack);
+    // Trace-only compact proof for every ack (including coalesced
+    // Shown->Unchanged): carrier, generation, safety, outcome, proof flags,
+    // applied colour/rect/checksum, transport age, present span, and bounded
+    // failure. Non-trace logs stay change-gated in the existing vocabulary
+    // below. No renderer/input logging, no raw input/app content, no window
+    // identifiers.
+    if state.trace {
+        let (outcome_name, reason) = match &ack.outcome {
+            RenderOutcome::Refused(reason) => ("refused", Some(*reason)),
+            RenderOutcome::Unknown(reason) => ("unknown", Some(*reason)),
+            outcome => (outcome.name(), None),
+        };
+        let mut event = serde_json::json!({
+            "event": "render-applied",
+            "tick": state.tick,
+            "carrier": carrier.name(),
+            "generation": ack.generation,
+            "safety": ack.safety,
+            "outcome": outcome_name,
+            "hidden_proven": ack.hidden_proven,
+            "id_proven": ack.identity_proven,
+            "queue_age_us": ack.queue_age_us,
+            "span_us": ack.span_us,
+            "checksum": format!("{:016x}", ack.checksum),
+        });
+        if let Some(reason) = reason {
+            event["reason"] = serde_json::Value::from(reason);
+        }
+        if let Some(applied) = ack.applied.as_ref() {
+            event["color"] = serde_json::Value::from(applied.color_hex.clone());
+            event["rect"] = serde_json::json!(applied.outer);
+        }
+        if let Some(error) = ack.last_error.as_ref() {
+            event["last_error"] = serde_json::Value::from(error.clone());
+        }
+        let log_path = state.log_path.clone();
+        log_json_at(&log_path, event);
+    }
+    let checksum_hex = format!("{:016x}", ack.checksum);
+    match carrier {
+        RenderCarrier::Border => poll_border_ack(state, &ack, &checksum_hex),
+        RenderCarrier::Underlay => poll_underlay_ack(state, &ack, &checksum_hex),
+        RenderCarrier::Preview => poll_preview_ack(state, &ack, &checksum_hex),
+    }
+}
+
+/// Find the posted note pairing one ack generation (bounded history; the
+/// latest-wins slot plus the renderer quantum keep realistic lag near zero).
+/// `None` means the pairing is gone: log nothing rather than fabricate.
+fn render_note_for(
+    state: &TileLoop,
+    carrier: RenderCarrier,
+    generation: u64,
+) -> Option<PostedNote> {
+    state.render_bridge.as_ref()?.posted[carrier.index()]
+        .iter()
+        .find(|(posted_gen, _)| *posted_gen == generation)
+        .map(|(_, note)| note.clone())
+}
+
+/// Prune posted notes at or below one acknowledged generation.
+fn render_prune_notes(state: &mut TileLoop, carrier: RenderCarrier, generation: u64) {
+    if let Some(bridge) = state.render_bridge.as_mut() {
+        let history = &mut bridge.posted[carrier.index()];
+        history.retain(|(posted_gen, _)| *posted_gen > generation);
+    }
+}
+
+fn poll_border_ack(
+    state: &mut TileLoop,
+    ack: &crate::render_handoff::CarrierAck,
+    checksum_hex: &str,
+) {
+    let tick = state.tick;
+    let trace = state.trace;
+    let log_path = state.log_path.clone();
+    match &ack.outcome {
+        RenderOutcome::Hidden if !ack.hidden_proven => {
+            // Attempted but unverified: unknown visibility, never a hidden
+            // claim. The hide stays pending renderer-side for its retry.
+            render_prune_notes(state, RenderCarrier::Border, ack.generation);
+            let reason = render_hide_reason(state, RenderCarrier::Border, ack);
+            let signature = format!("unknown:{reason}");
+            let changed = state.border_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.border_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "active-border",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Hidden => {
+            let reason = render_hide_reason(state, RenderCarrier::Border, ack);
+            render_prune_notes(state, RenderCarrier::Border, ack.generation);
+            let signature = format!("hidden:{reason}");
+            let changed = state.border_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.border_last = Some(signature);
+            }
+            if changed || trace {
+                let mut event = serde_json::json!({
+                    "event": "active-border",
+                    "tick": tick,
+                    "outcome": "hidden",
+                    "reason": reason,
+                });
+                if let Some(error) = ack.last_error.as_ref() {
+                    event["last_error"] = serde_json::Value::from(error.clone());
+                }
+                log_json_at(&log_path, event);
+            }
+        }
+        RenderOutcome::Refused(reason) => {
+            render_prune_notes(state, RenderCarrier::Border, ack.generation);
+            let signature = format!("hidden:{reason}");
+            let changed = state.border_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.border_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "active-border",
+                        "tick": tick,
+                        "outcome": "hidden",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Unknown(reason) => {
+            render_prune_notes(state, RenderCarrier::Border, ack.generation);
+            let signature = format!("unknown:{reason}");
+            let changed = state.border_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.border_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "active-border",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        outcome => {
+            // Content truth rides the ack applied payload (fresh from the
+            // presented frame, accent-resolved): a missing note pairing
+            // logs nothing rather than an older payload as new.
+            let Some(applied) = ack.applied.clone() else {
+                return;
+            };
+            render_prune_notes(state, RenderCarrier::Border, ack.generation);
+            let style = applied.style_px.unwrap_or([0, 0, 0]);
+            // Same change-only signature as the same-thread line: the
+            // presented colour rides it so a theme change that repaints
+            // the same geometry still logs once.
+            let signature = format!(
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                applied.target,
+                applied.outer[0],
+                applied.outer[1],
+                applied.outer[2],
+                applied.outer[3],
+                style[0],
+                style[1],
+                applied.topmost,
+                applied.color_hex
+            );
+            let changed = state.border_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.border_last = Some(signature);
+            }
+            let outcome_name = outcome.name();
+            if outcome_name == "moved" {
+                if trace {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "active-border",
+                            "tick": tick,
+                            "outcome": "moved",
+                            "target": applied.target,
+                            "outer": applied.outer,
+                            "style_px": style,
+                            "span_us": ack.span_us,
+                        }),
+                    );
+                }
+                return;
+            }
+            if outcome_name == "unchanged" {
+                if trace && changed {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "active-border",
+                            "tick": tick,
+                            "outcome": "unchanged",
+                            "target": applied.target,
+                        }),
+                    );
+                }
+                return;
+            }
+            if !(changed || trace) {
+                return;
+            }
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "active-border",
+                    "tick": tick,
+                    "outcome": outcome_name,
+                    "target": applied.target,
+                    "outer": applied.outer,
+                    "style_px": style,
+                    "color": applied.color_hex,
+                    "dib_checksum": checksum_hex,
+                    "span_us": ack.span_us,
+                    "id_proven": ack.identity_proven,
+                }),
+            );
+        }
+    }
+}
+
+fn poll_underlay_ack(
+    state: &mut TileLoop,
+    ack: &crate::render_handoff::CarrierAck,
+    checksum_hex: &str,
+) {
+    let tick = state.tick;
+    let trace = state.trace;
+    let log_path = state.log_path.clone();
+    match &ack.outcome {
+        RenderOutcome::Hidden if !ack.hidden_proven => {
+            render_prune_notes(state, RenderCarrier::Underlay, ack.generation);
+            let reason = render_hide_reason(state, RenderCarrier::Underlay, ack);
+            let signature = format!("unknown:{reason}");
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Hidden | RenderOutcome::Refused(_) => {
+            let reason = match &ack.outcome {
+                RenderOutcome::Refused(reason) => (*reason).to_owned(),
+                _ => render_hide_reason(state, RenderCarrier::Underlay, ack),
+            };
+            render_prune_notes(state, RenderCarrier::Underlay, ack.generation);
+            let signature = format!("hidden:{reason}");
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": tick,
+                        "outcome": "hidden",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Unknown(reason) => {
+            render_prune_notes(state, RenderCarrier::Underlay, ack.generation);
+            let signature = format!("unknown:{reason}");
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        outcome => {
+            let Some(applied) = ack.applied.clone() else {
+                return;
+            };
+            // Diagnostics extras still ride the note pairing; content truth
+            // rides the ack applied payload.
+            let note = render_note_for(state, RenderCarrier::Underlay, ack.generation);
+            render_prune_notes(state, RenderCarrier::Underlay, ack.generation);
+            let signature = format!(
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}",
+                applied.target,
+                applied.outer[0],
+                applied.outer[1],
+                applied.outer[2],
+                applied.outer[3],
+                applied.topmost,
+                applied.color_hex,
+                checksum_hex
+            );
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            let outcome_name = outcome.name();
+            if outcome_name == "moved" {
+                if trace {
+                    let mut event = serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": tick,
+                        "outcome": "moved",
+                        "target": applied.target,
+                        "outer": applied.outer,
+                        "span_us": ack.span_us,
+                    });
+                    if let Some(fields) = note
+                        .as_ref()
+                        .and_then(|note| note.debug.as_ref())
+                        .and_then(|d| d.as_object())
+                    {
+                        for (key, value) in fields {
+                            event[key] = value.clone();
+                        }
+                    }
+                    log_json_at(&log_path, event);
+                }
+                return;
+            }
+            if outcome_name == "unchanged" {
+                if trace && changed {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "group-underlay",
+                            "tick": tick,
+                            "outcome": "unchanged",
+                            "target": applied.target,
+                        }),
+                    );
+                }
+                return;
+            }
+            if !(changed || trace) {
+                return;
+            }
+            let mut event = serde_json::json!({
+                "event": "group-underlay",
+                "tick": tick,
+                "outcome": outcome_name,
+                "target": applied.target,
+                "outer": applied.outer,
+                "color": applied.color_hex,
+                "members": applied.members,
+                "dib_checksum": checksum_hex,
+                "span_us": ack.span_us,
+                "id_proven": ack.identity_proven,
+            });
+            if let Some(fields) = note
+                .as_ref()
+                .and_then(|note| note.debug.as_ref())
+                .and_then(|d| d.as_object())
+            {
+                for (key, value) in fields {
+                    event[key] = value.clone();
+                }
+            }
+            log_json_at(&log_path, event);
+        }
+    }
+}
+
+fn poll_preview_ack(
+    state: &mut TileLoop,
+    ack: &crate::render_handoff::CarrierAck,
+    checksum_hex: &str,
+) {
+    let tick = state.tick;
+    let trace = state.trace;
+    let log_path = state.log_path.clone();
+    match &ack.outcome {
+        RenderOutcome::Hidden if !ack.hidden_proven => {
+            render_prune_notes(state, RenderCarrier::Preview, ack.generation);
+            let reason = render_hide_reason(state, RenderCarrier::Preview, ack);
+            let signature = format!("unknown:{reason}");
+            let changed = state.preview_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.preview_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "drag-preview",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Hidden | RenderOutcome::Refused(_) => {
+            let reason = match &ack.outcome {
+                RenderOutcome::Refused(reason) => (*reason).to_owned(),
+                _ => render_hide_reason(state, RenderCarrier::Preview, ack),
+            };
+            render_prune_notes(state, RenderCarrier::Preview, ack.generation);
+            let signature = format!("hidden:{reason}");
+            let changed = state.preview_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.preview_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "drag-preview",
+                        "tick": tick,
+                        "outcome": "hidden",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        RenderOutcome::Unknown(reason) => {
+            render_prune_notes(state, RenderCarrier::Preview, ack.generation);
+            let signature = format!("unknown:{reason}");
+            let changed = state.preview_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.preview_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "drag-preview",
+                        "tick": tick,
+                        "outcome": "unknown",
+                        "reason": reason,
+                        "last_error": ack.last_error,
+                    }),
+                );
+            }
+        }
+        _ => {
+            let Some(applied) = ack.applied.clone() else {
+                return;
+            };
+            let note = render_note_for(state, RenderCarrier::Preview, ack.generation);
+            render_prune_notes(state, RenderCarrier::Preview, ack.generation);
+            let signature = format!(
+                "shown:{}:{},{},{},{}:{checksum_hex}",
+                applied.target,
+                applied.outer[0],
+                applied.outer[1],
+                applied.outer[2],
+                applied.outer[3]
+            );
+            let changed = state.preview_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.preview_last = Some(signature);
+            }
+            if changed || trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "drag-preview",
+                        "tick": tick,
+                        "correlation": note.as_ref().map(|note| note.correlation.clone()).unwrap_or_default(),
+                        "outcome": ack.outcome.name(),
+                        "window": applied.target,
+                        "rect": applied.outer,
+                        "hover_prior": note.as_ref().map(|note| note.prior.clone()).unwrap_or_default(),
+                        "span_us": ack.span_us,
+                        "id_proven": ack.identity_proven,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+/// Read-only applied snapshot for one renderer carrier at graceful stop:
+/// the last acknowledged applied content plus its ack generation, outcome
+/// and owned-pixel checksum. Hidden when the carrier reads hidden or never
+/// presented; explicitly unknown when the last ack proved nothing (so
+/// inspection never claims desired-or-stale pixels). Feeds the `*-end`
+/// lines. The payload shape mirrors the carrier `snapshot()` vocabulary
+/// (visibility, target, geometry, colour) without foreign identifiers, plus
+/// the ack evidence.
+fn render_end_snapshot(state: &TileLoop, carrier: RenderCarrier) -> serde_json::Value {
+    let bridge = state.render_bridge.as_ref();
+    let index = carrier.index();
+    let (visible, known, ack) = match bridge {
+        Some(bridge) => (
+            bridge.applied_visible[index],
+            bridge.applied_known[index],
+            bridge.applied_ack[index].clone(),
+        ),
+        None => return serde_json::json!({"visible": false}),
+    };
+    if !known {
+        return serde_json::json!({"visibility": "unknown", "visible": visible});
+    }
+    if !visible {
+        return serde_json::json!({"visible": false});
+    }
+    match ack.and_then(|ack| {
+        ack.applied.map(|applied| {
+            (
+                ack.generation,
+                ack.outcome.name().to_owned(),
+                ack.checksum,
+                applied,
+            )
+        })
+    }) {
+        Some((generation, outcome, checksum, applied)) => serde_json::json!({
+            "visible": true,
+            "target": applied.target,
+            "outer": applied.outer,
+            "color": applied.color_hex,
+            "generation": generation,
+            "outcome": outcome,
+            "dib_checksum": format!("{:016x}", checksum),
+        }),
+        None => serde_json::json!({"visible": false}),
+    }
+}
+
 /// Armed prompt-restore wake: the restored member by full identity plus the
 /// Engine token, so a recycled HWND can never count as completion proof.
 struct RestoreWake {
@@ -2209,6 +3503,23 @@ impl TileLoop {
         skipped: &mut Vec<(String, String)>,
         retained: &mut Vec<RetainedRow>,
     ) -> Option<Vec<ObservedWindow>> {
+        #[cfg(test)]
+        if let Some((observed, retained_injected, enum_failed)) =
+            INJECTED_OBSERVE.with(|slot| slot.borrow().clone())
+        {
+            if enum_failed {
+                return None;
+            }
+            self.last_enumerated = observed.len() + retained_injected.len();
+            self.last_hwnds = observed
+                .iter()
+                .map(|window| window.hwnd)
+                .chain(retained_injected.iter().map(|row| row.key.hwnd))
+                .collect();
+            retained.extend(retained_injected);
+            let _ = (me, fulls);
+            return Some(observed);
+        }
         use ObserveFailure::{Known, Unknown};
         let proof_mode = self.allowlist.is_some();
         let hwnds = enumerate_hwnds()?;
@@ -2223,13 +3534,13 @@ impl TileLoop {
         for raw in hwnds {
             // The process-owned border overlay is never a tile target, a
             // token source, or an unreadable count: skip it before any query.
-            if self.border_overlay.hwnd() == Some(raw as usize as u64) {
+            if owned_overlay_hwnd(self, RenderCarrier::Border) == Some(raw as usize as u64) {
                 continue;
             }
             // Same for the process-owned group-underlay fill: never a tile
             // target, so its own move/paint events cannot retarget tiling or
             // the underlay itself.
-            if self.underlay_overlay.hwnd() == Some(raw as usize as u64) {
+            if owned_overlay_hwnd(self, RenderCarrier::Underlay) == Some(raw as usize as u64) {
                 continue;
             }
             let hwnd = raw as HWND;
@@ -2628,7 +3939,14 @@ fn publish_managed(
 }
 
 /// Hide the border overlay with a change-only `active-border` log line.
+/// With an active render bridge the hide posts through the handoff (safety
+/// epoch plus watermark) and the `Hidden` line fires on the renderer
+/// acknowledgement; otherwise the same-thread carrier hides inline.
 fn hide_border(state: &mut TileLoop, reason: &str) {
+    if state.render_bridge.is_some() {
+        hide_render_carrier(state, RenderCarrier::Border, reason);
+        return;
+    }
     let was_visible = state.border_overlay.is_visible();
     state.border_overlay.hide();
     let signature = format!("hidden:{reason}");
@@ -2664,7 +3982,7 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
         hide_border(state, "no-target");
         return;
     }
-    if state.border_overlay.hwnd() == Some(foreground) {
+    if owned_overlay_hwnd(state, RenderCarrier::Border) == Some(foreground) {
         return;
     }
     let hwnd = foreground as isize as HWND;
@@ -2783,6 +4101,42 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
         hide_border(state, "geometry");
         return;
     };
+    // Bridged present: post the owner-resolved frame (geometry, physical
+    // style, configured fallback colour plus theme choice, fresh target
+    // lifetime identity, foreground identity, and monitor fulls) and return.
+    // The target is the live foreground here, so the foreground proof
+    // clones the target lifetime: any later switch refuses renderer-side.
+    // The renderer owns the live accent query and the fullscreen predicate,
+    // so neither runs owner-side per tick. The applied outcome logs on the
+    // renderer acknowledgement in `poll_render_acks`.
+    if state.render_bridge.is_some() {
+        // Unmanaged foregrounds carry no member tag by construction (tags
+        // stamp only on admission): `None` here is honest untagged
+        // evidence, fenced pid/creation-only renderer-side with the
+        // weakness reported in the ack. The observe-to-tag read is an
+        // existing native race (close/reuse between reads); pid/creation
+        // plus the next-tick owner re-fence close it. No foreign property
+        // is read for this.
+        let lifetime = WindowLifetime {
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+            member_tag: crate::product_hide::sys::read_member_tag(window.hwnd),
+        };
+        post_border_frame(
+            state,
+            outer,
+            (width_px, gap_px, radius_px),
+            state.border.style.color,
+            state.border.style.use_theme,
+            &window.token,
+            window.hwnd,
+            lifetime.clone(),
+            lifetime,
+            fulls.to_vec(),
+            topmost,
+        );
+        return;
+    }
     let outcome = state.border_overlay.show_at(
         outer,
         width_px,
@@ -2920,7 +4274,12 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
 }
 
 /// Hide the underlay fill with a change-only `group-underlay` log line.
+/// Bridged hides post through the handoff like the border; the ack logs.
 fn hide_underlay(state: &mut TileLoop, reason: &str) {
+    if state.render_bridge.is_some() {
+        hide_render_carrier(state, RenderCarrier::Underlay, reason);
+        return;
+    }
     let was_visible = state.underlay_overlay.is_visible();
     state.underlay_overlay.hide();
     let signature = format!("hidden:{reason}");
@@ -2942,7 +4301,14 @@ fn hide_underlay(state: &mut TileLoop, reason: &str) {
 /// Hide the drop preview with change-only logging (no-op when already
 /// hidden). Every cancel, refusal, zero, self/centre/outside, suspend,
 /// teardown, and drift path funnels here so no stale rectangle survives.
+/// Bridged hides post through the handoff; the ack logs. Settle-time finish
+/// uses [`hide_preview_finish`] instead so the Engine drop runs only after
+/// the renderer acknowledges the hide.
 fn hide_preview(state: &mut TileLoop, reason: &str) {
+    if state.render_bridge.is_some() {
+        hide_render_carrier(state, RenderCarrier::Preview, reason);
+        return;
+    }
     let was_visible = state.preview_overlay.is_visible();
     state.preview_overlay.hide();
     let signature = format!("hidden:{reason}");
@@ -3124,8 +4490,8 @@ fn refresh_group_underlay(
         hide_underlay(state, "no-target");
         return;
     }
-    if state.border_overlay.hwnd() == Some(foreground)
-        || state.underlay_overlay.hwnd() == Some(foreground)
+    if owned_overlay_hwnd(state, RenderCarrier::Border) == Some(foreground)
+        || owned_overlay_hwnd(state, RenderCarrier::Underlay) == Some(foreground)
     {
         return;
     }
@@ -3330,12 +4696,15 @@ fn refresh_group_underlay(
         hide_underlay(state, "geometry");
         return;
     };
-    // Anchor beneath the lowest renderable member; the border surface sorts
-    // into the same comparison only when visible so the fill stays below it
-    // too. Member candidates stay identity-valid (still managed) and freshly
-    // renderable (visible, non-iconic, non-cloaked); stale Engine members
-    // between reconciles fail closed to `anchor-missing`.
-    let mut candidates: Vec<u64> = found
+    // Anchor beneath the lowest renderable member; the renderer's own border
+    // surface sorts into the same comparison renderer-side so the fill stays
+    // below it too. Member candidates stay identity-valid (still managed)
+    // and freshly renderable (visible, non-iconic, non-cloaked), each
+    // carrying its own lifetime identity for individual renderer-side
+    // validation; stale Engine members between reconciles fail closed to
+    // `anchor-missing`. The owner never pushes its possibly stale border
+    // HWND through the handoff.
+    let candidates: Vec<UnderlayCandidate> = found
         .members
         .iter()
         .filter_map(|member| {
@@ -3346,13 +4715,28 @@ fn refresh_group_underlay(
                 .map(|(hwnd, _)| *hwnd)
         })
         .filter(|hwnd| state.managed.contains(hwnd) && underlay_anchor_renderable(*hwnd))
+        .filter_map(|hwnd| {
+            let key = state.member_tokens.keys().find(|key| key.hwnd == hwnd)?;
+            Some(UnderlayCandidate {
+                hwnd,
+                lifetime: WindowLifetime {
+                    pid: key.pid,
+                    creation: key.creation.clone(),
+                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+                },
+            })
+        })
         .collect();
-    if state.border_overlay.is_visible()
-        && let Some(border_hwnd) = state.border_overlay.hwnd()
-    {
-        candidates.push(border_hwnd);
-    }
-    let Some(anchor) = lowest_in_z(&candidates) else {
+    let z_hwnds: Vec<u64> = candidates.iter().map(|candidate| candidate.hwnd).collect();
+    let Some(anchor) = lowest_in_z(&z_hwnds) else {
+        hide_underlay(state, "anchor-missing");
+        return;
+    };
+    let Some(anchor_lifetime) = candidates
+        .iter()
+        .find(|candidate| candidate.hwnd == anchor)
+        .map(|candidate| candidate.lifetime.clone())
+    else {
         hide_underlay(state, "anchor-missing");
         return;
     };
@@ -3364,9 +4748,6 @@ fn refresh_group_underlay(
         state.underlay.style.color.1,
         state.underlay.style.color.2,
     );
-    let outcome = state
-        .underlay_overlay
-        .show_fill_at(outer, color, &window.token, topmost, anchor);
     let color_hex = crate::group_underlay::render_color_argb((
         state.underlay.style.color,
         state.underlay.style.alpha,
@@ -3375,6 +4756,8 @@ fn refresh_group_underlay(
     // group/leaf, member rects, DPI/pad inputs, and domain/revision ride the
     // already-logged shown/redrew/moved lines. No new lines, no geometry or
     // placement change; the change-gated signature below is untouched.
+    // Hoisted above the present so the bridged post can stash the same
+    // payload for its acknowledgement-driven log line.
     let member_windows: Vec<String> = found
         .members
         .iter()
@@ -3395,6 +4778,35 @@ fn refresh_group_underlay(
         domain_gap,
         base_revision: found.base_revision,
     });
+    // Bridged present: post the owner-resolved union frame with the live
+    // member candidates the renderer revalidates individually and
+    // re-resolves to a fresh lowest-in-z anchor, plus the foreground
+    // identity and monitor fulls for the renderer-side switch/fullscreen
+    // fence. The applied outcome logs on the acknowledgement.
+    if state.render_bridge.is_some() {
+        let foreground = WindowLifetime {
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+            member_tag: crate::product_hide::sys::read_member_tag(window.hwnd),
+        };
+        post_underlay_frame(
+            state,
+            outer,
+            color,
+            &window.token,
+            topmost,
+            anchor,
+            anchor_lifetime,
+            candidates,
+            foreground,
+            monitor_fulls(areas),
+            geometry_debug,
+        );
+        return;
+    }
+    let outcome = state
+        .underlay_overlay
+        .show_fill_at(outer, color, &window.token, topmost, anchor);
     match outcome {
         OverlayOutcome::Hidden => {
             let failure = format!(
@@ -3550,7 +4962,8 @@ fn refresh_drag_preview(
     }
     if movers.is_empty() {
         // No open move: late samples after Finish must never render.
-        if state.preview_overlay.is_visible() || !state.preview_bound.is_empty() {
+        if render_carrier_visible(state, RenderCarrier::Preview) || !state.preview_bound.is_empty()
+        {
             hide_preview(state, "idle");
         }
         state.preview_bound.clear();
@@ -3880,6 +5293,34 @@ fn refresh_drag_preview(
             let prior_desc = preview_prior_desc(&Some(next_prior.clone()));
             if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
                 bound.hover_prior = Some(next_prior);
+            }
+            // Bridged present: post the Engine-resolved slot with the sample
+            // correlation and carried prior for the ack-driven log line,
+            // fenced on the fresh mover lifetime identity (the mover band
+            // is never a requirement: the preview plane is always topmost)
+            // plus the foreground identity for the renderer-side switch
+            // fence (an unreadable foreground posts `None` and refuses
+            // narrowly per the binding contract; readable unchanged
+            // foregrounds keep unfocused-hold semantics). The applied
+            // outcome logs on the acknowledgement.
+            if state.render_bridge.is_some() {
+                let lifetime = WindowLifetime {
+                    pid: live_frame.identity.pid,
+                    creation: live_frame.identity.process_creation.clone(),
+                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+                };
+                post_preview_frame(
+                    state,
+                    rect,
+                    PREVIEW_DEFAULT_ARGB,
+                    &start.token,
+                    hwnd,
+                    lifetime,
+                    foreground_lifetime(me),
+                    correlation.as_str(),
+                    &prior_desc,
+                );
+                return;
             }
             let outcome = state.preview_overlay.show_fill_above(
                 rect,
@@ -5374,6 +6815,10 @@ fn fixed_predicate_for(live: Option<&LiveSettings>) -> tiler_core::size_hints::F
 /// the opt-in on, only the portable floating flag binds convergence, so
 /// flag-only drift never diverges a session.
 fn handle_engine_event(state: &mut TileLoop, event: &mut CoreEvent) -> CoreReply {
+    #[cfg(test)]
+    PENDING_COUNTERS.with(|slot| {
+        slot.borrow_mut().engine += 1;
+    });
     stamp_engine_event(state, event);
     state.engine.handle(event)
 }
@@ -6447,6 +7892,15 @@ fn reconcile_tick(
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
+    #[cfg(test)]
+    if INJECTED_OBSERVE.with(|slot| slot.borrow().is_some()) {
+        PENDING_COUNTERS.with(|slot| {
+            slot.borrow_mut().reconcile += 1;
+        });
+        state.tick += 1;
+        let _ = (me, fulls, areas);
+        return;
+    }
     state.tick += 1;
     let tick = state.tick;
     let correlation = state.correlation();
@@ -6652,6 +8106,19 @@ fn audit_json(state: &TileLoop, value: serde_json::Value) {
 }
 
 fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySummary> {
+    #[cfg(test)]
+    if INJECTED_OBSERVE.with(|slot| slot.borrow().is_some()) {
+        PENDING_COUNTERS.with(|slot| {
+            slot.borrow_mut().apply += 1;
+        });
+        let _ = input;
+        return Some(ApplySummary {
+            applied: 0,
+            mismatched: 0,
+            readback_ok: true,
+            veto: None,
+        });
+    }
     let ApplyInput {
         me,
         fulls,
@@ -7254,6 +8721,21 @@ fn actuate_focus(
     retained: &[RetainedRow],
     to_token: &str,
 ) -> FocusActuation {
+    #[cfg(test)]
+    if let Some(outcome) = INJECTED_FOCUS.with(|slot| *slot.borrow()) {
+        PENDING_COUNTERS.with(|slot| {
+            slot.borrow_mut().focus += 1;
+        });
+        let _ = (state, me, fulls, observed, retained, to_token);
+        return FocusActuation {
+            outcome,
+            setter_accepted: false,
+            prime_inserted: 0,
+            attach_ok: false,
+            eventual: false,
+            deferred: false,
+        };
+    }
     let unsettled = |outcome: &'static str| FocusActuation {
         outcome,
         setter_accepted: false,
@@ -18329,6 +19811,11 @@ fn log_workspace_action(_state: &TileLoop, log_path: &Path, line: &ActionLine<'_
 /// True when the foreground window's process is not medium integrity:
 /// elevated foreground gates workspace dispatch.
 fn foreground_elevated(me: &ProcessIdentity) -> bool {
+    #[cfg(test)]
+    if let Some(elevated) = INJECTED_ELEVATED.with(|slot| slot.get()) {
+        let _ = me;
+        return elevated;
+    }
     let foreground = unsafe { GetForegroundWindow() };
     if foreground.is_null() {
         return false;
@@ -19105,7 +20592,9 @@ fn clear_windrag_gesture_scoped(
     state.gesture_start_cursor.remove(&hwnd);
     // Owner-side cancel clears the preview with the gesture (the hook
     // already disarmed; the paired Up stays swallowed hook-side).
-    if had_preview || (hide_visible_fallback && state.preview_overlay.is_visible()) {
+    if had_preview
+        || (hide_visible_fallback && render_carrier_visible(state, RenderCarrier::Preview))
+    {
         hide_preview(state, "cancelled");
     }
     state.active.remove(&hwnd);
@@ -19120,7 +20609,608 @@ fn clear_windrag_gesture_scoped(
     state.windrag_start_cursor.remove(&hwnd);
     state.windrag_bound.remove(&hwnd);
     state.move_kind.remove(&hwnd);
+    // Owner-side cancel also drops a queued bridged finish for the same
+    // HWND: the gesture is gone, so a late hide ack must never actuate it.
+    // No Engine/focus/geometry here; the service logs the refusal when it
+    // observes the missing slot, or this drops it immediately when the
+    // bridge is present.
+    if state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.pending.as_ref())
+        .is_some_and(|pending| pending.hwnd == hwnd)
+    {
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.pending.take();
+        }
+        state.gesture_start_key.remove(&hwnd);
+        state.gesture_start_tag.remove(&hwnd);
+    }
     token
+}
+
+/// Pending invalidation while a bridged finish waits (or after its hide
+/// proves): stop, Esc/cancel, suspend/elevated, or a new gesture for the
+/// same HWND. Returns the narrow refusal vocabulary when invalidated, else
+/// `None`. Pure decision over owner state plus the suspend/elevated reads
+/// (injected in tests, native in production); no Engine, focus, geometry,
+/// or pending mutation here. The caller drops the slot.
+fn pending_invalidation(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    hwnd: u64,
+) -> Option<(&'static str, &'static str)> {
+    #[cfg(test)]
+    if INJECTED_STOP.with(|slot| slot.get()) {
+        return Some(("drag-drop-refused", "preview-finish-stopped"));
+    }
+    if state.esc_latched.contains(&hwnd) {
+        return Some(("gesture-cancelled-esc", "esc"));
+    }
+    if state.suspended {
+        return Some(("drag-drop-refused", "preview-finish-suspended"));
+    }
+    if suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
+        return Some(("drag-drop-refused", "preview-finish-suspended"));
+    }
+    // A new gesture for the same HWND supersedes the queued finish: the
+    // pending slot owns its START snapshots, but a fresh `active` capture
+    // means the window started moving again after END. Fail the stale slot
+    // closed; the new gesture settles on its own END.
+    if state.active.contains(&hwnd) {
+        return Some(("drag-drop-refused", "preview-finish-superseded"));
+    }
+    None
+}
+
+/// Queue one bridged finish as a bounded pending owner operation (END path).
+/// Hides the preview (the safety epoch bars any stale-show replay) and
+/// stashes the drop with its hide pair and deadline. Returns `true` when a
+/// previous finish still owns the slot (overlapping END race): the newcomer
+/// is refused narrowly with no drop and no reconcile, and the pending
+/// operation owns the settle. Single slot: one gesture settles at a time.
+/// Production END queueing funnels through here; tests exercise it directly
+/// with offline fixtures (channels only, no renderer thread).
+#[allow(clippy::too_many_arguments)]
+fn queue_pending_drop(
+    state: &mut TileLoop,
+    hwnd: &u64,
+    producer: &'static str,
+    intent: GestureIntent,
+    mover_token: &str,
+    start_key: Option<crate::workspace::WindowKey>,
+    start_tag: Option<Option<String>>,
+    member_key: crate::workspace::WindowKey,
+    output: &str,
+    workspace: &str,
+) -> bool {
+    let drop_prior = state
+        .preview_bound
+        .get(hwnd)
+        .and_then(|bound| bound.hover_prior.clone());
+    hide_render_carrier(state, RenderCarrier::Preview, "finish");
+    state
+        .render_bridge
+        .as_mut()
+        .map(|bridge| {
+            let index = RenderCarrier::Preview.index();
+            let pair = (
+                bridge.gens[index],
+                bridge.channels.hide_mark(RenderCarrier::Preview),
+            );
+            if bridge.pending.is_some() {
+                true
+            } else {
+                bridge.pending = Some(PendingDrop {
+                    hwnd: *hwnd,
+                    producer: producer.to_owned(),
+                    intent,
+                    mover_token: mover_token.to_owned(),
+                    start_key,
+                    start_tag,
+                    member_key,
+                    output: output.to_owned(),
+                    workspace: workspace.to_owned(),
+                    drop_prior,
+                    hide_gen: pair.0,
+                    hide_safety: pair.1,
+                    deadline: Instant::now() + FINISH_WAIT,
+                });
+                false
+            }
+        })
+        .unwrap_or(false)
+}
+
+/// Service the bounded pending gesture drop from render-ack state at loop
+/// level (ack-only and full turns alike): no blocking wait, so the owner
+/// stays responsive to stop and new events. On a proven `Hidden`
+/// acknowledgement the settle re-enters below with fresh observations and
+/// gates before every focus/Engine/foreign write. On timeout the drop is
+/// refused narrowly with no drop and no reconcile: actuation runs only over
+/// a proven hide, while the posted safety epoch already bars any stale-show
+/// replay. Cancel/Esc/suspend/new-gesture/stop invalidate the pending slot
+/// with no Engine/focus/geometry, so a late ack can never actuate after the
+/// gesture was cancelled, suspended, superseded, or stopped.
+fn service_pending_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+) {
+    let Some(bridge) = state.render_bridge.as_ref() else {
+        return;
+    };
+    let pending = match bridge.pending.as_ref() {
+        Some(pending) => pending,
+        None => return,
+    };
+    let (hwnd, hide_gen, hide_safety, deadline) = (
+        pending.hwnd,
+        pending.hide_gen,
+        pending.hide_safety,
+        pending.deadline,
+    );
+    // Invalidation while waiting (unproven or proven): stop, Esc/cancel,
+    // suspend, or a new gesture for the same HWND drops the slot with no
+    // Engine/focus/geometry. Checked before the timeout so a cancelled
+    // pending never waits out the bound.
+    if let Some((outcome, kind)) = pending_invalidation(state, me, fulls, hwnd) {
+        let mover_token = state
+            .render_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.pending.as_ref())
+            .map(|pending| pending.mover_token.clone())
+            .unwrap_or_default();
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.pending.take();
+        }
+        state.gesture_start_key.remove(&hwnd);
+        state.gesture_start_tag.remove(&hwnd);
+        // Esc invalidation converges like the inline Esc path (one bounded
+        // reconcile to snap back); stop/suspend/supersede drop without
+        // converging, since the loop is stopping/suspended or the new
+        // gesture owns the settle.
+        let reconcile = outcome == "gesture-cancelled-esc";
+        log_json_at(
+            &state.log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "drag-drop",
+                "disposition": "refused",
+                "outcome": outcome,
+                "kind": kind,
+                "window": mover_token,
+                "producer": "settle",
+            }),
+        );
+        if reconcile {
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+        }
+        return;
+    }
+    let proven = state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.hidden_ack[RenderCarrier::Preview.index()])
+        .is_some_and(|(hgen, safe)| hgen >= hide_gen && safe >= hide_safety);
+    if !proven {
+        if Instant::now() >= deadline {
+            // Timeout: refuse narrowly. No drop, no reconcile: the drop and
+            // its convergence run only over a proven hide, and the safety
+            // epoch already bars replay. The renderer hides on its next
+            // quantum either way.
+            let mover_token = state
+                .render_bridge
+                .as_ref()
+                .and_then(|bridge| bridge.pending.as_ref())
+                .map(|pending| pending.mover_token.clone())
+                .unwrap_or_default();
+            if let Some(bridge) = state.render_bridge.as_mut() {
+                bridge.pending.take();
+            }
+            state.gesture_start_key.remove(&hwnd);
+            state.gesture_start_tag.remove(&hwnd);
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "op": "drag-drop",
+                    "disposition": "refused",
+                    "outcome": "drag-drop-refused",
+                    "kind": "preview-finish-unacked",
+                    "window": mover_token,
+                    "producer": "settle",
+                }),
+            );
+        }
+        return;
+    }
+    let Some(pending) = state
+        .render_bridge
+        .as_mut()
+        .and_then(|bridge| bridge.pending.take())
+    else {
+        return;
+    };
+    state.gesture_start_key.remove(&pending.hwnd);
+    state.gesture_start_tag.remove(&pending.hwnd);
+    let log_path = state.log_path.clone();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"tick-skip","tick":state.tick,"cause":"enum-failed"}),
+        );
+        return;
+    };
+    publish_managed(state, me, &observed, &retained);
+    let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
+    // Fresh revalidation against the stashed START snapshots before any
+    // write: a reuse between END and the proven hide fails closed here
+    // exactly like the inline settle path.
+    let Some(current) = by_hwnd.get(&pending.hwnd) else {
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    };
+    if let (Some(key), Some(stored)) = (pending.start_key.as_ref(), pending.start_tag.as_ref())
+        && (!crate::workspace_owner::member_matches(
+            key,
+            current.hwnd,
+            current.identity.pid,
+            &current.identity.process_creation,
+        ) || {
+            let live = live_member_tag(current.hwnd);
+            stored != &live
+        })
+    {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "gesture",
+                "disposition": "refused",
+                "outcome": "gesture-refused-identity",
+                "window": current.token,
+                "producer": pending.producer,
+            }),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    let member_key = state
+        .member_tokens
+        .iter()
+        .find(|(_, token)| token.as_str() == current.token.as_str())
+        .map(|(key, _)| key.clone());
+    let Some(member_key) = member_key else {
+        return;
+    };
+    // The stashed END-time membership must still name the same member:
+    // a token remap between END and the proven hide fails closed instead
+    // of dropping under a recycled identity.
+    if member_key != pending.member_key {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "gesture",
+                "disposition": "refused",
+                "outcome": "gesture-refused-identity",
+                "window": current.token,
+                "producer": pending.producer,
+            }),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    if !crate::workspace_owner::member_matches(
+        &member_key,
+        current.hwnd,
+        current.identity.pid,
+        &current.identity.process_creation,
+    ) {
+        return;
+    }
+    if state.sticky.contains_key(&member_key) {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "gesture",
+                "disposition": "observed",
+                "outcome": "gesture-refused-sticky",
+                "window": current.token,
+            }),
+        );
+        return;
+    }
+    if let Some(loc) = state.workspaces.member_loc(&member_key).cloned()
+        && (engine_is_float(state, &loc.output, &loc.workspace, &current.token)
+            || !workspace_mode_tiled(state, &loc.output, &loc.workspace))
+    {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "gesture",
+                "disposition": "observed",
+                "outcome": "gesture-refused-floating",
+                "window": current.token,
+            }),
+        );
+        return;
+    }
+    let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+        return;
+    };
+    if loc.output != pending.output || loc.workspace != pending.workspace {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "gesture",
+                "disposition": "refused",
+                "outcome": "gesture-refused-domain",
+                "window": current.token,
+                "producer": pending.producer,
+            }),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    let Some((domain, domain_key)) = workspace_domain_for(
+        &loc.output,
+        &loc.workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        return;
+    };
+    if let GestureIntent::MoveDrop { x, y } = pending.intent
+        && !drop_point_in_domain(
+            domain.bounds.x,
+            domain.bounds.y,
+            domain.bounds.w,
+            domain.bounds.h,
+            x,
+            y,
+        )
+    {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": state.tick,
+                "op": "drag-drop",
+                "disposition": "refused",
+                "outcome": "gesture-refused-cross-output",
+                "window": current.token,
+                "producer": pending.producer,
+            }),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    if pending.producer == "windrag" {
+        // Fresh suspension fence after the proven hide, before any focus
+        // write: a fullscreen arrival (or elevated foreground) between END
+        // and the ack refuses with no focus and no Engine plan. The late
+        // fence inside `actuate_focus` stays the second guard for arrivals
+        // racing this re-entry.
+        if state.suspended || suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "op": "gesture",
+                    "disposition": "refused",
+                    "outcome": "gesture-refused-focus",
+                    "window": current.token,
+                    "producer": pending.producer,
+                }),
+            );
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+            return;
+        }
+        let actuation = actuate_focus(state, me, fulls, &observed, &retained, &current.token);
+        if actuation.outcome != "focus-ok" {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "op": "gesture",
+                    "disposition": "refused",
+                    "outcome": "gesture-refused-focus",
+                    "window": current.token,
+                    "producer": pending.producer,
+                }),
+            );
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+            return;
+        }
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "windrag-focus",
+                "tick": state.tick,
+                "phase": "drop",
+                "outcome": "focus-ok",
+                "window": current.token,
+                "producer": pending.producer,
+            }),
+        );
+    }
+    state.tick += 1;
+    let correlation = state.correlation();
+    let mut hint_cx = HintCx::new();
+    let Some(rows) = assemble_domain_rows(
+        state,
+        &loc.output,
+        &loc.workspace,
+        &observed,
+        &retained,
+        "gesture",
+        correlation.as_str(),
+        &mut hint_cx,
+    ) else {
+        return;
+    };
+    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let fp = fingerprint(
+        &rows
+            .iter()
+            .map(|r| (r.token.clone(), r.rect))
+            .collect::<Vec<_>>(),
+    );
+    let mover = WindowId(current.token.clone());
+    {
+        let revision = revision_for(state, &loc.output, &loc.workspace);
+        let outer_gap = state.outer_gap;
+        adopt_gaps_for_route(
+            state,
+            &domain,
+            &domain_key,
+            outer_gap,
+            &windows,
+            Some(&mover),
+            revision,
+            fp,
+            &correlation,
+        );
+    }
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        &correlation,
+        revision_for(state, &loc.output, &loc.workspace),
+        fp,
+        &domain,
+        &domain_key,
+        state.outer_gap,
+        &windows,
+        Some(&mover),
+    );
+    let drop_prior_desc = preview_prior_desc(&pending.drop_prior);
+    let reply = match pending.intent {
+        GestureIntent::MoveDrop { x, y } => {
+            event.command = CoreCommand::DragDrop {
+                window: current.token.clone(),
+                x,
+                y,
+                hover_prior: pending.drop_prior,
+                source: None,
+            };
+            handle_engine_event(state, &mut event)
+        }
+        GestureIntent::PointerResize {
+            direction,
+            boundary,
+            direction2,
+            boundary2,
+        } => {
+            event.command = CoreCommand::PointerResize {
+                window: current.token.clone(),
+                direction: direction.to_owned(),
+                boundary,
+                direction2: direction2.map(str::to_owned),
+                boundary2,
+            };
+            handle_engine_event(state, &mut event)
+        }
+    };
+    let op = match pending.intent {
+        GestureIntent::MoveDrop { .. } => "drag-drop",
+        GestureIntent::PointerResize { .. } => "pointer-resize",
+    };
+    match &reply {
+        CoreReply::Tiled(_) | CoreReply::Projection(_) | CoreReply::Resize(_) => {
+            let tick = state.tick;
+            let fulls_owned = fulls.to_vec();
+            let writable = writable_tokens(state, &loc.output, &loc.workspace, &observed);
+            apply_geometry(
+                state,
+                ApplyInput {
+                    me,
+                    fulls: &fulls_owned,
+                    reply: &reply,
+                    observed: &observed,
+                    op,
+                    tick,
+                    correlation: correlation.as_str(),
+                    skipped: Vec::new(),
+                    writable: &writable,
+                    output_token: state.workspaces.output_token(&loc.output),
+                    workspace_token: state
+                        .workspaces
+                        .workspace_token(&loc.output, &loc.workspace),
+                    revision: revision_for(state, &loc.output, &loc.workspace),
+                },
+            );
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "op": op,
+                    "disposition": "applied",
+                    "outcome": if op == "drag-drop" { "drag-drop-applied" } else { "pointer-resize-applied" },
+                    "window": current.token,
+                    "producer": pending.producer,
+                    "hover_prior": drop_prior_desc,
+                }),
+            );
+        }
+        _ => {
+            let kind = match &reply {
+                CoreReply::Rejected { kind, .. } => *kind,
+                CoreReply::Diverged(reason) => reason.as_str(),
+                CoreReply::SnapshotInvalid { detail, .. } => *detail,
+                _ => "unhandled-variant",
+            };
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "op": op,
+                    "disposition": "refused",
+                    "outcome": "drag-drop-refused",
+                    "kind": kind,
+                    "window": current.token,
+                    "producer": pending.producer,
+                    "hover_prior": drop_prior_desc,
+                }),
+            );
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+        }
+    }
 }
 
 fn gesture_tick(
@@ -19271,7 +21361,7 @@ fn gesture_tick(
                 current.identity.pid,
                 &current.identity.process_creation,
             ) || {
-                let live = crate::product_hide::sys::read_member_tag(current.hwnd);
+                let live = live_member_tag(current.hwnd);
                 stored != &live
             })
         {
@@ -19457,6 +21547,56 @@ fn gesture_tick(
             reconcile_tick(state, me, &fulls_owned, areas);
             continue;
         }
+        // Bridged finish: hide (the safety epoch bars any stale-show replay)
+        // and stash the drop as a bounded pending owner operation serviced
+        // from render acks at loop level. No blocking wait: the owner stays
+        // responsive to stop and new events, and the drop runs only after
+        // the proven `Hidden` acknowledgement, re-entered with fresh
+        // observations and gates before every focus/Engine/foreign write
+        // below. The same-thread path keeps its proven-inline ordering.
+        if state.render_bridge.is_some() {
+            let occupied = queue_pending_drop(
+                state,
+                hwnd,
+                producer,
+                intent,
+                &current.token,
+                start_key,
+                start_tag,
+                member_key,
+                &loc.output,
+                &loc.workspace,
+            );
+            state.preview_bound.remove(hwnd);
+            state.preview_dead.remove(hwnd);
+            state.gesture_preview_start.remove(hwnd);
+            state.gesture_start_cursor.remove(hwnd);
+            state.gesture_end_cursor.remove(hwnd);
+            state.windrag_start_cursor.remove(hwnd);
+            state.gesture_before.remove(hwnd);
+            if occupied {
+                // A previous finish is still pending (overlapping END races):
+                // refuse the newcomer narrowly with no drop and no
+                // reconcile; the pending operation owns the settle.
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": match &intent {
+                            GestureIntent::MoveDrop { .. } => "drag-drop",
+                            GestureIntent::PointerResize { .. } => "pointer-resize",
+                        },
+                        "disposition": "refused",
+                        "outcome": "drag-drop-refused",
+                        "kind": "preview-finish-busy",
+                        "window": current.token,
+                        "producer": producer,
+                    }),
+                );
+            }
+            continue;
+        }
         // Project-driven Win+Left focus binding (KDE mover parity): the
         // gesture owns the mover even when native focus lags (unfocused
         // Win+Left starts without focusing). The Engine binds logical focus
@@ -19570,9 +21710,43 @@ fn gesture_tick(
         // proves preview-to-drop carry equality without raw NodeIds.
         let drop_prior_desc = preview_prior_desc(&drop_prior);
         // Reply rendering must never outlive the gesture: the preview is
-        // gone before the Engine drop runs, so no late sample can paint
-        // over the settled layout.
-        hide_preview(state, "finish");
+        // proven hidden before the Engine drop runs, so no late sample can
+        // paint over the settled layout. With a render bridge this hides
+        // with a verified `Hidden` acknowledgement the owner waits for
+        // (bounded, outside callbacks) before the Engine drop below. An
+        // unacknowledged hide refuses the drop narrowly (tentative stage 2
+        // semantics: `drag-drop-refused` with kind `preview-finish-unacked`,
+        // converging through one bounded reconcile like any other refusal):
+        // the drop never executes over a possibly visible preview, and the
+        // bumped safety epoch still bars any stale-show replay.
+        if !hide_preview_finish(state, "finish") {
+            let op = match &intent {
+                GestureIntent::MoveDrop { .. } => "drag-drop",
+                GestureIntent::PointerResize { .. } => "pointer-resize",
+            };
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": state.tick,
+                    "correlation": correlation.as_str(),
+                    "op": op,
+                    "disposition": "refused",
+                    "outcome": "drag-drop-refused",
+                    "kind": "preview-finish-unacked",
+                    "window": current.token,
+                    "producer": producer,
+                    "hover_prior": drop_prior_desc,
+                }),
+            );
+            state.preview_bound.remove(hwnd);
+            state.preview_dead.remove(hwnd);
+            state.gesture_preview_start.remove(hwnd);
+            state.gesture_start_cursor.remove(hwnd);
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+            continue;
+        }
         state.preview_bound.remove(hwnd);
         state.preview_dead.remove(hwnd);
         state.gesture_preview_start.remove(hwnd);
@@ -19686,8 +21860,23 @@ fn gesture_tick(
     state.gesture_esc_seq.clear();
     state.gesture_end_seq.clear();
     state.gesture_end_cursor.clear();
-    state.gesture_start_key.clear();
-    state.gesture_start_tag.clear();
+    // A pending bridged finish owns its START snapshots until the loop-level
+    // service consumes them: retain exactly that HWND's entries here.
+    let pending_hwnd = state
+        .render_bridge
+        .as_ref()
+        .and_then(|bridge| bridge.pending.as_ref())
+        .map(|pending| pending.hwnd);
+    match pending_hwnd {
+        Some(hwnd) => {
+            state.gesture_start_key.retain(|key, _| *key == hwnd);
+            state.gesture_start_tag.retain(|key, _| *key == hwnd);
+        }
+        None => {
+            state.gesture_start_key.clear();
+            state.gesture_start_tag.clear();
+        }
+    }
     state.gesture_producer.clear();
     state.windrag_start_cursor.clear();
     state.windrag_bound.clear();
@@ -19865,6 +22054,35 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
 /// overlay transition (slotted member or lifetime-known non-fullscreen)
 /// never re-enters the hold.
 fn suspend_read(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Rect]) -> ForegroundRead {
+    #[cfg(test)]
+    if let Some(blocked) = INJECTED_SUSPEND.with(|slot| slot.get()) {
+        use crate::workspace_owner::ForegroundVetoReason;
+        let _ = (state, me, fulls);
+        if blocked {
+            return ForegroundRead {
+                veto: crate::workspace_owner::ForegroundVeto {
+                    block: true,
+                    reason: ForegroundVetoReason::Fullscreen,
+                },
+                desktop: false,
+                visible: true,
+                captioned: false,
+                dwm_readable: true,
+                cloaked: false,
+            };
+        }
+        return ForegroundRead {
+            veto: crate::workspace_owner::ForegroundVeto {
+                block: false,
+                reason: ForegroundVetoReason::None,
+            },
+            desktop: false,
+            visible: false,
+            captioned: false,
+            dwm_readable: false,
+            cloaked: false,
+        };
+    }
     use crate::workspace_owner::ForegroundVetoReason;
     let raw = foreground_read(fulls);
     if !raw.veto.block {
@@ -20437,6 +22655,7 @@ fn run_tile_loop(
         born_first_exit: BTreeSet::new(),
         overlay_now: HashMap::new(),
         input_bridge: None,
+        render_bridge: None,
         pending_releases: crate::workspace::PendingReleases::new(),
         pending_retry_fp: 0,
     };
@@ -20731,6 +22950,74 @@ fn run_tile_loop(
             }
         }
     }
+    // Dedicated renderer for the product path: all three overlay carriers
+    // move to one renderer thread (stage 2, option B). Readiness uses a
+    // bounded wait; a spawn failure degrades to same-thread overlays while
+    // tiling continues, never a refused run. Proof paths keep `None` above
+    // and stay same-thread.
+    if use_input_thread {
+        match RenderHandle::spawn() {
+            Ok(mut handle) => {
+                let ready = handle.wait_ready(RENDER_READY_WAIT, &mut |event: &RenderFailEvent| {
+                    log_json_at(
+                        &log_path,
+                        if event.recovered {
+                            serde_json::json!({
+                                "event": "render-available",
+                                "op": event.op,
+                                "producer": "render-thread",
+                            })
+                        } else {
+                            let mut line = serde_json::json!({
+                                "event": "render-unavailable",
+                                "op": event.op,
+                                "attempt": event.attempt,
+                                "retry_secs": event.retry_secs,
+                                "producer": "render-thread",
+                            });
+                            if let Some(detail) = event.detail.as_ref() {
+                                line["cause"] = serde_json::Value::from(detail.clone());
+                            }
+                            line
+                        },
+                    );
+                });
+                if ready {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({"event":"render-ready","bounded_wait":"met"}),
+                    );
+                } else {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({"event":"render-pending","note":"renderer retries creation on its pump; tiling continues with pending presents"}),
+                    );
+                }
+                let channels = handle.channels().clone();
+                state.render_bridge = Some(RenderBridge {
+                    channels,
+                    handle: Some(handle),
+                    gens: [0, 0, 0],
+                    hide_posted: [false, false, false],
+                    hide_reason: [None, None, None],
+                    hidden_ack: [None, None, None],
+                    posted: std::array::from_fn(|_| VecDeque::new()),
+                    applied_visible: [false, false, false],
+                    applied_note: [None, None, None],
+                    applied_ack: [None, None, None],
+                    applied_known: [false, false, false],
+                    admission_open: true,
+                    pending: None,
+                });
+            }
+            Err(cause) => {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"render-spawn-failed","cause": cause}),
+                );
+            }
+        }
+    }
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
     let mut slow_last = Instant::now();
     let result = (|| -> Result<()> {
@@ -20783,12 +23070,17 @@ fn run_tile_loop(
             if deadline.is_some_and(|end| Instant::now() >= end) {
                 return Ok(());
             }
-            pump_wait_with_intent(
+            let wait = pump_wait_with_intent(
                 TICK_POLL_MS,
                 state
                     .input_bridge
                     .as_ref()
                     .and_then(|bridge| bridge.channels.intent_wake()),
+                state
+                    .render_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.handle.as_ref())
+                    .map(|handle| handle.ack_wake()),
             );
             // Trace-only owner-work clock starts here: `busy_us` excludes the
             // wait above plus callbacks delivered inside it. Scoped to this
@@ -20814,9 +23106,11 @@ fn run_tile_loop(
                     HookEvent::Wake(raw) => {
                         // Own overlay events never wake the loop: no repeated
                         // full reconcile off our own move/paint/show.
-                        if state.border_overlay.hwnd() == Some(raw as u64)
-                            || state.underlay_overlay.hwnd() == Some(raw as u64)
-                            || state.preview_overlay.hwnd() == Some(raw as u64)
+                        if owned_overlay_hwnd(&state, RenderCarrier::Border) == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Underlay)
+                                == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Preview)
+                                == Some(raw as u64)
                         {
                             continue;
                         }
@@ -20826,9 +23120,11 @@ fn run_tile_loop(
                         }
                     }
                     HookEvent::MoveSizeStart(raw, start_seq) => {
-                        if state.border_overlay.hwnd() == Some(raw as u64)
-                            || state.underlay_overlay.hwnd() == Some(raw as u64)
-                            || state.preview_overlay.hwnd() == Some(raw as u64)
+                        if owned_overlay_hwnd(&state, RenderCarrier::Border) == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Underlay)
+                                == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Preview)
+                                == Some(raw as u64)
                         {
                             continue;
                         }
@@ -20871,9 +23167,11 @@ fn run_tile_loop(
                         }
                     }
                     HookEvent::MoveSizeEnd(raw, cursor, end_seq) => {
-                        if state.border_overlay.hwnd() == Some(raw as u64)
-                            || state.underlay_overlay.hwnd() == Some(raw as u64)
-                            || state.preview_overlay.hwnd() == Some(raw as u64)
+                        if owned_overlay_hwnd(&state, RenderCarrier::Border) == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Underlay)
+                                == Some(raw as u64)
+                            || owned_overlay_hwnd(&state, RenderCarrier::Preview)
+                                == Some(raw as u64)
                         {
                             continue;
                         }
@@ -20906,6 +23204,23 @@ fn run_tile_loop(
                         state.move_kind.remove(&hwnd);
                     }
                 }
+            }
+            // Ack accounting runs on every turn (cheap: three mutex takes
+            // plus the bounded failure drain), then the pending finish is
+            // serviced from the ack state with no blocking wait.
+            drain_render_failures(&mut state);
+            poll_render_acks(&mut state);
+            service_pending_drop(&mut state, me, &fulls, &areas);
+            // Ack-only turns (renderer ack with no input, message, timeout,
+            // or hook-callback event) loop here without reposting frames,
+            // reconciling, polling settings, or touching input: an ack alone
+            // never triggers owner work, so the ack wake cannot feed back
+            // into a post/ack/post loop. Hook events above force a full
+            // turn, so no input starves; the timeout preserves the timed
+            // follow/reassert cadence, and the pending finish above still
+            // completes with no added latency.
+            if !(wait.full_turn() || woke) {
+                continue;
             }
             let now = Instant::now();
             let slow = now.duration_since(slow_last).as_millis() >= u128::from(SLOW_POLL_MS);
@@ -20948,6 +23263,10 @@ fn run_tile_loop(
                 }
                 poll_input_ack(&mut state);
             }
+            // Renderer acknowledgements and lifecycle were already drained
+            // above (before the ack-only branch), so ack accounting never
+            // stalls behind the input gate: a failed input spawn must not
+            // stall it, and an ack-only turn must not wait for it.
             if !use_input_thread
                 && takeover_live
                 && snap_hook.is_none()
@@ -22005,7 +24324,8 @@ fn run_tile_loop(
             // waiting for mouse-up (the stationary gesture has no native
             // modal loop to end it; the native loop ends on its own).
             for hwnd in state.esc_latched.iter().copied().collect::<Vec<_>>() {
-                if state.preview_bound.remove(&hwnd).is_some() || state.preview_overlay.is_visible()
+                if state.preview_bound.remove(&hwnd).is_some()
+                    || render_carrier_visible(&state, RenderCarrier::Preview)
                 {
                     hide_preview(&mut state, "esc-cancelled");
                 }
@@ -22189,6 +24509,27 @@ fn run_tile_loop(
             UnhookWinEvent(hook);
         }
     }
+    // Render admission closes first: invalidate every carrier epoch (a hide
+    // on each carrier bumps the shared safety epoch and drops queued Shows)
+    // and signal the renderer to stop, before the input stop wait. No stale
+    // show can present during the potentially 5s input shutdown, and the
+    // renderer observes stop promptly through its work wake.
+    if let Some(bridge) = state.render_bridge.as_mut() {
+        bridge.admission_open = false;
+        for carrier in RenderCarrier::all() {
+            let index = carrier.index();
+            if !bridge.hide_posted[index] {
+                bridge.gens[index] += 1;
+                let generation = bridge.gens[index];
+                bridge.channels.hide(carrier, generation);
+                bridge.hide_posted[index] = true;
+            }
+        }
+        let _ = bridge.handle.as_mut().map(|handle| handle.request_stop());
+        if let Some(handle) = bridge.handle.as_ref() {
+            handle.notify_work();
+        }
+    }
     // Product path graceful stop: close admission (owner stops pushing),
     // keep consumed pairs handled until the hook release, unhook on the
     // creator pump, and ack with a bounded wait. A missing ack returns an
@@ -22211,6 +24552,42 @@ fn run_tile_loop(
         }
         log_json_at(&log_path, event);
         input_stop_clean = report.clean;
+    }
+    // Renderer graceful stop: the loop has ended so no fresh frames enter
+    // after stop (admission closed and epochs invalidated above), the
+    // renderer destroys every carrier on its creator thread with verified
+    // readbacks, and acks with a bounded wait. A missing ack returns an
+    // unclean report without claiming clean and retains `Stopping` so no
+    // overlapping worker can start; the existing recovery lifecycle is
+    // untouched. Published overlay identities clear only after verified
+    // destruction plus exit (never on timeout), so a recycled HWND value
+    // can never linger as a stale exclusion while a live carrier may still
+    // own it. Never waits indefinitely or holds owner locks while joining.
+    let mut render_stop_clean = true;
+    if let Some(bridge) = state.render_bridge.as_mut() {
+        let _ = bridge.handle.as_mut().map(|handle| handle.request_stop());
+        if let Some(handle) = bridge.handle.as_ref() {
+            handle.notify_work();
+        }
+        let report = bridge
+            .handle
+            .as_mut()
+            .map(|handle| handle.wait_stopped(RENDER_STOP_WAIT))
+            .unwrap_or(crate::render_handoff::RenderStopReport {
+                destroyed_ok: false,
+                clean: true,
+            });
+        let mut event = serde_json::json!({"event":"render-stop","clean": report.clean, "destroyed_ok": report.destroyed_ok});
+        if !report.clean {
+            event["note"] = serde_json::json!(
+                "render stop unclean; process exit destroys carriers; no overlapping worker started"
+            );
+        }
+        log_json_at(&log_path, event);
+        render_stop_clean = report.clean;
+        if report.clean {
+            bridge.channels.clear_overlay_ids();
+        }
     }
     if let Some(mut snap) = snap_hook {
         // Honest release accounting: process exit releases the hook in any
@@ -22239,14 +24616,25 @@ fn run_tile_loop(
         log_json_at(&log_path, serde_json::json!({"event":"tray-end"}));
     }
     // Owned overlay teardown: explicit destroy on graceful stop (process exit
-    // destroys it implicitly after a crash, so no residue either way).
-    let border_snapshot = state.border_overlay.snapshot();
+    // destroys it implicitly after a crash, so no residue either way). With
+    // a render bridge the renderer destroyed its carriers above and the
+    // `*-end` lines report the last acknowledged applied state; otherwise
+    // the same-thread carriers destroy inline as before.
+    let border_snapshot = if state.render_bridge.is_some() {
+        render_end_snapshot(&state, RenderCarrier::Border)
+    } else {
+        state.border_overlay.snapshot()
+    };
     state.border_overlay.destroy();
     log_json_at(
         &log_path,
         serde_json::json!({"event":"active-border-end","overlay": border_snapshot}),
     );
-    let underlay_snapshot = state.underlay_overlay.snapshot();
+    let underlay_snapshot = if state.render_bridge.is_some() {
+        render_end_snapshot(&state, RenderCarrier::Underlay)
+    } else {
+        state.underlay_overlay.snapshot()
+    };
     state.underlay_overlay.destroy();
     log_json_at(
         &log_path,
@@ -22255,7 +24643,11 @@ fn run_tile_loop(
     // Drop-preview teardown: explicit nonactivating destroy on graceful
     // stop (process exit destroys it implicitly after a crash, so no
     // residue either way). No ledger, no registry, no hidden windows.
-    let preview_snapshot = state.preview_overlay.snapshot();
+    let preview_snapshot = if state.render_bridge.is_some() {
+        render_end_snapshot(&state, RenderCarrier::Preview)
+    } else {
+        state.preview_overlay.snapshot()
+    };
     state.preview_overlay.destroy();
     log_json_at(
         &log_path,
@@ -22318,12 +24710,18 @@ fn run_tile_loop(
         &log_path,
         serde_json::json!({"event":"tile-end","ticks":state.tick}),
     );
-    // Truthful stop accounting: a missing input-pump acknowledgement never
-    // claims clean. Teardown above still ran (tray, overlays, restore), so
-    // this only changes the reported outcome, never the recovery lifecycle.
+    // Truthful stop accounting: a missing input-pump or renderer
+    // acknowledgement never claims clean. Teardown above still ran (tray,
+    // overlays, restore), so this only changes the reported outcome, never
+    // the recovery lifecycle.
     if !input_stop_clean {
         return Err(err(
             "error: input pump stop unacknowledged; hooks released by process exit",
+        ));
+    }
+    if !render_stop_clean {
+        return Err(err(
+            "error: render thread stop unacknowledged; carriers destroyed by process exit",
         ));
     }
     result
@@ -31281,6 +33679,7 @@ mod rmax03_adapter_tests {
             born_first_exit: std::collections::BTreeSet::new(),
             overlay_now: std::collections::HashMap::new(),
             input_bridge: None,
+            render_bridge: None,
             pending_releases: crate::workspace::PendingReleases::new(),
             pending_retry_fp: 0,
         };
@@ -34216,11 +36615,110 @@ mod intent_wake_tests {
         let channels = crate::input_pump::InputChannels::new();
         let wake = channels.intent_wake().expect("wake created");
         channels.notify_intent();
-        pump_wait_with_intent(0, Some(wake));
+        let woke = pump_wait_with_intent(0, Some(wake), None);
+        assert!(woke.input && woke.full_turn());
         assert!(!wake_signaled(wake), "pending wake is consumed by the wait");
-        pump_wait_with_intent(0, Some(wake));
+        let woke = pump_wait_with_intent(0, Some(wake), None);
+        // No signal and no pump traffic: timeout (which is a full turn by
+        // design, preserving the timed cadence) or an ambient message.
+        assert!(woke.timeout || woke.message);
         assert!(!wake_signaled(wake));
-        pump_wait_with_intent(0, None);
+        let _ = pump_wait_with_intent(0, None, None);
+    }
+
+    #[test]
+    fn wait_reports_ack_only_without_input_or_message() {
+        // The feedback-loop guard: an ack-only wake reports exactly that,
+        // so the loop drains acks and services the pending finish without
+        // reposting, reconciling, or settings/input work. A bare wait with
+        // nothing signaled reports timeout (the periodic full turn).
+        use super::WaitWake;
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+        fn event() -> OwnedHandle {
+            let raw = unsafe {
+                windows_sys::Win32::System::Threading::CreateEventW(
+                    std::ptr::null(),
+                    0,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert!(!raw.is_null());
+            unsafe { OwnedHandle::from_raw_handle(raw) }
+        }
+        fn signal(handle: &OwnedHandle) {
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
+            }
+        }
+        let intent = event();
+        let ack = event();
+        signal(&ack);
+        let woke = pump_wait_with_intent(0, Some(&intent), Some(&ack));
+        assert!(!wake_signaled(&ack), "outer wait consumes the ack");
+        assert!(!wake_signaled(&intent), "peer wake stays unsignaled");
+        // Zero timeout with no signal and no pump traffic reports timeout:
+        // either a pure timeout or a timeout plus ambient messages (a busy
+        // desktop may deliver broadcasts through the pump drains).
+        let idle = pump_wait_with_intent(0, Some(&intent), Some(&ack));
+        assert!(idle.timeout || idle.message);
+        assert!(!idle.input && !idle.ack);
+        // Reason bits compose honestly: ack-only is never a full turn.
+        let ack_only = WaitWake {
+            input: false,
+            ack: true,
+            message: false,
+            timeout: false,
+        };
+        assert!(!ack_only.full_turn());
+        assert!(woke.ack);
+        assert!(
+            WaitWake {
+                input: true,
+                ack: false,
+                message: false,
+                timeout: false,
+            }
+            .full_turn()
+        );
+    }
+
+    #[test]
+    fn wait_wakes_on_either_intent_or_ack_without_consuming_peer() {
+        // Two wakes share the outer wait: each signal returns immediately,
+        // and waiting observes only the signaled one (auto-reset events
+        // stay pending until a wait actually observes them).
+        use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+        fn event() -> OwnedHandle {
+            let raw = unsafe {
+                windows_sys::Win32::System::Threading::CreateEventW(
+                    std::ptr::null(),
+                    0,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            assert!(!raw.is_null());
+            unsafe { OwnedHandle::from_raw_handle(raw) }
+        }
+        fn signal(handle: &OwnedHandle) {
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
+            }
+        }
+        let intent = event();
+        let ack = event();
+        signal(&ack);
+        pump_wait_with_intent(0, Some(&intent), Some(&ack));
+        assert!(!wake_signaled(&ack), "outer wait consumes the ack");
+        assert!(!wake_signaled(&intent), "peer wake stays unsignaled");
+        signal(&intent);
+        pump_wait_with_intent(0, Some(&intent), Some(&ack));
+        assert!(!wake_signaled(&intent), "outer wait consumes the intent");
+        assert!(!wake_signaled(&ack), "peer wake stays unsignaled");
+        pump_wait_with_intent(0, Some(&intent), Some(&ack));
     }
 }
 
@@ -34443,5 +36941,725 @@ mod launch_dispatch_tests {
         let _ = SystemLaunchBackend;
         assert_eq!(LaunchKind::Browser.as_str(), "browser");
         assert_eq!(LaunchKind::Terminal.as_str(), "terminal");
+    }
+}
+
+#[cfg(test)]
+mod pending_drop_tests {
+    use super::{
+        GestureIntent, MonitorArea, ObservedWindow, RenderBridge, RenderCarrier, RetainedRow,
+        clear_pending_seams, hide_render_carrier, inject_pending_elevated, inject_pending_focus,
+        inject_pending_observe, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
+        live_member_tag, pending_counters, queue_pending_drop, service_pending_drop,
+    };
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn pending_me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 5001,
+            process_creation: "creation-pending-me".to_owned(),
+            user_sid: "S-1-pending".to_owned(),
+            session_id: 7,
+            exe_path: "C:\\test\\app.exe".to_owned(),
+        }
+    }
+
+    fn pending_state() -> super::TileLoop {
+        let mut state = super::rmax03_adapter_tests::test_state();
+        let channels = Arc::new(crate::render_handoff::RenderChannels::new());
+        state.render_bridge = Some(RenderBridge {
+            channels,
+            handle: None,
+            gens: [0, 0, 0],
+            hide_posted: [false, false, false],
+            hide_reason: [None, None, None],
+            hidden_ack: [None, None, None],
+            posted: std::array::from_fn(|_| VecDeque::new()),
+            applied_visible: [false, false, false],
+            applied_note: [None, None, None],
+            applied_ack: [None, None, None],
+            applied_known: [false, false, false],
+            admission_open: true,
+            pending: None,
+        });
+        state
+    }
+
+    fn pending_domain() -> (
+        String,
+        String,
+        Vec<MonitorArea>,
+        Vec<tiler_core::geometry::Rect>,
+    ) {
+        let output = "mon-pending".to_owned();
+        let workspace = "ws-pending".to_owned();
+        let work = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let full = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let areas = vec![MonitorArea {
+            device: output.clone(),
+            work,
+            full,
+        }];
+        let fulls = vec![full];
+        let _ = workspace;
+        (output, workspace, areas, fulls)
+    }
+
+    fn member_key(hwnd: u64, pid: u32, creation: &str) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid,
+            creation: creation.to_owned(),
+        }
+    }
+
+    fn member_identity(
+        pid: u32,
+        creation: &str,
+        me: &crate::model::ProcessIdentity,
+    ) -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid,
+            process_creation: creation.to_owned(),
+            user_sid: me.user_sid.clone(),
+            session_id: me.session_id,
+            exe_path: me.exe_path.clone(),
+        }
+    }
+
+    fn observed_window(
+        hwnd: u64,
+        token: &str,
+        pid: u32,
+        creation: &str,
+        me: &crate::model::ProcessIdentity,
+        rect: tiler_core::geometry::Rect,
+    ) -> ObservedWindow {
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer: rect,
+            visible: rect,
+            insets: crate::tiling::FrameInsets {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            identity: crate::tiling::ObservedTarget {
+                hwnd,
+                pid,
+                process_creation: creation.to_owned(),
+                exe_path: me.exe_path.clone(),
+                user_sid: me.user_sid.clone(),
+                session_id: me.session_id,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    fn valid_fixture(
+        producer: &'static str,
+    ) -> (
+        super::TileLoop,
+        crate::model::ProcessIdentity,
+        Vec<MonitorArea>,
+        Vec<tiler_core::geometry::Rect>,
+        crate::workspace::WindowKey,
+        String,
+        u64,
+    ) {
+        clear_pending_seams();
+        let me = pending_me();
+        let mut state = pending_state();
+        let (output, _workspace_name, areas, fulls) = pending_domain();
+        state.workspaces.ensure_output(&output);
+        let active = state
+            .workspaces
+            .active_id(&output)
+            .expect("active workspace");
+        state.workspaces.set_tiled(&output, &active, true);
+        let hwnd: u64 = 0x2101;
+        let pid: u32 = 6001;
+        let creation = "creation-2101";
+        let token = "w-pending-1".to_owned();
+        let key = member_key(hwnd, pid, creation);
+        state.member_tokens.insert(key.clone(), token.clone());
+        state
+            .member_identity
+            .insert(key.clone(), member_identity(pid, creation, &me));
+        state.member_tags.insert(key.clone(), "tag-2101".to_owned());
+        assert!(
+            state
+                .workspaces
+                .assign(key.clone(), &output, &active, false)
+        );
+        state.member_rects.insert(
+            token.clone(),
+            tiler_core::geometry::Rect {
+                x: 10,
+                y: 10,
+                w: 400,
+                h: 300,
+            },
+        );
+        let rect = tiler_core::geometry::Rect {
+            x: 10,
+            y: 10,
+            w: 400,
+            h: 300,
+        };
+        let observed = vec![observed_window(hwnd, &token, pid, creation, &me, rect)];
+        let retained: Vec<RetainedRow> = Vec::new();
+        inject_pending_observe(observed.clone(), retained.clone(), false);
+        inject_pending_tag(hwnd, Some("tag-2101".to_owned()));
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        if producer == "windrag" {
+            inject_pending_focus(Some("focus-ok"));
+        } else {
+            inject_pending_focus(None);
+        }
+        inject_pending_stop(false);
+        // Queue via the production END path (hide + bounded slot).
+        let member_key = key.clone();
+        let start_key = Some(key.clone());
+        let start_tag = Some(Some("tag-2101".to_owned()));
+        let intent = GestureIntent::MoveDrop { x: 960, y: 500 };
+        let occupied = queue_pending_drop(
+            &mut state, &hwnd, producer, intent, &token, start_key, start_tag, member_key, &output,
+            &active,
+        );
+        assert!(!occupied, "valid fixture queues into an empty slot");
+        // Prove the hide: the ack pair covers the queued hide pair.
+        let (hide_gen, hide_safety) = state
+            .render_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.pending.as_ref())
+            .map(|pending| (pending.hide_gen, pending.hide_safety))
+            .expect("pending queued");
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.hidden_ack[RenderCarrier::Preview.index()] = Some((hide_gen, hide_safety));
+        }
+        (state, me, areas, fulls, key, token, hwnd)
+    }
+
+    #[test]
+    fn proven_hidden_executes_with_fresh_validation() {
+        let (mut state, me, areas, fulls, _key, token, hwnd) = valid_fixture("native");
+        let before = pending_counters();
+        assert_eq!(before.engine, 0);
+        assert_eq!(before.focus, 0);
+        assert_eq!(before.apply, 0);
+        assert_eq!(before.reconcile, 0);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        let after = pending_counters();
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "proven pending is consumed"
+        );
+        assert_eq!(after.engine, 1, "Engine runs only after proven hide");
+        assert_eq!(after.focus, 0, "native producer skips focus");
+        assert!(
+            after.apply + after.reconcile >= 1,
+            "drop converges via apply or reconcile, got {after:?}"
+        );
+        let _ = (token, hwnd);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn windrag_proven_runs_focus_then_engine() {
+        let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("windrag");
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        let counters = pending_counters();
+        assert_eq!(counters.focus, 1, "windrag re-fences focus after ack");
+        assert_eq!(counters.engine, 1, "Engine runs after focus-ok");
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "proven windrag pending is consumed"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn unproven_ack_keeps_pending_with_no_actuation() {
+        let (mut state, me, areas, fulls, _key, _token, hwnd) = valid_fixture("native");
+        // Make the ack unproven: clear the proven pair.
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.hidden_ack[RenderCarrier::Preview.index()] = None;
+            // Keep the deadline in the future so this is a wait, not a timeout.
+            if let Some(pending) = bridge.pending.as_mut() {
+                pending.deadline = Instant::now() + Duration::from_secs(60);
+            }
+        }
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_some(),
+            "unproven pending waits"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "no Engine before hidden");
+        assert_eq!(counters.focus, 0, "no focus before hidden");
+        assert_eq!(counters.apply, 0, "no geometry before hidden");
+        assert_eq!(counters.reconcile, 0, "no converge before hidden");
+        let _ = hwnd;
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn stale_ack_pair_keeps_pending_with_no_actuation() {
+        let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("native");
+        // Unknown/stale ack: a pair older than the queued hide proves nothing.
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            let (hide_gen, hide_safety) = bridge
+                .pending
+                .as_ref()
+                .map(|pending| (pending.hide_gen, pending.hide_safety))
+                .expect("pending");
+            bridge.hidden_ack[RenderCarrier::Preview.index()] =
+                Some((hide_gen.saturating_sub(1), hide_safety.saturating_sub(1)));
+            if let Some(pending) = bridge.pending.as_mut() {
+                pending.deadline = Instant::now() + Duration::from_secs(60);
+            }
+        }
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_some(),
+            "stale ack keeps pending"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0);
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 0);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn timeout_refuses_with_no_actuation_or_reconcile() {
+        let (mut state, me, areas, fulls, _key, _token, hwnd) = valid_fixture("native");
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.hidden_ack[RenderCarrier::Preview.index()] = None;
+            if let Some(pending) = bridge.pending.as_mut() {
+                pending.deadline = Instant::now() - Duration::from_secs(1);
+            }
+        }
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "timeout drops the slot"
+        );
+        assert!(
+            !state.gesture_start_key.contains_key(&hwnd),
+            "timeout releases START snapshots"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "timeout never runs Engine");
+        assert_eq!(counters.focus, 0, "timeout never focuses");
+        assert_eq!(counters.apply, 0, "timeout never writes geometry");
+        assert_eq!(counters.reconcile, 0, "timeout never reconciles");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn start_identity_mismatch_refuses() {
+        let (mut state, me, areas, fulls, key, _token, hwnd) = valid_fixture("native");
+        // Same-process HWND reuse: live tag differs from the START tag.
+        inject_pending_tag(hwnd, Some("tag-reused".to_owned()));
+        // Keep the START snapshot naming the old tag.
+        assert_eq!(
+            state.gesture_start_key.get(&hwnd),
+            None,
+            "service owns START snapshots via pending, not gesture maps"
+        );
+        let _ = key;
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "identity mismatch consumes the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "identity mismatch never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 1, "identity mismatch converges once");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn member_token_remap_refuses() {
+        let (mut state, me, areas, fulls, key, _token, _hwnd) = valid_fixture("native");
+        // Token remap between END and the proven hide: the queued pending
+        // names a stale member while the live lookup resolves the current
+        // member. Fail closed instead of dropping under a recycled identity.
+        if let Some(bridge) = state.render_bridge.as_mut()
+            && let Some(pending) = bridge.pending.as_mut()
+        {
+            pending.member_key = member_key(0x9999, 9999, "creation-stale");
+        }
+        let _ = key;
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "remap consumes the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "remap never reaches Engine");
+        assert_eq!(counters.reconcile, 1, "remap converges once");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn occupied_newcomer_is_refused_narrowly() {
+        clear_pending_seams();
+        let me = pending_me();
+        let mut state = pending_state();
+        let (output, _workspace_name, _areas, _fulls) = pending_domain();
+        state.workspaces.ensure_output(&output);
+        let active = state
+            .workspaces
+            .active_id(&output)
+            .expect("active workspace");
+        state.workspaces.set_tiled(&output, &active, true);
+        let first_key = member_key(0x2201, 6101, "creation-2201");
+        let second_key = member_key(0x2202, 6102, "creation-2202");
+        let intent = GestureIntent::MoveDrop { x: 960, y: 500 };
+        let first_occupied = queue_pending_drop(
+            &mut state,
+            &0x2201,
+            "native",
+            intent,
+            "w-first",
+            Some(first_key.clone()),
+            Some(Some("tag-first".to_owned())),
+            first_key,
+            &output,
+            &active,
+        );
+        assert!(!first_occupied, "first finish owns the slot");
+        let second_occupied = queue_pending_drop(
+            &mut state,
+            &0x2202,
+            "native",
+            GestureIntent::MoveDrop { x: 960, y: 500 },
+            "w-second",
+            Some(second_key.clone()),
+            Some(Some("tag-second".to_owned())),
+            second_key,
+            &output,
+            &active,
+        );
+        assert!(second_occupied, "overlapping END is refused busy");
+        let pending = state
+            .render_bridge
+            .as_ref()
+            .and_then(|b| b.pending.as_ref())
+            .expect("first pending owns the settle");
+        assert_eq!(pending.hwnd, 0x2201);
+        assert_eq!(pending.mover_token, "w-first");
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "queueing never runs Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 0);
+        let _ = me;
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn esc_invalidates_pending_with_converge() {
+        let (mut state, me, areas, fulls, _key, _token, hwnd) = valid_fixture("native");
+        state.esc_latched.insert(hwnd);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "Esc drops the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "Esc never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(
+            counters.reconcile, 1,
+            "Esc converges once like the inline path"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn suspend_invalidates_pending_without_actuation() {
+        let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("native");
+        inject_pending_suspend(Some(true));
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "suspend drops the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "suspend never reaches Engine");
+        assert_eq!(counters.focus, 0, "suspend never focuses");
+        assert_eq!(counters.apply, 0, "suspend never writes geometry");
+        assert_eq!(counters.reconcile, 0, "suspend drops without converging");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn new_gesture_supersedes_pending() {
+        let (mut state, me, areas, fulls, _key, _token, hwnd) = valid_fixture("native");
+        state.active.insert(hwnd);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "new gesture supersedes the stale slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0);
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(
+            counters.reconcile, 0,
+            "supersede leaves settle to the new gesture"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn stop_while_pending_drops_without_actuation() {
+        let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("native");
+        inject_pending_stop(true);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "stop drops the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "stop never runs Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 0);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cancel_clears_queued_finish() {
+        let (mut state, _me, _areas, _fulls, _key, _token, hwnd) = valid_fixture("native");
+        // Owner-side cancel for the same HWND drops the queued finish with
+        // no Engine/focus/geometry; the service then observes no slot.
+        state.gesture_producer.insert(hwnd, "windrag");
+        state.windrag_bound.insert(
+            hwnd,
+            crate::win_mouse::WinDragSnapshot {
+                origin: crate::snapkey::SnapOrigin {
+                    hwnd,
+                    token: "w-pending-1".to_owned(),
+                    pid: 6001,
+                    creation: "creation-2101".to_owned(),
+                },
+                tag: Some("tag-2101".to_owned()),
+            },
+        );
+        super::clear_windrag_gesture(&mut state, hwnd);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "cancel drops the queued finish"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0);
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn suspend_after_ack_refuses_before_focus() {
+        let (mut state, me, areas, fulls, _key, _token, _hwnd) = valid_fixture("windrag");
+        // Proven hide but a suspend arrival before the re-entry: the fresh
+        // suspension fence refuses before any focus write, with no Engine
+        // and no geometry. Invalidation drops the slot without converging,
+        // since the loop is suspended.
+        inject_pending_suspend(Some(true));
+        inject_pending_focus(Some("focus-ok"));
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "suspended drop is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.focus, 0, "suspend blocks focus even after ack");
+        assert_eq!(counters.engine, 0, "suspend blocks Engine even after ack");
+        assert_eq!(counters.apply, 0);
+        assert_eq!(
+            counters.reconcile, 0,
+            "suspended drop drops without converging"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn domain_drift_after_ack_refuses() {
+        let (mut state, me, areas, fulls, key, _token, _hwnd) = valid_fixture("native");
+        // The member moved workspaces between END and the proven hide.
+        let other = "ws-other".to_owned();
+        state.workspaces.ensure_output("mon-pending");
+        // Create a second workspace by toggling? Use a direct assign to a
+        // different workspace id via a new output to force domain mismatch.
+        let _ = other;
+        if let Some(bridge) = state.render_bridge.as_mut()
+            && let Some(pending) = bridge.pending.as_mut()
+        {
+            pending.workspace = "ws-stale".to_owned();
+        }
+        let _ = key;
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "domain drift consumes the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "domain drift never reaches Engine");
+        assert_eq!(counters.reconcile, 1, "domain drift converges once");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn live_member_tag_prefers_injected_without_native() {
+        clear_pending_seams();
+        inject_pending_tag(0x9999, Some("tag-injected".to_owned()));
+        assert_eq!(live_member_tag(0x9999), Some("tag-injected".to_owned()));
+        assert_eq!(
+            live_member_tag(0x8888),
+            None,
+            "unscripted stays None native-free"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn hide_reason_transition_posts_once_without_forging_visibility() {
+        // Consecutive hidden reason changes were silently suppressed by the
+        // early return; the ack then logged the stale reason. A changed
+        // reason posts one new hide generation/epoch, a repeated reason
+        // stays idempotent, visibility is never forged, and the queued
+        // finish keeps its original pair (no unrelated clear).
+        let (mut state, _me, _areas, _fulls, _key, _token, _hwnd) = valid_fixture("native");
+        let bridge = state.render_bridge.as_ref().expect("bridge");
+        let preview = RenderCarrier::Preview.index();
+        let safety_before = bridge.channels.safety();
+        let gen_before = bridge.gens[preview];
+        let (pending_gen, pending_safety) = bridge
+            .pending
+            .as_ref()
+            .map(|pending| (pending.hide_gen, pending.hide_safety))
+            .expect("pending queued");
+        // Same reason as the queued finish stays idempotent: no new epoch.
+        hide_render_carrier(&mut state, RenderCarrier::Preview, "finish");
+        let bridge = state.render_bridge.as_ref().expect("bridge");
+        assert_eq!(bridge.channels.safety(), safety_before);
+        assert_eq!(bridge.gens[preview], gen_before);
+        // Changed reason posts exactly one new hide generation/epoch.
+        hide_render_carrier(&mut state, RenderCarrier::Preview, "cancel");
+        let bridge = state.render_bridge.as_ref().expect("bridge");
+        assert_eq!(bridge.channels.safety(), safety_before + 1);
+        assert_eq!(bridge.gens[preview], gen_before + 1);
+        assert_eq!(
+            bridge.hide_reason[preview].as_deref(),
+            Some("cancel"),
+            "ack logs the true transition reason"
+        );
+        // Repeating the new reason stays idempotent: no per-tick feedback.
+        hide_render_carrier(&mut state, RenderCarrier::Preview, "cancel");
+        let bridge = state.render_bridge.as_ref().expect("bridge");
+        assert_eq!(bridge.channels.safety(), safety_before + 1);
+        assert_eq!(bridge.gens[preview], gen_before + 1);
+        // No visibility is forged and the unrelated pending finish keeps its
+        // original pair: only the renderer ack proves hidden.
+        assert!(!bridge.applied_visible[preview]);
+        assert!(!bridge.applied_known[preview]);
+        let pending = bridge.pending.as_ref().expect("pending retained");
+        assert_eq!(pending.hide_gen, pending_gen);
+        assert_eq!(pending.hide_safety, pending_safety);
+        clear_pending_seams();
     }
 }

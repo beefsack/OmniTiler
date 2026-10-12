@@ -168,6 +168,21 @@ impl BorderOverlay {
         self.color
     }
 
+    /// Opaque target token currently shown, if any. Lets the renderer admit
+    /// the own border as an underlay anchor only for its own group.
+    #[must_use]
+    pub fn target_token(&self) -> Option<String> {
+        self.target_token.clone()
+    }
+
+    /// Checksum over the owned DIB bytes actually presented (0 when hidden).
+    /// Renderer-ack evidence: the owner logs acknowledged checksums, never
+    /// desired state masquerading as rendered pixels.
+    #[must_use]
+    pub fn dib_checksum(&self) -> u64 {
+        self.dib_checksum
+    }
+
     /// Hide the surface (no-op when already hidden). Keeps the window alive
     /// for the next target; failures count boundedly.
     pub fn hide(&mut self) {
@@ -181,18 +196,74 @@ impl BorderOverlay {
         }
     }
 
-    /// Destroy the surface explicitly (graceful stop). Process exit also
-    /// destroys it implicitly.
-    pub fn destroy(&mut self) {
-        if let Some(hwnd) = self.hwnd.take() {
-            destroy_window(hwnd);
+    /// Creator-side verified hide: drops state and reads back hidden. True
+    /// only when no owned surface reads visible afterwards; the renderer
+    /// acknowledgement behind every hide wait.
+    pub fn hide_verified(&mut self) -> bool {
+        if !self.hwnd.is_none_or(hide_window) {
+            return false;
         }
+        self.outer = None;
+        self.target_token = None;
+        true
+    }
+
+    /// Creator-side ensure: create the hidden carrier window when absent so
+    /// readiness never signals before the carriers exist. Never shows:
+    /// visibility still starts on the first show. An externally destroyed
+    /// surface drops its stale handle and recreates here.
+    pub fn ensure_created(&mut self) -> Result<u64, DynError> {
+        if let Some(hwnd) = self.hwnd
+            && is_overlay_window(hwnd)
+        {
+            return Ok(hwnd);
+        }
+        self.hwnd = None;
+        self.outer = None;
+        match create_overlay_window() {
+            Ok(hwnd) => {
+                self.hwnd = Some(hwnd);
+                self.last_error = None;
+                Ok(hwnd)
+            }
+            Err(e) => {
+                self.failures += 1;
+                self.last_error = Some(truncate_error(&e.to_string()));
+                Err(err(self.last_error.clone().unwrap_or_default()))
+            }
+        }
+    }
+
+    /// Destroy the surface explicitly (graceful stop). Process exit also
+    /// destroys it implicitly. Verified: true only when the HWND reads
+    /// destroyed afterwards; a surviving window keeps its live handle so a
+    /// bounded creator-side retry can re-drive it instead of dropping a
+    /// live window and claiming success.
+    pub fn destroy(&mut self) -> bool {
+        let Some(hwnd) = self.hwnd else {
+            self.outer = None;
+            self.style_px = None;
+            self.color = None;
+            self.accent = None;
+            self.target_token = None;
+            self.topmost = false;
+            return true;
+        };
+        if !destroy_window(hwnd) {
+            self.failures += 1;
+            self.last_error = Some(truncate_error("error: active-border destroy unverified"));
+            self.outer = None;
+            self.target_token = None;
+            return false;
+        }
+        self.hwnd = None;
         self.outer = None;
         self.style_px = None;
         self.color = None;
         self.accent = None;
         self.target_token = None;
         self.topmost = false;
+        true
     }
 
     /// Show or move the ring for one eligible target. Position-only changes
@@ -376,9 +447,28 @@ impl UnderlayOverlay {
         self.last_error.as_deref()
     }
 
+    /// Checksum over the owned DIB bytes actually presented (0 when hidden).
+    /// Renderer-ack evidence, mirroring the border carrier.
+    #[must_use]
+    pub fn dib_checksum(&self) -> u64 {
+        self.dib_checksum
+    }
+
     #[must_use]
     pub fn is_visible(&self) -> bool {
         self.outer.is_some()
+    }
+
+    /// Currently presented fill colour (actually painted bytes), if shown.
+    #[must_use]
+    pub fn current_fill(&self) -> Option<(u8, u8, u8, u8)> {
+        self.color
+    }
+
+    /// Opaque anchor token currently shown, if any.
+    #[must_use]
+    pub fn anchor_token(&self) -> Option<String> {
+        self.anchor_token.clone()
     }
 
     /// Hide the surface (no-op when already hidden). Keeps the window alive
@@ -395,17 +485,67 @@ impl UnderlayOverlay {
         }
     }
 
-    /// Destroy the surface explicitly (graceful stop). Process exit also
-    /// destroys it implicitly.
-    pub fn destroy(&mut self) {
-        if let Some(hwnd) = self.hwnd.take() {
-            destroy_window(hwnd);
+    /// Creator-side verified hide, mirroring the border carrier.
+    pub fn hide_verified(&mut self) -> bool {
+        if !self.hwnd.is_none_or(hide_window) {
+            return false;
         }
+        self.outer = None;
+        self.anchor_token = None;
+        self.anchor_hwnd = None;
+        true
+    }
+
+    /// Creator-side ensure for the underlay class, mirroring the border.
+    pub fn ensure_created(&mut self) -> Result<u64, DynError> {
+        if let Some(hwnd) = self.hwnd
+            && is_overlay_window(hwnd)
+        {
+            return Ok(hwnd);
+        }
+        self.hwnd = None;
+        self.outer = None;
+        match create_overlay_window_in(UNDERLAY_CLASS) {
+            Ok(hwnd) => {
+                self.hwnd = Some(hwnd);
+                self.last_error = None;
+                Ok(hwnd)
+            }
+            Err(e) => {
+                self.failures += 1;
+                self.last_error = Some(truncate_error(&e.to_string()));
+                Err(err(self.last_error.clone().unwrap_or_default()))
+            }
+        }
+    }
+
+    /// Destroy the surface explicitly (graceful stop). Process exit also
+    /// destroys it implicitly. Verified like the border carrier: a surviving
+    /// window keeps its live handle for a bounded retry.
+    pub fn destroy(&mut self) -> bool {
+        let Some(hwnd) = self.hwnd else {
+            self.outer = None;
+            self.color = None;
+            self.anchor_token = None;
+            self.anchor_hwnd = None;
+            self.topmost = false;
+            return true;
+        };
+        if !destroy_window(hwnd) {
+            self.failures += 1;
+            self.last_error = Some(truncate_error("error: group-underlay destroy unverified"));
+            self.outer = None;
+            self.anchor_token = None;
+            self.anchor_hwnd = None;
+            return false;
+        }
+        self.hwnd = None;
         self.outer = None;
         self.color = None;
         self.anchor_token = None;
         self.anchor_hwnd = None;
         self.topmost = false;
+        true
     }
 
     /// Show or move the fill for one resolved group. `anchor_hwnd` is the
@@ -563,9 +703,28 @@ impl PreviewOverlay {
         self.last_error.as_deref()
     }
 
+    /// Checksum over the owned DIB bytes actually presented (0 when hidden).
+    /// Renderer-ack evidence, mirroring the border carrier.
+    #[must_use]
+    pub fn dib_checksum(&self) -> u64 {
+        self.dib_checksum
+    }
+
     #[must_use]
     pub fn is_visible(&self) -> bool {
         self.outer.is_some()
+    }
+
+    /// Currently presented fill colour (actually painted bytes), if shown.
+    #[must_use]
+    pub fn current_fill(&self) -> Option<(u8, u8, u8, u8)> {
+        self.color
+    }
+
+    /// Opaque anchor token currently shown, if any.
+    #[must_use]
+    pub fn anchor_token(&self) -> Option<String> {
+        self.anchor_token.clone()
     }
 
     /// Hide the surface (no-op when already hidden). Keeps the window alive
@@ -582,16 +741,64 @@ impl PreviewOverlay {
         }
     }
 
-    /// Destroy the surface explicitly (graceful stop). Process exit also
-    /// destroys it implicitly.
-    pub fn destroy(&mut self) {
-        if let Some(hwnd) = self.hwnd.take() {
-            destroy_window(hwnd);
+    /// Creator-side verified hide, mirroring the border carrier.
+    pub fn hide_verified(&mut self) -> bool {
+        if !self.hwnd.is_none_or(hide_window) {
+            return false;
         }
+        self.outer = None;
+        self.anchor_token = None;
+        self.anchor_hwnd = None;
+        true
+    }
+
+    /// Creator-side ensure for the preview class, mirroring the border.
+    pub fn ensure_created(&mut self) -> Result<u64, DynError> {
+        if let Some(hwnd) = self.hwnd
+            && is_overlay_window(hwnd)
+        {
+            return Ok(hwnd);
+        }
+        self.hwnd = None;
+        self.outer = None;
+        match create_overlay_window_in(PREVIEW_CLASS) {
+            Ok(hwnd) => {
+                self.hwnd = Some(hwnd);
+                self.last_error = None;
+                Ok(hwnd)
+            }
+            Err(e) => {
+                self.failures += 1;
+                self.last_error = Some(truncate_error(&e.to_string()));
+                Err(err(self.last_error.clone().unwrap_or_default()))
+            }
+        }
+    }
+
+    /// Destroy the surface explicitly (graceful stop). Process exit also
+    /// destroys it implicitly. Verified like the border carrier.
+    pub fn destroy(&mut self) -> bool {
+        let Some(hwnd) = self.hwnd else {
+            self.outer = None;
+            self.color = None;
+            self.anchor_token = None;
+            self.anchor_hwnd = None;
+            return true;
+        };
+        if !destroy_window(hwnd) {
+            self.failures += 1;
+            self.last_error = Some(truncate_error("error: drop-preview destroy unverified"));
+            self.outer = None;
+            self.anchor_token = None;
+            self.anchor_hwnd = None;
+            return false;
+        }
+        self.hwnd = None;
         self.outer = None;
         self.color = None;
         self.anchor_token = None;
         self.anchor_hwnd = None;
+        true
     }
 
     /// Show or move the filled target-slot rectangle above windows.
@@ -798,6 +1005,13 @@ fn is_overlay_window(hwnd_u64: u64) -> bool {
     unsafe { IsWindow(hwnd_u64 as usize as HWND) != 0 }
 }
 
+/// Creator-thread liveness read for one owned carrier window: the shared
+/// readback behind renderer-side own-anchor validation and pre-present
+/// ensure. Read-only, never a write.
+pub(crate) fn overlay_window_alive(hwnd_u64: u64) -> bool {
+    is_overlay_window(hwnd_u64)
+}
+
 /// Z-order relation between the owned overlay and the fresh target in
 /// `EnumWindows` top-to-bottom order. A background owner cannot place its
 /// surface above the foreground window (live probe: steady-state overlay
@@ -953,20 +1167,36 @@ pub(crate) fn create_overlay_window_in(class: &str) -> Result<u64, DynError> {
     Ok(hwnd as usize as u64)
 }
 
-fn hide_window(hwnd_u64: u64) {
+fn hide_window(hwnd_u64: u64) -> bool {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
     unsafe {
         ShowWindow(hwnd_u64 as usize as HWND, SW_HIDE);
     }
+    window_hidden(hwnd_u64)
 }
 
-fn destroy_window(hwnd_u64: u64) {
+/// True when the owned window reads hidden (or is already gone): the
+/// creator-side readback behind every verified hide acknowledgement.
+fn window_hidden(hwnd_u64: u64) -> bool {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    if !is_overlay_window(hwnd_u64) {
+        return true;
+    }
+    unsafe { IsWindowVisible(hwnd_u64 as usize as HWND) == 0 }
+}
+
+fn destroy_window(hwnd_u64: u64) -> bool {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
     unsafe {
         DestroyWindow(hwnd_u64 as usize as HWND);
     }
+    // Verified destroyed readback: a surviving HWND reads live so the
+    // caller preserves the handle for a bounded retry instead of claiming
+    // success over a live window.
+    !is_overlay_window(hwnd_u64)
 }
 
 /// Z-order anchors: ordinary targets stay in the normal band and sit directly

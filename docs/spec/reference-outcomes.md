@@ -15,6 +15,12 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### Windows asynchronous preview-finish discriminator
+
+| Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
+| --- | --- | --- | --- |
+| Missing hide proof | Show a drag preview for A; end the gesture; withhold the renderer's verified hidden acknowledgement past 500 ms; later try a fresh gesture | Tentative, pending user review: refuse that finish without Engine drop, focus, geometry or snap-back writes; retain the hide safety obligation. A verified hide instead permits fresh owner revalidation before actuation; cancel/Esc/suspend/new gesture/stop invalidate pending work ([record](../changes/archive/windows-render-thread.md)) | Deterministic pending-owner fixtures prove ordering/refusal. Agent live verified hide-before-own-slot-drop, not a physical structural drop. Native missing-ack and exact reference-WM outcomes TBD; no crash/game experiment inferred |
+
 ### R-FLT-06 readings
 
 Minimal variants of [R-FLT-06](reference-outcomes/floating.md#r-flt-06-float-toggle-over-a-maximized-window), recorded with the [B9 delivery](../changes/archive/maximized-intentional-unfloat.md). These qualify the ordinary-float row without changing fullscreen or sticky policy.
