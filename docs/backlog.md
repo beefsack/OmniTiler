@@ -299,8 +299,15 @@ decisions of 2026-09-24 are under
   preview hide-before-drop, clean stop). Tentative: 500 ms hide-proof timeout
   refuses that drop without writes. User physical check pending (pixels,
   follow, z-order, cross-slot drop, Esc, stale-show, edge-resize, Win+arrow)
-  ([record](changes/archive/windows-render-thread.md)). Next: stage 3
-  hardening. [Design](research/windows-port/owner-threading.md),
+  ([record](changes/archive/windows-render-thread.md)). Stage 3
+  single-output hardening delivered 2026-10-12 (`baee279`, `2fce63f`, CI
+  green): fixed repeated-stop panic, false-clean stop after thread panic,
+  10 ms input/render idle polling, stranded final callback/retained input and
+  renderer stop wake; agent live bursts and five clean start/stop runs; idle
+  trace-on dev ~1% of one core with owner maintenance still periodic
+  ([record](changes/archive/windows-owner-threading-acceptance.md)).
+  Remaining: user physical single-output check, multi-output/mixed-DPI
+  (after multi-output foundation) and gaming-cost legs. [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
 - P1 | Rust `unsafe` policy | User request 2026-10-12: avoid `unsafe`
   entirely where possible, especially with multithreading. Audit at `2af85a7`:
