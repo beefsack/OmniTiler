@@ -62,11 +62,20 @@
   down-only pump classification, owner `keyboard_tick` dispatch on the
   owner thread (never the hook callback), Compatible disables both (38->40).
   No shared core/protocol change; no `kwin/` edits.
-- Gates: locked four-package build pass; tests 1,588 passed, 0 failed,
-  1 ignored; `cargo fmt --check` clean; strict clippy
-  `--all-targets -- -D warnings` clean; `git diff --check` clean.
-  Independent spawn-path review: pass for merging (one cosmetic
+- Gates: locked four-package build pass; `cargo fmt --check` clean;
+  strict clippy `--all-targets -- -D warnings` clean; `git diff --check`
+  clean. Independent spawn-path review: pass for merging (one cosmetic
   `SW_SHOWNORMAL` comment applied).
+- CI episode (run 38248468961): the Windows job failed 2 launch-dispatch
+  tests that passed locally because `dispatch_launch_intent` read the live
+  suspend/elevated fence internally (`foreground_elevated` returns true
+  when the ambient foreground is unopenable, as on the headless runner).
+  Fixed without production behavior change: `keyboard_tick` computes the
+  identical fence at the production call site and passes it in as an
+  injected gate; tests use a clear/injected fence deterministically, with
+  a new `launch_dispatch_refuses_on_injected_fence` test keeping
+  suspend/elevated-refusal coverage. Re-verified: 1,589 passed, 0 failed,
+  1 ignored.
 - Rejected: named-browser launch and Terminal fallback (decision requires
   system association / narrow failure).
 - User physical check: under Authentic press Win+B (default browser opens)

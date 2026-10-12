@@ -9493,7 +9493,16 @@ fn keyboard_tick(
                 dispatch_sticky_intent(state, me, fulls, areas, intent);
             }
             QueuedSnapEvent::Launch(intent) => {
-                dispatch_launch_intent(state, me, fulls, intent, &SystemLaunchBackend);
+                // The suspend/elevated fence reads live foreground state, so
+                // it is computed here at the production call site and injected
+                // below: `dispatch_launch_intent` stays a pure function of its
+                // gate argument, which keeps owner-dispatch tests deterministic
+                // on headless runners.
+                let gate = crate::tiling::toggle_gate_outcome(
+                    suspend_read(state, me, fulls).veto.block,
+                    foreground_elevated(me),
+                );
+                dispatch_launch_intent(state, intent, &SystemLaunchBackend, gate);
             }
         }
     }
@@ -11225,16 +11234,18 @@ fn launch_windows_terminal() -> std::result::Result<(), String> {
 /// unnecessary (no window is touched), but the takeover and
 /// suspend/elevated fences still apply, so a chord arriving while keyboard
 /// takeover is off or the session is suspended/elevated settles without
-/// spawning. The chord-time origin rides only for mask/queue parity and is
-/// ignored: launchers act on no window. Only the down dispatches; key-ups
-/// and repeats are trace-only. A failed spawn logs narrowly and keeps the
-/// loop functioning.
+/// spawning. The fence outcome is injected by the caller: the production
+/// `keyboard_tick` arm passes the live `toggle_gate_outcome` read, while
+/// tests pass an explicit outcome, so dispatch never depends on ambient
+/// foreground state. The chord-time origin rides only for mask/queue parity
+/// and is ignored: launchers act on no window. Only the down dispatches;
+/// key-ups and repeats are trace-only. A failed spawn logs narrowly and keeps
+/// the loop functioning.
 fn dispatch_launch_intent(
     state: &mut TileLoop,
-    me: &ProcessIdentity,
-    fulls: &[Rect],
     intent: QueuedLaunchIntent,
     backend: &dyn LaunchBackend,
+    gate: Option<&'static str>,
 ) {
     let log_path = state.log_path.clone();
     // Key-ups close the pair and passed chords never dispatch: trace-only so
@@ -11277,13 +11288,10 @@ fn dispatch_launch_intent(
         log_json_at(&log_path, line);
         return;
     }
-    // Fresh per-intent suspension/elevation fence (workspace_tick parity):
-    // newly intercepted suspended/elevated chords settle here with no side
-    // effects.
-    if let Some(outcome) = crate::tiling::toggle_gate_outcome(
-        suspend_read(state, me, fulls).veto.block,
-        foreground_elevated(me),
-    ) {
+    // Fresh per-intent suspension/elevation fence (workspace_tick parity),
+    // injected precomputed by the caller: newly intercepted
+    // suspended/elevated chords settle here with no side effects.
+    if let Some(outcome) = gate {
         let line = settle(outcome);
         log_json_at(&log_path, line);
         return;
@@ -34280,25 +34288,25 @@ mod launch_dispatch_tests {
     fn launch_dispatch_spawns_each_kind_through_backend() {
         // Down-only dispatch: browser and terminal downs each spawn exactly
         // once through the injected backend; the chord-time origin is ignored
-        // (launchers act on no window).
+        // (launchers act on no window). The fence is injected clear, so the
+        // test never depends on ambient foreground state (headless runners
+        // report an unopenable foreground process, which the live fence
+        // would refuse).
         let mut state = test_state();
         state.keyboard.takeover = true;
-        let me = fake_me();
         let backend = Recorder::ok();
         let tick = state.tick;
         dispatch_launch_intent(
             &mut state,
-            &me,
-            &[],
             launch_intent(LaunchKind::Browser),
             &backend,
+            None,
         );
         dispatch_launch_intent(
             &mut state,
-            &me,
-            &[],
             launch_intent(LaunchKind::Terminal),
             &backend,
+            None,
         );
         assert_eq!(
             *backend.kinds.borrow(),
@@ -34313,14 +34321,11 @@ mod launch_dispatch_tests {
         // the tick.
         let mut state = test_state();
         state.keyboard.takeover = true;
-        let me = fake_me();
         let backend = Recorder::ok();
         let tick = state.tick;
         for edge in [SnapEdge::Up, SnapEdge::Repeat] {
             dispatch_launch_intent(
                 &mut state,
-                &me,
-                &[],
                 QueuedLaunchIntent {
                     kind: LaunchKind::Browser,
                     edge,
@@ -34330,12 +34335,11 @@ mod launch_dispatch_tests {
                     tick: std::time::Instant::now(),
                 },
                 &backend,
+                None,
             );
         }
         dispatch_launch_intent(
             &mut state,
-            &me,
-            &[],
             QueuedLaunchIntent {
                 kind: LaunchKind::Terminal,
                 edge: SnapEdge::Down,
@@ -34345,6 +34349,7 @@ mod launch_dispatch_tests {
                 tick: std::time::Instant::now(),
             },
             &backend,
+            None,
         );
         assert!(backend.kinds.borrow().is_empty());
         assert_eq!(state.tick, tick);
@@ -34356,16 +34361,35 @@ mod launch_dispatch_tests {
         // spawning, mirroring the classifier's pass-through.
         let mut state = test_state();
         assert!(!state.keyboard.takeover);
-        let me = fake_me();
         let backend = Recorder::ok();
         dispatch_launch_intent(
             &mut state,
-            &me,
-            &[],
             launch_intent(LaunchKind::Browser),
             &backend,
+            None,
         );
         assert!(backend.kinds.borrow().is_empty());
+    }
+
+    #[test]
+    fn launch_dispatch_refuses_on_injected_fence() {
+        // A blocked suspend/elevated fence settles without spawning: the
+        // injected outcome pins the refusal deterministically instead of
+        // reading ambient foreground state.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let backend = Recorder::ok();
+        let tick = state.tick;
+        for gate in [Some("suspended"), Some("elevated-foreground")] {
+            dispatch_launch_intent(
+                &mut state,
+                launch_intent(LaunchKind::Browser),
+                &backend,
+                gate,
+            );
+        }
+        assert!(backend.kinds.borrow().is_empty());
+        assert_eq!(state.tick, tick + 2);
     }
 
     #[test]
@@ -34375,15 +34399,13 @@ mod launch_dispatch_tests {
         // fallback launch.
         let mut state = test_state();
         state.keyboard.takeover = true;
-        let me = fake_me();
         let backend = Recorder::failing();
         let tick = state.tick;
         dispatch_launch_intent(
             &mut state,
-            &me,
-            &[],
             launch_intent(LaunchKind::Terminal),
             &backend,
+            None,
         );
         assert_eq!(*backend.kinds.borrow(), vec![LaunchKind::Terminal]);
         assert_eq!(state.tick, tick + 1);
