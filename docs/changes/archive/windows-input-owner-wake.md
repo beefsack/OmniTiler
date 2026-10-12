@@ -68,7 +68,8 @@
   snapshot transport, the input message quantum and foreground settlement remain
   possible latency contributors. Physical improvement and preserved drag
   smoothness are pending; no new live test was performed.
-- Publication CI pending.
+- Implementation `21a9e58`: [publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38238818408)
+  PASS for Windows, Rust, KWin, native, shell and macOS jobs.
 
 ## Exact physical recheck
 
