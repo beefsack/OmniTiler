@@ -78,12 +78,13 @@ decisions of 2026-09-24 are under
   vendored attribution inventory. Audit gate delivered 2026-10-12: deny
   licenses/bans/sources pass, CI gate added, per-distro closure and vendored
   inventory recorded, no THIRD-PARTY file required; [evidence](changes/archive/licensing-audit-gate.md).
-- P1 | OBS release handoff redesign | Pre-0.1 research: narrow OBS tokens
-  (`runservice`, `rebuild`, `release`, `workflow`) cannot upload new sources or
-  checksums. Compare full-credential `osc commit` from GitHub Actions with
-  OBS-side tag fetching (`obs_scm`, `cargo_vendor`, etc.) triggered by a narrow
-  token. Assess credentials, tag/source integrity and execution security for
-  each route; produce a recommendation before implementing the handoff.
+- P1 | OBS release handoff redesign | Research delivered, user decision pending:
+  recommend GitHub Actions `osc commit` with a dedicated least-privilege OBS
+  bot account, keeping pinned `download_url` + `verify_file` and the
+  post-release `tag_push` webhook as defense in depth; narrow OBS tokens
+  (`runservice`, `rebuild`, `release`, `workflow`) cannot upload new sources
+  or checksums, and pure OBS-side tag fetching leaves checksum/revision
+  delivery unsolved. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
 - P2 | [Push code down](principles.md#layering) | Recurring post-0.1 passes: move logic from host-coupled
   `kwin/src` TypeScript and `kwin/native-effect` C++ (including settings and
   shortcut reconciliation) into system-specific Rust, then into the agnostic
