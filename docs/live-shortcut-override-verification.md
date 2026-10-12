@@ -69,10 +69,11 @@ Inspect only; do not create, edit, or delete it.
   Disable when the page opens; Authentic deliberately resets those choices.
 - Click `Apply Shortcuts` (`kwin/native-effect/unifiedsettings_module.cpp:runShortcutApply`).
   There is no preliminary confirmation. With no conflicts, it applies directly;
-  verify the success dialog says shortcuts are applied and active immediately,
-  without overall Settings Apply/OK. Use a physical chord before clicking
-  either overall button. A transport or partial-apply failure must show its
-  original reason in an error dialog, without offering Force.
+  it applies immediately, with the result shown in a short dialog:
+  "Shortcuts applied." Use a physical chord before clicking overall Settings
+  Apply/OK. Result text must give no instructions about those buttons.
+  A transport or partial-apply failure must show a brief single-line reason
+  in an error dialog, without offering Force; full diagnostics stay in the journal.
 With Authentic staged it assigns all enabled catalog bindings, including workspace and symbol aliases.
 With focus-right enabled under Authentic, it takes `Meta+L` and moves Lock Session to `Meta+Esc`,
 plus `Meta+Alt+K`, `Meta+Alt+L`, `Meta+Alt+Left`, `Meta+Alt+Down`,
@@ -126,8 +127,8 @@ that holder and retains the list for Revert.
 
 - Click Apply Shortcuts for a fresh conflict dialog, then choose `Force Apply`.
   This is the single Force confirmation; no extra question follows. Capture
-  the success/error result. Success must say applied and active immediately,
-  independent of overall Settings Apply/OK; verify physical delivery now.
+  the success/error result. It applies immediately, with the result shown in
+  a short dialog: "Shortcuts applied." Verify physical delivery now.
 - Clearing removes only the required keys and preserves unrelated keys.
 The union of cleared component/action IDs is persisted to
 `shortcut-clearedrc` before clearing, so an interrupted Force stays revertible.
@@ -142,8 +143,9 @@ It names the recorded cleared count and states custom cleared bindings are lost.
 cleared. Partial failure retains the list for resume; an empty list is a
 no-op success.
 - Verify a result dialog follows the retained data-loss confirmation: success
-  reports immediate activation; failure gives its reason and retains recovery
-  state. An empty cleared list also reports a successful no-op result.
+  says "Shortcuts reverted to defaults."; failure gives a brief single-line
+  reason and retains recovery state. An empty cleared list also succeeds with
+  the same short result. Restored defaults apply immediately.
 - Old `shortcut-override-journalrc` files (including any kcmshell6 legacy path)
 are ignored and must remain untouched. No migration, Finish, or Restore exists.
 

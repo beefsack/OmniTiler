@@ -185,9 +185,12 @@ platform API behavior.
   startup-only `workspaceMode`.
 - KDE shortcut dialogs (user 2026-10-12): explicit Apply Shortcuts applies
   immediately; conflicts open one modal, scrollable preview with Force Apply
-  and Cancel. Successful Apply/Force/Revert shows a result dialog; operational
-  failures show the reason in an error dialog. No overall Settings Apply/OK is
-  needed for shortcut operations. Tentative, pending user review: no preliminary
+  and Cancel. Apply/Force/Revert applies immediately, with the result shown in a
+  short dialog. User live review 2026-10-12: success text is "Shortcuts applied."
+  for Apply/Force and "Shortcuts reverted to defaults." for Revert; result
+  dialogs give no instructions about overall Settings Apply/OK. Errors show a
+  single-line reason, capped at 240 characters with `...` for truncation;
+  full diagnostics remain in the journal. Tentative, pending user review: no preliminary
   Apply confirmation and no second Force confirmation; the conflict dialog is
   the single Force confirmation. Revert retains its custom-binding-loss
   confirmation. [Flow](#shortcuts-conflicts-and-presets),
@@ -923,9 +926,9 @@ platform API behavior.
   Force Apply and Cancel are the dialog's actions. Cancel discards the preview
   without writes or another dialog. Tentative, pending user review: no stacked
   confirmations, so Apply has no preliminary prompt and this dialog is the
-  sole Force confirmation. Successful Apply/Force reports shortcuts applied
-  and active immediately, with no need for overall Settings Apply/OK;
-  operational/partial failures report their original reason, without offering
+  sole Force confirmation. Apply/Force applies immediately, with the result
+  shown in a short dialog (wording under [Settings](#settings-tray-and-first-run));
+  operational/partial failures report a brief reason, without offering
   Force as recovery. Revert retains one custom-binding-loss confirmation and
   then shows a success/error result dialog, including empty-list success.
   Confirmed Force revalidates owner, live images, and the full holder snapshot

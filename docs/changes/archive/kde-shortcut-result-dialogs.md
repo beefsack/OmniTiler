@@ -4,8 +4,8 @@
 
 - Replace inline shortcut refusal/Force controls with one complete modal conflict
   preview offering Force Apply and Cancel. Apply without conflicts acts directly.
-- Show modal success/error results for Apply, Force and Revert; successful Apply
-  is active immediately, independent of the settings window's Apply/OK.
+- Show short modal success/error results for Apply, Force and Revert;
+  shortcuts apply immediately.
 - Keep Revert's custom-binding-loss confirmation and existing Force revalidation,
   exemptions, persistence and mutation boundaries.
 - Normalize conflict completeness/order below the UI and retain reconstructible
@@ -61,7 +61,7 @@
 - Hermetic coverage includes six-holder multi-chord dialog completeness, 30-holder
   indexed-log completeness, mixed blocker/clear ordering, keyed-only friendly
   names, unrelated blocker-key retention, Lock exemptions, real offscreen
-  Force/Cancel/disabled-Force widgets, immediate-result wording, stale owner/live
+  Force/Cancel/disabled-Force widgets, result wording, stale owner/live
   image refusal, partial failure reporting and Revert results. Existing Save,
   selection, disabled-binding and recovery suites remain green.
 - No KWin JavaScript or shell source changed; those suites were not required.
@@ -69,12 +69,26 @@
   [live procedure](../../live-shortcut-override-verification.md) updated;
   matching Windows settings dialogs remain a [backlog handoff](../../backlog.md).
 
+## Short Result Text Follow-Up (2026-10-12)
+
+- User live review of `9d3c4bc`: dialogs work well; result text is too verbose.
+  Apply/Force success now says "Shortcuts applied."; Revert success says
+  "Shortcuts reverted to defaults.". No Settings Apply/OK instructions appear
+  in result dialogs. Conflict dialog content is unchanged.
+- Error dialogs show a whitespace-normalized single-line reason, capped at
+  240 characters (including trailing `...` when truncated). Full diagnostic
+  reasons remain in the journal and status error state.
+- Exact success-string and multiline/long-error regression checks added;
+  settings-only CTest **26/26 passed**, full native CTest **32/32 passed**, and
+  `git diff --check` passed after the follow-up. Short-text live check pending.
+
 ## User-Owned Live Checks
 
 - Follow the live procedure for conflict-free immediate Apply, complete many-holder
   modal/list/journal agreement, Cancel with no writes or second dialog, sole Force
   confirmation, stale snapshot refusal, physical chords and Revert-to-defaults.
-  Native results remain TBD; offline checks do not establish physical delivery.
+  Dialog usability is user-confirmed above. Unspecified native outcomes remain
+  TBD; offline checks do not establish physical delivery.
 - With an already-discovered development stage, `just build-native-effect` plus
   fully quitting/reopening Settings or kcmshell6 loads this KCM change without
   logout. A new delivery path/initial setup or loading a rebuilt effect still

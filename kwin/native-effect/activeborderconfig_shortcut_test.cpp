@@ -2064,8 +2064,8 @@ void selectionAuthenticForceConsumesRetainsOnFailure()
 
 void dialogApplySuccessNoPreliminaryConfirm()
 {
-    // Direct Apply without conflicts: no preliminary confirmation, success
-    // dialog states active-immediately with no Settings Apply/OK needed.
+    // Direct Apply without conflicts: no preliminary confirmation, short
+    // success dialog with no Settings Apply/OK instructions.
     FakeShortcutStore store;
     seedReady(store);
     FakeClearedStore cleared;
@@ -2097,8 +2097,9 @@ void dialogApplySuccessNoPreliminaryConfirm()
     CHECK(force.calls == 0);
     CHECK(infos == 1);
     CHECK(infoTitle.contains(QStringLiteral("Apply")));
-    CHECK(infoText.contains(QStringLiteral("active immediately")));
-    CHECK(infoText.contains(QStringLiteral("No further Settings Apply")));
+    CHECK(infoText == QStringLiteral("Shortcuts applied."));
+    CHECK(!infoText.contains(QStringLiteral("active immediately")));
+    CHECK(!infoText.contains(QStringLiteral("Apply or OK")));
     CHECK(module.shortcutErrorText().isEmpty());
 }
 
@@ -2271,7 +2272,11 @@ void dialogRevertResultDialogs()
     wireForceCapture(module, force);
     int infos = 0;
     int errors = 0;
-    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    QStringList infoTexts;
+    module.setShortcutInformationHandler([&](const QString &, const QString &text) {
+        ++infos;
+        infoTexts.append(text);
+    });
     module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
     module.setShortcutStores(&store, &cleared);
     module.load();
@@ -2282,11 +2287,14 @@ void dialogRevertResultDialogs()
     module.requestShortcutApply();
     CHECK(force.calls == 1);
     CHECK(cleared.stored.size() == 1);
+    CHECK(infos == 1);
+    CHECK(infoTexts.last() == QStringLiteral("Shortcuts applied."));
     const int confirmsBeforeRevert = confirms;
     module.requestShortcutRevert();
     CHECK(confirms == confirmsBeforeRevert + 1);
     CHECK(infos == 2);
     CHECK(errors == 0);
+    CHECK(infoTexts.last() == QStringLiteral("Shortcuts reverted to defaults."));
     CHECK(cleared.stored.isEmpty());
     // Failing revert reports an error dialog and retains the list.
     cleared.stored.append(ClearedAction{QStringLiteral("org.example"), QStringLiteral("missing-action")});
@@ -2298,8 +2306,8 @@ void dialogRevertResultDialogs()
 void dialogRealConflictModalForce()
 {
     // Real scrollable conflict dialog offscreen: the list is read-only and
-    // complete, Force Apply applies with revalidation, and the result
-    // wording states active-immediately with no Settings Apply needed.
+    // complete, Force Apply applies with revalidation, and the result is
+    // the short success string.
     FakeShortcutStore store;
     seedReady(store);
     addForeignHolder(store, QStringLiteral("org.kde.unknown"), QStringLiteral("other-launch"),
@@ -2345,8 +2353,9 @@ void dialogRealConflictModalForce()
     });
     module.requestShortcutApply();
     CHECK(infos == 1);
-    CHECK(infoText.contains(QStringLiteral("active immediately")));
-    CHECK(infoText.contains(QStringLiteral("No further Settings Apply")));
+    CHECK(infoText == QStringLiteral("Shortcuts applied."));
+    CHECK(!infoText.contains(QStringLiteral("active immediately")));
+    CHECK(!infoText.contains(QStringLiteral("Apply or OK")));
     CHECK(module.shortcutErrorText().isEmpty());
     CHECK(cleared.saves == 1);
     for (const ShortcutTuple &tuple : store.tuples) {
@@ -2614,6 +2623,35 @@ void dialogPartialApplyFailureReportsOriginal()
     }
 }
 
+void dialogErrorBriefSingleLineCapped()
+{
+    // Error rendering boundary: a multiline long reason reaches the
+    // handler as one single-line string capped at 240 characters.
+    FakeShortcutStore store;
+    seedReady(store);
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    module.setShortcutStores(&store, &cleared);
+    module.load();
+    QString seen;
+    module.setShortcutErrorHandler([&](const QString &, const QString &text) { seen = text; });
+    QString longReason = QStringLiteral("first line\nsecond\tline  with   extra   spaces\n");
+    while (longReason.size() < 400) {
+        longReason += QStringLiteral("0123456789 detail ");
+    }
+    module.showShortcutError(QStringLiteral("Apply Shortcuts"), longReason);
+    CHECK(!seen.isEmpty());
+    CHECK(!seen.contains(QStringLiteral("\n")));
+    CHECK(!seen.contains(QStringLiteral("\t")));
+    CHECK(!seen.contains(QStringLiteral("  ")));
+    CHECK(seen.size() <= 240);
+    CHECK(seen.endsWith(QStringLiteral("...")));
+    // Short reasons pass through simplified but untruncated.
+    module.showShortcutError(QStringLiteral("Apply Shortcuts"), QStringLiteral("reconciler is not configured"));
+    CHECK(seen == QStringLiteral("reconciler is not configured"));
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -2682,6 +2720,7 @@ int main(int argc, char **argv)
         dialogPartialApplyFailureReportsOriginal();
         dialogLockRelocationDescribed();
         dialogKeyedHolderFriendlyLabels();
+        dialogErrorBriefSingleLineCapped();
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", argv[1]);
         return EXIT_FAILURE;

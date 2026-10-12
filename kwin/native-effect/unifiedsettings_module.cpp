@@ -397,11 +397,16 @@ void UnifiedSettingsModule::showShortcutInformation(const QString &title, const 
 
 void UnifiedSettingsModule::showShortcutError(const QString &title, const QString &text)
 {
+    QString brief = text.simplified();
+    if (brief.size() > 240) {
+        brief.truncate(237);
+        brief += QStringLiteral("...");
+    }
     if (m_shortcutErrorHandler) {
-        m_shortcutErrorHandler(title, text);
+        m_shortcutErrorHandler(title, brief);
         return;
     }
-    QMessageBox::critical(widget(), title, text);
+    QMessageBox::critical(widget(), title, brief);
 }
 
 bool UnifiedSettingsModule::askShortcutForce(const QString &title, const QString &text, bool forceEnabled)
@@ -620,8 +625,7 @@ void UnifiedSettingsModule::applyConfirmedForcePreview(const ShortcutForcePrevie
     if (result.ok) {
         showShortcutInformation(
             QStringLiteral("Force Apply Shortcuts"),
-            QStringLiteral("Shortcuts force-applied and active immediately. "
-                           "No further Settings Apply or OK is needed."));
+            QStringLiteral("Shortcuts applied."));
     } else {
         showShortcutError(QStringLiteral("Force Apply Shortcuts"), m_shortcutError);
     }
@@ -741,8 +745,7 @@ void UnifiedSettingsModule::runShortcutApply(const char *operation)
         refreshShortcutState();
         showShortcutInformation(
             QStringLiteral("Apply Shortcuts"),
-            QStringLiteral("Shortcuts applied and active immediately. "
-                           "No further Settings Apply or OK is needed."));
+            QStringLiteral("Shortcuts applied."));
         return;
     }
     m_shortcutError = result.error.isEmpty() ? QStringLiteral("Apply failed") : result.error;
@@ -905,8 +908,7 @@ void UnifiedSettingsModule::runShortcutRevert(const char *operation)
     if (result.ok) {
         showShortcutInformation(
             QStringLiteral("Revert Shortcuts"),
-            QStringLiteral("Shortcuts reverted and active immediately. "
-                           "No further Settings Apply or OK is needed."));
+            QStringLiteral("Shortcuts reverted to defaults."));
     } else {
         showShortcutError(QStringLiteral("Revert Shortcuts"), m_shortcutError);
     }
