@@ -60,6 +60,11 @@ QComboBox *fixedSizePredicateCombo(KWin::ScriptConfigModule &module)
     return module.widget()->findChild<QComboBox *>(QStringLiteral("fixedSizePredicateCombo"));
 }
 
+QComboBox *bornMaximizedCombo(KWin::ScriptConfigModule &module)
+{
+    return module.widget()->findChild<QComboBox *>(QStringLiteral("bornMaximizedCombo"));
+}
+
 QComboBox *migrationSourceRefillCombo(KWin::ScriptConfigModule &module)
 {
     return module.widget()->findChild<QComboBox *>(QStringLiteral("migrationSourceRefillCombo"));
@@ -119,6 +124,19 @@ QString otherFixedSizePredicate(const QString &current)
         return QStringLiteral("both-axes-fixed");
     }
     return QStringLiteral("either-axis-fixed");
+}
+
+QString storedBornMaximized()
+{
+    return scriptGroup().readEntry(QStringLiteral("bornMaximized"), QStringLiteral("tile-on-launch"));
+}
+
+QString otherBornMaximized(const QString &current)
+{
+    if (current == QStringLiteral("keep-maximized-overlay")) {
+        return QStringLiteral("tile-on-launch");
+    }
+    return QStringLiteral("keep-maximized-overlay");
 }
 
 QString storedMigrationSourceRefill()
@@ -775,6 +793,76 @@ void fixedSizePredicateContractDefaultsValidatesAndPersists()
         CHECK(combo->currentData().toString() == QStringLiteral("both-axes-fixed"));
         module.save();
         CHECK(storedFixedSizePredicate() == QStringLiteral("both-axes-fixed"));
+    }
+}
+
+void bornMaximizedContractDefaultsValidatesAndPersists()
+{
+    // Invalid stored values normalize to the tile-on-launch default.
+    {
+        KConfigGroup group = scriptGroup();
+        group.writeEntry(QStringLiteral("bornMaximized"), QStringLiteral("bogus"));
+        group.sync();
+    }
+    {
+        KWin::ScriptConfigModule module(nullptr, KPluginMetaData());
+        QComboBox *combo = bornMaximizedCombo(module);
+        CHECK(combo != nullptr);
+        module.load();
+        if (combo) {
+            CHECK(combo->currentData().toString() == QStringLiteral("tile-on-launch"));
+        }
+    }
+    // Missing keys stay missing through load and default back.
+    {
+        KConfigGroup group = scriptGroup();
+        group.deleteEntry(QStringLiteral("bornMaximized"));
+        group.sync();
+    }
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        QComboBox *combo = bornMaximizedCombo(module);
+        CHECK(combo != nullptr);
+        module.load();
+        if (combo) {
+            CHECK(combo->currentData().toString() == QStringLiteral("tile-on-launch"));
+        }
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(!scriptGroup().hasKey(QStringLiteral("bornMaximized")));
+        CHECK(module.scriptCalls == 0);
+        CHECK(!module.isScriptRestartRequired());
+    }
+    // A born-maximized change persists, sends one live reconfigure, and
+    // never requires a session restart.
+    {
+        CountingScriptModule module(nullptr, KPluginMetaData());
+        module.load();
+        QComboBox *combo = bornMaximizedCombo(module);
+        CHECK(combo != nullptr);
+        if (!combo) {
+            return;
+        }
+        const QString target = otherBornMaximized(storedBornMaximized());
+        const int index = combo->findData(target);
+        CHECK(index >= 0);
+        combo->setCurrentIndex(index);
+        CHECK(module.needsSave());
+        module.scriptSucceed = true;
+        module.save();
+        CHECK(storedBornMaximized() == target);
+        CHECK(module.scriptCalls == 1);
+        CHECK(!module.isScriptRestartRequired());
+        CHECK(module.scriptStatusText().contains(QStringLiteral("unconfirmed")));
+        CHECK(module.scriptStatusText().contains(QStringLiteral("born-maximized")));
+        CHECK(!containsAppliedClaim(module.scriptStatusText()));
+        CHECK(!module.needsSave());
+        module.save();
+        CHECK(module.scriptCalls == 1);
+        module.defaults();
+        CHECK(combo->currentData().toString() == QStringLiteral("tile-on-launch"));
+        module.save();
+        CHECK(storedBornMaximized() == QStringLiteral("tile-on-launch"));
     }
 }
 
@@ -1480,6 +1568,7 @@ int main(int argc, char **argv)
         combinedGapAndSameAxisMoveSaveFailureMentionsBothKeys();
         sameAxisMoveContractDefaultsValidatesAndPersists();
         fixedSizePredicateContractDefaultsValidatesAndPersists();
+        bornMaximizedContractDefaultsValidatesAndPersists();
         migrationSourceRefillContractDefaultsValidatesAndPersists();
         startupRestartLogEnumeratesOnlyChangedKeys();
         startupOnlySaveDisablesSendWithRestartMessage();

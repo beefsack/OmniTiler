@@ -15,7 +15,7 @@
         </entry>
         <entry name="BorderRadius" type="Double">
             <label>Outline radius</label>
-            <default>0.0</default>
+            <default>6.0</default>
         </entry>
         <entry name="BorderGap" type="Double">
             <label>Gap from the window</label>

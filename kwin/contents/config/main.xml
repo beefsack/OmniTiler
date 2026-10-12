@@ -44,6 +44,14 @@
                 <choice name="either-axis-fixed" value="either-axis-fixed"/>
             </choices>
         </entry>
+        <entry name="bornMaximized" type="Enum">
+            <label>The born-maximized admission behavior</label>
+            <default>tile-on-launch</default>
+            <choices>
+                <choice name="tile-on-launch" value="tile-on-launch"/>
+                <choice name="keep-maximized-overlay" value="keep-maximized-overlay"/>
+            </choices>
+        </entry>
         <entry name="migrationSourceRefill" type="Enum">
             <label>Source workspace after migration</label>
             <default>last-remaining-workspace</default>

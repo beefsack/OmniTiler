@@ -18,6 +18,7 @@
 
 import { orderGeometryWrites } from "./geometry-order";
 import { normalizeSameAxisMove } from "./same-axis-move";
+import { BORN_MAXIMIZED_DEFAULT, normalizeBornMaximized } from "./born-maximized";
 import {
     FIXED_SIZE_PREDICATE_DEFAULT,
     FIXED_SIZE_PREDICATE_EITHER,
@@ -747,6 +748,17 @@ export interface PlanAdapterEnv {
     // admissions with no reclassification. Absent/invalid resolves to
     // `both-axes-fixed` (wire-omitted, the delivered default).
     readonly readFixedSizePredicate?: () => unknown;
+    // R-MAX-06 born-maximized admission mode. Read live per admission so an
+    // entry-owned Options configChanged re-read applies to subsequent
+    // admissions with no rebuild. Absent/invalid resolves to
+    // `tile-on-launch` (clear once, then admit ordinarily).
+    readonly readBornMaximized?: () => unknown;
+    // R-MAX-03 floating-first sighting: true when the id was first sighted
+    // on an untiled (floating) domain. Such ids keep their maximized overlay
+    // over the reserved slot under both born-maximized settings with no
+    // one-shot clear; only born tiled-first admissions read the R-MAX-06
+    // mode. Absent resolves to false.
+    readonly isFloatingFirst?: (id: string) => boolean;
 }
 
 export interface PlanEnableAuth {
@@ -2219,6 +2231,15 @@ export class PlanAdapter {
     // evicts even marker-only ids with no applied slot.
     private seenNonFullscreen = new Map<string, object>();
     private heldInitialFullscreen = new Map<string, object>();
+    // R-MAX-03 floating-first sightings: stable ids observed on an untiled
+    // (floating) domain, recorded at the workspace-floating skip before any
+    // dispatch. Their later tiled-domain admission keeps the maximized
+    // overlay over the reserved slot under both R-MAX-06 settings with no
+    // one-shot clear; only born tiled-first admissions read the R-MAX-06
+    // mode. Lifetime-bound (pruned on verified native removal, cleared on
+    // enable/disable) and retained across planner recovery like the Windows
+    // latches; bounded at 4096 ids with oldest-first eviction.
+    private floatingFirstSeen = new Set<string>();
     private reconcileAttempts = 0;
     // One-shot forced complete reconciliation for send-settled domains,
     // keyed by domain output/workspace. A terminal send flight carries its
@@ -2442,6 +2463,7 @@ export class PlanAdapter {
         this.appliedScopeByDomain.clear();
         this.seenNonFullscreen.clear();
         this.heldInitialFullscreen.clear();
+        this.floatingFirstSeen.clear();
         this.fixedClients.clear();
         this.settleDragRestoreUnavailable();
         this.reconcileAttempts = 0;
@@ -2495,6 +2517,7 @@ export class PlanAdapter {
         this.appliedScopeByDomain.clear();
         this.seenNonFullscreen.clear();
         this.heldInitialFullscreen.clear();
+        this.floatingFirstSeen.clear();
         this.fixedClients.clear();
         this.settleDragRestoreUnavailable();
         this.reconcileAttempts = 0;
@@ -3334,6 +3357,7 @@ export class PlanAdapter {
     // set; anything else keeps it.
     noteNativeRemovedId(id: string): void {
         this.fixedClients.delete(id);
+        this.floatingFirstSeen.delete(id);
         if (!this.intentActive) {
             return;
         }
@@ -4438,6 +4462,59 @@ export class PlanAdapter {
         } catch (error) {
             void error;
             return FIXED_SIZE_PREDICATE_DEFAULT;
+        }
+    }
+
+    private readBornMaximized(): string {
+        try {
+            const reader = this.env.readBornMaximized;
+            if (typeof reader !== "function") {
+                return BORN_MAXIMIZED_DEFAULT;
+            }
+            return normalizeBornMaximized(reader());
+        } catch (error) {
+            void error;
+            return BORN_MAXIMIZED_DEFAULT;
+        }
+    }
+
+    private isFloatingFirst(id: string): boolean {
+        try {
+            if (this.floatingFirstSeen.has(id)) {
+                return true;
+            }
+            const reader = this.env.isFloatingFirst;
+            if (typeof reader !== "function") {
+                return false;
+            }
+            return reader(id) === true;
+        } catch (error) {
+            void error;
+            return false;
+        }
+    }
+
+    // R-MAX-03 recorder for the workspace-floating skips: every id in an
+    // untiled-domain observation keeps its overlay on later tiled-domain
+    // admission. Bounded, silent, never dispatches.
+    private noteFloatingFirstSighted(observed: PlanObserved): void {
+        try {
+            for (const entry of observed.windows) {
+                const id = entry.id;
+                if (typeof id !== "string" || id.length === 0 || this.floatingFirstSeen.has(id)) {
+                    continue;
+                }
+                if (this.floatingFirstSeen.size >= 4096) {
+                    const oldest = this.floatingFirstSeen.values().next();
+                    if (oldest.done) {
+                        return;
+                    }
+                    this.floatingFirstSeen.delete(oldest.value);
+                }
+                this.floatingFirstSeen.add(id);
+            }
+        } catch (error) {
+            void error;
         }
     }
 
@@ -6942,6 +7019,8 @@ export class PlanAdapter {
         }
         // Floating workspaces skip automatic foreground tiling.
         if (!this.isTiledDomain(fresh.domainOutput, fresh.domainWorkspace)) {
+            // R-MAX-03: record floating-first sightings before the skip.
+            this.noteFloatingFirstSighted(fresh);
             this.logRefreshClassification("foreground", "equal", "workspace-floating", "quiet");
             return;
         }
@@ -7258,6 +7337,8 @@ export class PlanAdapter {
     // workspaces are unmanaged and never dispatch here.
     private hiddenIntentFor(observed: PlanObserved): HiddenDecision | null {
         if (!this.isTiledDomain(observed.domainOutput, observed.domainWorkspace)) {
+            // R-MAX-03: record floating-first sightings before the skip.
+            this.noteFloatingFirstSighted(observed);
             return { intent: null, outcome: "equal", reason: "workspace-floating", terminal: "quiet" };
         }
         const prepared = this.clearMaximizeAtAdmission(observed, null, () =>
@@ -7414,11 +7495,32 @@ export class PlanAdapter {
             // before carriedSnapshot releases the exact-ref hold. D5: a
             // fixed exit floats untouched with no writes, so skip the
             // clear (and its refetch) using the CURRENT predicate.
+            // R-MAX-06 adds one born-maximized lane below: under the
+            // `tile-on-launch` default a tiled-first born maximized window
+            // clears once, then admits ordinarily; `keep-maximized-overlay`
+            // keeps this existing overlay behaviour (no clear here).
             if (entry.fullscreen || !entry.maximized || this.maximizeAdmissionAttempts.has(entry.id)) {
                 continue;
             }
             if (this.heldInitialFullscreen.get(entry.id) !== entry.ref) {
-                continue;
+                // R-MAX-06 born lane: fullscreen isolation above already
+                // skipped fullscreen entries. Floating, sticky, R-MAX-03
+                // floating-first, and already-tiled ids keep their overlay
+                // under both settings; later maximizes are unchanged (a
+                // prior attempt or applied evidence skips). D4 fixed births
+                // share the fixed skip below and float untouched.
+                if (this.readBornMaximized() !== BORN_MAXIMIZED_DEFAULT) {
+                    continue;
+                }
+                if (this.appliedById.has(entry.id)) {
+                    continue;
+                }
+                if (entry.floating === true || entry.sticky === true) {
+                    continue;
+                }
+                if (this.isFloatingFirst(entry.id)) {
+                    continue;
+                }
             }
             const exitHints = this.hintSizesFor(entry.ref);
             if (isFixedSize(exitHints.minSize, exitHints.maxSize, this.readFixedSizePredicate())) {

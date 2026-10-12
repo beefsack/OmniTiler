@@ -38,6 +38,7 @@ const SCRIPT_SETTINGS = {
     shortcutProfile: { type: "Enum", defaultValue: "cosmic" },
     sameAxisMove: { type: "Enum", defaultValue: "group-with-neighbor" },
     fixedSizePredicate: { type: "Enum", defaultValue: "both-axes-fixed" },
+    bornMaximized: { type: "Enum", defaultValue: "tile-on-launch" },
     migrationSourceRefill: { type: "Enum", defaultValue: "last-remaining-workspace" },
     innerGap: { type: "Int", defaultValue: "8" },
     outerGap: { type: "Int", defaultValue: "8" },
@@ -121,7 +122,7 @@ describe("native KCM static contract", () => {
         assert.match(unifiedHeader, /::Ui::UnifiedSettings m_ui/);
         // Thin factories carry no widget or reconfigure internals.
         for (const factory of [effectFactory, scriptFactory]) {
-            assert.doesNotMatch(factory, /workspaceModeCombo|sameAxisMoveCombo|fixedSizePredicateCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
+            assert.doesNotMatch(factory, /workspaceModeCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
             assert.doesNotMatch(factory, /requestEffectReconfigure|requestScriptReconfigure/);
             assert.doesNotMatch(factory, /Script-omnitiler-kwin/);
         }
@@ -143,6 +144,7 @@ describe("native KCM static contract", () => {
             "workspaceModeCombo",
             "sameAxisMoveCombo",
             "fixedSizePredicateCombo",
+            "bornMaximizedCombo",
             "migrationSourceRefillCombo",
             "innerGapSpinBox",
             "outerGapSpinBox",
@@ -190,7 +192,7 @@ describe("native KCM static contract", () => {
         }
     });
 
-    it("keeps the six supported script keys and defaults identical between schema and the unified script KCM", () => {
+    it("keeps the seven supported script keys and defaults identical between schema and the unified script KCM", () => {
         // defaultTiled is schema-only (tray persist + script readConfig for
         // newly discovered workspaces); the unified KCM intentionally owns
         // only workspaceMode/innerGap/outerGap, so it is asserted separately.
@@ -224,6 +226,7 @@ describe("native KCM static contract", () => {
         assert.match(unified, /workspaceModeCombo->findData\(QStringLiteral\("per-output-local"\)\)/);
         assert.match(unified, /sameAxisMoveCombo->findData\(QStringLiteral\("group-with-neighbor"\)\)/);
         assert.match(unified, /fixedSizePredicateCombo->findData\(QStringLiteral\("both-axes-fixed"\)\)/);
+        assert.match(unified, /bornMaximizedCombo->findData\(QStringLiteral\("tile-on-launch"\)\)/);
         assert.match(unified, /migrationSourceRefillCombo->findData\(QStringLiteral\("last-remaining-workspace"\)\)/);
         assert.doesNotMatch(unified, /shortcutProfileCombo/);
         assert.doesNotMatch(unified, /readEntry\(QStringLiteral\("shortcutProfile"\)/);
@@ -233,7 +236,7 @@ describe("native KCM static contract", () => {
         assert.match(unified, /innerGapSpinBox->setValue\((8|kGapDefault)\)/);
         assert.match(unified, /outerGapSpinBox->setValue\((8|kGapDefault)\)/);
         for (const factory of [effectFactory, scriptFactory]) {
-            assert.doesNotMatch(factory, /workspaceModeCombo|shortcutProfileCombo|sameAxisMoveCombo|fixedSizePredicateCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
+            assert.doesNotMatch(factory, /workspaceModeCombo|shortcutProfileCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
             assert.doesNotMatch(factory, /Script-omnitiler-kwin/);
         }
     });
@@ -249,6 +252,9 @@ describe("native KCM static contract", () => {
         assert.match(unified, /readFixedSizePredicate\(group\)/);
         assert.match(unified, /select\(m_ui\.fixedSizePredicateCombo, fixedSizePredicate, QStringLiteral\("both-axes-fixed"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("fixedSizePredicate"\)/);
+        assert.match(unified, /readBornMaximized\(group\)/);
+        assert.match(unified, /select\(m_ui\.bornMaximizedCombo, bornMaximized, QStringLiteral\("tile-on-launch"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("bornMaximized"\)/);
         assert.match(unified, /readMigrationSourceRefill\(group\)/);
         assert.match(unified, /select\(m_ui\.migrationSourceRefillCombo, migrationSourceRefill, QStringLiteral\("last-remaining-workspace"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("migrationSourceRefill"\)/);
@@ -271,6 +277,7 @@ describe("native KCM static contract", () => {
     it("keeps border settings in the native group and hot-applies through the native effect", () => {
         assert.match(kcfg, /<group name="Effect-omnitiler-active-border">/);
         assert.match(kcfg, /<entry name="UseThemeColor" type="Bool">[\s\S]*?<default>true<\/default>/);
+        assert.match(kcfg, /<entry name="BorderRadius" type="Double">[\s\S]*?<default>6(\.0)?<\/default>/);
         assert.match(unified, /ActiveBorderConfig::instance\(QStringLiteral\("kwinrc"\)\)/);
         assert.match(unified, /QString UnifiedSettingsModule::effectService\(\)[\s\S]*?QStringLiteral\("org\.kde\.KWin"\)/);
         assert.match(unified, /QString UnifiedSettingsModule::effectPath\(\)[\s\S]*?QStringLiteral\("\/Effects"\)/);
@@ -325,6 +332,7 @@ describe("native KCM static contract", () => {
             ["label_workspaceMode", "workspaceModeCombo"],
             ["label_sameAxisMove", "sameAxisMoveCombo"],
             ["label_fixedSizePredicate", "fixedSizePredicateCombo"],
+            ["label_bornMaximized", "bornMaximizedCombo"],
             ["label_migrationSourceRefill", "migrationSourceRefillCombo"],
             ["label_innerGap", "innerGapSpinBox"],
             ["label_outerGap", "outerGapSpinBox"],
@@ -373,7 +381,7 @@ describe("native KCM static contract", () => {
         assert.match(unifiedHeader, /isScriptRestartRequired/);
         assert.match(unifiedHeader, /isGapReconfigurePending/);
         assert.match(unified, /m_gapReconfigurePending/);
-        assert.match(unified, /const bool liveChanged = gapChanged \|\| sameAxisMoveChanged \|\| fixedPredicateChanged \|\| refillChanged/);
+        assert.match(unified, /const bool liveChanged = gapChanged \|\| sameAxisMoveChanged \|\| fixedPredicateChanged \|\| bornMaximizedChanged \|\| refillChanged/);
         assert.match(unified, /if \(liveChanged \|\| scriptRetryArmed\)/);
         assert.match(unified, /if \(!widgetsChanged\)/);
         assert.match(unified, /This retry saved nothing/);

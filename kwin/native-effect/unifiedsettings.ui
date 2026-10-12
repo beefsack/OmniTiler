@@ -311,34 +311,47 @@
          </property>
         </widget>
        </item>
-         <item row="2" column="1">
-         <widget class="QComboBox" name="fixedSizePredicateCombo"/>
-        </item>
-         <item row="3" column="0">
-          <widget class="QLabel" name="label_migrationSourceRefill">
+          <item row="2" column="1">
+          <widget class="QComboBox" name="fixedSizePredicateCombo"/>
+         </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="label_bornMaximized">
+            <property name="buddy">
+             <cstring>bornMaximizedCombo</cstring>
+            </property>
+           <property name="text">
+            <string>Born-maximized admission behavior:</string>
+           </property>
+          </widget>
+         </item>
+           <item row="3" column="1">
+           <widget class="QComboBox" name="bornMaximizedCombo"/>
+          </item>
+          <item row="4" column="0">
+           <widget class="QLabel" name="label_migrationSourceRefill">
+            <property name="buddy">
+             <cstring>migrationSourceRefillCombo</cstring>
+            </property>
+           <property name="text">
+            <string>Source workspace after migration:</string>
+           </property>
+          </widget>
+         </item>
+          <item row="4" column="1">
+          <widget class="QComboBox" name="migrationSourceRefillCombo"/>
+         </item>
+          <item row="5" column="0">
+           <widget class="QLabel" name="label_innerGap">
            <property name="buddy">
-            <cstring>migrationSourceRefillCombo</cstring>
+            <cstring>innerGapSpinBox</cstring>
            </property>
           <property name="text">
-           <string>Source workspace after migration:</string>
+           <string>Gap between tiled windows:</string>
           </property>
          </widget>
         </item>
-         <item row="3" column="1">
-         <widget class="QComboBox" name="migrationSourceRefillCombo"/>
-        </item>
-         <item row="4" column="0">
-          <widget class="QLabel" name="label_innerGap">
-          <property name="buddy">
-           <cstring>innerGapSpinBox</cstring>
-          </property>
-         <property name="text">
-          <string>Gap between tiled windows:</string>
-         </property>
-        </widget>
-       </item>
-         <item row="4" column="1">
-         <widget class="QSpinBox" name="innerGapSpinBox">
+          <item row="5" column="1">
+          <widget class="QSpinBox" name="innerGapSpinBox">
         <property name="minimum">
          <number>0</number>
         </property>
@@ -353,18 +366,18 @@
         </property>
        </widget>
       </item>
-         <item row="5" column="0">
-          <widget class="QLabel" name="label_outerGap">
-          <property name="buddy">
-           <cstring>outerGapSpinBox</cstring>
+          <item row="6" column="0">
+           <widget class="QLabel" name="label_outerGap">
+           <property name="buddy">
+            <cstring>outerGapSpinBox</cstring>
+           </property>
+          <property name="text">
+           <string>Gap between tiled windows and the work area edge:</string>
           </property>
-         <property name="text">
-          <string>Gap between tiled windows and the work area edge:</string>
-         </property>
-        </widget>
-       </item>
-         <item row="5" column="1">
-         <widget class="QSpinBox" name="outerGapSpinBox">
+         </widget>
+        </item>
+          <item row="6" column="1">
+          <widget class="QSpinBox" name="outerGapSpinBox">
         <property name="minimum">
          <number>0</number>
         </property>

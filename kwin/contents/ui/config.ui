@@ -44,27 +44,37 @@
        </widget>
       </item>
         <item row="3" column="1">
-        <widget class="QComboBox" name="kcfg_fixedSizePredicate"/>
-       </item>
-        <item row="4" column="0">
-        <widget class="QLabel" name="label_migrationSourceRefill">
-         <property name="text">
-          <string>Source workspace after migration</string>
-         </property>
-        </widget>
-       </item>
-        <item row="4" column="1">
-        <widget class="QComboBox" name="kcfg_migrationSourceRefill"/>
-       </item>
-        <item row="5" column="0">
-       <widget class="QLabel" name="label_innerGap">
-       <property name="text">
-        <string>Gap between tiled windows</string>
-       </property>
-      </widget>
-     </item>
+         <widget class="QComboBox" name="kcfg_fixedSizePredicate"/>
+        </item>
+         <item row="4" column="0">
+         <widget class="QLabel" name="label_bornMaximized">
+          <property name="text">
+           <string>The born-maximized admission behavior</string>
+          </property>
+         </widget>
+        </item>
+          <item row="4" column="1">
+          <widget class="QComboBox" name="kcfg_bornMaximized"/>
+         </item>
+         <item row="5" column="0">
+         <widget class="QLabel" name="label_migrationSourceRefill">
+          <property name="text">
+           <string>Source workspace after migration</string>
+          </property>
+         </widget>
+        </item>
         <item row="5" column="1">
-        <widget class="QSpinBox" name="kcfg_innerGap">
+         <widget class="QComboBox" name="kcfg_migrationSourceRefill"/>
+        </item>
+         <item row="6" column="0">
+        <widget class="QLabel" name="label_innerGap">
+        <property name="text">
+         <string>Gap between tiled windows</string>
+        </property>
+       </widget>
+      </item>
+         <item row="6" column="1">
+         <widget class="QSpinBox" name="kcfg_innerGap">
        <property name="minimum">
         <number>0</number>
        </property>
@@ -76,15 +86,15 @@
        </property>
       </widget>
      </item>
-        <item row="6" column="0">
-        <widget class="QLabel" name="label_outerGap">
-       <property name="text">
-        <string>Gap between tiled windows and the work area edge</string>
-       </property>
-      </widget>
-     </item>
-        <item row="6" column="1">
-        <widget class="QSpinBox" name="kcfg_outerGap">
+         <item row="7" column="0">
+         <widget class="QLabel" name="label_outerGap">
+        <property name="text">
+         <string>Gap between tiled windows and the work area edge</string>
+        </property>
+       </widget>
+      </item>
+         <item row="7" column="1">
+         <widget class="QSpinBox" name="kcfg_outerGap">
        <property name="minimum">
         <number>0</number>
        </property>

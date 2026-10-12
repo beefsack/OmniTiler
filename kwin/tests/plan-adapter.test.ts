@@ -130,6 +130,7 @@ interface Mocks {
     readonly floatingCalls: Array<{ id: string; floating: boolean }>;
     observeImpl: () => PlanObserved | null;
     activeImpl: () => object | null;
+    bornMode: unknown;
     geometryImpl: (target: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     maximizeClearImpl: (target: object) => MaximizeClearOutcome;
     maximizeToggleImpl: (target: object, maximized: boolean) => MaximizeClearOutcome;
@@ -161,6 +162,10 @@ function mockEnv(refs: { a: object; b: object; c: object }): Mocks {
         floatingCalls: [],
         observeImpl: () => makeObserved(refs, { focused: refs.a }),
         activeImpl: () => refs.a,
+        // R-MAX-06: the production default is tile-on-launch; tests
+        // asserting the Q3 reserved-slot overlay path pin
+        // keep-maximized-overlay explicitly.
+        bornMode: undefined as unknown,
         geometryImpl: (_target: object, _rect: { x: number; y: number; w: number; h: number }): boolean => true,
         maximizeClearImpl: (_target: object): MaximizeClearOutcome => "invoked",
         maximizeToggleImpl: (_target: object, _maximized: boolean): MaximizeClearOutcome => "invoked",
@@ -204,6 +209,7 @@ function mockEnv(refs: { a: object; b: object; c: object }): Mocks {
             state.logs.push(message);
         },
         observe: (): PlanObserved | null => state.observeImpl(),
+        readBornMaximized: (): unknown => state.bornMode,
         clearMaximize: (target): MaximizeClearOutcome => {
             state.maximizeClears.push(target);
             return state.maximizeClearImpl(target);
@@ -6798,14 +6804,16 @@ describe("plan adapter maximize isolation", () => {
     }
 
     it("born-maximized admission reserves a tile slot and restores into it", async () => {
-        // A window first seen maximized on a tiled domain keeps native
-        // maximize: admission issues no native clear or toggle. The member
-        // reserves a tile slot as a maximized overlay (fit_excluded, never
-        // actuated) while the sibling takes its allocated share; a later
-        // native restore lands in the reserved slot, and repeated maximize
-        // observations keep the slot with no further dispatch.
+        // R-MAX-06 keep-maximized-overlay: a window first seen maximized on
+        // a tiled domain keeps native maximize (no clear or toggle). The
+        // member reserves a tile slot as a maximized overlay (fit_excluded,
+        // never actuated) while the sibling takes its allocated share; a
+        // later native restore lands in the reserved slot, and repeated
+        // maximize observations keep the slot with no further dispatch.
+        // The tile-on-launch default clears instead (born-maximized.test.ts).
         const refs = makeRefs();
         const mocks = mockEnv(refs);
+        mocks.bornMode = "keep-maximized-overlay";
         mocks.observeImpl = () =>
             makeObserved(refs, {
                 focused: refs.a,
@@ -6932,11 +6940,13 @@ describe("plan adapter maximize isolation", () => {
     });
 
     it("born-maximized admission on a hidden domain reserves its slot", async () => {
-        // The reserved-slot overlay contract holds on hidden tiled domains:
-        // no admission clear, a fit_excluded dispatch the Engine retains,
-        // no actuation of the overlay, and a quiet settle once converged.
+        // R-MAX-06 keep-maximized-overlay: the reserved-slot overlay
+        // contract holds on hidden tiled domains (no admission clear, a
+        // fit_excluded dispatch the Engine retains, no actuation of the
+        // overlay, and a quiet settle once converged).
         const refs = makeRefs();
         const mocks = mockEnv(refs);
+        mocks.bornMode = "keep-maximized-overlay";
         const hiddenRef = {};
         mocks.observeImpl = () =>
             makeObserved(refs, {
@@ -7009,11 +7019,14 @@ describe("plan adapter maximize isolation", () => {
 
     it("workspace floating-to-tiled keeps maximize over a reserved slot (R-MAX-03)", async () => {
         // R-MAX-03 Q3: a first-seen maximized window on a floating workspace
-        // keeps native maximize when the workspace toggles to tiled. The
-        // retile issues no native clear or toggle; the member reserves a tile
-        // slot as a maximized overlay while the sibling takes its share. A
-        // later actual unmaximize writes the retained slot, and a fresh
-        // born-maximized newcomer reserves alongside through the same path.
+        // keeps native maximize when the workspace toggles to tiled, under
+        // both R-MAX-06 settings (the retile leg below runs the
+        // tile-on-launch default). The retile issues no native clear or
+        // toggle; the member reserves a tile slot as a maximized overlay
+        // while the sibling takes its share. A later actual unmaximize
+        // writes the retained slot, and a fresh born-maximized newcomer
+        // reserves alongside through the overlay path (pinned to
+        // keep-maximized-overlay: the default clears instead).
         const refs = makeRefs();
         const mocks = mockEnv(refs);
         let tiled = false;
@@ -7147,7 +7160,10 @@ describe("plan adapter maximize isolation", () => {
             assert.equal(mocks.maximizeClears.length, 0, "restore issues no native maximize clear");
             assert.equal(mocks.maximizeToggles.length, 0, "restore issues no native maximize toggle");
             // Born-max interaction: a fresh maximized newcomer on the same
-            // tiled domain reserves through the same overlay path.
+            // tiled domain reserves through the overlay path under
+            // keep-maximized-overlay (the tile-on-launch default clears
+            // instead; born-maximized.test.ts).
+            mocks.bornMode = "keep-maximized-overlay";
             mocks.observeImpl = () =>
                 makeObserved3(refs, {
                     focused: refs.a,

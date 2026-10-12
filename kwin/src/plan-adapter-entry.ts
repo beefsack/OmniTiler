@@ -27,6 +27,7 @@
 import { DomainGaps, readDomainGaps } from "./domain-gap";
 import { readMigrationSourceRefillValue } from "./migration-source-refill";
 import { SameAxisMove, readSameAxisMoveValue } from "./same-axis-move";
+import { BornMaximized, readBornMaximizedValue } from "./born-maximized";
 import {
     FixedSizePredicate,
     readFixedSizePredicateValue,
@@ -125,6 +126,7 @@ export interface PlanEntryOverrides {
     readonly readOuterGapFn?: () => unknown;
     readonly readSameAxisMoveFn?: () => unknown;
     readonly readFixedSizePredicateFn?: () => unknown;
+    readonly readBornMaximizedFn?: () => unknown;
     readonly readMigrationSourceRefillFn?: () => unknown;
     readonly options?: unknown;
     // Workspace tiling menu state: invoked whenever the tray snapshot
@@ -4467,6 +4469,39 @@ function startPlanAdapterEntryOnce(
     let fixedSizePredicate: FixedSizePredicate = readFixedSizePredicateValue(
         overrides.readFixedSizePredicateFn,
     );
+    // R-MAX-06 born-maximized admission mode: resolved at startup, then
+    // re-read only on the KWin Options `configChanged` signal for subsequent
+    // admissions. No rebuild, no reclassification, no resync, no topology
+    // work on change; the adapter reads the entry-owned value live per
+    // admission.
+    let bornMaximized: BornMaximized = readBornMaximizedValue(overrides.readBornMaximizedFn);
+    // R-MAX-03 floating-first sightings: stable ids first observed on an
+    // untiled (floating) domain. Their later tiled-domain admission keeps
+    // the maximized overlay over the reserved slot under both R-MAX-06
+    // settings with no one-shot clear; only born tiled-first admissions
+    // read the R-MAX-06 mode. Bounded (never a lifecycle): evicted on
+    // verified native removal, dropped with the entry on stop.
+    const floatingFirstIds = new Set<string>();
+    const noteFloatingFirstSighted = (ids: ReadonlyArray<string>): void => {
+        try {
+            for (const id of ids) {
+                if (typeof id !== "string" || id.length === 0) {
+                    continue;
+                }
+                if (!floatingFirstIds.has(id)) {
+                    if (floatingFirstIds.size >= 4096) {
+                        const oldest = floatingFirstIds.values().next();
+                        if (!oldest.done) {
+                            floatingFirstIds.delete(oldest.value as string);
+                        }
+                    }
+                    floatingFirstIds.add(id);
+                }
+            }
+        } catch (error) {
+            void error;
+        }
+    };
     // R-WS-12 G-37 migration source refill: the workspace-native map
     // commit reads it per migration from the entry-pushed value (startup via
     // the env closure below, then only on the KWin Options `configChanged`
@@ -4510,6 +4545,7 @@ function startPlanAdapterEntryOnce(
         nativeIds.delete(id);
         sendNativeIds.delete(id);
         nativeOwners.delete(id);
+        floatingFirstIds.delete(id);
         eligibilityReasons.delete(id);
         // Verified removal also drops the in-progress float mark: a closed
         // window must not keep observing floating on id reuse before the
@@ -4666,6 +4702,15 @@ function startPlanAdapterEntryOnce(
         },
         readSameAxisMove: () => sameAxisMove,
         readFixedSizePredicate: () => fixedSizePredicate,
+        readBornMaximized: () => bornMaximized,
+        isFloatingFirst: (id) => {
+            try {
+                return floatingFirstIds.has(id);
+            } catch (error) {
+                void error;
+                return false;
+            }
+        },
         observe: () => {
             const seen = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
             if (seen === null) {
@@ -4676,6 +4721,14 @@ function startPlanAdapterEntryOnce(
             // skip it. Release-domain snapshots bypass this filter via the
             // raw observers below.
             if (!isEntryDomainTiled(seen.domainOutput, seen.domainWorkspace)) {
+                // R-MAX-03: record floating-first sightings so the later
+                // tiled-domain admission keeps the overlay under both
+                // born-maximized settings.
+                try {
+                    noteFloatingFirstSighted(seen.windows.map((entry) => entry.id));
+                } catch (error) {
+                    void error;
+                }
                 return null;
             }
             return seen;
@@ -4686,6 +4739,13 @@ function startPlanAdapterEntryOnce(
             for (const entry of list) {
                 if (isEntryDomainTiled(entry.domainOutput, entry.domainWorkspace)) {
                     out.push(entry);
+                } else {
+                    // R-MAX-03: record floating-first sightings as above.
+                    try {
+                        noteFloatingFirstSighted(entry.windows.map((member) => member.id));
+                    } catch (error) {
+                        void error;
+                    }
                 }
             }
             return Object.freeze(out);
@@ -9041,6 +9101,25 @@ function startPlanAdapterEntryOnce(
                             fixedSizePredicate = reread;
                             try {
                                 log(`omnitiler:plan:config-reloaded stage=fixed-size-predicate predicate=${reread}`);
+                            } catch (error) {
+                                void error;
+                            }
+                        }
+                    } catch (error) {
+                        void error;
+                    }
+                    // R-MAX-06 live mode: re-read the born-maximized setting
+                    // for subsequent admissions only. No rebuild, no
+                    // reclassification, no resync, no topology work; the
+                    // adapter reads the entry-owned value live per admission.
+                    try {
+                        const reread = readBornMaximizedValue(
+                            overrides.readBornMaximizedFn,
+                        );
+                        if (reread !== bornMaximized) {
+                            bornMaximized = reread;
+                            try {
+                                log(`omnitiler:plan:config-reloaded stage=born-maximized mode=${reread}`);
                             } catch (error) {
                                 void error;
                             }
