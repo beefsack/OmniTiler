@@ -176,18 +176,60 @@ decisions of 2026-09-24 are under
     ([record](changes/archive/windows-group-underlay-geometry.md)).
   - (d) Offline-delivered: `core.born_maximized`, default `tile-on-launch`
     and working `keep-maximized-overlay`; live changes affect subsequent
-    admissions only. Launch/restore, Settings and gaming live checks pending
+    admissions only. Both-values maximized Paint launch user-accepted physically
+    2026-10-12, scoped normal owner, single output, Notepad/Paint, base `e506350`
+    plus combined directional/retile/B9 changes. Browser restore, detailed
+    Settings, fixed-size, game/DPI/multi-output checks pending
     ([record](changes/archive/windows-born-maximized-setting.md)); R-MAX-03
-    overlay parity remains item 11; fixed admission is delivered with 13+17 below.
+    overlay parity is delivered offline with item 11; fixed admission is
+    delivered with 13+17 below.
   - (e) Offline-delivered: active border radius defaults to 6 in Windows
-    settings and CLI/proof owners; explicit radii preserved. Settings/visual
-    live check pending ([record](changes/archive/windows-border-radius-default.md)).
+    settings and CLI/proof owners; explicit radii preserved. Radius 6 appearance
+    and live Settings Apply user-accepted physically 2026-10-12 under the same
+    conditions as (d); Revert/game/DPI/multi-output pending
+    ([record](changes/archive/windows-border-radius-default.md)).
   - Items 13+17 offline-delivered: bounded min/max observations, predicate
     schema/UI, current-hint fullscreen exit/enable classification and fixed-origin
     restart markers. Native hints/overlay/game no-touch acceptance pending;
     hydrated fixed-override maximize routing is tentative
     ([item 13](changes/archive/windows-fixed-size-admission.md),
     [item 17](changes/archive/windows-per-axis-zero-predicate.md)).
+  - Items 10+18 offline-delivered 2026-10-12: ordinary/sticky float directional
+    focus and stateless half-snaps; maximized focus fence and one observed-clear
+    unmaximize-before-move. User-accepted physically 2026-10-12 under (d)'s
+    conditions: float focus/half-snaps, maximized tiled focus fence, maximized
+    float clear then all four halves, maximized tiled clear then move (sensible
+    to user). Tie/sticky/clamp/preset variants, failure/race, fixed-size,
+    game/DPI/multi-output pending
+    ([item 10](changes/archive/windows-floating-directional-navigation.md),
+    [item 18](changes/archive/windows-maximized-directional-navigation.md)).
+  - Items 11+15 offline-delivered 2026-10-12: R-MAX-03 workspace retile retains
+    maximize over a reserved slot under both born settings; ordinary maximized
+    unfloat clears/observes before fresh admission with fixed D3/D7 overrides.
+    Item 11 retile-preserves-maximize/restore-to-slot user-accepted physically
+    2026-10-12 under (d)'s conditions; tray toggle does not restore previous
+    window focus (observation only; may suit tray keyboard accessibility).
+    Item 15 ordinary clear/admission/focus already has scoped native evidence;
+    physical B9, hidden retile, session restore, fixed marker/restart,
+    failure/race, game/DPI/multi-output pending
+    ([item 11](changes/archive/windows-maximized-floating-retile-overlay.md),
+    [item 15](changes/archive/windows-maximized-intentional-unfloat.md)).
+- P0 | Windows owner threading | User direction 2026-10-12: rendering moves
+  off the input hook thread so LL mouse/keyboard hook delivery never waits on
+  owner work, done now while the owner is still small. Evidence: edge
+  drag-resize feels ~30-60 Hz with the owner running versus smooth at the
+  display refresh without it, after the border-raster fix; LL hooks share one
+  pump with observation, Engine, actuation, overlay rendering and trace I/O.
+  Recommended target C, staged: (1) dedicated input thread for LL hooks plus
+  the synchronous consume/pass classifier over published snapshots; (2)
+  dedicated render thread owning border/underlay/drop-preview windows,
+  latest-wins desired state with hide/cancel epochs; (3) combined
+  stress/recovery, then multi-output/DPI and gaming-cost checks. One
+  observation/Engine/recovery owner remains. Confirm A/B/C and order when work
+  starts. Selected for latency only; parked Win+G/F11 containment is not
+  claimed. Trace-off and release-build drag comparison is still useful as a
+  baseline. [Design](research/windows-port/owner-threading.md),
+  [evidence](changes/archive/windows-resize-hook-latency.md).
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Cross-platform
   decisions for the KDE session: R-MAX-06 born-maximized setting (default
   tile) and active border radius default 6; underlay default visibility
@@ -200,6 +242,27 @@ decisions of 2026-09-24 are under
   retain required data-loss safety. KDE user-tested live 2026-10-12: dialogs
   worked; result text shortened in `b718987` (short-text recheck pending).
   [flow and evidence](changes/archive/kde-shortcut-result-dialogs.md).
+- P2 | Windows float/maximized focus tie research | Tentative 2026-10-12,
+  pending user review: observed-before-retained encounter order only affects
+  equal-axis ties, not distance ranking. Existing-source tally: 0 explicit
+  observed-first, 2 applicable but incomparable live-list mechanisms, 7
+  unavailable profiles. Keep current order; deeper comparable reference
+  tie-order research pending. [Discriminator](spec/reference-outcomes.md#windows-floating-candidate-discriminator-2026-10-12),
+  [tally](changes/archive/windows-floating-directional-navigation.md#user-accepted-physical-evidence---2026-10-12).
+- P1 | Windows fullscreen-exit acceptance | Startup/born exits, retained managed
+  slot return, borderless exit and owned-exit metadata retirement pinned offline
+  2026-10-12; directional post-clear owned-metadata veto corrected. Owned
+  Notepad managed-slot return and fullscreen stop/relaunch/exit tiling
+  physically user-accepted 2026-10-12, scoped single-output Notepad/Paint,
+  base `e506350` plus pre-retirement Windows changes. User-selected automatic
+  stale retirement delivered offline for positively restored nonzero chrome
+  masks, with double live proof/lifetime/preimage fences and transition/
+  re-fullscreen regressions. User follow-up 2026-10-12: originally captionless
+  zero-bit metadata stays fail-closed without a restoration witness; Win+F11
+  owned toggle exit is the release path. User watches for untiled windows
+  during dogfood; no remaining policy decision for this case. App-native/born-after-start/
+  borderless, retirement physical, fixed/game/DPI/multi-output pending.
+  [Record](changes/archive/windows-fullscreen-exit-acceptance.md).
 - P0 | Windows port | KDE-first core extraction finished at K1 (user
   2026-09-30; K2/K3 revisit when macOS starts, see
   [extraction](research/cross-platform-core/extraction.md),
@@ -239,6 +302,18 @@ decisions of 2026-09-24 are under
   ordinary-app recovery/timing: 72-124 ms ordinary-app selects, 171-241 ms
   physical select/send trace; user accepts select/send/follow and drag-resize
   usability. [Latency evidence](changes/archive/windows-workspace-action-latency.md).
+  Follow-up 2026-10-12 edge-resize lag: pixel/checksum-identical border raster
+  optimization passes native offline gates; user dev/trace-on reports much
+  better but still laggy. LL hooks share the rendering/owner thread; unchanged
+  hide traces suppressed and owner busy-span diagnostics delivered offline.
+  Trace-off and release smoothness/release-settle comparison pending
+  ([raster record](changes/archive/windows-edge-resize-latency.md),
+  [input-thread evidence and commands](changes/archive/windows-resize-hook-latency.md)).
+  Owner threading assessment 2026-10-12: separate rendering early; target A/B/C
+  and delivery order pending user selection. Recommend isolated input then
+  render pumps, with one observation/Engine/recovery owner; latency selection
+  is separate from parked Win+G/F11 containment
+  ([design](research/windows-port/owner-threading.md)).
   Minimum-size hints shipped in 49d4191 and were physically accepted, including
   send into a populated workspace (2026-10-02). Late directional dogfood moves
   match KDE/core R2c/R3; minimum-pinned geometry explains zero visible change.
@@ -346,6 +421,11 @@ decisions of 2026-09-24 are under
   unselected and require separate authorization. (b) user chose
   documented-signal-only detection (2026-10-03); blocked until one exists.
   (c) researched; alternate Game Bar access deferred (see Future).
+  - User physical re-check 2026-10-12, scoped single-output Notepad/Paint,
+    base `e506350` plus pre-retirement Windows changes: every Win+F11 owned
+    fullscreen/exit press also raised the Xbox full screen experience prompt.
+    Known parked containment issue confirmed; user wants a fix eventually.
+    Remains parked in gaming coexistence, with no new containment work.
   - M16 gaming-cost measurement: compare the existing 100 ms pump's
     incremental CPU, frame-time and input cost against a without-tiler game
     baseline, including suspended work/effects. Cost remains unmeasured;
@@ -437,16 +517,26 @@ decisions of 2026-09-24 are under
   Shared restart store in core (float intent, tile overrides, possibly positions); platforms supply window identity and storage location (user 2026-10-08).
 - P1 | Windows parity with the 2026-10-05 KDE session | Next Windows session:
   (a) float-origin directional focus and Meta+Shift+arrow half-snaps
-  (R-FLT-07..11; Windows today refuses float subjects); (b) Q3 born-maximized
+  (R-FLT-07..11; Windows delivered offline 2026-10-12,
+  [record](changes/archive/windows-floating-directional-navigation.md), ordinary
+  physical single-output user acceptance 2026-10-12; variants/game/DPI pending);
+  (b) Q3 born-maximized
   reserved slot plus maximize overlay, replacing the one-shot admission
   clear on Windows (and KDE, same decision); user 2026-10-07: Q3 also
   covers the R-MAX-03 floating-to-tiled case (stays maximized over a
   reserved slot). KDE R-MAX-03 and R-MAX-06 delivered offline, native checks
   pending ([scope record](changes/archive/kde-maximized-floating-retile-overlay.md));
-  Windows parity (b) remains pending in Windows delivery.
+   Windows parity (b) delivered offline 2026-10-12
+   ([record](changes/archive/windows-maximized-floating-retile-overlay.md));
+   born R-MAX-06 uses the delivered 2026-10-11 setting, R-MAX-03 independent;
+    ordinary single-output retile/restore and both-values born Paint launch
+    user-accepted physically 2026-10-12; hidden/session/fixed/game/DPI pending.
   (c) B9 overlaid unfloat: unmaximize then fresh-admit, selected 2026-10-08;
   remove the Windows refusal, with the user's COSMIC check as confirmation
-  only (handoff item 15; KDE delivered offline); (d) keyboard resize delivered
+   only (handoff item 15; KDE and Windows delivered offline,
+   [Windows record](changes/archive/windows-maximized-intentional-unfloat.md),
+    ordinary native clear/frame/focus agent-observed 2026-10-12; physical B9,
+    marker/restart/failure/game/DPI pending); (d) keyboard resize delivered
   2026-10-11, base `f794cf9` + delivery commit (handoff item 6,
   [record](changes/archive/windows-keyboard-resize.md)); physical interception
   remains user-owned. Non-local workspace modes remain unimplemented despite
@@ -617,15 +707,15 @@ decisions of 2026-09-24 are under
   | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below), REQ-RST-01c is PROVISIONAL tentative D25 pending user review. Coordinate D7 membership with item 13. |
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
-  | 10 | Float/half-snap parity (a) R-FLT-07..11 | Independent of items 1-5; reuses existing focus/move catalog rows, no new chords. |
-  | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Replaces generic one-shot admission clear; fixed-origin override subset delivered with item 13. First-fullscreen-exit is separate (D5 Windows/core/KDE delivered offline). B9 unmaximize/fresh-admit is item 15. Independent of items 1-5. |
+  | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
+  | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
   | 12 | Non-local workspace modes parity (d) | Depends on handoff items 1/2 (ring + follow/stay) and the parity-queue multi-output foundation; last. |
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Core/KDE offline delivery including D8 overlay carry under user decisions 2026-10-08 (normative as delivered); depends on item 5's multi-output foundation, item 1 history invalidation and item 12 for non-local runtime modes. Windows adapter including D8 pending; no Windows behavior delivered. |
-  | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | KDE/shared-core offline evidence delivered; replace Windows maximize refusal only for ordinary floating-to-tiled toggle, clear/observe before fresh admission. Coordinate fixed tile overrides with items 8/13; independent of Q3 item 11 overlay retention. |
+  | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
   | 16 | Position-based output selection | Shared core/KDE delivered offline 2026-10-09; Windows handoff only. Wire with item 5's multi-output foundation and item 14 migration, preserving arrival/current-view/lifetime fences. |
   | 17 | G-05 per-axis-zero predicate | Windows delivered offline 2026-10-11 with item 13, shared predicate reused; converted partial-zero orientations/default/either and subsequent-admission controls pass. Native hint representation pending. [Record](changes/archive/windows-per-axis-zero-predicate.md). |
-  | 18 | G-06 maximized directional focus/move | Shared opt-in fence/KDE delivered offline 2026-10-10; Windows focus fence and unmaximize-before-move pending; coordinate float half-snaps with item 10. |
+  | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
 
@@ -1804,7 +1894,13 @@ decisions of 2026-09-24 are under
   - Item 10: float/half-snap parity (a), R-FLT-07..11. User decision
     2026-10-05 float-nav ([decisions](decisions.md#window-state-float-sticky-maximize-fullscreen));
     KDE delivered offline ([record](changes/archive/kde-floating-directional-navigation.md)).
-    Windows parity pending; cross-platform consistency already selected.
+    Windows delivered offline 2026-10-12 from base `e506350`
+    ([record](changes/archive/windows-floating-directional-navigation.md)); native
+    MSVC gates pass. Focus candidate/reconcile fixtures include retained maximum
+    and visible non-home sticky targets; automatic fixed floats retain D8 no-touch.
+    Ordinary focus/half-snaps user-accepted physically 2026-10-12, scoped normal
+    owner, single output, Notepad/Paint, base `e506350` plus combined deliveries.
+    Tie/sticky/clamp/preset/fixed/game/DPI/multi-output pending. Historical seams below.
 
     #### Item 10 behavior and reference seams
 
@@ -1860,7 +1956,8 @@ decisions of 2026-09-24 are under
       same subject; no Engine call. Keep the refusal vocabulary for
       ineligible subjects, invalid geometry, stale subjects and the
       deferred quarter/max/outward states.
-    - [ ] Portable: `tests/tiling.rs` + `tests/snapkey.rs` (existing
+    - [x] Offline: `tests/tiling.rs`, cfg(windows) retained Engine fixtures and
+      existing `tests/snapkey.rs` catalog/pairing coverage (existing
       focus/move rows, no new chords): nearer ordinary vs farther sticky,
       first/last tie selection, miss
       retention, repeated half-snaps stateless with exact allocation,
@@ -1893,10 +1990,21 @@ decisions of 2026-09-24 are under
     born-max [record](changes/archive/kde-born-maximized-overlay.md)).
     R-MAX-06 now has the 2026-10-11 setting: Windows both values delivered
     offline ([record](changes/archive/windows-born-maximized-setting.md));
-    this item's remaining Windows implementation is R-MAX-03, independent
-    of that setting. Native acceptance remains pending for both legs.
+    R-MAX-03 delivered offline 2026-10-12, independent of that setting
+    ([Windows record](changes/archive/windows-maximized-floating-retile-overlay.md)).
+    Native MSVC offline gates pass; ordinary retile/restore and both-values born
+    Paint launch user-accepted physically 2026-10-12 under item 10's conditions.
+    Tray toggle previous-focus non-restoration is observation only; no change
+    requested. Hidden/session/fixed/game/DPI/multi-output remain pending.
 
-    #### Item 11 behavior and reference seams
+    #### Item 11 behavior and reference seams (historical handoff)
+
+    - Current Windows seams: `retile_keep_overlay`, `admit_slotless_maximized`,
+      `admission_clear_planned`, `clear_maximize_at_admission` and assembly
+      slot seeding reuse born-overlay machinery. R-MAX-03 no longer clears;
+      D5 first fullscreen exit is delivered offline with item 13. Historical
+      line numbers and pending implementation descriptions below are superseded
+      by the Windows record; native checklist remains open.
 
     - Normative: [spec](spec/functional-spec.md#maximize) REQ-MAX-03/03b/06;
       [matrix](spec/reference-outcomes/maximize-fullscreen.md) R-MAX-03
@@ -1964,7 +2072,9 @@ decisions of 2026-09-24 are under
       `src/settings.rs:799-818`, workspace default :250-263, Settings UI
       `src/settings_ui.rs:314/:394` and tray `src/tray.rs:179-275`; no new catalog row or
       `compatible_disabled_ids` :1528 policy is selected by Q3.
-    - [ ] Portable: :17164 plus new cases: born-max beside a sibling
+    - [x] Offline Engine/adapter: both born-setting values, reserved slot and
+      sibling share, restore projection, quiet repeat and reused lifetime.
+    - [ ] Remaining native/application scenarios: born-max beside a sibling
       (sibling keeps its allocated share), hidden-workspace retile,
       floating-toggle retile, native restore to the exact retained slot,
       quiet repeated signals, reused IDs, session-boundary restored max
@@ -1979,7 +2089,7 @@ decisions of 2026-09-24 are under
       with a session-restored maximized A at a user-owned session
       boundary, no loop.
     - DoD: one-shot clear replaced by reserved-slot overlay on both legs;
-      first-fullscreen-exit separate (D5 Windows pending) from B9; D6 fixed
+      first-fullscreen-exit separate (D5 Windows delivered offline) from B9; D6 fixed
       automatic workspace-enable exceptions stay slotless per item 13;
       matrix `R-MAX-03` /
       `R-MAX-06` Ours Windows cells updated with dated offline evidence,
@@ -2359,7 +2469,14 @@ decisions of 2026-09-24 are under
       core/KDE delivered offline, Windows adapter pending.
 
   - Item 15: B9 / M09=A maximized intentional unfloat R-FLT-06 (User
-    2026-10-08). Shared-core/KDE delivered offline; Windows runtime unchanged.
+    2026-10-08). Shared-core/KDE delivered offline; Windows delivered offline
+    2026-10-12 ([Windows record](changes/archive/windows-maximized-intentional-unfloat.md)).
+    Native MSVC gates pass; scripted native effects plus real Engine cover
+    clear-before-admission, restored frame, narrow refusal/later-press recovery,
+    post-clear lifetime/focus/domain/fullscreen races and fixed override. Native
+    ordinary clear/frame/focus agent-observed 2026-10-12 in scoped Notepad/Paint;
+    physical B9, fixed marker/restart, failure/race/game/DPI remain pending. Checklist below
+    records the delivered contract and remaining native acceptance.
     [Record](changes/archive/maximized-intentional-unfloat.md),
     [spec](spec/functional-spec.md#7-floating-r-flt),
     [row](spec/reference-outcomes/floating.md#r-flt-06-float-toggle-over-a-maximized-window).
@@ -2458,7 +2575,15 @@ decisions of 2026-09-24 are under
     unmaximize or Alt+Tab); directional move unmaximizes first, then moves.
     Replace Windows focus-permit/movement-refusal, retaining pointer refusals
     and fullscreen policy. Shared opt-in focus fence + KDE delivered offline
-    2026-10-10; Windows adapter wiring pending. Exact seams:
+    2026-10-10; Windows delivered offline 2026-10-12 from base `e506350`
+    ([record](changes/archive/windows-maximized-directional-navigation.md)). Native
+    MSVC gates pass; pre/post-clear authorization, fullscreen precedence and
+    coordinated float targets covered offline. User-accepted physically
+    2026-10-12 under item 10's conditions: maximized tiled focus fence and
+    clear then tiled move/float all four halves. Failure/race/held-repeat/preset,
+    fixed-size, game/DPI/multi-output pending.
+    Windows keeps the local fresh-flag guard because reconcile omits maximize;
+    shared Engine still owns ordinary tiled move. Historical seams:
     - `core/engine.rs` `set_maximized_focus_fence` propagates to retained/fresh
       sessions; default OFF preserves Windows. `core/session/ops/focus.rs`
       fences local/cross-output focus for a maximized non-fullscreen origin.
@@ -2910,7 +3035,7 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
     and MRU survivor B receives focus. Shared exception-drop already sourced.
 
 - Reference comparison decisions 2026-10-10 (shared/core KDE delivered offline,
-  Windows wiring pending; user-owned checks):
+  Windows G-05 and G-06 delivered offline; G-37 wiring pending; user-owned checks):
   [Delivery](changes/archive/reference-comparison-implementation.md).
   - G-05: freshly admit (640,0) and (0,480) equal partial-zero hints under
     both predicates: tile for both-axes, untouched automatic float for
@@ -2923,7 +3048,13 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
     and delayed native notifications. Unconfirmed clear must log refusal,
     without a delayed structural move; a later press retries. Repeat with an
     eligible maximized float (clear then half-snap). Existing pointer/fullscreen
-    controls unchanged.
+    controls unchanged. Windows offline delivery:
+    [item 18](changes/archive/windows-maximized-directional-navigation.md);
+    Windows ordinary single-output tiled focus fence/clear-then-move and float
+    four-half-snaps user-accepted physically 2026-10-12, scoped normal owner,
+    Notepad/Paint, base `e506350` plus combined directional/retile/B9 deliveries;
+    partial-maximize/exact timing/failure/race/preset/fixed/game/DPI/multi-output
+    and KDE native checks remain pending.
   - G-37 (multi-output): visit surviving WS1 then active WS2 on L, with a
     distinct trailing E; migrate WS2 to R. Default shows last remaining E;
     MRU shows eligible WS1. Clear/invalidate history and repeat: MRU falls
@@ -2955,6 +3086,18 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Windows session
 
+- User physical acceptance 2026-10-12: radius 6/live Apply, ordinary float
+  focus/half-snaps, G-06 maximum focus fence/clear then move, R-MAX-03
+  retile/restore and both born-setting Paint launches accepted under the
+  [dogfood conditions](#open-work). Remaining exact fixtures, fixed-size,
+  game/DPI/multi-output legs stay pending; no physical B9 claim added.
+- Fullscreen exit: owned Notepad managed-slot return and stop/relaunch with
+  fullscreen then exit tiling physically user-accepted 2026-10-12, scoped
+  single-output Notepad/Paint, base `e506350` plus pre-retirement changes.
+  Born-after-start/app-native/borderless, automatic-retirement/explicit-clear
+  recovery and fixed/game/DPI/multi-output remain pending. Each Win+F11 also
+  raised the known parked Xbox prompt; eventual fix stays in gaming coexistence.
+  [Lifecycle record](changes/archive/windows-fullscreen-exit-acceptance.md).
 - Placement physical acceptance (fixes live-API verified, ratified 2026-10-08):
   dogfood startup adoption on Windows, Win+M maximize/restore and send returns.
   Clean/tolerance-valid layouts keep their fit; overlap/minimum-infeasible fits
