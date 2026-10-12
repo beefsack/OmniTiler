@@ -457,6 +457,7 @@ pub fn snap_batch_age_us(batch: &[QueuedSnapEvent], now: Instant) -> u64 {
             QueuedSnapEvent::Float(i) => i.tick,
             QueuedSnapEvent::Sticky(i) => i.tick,
             QueuedSnapEvent::Orientation(i) => i.tick,
+            QueuedSnapEvent::Launch(i) => i.tick,
             QueuedSnapEvent::Mask(i) => i.tick,
         };
         oldest = Some(match oldest {

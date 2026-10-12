@@ -58,6 +58,7 @@ fn push_snap(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::Launch(_)
         | Classified::Resize(_) => {
             panic!("expected directional chord")
         }
@@ -81,6 +82,7 @@ fn push_workspace(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::Launch(_)
         | Classified::Resize(_) => {
             panic!("expected workspace digit")
         }
@@ -104,6 +106,7 @@ fn push_maximize(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::Launch(_)
         | Classified::Resize(_) => {
             panic!("expected maximize chord")
         }
@@ -126,6 +129,7 @@ fn push_fullscreen(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::Launch(_)
         | Classified::Resize(_) => {
             panic!("expected fullscreen chord")
         }
@@ -149,6 +153,7 @@ fn push_float(
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
+        | Classified::Launch(_)
         | Classified::Resize(_)
         | Classified::Fullscreen(_) => {
             panic!("expected float chord")
@@ -173,6 +178,7 @@ fn push_sticky(
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
+        | Classified::Launch(_)
         | Classified::Resize(_)
         | Classified::Fullscreen(_) => {
             panic!("expected sticky chord")
@@ -197,6 +203,7 @@ fn push_orientation(
         | Classified::Fullscreen(_)
         | Classified::Float(_)
         | Classified::Resize(_)
+        | Classified::Launch(_)
         | Classified::Sticky(_) => {
             panic!("expected orientation chord")
         }
@@ -642,6 +649,7 @@ fn saturated_queue_swallows_and_counts_loss() {
         | QueuedSnapEvent::Float(_)
         | QueuedSnapEvent::Orientation(_)
         | QueuedSnapEvent::Sticky(_)
+        | QueuedSnapEvent::Launch(_)
         | QueuedSnapEvent::Resize(_)
         | QueuedSnapEvent::Mask(_) => panic!("expected intent"),
     }
@@ -2882,8 +2890,12 @@ fn callback_diag_privacy_never_records_typed_letters_without_win() {
     };
     // Ordinary typing keys are never candidates: no borrow, no record.
     assert!(!is_callback_diag_candidate(0x41));
-    assert!(!is_callback_diag_candidate(0x42));
     assert!(!callback_diag_allows(0x41, false, false, false));
+    // Win+B is a launcher chord key, so B is a candidate gated exactly like
+    // the other letter catalog keys (typed B without Win still denied).
+    assert!(is_callback_diag_candidate(0x42));
+    assert!(!callback_diag_allows(0x42, false, false, false));
+    assert!(callback_diag_allows(0x42, true, false, false));
     // Letter catalog keys without Win/armed/marked are denied (typed-letter
     // risk); non-letter candidates stay gated the same way.
     assert!(is_callback_diag_candidate(VK_H));
@@ -2997,6 +3009,7 @@ fn push_send(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::Launch(_)
         | Classified::Resize(_) => {
             panic!("expected relative send")
         }
@@ -3448,7 +3461,8 @@ fn push_resize(
         | Classified::Fullscreen(_)
         | Classified::Float(_)
         | Classified::Orientation(_)
-        | Classified::Sticky(_) => {
+        | Classified::Sticky(_)
+        | Classified::Launch(_) => {
             panic!("expected resize chord")
         }
     }
@@ -3722,4 +3736,218 @@ fn resize_queue_carries_mode_and_masks_with_saturation() {
         Some(true)
     );
     assert!(q.dropped >= 1);
+}
+
+fn push_launch(
+    m: &mut SnapClassify,
+    vk: u32,
+    is_up: bool,
+    fg: bool,
+    inj: bool,
+) -> Option<tiler_windows::snapkey::LaunchIntent> {
+    match SnapClassify::push(m, vk, is_up, fg, inj)? {
+        Classified::Launch(intent) => Some(intent),
+        Classified::Snap(_)
+        | Classified::Workspace(_)
+        | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceHistory(_)
+        | Classified::Maximize(_)
+        | Classified::Fullscreen(_)
+        | Classified::Float(_)
+        | Classified::Orientation(_)
+        | Classified::Sticky(_)
+        | Classified::Resize(_) => {
+            panic!("expected launcher chord")
+        }
+    }
+}
+
+#[test]
+fn launch_browser_consumes_down_repeat_up() {
+    // Win+B: down consumes with announce for the browser kind, held repeat
+    // is swallowed (no re-spawn), up closes the pair without announce.
+    use tiler_windows::snapkey::{LaunchKind, VK_B, is_launch_browser_vk};
+    assert!(is_chord_vk(VK_B));
+    assert!(is_launch_browser_vk(VK_B));
+    assert_eq!(VK_B, 0x42);
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    assert!(!m.key_is_down(VK_B));
+    let down = push_launch(&mut m, VK_B, false, true, false).expect("browser down");
+    assert_eq!(down.kind, LaunchKind::Browser);
+    assert_eq!(down.edge, SnapEdge::Down);
+    assert!(down.consumed && down.announce);
+    assert!(m.key_is_down(VK_B));
+    let repeat = push_launch(&mut m, VK_B, false, true, false).expect("browser repeat");
+    assert_eq!(repeat.edge, SnapEdge::Repeat);
+    assert!(repeat.consumed && !repeat.announce);
+    let up = push_launch(&mut m, VK_B, true, true, false).expect("paired up");
+    assert_eq!(up.edge, SnapEdge::Up);
+    assert!(up.consumed && !up.announce);
+    assert!(!m.key_is_down(VK_B));
+    assert_eq!(push_launch(&mut m, VK_B, true, true, false), None);
+    assert_eq!(
+        (
+            m.launch_browser_counts.down,
+            m.launch_browser_counts.repeat,
+            m.launch_browser_counts.up
+        ),
+        (1, 1, 1)
+    );
+}
+
+#[test]
+fn launch_terminal_consumes_down_with_kind() {
+    // Win+T dispatches the terminal kind through the queue with the
+    // chord-time origin riding for mask/queue parity.
+    use tiler_windows::snapkey::{LaunchKind, QueuedLaunchIntent, VK_T, is_launch_terminal_vk};
+    assert!(is_chord_vk(VK_T));
+    assert!(is_launch_terminal_vk(VK_T));
+    assert_eq!(VK_T, 0x54);
+    let mut m = SnapClassify::new(takeover());
+    let mut q = SnapQueue::new();
+    let tick = std::time::Instant::now();
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(
+            &mut m,
+            &mut q,
+            VK_T,
+            false,
+            Some(origin_of(9, "w9")),
+            false,
+            tick,
+            true
+        ),
+        Some(true)
+    );
+    match q.pop_front().expect("launch intent") {
+        QueuedSnapEvent::Launch(QueuedLaunchIntent { kind, origin, .. }) => {
+            assert_eq!(kind, LaunchKind::Terminal);
+            assert_eq!(origin, Some(origin_of(9, "w9")));
+        }
+        _ => panic!("expected launch intent"),
+    }
+}
+
+#[test]
+fn launch_modifier_exactness_passes_untracked() {
+    // Any Shift/Ctrl/Alt, missing Win, bare chords, and injected chords never
+    // classify and never arm the mask: there is no shifted launcher arm.
+    use tiler_windows::snapkey::{SnapQueue, VK_B, VK_T};
+    for vk in [VK_B, VK_T] {
+        let mut m = SnapClassify::new(takeover());
+        win_down(&mut m, VK_LWIN);
+        push_snap(&mut m, VK_SHIFT, false, true, false);
+        assert_eq!(push_launch(&mut m, vk, false, true, false), None);
+        assert_eq!(push_launch(&mut m, vk, true, true, false), None);
+        push_snap(&mut m, VK_SHIFT, true, true, false);
+        for mod_vk in [VK_CONTROL, VK_MENU, VK_LMENU] {
+            let mut m = SnapClassify::new(takeover());
+            win_down(&mut m, VK_LWIN);
+            push_snap(&mut m, mod_vk, false, true, false);
+            assert_eq!(push_launch(&mut m, vk, false, true, false), None);
+            assert_eq!(push_launch(&mut m, vk, true, true, false), None);
+            push_snap(&mut m, mod_vk, true, true, false);
+        }
+        let mut m = SnapClassify::new(takeover());
+        assert_eq!(push_launch(&mut m, vk, false, true, false), None);
+        assert_eq!(push_launch(&mut m, vk, false, true, true), None);
+        let mut m = SnapClassify::new(takeover());
+        win_down(&mut m, VK_LWIN);
+        assert_eq!(push_launch(&mut m, vk, false, true, true), None);
+        assert!(!win_up_mask_reserve(
+            &mut m,
+            &mut SnapQueue::new(),
+            VK_LWIN,
+            true,
+            std::time::Instant::now()
+        ));
+    }
+}
+
+#[test]
+fn launch_arms_start_menu_mask() {
+    // A consumed Win+B / Win+T reserves the E8 mask at Win-up with per-kind
+    // trigger evidence.
+    use tiler_windows::snapkey::{MaskTrigger, QueuedLaunchIntent, SnapQueue, VK_B, VK_T};
+    for (vk, trigger) in [
+        (VK_B, MaskTrigger::LaunchBrowser),
+        (VK_T, MaskTrigger::LaunchTerminal),
+    ] {
+        let mut m = SnapClassify::new(takeover());
+        let mut q = SnapQueue::new();
+        let tick = std::time::Instant::now();
+        assert_eq!(
+            classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+            None
+        );
+        assert_eq!(
+            classify_and_queue(
+                &mut m,
+                &mut q,
+                vk,
+                false,
+                Some(origin_of(7, "w7")),
+                false,
+                tick,
+                true
+            ),
+            Some(true)
+        );
+        assert!(win_up_mask_reserve(&mut m, &mut q, VK_LWIN, true, tick));
+        match q.pop_front().expect("launch intent") {
+            QueuedSnapEvent::Launch(QueuedLaunchIntent { origin, .. }) => {
+                assert_eq!(origin, Some(origin_of(7, "w7")));
+            }
+            _ => panic!("expected launch intent"),
+        }
+        match q.pop_front().expect("mask") {
+            QueuedSnapEvent::Mask(mask) => assert_eq!(mask.trigger, trigger),
+            _ => panic!("expected mask"),
+        }
+    }
+}
+
+#[test]
+fn launch_rebind_and_disable_flow() {
+    // Rebound launcher (Win+U -> browser/B) dispatches through the rebound
+    // table; disabling the canonical Win+B suppresses fresh downs while the
+    // rebound still routes (rebound wins over suppression).
+    use tiler_windows::snapkey::{
+        ChordAction, ChordDisable, ChordRemap, LaunchKind, VK_B, is_launch_browser_vk,
+    };
+    const VK_U: u32 = 0x55;
+    assert!(is_launch_browser_vk(VK_B));
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_U,
+        from_shift: false,
+        from_ctrl: false,
+        from_alt: false,
+        action: ChordAction::LaunchBrowser,
+        to_vk: VK_B,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    match SnapClassify::push(&mut m, VK_U, false, true, false).expect("rebound down") {
+        Classified::Launch(intent) => {
+            assert_eq!(intent.kind, LaunchKind::Browser);
+            assert!(intent.consumed && intent.announce);
+        }
+        other => panic!("expected launch, got {other:?}"),
+    }
+    // Disabled canonical passes fresh downs through; the rebound still routes.
+    let mut m = SnapClassify::new(takeover());
+    m.set_disabled(vec![ChordDisable {
+        vk: VK_B,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    assert_eq!(push_launch(&mut m, VK_B, false, true, false), None);
+    assert_eq!(push_launch(&mut m, VK_B, true, true, false), None);
 }

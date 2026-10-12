@@ -715,12 +715,14 @@ fn three_colliders_pair_in_any_release_order_across_remap_change() {
 fn compatible_preset_disables_os_conflicting_rows() {
     let mut settings = Settings::default();
     let changed = tiler_windows::settings::apply_preset(&mut settings, Preset::Compatible);
-    // Every OS-conflicting row: 8 focus + 4 move-arrow + 4 toggles + 20
-    // workspace digits + 2 history arrows.
-    assert_eq!(changed.len(), 38);
+    // Every OS-conflicting row: 8 focus + 4 move-arrow + 4 toggles + 2
+    // launchers + 20 workspace digits + 2 history arrows.
+    assert_eq!(changed.len(), 40);
     assert!(changed.contains(&"toggle-float"));
     assert!(changed.contains(&"toggle-fullscreen"));
     assert!(changed.contains(&"toggle-orientation"));
+    assert!(changed.contains(&"launch-browser"));
+    assert!(changed.contains(&"launch-terminal"));
     assert!(changed.contains(&"focus-left"));
     assert!(changed.contains(&"focus-left-arrow"));
     assert!(changed.contains(&"move-left-arrow"));
@@ -728,7 +730,7 @@ fn compatible_preset_disables_os_conflicting_rows() {
     assert!(changed.contains(&"workspace-prev-left-arrow"));
     assert!(changed.contains(&"workspace-next-right-arrow"));
     let effective = tiler_windows::settings::effective_bindings(&settings);
-    assert_eq!(effective.len(), 84);
+    assert_eq!(effective.len(), 86);
     for row in &effective {
         if tiler_windows::settings::compatible_disabled_ids().contains(&row.id) {
             assert!(!row.active, "{}", row.id);
@@ -907,10 +909,10 @@ fn retained_update_gaps_preserves_topology() {
 }
 
 // Item 2 catalog/settings: 26 new rows (10 numbered stay + 8 relative follow
-// + 8 relative stay) for 83 total, plus the item 4 orientation toggle for 84;
-// follow defaults keep pending evidenced conflicts with honest
-// unknown-ownership text (no new Compatible disables); stay rows are bindable
-// unbound with Keep meaning unbound.
+// + 8 relative stay) for 83 total, plus the item 4 orientation toggle for 84,
+// plus the two launcher rows for 86; follow defaults keep pending evidenced
+// conflicts with honest unknown-ownership text (no new Compatible disables);
+// stay rows are bindable unbound with Keep meaning unbound.
 
 #[test]
 fn catalog_exposes_item2_rows_with_exact_modifiers() {
@@ -920,7 +922,7 @@ fn catalog_exposes_item2_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 84);
+    assert_eq!(catalog.len(), 86);
     // Numbered stay: ten unbound rows on the shifted digit arm through the
     // stay action, sharing the follow digit canonical slot.
     for index in [1u8, 2, 9, 0] {
@@ -1631,7 +1633,7 @@ fn catalog_exposes_resize_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 84);
+    assert_eq!(catalog.len(), 86);
     let resize: Vec<_> = catalog
         .iter()
         .filter(|def| {
@@ -1896,4 +1898,187 @@ fn resize_keep_disable_rebind_with_duplicates() {
         .find(|def| def.id == "resize-out-left")
         .expect("row");
     assert_eq!(def.conflict, Some(RESIZE_CONFLICT));
+}
+
+// Launcher catalog/settings: `launch-browser` on exact unshifted Win+B and
+// `launch-terminal` on exact unshifted Win+T; Authentic keeps both (takeover
+// overrides the notification-area/taskbar owners), Compatible disables both.
+// Keep/Disable/Rebind ride the existing toggle-style plumbing with distinct
+// launch actions at the B/T canonical slots.
+#[test]
+fn catalog_exposes_launcher_rows_with_exact_modifiers() {
+    use tiler_windows::settings::{
+        BindingSetting, BindingState, Preset, Settings, apply_preset, binding_action,
+        binding_canonical_vk, binding_catalog, binding_modifiers_ok, binding_wants_alt,
+        binding_wants_ctrl, binding_wants_shift, compatible_disabled_ids, effective_bindings,
+        parse_chord, validate_settings,
+    };
+    use tiler_windows::snapkey::ChordAction;
+    let catalog = binding_catalog();
+    for (id, chord, vk, action, owner) in [
+        (
+            "launch-browser",
+            "Win+B",
+            0x42,
+            ChordAction::LaunchBrowser,
+            "notification area focus",
+        ),
+        (
+            "launch-terminal",
+            "Win+T",
+            0x54,
+            ChordAction::LaunchTerminal,
+            "taskbar cycle",
+        ),
+    ] {
+        let def = catalog.iter().find(|def| def.id == id).expect("row");
+        assert_eq!(def.defaults, &[chord]);
+        assert!(def.implemented, "{id}");
+        assert!(!binding_wants_shift(def), "{id}");
+        assert!(!binding_wants_ctrl(def), "{id}");
+        assert!(!binding_wants_alt(def), "{id}");
+        assert_eq!(binding_action(def), action, "{id}");
+        assert_eq!(binding_canonical_vk(def), Some(vk), "{id}");
+        let conflict = def.conflict.expect("OS owner text");
+        assert!(
+            conflict.contains(owner) && conflict.contains("takeover"),
+            "{id}: {conflict}"
+        );
+        // Exact modifiers: only the unshifted Win chord matches the arm.
+        let parsed = parse_chord(chord).expect("parse");
+        assert!(binding_modifiers_ok(
+            def,
+            parsed.shift,
+            parsed.ctrl,
+            parsed.alt
+        ));
+        let shifted = format!("Win+Shift+{}", &chord[4..]);
+        for bad in [shifted.as_str(), "Win+Ctrl+B", "Win+Ctrl+T", "Win+Alt+B"] {
+            let parsed = parse_chord(bad).expect("parse");
+            assert!(
+                !binding_modifiers_ok(def, parsed.shift, parsed.ctrl, parsed.alt),
+                "{id} {bad} must not match"
+            );
+        }
+    }
+    // Authentic keeps both launchers live on their defaults.
+    let effective = effective_bindings(&Settings::default());
+    assert_eq!(effective.len(), 86);
+    for (id, chord) in [("launch-browser", "Win+B"), ("launch-terminal", "Win+T")] {
+        let row = effective.iter().find(|row| row.id == id).expect("row");
+        assert!(row.active && row.effective, "{id}");
+        assert_eq!(row.chords, vec![chord.to_owned()], "{id}");
+    }
+    // Compatible disables both.
+    assert!(compatible_disabled_ids().contains(&"launch-browser"));
+    assert!(compatible_disabled_ids().contains(&"launch-terminal"));
+    let mut settings = Settings::default();
+    apply_preset(&mut settings, Preset::Compatible);
+    for id in ["launch-browser", "launch-terminal"] {
+        assert_eq!(
+            settings.bindings.get(id).map(|b| &b.state),
+            Some(&BindingState::Disabled),
+            "{id}"
+        );
+    }
+    let effective = effective_bindings(&settings);
+    for id in ["launch-browser", "launch-terminal"] {
+        let row = effective.iter().find(|row| row.id == id).expect("row");
+        assert!(!row.active && !row.effective, "{id}");
+    }
+    // Disable validates and suppresses the default chord through the shared
+    // suppression table.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "launch-browser".to_owned(),
+        BindingSetting {
+            state: BindingState::Disabled,
+            chord: None,
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    let disabled = tiler_windows::settings::build_disabled(&settings);
+    assert!(disabled.contains(&tiler_windows::snapkey::ChordDisable {
+        vk: 0x42,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }));
+    // Rebind routes the unshifted arm into the launch action at the B
+    // canonical slot and suppresses the old default.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "launch-browser".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+U".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    let remap = tiler_windows::settings::build_remap(&settings);
+    assert_eq!(
+        remap,
+        vec![tiler_windows::snapkey::ChordRemap {
+            from_vk: 0x55,
+            from_shift: false,
+            from_ctrl: false,
+            from_alt: false,
+            action: ChordAction::LaunchBrowser,
+            to_vk: 0x42,
+        }]
+    );
+    let disabled = tiler_windows::settings::build_disabled(&settings);
+    assert!(disabled.contains(&tiler_windows::snapkey::ChordDisable {
+        vk: 0x42,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }));
+    let effective = effective_bindings(&settings);
+    let row = effective
+        .iter()
+        .find(|row| row.id == "launch-browser")
+        .expect("row");
+    assert!(row.active && row.effective);
+    assert_eq!(row.chords, vec!["Win+U".to_owned()]);
+    // Wrong-arm rebinds refuse.
+    for (id, bad) in [
+        ("launch-browser", "Win+Shift+U"),
+        ("launch-browser", "Win+Ctrl+U"),
+        ("launch-browser", "Win+Alt+U"),
+        ("launch-terminal", "Win+Shift+U"),
+        ("launch-terminal", "Win+Ctrl+U"),
+    ] {
+        let mut settings = Settings::default();
+        settings.bindings.insert(
+            id.to_owned(),
+            BindingSetting {
+                state: BindingState::Rebind,
+                chord: Some(bad.to_owned()),
+            },
+        );
+        assert!(validate_settings(&settings).is_err(), "{id} {bad}");
+    }
+    // Duplicate active chords refuse: rebound browser onto the terminal
+    // default, and both launchers onto one fresh chord.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "launch-browser".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+T".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_err());
+    let mut settings = Settings::default();
+    for id in ["launch-browser", "launch-terminal"] {
+        settings.bindings.insert(
+            id.to_owned(),
+            BindingSetting {
+                state: BindingState::Rebind,
+                chord: Some("Win+U".to_owned()),
+            },
+        );
+    }
+    assert!(validate_settings(&settings).is_err());
 }

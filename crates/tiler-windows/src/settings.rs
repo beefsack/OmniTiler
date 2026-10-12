@@ -678,6 +678,9 @@ pub enum BindingFamily {
     Toggle {
         kind: ToggleKind,
     },
+    Launch {
+        kind: LaunchKind,
+    },
     Resize {
         direction: &'static str,
         mode: &'static str,
@@ -760,6 +763,25 @@ impl ToggleKind {
         match self {
             Self::Sticky => true,
             Self::Float | Self::Maximize | Self::Fullscreen | Self::Orientation => false,
+        }
+    }
+}
+
+/// Launcher arm selector: default browser (Win+B) or Windows Terminal
+/// (Win+T). Both ride unshifted Win chords with no Ctrl/Alt; only the down
+/// dispatches, ups close the pair, held repeats stay swallowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchKind {
+    Browser,
+    Terminal,
+}
+
+impl LaunchKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::Terminal => "terminal",
         }
     }
 }
@@ -1052,6 +1074,26 @@ pub fn binding_catalog() -> Vec<BindingDef> {
         defaults: &["Win+O"],
         implemented: true,
         conflict: chord_conflict("Win+O"),
+    });
+    rows.push(BindingDef {
+        id: "launch-browser",
+        text: "Open default browser",
+        family: BindingFamily::Launch {
+            kind: LaunchKind::Browser,
+        },
+        defaults: &["Win+B"],
+        implemented: true,
+        conflict: chord_conflict("Win+B"),
+    });
+    rows.push(BindingDef {
+        id: "launch-terminal",
+        text: "Open Windows Terminal",
+        family: BindingFamily::Launch {
+            kind: LaunchKind::Terminal,
+        },
+        defaults: &["Win+T"],
+        implemented: true,
+        conflict: chord_conflict("Win+T"),
     });
     for index in 1..=9u8 {
         rows.push(workspace_row(index, SnapFamilyOp::Primary));
@@ -1559,6 +1601,7 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
         BindingFamily::WorkspaceStay { .. } | BindingFamily::WorkspaceSendRelative { .. } => true,
         BindingFamily::WorkspaceHistory { .. } => false,
         BindingFamily::Toggle { kind } => kind.wants_shift(),
+        BindingFamily::Launch { .. } => false,
         BindingFamily::Resize { mode, .. } => mode == "inwards",
     }
 }
@@ -1663,6 +1706,10 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
             ToggleKind::Maximize => ChordAction::Maximize,
             ToggleKind::Fullscreen => ChordAction::Fullscreen,
             ToggleKind::Orientation => ChordAction::Orientation,
+        },
+        BindingFamily::Launch { kind } => match kind {
+            LaunchKind::Browser => ChordAction::LaunchBrowser,
+            LaunchKind::Terminal => ChordAction::LaunchTerminal,
         },
     }
 }
@@ -2166,7 +2213,8 @@ pub enum Preset {
     /// voice, Win+J recall, Win+K cast, Win+L lock, arrows Snap/maximize/
     /// minimize), all move-arrow rows (Win+Shift+arrows monitor-move/stretch),
     /// float (Win+G Game Bar), maximize (Win+M minimize-all), fullscreen
-    /// (Win+F11 Xbox mode), orientation (Win+O orientation lock), all
+    /// (Win+F11 Xbox mode), orientation (Win+O orientation lock), both
+    /// launchers (Win+B notification-area focus, Win+T taskbar cycle), all
     /// workspace digits (Win[/Shift]+digits
     /// taskbar launch/new-instance), and the two item 1 history arrows
     /// (Win+Ctrl+Left/Right native virtual-desktop switch, ownership
@@ -2229,7 +2277,7 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
 /// under both presets since Windows Alt-chord ownership is unverified;
 /// see [`Preset::Compatible`]).
 #[must_use]
-pub const fn compatible_disabled_ids() -> [&'static str; 38] {
+pub const fn compatible_disabled_ids() -> [&'static str; 40] {
     [
         "focus-left",
         "focus-left-arrow",
@@ -2247,6 +2295,8 @@ pub const fn compatible_disabled_ids() -> [&'static str; 38] {
         "toggle-maximize",
         "toggle-fullscreen",
         "toggle-orientation",
+        "launch-browser",
+        "launch-terminal",
         "workspace-select-1",
         "workspace-select-2",
         "workspace-select-3",
@@ -2809,13 +2859,13 @@ mod tests {
     fn catalog_covers_kde_actions_without_collisions() {
         let catalog = binding_catalog();
         // 16 focus/move (letter plus separate arrow rows) + 8 resize + 5
-        // toggles + 20 workspace + 9 item 1 history + 10 numbered stay +
-        // 8 relative follow + 8 relative stay (item 2) = 84.
-        assert_eq!(catalog.len(), 84);
+        // toggles + 2 launchers + 20 workspace + 9 item 1 history + 10
+        // numbered stay + 8 relative follow + 8 relative stay (item 2) = 86.
+        assert_eq!(catalog.len(), 86);
         let mut ids: Vec<&str> = catalog.iter().map(|def| def.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 84);
+        assert_eq!(ids.len(), 86);
         // Every default parses and every row (resize included) intercepts.
         for def in &catalog {
             for default in def.defaults {
@@ -3201,7 +3251,7 @@ mod tests {
         assert!(!settings.bindings.contains_key("toggle-sticky"));
         assert!(!settings.bindings.contains_key("workspace-previous"));
         let effective = effective_bindings(&settings);
-        assert_eq!(effective.len(), 84);
+        assert_eq!(effective.len(), 86);
         for row in &effective {
             if compatible_disabled_ids().contains(&row.id) {
                 assert!(!row.active, "{}", row.id);

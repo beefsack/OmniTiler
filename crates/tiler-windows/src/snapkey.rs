@@ -45,6 +45,8 @@ impl KeyboardConfig {
 }
 
 pub const VK_G: u32 = 0x47;
+pub const VK_B: u32 = 0x42;
+pub const VK_T: u32 = 0x54;
 pub const VK_H: u32 = 0x48;
 pub const VK_J: u32 = 0x4A;
 pub const VK_K: u32 = 0x4B;
@@ -225,6 +227,8 @@ pub enum ChordAction {
     Float,
     Sticky,
     Orientation,
+    LaunchBrowser,
+    LaunchTerminal,
     WorkspacePrevious,
     WorkspacePrev,
     WorkspaceNext,
@@ -248,6 +252,8 @@ impl ChordAction {
             Self::Float => "float",
             Self::Sticky => "sticky",
             Self::Orientation => "orientation",
+            Self::LaunchBrowser => "launch-browser",
+            Self::LaunchTerminal => "launch-terminal",
             Self::WorkspacePrevious => "workspace-previous",
             Self::WorkspacePrev => "workspace-prev",
             Self::WorkspaceNext => "workspace-next",
@@ -354,8 +360,8 @@ pub const fn is_digit_vk(vk: u32) -> bool {
 }
 
 /// True for any chord key the single classifier owns: directional catalog
-/// plus workspace digits plus the maximize, fullscreen, float, sticky, and
-/// orientation toggles plus the item 1 history keys (Tab/H/J/K/L/arrows with
+/// plus workspace digits plus the maximize, fullscreen, float, sticky,
+/// orientation, and launcher toggles plus the item 1 history keys (Tab/H/J/K/L/arrows with
 /// Ctrl). Modifiers, Win keys, and ordinary keys are not chord keys.
 #[must_use]
 pub fn is_chord_vk(vk: u32) -> bool {
@@ -365,6 +371,8 @@ pub fn is_chord_vk(vk: u32) -> bool {
         || is_fullscreen_vk(vk)
         || is_float_vk(vk)
         || is_orientation_vk(vk)
+        || is_launch_browser_vk(vk)
+        || is_launch_terminal_vk(vk)
         || is_history_vk(vk)
 }
 
@@ -484,6 +492,21 @@ pub const fn is_sticky_vk(vk: u32) -> bool {
 #[must_use]
 pub const fn is_orientation_vk(vk: u32) -> bool {
     vk == VK_O
+}
+
+/// True only for the default-browser launcher chord key (Win+B). Like
+/// maximize, any Shift/Ctrl/Alt combination passes through untracked: there
+/// is no shifted launcher arm.
+#[must_use]
+pub const fn is_launch_browser_vk(vk: u32) -> bool {
+    vk == VK_B
+}
+
+/// True only for the Windows Terminal launcher chord key (Win+T). Same
+/// unshifted-only contract as the browser launcher.
+#[must_use]
+pub const fn is_launch_terminal_vk(vk: u32) -> bool {
+    vk == VK_T
 }
 
 /// Direction for a catalog index. Letters and arrows are exact aliases.
@@ -652,6 +675,13 @@ fn collide_refusal(
             consumed,
             announce: false,
         }),
+        Classified::Launch(intent) => Classified::Launch(LaunchIntent {
+            kind: intent.kind,
+            edge,
+            foreground,
+            consumed,
+            announce: false,
+        }),
     }
 }
 
@@ -684,6 +714,10 @@ fn collide_trigger(shape: &Classified) -> Option<MaskTrigger> {
         Classified::Fullscreen(_) => Some(MaskTrigger::Fullscreen),
         Classified::Float(_) => Some(MaskTrigger::Float),
         Classified::Sticky(_) => Some(MaskTrigger::Sticky),
+        Classified::Launch(intent) => Some(match intent.kind {
+            LaunchKind::Browser => MaskTrigger::LaunchBrowser,
+            LaunchKind::Terminal => MaskTrigger::LaunchTerminal,
+        }),
     }
 }
 
@@ -859,6 +893,38 @@ pub struct OrientationIntent {
     pub announce: bool,
 }
 
+/// Launcher selector: default browser (Win+B) or Windows Terminal (Win+T).
+/// The kind pins at down time from the explicit bound action; later modifier
+/// flips never rewrite it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LaunchKind {
+    Browser,
+    Terminal,
+}
+
+impl LaunchKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Browser => "browser",
+            Self::Terminal => "terminal",
+        }
+    }
+}
+
+/// Classifier outcome for one launcher event (Win+B browser, Win+T
+/// terminal). The launcher carries no direction and needs no managed
+/// origin: only the down dispatches (the owner spawns without touching any
+/// window), ups close the pair, held repeats stay swallowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaunchIntent {
+    pub kind: LaunchKind,
+    pub edge: SnapEdge,
+    pub foreground: bool,
+    pub consumed: bool,
+    pub announce: bool,
+}
+
 /// Unified classifier outcome: exactly one of directional, resize,
 /// workspace digit, workspace history, maximize, fullscreen, or
 /// float/sticky. One machine, one modifier/mask authority; history shares
@@ -878,6 +944,7 @@ pub enum Classified {
     Float(FloatIntent),
     Sticky(StickyIntent),
     Orientation(OrientationIntent),
+    Launch(LaunchIntent),
 }
 
 impl Classified {
@@ -894,6 +961,7 @@ impl Classified {
             Self::Float(intent) => intent.consumed,
             Self::Sticky(intent) => intent.consumed,
             Self::Orientation(intent) => intent.consumed,
+            Self::Launch(intent) => intent.consumed,
         }
     }
 
@@ -910,6 +978,7 @@ impl Classified {
             Self::Float(intent) => intent.announce,
             Self::Sticky(intent) => intent.announce,
             Self::Orientation(intent) => intent.announce,
+            Self::Launch(intent) => intent.announce,
         }
     }
 }
@@ -947,6 +1016,8 @@ pub enum MaskTrigger {
     Float,
     Sticky,
     Orientation,
+    LaunchBrowser,
+    LaunchTerminal,
     WinDrag,
 }
 
@@ -1008,6 +1079,10 @@ pub struct SnapClassify {
     sticky_origin: bool,
     orientation_down: bool,
     orientation_origin: bool,
+    launch_browser_down: bool,
+    launch_browser_origin: bool,
+    launch_terminal_down: bool,
+    launch_terminal_origin: bool,
     resize_down: [bool; 8],
     resize_origin: [bool; 8],
     resize_mode: [Option<ResizeMode>; 8],
@@ -1057,6 +1132,8 @@ pub struct SnapClassify {
     pub float_counts: SnapCounts,
     pub sticky_counts: SnapCounts,
     pub orientation_counts: SnapCounts,
+    pub launch_browser_counts: SnapCounts,
+    pub launch_terminal_counts: SnapCounts,
     hist_down: [bool; 9],
     hist_origin: [bool; 9],
     hist_op: [Option<WorkspaceHistoryOp>; 9],
@@ -1110,6 +1187,10 @@ impl SnapClassify {
             sticky_origin: false,
             orientation_down: false,
             orientation_origin: false,
+            launch_browser_down: false,
+            launch_browser_origin: false,
+            launch_terminal_down: false,
+            launch_terminal_origin: false,
             resize_down: [false; 8],
             resize_origin: [false; 8],
             resize_mode: [None; 8],
@@ -1128,6 +1209,8 @@ impl SnapClassify {
             float_counts: SnapCounts::default(),
             sticky_counts: SnapCounts::default(),
             orientation_counts: SnapCounts::default(),
+            launch_browser_counts: SnapCounts::default(),
+            launch_terminal_counts: SnapCounts::default(),
             hist_down: [false; 9],
             hist_origin: [false; 9],
             hist_op: [None; 9],
@@ -1279,6 +1362,12 @@ impl SnapClassify {
         }
         if is_orientation_vk(physical) && !self.shift {
             return Some(ChordAction::Orientation);
+        }
+        if is_launch_browser_vk(physical) && !self.shift {
+            return Some(ChordAction::LaunchBrowser);
+        }
+        if is_launch_terminal_vk(physical) && !self.shift {
+            return Some(ChordAction::LaunchTerminal);
         }
         if is_float_vk(physical) {
             return Some(if self.shift {
@@ -1512,6 +1601,30 @@ impl SnapClassify {
                     announce: false,
                 }))
             }
+            ChordAction::LaunchBrowser => {
+                if !self.launch_browser_down {
+                    return None;
+                }
+                Some(Classified::Launch(LaunchIntent {
+                    kind: LaunchKind::Browser,
+                    edge: SnapEdge::Down,
+                    foreground: true,
+                    consumed: self.launch_browser_origin,
+                    announce: false,
+                }))
+            }
+            ChordAction::LaunchTerminal => {
+                if !self.launch_terminal_down {
+                    return None;
+                }
+                Some(Classified::Launch(LaunchIntent {
+                    kind: LaunchKind::Terminal,
+                    edge: SnapEdge::Down,
+                    foreground: true,
+                    consumed: self.launch_terminal_origin,
+                    announce: false,
+                }))
+            }
         }
     }
 
@@ -1544,6 +1657,8 @@ impl SnapClassify {
             ChordAction::Fullscreen => self.fullscreen_down,
             ChordAction::Float => self.float_down,
             ChordAction::Sticky => self.sticky_down,
+            ChordAction::LaunchBrowser => self.launch_browser_down,
+            ChordAction::LaunchTerminal => self.launch_terminal_down,
         }
     }
 
@@ -1794,6 +1909,14 @@ impl SnapClassify {
             ChordAction::Sticky => {
                 debug_assert!(is_float_vk(vk) || is_sticky_vk(vk));
                 return self.push_g(is_up, foreground, route_live);
+            }
+            ChordAction::LaunchBrowser => {
+                debug_assert!(is_launch_browser_vk(vk));
+                return self.push_launch(LaunchKind::Browser, is_up, foreground, route_live);
+            }
+            ChordAction::LaunchTerminal => {
+                debug_assert!(is_launch_terminal_vk(vk));
+                return self.push_launch(LaunchKind::Terminal, is_up, foreground, route_live);
             }
             ChordAction::ResizeOut | ChordAction::ResizeIn => {
                 return self.push_resize(vk, action, is_up, foreground, route_live);
@@ -2989,6 +3112,105 @@ impl SnapClassify {
             }
         }
     }
+
+    /// Launcher half of the unified classifier (Win+B browser, Win+T
+    /// terminal): same Win/Ctrl/Alt/armed-hold/gate/mask contract as the
+    /// maximize arm. Any held Shift (or Ctrl/Alt, or missing Win) passes a
+    /// fresh chord through untracked and the paired key-up also passes. A
+    /// consumed hold stays swallowed across later Shift/Ctrl/Alt/Win
+    /// transitions until its matching up. Only the down dispatches: held
+    /// repeats are swallowed (mask stays armed) instead of re-spawning. Ups
+    /// close the pair. Fresh downs consume iff takeover is on with the
+    /// shortcut gate active; the owner spawns without touching any window.
+    fn push_launch(
+        &mut self,
+        kind: LaunchKind,
+        is_up: bool,
+        foreground: bool,
+        route_live: bool,
+    ) -> Option<Classified> {
+        let trigger = match kind {
+            LaunchKind::Browser => MaskTrigger::LaunchBrowser,
+            LaunchKind::Terminal => MaskTrigger::LaunchTerminal,
+        };
+        let (down, origin, counts) = match kind {
+            LaunchKind::Browser => (
+                &mut self.launch_browser_down,
+                &mut self.launch_browser_origin,
+                &mut self.launch_browser_counts,
+            ),
+            LaunchKind::Terminal => (
+                &mut self.launch_terminal_down,
+                &mut self.launch_terminal_origin,
+                &mut self.launch_terminal_counts,
+            ),
+        };
+        let intent = |edge: SnapEdge, consumed: bool, announce: bool| {
+            Classified::Launch(LaunchIntent {
+                kind,
+                edge,
+                foreground,
+                consumed,
+                announce,
+            })
+        };
+        if is_up {
+            if !*down {
+                return None;
+            }
+            *down = false;
+            let had_origin = *origin;
+            *origin = false;
+            counts.up += 1;
+            if had_origin {
+                counts.consumed += 1;
+                Some(intent(SnapEdge::Up, true, false))
+            } else {
+                counts.passed += 1;
+                Some(intent(SnapEdge::Up, false, false))
+            }
+        } else {
+            // Armed-hold repeats classify before the fresh-chord guard: a
+            // consumed launcher hold stays swallowed across later
+            // Shift/Ctrl/Alt/Win transitions (never re-dispatched), a passed
+            // hold stays passed.
+            if *down {
+                counts.repeat += 1;
+                if *origin {
+                    // Held repeat: swallowed, never re-dispatched. A Win-held
+                    // hold continues to disguise Win, so the mask stays
+                    // armed; a bare repeat after Win-up must not create a new
+                    // mask obligation.
+                    counts.consumed += 1;
+                    if self.win_l || self.win_r {
+                        self.mask_pending = true;
+                        self.mask_trigger = Some(trigger);
+                    }
+                    Some(intent(SnapEdge::Repeat, true, false))
+                } else {
+                    counts.passed += 1;
+                    Some(intent(SnapEdge::Repeat, false, false))
+                }
+            } else {
+                if self.ctrl || self.alt || self.shift || !(self.win_l || self.win_r) {
+                    return None;
+                }
+                *down = true;
+                let has_origin = self.enabled && self.gate_active && route_live;
+                *origin = has_origin;
+                counts.down += 1;
+                if has_origin {
+                    counts.consumed += 1;
+                    self.mask_pending = true;
+                    self.mask_trigger = Some(trigger);
+                    Some(intent(SnapEdge::Down, true, true))
+                } else {
+                    counts.passed += 1;
+                    Some(intent(SnapEdge::Down, false, false))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3648,6 +3870,20 @@ pub struct QueuedOrientationIntent {
     pub tick: std::time::Instant,
 }
 
+/// One approved launcher chord captured by the callback (Win+B browser,
+/// Win+T terminal). `kind` pins the explicit intent at down time. Launchers
+/// act on no window: `origin` rides only for mask/queue parity and is
+/// ignored at dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedLaunchIntent {
+    pub kind: LaunchKind,
+    pub edge: SnapEdge,
+    pub origin: Option<SnapOrigin>,
+    pub consumed: bool,
+    pub announce: bool,
+    pub tick: std::time::Instant,
+}
+
 /// One approved keyboard resize chord captured by the callback. `mode` is
 /// pinned at down time (outwards/inwards) with the direction; `origin` rides
 /// for mask/queue parity. Runtime geometry dispatch is a later unit: the
@@ -3675,6 +3911,7 @@ pub enum QueuedSnapEvent {
     Float(QueuedFloatIntent),
     Sticky(QueuedStickyIntent),
     Orientation(QueuedOrientationIntent),
+    Launch(QueuedLaunchIntent),
     Mask(QueuedMask),
 }
 
@@ -3867,6 +4104,14 @@ pub fn classify_and_queue(
             tick,
         }),
         Classified::Orientation(intent) => QueuedSnapEvent::Orientation(QueuedOrientationIntent {
+            edge: intent.edge,
+            origin,
+            consumed: intent.consumed,
+            announce: intent.announce,
+            tick,
+        }),
+        Classified::Launch(intent) => QueuedSnapEvent::Launch(QueuedLaunchIntent {
+            kind: intent.kind,
             edge: intent.edge,
             origin,
             consumed: intent.consumed,
@@ -5328,6 +5573,12 @@ pub mod sys {
             }),
             super::MaskTrigger::Orientation => serde_json::json!({
                 "trigger_op": "orientation",
+            }),
+            super::MaskTrigger::LaunchBrowser => serde_json::json!({
+                "trigger_op": "launch-browser",
+            }),
+            super::MaskTrigger::LaunchTerminal => serde_json::json!({
+                "trigger_op": "launch-terminal",
             }),
             super::MaskTrigger::WinDrag => serde_json::json!({
                 "trigger_op": "windrag",

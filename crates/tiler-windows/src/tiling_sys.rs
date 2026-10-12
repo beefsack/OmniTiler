@@ -81,10 +81,10 @@ use crate::model::ProcessIdentity;
 use crate::native::HeldProcess;
 use crate::settings::LiveSettings;
 use crate::snapkey::{
-    KeyboardConfig, MAX_DISPATCH_PER_TICK, OriginVerdict, QueuedFloatIntent, QueuedSnapEvent,
-    QueuedStickyIntent, QueuedWorkspaceHistoryIntent, QueuedWorkspaceSendIntent, SnapEdge, SnapOp,
-    SnapOrigin, VK_LSHIFT, VK_LWIN, VK_MASK, VK_RSHIFT, VK_RWIN, VK_SHIFT, WorkspaceHistoryOp,
-    WorkspaceOp, direction_name, resolve_origin,
+    KeyboardConfig, LaunchKind, MAX_DISPATCH_PER_TICK, OriginVerdict, QueuedFloatIntent,
+    QueuedLaunchIntent, QueuedSnapEvent, QueuedStickyIntent, QueuedWorkspaceHistoryIntent,
+    QueuedWorkspaceSendIntent, SnapEdge, SnapOp, SnapOrigin, VK_LSHIFT, VK_LWIN, VK_MASK,
+    VK_RSHIFT, VK_RWIN, VK_SHIFT, WorkspaceHistoryOp, WorkspaceOp, direction_name, resolve_origin,
 };
 use crate::storage::LedgerStore;
 use crate::tiling::{
@@ -7519,6 +7519,7 @@ fn keyboard_tick(
                 QueuedSnapEvent::Fullscreen(_) => stale += 1,
                 QueuedSnapEvent::Float(_) => stale += 1,
                 QueuedSnapEvent::Sticky(_) => stale += 1,
+                QueuedSnapEvent::Launch(_) => stale += 1,
             }
         }
         if stale > 0 {
@@ -9491,6 +9492,9 @@ fn keyboard_tick(
             QueuedSnapEvent::Sticky(intent) => {
                 dispatch_sticky_intent(state, me, fulls, areas, intent);
             }
+            QueuedSnapEvent::Launch(intent) => {
+                dispatch_launch_intent(state, me, fulls, intent, &SystemLaunchBackend);
+            }
         }
     }
 }
@@ -11137,6 +11141,166 @@ fn unfloat_maximize_clear(
 /// re-resolution, full gates, one Engine `ToggleFloat` evaluated on a local
 /// candidate that commits only after the target native effects verify, then
 /// sibling reflow through the shared write path. No compensating toggle.
+/// Owner-side launcher backend seam: production spawns detached processes;
+/// tests inject a recorder. Launching never runs in the hook callback (the
+/// callback only queues through [`SnapClassify`]); the owner spawns here on
+/// the owner thread, and `Command::spawn`/`ShellExecuteW` return without
+/// waiting, so the pump never blocks.
+pub trait LaunchBackend {
+    fn launch(&self, kind: LaunchKind) -> std::result::Result<(), String>;
+}
+
+/// Production launcher backend: default browser via `ShellExecuteW`, Windows
+/// Terminal via the `wt.exe` app execution alias. Launched processes never
+/// inherit owner handles and never elevate: stdio is nulled, no handle list
+/// is passed, and the spawn runs as the current (normal) user token.
+pub struct SystemLaunchBackend;
+
+impl LaunchBackend for SystemLaunchBackend {
+    fn launch(&self, kind: LaunchKind) -> std::result::Result<(), String> {
+        match kind {
+            LaunchKind::Browser => launch_default_browser(),
+            LaunchKind::Terminal => launch_windows_terminal(),
+        }
+    }
+}
+
+/// Open the default browser on an empty `https://` URL through the shell
+/// `open` verb: the shell resolves the user's default browser, never a
+/// hard-coded executable.
+fn launch_default_browser() -> std::result::Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let op: Vec<u16> = std::ffi::OsStr::new("open")
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let url: Vec<u16> = std::ffi::OsStr::new("https://")
+            .encode_wide()
+            .chain([0])
+            .collect();
+        // SAFETY: minimal Win32 FFI call site. Both pointers are
+        // nul-terminated UTF-16 buffers alive for the call; the remaining
+        // parameters are null and no returned pointer is retained.
+        // SW_SHOWNORMAL = 1.
+        let rc = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                op.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1, // SW_SHOWNORMAL
+            )
+        };
+        if (rc as usize) <= 32 {
+            return Err(format!(
+                "ShellExecuteW open https:// failed: {}",
+                rc as usize
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("default browser launch is Windows-only".to_owned())
+    }
+}
+
+/// Spawn Windows Terminal through its `wt.exe` app execution alias with
+/// nulled stdio and no inherited handles. A missing alias is a narrow
+/// logged error, never a crash and never a fallback launch.
+fn launch_windows_terminal() -> std::result::Result<(), String> {
+    std::process::Command::new("wt.exe")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("wt.exe spawn failed: {err}"))
+}
+
+/// Launcher dispatch (Win+B browser, Win+T terminal): fresh observation is
+/// unnecessary (no window is touched), but the takeover and
+/// suspend/elevated fences still apply, so a chord arriving while keyboard
+/// takeover is off or the session is suspended/elevated settles without
+/// spawning. The chord-time origin rides only for mask/queue parity and is
+/// ignored: launchers act on no window. Only the down dispatches; key-ups
+/// and repeats are trace-only. A failed spawn logs narrowly and keeps the
+/// loop functioning.
+fn dispatch_launch_intent(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    intent: QueuedLaunchIntent,
+    backend: &dyn LaunchBackend,
+) {
+    let log_path = state.log_path.clone();
+    // Key-ups close the pair and passed chords never dispatch: trace-only so
+    // held-key traffic stays out of normal logs.
+    if !intent.consumed || !intent.announce {
+        if state.trace {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "launch",
+                    "tick": state.tick,
+                    "kind": intent.kind.as_str(),
+                    "edge": intent.edge.as_str(),
+                    "disposition": if intent.consumed { "consumed" } else { "passed" },
+                    "outcome": if intent.consumed { "key-up" } else { "passed" },
+                }),
+            );
+        }
+        return;
+    }
+    state.tick += 1;
+    let tick = state.tick;
+    let correlation = state.correlation();
+    let settle = |outcome: &'static str| {
+        serde_json::json!({
+            "event": "launch",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "kind": intent.kind.as_str(),
+            "edge": intent.edge.as_str(),
+            "disposition": "consumed",
+            "outcome": outcome,
+        })
+    };
+    // KDE `!enabled` parity: chords arriving while keyboard takeover is off
+    // never dispatch (the classifier already passes them through; this
+    // covers the exact-owner test-needed route, which bypasses it).
+    if !state.keyboard.takeover {
+        let line = settle("launch-refused-disabled");
+        log_json_at(&log_path, line);
+        return;
+    }
+    // Fresh per-intent suspension/elevation fence (workspace_tick parity):
+    // newly intercepted suspended/elevated chords settle here with no side
+    // effects.
+    if let Some(outcome) = crate::tiling::toggle_gate_outcome(
+        suspend_read(state, me, fulls).veto.block,
+        foreground_elevated(me),
+    ) {
+        let line = settle(outcome);
+        log_json_at(&log_path, line);
+        return;
+    }
+    match backend.launch(intent.kind) {
+        Ok(()) => {
+            let line = settle("launched");
+            log_json_at(&log_path, line);
+        }
+        Err(err) => {
+            let mut line = settle("launch-failed");
+            line["error"] = serde_json::Value::from(err);
+            log_json_at(&log_path, line);
+        }
+    }
+}
+
 fn dispatch_float_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -21044,6 +21208,7 @@ fn run_tile_loop(
                     | QueuedSnapEvent::Orientation(_)
                     | QueuedSnapEvent::Fullscreen(_)
                     | QueuedSnapEvent::Float(_)
+                    | QueuedSnapEvent::Launch(_)
                     | QueuedSnapEvent::Sticky(_) => {
                         directional_events.push(event);
                     }
@@ -34048,5 +34213,213 @@ mod intent_wake_tests {
         pump_wait_with_intent(0, Some(wake));
         assert!(!wake_signaled(wake));
         pump_wait_with_intent(0, None);
+    }
+}
+
+#[cfg(test)]
+mod launch_dispatch_tests {
+    use super::rmax03_adapter_tests::test_state;
+    use super::{LaunchBackend, SystemLaunchBackend, dispatch_launch_intent, keyboard_tick};
+    use crate::snapkey::{LaunchKind, QueuedLaunchIntent, QueuedSnapEvent, SnapEdge};
+
+    /// Mocked spawn backend: records requested kinds, never touches the OS.
+    /// No test in this module launches a real browser or terminal.
+    struct Recorder {
+        kinds: std::cell::RefCell<Vec<LaunchKind>>,
+        fail: bool,
+    }
+
+    impl Recorder {
+        fn ok() -> Self {
+            Self {
+                kinds: std::cell::RefCell::new(Vec::new()),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                kinds: std::cell::RefCell::new(Vec::new()),
+                fail: true,
+            }
+        }
+    }
+
+    impl LaunchBackend for Recorder {
+        fn launch(&self, kind: LaunchKind) -> std::result::Result<(), String> {
+            self.kinds.borrow_mut().push(kind);
+            if self.fail {
+                return Err("mock spawn failed".to_owned());
+            }
+            Ok(())
+        }
+    }
+
+    fn fake_me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        }
+    }
+
+    fn launch_intent(kind: LaunchKind) -> QueuedLaunchIntent {
+        QueuedLaunchIntent {
+            kind,
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: true,
+            announce: true,
+            tick: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn launch_dispatch_spawns_each_kind_through_backend() {
+        // Down-only dispatch: browser and terminal downs each spawn exactly
+        // once through the injected backend; the chord-time origin is ignored
+        // (launchers act on no window).
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let me = fake_me();
+        let backend = Recorder::ok();
+        let tick = state.tick;
+        dispatch_launch_intent(
+            &mut state,
+            &me,
+            &[],
+            launch_intent(LaunchKind::Browser),
+            &backend,
+        );
+        dispatch_launch_intent(
+            &mut state,
+            &me,
+            &[],
+            launch_intent(LaunchKind::Terminal),
+            &backend,
+        );
+        assert_eq!(
+            *backend.kinds.borrow(),
+            vec![LaunchKind::Browser, LaunchKind::Terminal]
+        );
+        assert_eq!(state.tick, tick + 2);
+    }
+
+    #[test]
+    fn launch_dispatch_ignores_ups_repeats_and_passed_chords() {
+        // Key-ups, repeats, and passed chords never spawn and never advance
+        // the tick.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let me = fake_me();
+        let backend = Recorder::ok();
+        let tick = state.tick;
+        for edge in [SnapEdge::Up, SnapEdge::Repeat] {
+            dispatch_launch_intent(
+                &mut state,
+                &me,
+                &[],
+                QueuedLaunchIntent {
+                    kind: LaunchKind::Browser,
+                    edge,
+                    origin: None,
+                    consumed: true,
+                    announce: false,
+                    tick: std::time::Instant::now(),
+                },
+                &backend,
+            );
+        }
+        dispatch_launch_intent(
+            &mut state,
+            &me,
+            &[],
+            QueuedLaunchIntent {
+                kind: LaunchKind::Terminal,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: false,
+                announce: false,
+                tick: std::time::Instant::now(),
+            },
+            &backend,
+        );
+        assert!(backend.kinds.borrow().is_empty());
+        assert_eq!(state.tick, tick);
+    }
+
+    #[test]
+    fn launch_dispatch_refuses_without_takeover() {
+        // `test_state` ships with takeover off: the down settles without
+        // spawning, mirroring the classifier's pass-through.
+        let mut state = test_state();
+        assert!(!state.keyboard.takeover);
+        let me = fake_me();
+        let backend = Recorder::ok();
+        dispatch_launch_intent(
+            &mut state,
+            &me,
+            &[],
+            launch_intent(LaunchKind::Browser),
+            &backend,
+        );
+        assert!(backend.kinds.borrow().is_empty());
+    }
+
+    #[test]
+    fn launch_backend_failure_keeps_loop_functioning() {
+        // A failed spawn (e.g. missing wt.exe) settles narrowly: the tick
+        // still advances and the loop keeps functioning with no crash and no
+        // fallback launch.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let me = fake_me();
+        let backend = Recorder::failing();
+        let tick = state.tick;
+        dispatch_launch_intent(
+            &mut state,
+            &me,
+            &[],
+            launch_intent(LaunchKind::Terminal),
+            &backend,
+        );
+        assert_eq!(*backend.kinds.borrow(), vec![LaunchKind::Terminal]);
+        assert_eq!(state.tick, tick + 1);
+    }
+
+    #[test]
+    fn keyboard_tick_routes_launch_without_spawning_for_settled_events() {
+        // The `keyboard_tick` launch arm routes through the production
+        // dispatch; a settled (non-announced) event returns before touching
+        // the production backend, so this exercises the routing arm with no
+        // real spawn.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let me = fake_me();
+        let tick = state.tick;
+        keyboard_tick(
+            &mut state,
+            &me,
+            &[],
+            &[],
+            vec![QueuedSnapEvent::Launch(QueuedLaunchIntent {
+                kind: LaunchKind::Browser,
+                edge: SnapEdge::Up,
+                origin: None,
+                consumed: true,
+                announce: false,
+                tick: std::time::Instant::now(),
+            })],
+            None,
+        );
+        assert_eq!(state.tick, tick);
+        // The production backend selects one spawn path per kind without
+        // sharing handles or elevation; assert the selection contract, not
+        // the spawn itself (never launch here).
+        let _ = SystemLaunchBackend;
+        assert_eq!(LaunchKind::Browser.as_str(), "browser");
+        assert_eq!(LaunchKind::Terminal.as_str(), "terminal");
     }
 }
