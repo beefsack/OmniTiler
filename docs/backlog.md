@@ -232,8 +232,9 @@ decisions of 2026-09-24 are under
   dedicated render thread owning border/underlay/drop-preview windows,
   latest-wins desired state with hide/cancel epochs; (3) combined
   stress/recovery, then multi-output/DPI and gaming-cost checks. One
-  observation/Engine/recovery owner remains. Confirm A/B/C and order when work
-  starts. Selected for latency only; parked Win+G/F11 containment is not
+  observation/Engine/recovery owner remains. User selected target C
+  2026-10-12: stage 1 (complete A) first, then stage 2 (B) early. Selected for
+  latency only; parked Win+G/F11 containment is not
   claimed. Trace-off and release-build drag comparison is still useful as a
   baseline. [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
@@ -316,9 +317,8 @@ decisions of 2026-09-24 are under
   Trace-off and release smoothness/release-settle comparison pending
   ([raster record](changes/archive/windows-edge-resize-latency.md),
   [input-thread evidence and commands](changes/archive/windows-resize-hook-latency.md)).
-  Owner threading assessment 2026-10-12: separate rendering early; target A/B/C
-  and delivery order pending user selection. Recommend isolated input then
-  render pumps, with one observation/Engine/recovery owner; latency selection
+  Owner threading assessment 2026-10-12: separate rendering early; user selected
+  target C (isolated input then render pumps, A first), with one observation/Engine/recovery owner; latency selection
   is separate from parked Win+G/F11 containment
   ([design](research/windows-port/owner-threading.md)).
   Minimum-size hints shipped in 49d4191 and were physically accepted, including

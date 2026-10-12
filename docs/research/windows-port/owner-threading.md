@@ -1,8 +1,9 @@
 # Windows owner threading assessment
 
 - Date: 2026-10-12. User direction: separate rendering from input early,
-  before further owner features make separation harder. Target and delivery
-  order remain pending architecture selection.
+  before further owner features make separation harder. User selected target
+  C on 2026-10-12: complete A (stage 1) first, then B (stage 2) early, for
+  latency only.
 - Symptom: native edge-resize mouse delivery is less smooth with the owner.
   WH_MOUSE_LL runs on its installing thread; owner work can delay delivery,
   even when the callback itself is cheap. Actual waiting time is not yet
