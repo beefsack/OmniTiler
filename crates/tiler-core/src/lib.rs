@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Portable tiling model over adapter-normalized integer geometry units.
 //! Adapters convert host coordinates into these units and keep frame insets
 //! outside the core; a core rectangle never encodes host-specific frame insets.

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Portable workspace-owner policy: output context, select/send resolution,
 //! Engine observation assembly, and follow verification.
 //!

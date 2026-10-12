@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Owner-owned Windows notification tray plus the first-run preset choice.
 //!
 //! Portable policy only (no Win32 here): unresolved-conflict computation over

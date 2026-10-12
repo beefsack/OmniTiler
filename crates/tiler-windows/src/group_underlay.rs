@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Portable Windows group-underlay policy, settings, and fill-raster math.
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`

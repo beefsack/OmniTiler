@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Validated persistent Windows settings plus the per-binding shortcut model.
 //!
 //! Portable policy only (no Win32 here): schema, strict validation,

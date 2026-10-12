@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Tiling-only Windows runtime over the retained portable Engine.
 //!
 //! Portable policy lives here and compiles everywhere; native enumeration,

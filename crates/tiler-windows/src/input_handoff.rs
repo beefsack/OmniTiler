@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Portable dedicated-input-thread handoff (stage 1, unit 1).
 //!
 //! One ordered FIFO carries owner-built immutable payloads to the input pump;

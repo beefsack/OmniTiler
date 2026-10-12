@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Per-output-local managed workspaces plus digit classification.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};

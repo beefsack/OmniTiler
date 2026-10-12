@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use serde::{Deserialize, Serialize};
 
 pub const LEDGER_SCHEMA_VERSION: u32 = 4;

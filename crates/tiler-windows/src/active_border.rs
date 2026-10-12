@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Portable Windows active-border policy, settings, and raster math.
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
