@@ -1920,6 +1920,23 @@ platform API behavior.
   action and should be honoured. Replacing the current refusal needs code;
   it is no longer a listed 0.1 known issue.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
+- User clarification 2026-10-12, D28 born-fullscreen option (a): explicit
+  numbered/relative follow/stay sends also carry never-tiled born-fullscreen
+  members. The window remains fullscreen and slotless on the destination;
+  preserve the initial hold, with neither source nor target reflow and no
+  source admission before transfer. On its first fullscreen exit, apply the
+  existing D5 fresh-admission rule on the destination workspace. Preserve the
+  fullscreen flag and geometry protections; focus writes are limited to the
+  established explicit follow/stay semantics. Prefer shared exception-member
+  send/focus support; a required architectural change needs review before
+  implementation. This clarification does not alter Windows delivery claims.
+- Deferred-transfer extension selected 2026-10-12: add a shared slotless-member
+  operation with window/source/target identities and no leaf; extend shared
+  exception-member send/focus handling without mutating either tree. KDE applies
+  native membership movement under existing follow/stay semantics and all
+  existing fences. This is an additive extension within the existing
+  architecture. Existing tiled contracts remain intact; Windows changes are
+  limited to compilation support for the added variant.
 - D28 [tier basis](#reference-tiers), original triage tally: i3/sway (Tier 1)
   plus qtile/awesome (Tier 2) carry; bspwm is context. COSMIC/Hyprland were
   untraced in that tally; no evidenced alternative, no setting. Detailed

@@ -176,6 +176,12 @@ switching, with no focus actuation while fullscreen is involved; runtime TBD.
 | Explicit target versus navigation | Focus fullscreen B; explicitly select existing unrelated A by Alt+Tab/taskbar/target command; repeat fresh with directional focus | KWin Alt+Tab activates A without clearing B fullscreen; i3/sway target focus exits B while directional navigation can be fenced. [R-INS-06 discriminator](reference-outcomes/insertion.md#r-ins-06-explicit-selection-discriminator-fresh-fullscreen-leg) | Untested; native settlement/Ours result TBD |
 | Xwayland launch provenance | Focus fullscreen B; open C with fresh user-launch timestamp; repeat with stale/zero user-time; compare tiler-off/on | KWin v6.6.3 X11 map uses timestamps/FSP; fresh authorization can activate, zero/stale can deny/restack underneath. [Baseline](../research/d01-fullscreen-admission.md#native-kwin-baseline) | Untested; exact launch provenance and runtime outcomes TBD |
 
+### D28 born-fullscreen send discriminator (selected 2026-10-12)
+
+| Variant | Minimal action sequence | Selected target | Ours / reference outcomes |
+| --- | --- | --- | --- |
+| Slotless fullscreen carry and destination exit | First observe B already fullscreen on WS1 with tiled A; keep B under the real initial hold; explicitly send B to occupied WS2; repeat fresh for numbered/relative follow/stay; exit fullscreen on WS2 | B remains fullscreen and slotless on WS2; no source admission or source/target reflow; native desktop movement only, with established follow/stay focus semantics; first exit admits B on WS2 under D5 ([decision](../decisions.md#window-state-float-sticky-maximize-fullscreen)) | KDE current shared path rejects the held exception at tiled focus synchronization; retained-fullscreen carry fixtures do not prove this leg. Implementation and native outcome TBD; unsupported reference outcomes TBD |
+
 ### 0.1 package split discriminator (Settings decision pending)
 
 | Variant | Minimal action sequence | Offline evidence | Desired / native outcome |
