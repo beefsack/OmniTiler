@@ -9896,3 +9896,348 @@ describe("plan adapter refresh classification", () => {
         );
     });
 });
+
+describe("D01 native activation ownership focus fence", () => {
+    const RA = { x: 0, y: 0, w: 600, h: 800 };
+    const RB = { x: 600, y: 0, w: 600, h: 800 };
+    const equalGeom = [
+        { window: "win-a", rect: RA },
+        { window: "win-b", rect: RB },
+    ];
+
+    function plainObserved(refs: { a: object; b: object; c: object }, focused: object): PlanObserved {
+        return makeObserved(refs, { focused, rects: { "win-a": RA, "win-b": RB } });
+    }
+
+    // Two retained tiles focused on A. Returns the enabled adapter with
+    // applied evidence for both members, so a later fullscreen on the same
+    // ref keeps its tile slot instead of taking the born-fullscreen hold.
+    function baselineTwoTiles(mocks: Mocks, refs: { a: object; b: object; c: object }): PlanAdapter {
+        mocks.observeImpl = () => plainObserved(refs, refs.a);
+        mocks.activeImpl = () => refs.a;
+        const adapter = enableAdapter(mocks);
+        fire(mocks, "added");
+        runDebounce(mocks);
+        assert.equal(mocks.dbusCalls.length, 1, "baseline reconcile must dispatch");
+        const corr = plannerPayload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(plannedReply(corr, equalGeom, "win-a-leaf"));
+        assert.deepEqual(mocks.actives, [], "baseline settles with no focus write");
+        return adapter;
+    }
+
+    function dispatchReconcile(mocks: Mocks, index: number): string {
+        // A flag/focus drift (not a bare re-added signal, which stays
+        // quiet on equal membership) drives the automatic reconcile.
+        fire(mocks, "geometry");
+        runDebounce(mocks);
+        assert.equal(mocks.dbusCalls.length, index + 1, "automatic reconcile must dispatch");
+        return plannerPayload(mocks, index)["correlation_id"] as string;
+    }
+
+    it("fences an automatic focus write while a retained fullscreen window is present", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // Host kept the fullscreen game B focused; the tiler must not yank
+        // focus back to A on a divergent automatic reply. The sibling drift
+        // on A drives the reconcile dispatch (pure flag flips stay quiet).
+        const driftA = { x: 0, y: 0, w: 620, h: 800 };
+        mocks.observeImpl = () =>
+            makeObserved(refs, {
+                focused: refs.b,
+                rects: { "win-a": driftA, "win-b": RB },
+                fullscreen: { "win-b": true },
+            });
+        mocks.activeImpl = () => refs.b;
+        const corr = dispatchReconcile(mocks, 1);
+        mocks.callbacks[1]?.(
+            plannedReply(
+                corr,
+                [
+                    { window: "win-a", rect: driftA },
+                    { window: "win-b", rect: RB },
+                ],
+                "win-a-leaf",
+            ),
+        );
+        assert.deepEqual(mocks.actives, [], "no focus steal while fullscreen involved");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=fullscreen-active")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("fences an automatic focus write while a maximized overlay is present", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        mocks.observeImpl = () =>
+            makeObserved(refs, { focused: refs.b, rects: { "win-a": RA, "win-b": RB }, maximized: { "win-b": true } });
+        mocks.activeImpl = () => refs.b;
+        enableAdapter(mocks);
+        const corr = dispatchReconcile(mocks, 0);
+        mocks.callbacks[0]?.(plannedReply(corr, equalGeom, "win-a-leaf"));
+        assert.deepEqual(mocks.actives, [], "no focus steal while maximized involved");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=maximize-active")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("fences a mid-apply native focus race to the retained fullscreen window", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // Dispatch snapshot reads native on A; native switches to retained
+        // fullscreen B after the observation, so the reply validates while
+        // the just-before-focus re-read carries the overlay. No new setters
+        // are used to detect it. The sibling drift on A drives dispatch.
+        const driftA = { x: 0, y: 0, w: 620, h: 800 };
+        mocks.observeImpl = () =>
+            makeObserved(refs, {
+                focused: refs.a,
+                rects: { "win-a": driftA, "win-b": RB },
+                fullscreen: { "win-b": true },
+            });
+        mocks.activeImpl = () => refs.b;
+        const corr = dispatchReconcile(mocks, 1);
+        mocks.callbacks[1]?.(
+            plannedReply(
+                corr,
+                [
+                    { window: "win-a", rect: driftA },
+                    { window: "win-b", rect: RB },
+                ],
+                "win-a-leaf",
+            ),
+        );
+        assert.deepEqual(mocks.actives, [], "live native focus on fullscreen B must stand");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=fullscreen-active")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("fences fullscreen onset triggered from inside a geometry write", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // True onset (not preset): no fullscreen anywhere at dispatch or
+        // at the reply boundary. The sibling enters fullscreen natively
+        // from inside the first geometry setter, and native focus follows
+        // it before the focus setter runs. The just-before-focus re-read
+        // is the only evidence; the reply-boundary observation is clean.
+        // The sibling drift on A drives dispatch and the first write.
+        let fsOn = false;
+        let liveActive: object = refs.a;
+        const driftA = { x: 0, y: 0, w: 620, h: 800 };
+        const writeA = { x: 0, y: 0, w: 640, h: 800 };
+        mocks.observeImpl = () =>
+            makeObserved(refs, {
+                focused: refs.a,
+                rects: { "win-a": driftA, "win-b": RB },
+                ...(fsOn ? { fullscreen: { "win-b": true } } : {}),
+            });
+        mocks.activeImpl = () => liveActive;
+        const corr = dispatchReconcile(mocks, 1);
+        const origGeometry = mocks.geometryImpl;
+        mocks.geometryImpl = (target, rect) => {
+            const ok = origGeometry(target, rect);
+            fsOn = true;
+            liveActive = refs.b;
+            return ok;
+        };
+        mocks.callbacks[1]?.(
+            plannedReply(
+                corr,
+                [
+                    { window: "win-a", rect: writeA },
+                    { window: "win-b", rect: RB },
+                ],
+                "win-a-leaf",
+            ),
+        );
+        assert.equal(mocks.geometries.length, 1, "the drifted write still lands");
+        assert.deepEqual(mocks.actives, [], "onset fullscreen must fence the trailing focus write");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=fullscreen-active")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("suppresses automatic focus when the foreground domain changes mid-apply", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // Native switches the active output mid-apply: the foreground
+        // re-read names another domain, so the stale reply focus (bound to
+        // the old domain) must not actuate there.
+        let domainNow = { output: "out-1", workspace: "ws-1" };
+        const driftA = { x: 0, y: 0, w: 620, h: 800 };
+        const writeA = { x: 0, y: 0, w: 640, h: 800 };
+        mocks.observeImpl = () => ({
+            ...makeObserved(refs, { focused: refs.a, rects: { "win-a": driftA, "win-b": RB } }),
+            domainOutput: domainNow.output,
+            domainWorkspace: domainNow.workspace,
+        });
+        mocks.activeImpl = () => refs.a;
+        const corr = dispatchReconcile(mocks, 1);
+        const origGeometry = mocks.geometryImpl;
+        mocks.geometryImpl = (target, rect) => {
+            const ok = origGeometry(target, rect);
+            domainNow = { output: "out-2", workspace: "ws-1" };
+            return ok;
+        };
+        mocks.callbacks[1]?.(
+            plannedReply(
+                corr,
+                [
+                    { window: "win-a", rect: writeA },
+                    { window: "win-b", rect: RB },
+                ],
+                "win-a-leaf",
+            ),
+        );
+        assert.deepEqual(mocks.actives, [], "domain-changed automatic focus must not actuate");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=domain-changed")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("suppresses automatic focus when live active moves after the re-read", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // No overlay anywhere: the re-read matches the reply boundary, but
+        // the live active() no longer matches the re-read activeRef, so the
+        // observation is already stale and the automatic write is dropped.
+        const driftA = { x: 0, y: 0, w: 620, h: 800 };
+        mocks.observeImpl = () =>
+            makeObserved(refs, { focused: refs.a, rects: { "win-a": driftA, "win-b": RB } });
+        mocks.activeImpl = () => refs.b;
+        const corr = dispatchReconcile(mocks, 1);
+        mocks.callbacks[1]?.(
+            plannedReply(
+                corr,
+                [
+                    { window: "win-a", rect: driftA },
+                    { window: "win-b", rect: RB },
+                ],
+                "win-a-leaf",
+            ),
+        );
+        assert.deepEqual(mocks.actives, [], "active-moved automatic focus must not actuate");
+        assert.ok(
+            mocks.logs.some((line) => line.includes("focus-skipped") && line.includes("reason=active-changed")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("explicit directional focus still actuates with a retained fullscreen window present", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        const adapter = baselineTwoTiles(mocks, refs);
+        mocks.observeImpl = () =>
+            makeObserved(refs, { focused: refs.a, rects: { "win-a": RA, "win-b": RB }, fullscreen: { "win-b": true } });
+        mocks.activeImpl = () => refs.a;
+        adapter.requestFocus("right");
+        assert.equal(mocks.dbusCalls.length, 2, "explicit focus must still dispatch");
+        const corr = plannerPayload(mocks, 1)["correlation_id"] as string;
+        mocks.callbacks[1]?.(plannedReply(corr, equalGeom, "win-b-leaf"));
+        assert.deepEqual(mocks.actives, [refs.b], "explicit op focus stays effective");
+        assert.ok(
+            !mocks.logs.some((line) => line.includes("focus-skipped")),
+            "explicit focus must never hit the automatic fence",
+        );
+    });
+
+    it("explicit directional focus exits fullscreen to the sibling", () => {
+        const refs2 = makeRefs();
+        const mocks2 = mockEnv(refs2);
+        const adapter2 = baselineTwoTiles(mocks2, refs2);
+        // Fullscreen game B focused; the user explicitly navigates left to
+        // sibling A. The reply completes and the explicit write lands.
+        mocks2.observeImpl = () =>
+            makeObserved(refs2, {
+                focused: refs2.b,
+                rects: { "win-a": RA, "win-b": RB },
+                fullscreen: { "win-b": true },
+            });
+        mocks2.activeImpl = () => refs2.b;
+        adapter2.requestFocus("left");
+        assert.equal(mocks2.dbusCalls.length, 2, "explicit navigation must still dispatch");
+        const corr = plannerPayload(mocks2, 1)["correlation_id"] as string;
+        mocks2.callbacks[1]?.(plannedReply(corr, equalGeom, "win-a-leaf"));
+        assert.deepEqual(mocks2.actives, [refs2.a], "explicit fullscreen exit focuses the sibling");
+        assert.ok(
+            !mocks2.logs.some((line) => line.includes("focus-skipped")),
+            "explicit focus must never hit the automatic fence",
+        );
+    });
+
+    function singleObserved(refs: { a: object; b: object; c: object }): PlanObserved {
+        return {
+            domainOutput: "out-1",
+            domainWorkspace: "ws-1",
+            domainBounds: { x: 0, y: 0, w: 1200, h: 800 },
+            domainGap: DOMAIN_GAP,
+            domainOuterGap: OUTER_DOMAIN_GAP,
+            focusedId: "win-a",
+            windows: Object.freeze([
+                Object.freeze({
+                    id: "win-a",
+                    ref: refs.a,
+                    rect: RA,
+                    output: "out-1",
+                    workspace: "ws-1",
+                    fullscreen: false,
+                    maximized: false,
+                    floating: false,
+                    sticky: false,
+                    resourceClass: "unknown",
+                }),
+            ]),
+            activeRef: refs.a,
+            fingerprint: "fp-close",
+            revalidate: () => true,
+        };
+    }
+
+    it("survivor refocus actuates after the fullscreen overlay closes", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        baselineTwoTiles(mocks, refs);
+        // Fullscreen B closes: the removal observation carries only
+        // survivor A, so the refill reconcile has no overlay left and the
+        // survivor refocus actuates even with stale native focus on the
+        // removed window.
+        mocks.observeImpl = () => singleObserved(refs);
+        mocks.activeImpl = () => refs.b;
+        fire(mocks, "removed", refs.b);
+        runDebounce(mocks);
+        assert.equal(mocks.dbusCalls.length, 2, "removal must reconcile the refill");
+        const corr = plannerPayload(mocks, 1)["correlation_id"] as string;
+        mocks.callbacks[1]?.(plannedReply(corr, [{ window: "win-a", rect: RA }], "win-a-leaf"));
+        assert.deepEqual(mocks.actives, [refs.a], "close refill focuses the survivor");
+        assert.ok(
+            !mocks.logs.some((line) => line.includes("focus-skipped")),
+            "overlay-free refill must never hit the fence",
+        );
+    });
+
+    it("close-race staleness after the overlay leaves writes no focus", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        // Dispatch while fullscreen B is still around; B closes before the
+        // reply lands, so the reply boundary goes stale with zero setters.
+        mocks.observeImpl = () =>
+            makeObserved(refs, { focused: refs.a, rects: { "win-a": RA, "win-b": RB }, fullscreen: { "win-b": true } });
+        mocks.activeImpl = () => refs.a;
+        enableAdapter(mocks);
+        const corr = dispatchReconcile(mocks, 0);
+        mocks.observeImpl = () => makeObserved(refs, { focused: refs.a, rects: { "win-a": RA, "win-b": RB } });
+        mocks.callbacks[0]?.(plannedReply(corr, equalGeom, "win-a-leaf"));
+        assert.deepEqual(mocks.actives, [], "stale close-race reply must not actuate");
+        assert.deepEqual(mocks.geometries, [], "stale close-race reply must not write geometry");
+    });
+});

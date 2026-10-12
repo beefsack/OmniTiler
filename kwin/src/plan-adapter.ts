@@ -5102,6 +5102,85 @@ export class PlanAdapter {
         }
     }
 
+    // D01 native activation ownership: automatic convergence (reconcile /
+    // update-gaps admission) never actuates focus while a fullscreen or
+    // maximized overlay is involved. Domain fullscreen/maximized presence
+    // is involvement, even when the reply target itself is an ordinary
+    // sibling: the host owns activation, denial, and explicit switching.
+    // Explicit op focus flights are exempt, as are CLOSE-05 survivor
+    // refocuses once the overlay is gone from the fresh observation.
+    // The foreground observation is re-read just before the setter (after
+    // geometry writes): a sibling may have entered fullscreen mid-apply,
+    // or native focus may have moved to another output. An unavailable
+    // or domain-changed re-read suppresses the stale automatic write
+    // fail-closed, as does a live active() that no longer matches the
+    // re-read. Read-only: the existing foreground observer plus the
+    // existing active() read, never a new setter or env hook.
+    private automaticFocusGuard(
+        flightState: PendingFlight,
+    ): { readonly reason: string | null; readonly active: object | null } {
+        const readActive = (): object | null => {
+            try {
+                return this.env.active();
+            } catch (error) {
+                void error;
+                return null;
+            }
+        };
+        if (flightState.op !== "reconcile" && flightState.op !== "update-gaps") {
+            return { reason: null, active: readActive() };
+        }
+        let fresh: PlanObserved | null = null;
+        try {
+            fresh = this.env.observe();
+        } catch (error) {
+            void error;
+            fresh = null;
+        }
+        if (fresh === null) {
+            return { reason: "observe-unavailable", active: null };
+        }
+        if (
+            fresh.domainOutput !== flightState.snapshot.domainOutput ||
+            fresh.domainWorkspace !== flightState.snapshot.domainWorkspace
+        ) {
+            return { reason: "domain-changed", active: null };
+        }
+        const snapshotFlags = new Map<string, { readonly fullscreen: boolean; readonly maximized: boolean }>();
+        for (const entry of flightState.snapshot.windows) {
+            if (!snapshotFlags.has(entry.id)) {
+                snapshotFlags.set(entry.id, { fullscreen: entry.fullscreen, maximized: entry.maximized });
+            }
+        }
+        let maximized = false;
+        for (const entry of fresh.windows) {
+            const snap = snapshotFlags.get(entry.id);
+            if (entry.fullscreen === true || snap?.fullscreen === true) {
+                return { reason: "fullscreen-active", active: null };
+            }
+            if (entry.maximized === true || snap?.maximized === true) {
+                maximized = true;
+            }
+        }
+        if (maximized) {
+            return { reason: "maximize-active", active: null };
+        }
+        const active = readActive();
+        if (active !== fresh.activeRef) {
+            // A live active window that is still observed is a newer
+            // native decision: the re-read is already stale, so the
+            // automatic write is dropped. A stale ref to a removed or
+            // unknown window is benign: CLOSE-05 survivor refocus still
+            // actuates below.
+            const stillObserved =
+                active !== null && fresh.windows.some((entry) => entry.ref === active);
+            if (stillObserved) {
+                return { reason: "active-changed", active };
+            }
+        }
+        return { reason: null, active };
+    }
+
     private ensureKeepAbove(target: object, id: string, resourceClass: string): boolean {
         let above: boolean | null = null;
         let below: boolean | null = null;
@@ -9976,17 +10055,20 @@ export class PlanAdapter {
                         focusSkipped = true;
                     }
                 }
+                // D01 native activation ownership: automatic convergence
+                // never actuates focus while a fullscreen/maximized overlay
+                // is involved. Explicit op focus stays exempt inside the
+                // guard. The guard re-reads the foreground observation
+                // after geometry writes and carries the live active()
+                // read forward, so the setter below never re-reads.
                 if (!focusSkipped) {
-                    const target = byRef.get(focusWindow);
-                    if (target !== undefined) {
-                        let currentActive: object | null = null;
-                        try {
-                            currentActive = this.env.active();
-                        } catch (error) {
-                            void error;
-                            currentActive = null;
-                        }
-                        if (currentActive !== target) {
+                    const guard = this.automaticFocusGuard(flightState);
+                    if (guard.reason !== null) {
+                        this.logToken(`${LOG_PREFIX}:focus-skipped correlation=${flightState.correlation} kind=${flightState.op} reason=${guard.reason} window=${current.focusedId} target=${focusWindow}`);
+                        focusSkipped = true;
+                    } else {
+                        const target = byRef.get(focusWindow);
+                        if (target !== undefined && guard.active !== target) {
                             let focused = false;
                             try {
                                 focused = this.env.setActive(target) === true;
