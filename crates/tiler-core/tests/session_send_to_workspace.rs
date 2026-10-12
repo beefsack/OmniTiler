@@ -422,11 +422,21 @@ fn refusals_fail_closed_then_lifecycle_diverges() {
         RefusalKind::MalformedInput
     );
     defer_float(&mut s, "win-9", "out-1", "ws-a", "corr-11");
+    // D16 option (a): an ordinary intentional float rides the slotless
+    // deferred transfer instead of refusing.
     let deferred = mv("win-9", "out-1", "ws-b");
-    assert_eq!(
-        mr(&mut s, &deferred, "corr-12", &full()),
-        RefusalKind::NotTiled
+    let deferred_plan = match s.propose(&deferred, &obs(&s, vec![]), &corr("corr-12"), &full()) {
+        Ok(plan) => plan,
+        other => panic!("ordinary float send must plan, got {other:?}"),
+    };
+    assert!(
+        matches!(
+            &deferred_plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "float send carries the deferred transfer"
     );
+    ack_verify(&mut s, &deferred_plan, "corr-12", 510);
     assert_eq!(s.divergence(), None);
     assert!(!s.has_pending());
     let plan = propose_mv(&mut s, "win-2", "out-1", "ws-a", "corr-13");
@@ -901,9 +911,11 @@ fn output_send_scope_refusals_keep_ops_distinct() {
 }
 
 #[test]
-fn output_send_refuses_sticky_and_intentional_floats() {
-    // Sticky/intentional floats are ineligible like workspace send: float
-    // and sticky exception movers refuse as NotTiled.
+fn output_send_refuses_sticky_but_carries_intentional_floats() {
+    // D16 option (a), no setting: ordinary intentional floats ride
+    // the slotless deferred transfer like workspace send (float
+    // retained on arrival, no tree mutation); sticky exception movers
+    // keep refusing as NotTiled.
     for (flag, admit_c, mr_c) in [
         ("floating", "elig-f1", "elig-f2"),
         ("sticky", "elig-s1", "elig-s2"),
@@ -941,16 +953,43 @@ fn output_send_refuses_sticky_and_intentional_floats() {
             .propose(&cmd, &o0, &corr(admit_c), &full())
             .expect("defer");
         ack_verify(&mut s, &dp, admit_c, 330);
-        assert_eq!(
-            mr(
-                &mut s,
+        if flag == "sticky" {
+            assert_eq!(
+                mr(
+                    &mut s,
+                    &out_mv("win-f", "out-2", "ws-a", true),
+                    mr_c,
+                    &full()
+                ),
+                RefusalKind::NotTiled,
+                "sticky movers stay ineligible"
+            );
+            continue;
+        }
+        let plan = s
+            .propose(
                 &out_mv("win-f", "out-2", "ws-a", true),
-                mr_c,
-                &full()
+                &obs(&s, vec![]),
+                &corr(mr_c),
+                &full(),
+            )
+            .expect("ordinary float output send plans");
+        assert!(
+            matches!(
+                &plan.dispatch.operation,
+                LifecycleOperation::MoveDeferred { .. }
             ),
-            RefusalKind::NotTiled,
-            "{flag} movers are ineligible"
+            "ordinary floats ride the deferred transfer"
         );
+        ack_verify(&mut s, &plan, mr_c, 340);
+        let record = s
+            .exception_observed()
+            .into_iter()
+            .find(|w| w.window.0 == "win-f")
+            .expect("mover exception");
+        assert_eq!(record.output.0, "out-2");
+        assert_eq!(record.workspace.0, "ws-a");
+        assert!(record.floating, "float retained across outputs");
     }
 }
 

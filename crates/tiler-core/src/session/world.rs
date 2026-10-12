@@ -429,17 +429,22 @@ impl super::Session {
     }
 
     /// Whether an exception member is eligible for the slotless deferred
-    /// send transfer (D28 born-fullscreen carry, option (a)).
+    /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
+    /// intentional-float carry, option (a), no setting).
     ///
-    /// Only the held born-fullscreen shape carries: a retained
-    /// floating-only exception (the synthetic initial hold, never an
-    /// intentional float/sticky/maximized record) homed on `source`,
-    /// observed still fullscreen with the native send-route flags
-    /// (never floating there, never maximized/sticky, no fixed-size
-    /// origin signals). Hints are advisory and never gate. Anything
-    /// else (tiled members, unknown windows, plain floats, sticky,
-    /// maximized, exited movers, wrong homing) is ineligible, so the
-    /// D16 intentional-float gap stays refused elsewhere.
+    /// Two retained floating-only shapes carry, both homed on `source`
+    /// with the rest of the observation binding exactly elsewhere: the
+    /// held born-fullscreen hold (the synthetic initial hold, never an
+    /// intentional float/sticky/maximized record), observed still
+    /// fullscreen with the native send-route flags (never floating
+    /// there, never maximized/sticky, no fixed-size origin signals);
+    /// and the ordinary intentional float, observed still floating
+    /// (never fullscreen/maximized/sticky there, no fixed-size origin
+    /// signals). Hints are advisory
+    /// and never gate. Anything else (tiled
+    /// members, unknown windows, automatic fixed floats, sticky,
+    /// maximized, exited movers, wrong homing) is ineligible, so
+    /// sticky keeps refusing as today.
     pub fn deferred_send_eligible(
         &self,
         window: &WindowId,
@@ -465,13 +470,22 @@ impl super::Session {
         if entry.output != source.output || entry.workspace != source.workspace {
             return false;
         }
-        if entry.floating || !entry.fullscreen || entry.maximized || entry.sticky {
-            return false;
+        // Held born-fullscreen arm (D28): the native send-route shape.
+        if !entry.floating && entry.fullscreen && !entry.maximized && !entry.sticky {
+            return !entry.fixed_auto && !entry.fixed_suppress;
         }
-        if entry.fixed_auto || entry.fixed_suppress {
-            return false;
+        // Ordinary intentional-float arm (D16): still floating, no
+        // overlays, no fixed-size origin signals (observed flags or
+        // the retained automatic marker; automatic fixed floats stay
+        // refused as pinned by the fixed-size suite).
+        // Size travels in the retained record, never in the
+        // observation, so no geometry gates here.
+        if entry.floating && !entry.fullscreen && !entry.maximized && !entry.sticky {
+            return !entry.fixed_auto
+                && !entry.fixed_suppress
+                && !self.automatic_fixed.contains(window);
         }
-        true
+        false
     }
 
     /// Number of tracked exception windows.

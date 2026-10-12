@@ -14,10 +14,12 @@ impl super::super::Session {
     /// with no window id and moves only the focused element; `move_element`
     /// unmaps the source (recursive collapse) then maps the tiled element in
     /// the target. The portable gate mirrors [`Session::propose_move`]:
-    /// unknown windows refuse as `UnknownWindow`, exception windows or an
-    /// unresolved focused leaf as `NotTiled`, and a missing global focus or
+    /// unknown windows refuse as `UnknownWindow`, ineligible exception
+    /// windows (sticky, maximized, exited movers) or an unresolved
+    /// focused leaf as `NotTiled`, and a missing global focus or
     /// requested non-focused tile as `FocusMismatch`. The source domain must
-    /// equal the focused domain before mutation.
+    /// equal the focused domain before mutation. Ordinary intentional
+    /// floats transfer slotless through the deferred path instead.
     ///
     /// Target placement follows `map_to_tree` (`direction=None`): the valid
     /// remembered destination last-active leaf splits when still linked
@@ -62,7 +64,9 @@ impl super::super::Session {
 
     /// Explicit output send (REQ-OUT-04, item 5.4): identical ordinary
     /// transfer to [`Session::propose_move_to_workspace`] (focused tiled
-    /// subject only, sticky/intentional floats ineligible as `NotTiled`;
+    /// subject through the ordinary transfer, ordinary intentional
+    /// floats through the slotless deferred transfer, sticky still
+    /// ineligible as `NotTiled`;
     /// remembered-leaf, destination focus-history, root admission; explicit
     /// follow/stay), except the target is the destination output's current
     /// workspace resolved adapter-side, so cross-output targets are admitted.
@@ -123,13 +127,16 @@ impl super::super::Session {
         if observed_ids != known {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
-        // A held born-fullscreen exception member carries through the
-        // slotless deferred transfer (D28 option (a)): it rides the native
-        // send-route flags (never floating, still fullscreen) while the
-        // retained record holds the synthetic floating shape, so the
-        // ordinary exact matcher below cannot bind it. Route before that
-        // matcher; the deferred path binds the rest exactly plus the held
-        // exemption for the mover only.
+        // A slotless floating exception member carries through the
+        // deferred transfer (D28 held born-fullscreen hold, D16
+        // ordinary intentional float, both option (a)): the held mover
+        // rides the native send-route flags (never floating, still
+        // fullscreen) while the retained record holds the synthetic
+        // floating shape, and the ordinary float rides still floating
+        // while the retained record holds its size, so the ordinary
+        // exact matcher below cannot bind either. Route before that
+        // matcher; the deferred path binds the rest exactly plus the
+        // mover exemption only.
         if self.exceptions.contains_key(window) {
             return self.propose_deferred_send(
                 window,
@@ -385,17 +392,19 @@ impl super::super::Session {
         })
     }
 
-    /// Slotless deferred send transfer for a held born-fullscreen
-    /// exception member (D28 option (a)).
+    /// Slotless deferred send transfer for a floating exception member
+    /// (D28 held born-fullscreen carry and D16 ordinary intentional-float
+    /// carry, both option (a)).
     ///
     /// Eligibility is exactly [`Session::deferred_send_eligible`]: any
-    /// other exception (plain intentional float, sticky, maximized,
-    /// exited mover, wrong homing) refuses as `NotTiled`, so the D16
-    /// intentional-float gap stays refused. The transfer adds/removes no
+    /// other exception (sticky, maximized, exited mover, wrong homing)
+    /// refuses as `NotTiled`. The transfer adds/removes no
     /// window identity: the rest-match binds every non-mover plus the
     /// mover exemption and rejects extras by count. Trees, tiled links, and allocations are untouched:
     /// the mover exception simply rehomes to the target while staying
-    /// slotless and fullscreen-held. Follow selects the target MRU tiled
+    /// slotless with flags and floating size preserved verbatim
+    /// (the restart float memory is keyed by window id, so it follows
+    /// with no rehoming step). Follow selects the target MRU tiled
     /// fallback for bookkeeping (native follow runs adapter-side on the
     /// mover ref); stay falls back through the source MRU exactly like
     /// the ordinary transfer. Plans commit only
