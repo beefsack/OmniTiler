@@ -4385,11 +4385,15 @@ pub mod sys {
         KeyboardConfig, MarkedDiagBuf, MarkedKeyDiag, ModDiagBuf, QueuedMask, QueuedSnapEvent,
         SnapClassify, SnapOrigin, SnapQueue,
     };
+    use crate::input_handoff::{
+        SharedSnapshot, global_esc_clock, global_windrag_esc_clock, keyboard_fresh_gate,
+    };
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::time::Instant;
     use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
         VK_CONTROL, VK_MENU, VK_SHIFT,
@@ -4467,6 +4471,19 @@ pub mod sys {
 
     thread_local! {
         static SNAP: RefCell<Option<SnapHookState>> = const { RefCell::new(None) };
+    }
+
+    /// Direct sample of the process-global native Esc clock for WinEvent
+    /// START/END. Bumped in hook callbacks at Esc-down time; singletons, so
+    /// pump restarts can never mismatch clocks.
+    pub fn shared_esc_seq() -> u64 {
+        global_esc_clock().load()
+    }
+
+    /// Direct sample of the process-global windrag Esc clock for mouse
+    /// Down/Up. Same singleton contract as [`shared_esc_seq`].
+    pub fn shared_windrag_esc_seq() -> u64 {
+        global_windrag_esc_clock().load()
     }
 
     /// Owner publish: cached origin map for the callback. Cheap clone of the
@@ -4563,6 +4580,67 @@ pub mod sys {
         });
     }
 
+    /// Ordered windrag invalidation from the input pump (FIFO between
+    /// snapshots): drops the cached origin so later Downs cannot rebind
+    /// until a fresh snapshot republishes it. Held-pair state is untouched:
+    /// consumed holds ride their stored verdict to the paired key-up.
+    pub fn apply_invalidate_windrag(hwnd: u64) {
+        SNAP.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.origins.remove(&hwnd);
+            }
+        });
+    }
+
+    /// Suspend/teardown path only: drop all cached origins. Held pairs keep
+    /// their stored verdicts; no new chord binds until a fresh snapshot.
+    pub fn apply_clear_windrag_origins() {
+        SNAP.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.origins.clear();
+            }
+        });
+    }
+
+    /// Apply one whole owner snapshot outside callbacks (input pump only).
+    /// Whole-payload FIFO order preserved by the caller; never called from a
+    /// hook callback. Stale queued actions drain only when the classifier
+    /// policy actually changed (`policy_changed`); origins/gate-only
+    /// republishes never flush, so held pairs and legitimate queued actions
+    /// survive map updates. In-flight held keys always keep their down-time
+    /// verdicts and the mask obligation survives either way. Returns the
+    /// stale-drained count for the owner ack.
+    pub fn apply_snapshot(snap: &SharedSnapshot, policy_changed: bool) -> usize {
+        SNAP.with(|s| {
+            let mut borrow = s.borrow_mut();
+            let Some(st) = borrow.as_mut() else {
+                return 0;
+            };
+            let mut drained = 0;
+            if policy_changed {
+                st.machine.set_enabled(snap.keyboard.takeover);
+                st.machine.allow_win_l = snap.keyboard.allow_win_l;
+                st.machine.set_remap(snap.remap.clone());
+                st.machine.set_disabled(snap.disabled.clone());
+                drained = st.queue.drain_stale();
+            }
+            st.origins = snap.snap_origins.clone();
+            st.active = snap.active;
+            st.cb_diag_enabled = snap.trace;
+            drained
+        })
+    }
+
+    /// Drop a stale windrag Esc edge without acting (suspend/teardown path
+    /// only), alongside [`clear_esc_edge`]. Gesture START snapshots the
+    /// sequence instead of clearing, so a same-batch edge stays ordered.
+    pub fn clear_windrag_esc_edge() {
+        SNAP.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.windrag_esc_edge = false;
+            }
+        });
+    }
     /// Monotonic sequence of physical Esc down edges. The owner snapshots
     /// this at each gesture START and latches only edges with a newer
     /// sequence, so pre-gesture taps never cancel and fast cancel taps that
@@ -4654,6 +4732,13 @@ pub mod sys {
             // with no borrow held after the reserve and is timed
             // separately in the mask-send aggregate).
             let started: Option<Instant> = diag_on.then(Instant::now);
+            // Trace-only native delivery gap: native event timestamp to
+            // callback entry, tick-count domain. No timing work unless
+            // tracing.
+            if diag_on {
+                let gap = unsafe { GetTickCount() }.saturating_sub(kb.time);
+                crate::input_handoff::record_delivery_gap_ms(gap);
+            }
             let injected = flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED) != 0;
             // Own-injection guard BEFORE any SNAP borrow: the SendInput pair
             // below reenters this callback on the same thread, and
@@ -4761,6 +4846,14 @@ pub mod sys {
                                 st.windrag_esc_seq = st.windrag_esc_seq.wrapping_add(1);
                             }
                         });
+                        // Direct atomic publish in the callback: the owner
+                        // settle sees this edge even if a WinEvent END lands
+                        // before the pump forwards anything. The sequence
+                        // still decides cancellation, so the flag alone never
+                        // cancels.
+                        global_windrag_esc_clock().bump();
+                        crate::input_handoff::global_windrag_esc_edge()
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                     return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
                 }
@@ -4790,6 +4883,15 @@ pub mod sys {
                         st.windrag_esc_seq = st.windrag_esc_seq.wrapping_add(1);
                     }
                 });
+                // Direct atomic publish in the callback (see the injected
+                // path above): no pump-forwarding delay can hide an Esc that
+                // lands just before a WinEvent END.
+                global_esc_clock().bump();
+                global_windrag_esc_clock().bump();
+                crate::input_handoff::global_esc_edge()
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::input_handoff::global_windrag_esc_edge()
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
             }
             if is_up && super::is_win_vk(vk) {
                 let tick = Instant::now();
@@ -5008,11 +5110,15 @@ pub mod sys {
                 // Shortcut-handling gate (no syscalls beyond the single
                 // foreground read inside `callback_origin`): fresh downs
                 // consume iff enabled with the gate active; consumed-hold
-                // pairs ride the stored down verdict. Suspended/fullscreen/
+                // pairs ride the stored down verdict. The publication fence
+                // closes the gate further while a newer policy is published
+                // but not yet applied, so fresh actions refuse (pass through
+                // tracked) instead of consuming under stale policy and
+                // getting discarded owner-side. Suspended/fullscreen/
                 // gesture/elevated/unmanaged never enter this gate (takeover
                 // publication only); the owner rechecks those fresh per
                 // intent.
-                let gate = st.active;
+                let gate = keyboard_fresh_gate(st.active);
                 let fg = callback_origin(st);
                 let tick = Instant::now();
                 // Reaching here with `injected` true means the fixed proof
@@ -5398,18 +5504,346 @@ pub mod sys {
 
     /// Uninstall and drop hook state. Returns the actual unhook result:
     /// process exit releases the hook in any case, but success is never
-    /// fabricated here. The Win-up itself always passed through, so no stuck
-    /// keys are possible; a partial E8 pair resolves to one bounded release
-    /// attempt at send time.
+    /// fabricated here. State mutates only on success: a failed unhook
+    /// retains the full classifier state (including arm/swallow obligations),
+    /// so a creator-side retry still sees the live gesture and no paired Up
+    /// can leak through as a passed-through click. The Win-up itself always
+    /// passed through, so no stuck keys are possible; a partial E8 pair
+    /// resolves to one bounded release attempt at send time.
     pub fn uninstall(hook: &mut HHOOK) -> bool {
+        let ok = unsafe { UnhookWindowsHookEx(*hook) } != 0;
+        if !ok {
+            return false;
+        }
+        *hook = std::ptr::null_mut();
         SNAP.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
                 st.machine.set_enabled(false);
             }
         });
-        let ok = unsafe { UnhookWindowsHookEx(*hook) } != 0;
-        *hook = std::ptr::null_mut();
         SNAP.with(|s| *s.borrow_mut() = None);
-        ok
+        true
+    }
+
+    /// Test-only mask-obligation probe (no hooks, no native calls): true
+    /// while a consumed gesture (chord or windrag) still owes the Win-up E8
+    /// pair. Driven directly in callback tests that must not perform a real
+    /// `SendInput`.
+    #[cfg(test)]
+    pub fn test_mask_pending() -> bool {
+        SNAP.with(|s| {
+            s.borrow()
+                .as_ref()
+                .is_some_and(|st| st.machine.mask_pending)
+        })
+    }
+
+    /// Test-only applied-origin snapshot (no hooks, no native calls): the
+    /// currently applied chord-origin map for FIFO-order assertions.
+    #[cfg(test)]
+    pub fn test_keyboard_origins() -> HashMap<u64, SnapOrigin> {
+        SNAP.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|st| st.origins.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Test-only hook-state installer (no `SetWindowsHookExW`, no native
+    /// effects): mirrors [`install`](Self::install)'s TLS init so step tests
+    /// drive the production apply/drain logic without hooks.
+    #[cfg(test)]
+    pub fn test_ensure_state(config: KeyboardConfig) {
+        SNAP.with(|s| {
+            *s.borrow_mut() = Some(SnapHookState {
+                machine: SnapClassify::new(config),
+                queue: SnapQueue::new(),
+                origins: HashMap::new(),
+                active: false,
+                proof_marker: None,
+                diag: MarkedDiagBuf::new(),
+                mod_diag: ModDiagBuf::new(),
+                cb_diag: CallbackDiagBuf::new(),
+                cb_diag_enabled: false,
+                mask_sends: 0,
+                mask_send_max_us: 0,
+                esc_edge: false,
+                esc_seq: 0,
+                windrag_esc_edge: false,
+                windrag_esc_seq: 0,
+            });
+        });
+    }
+
+    /// Test-only state teardown (no native calls).
+    #[cfg(test)]
+    pub fn test_clear_state() {
+        SNAP.with(|s| *s.borrow_mut() = None);
+    }
+
+    /// Test-only queue injection (no hooks, no native calls): push one
+    /// classifier record straight into the hook queue for drain/offer tests.
+    /// Mirrors saturation accounting.
+    #[cfg(test)]
+    pub fn test_push_queued(event: QueuedSnapEvent) -> bool {
+        SNAP.with(|s| {
+            s.borrow_mut()
+                .as_mut()
+                .is_some_and(|st| st.queue.push(event))
+        })
+    }
+
+    /// Test-only synthetic `llproc` drive (no hooks, no `SendInput`): feeds
+    /// one fabricated low-level event through the real callback. Safe
+    /// inputs only: injected-filtered traffic, Esc downs, and ordinary
+    /// physical keys. Never drive a Win-up that could reserve the mask
+    /// (that path performs a real `SendInput`).
+    ///
+    /// # Safety
+    ///
+    /// Test-only: the fabricated `KBDLLHOOKSTRUCT` lives on the stack for
+    /// the synchronous call; the callback only reads it and passes it to
+    /// `CallNextHookEx` (no hook installed, no effects). Callers must not
+    /// drive inputs that trigger `SendInput` (see above).
+    #[cfg(test)]
+    pub unsafe fn test_drive_llproc(
+        vk: u32,
+        scan: u32,
+        flags: u32,
+        extra: u64,
+    ) -> windows_sys::Win32::Foundation::LRESULT {
+        use windows_sys::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT;
+        let kb = KBDLLHOOKSTRUCT {
+            vkCode: vk,
+            scanCode: scan,
+            flags,
+            time: 0,
+            dwExtraInfo: extra as usize,
+        };
+        unsafe { llproc(HC_ACTION as i32, 0, &kb as *const KBDLLHOOKSTRUCT as isize) }
+    }
+
+    #[cfg(test)]
+    mod sys_tests {
+        use super::*;
+        use crate::input_handoff::{
+            global_esc_clock, global_esc_edge, global_windrag_esc_clock, global_windrag_esc_edge,
+        };
+        use std::sync::atomic::Ordering;
+
+        fn fresh_state() {
+            test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+        }
+
+        #[test]
+        fn own_e8_reentry_passes_through_with_no_state_change() {
+            // The mask `SendInput` pair reenters this callback on the same
+            // thread as injected E8 with `dwExtraInfo` 0: product filters ALL
+            // injected, so the reentry passes through with no borrow held,
+            // no queue push, no sequence bump, and no panic.
+            fresh_state();
+            let tls_before = SNAP.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|st| {
+                        (
+                            st.queue.len(),
+                            st.queue.dropped,
+                            st.esc_seq,
+                            st.windrag_esc_seq,
+                        )
+                    })
+                    .unwrap_or((0, 0, 0, 0))
+            });
+            unsafe {
+                test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
+                test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED | LLKHF_UP, 0);
+            }
+            // Thread-local state untouched (process-global clocks are shared
+            // with parallel tests, so only TLS effects assert exactly here).
+            let tls_after = SNAP.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|st| {
+                        (
+                            st.queue.len(),
+                            st.queue.dropped,
+                            st.esc_seq,
+                            st.windrag_esc_seq,
+                        )
+                    })
+                    .unwrap_or((0, 0, 0, 0))
+            });
+            assert_eq!(tls_before, tls_after);
+            // The reentry is trace-visible (closed E8 vocabulary) but never
+            // classifier state: enabling trace records exactly the two
+            // filtered summaries and nothing else.
+            SNAP.with(|s| {
+                if let Some(st) = s.borrow_mut().as_mut() {
+                    st.cb_diag_enabled = true;
+                }
+            });
+            unsafe {
+                test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
+            }
+            let diags = drain_callback_diag();
+            assert_eq!(diags.len(), 1);
+            assert_eq!(diags[0].reason, CallbackReason::InjectedFiltered);
+            assert!(!diags[0].consumed);
+            test_clear_state();
+        }
+
+        #[test]
+        fn physical_esc_sets_both_edges_and_bumps_both_clocks() {
+            // Serial guard: the global edge assertions race a concurrent
+            // pump `ClearEsc` apply (which stores false).
+            let _guard = crate::input_handoff::fence_test_serial();
+            fresh_state();
+            let esc_before = global_esc_clock().load();
+            let windrag_before = global_windrag_esc_clock().load();
+            unsafe {
+                test_drive_llproc(super::super::VK_ESCAPE, 1, 0, 0);
+            }
+            let (edge, windrag_edge) = SNAP.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|st| (st.esc_edge, st.windrag_esc_edge))
+                    .unwrap_or((false, false))
+            });
+            assert!(edge && windrag_edge);
+            assert!(global_esc_clock().load() >= esc_before.wrapping_add(1));
+            assert!(global_windrag_esc_clock().load() >= windrag_before.wrapping_add(1));
+            assert!(global_esc_edge().load(Ordering::SeqCst));
+            assert!(global_windrag_esc_edge().load(Ordering::SeqCst));
+            test_clear_state();
+        }
+
+        #[test]
+        fn injected_esc_sets_only_the_windrag_edge() {
+            // Synthetic Esc (unmarked, like a `SendInput` cancel): never a
+            // command, never the native edge, but still cancels an open
+            // Win+Left drag that has no native modal loop. Serial guard:
+            // same global-edge race as the physical Esc test above.
+            let _guard = crate::input_handoff::fence_test_serial();
+            fresh_state();
+            unsafe {
+                test_drive_llproc(super::super::VK_ESCAPE, 1, LLKHF_INJECTED, 0);
+            }
+            let (edge, windrag_edge, esc_seq_delta) = SNAP.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .map(|st| (st.esc_edge, st.windrag_esc_edge, st.esc_seq))
+                    .unwrap_or((true, false, 1))
+            });
+            assert!(!edge && windrag_edge);
+            assert_eq!(esc_seq_delta, 0);
+            assert!(global_windrag_esc_edge().load(Ordering::SeqCst));
+            test_clear_state();
+        }
+
+        #[test]
+        fn untracked_win_up_passes_without_mask_send() {
+            // A Win-up with no tracked hold reserves nothing, sends nothing
+            // (no real `SendInput`), and always passes through.
+            fresh_state();
+            let (sends_before, _) = mask_send_stats();
+            unsafe {
+                test_drive_llproc(super::super::VK_LWIN, 0, LLKHF_UP, 0);
+            }
+            let (sends_after, _) = mask_send_stats();
+            assert_eq!(sends_before, sends_after);
+            test_clear_state();
+        }
+
+        #[test]
+        fn publication_fence_refuses_fresh_chord_through_real_callback() {
+            // Real `llproc` through the test-drive seam: while the fence is
+            // pending (policy published, pump not yet applied) a fresh chord
+            // passes through instead of consuming under stale policy; after
+            // the pump applies, fresh chords consume, and a consumed hold
+            // rides its stored verdict (repeat, paired Up, mask obligation)
+            // across a later fence window. No `SendInput` here: Win-up is
+            // never driven (the mask reserve is asserted directly).
+            use crate::input_handoff::{
+                fence_test_allocate, fence_test_serial, keyboard_fresh_gate, note_policy_applied,
+                note_policy_published,
+            };
+            let _guard = fence_test_serial();
+            let base = fence_test_allocate();
+            fresh_state();
+            SNAP.with(|s| {
+                if let Some(st) = s.borrow_mut().as_mut() {
+                    st.active = true;
+                }
+            });
+            unsafe {
+                test_drive_llproc(super::super::VK_LWIN, 0, 0, 0);
+            }
+            assert!(SNAP.with(|s| { s.borrow().as_ref().is_some_and(|st| st.machine.win_held()) }));
+            // Fence pending: the fresh H down passes through the real
+            // callback (never swallowed under stale policy).
+            note_policy_published(base + 1);
+            assert!(!keyboard_fresh_gate(true));
+            let verdict = unsafe { test_drive_llproc(super::super::VK_H, 0, 0, 0) };
+            assert_ne!(verdict, 1);
+            assert!(SNAP.with(|s| {
+                s.borrow()
+                    .as_ref()
+                    .is_some_and(|st| st.machine.key_is_down(super::super::VK_H))
+            }));
+            // Pump applies: a new fresh chord consumes through the callback.
+            note_policy_applied(base + 1);
+            assert!(keyboard_fresh_gate(true));
+            let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, 0, 0) };
+            assert_eq!(verdict, 1);
+            // A newer policy publishes mid-hold: the repeat still rides the
+            // stored consumed verdict, the mask obligation survives, and the
+            // paired Up stays swallowed; the passed H pair still closes
+            // passing (never stolen).
+            note_policy_published(base + 2);
+            assert!(!keyboard_fresh_gate(true));
+            let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, 0, 0) };
+            assert_eq!(verdict, 1);
+            let mask_armed = SNAP.with(|s| {
+                let mut borrow = s.borrow_mut();
+                let st = borrow.as_mut().expect("hook state");
+                super::super::win_up_mask_reserve(
+                    &mut st.machine,
+                    &mut st.queue,
+                    super::super::VK_LWIN,
+                    true,
+                    std::time::Instant::now(),
+                )
+            });
+            assert!(mask_armed);
+            let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, LLKHF_UP, 0) };
+            assert_eq!(verdict, 1);
+            let verdict = unsafe { test_drive_llproc(super::super::VK_H, 0, LLKHF_UP, 0) };
+            assert_ne!(verdict, 1);
+            note_policy_applied(base + 2);
+            assert!(keyboard_fresh_gate(true));
+            test_clear_state();
+        }
+
+        #[test]
+        fn proof_marker_matrix_accepts_only_the_exact_marker() {
+            assert!(!super::super::accept_proof_injected(0, None));
+            assert!(!super::super::accept_proof_injected(
+                super::super::SHORTCUT_PROOF_MARKER,
+                None
+            ));
+            assert!(!super::super::accept_proof_injected(
+                0,
+                Some(super::super::SHORTCUT_PROOF_MARKER)
+            ));
+            assert!(super::super::accept_proof_injected(
+                super::super::SHORTCUT_PROOF_MARKER,
+                Some(super::super::SHORTCUT_PROOF_MARKER)
+            ));
+        }
     }
 }

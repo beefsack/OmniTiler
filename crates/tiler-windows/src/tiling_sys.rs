@@ -64,6 +64,14 @@ use crate::group_underlay::{
     GroupUnderlayOptions, MoveSizeKind, aggregate_chord_keys, classify_hit_test, underlay_eligible,
     underlay_geometry_debug, underlay_outer_rect,
 };
+use crate::input_handoff::InboxItem;
+use crate::input_handoff::SharedSnapshot;
+use crate::input_handoff::fence_base_generation;
+use crate::input_handoff::note_policy_published;
+use crate::input_handoff::snapshot_content_eq;
+use crate::input_handoff::snapshot_policy_eq;
+use crate::input_pump::READY_WAIT;
+use crate::input_pump::{FailEvent, InboxSender, InputHandle};
 use crate::lifecycle::{
     WORKSPACE_REQUEST_FILE, exe_paths_equal, is_medium_rid,
     sys::{log_path_for, snap_resume, snap_suspend, stop_requested},
@@ -95,7 +103,6 @@ use crate::win_mouse::{
     settle_pointer_journey, validate_windrag_down,
 };
 use crate::workspace::ManagedWorkspaces;
-
 type DynError = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, DynError>;
 
@@ -328,12 +335,13 @@ unsafe extern "system" fn winevent_proc(
     _time: u32,
 ) {
     if event == EVENT_SYSTEM_MOVESIZESTART {
-        // Event-time Esc sequence: snapshot now in the callback so a
-        // physical Esc between the real START and the owner drain keeps a
-        // newer sequence than the snapshot and still latches.
+        // Event-time Esc sequence sampled directly from the shared atomic
+        // clock, so a physical Esc between the real START and the owner
+        // drain keeps a newer sequence than the snapshot and still latches.
+        // Delayed batch sequences never decide this comparison.
         push_hook(HookEvent::MoveSizeStart(
             hwnd as isize,
-            crate::snapkey::sys::esc_seq(),
+            crate::snapkey::sys::shared_esc_seq(),
         ));
     } else if event == EVENT_SYSTEM_MOVESIZEEND {
         // KDE Finish pointer: capture the release cursor now, at event
@@ -343,7 +351,7 @@ unsafe extern "system" fn winevent_proc(
         push_hook(HookEvent::MoveSizeEnd(
             hwnd as isize,
             cursor_pos(),
-            crate::snapkey::sys::esc_seq(),
+            crate::snapkey::sys::shared_esc_seq(),
         ));
     } else if id_object == OBJID_WINDOW
         && matches!(
@@ -1530,10 +1538,15 @@ struct TileLoop {
     cli_overrides: crate::tiling::CliOverrides,
     /// Last published snap-queue loss count, for explicit drop evidence.
     snap_dropped: u32,
+    /// Last owner-measured snap batch age at take time, microseconds
+    /// (trace-only `input-queue-age` evidence).
+    input_trace_snap_age: u64,
     /// Last published callback-summary loss counts, for explicit drop/filter
     /// evidence on the trace-only `snap-callback` drain.
     cb_diag_dropped: u32,
     cb_diag_filtered: u32,
+    /// Last published callback-summary outbox drops (product pump only).
+    cb_outbox_dropped: u32,
     /// Last published trace-only mask-send aggregate (`sends`, `max_us`).
     mask_sends: u32,
     mask_send_max_us: u32,
@@ -1838,6 +1851,280 @@ struct TileLoop {
     /// inherit, pruned with membership. Sticky/maximized Engine flags stay
     /// adapter-owned (false): their lanes are unchanged by this delivery.
     overlay_now: HashMap<String, (bool, bool)>,
+    /// Dedicated-input bridge for the product path (`None` on proof paths,
+    /// which keep same-thread hooks). Carries the pump channels plus the
+    /// owner-side generation/ack/carry bookkeeping; all owner control calls
+    /// route through it so nothing touches input TLS from this thread.
+    input_bridge: Option<InputBridge>,
+}
+
+/// Owner-side dedicated-input bridge (product path only). The pump owns both
+/// hooks and their classifiers; the owner publishes versioned snapshots and
+/// ordered controls through the bounded inbox and dispatches tagged batches.
+/// Generations pair batches with policy: a batch tagged older than the latest
+/// published policy is stale-dropped (mask events still resolve), never
+/// dispatched under a replaced policy.
+struct InputBridge {
+    /// Pump channels (outboxes, diagnostics, apply-ack atomics).
+    channels: std::sync::Arc<crate::input_pump::InputChannels>,
+    /// Bounded FIFO sender with ordered pending retry.
+    sender: InboxSender,
+    /// Pump thread handle (lifecycle + bounded join).
+    handle: InputHandle,
+    /// Last snapshot offered (change detection; content without generation).
+    last_snapshot: Option<SharedSnapshot>,
+    /// Armed-but-refused policy generation awaiting retry. Set when a
+    /// policy-changing snapshot refuses (inbox fault) after the fence armed;
+    /// the next offer reuses this generation for whatever the current
+    /// desired content is (even a revert to `last_snapshot`) instead of
+    /// inflating a new one, so the fence and the ack pair up exactly once.
+    /// Cleared when a snapshot is accepted. Map-only refusals need none:
+    /// unchanged `last_snapshot` re-offers them naturally with no fence.
+    retry_gen: Option<u64>,
+    /// Pending clear-driven full republish. Set when the sender absorbed a
+    /// `ClearWindrag` (a clear drops both hook origin maps while
+    /// `last_snapshot` still carries the old origins); forces the next offer
+    /// even when content is unchanged. Cleared only when a snapshot is
+    /// accepted (FIFO orders it behind the retained safety obligations).
+    force_snapshot: bool,
+    /// Last observed sender clear count (transition-only force trigger).
+    last_clear_seen: u64,
+    /// Latest published policy generation.
+    published_gen: u64,
+    /// Last observed applied policy generation.
+    applied_gen: u64,
+    /// Last observed sender fault count (transition-only fault logs).
+    last_faults: u64,
+    /// Last observed sender dedupe count (transition-only evidence).
+    last_deduped: u64,
+    /// Policy generation awaiting apply ack (`None` once acknowledged).
+    pending_ack: Option<u64>,
+    /// Last acknowledged config-apply log (dedupes the ack event).
+    last_ack_logged: u64,
+    /// Last traced pump turn count (change-only `input-queue-age` logs).
+    last_trace_turns: u64,
+    /// Last traced windrag offer count (change-only transport logs).
+    last_windrag_offers: u64,
+}
+
+/// Log sender fault/dedupe transitions with pending counts (once per
+/// transition, never per-tick noise).
+fn log_input_faults(bridge: &mut InputBridge, log_path: &std::path::Path) {
+    if bridge.sender.faults != bridge.last_faults {
+        bridge.last_faults = bridge.sender.faults;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "input-inbox-full",
+                "faults": bridge.sender.faults,
+                "pending": bridge.sender.pending_len(),
+                "note": "fresh admission closed; ordered payload preserved for retry",
+            }),
+        );
+    }
+    if bridge.sender.deduped != bridge.last_deduped {
+        bridge.last_deduped = bridge.sender.deduped;
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "input-inbox-dedupe",
+                "deduped": bridge.sender.deduped,
+            }),
+        );
+    }
+}
+
+/// Offer one control item through the bridge. Controls are infallibly
+/// absorbed by the sender (queued, buffered in FIFO order, collapsed as exact
+/// duplicates, or merged into the fixed-bound safety slots with clear
+/// escalation), so this always returns true on the product path: nothing
+/// safety-relevant is ever refused or dropped here. Snapshots never route
+/// through this function (they rebuild from live state every tick until
+/// accepted).
+fn offer_input_control(state: &mut TileLoop, item: InboxItem) -> bool {
+    let log_path = state.log_path.clone();
+    let Some(bridge) = state.input_bridge.as_mut() else {
+        // Proof/legacy paths: same-thread hooks, direct sys call.
+        match item {
+            InboxItem::InvalidateWindrag(hwnd) => crate::win_mouse::sys::invalidate(hwnd),
+            InboxItem::ClearWindrag => crate::win_mouse::sys::clear_armed(),
+            InboxItem::ClearEsc => crate::snapkey::sys::clear_esc_edge(),
+            InboxItem::Snapshot(_) => {}
+        }
+        return true;
+    };
+    bridge.sender.flush();
+    match bridge.sender.offer(item) {
+        Ok(()) => {
+            log_input_faults(bridge, &log_path);
+            true
+        }
+        Err(refused) => {
+            // Unreachable for controls: only snapshots refuse (rebuildable),
+            // and they route through `offer_input_snapshot`.
+            debug_assert!(
+                matches!(refused, InboxItem::Snapshot(_)),
+                "controls are infallibly absorbed by the sender"
+            );
+            log_input_faults(bridge, &log_path);
+            false
+        }
+    }
+}
+
+/// Production snapshot-offer directive (owner publication seam): whether
+/// the per-tick candidate reaches the sender. `Retry(g)` resends whatever
+/// the current desired content is (even a revert to `last`) with the armed
+/// generation `g`; `Fresh` offers normally; `Skip` sends nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SnapshotOffer {
+    Skip,
+    Fresh,
+    Retry(u64),
+}
+
+/// Decide the per-tick snapshot offer. A refused policy offer stays live as
+/// `retry_gen` and resends with its armed generation instead of early
+/// returning (a revert to `last_snapshot` would otherwise leave the armed
+/// fence pending forever) and instead of bumping a new generation (which
+/// would inflate generations on every stalled tick). A pending
+/// clear-driven `force` offers even unchanged content so cleared origins
+/// republish deterministically.
+pub(crate) fn plan_snapshot_offer(
+    last: Option<&SharedSnapshot>,
+    candidate: &crate::input_handoff::InputSnapshot,
+    retry_gen: Option<u64>,
+    force: bool,
+) -> SnapshotOffer {
+    if let Some(generation) = retry_gen {
+        return SnapshotOffer::Retry(generation);
+    }
+    if !force
+        && let Some(last) = last
+        && snapshot_content_eq(last, candidate)
+    {
+        return SnapshotOffer::Skip;
+    }
+    SnapshotOffer::Fresh
+}
+
+/// Offer the per-tick snapshot when content changed (or when a retry or a
+/// clear-driven force is outstanding). Assigns policy generations (bumped
+/// only on real policy change, reused on retry), stages the config-change
+/// ack, and skips redundant offers so unchanged ticks send nothing and never
+/// flush classifier queues.
+fn offer_input_snapshot(state: &mut TileLoop, mut candidate: crate::input_handoff::InputSnapshot) {
+    let log_path = state.log_path.clone();
+    let Some(bridge) = state.input_bridge.as_mut() else {
+        return;
+    };
+    // Clear-driven republish trigger: any sender-absorbed clear since the
+    // last observation forces the next offer even when content is unchanged.
+    if bridge.sender.windrag_cleared() != bridge.last_clear_seen {
+        bridge.last_clear_seen = bridge.sender.windrag_cleared();
+        bridge.force_snapshot = true;
+    }
+    match plan_snapshot_offer(
+        bridge.last_snapshot.as_ref(),
+        &candidate,
+        bridge.retry_gen,
+        bridge.force_snapshot,
+    ) {
+        SnapshotOffer::Skip => return,
+        SnapshotOffer::Retry(generation) => {
+            // Reuse the armed generation for the current desired content
+            // (the fence is already armed and `pending_ack` already pairs
+            // it; re-arming is a no-op `fetch_max`). Accepted even when the
+            // content equals `last_snapshot` (revert): the pump advances its
+            // ack on apply even for equal content, clearing the fence.
+            candidate.generation = generation;
+            // Retry preserved sender payloads before the fresh snapshot (FIFO).
+            bridge.sender.flush();
+            let shared: SharedSnapshot = std::sync::Arc::new(candidate);
+            match bridge
+                .sender
+                .offer(InboxItem::Snapshot(Arc::clone(&shared)))
+            {
+                Ok(()) => {
+                    bridge.last_snapshot = Some(shared);
+                    bridge.retry_gen = None;
+                    bridge.force_snapshot = false;
+                }
+                Err(_) => {
+                    // Still stalled: the retry stays armed for the next tick.
+                    // Fault counted by the sender.
+                }
+            }
+        }
+        SnapshotOffer::Fresh => {
+            let policy_changed = bridge
+                .last_snapshot
+                .as_ref()
+                .is_none_or(|last| !snapshot_policy_eq(last, &candidate));
+            if policy_changed {
+                bridge.published_gen += 1;
+                bridge.pending_ack = Some(bridge.published_gen);
+                // Arm the callback-visible fence before the inbox offer so fresh
+                // callbacks refuse fail-closed even while the snapshot is queued.
+                note_policy_published(bridge.published_gen);
+            }
+            candidate.generation = bridge.published_gen;
+            // Retry preserved sender payloads before the fresh snapshot (FIFO).
+            bridge.sender.flush();
+            let shared: SharedSnapshot = std::sync::Arc::new(candidate);
+            match bridge
+                .sender
+                .offer(InboxItem::Snapshot(Arc::clone(&shared)))
+            {
+                Ok(()) => {
+                    bridge.last_snapshot = Some(shared);
+                    bridge.force_snapshot = false;
+                }
+                Err(_) => {
+                    // Regenerable: map-only refusals rebuild next tick
+                    // (last_snapshot unchanged, so change detection
+                    // re-offers). A refused policy change arms the retry so
+                    // the fence still pairs exactly once, even across a
+                    // revert. Fault counted by the sender.
+                    if policy_changed {
+                        bridge.retry_gen = Some(bridge.published_gen);
+                    }
+                }
+            }
+        }
+    }
+    log_input_faults(bridge, &log_path);
+}
+
+/// Poll the pump's applied policy generation and log the config-change ack
+/// with the true stale-drained count once per change.
+fn poll_input_ack(state: &mut TileLoop) {
+    use std::sync::atomic::Ordering;
+    let log_path = state.log_path.clone();
+    let Some(bridge) = state.input_bridge.as_mut() else {
+        return;
+    };
+    let applied = bridge.channels.applied_policy_gen.load(Ordering::SeqCst);
+    if applied > bridge.applied_gen {
+        bridge.applied_gen = applied;
+    }
+    if let Some(pending) = bridge.pending_ack
+        && applied >= pending
+        && bridge.last_ack_logged != pending
+    {
+        let drained = bridge.channels.acked_stale.load(Ordering::Relaxed);
+        bridge.pending_ack = None;
+        bridge.last_ack_logged = pending;
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-keyboard-ack",
+                "generation": pending,
+                "applied": applied,
+                "drained": drained,
+            }),
+        );
+    }
 }
 
 /// Armed prompt-restore wake: the restored member by full identity plus the
@@ -2281,6 +2568,8 @@ fn publish_managed(
     }
     // Drop pre-gesture state for windows that left management, and disarm
     // the hook slot for them so a stale bound down can never settle later.
+    // Routes through the input bridge on the product path (ordered FIFO with
+    // snapshots); same-thread direct call on proof paths.
     for hwnd in state
         .gesture_producer
         .keys()
@@ -2288,7 +2577,7 @@ fn publish_managed(
         .filter(|hwnd| !state.managed.contains(hwnd))
         .collect::<Vec<_>>()
     {
-        crate::win_mouse::sys::invalidate(hwnd);
+        offer_input_control(state, InboxItem::InvalidateWindrag(hwnd));
     }
     state
         .esc_latched
@@ -7152,6 +7441,17 @@ fn born_maximized_keep_overlay_for(live: Option<&LiveSettings>) -> bool {
 /// enumeration failure settles the action as failed. Log vocabulary is tokens
 /// plus op/direction/edge/disposition/outcome/correlation only: no titles, raw
 /// native ids, or keys.
+/// Owner-side snap queue-loss source (production seam): the pump's bounded
+/// diagnostics when the dedicated input thread owns the hook TLS (owner TLS
+/// is never the input thread's there), direct hook TLS only on proof/legacy
+/// paths. `diag` carries the latest published `snap_dropped` when bridged.
+pub(crate) fn owner_snap_dropped(diag: Option<u32>) -> u32 {
+    match diag {
+        Some(dropped) => dropped,
+        None => crate::snapkey::sys::queue_dropped(),
+    }
+}
+
 fn keyboard_tick(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -7161,7 +7461,12 @@ fn keyboard_tick(
     blocked: Option<&'static str>,
 ) {
     let log_path = state.log_path.clone();
-    let dropped = crate::snapkey::sys::queue_dropped();
+    let dropped = owner_snap_dropped(
+        state
+            .input_bridge
+            .as_ref()
+            .map(|bridge| bridge.channels.diag.snapshot().snap_dropped),
+    );
     if dropped > state.snap_dropped {
         log_json_at(
             &log_path,
@@ -19553,20 +19858,43 @@ fn apply_live_settings(
         state.keyboard = keyboard;
         state.last_remap = remap.clone();
         state.last_disabled = disabled.clone();
-        let drained = crate::snapkey::sys::apply_live_config(keyboard, &remap, &disabled);
-        lanes.push("keyboard");
-        changed = true;
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "settings-keyboard",
-                "takeover": keyboard.takeover,
-                "allow_win_l": keyboard.allow_win_l,
-                "remap": remap.len(),
-                "disabled": disabled.len(),
-                "drained": drained,
-            }),
-        );
+        if state.input_bridge.is_some() {
+            // Product path: the policy rides the next versioned snapshot
+            // (generations assigned at offer time) and the pump applies it in
+            // FIFO order; the true stale-drained count arrives with the
+            // `settings-keyboard-ack` event. No direct hook call: input TLS
+            // lives on the pump thread. Dispatch of superseded batches is
+            // gated owner-side by generation until the ack lands.
+            lanes.push("keyboard");
+            changed = true;
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "settings-keyboard",
+                    "takeover": keyboard.takeover,
+                    "allow_win_l": keyboard.allow_win_l,
+                    "remap": remap.len(),
+                    "disabled": disabled.len(),
+                    "drained": 0,
+                    "ack_pending": true,
+                }),
+            );
+        } else {
+            let drained = crate::snapkey::sys::apply_live_config(keyboard, &remap, &disabled);
+            lanes.push("keyboard");
+            changed = true;
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "settings-keyboard",
+                    "takeover": keyboard.takeover,
+                    "allow_win_l": keyboard.allow_win_l,
+                    "remap": remap.len(),
+                    "disabled": disabled.len(),
+                    "drained": drained,
+                }),
+            );
+        }
     }
     let want_snap = !base.no_mouse_snap_prevention;
     if want_snap != *snap_want {
@@ -19855,8 +20183,10 @@ fn run_tile_loop(
         last_disabled,
         cli_overrides,
         snap_dropped: 0,
+        input_trace_snap_age: 0,
         cb_diag_dropped: 0,
         cb_diag_filtered: 0,
+        cb_outbox_dropped: 0,
         mask_sends: 0,
         mask_send_max_us: 0,
         snap_origins: HashMap::new(),
@@ -19915,6 +20245,7 @@ fn run_tile_loop(
         fixed_auto_seen: BTreeSet::new(),
         born_first_exit: BTreeSet::new(),
         overlay_now: HashMap::new(),
+        input_bridge: None,
         pending_releases: crate::workspace::PendingReleases::new(),
         pending_retry_fp: 0,
     };
@@ -20102,6 +20433,12 @@ fn run_tile_loop(
     // installs with test-only marker acceptance. Install is best-effort with
     // bounded backoff retries below: failure degrades to keyboard-unavailable
     // (nothing consumes) while tiling continues, never a refused run.
+    //
+    // Product `tile` runs both hooks on one dedicated input pump instead
+    // (stage 1): the callbacks never run on this owner thread, so owner
+    // observation, Engine, actuation and I/O cannot delay delivery. Proof
+    // commands keep the legacy same-thread hooks below untouched.
+    let use_input_thread = !proof && !shortcut_proof && !workspace_proof;
     let mut snap_hook = None;
     let mut snap_failures: u32 = 0;
     let mut snap_retry_at: Option<Instant> = None;
@@ -20111,7 +20448,10 @@ fn run_tile_loop(
     // gate below keeps everything passing through until then). Install
     // failure degrades to title-bar-only movement (Win+Left passes through
     // natively) while tiling continues, never a refused run.
-    let windrag_hook = if takeover || !proof {
+    //
+    // Product path: owned by the input pump instead (same install-while-off
+    // contract, same pass-through gate via snapshots).
+    let windrag_hook = if !use_input_thread && (takeover || !proof) {
         match crate::win_mouse::sys::install() {
             Ok(hook) => {
                 log_json_at(&log_path, serde_json::json!({"event":"windrag-available"}));
@@ -20128,6 +20468,78 @@ fn run_tile_loop(
     } else {
         None
     };
+    // Dedicated input pump for the product path: both LL hooks plus their
+    // synchronous classifiers on one thread. Readiness uses a bounded wait;
+    // install failures retry on the pump with the same 5s-doubling/60s-cap
+    // vocabulary and the loop keeps tiling degraded meanwhile. A spawn
+    // failure degrades the same way (no hooks, tiling continues).
+    if use_input_thread {
+        match InputHandle::spawn(state.keyboard) {
+            Ok(mut handle) => {
+                let ready = handle.wait_ready(READY_WAIT, &mut |event: &FailEvent| {
+                    log_json_at(
+                        &log_path,
+                        if event.recovered {
+                            serde_json::json!({
+                                "event": if event.hook == "keyboard" { "snap-available" } else { "windrag-available" },
+                                "producer": "input-pump",
+                            })
+                        } else {
+                            serde_json::json!({
+                                "event": if event.hook == "keyboard" { "snap-unavailable" } else { "windrag-unavailable" },
+                                "attempt": event.attempt,
+                                "retry_secs": event.retry_secs,
+                                "producer": "input-pump",
+                            })
+                        },
+                    );
+                });
+                if ready {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({"event":"input-ready","bounded_wait":"met"}),
+                    );
+                } else {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({"event":"input-pending","note":"hooks retry on the input pump; tiling continues degraded"}),
+                    );
+                }
+                let channels = handle.channels().clone();
+                // Esc clocks and edges are process-global singletons sampled
+                // directly by callbacks and WinEvent START/END; no per-handle
+                // registration can mismatch them.
+                // Fence generations start at the process-global maximum so a
+                // second same-process owner run re-arms the callback fence
+                // above every earlier allocation instead of idling below a
+                // pinned `fetch_max` ceiling (a reset would race an active
+                // pump; a leftover pending fence stays fail-closed).
+                state.input_bridge = Some(InputBridge {
+                    channels: Arc::clone(&channels),
+                    sender: InboxSender::new(Arc::clone(&channels.inbox)),
+                    handle,
+                    last_snapshot: None,
+                    retry_gen: None,
+                    force_snapshot: false,
+                    last_clear_seen: 0,
+                    published_gen: fence_base_generation(),
+                    applied_gen: 0,
+                    last_faults: 0,
+                    last_deduped: 0,
+                    pending_ack: None,
+                    last_ack_logged: 0,
+                    last_trace_turns: 0,
+                    last_windrag_offers: 0,
+                });
+            }
+            Err(cause) => {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"input-spawn-failed","cause": cause}),
+                );
+            }
+        }
+    }
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
     let mut slow_last = Instant::now();
     let result = (|| -> Result<()> {
@@ -20310,7 +20722,40 @@ fn run_tile_loop(
             // rebound table immediately.
             let takeover_live =
                 (state.keyboard.takeover && !proof) || shortcut_proof || workspace_proof;
-            if takeover_live && snap_hook.is_none() && snap_retry_at.is_none_or(|at| now >= at) {
+            if state.input_bridge.is_some() {
+                // Product path: the pump owns install/retry for both hooks.
+                // Drain failure events for the owner writer; late readiness
+                // completes here if the bounded startup wait expired first.
+                // Then retry pending inbox payloads and poll the apply ack.
+                if let Some(bridge) = state.input_bridge.as_mut() {
+                    bridge.handle.drain_failures(&mut |event: &FailEvent| {
+                        log_json_at(
+                            &log_path,
+                            if event.recovered {
+                                serde_json::json!({
+                                    "event": if event.hook == "keyboard" { "snap-available" } else { "windrag-available" },
+                                    "producer": "input-pump",
+                                })
+                            } else {
+                                serde_json::json!({
+                                    "event": if event.hook == "keyboard" { "snap-unavailable" } else { "windrag-unavailable" },
+                                    "attempt": event.attempt,
+                                    "retry_secs": event.retry_secs,
+                                    "producer": "input-pump",
+                                })
+                            },
+                        );
+                    });
+                    bridge.sender.flush();
+                    log_input_faults(bridge, &log_path);
+                }
+                poll_input_ack(&mut state);
+            }
+            if !use_input_thread
+                && takeover_live
+                && snap_hook.is_none()
+                && snap_retry_at.is_none_or(|at| now >= at)
+            {
                 let installed = if shortcut_proof || workspace_proof {
                     crate::snapkey::sys::install_proof(state.keyboard)
                 } else {
@@ -20449,7 +20894,100 @@ fn run_tile_loop(
             // any action, never manipulating protected windows. Hook-side
             // work stays cheap reads, never expensive syscalls per key.
             let snap_gate_active = state.keyboard.takeover;
-            let snap_events = if snap_hook.is_some() {
+            let snap_events = if state.input_bridge.is_some() {
+                // Product path: offer the whole ordered payload when content
+                // changed (no redundant snapshots, no queue flushes) and take
+                // the single-outstanding tagged batch. Batches tagged older
+                // than the published policy are stale-dropped through the
+                // config-change path (masks still resolve) instead of
+                // dispatching under a replaced policy; held pairs ride
+                // stored verdicts either way.
+                let candidate = crate::input_handoff::InputSnapshot {
+                    generation: 0,
+                    keyboard: state.keyboard,
+                    remap: state.last_remap.clone(),
+                    disabled: state.last_disabled.clone(),
+                    snap_origins: state.snap_origins.clone(),
+                    windrag_origins: state.windrag_origins.clone(),
+                    active: snap_gate_active,
+                    trace: state.trace,
+                };
+                offer_input_snapshot(&mut state, candidate);
+                let taken: Option<crate::input_handoff::TaggedBatch<QueuedSnapEvent>> = state
+                    .input_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.channels.snap_outbox.take());
+                let mut batch = Vec::new();
+                if let Some(tagged) = taken {
+                    if tagged.is_empty() {
+                        // Keep-alive empty: nothing to dispatch.
+                    } else {
+                        woke = true;
+                        let published = state
+                            .input_bridge
+                            .as_ref()
+                            .map(|bridge| bridge.published_gen)
+                            .unwrap_or(0);
+                        if tagged.is_stale(published) {
+                            keyboard_tick(
+                                &mut state,
+                                me,
+                                &fulls,
+                                &areas,
+                                tagged.items,
+                                Some("config-change"),
+                            );
+                        } else {
+                            if state.trace {
+                                let age = crate::input_pump::snap_batch_age_us(
+                                    &tagged.items,
+                                    Instant::now(),
+                                );
+                                state.input_trace_snap_age = age;
+                            }
+                            batch = tagged.items;
+                        }
+                    }
+                }
+                // Trace-only input ages plus pump heartbeat/dispatch gaps
+                // from the bounded diag slot, with honest limits: queue ages
+                // cover classifier-queue plus pump-to-owner transport only;
+                // the heartbeat proves liveness; none measures OS hook
+                // delivery latency (native timestamp vs delivery rides the
+                // separate `delivery_gap_ms` aggregate, tick-count domain).
+                if state.trace
+                    && let Some(bridge) = state.input_bridge.as_mut()
+                {
+                    let diag = bridge.channels.diag.snapshot();
+                    if diag.snap_dropped != state.snap_dropped {
+                        let lost = diag.snap_dropped.saturating_sub(state.snap_dropped);
+                        state.snap_dropped = diag.snap_dropped;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({"event":"snap-drop","lost": lost}),
+                        );
+                    }
+                    if diag.turns != bridge.last_trace_turns || !batch.is_empty() {
+                        bridge.last_trace_turns = diag.turns;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "input-queue-age",
+                                "snap_queue_age_us": state.input_trace_snap_age,
+                                "pump_queue_age_us": diag.queue_age_us,
+                                "heartbeat_us": diag.heartbeat_us,
+                                "turns": diag.turns,
+                                "dispatch_us": diag.dispatch_us,
+                                "delivery_gap_ms": diag.delivery_gap_ms,
+                                "pending": diag.pending_snap,
+                                "scope": "classifier-queue-plus-pump-transport-only",
+                                "excludes": "native-delivery-latency",
+                            }),
+                        );
+                    }
+                }
+                batch
+            } else if snap_hook.is_some() {
                 crate::snapkey::sys::publish_gate(&state.snap_origins, snap_gate_active);
                 let batch = crate::snapkey::sys::drain_up_to(MAX_DISPATCH_PER_TICK);
                 if !batch.is_empty() {
@@ -20497,7 +21035,139 @@ fn run_tile_loop(
             // `windrag_down` before anything arms. Downs pause tiling through
             // the shared `active` set (frames stay at source: no mid-gesture
             // writes); ups feed the shared `ended` settle below.
-            if windrag_hook.is_some() {
+            //
+            // Product path: edges arrive tagged from the input pump outbox.
+            // Drop loss clears through ordered inbox invalidations so hook
+            // disarm and owner state stay in FIFO order with snapshots.
+            // Batches tagged under a superseded policy are stale: Downs are
+            // refused without arming (a newer policy is live), while Ups and
+            // Cancels still flow (owner-side closes are no-ops without open
+            // gestures, preserving pair hygiene).
+            let windrag_edges: Vec<WinDragEdge> = if state.input_bridge.is_some() {
+                let taken: Option<crate::input_handoff::TaggedBatch<WinDragEdge>> = state
+                    .input_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.channels.windrag_outbox.take());
+                let mut edges = Vec::new();
+                if let Some(tagged) = taken
+                    && !tagged.is_empty()
+                {
+                    woke = true;
+                    let published = state
+                        .input_bridge
+                        .as_ref()
+                        .map(|bridge| bridge.published_gen)
+                        .unwrap_or(0);
+                    if tagged.is_stale(published) {
+                        let mut stale_downs = 0u32;
+                        for edge in tagged.items {
+                            match edge.kind {
+                                WinDragKind::Down => stale_downs += 1,
+                                WinDragKind::Up | WinDragKind::Cancel => {
+                                    edges.push(edge);
+                                }
+                            }
+                        }
+                        if stale_downs > 0 {
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "windrag-stale",
+                                    "cause": "config-change",
+                                    "dropped": stale_downs,
+                                }),
+                            );
+                        }
+                    } else {
+                        edges = tagged.items;
+                    }
+                }
+                if state.trace {
+                    let (offers, last_offer) = state
+                        .input_bridge
+                        .as_ref()
+                        .map(|bridge| {
+                            let diag = bridge.channels.diag.snapshot();
+                            (diag.windrag_offers, diag.windrag_last_offer)
+                        })
+                        .unwrap_or((0, None));
+                    let changed = state.input_bridge.as_mut().is_some_and(|bridge| {
+                        if offers != bridge.last_windrag_offers {
+                            bridge.last_windrag_offers = offers;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if changed && let Some(offered) = last_offer {
+                        let transport_us = Instant::now()
+                            .duration_since(offered)
+                            .as_micros()
+                            .min(u128::from(u64::MAX))
+                            as u64;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "windrag-transport",
+                                "transport_us": transport_us,
+                                "scope": "pump-offer-to-owner-take-only",
+                                "excludes": "queue-wait-and-native-delivery",
+                            }),
+                        );
+                    }
+                }
+                if let Some(bridge) = state.input_bridge.as_ref() {
+                    let diag = bridge.channels.diag.snapshot();
+                    let stats = diag.hook_stats;
+                    if stats != state.windrag_stats_logged {
+                        state.windrag_stats_logged = stats;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "windrag-hook-stats",
+                                "tick": state.tick,
+                                "downs_seen": stats.0,
+                                "downs_consumed": stats.1,
+                                "ups_seen": stats.2,
+                                "ups_consumed": stats.3,
+                            }),
+                        );
+                    }
+                    if diag.windrag_dropped > state.windrag_dropped {
+                        let lost = diag.windrag_dropped - state.windrag_dropped;
+                        state.windrag_dropped = diag.windrag_dropped;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({"event":"windrag-drop","lost": lost}),
+                        );
+                        if !state.windrag_bound.is_empty() {
+                            let open: Vec<u64> = state.windrag_bound.keys().copied().collect();
+                            for hwnd in open {
+                                clear_windrag_gesture(&mut state, hwnd);
+                                if !offer_input_control(
+                                    &mut state,
+                                    InboxItem::InvalidateWindrag(hwnd),
+                                ) {
+                                    log_json_at(
+                                        &log_path,
+                                        serde_json::json!({
+                                            "event": "windrag-drop-loss-unreported",
+                                            "note": "invalidation held for retry; paired Up stays swallowed",
+                                        }),
+                                    );
+                                }
+                            }
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({"event":"windrag-drop-loss","cleared": true}),
+                            );
+                            let fulls_owned = fulls.to_vec();
+                            reconcile_tick(&mut state, me, &fulls_owned, &areas);
+                        }
+                    }
+                }
+                edges
+            } else if windrag_hook.is_some() {
                 crate::win_mouse::sys::publish(&state.windrag_origins, snap_gate_active);
                 let stats = crate::win_mouse::sys::hook_stats();
                 if stats != state.windrag_stats_logged {
@@ -20518,6 +21188,14 @@ fn run_tile_loop(
                 if !edges.is_empty() {
                     woke = true;
                 }
+                edges
+            } else {
+                Vec::new()
+            };
+            // Legacy drop-loss path (same-thread hooks only): the product
+            // pump reports loss above through the diag slot and ordered
+            // inbox invalidations, so this block stays proof/legacy only.
+            if !use_input_thread && windrag_hook.is_some() {
                 let dropped = crate::win_mouse::sys::queue_dropped();
                 if dropped > state.windrag_dropped {
                     let lost = dropped - state.windrag_dropped;
@@ -20545,6 +21223,11 @@ fn run_tile_loop(
                         reconcile_tick(&mut state, me, &fulls_owned, &areas);
                     }
                 }
+            }
+            // Settle the drained edges (both paths): press-focus observation
+            // plus the shared windrag_down/up/cancel vocabulary. Only runs
+            // when edges wait; legacy and pump batches share this code.
+            if !windrag_edges.is_empty() {
                 // Press-focus observation for drained Downs: one fresh complete
                 // enumeration per pump (only when a Down waits) feeds the
                 // existing focus authority inside `windrag_down`. Token
@@ -20553,7 +21236,7 @@ fn run_tile_loop(
                 // closed with no arm and no writes.
                 let mut press_observed: Vec<ObservedWindow> = Vec::new();
                 let mut press_retained: Vec<RetainedRow> = Vec::new();
-                if edges.iter().any(|e| e.kind == WinDragKind::Down) {
+                if windrag_edges.iter().any(|e| e.kind == WinDragKind::Down) {
                     let mut skipped: Vec<(String, String)> = Vec::new();
                     if let Some(fresh) =
                         state.observe(me, &fulls, &mut skipped, &mut press_retained)
@@ -20561,7 +21244,7 @@ fn run_tile_loop(
                         press_observed = fresh;
                     }
                 }
-                for edge in edges {
+                for edge in windrag_edges {
                     match edge.kind {
                         WinDragKind::Down => match windrag_down(
                             &mut state,
@@ -20668,22 +21351,50 @@ fn run_tile_loop(
             // most; losses stay visible via dropped/filtered even when the
             // batch is empty. Mask `SendInput` latency rides the separate
             // `mask_sends`/`mask_send_max_us` aggregate (never inside
-            // `duration_us`, never the downstream hook chain).
-            if state.trace && snap_hook.is_some() {
-                let diags = crate::snapkey::sys::drain_callback_diag();
-                let dropped = crate::snapkey::sys::callback_diag_dropped();
-                let filtered = crate::snapkey::sys::callback_diag_filtered();
-                let (mask_sends, mask_send_max_us) = crate::snapkey::sys::mask_send_stats();
+            // `duration_us`, never the downstream hook chain). Product entries
+            // ride the pump `cb_outbox`; counts ride the diag slot. Neither
+            // measures native delivery latency.
+            let trace_has_pump = state.input_bridge.is_some();
+            if state.trace && (snap_hook.is_some() || trace_has_pump) {
+                let (diags, dropped, filtered, mask_sends, mask_send_max_us, cb_outbox_dropped) =
+                    if state.input_bridge.is_some() {
+                        match state.input_bridge.as_ref() {
+                            Some(bridge) => {
+                                let diag = bridge.channels.diag.snapshot();
+                                let batch = bridge.channels.cb_outbox.take().unwrap_or_default();
+                                (
+                                    batch,
+                                    diag.cb_dropped,
+                                    diag.cb_filtered,
+                                    diag.mask_sends,
+                                    diag.mask_send_max_us,
+                                    diag.cb_outbox_dropped,
+                                )
+                            }
+                            None => (Vec::new(), 0, 0, 0, 0, 0),
+                        }
+                    } else {
+                        (
+                            crate::snapkey::sys::drain_callback_diag(),
+                            crate::snapkey::sys::callback_diag_dropped(),
+                            crate::snapkey::sys::callback_diag_filtered(),
+                            crate::snapkey::sys::mask_send_stats().0,
+                            crate::snapkey::sys::mask_send_stats().1,
+                            0,
+                        )
+                    };
                 if !diags.is_empty()
                     || dropped != state.cb_diag_dropped
                     || filtered != state.cb_diag_filtered
                     || mask_sends != state.mask_sends
                     || mask_send_max_us != state.mask_send_max_us
+                    || cb_outbox_dropped != state.cb_outbox_dropped
                 {
                     state.cb_diag_dropped = dropped;
                     state.cb_diag_filtered = filtered;
                     state.mask_sends = mask_sends;
                     state.mask_send_max_us = mask_send_max_us;
+                    state.cb_outbox_dropped = cb_outbox_dropped;
                     let max_duration_us = diags.iter().map(|d| d.duration_us).max().unwrap_or(0);
                     let entries: Vec<serde_json::Value> = diags
                         .iter()
@@ -20696,6 +21407,7 @@ fn run_tile_loop(
                             "entries": entries,
                             "dropped": dropped,
                             "filtered": filtered,
+                            "cb_outbox_dropped": cb_outbox_dropped,
                             "max_duration_us": max_duration_us,
                             "mask_sends": mask_sends,
                             "mask_send_max_us": mask_send_max_us,
@@ -20897,11 +21609,17 @@ fn run_tile_loop(
                 state.gesture_preview_start.clear();
                 state.gesture_start_cursor.clear();
                 // A stale Esc edge must not leak into the next gesture.
-                crate::snapkey::sys::clear_esc_edge();
+                // Routes through the input bridge on the product path
+                // (ordered FIFO with snapshots; held pairs keep their stored
+                // verdicts until hook release) and clears the process-global
+                // edge flags in pump order via the ClearEsc apply; direct
+                // sys calls on proof paths. Atomic sequencing guarantees a
+                // pre-gesture edge never cancels a later gesture.
+                offer_input_control(&mut state, InboxItem::ClearEsc);
                 // A suspended session disarms the project hold with no
                 // replay; the consumed click already passed, so no half
                 // gesture can strand later.
-                crate::win_mouse::sys::clear_armed();
+                offer_input_control(&mut state, InboxItem::ClearWindrag);
                 hide_border(&mut state, "suspended");
                 hide_underlay(&mut state, "suspended");
                 hide_preview(&mut state, "suspended");
@@ -20997,9 +21715,30 @@ fn run_tile_loop(
             // the one deliberate injected exception (the stationary hold has
             // no native modal loop to cancel it).
             {
-                let esc_hit = crate::snapkey::sys::take_esc_edge();
+                // Product path consumes the process-global edges published
+                // directly in hook callbacks (no pump-forwarding delay can
+                // hide an Esc landing just before a WinEvent END); sequences
+                // come from the global atomic clocks sampled directly, never
+                // a delayed batch. Cancellation still requires a newer
+                // sequence than START, so stale flags never cancel.
+                let (esc_hit, now_seq, windrag_hit, windrag_now) = if state.input_bridge.is_some() {
+                    (
+                        crate::input_handoff::global_esc_edge()
+                            .swap(false, std::sync::atomic::Ordering::SeqCst),
+                        crate::snapkey::sys::shared_esc_seq(),
+                        crate::input_handoff::global_windrag_esc_edge()
+                            .swap(false, std::sync::atomic::Ordering::SeqCst),
+                        crate::snapkey::sys::shared_windrag_esc_seq(),
+                    )
+                } else {
+                    (
+                        crate::snapkey::sys::take_esc_edge(),
+                        crate::snapkey::sys::esc_seq(),
+                        crate::snapkey::sys::take_windrag_esc_edge(),
+                        crate::snapkey::sys::windrag_esc_seq(),
+                    )
+                };
                 if esc_hit {
-                    let now_seq = crate::snapkey::sys::esc_seq();
                     for hwnd in state.active.iter() {
                         if !state.managed.contains(hwnd) {
                             continue;
@@ -21031,9 +21770,8 @@ fn run_tile_loop(
                 // latches open windrag gestures only, with the same
                 // START/END sequence ordering. Never admits a command;
                 // settle reports the explicit `gesture-cancelled-esc`.
-                let windrag_hit = crate::snapkey::sys::take_windrag_esc_edge();
                 if windrag_hit {
-                    let now_seq = crate::snapkey::sys::windrag_esc_seq();
+                    let now_seq = windrag_now;
                     for hwnd in state.active.iter() {
                         if !state.managed.contains(hwnd) {
                             continue;
@@ -21253,6 +21991,29 @@ fn run_tile_loop(
             UnhookWinEvent(hook);
         }
     }
+    // Product path graceful stop: close admission (owner stops pushing),
+    // keep consumed pairs handled until the hook release, unhook on the
+    // creator pump, and ack with a bounded wait. A missing ack returns an
+    // unclean report without claiming clean and retains `Stopping` so no
+    // overlapping worker can start; the existing recovery lifecycle is
+    // untouched. Never waits indefinitely or holds owner locks while joining.
+    // If this state is dropped after a timeout, the process-level reservation
+    // still prevents a replacement pump while the old thread may be running.
+    let mut input_stop_clean = true;
+    if let Some(bridge) = state.input_bridge.as_mut() {
+        let _ = bridge.handle.request_stop();
+        // The loop has ended so no fresh snapshots enter after stop. The pump
+        // closes admission and releases hooks without dispatching queued work.
+        let report = bridge.handle.wait_stopped(crate::input_pump::STOP_WAIT);
+        let mut event = serde_json::json!({"event":"input-stop","clean": report.clean, "unhook_ok": report.unhook_ok});
+        if !report.clean {
+            event["note"] = serde_json::json!(
+                "input stop unclean; process exit releases hooks; no overlapping worker started"
+            );
+        }
+        log_json_at(&log_path, event);
+        input_stop_clean = report.clean;
+    }
     if let Some(mut snap) = snap_hook {
         // Honest release accounting: process exit releases the hook in any
         // case, but success is recorded, never fabricated.
@@ -21359,6 +22120,14 @@ fn run_tile_loop(
         &log_path,
         serde_json::json!({"event":"tile-end","ticks":state.tick}),
     );
+    // Truthful stop accounting: a missing input-pump acknowledgement never
+    // claims clean. Teardown above still ran (tray, overlays, restore), so
+    // this only changes the reported outcome, never the recovery lifecycle.
+    if !input_stop_clean {
+        return Err(err(
+            "error: input pump stop unacknowledged; hooks released by process exit",
+        ));
+    }
     result
 }
 
@@ -22896,6 +23665,210 @@ mod esc_sequence_tests {
         assert!(!esc_edge_cancels(u64::MAX, u64::MAX));
         // Multiple edges still cancel.
         assert!(esc_edge_cancels(7, 9));
+    }
+}
+
+#[cfg(test)]
+mod input_snapshot_offer_tests {
+    use super::{SnapshotOffer, owner_snap_dropped, plan_snapshot_offer};
+    use crate::input_handoff::{
+        Inbox, InboxItem, InputSnapshot, SharedSnapshot, WindragOrigin, fence_base_generation,
+        fence_test_allocate, fence_test_serial, keyboard_fresh_gate, note_policy_applied,
+        note_policy_published, policy_fence_pending,
+    };
+    use crate::input_pump::InboxSender;
+    use crate::snapkey::{KeyboardConfig, SnapOrigin};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn snapshot_with(takeover: bool, hwnds: &[u64]) -> InputSnapshot {
+        let mut snap = InputSnapshot {
+            generation: 0,
+            keyboard: KeyboardConfig {
+                takeover,
+                allow_win_l: false,
+            },
+            remap: Vec::new(),
+            disabled: Vec::new(),
+            snap_origins: HashMap::new(),
+            windrag_origins: HashMap::new(),
+            active: takeover,
+            trace: false,
+        };
+        for hwnd in hwnds {
+            let origin = SnapOrigin {
+                hwnd: *hwnd,
+                token: format!("token-{hwnd}"),
+                pid: 1,
+                creation: "c".to_owned(),
+            };
+            snap.snap_origins.insert(*hwnd, origin.clone());
+            snap.windrag_origins.insert(
+                *hwnd,
+                WindragOrigin {
+                    origin,
+                    tag: Some(format!("tag-{hwnd}")),
+                },
+            );
+        }
+        snap
+    }
+
+    #[test]
+    fn plan_skips_unchanged_forces_cleared_and_retries_armed() {
+        let last: SharedSnapshot = Arc::new(snapshot_with(true, &[7]));
+        let same = snapshot_with(true, &[7]);
+        assert_eq!(
+            plan_snapshot_offer(Some(&last), &same, None, false),
+            SnapshotOffer::Skip
+        );
+        // A pending clear forces the unchanged republish.
+        assert_eq!(
+            plan_snapshot_offer(Some(&last), &same, None, true),
+            SnapshotOffer::Fresh
+        );
+        // A refused policy offer resends with its armed generation even for
+        // a revert to `last` (never Skip) and never inflates a new one.
+        assert_eq!(
+            plan_snapshot_offer(Some(&last), &same, Some(41), false),
+            SnapshotOffer::Retry(41)
+        );
+        let changed = snapshot_with(false, &[]);
+        assert_eq!(
+            plan_snapshot_offer(Some(&last), &changed, None, false),
+            SnapshotOffer::Fresh
+        );
+        assert_eq!(
+            plan_snapshot_offer(None, &changed, None, false),
+            SnapshotOffer::Fresh
+        );
+    }
+
+    #[test]
+    fn refused_policy_reverts_with_reused_generation_and_fence_pairs() {
+        // Production plan + production sender + production fence: A->B
+        // refuses after arming, the revert to A still resends with the armed
+        // generation (fresh callbacks pass while pending), and the pump ack
+        // (even for content equal to the applied policy) resumes
+        // consumption. Mirrors `offer_input_snapshot` field bookkeeping.
+        let _guard = fence_test_serial();
+        let base = fence_test_allocate();
+        note_policy_applied(base);
+        let mut published_gen = fence_base_generation();
+        assert_eq!(published_gen, base);
+        let inbox = Arc::new(Inbox::new());
+        let mut sender = InboxSender::new(Arc::clone(&inbox));
+        let mut last: Option<SharedSnapshot> = Some(Arc::new(snapshot_with(true, &[7])));
+        let mut retry_gen: Option<u64> = None;
+        // Stall the transport, then refuse the policy change B.
+        for _ in 0..crate::input_handoff::INBOX_CAP {
+            sender.offer(InboxItem::ClearEsc).expect("fits");
+        }
+        sender
+            .offer(InboxItem::InvalidateWindrag(200))
+            .expect("buffered");
+        let mut candidate_b = snapshot_with(false, &[]);
+        assert_eq!(
+            plan_snapshot_offer(last.as_ref(), &candidate_b, retry_gen, false),
+            SnapshotOffer::Fresh
+        );
+        published_gen += 1;
+        let armed = published_gen;
+        note_policy_published(armed);
+        assert!(policy_fence_pending());
+        assert!(!keyboard_fresh_gate(true));
+        candidate_b.generation = armed;
+        assert!(
+            sender
+                .offer(InboxItem::Snapshot(Arc::new(candidate_b)))
+                .is_err(),
+            "policy change refuses while stalled"
+        );
+        retry_gen = Some(armed);
+        // Desired reverts to A: the plan must resend (never Skip) with the
+        // armed generation, not a fresh bump.
+        let revert = snapshot_with(true, &[7]);
+        assert_eq!(
+            plan_snapshot_offer(last.as_ref(), &revert, retry_gen, false),
+            SnapshotOffer::Retry(armed)
+        );
+        // Pump drains; the retry lands behind the retained safety control.
+        assert_eq!(inbox.drain().len(), crate::input_handoff::INBOX_CAP);
+        assert_eq!(sender.flush(), 0);
+        let mut retry = snapshot_with(true, &[7]);
+        retry.generation = retry_gen.expect("retry armed");
+        assert_eq!(retry.generation, armed);
+        sender
+            .offer(InboxItem::Snapshot(Arc::new(retry.clone())))
+            .expect("retry accepted");
+        last = Some(Arc::new(retry));
+        retry_gen = None;
+        assert!(last.as_ref().is_some_and(|s| s.generation == armed));
+        assert_eq!(retry_gen, None);
+        // Ordered behind the retained invalidation, then the pump ack for
+        // the revert (content equals the applied policy) clears the fence
+        // and fresh consumption resumes.
+        assert_eq!(
+            inbox.drain(),
+            vec![
+                InboxItem::InvalidateWindrag(200),
+                InboxItem::Snapshot(last.expect("accepted")),
+            ]
+        );
+        assert!(policy_fence_pending());
+        assert!(!keyboard_fresh_gate(true));
+        note_policy_applied(armed);
+        assert!(!policy_fence_pending());
+        assert!(keyboard_fresh_gate(true));
+    }
+
+    #[test]
+    fn clear_forces_unchanged_republish_until_accepted() {
+        // Production sender flag + production plan: an absorbed clear forces
+        // the unchanged desired snapshot; the force clears only on accept.
+        let inbox = Arc::new(Inbox::new());
+        let mut sender = InboxSender::new(Arc::clone(&inbox));
+        let last: SharedSnapshot = Arc::new(snapshot_with(true, &[7]));
+        let mut force = false;
+        let mut last_clear_seen = 0u64;
+        sender.offer(InboxItem::ClearWindrag).expect("absorbed");
+        assert_eq!(sender.windrag_cleared(), 1);
+        if sender.windrag_cleared() != last_clear_seen {
+            last_clear_seen = sender.windrag_cleared();
+            force = true;
+        }
+        let same = snapshot_with(true, &[7]);
+        assert_eq!(
+            plan_snapshot_offer(Some(&last), &same, None, force),
+            SnapshotOffer::Fresh
+        );
+        sender
+            .offer(InboxItem::Snapshot(Arc::new(same)))
+            .expect("accepted");
+        force = false;
+        assert!(!force);
+        assert_eq!(last_clear_seen, 1);
+        assert_eq!(
+            inbox.drain(),
+            vec![
+                InboxItem::ClearWindrag,
+                InboxItem::Snapshot(Arc::new(snapshot_with(true, &[7]))),
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_snap_dropped_reads_diag_when_bridged() {
+        // Regression: on the product path the owner thread must not read its
+        // own (empty) hook TLS. Bridged reads come from pump diagnostics.
+        crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+            takeover: true,
+            allow_win_l: false,
+        });
+        assert_eq!(crate::snapkey::sys::queue_dropped(), 0);
+        assert_eq!(owner_snap_dropped(None), 0);
+        assert_eq!(owner_snap_dropped(Some(7)), 7);
+        crate::snapkey::sys::test_clear_state();
     }
 }
 
@@ -30047,8 +31020,10 @@ mod rmax03_adapter_tests {
             last_disabled: Vec::new(),
             cli_overrides: crate::tiling::CliOverrides::default(),
             snap_dropped: 0,
+            input_trace_snap_age: 0,
             cb_diag_dropped: 0,
             cb_diag_filtered: 0,
+            cb_outbox_dropped: 0,
             mask_sends: 0,
             mask_send_max_us: 0,
             snap_origins: std::collections::HashMap::new(),
@@ -30107,6 +31082,7 @@ mod rmax03_adapter_tests {
             fixed_auto_seen: std::collections::BTreeSet::new(),
             born_first_exit: std::collections::BTreeSet::new(),
             overlay_now: std::collections::HashMap::new(),
+            input_bridge: None,
             pending_releases: crate::workspace::PendingReleases::new(),
             pending_retry_fp: 0,
         };

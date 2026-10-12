@@ -635,8 +635,10 @@ mod tests {
 pub mod sys {
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use windows_sys::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GA_ROOT, GetAncestor, HC_ACTION, HHOOK, MSLLHOOKSTRUCT, SetWindowsHookExW,
@@ -648,20 +650,15 @@ pub mod sys {
         UpOutcome, WINDRAG_MAX_DISPATCH_PER_TICK, WinDragEdge, WinDragKind, WinDragQueue,
         WinDragSnapshot, WinHookArm,
     };
+    use crate::input_handoff::{
+        SharedSnapshot, WindragOrigin, mouse_fresh_gate, record_delivery_gap_ms,
+    };
     use crate::snapkey::VK_LWIN;
     use crate::snapkey::VK_RWIN;
 
-    /// One published tiled origin plus its member lifetime tag, refreshed
-    /// by the owner every iteration. The callback clones both into the Down
-    /// snapshot (cheap map clone, no native identity probes); the owner
-    /// requires the snapshot to match fresh evidence before arming.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct WinDragPublished {
-        /// Published tiled origin (HWND/PID/creation/token).
-        pub origin: crate::snapkey::SnapOrigin,
-        /// Member lifetime tag read at publish time.
-        pub tag: Option<String>,
-    }
+    /// Published tiled origins plus member tags. Unified with the handoff
+    /// [`WindragOrigin`] so snapshots cross threads without conversion.
+    pub use crate::input_handoff::WindragOrigin as WinDragPublished;
 
     /// Either Win side held right now, sampled from the official async
     /// state. Sampling (not tracked classifier state) supports synthetic
@@ -669,7 +666,16 @@ pub mod sys {
     /// keyboard classifier filters injected keys. Extras are ignored: only
     /// Win gates the gesture, preserving the exact supported Win+Left
     /// behavior with no invented extra-modifier restriction.
+    ///
+    /// Test seam: `test_set_win_held(Some(_))` overrides the native sample
+    /// so callback freshness tests drive the production `llproc` with no
+    /// `GetAsyncKeyState` or input calls. `None` (production and default)
+    /// samples natively.
     fn win_held_now() -> bool {
+        #[cfg(test)]
+        if let Some(held) = TEST_WIN_HELD.with(|s| *s.borrow()) {
+            return held;
+        }
         (unsafe { GetAsyncKeyState(VK_LWIN as i32) }) < 0
             || (unsafe { GetAsyncKeyState(VK_RWIN as i32) }) < 0
     }
@@ -677,7 +683,14 @@ pub mod sys {
     /// Root top-level HWND under the pointer. `WindowFromPoint` may hit a
     /// child; the owner manages top-level windows, so the `GA_ROOT`
     /// ancestor is the bound subject. Pure reads, no identity probes.
+    ///
+    /// Test seam: same contract as [`win_held_now`]; `Some(root)` fixes the
+    /// bound subject for the production `llproc` drive.
     fn root_at(x: i32, y: i32) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(root) = TEST_ROOT.with(|s| *s.borrow()) {
+            return root;
+        }
         let pt = windows_sys::Win32::Foundation::POINT { x, y };
         let hit = unsafe { WindowFromPoint(pt) };
         if hit.is_null() {
@@ -689,15 +702,37 @@ pub mod sys {
         if raw == 0 { None } else { Some(raw) }
     }
 
+    #[cfg(test)]
+    thread_local! {
+        static TEST_WIN_HELD: RefCell<Option<bool>> = const { RefCell::new(None) };
+        static TEST_ROOT: RefCell<Option<Option<u64>>> = const { RefCell::new(None) };
+    }
+
+    /// Test-only native-query override for [`win_held_now`]: `Some(held)`
+    /// fixes the sample, `None` restores native sampling.
+    #[cfg(test)]
+    pub fn test_set_win_held(held: Option<bool>) {
+        TEST_WIN_HELD.with(|s| *s.borrow_mut() = held);
+    }
+
+    /// Test-only native-query override for [`root_at`]: `Some(root)` fixes
+    /// the bound subject, `None` restores native reads.
+    #[cfg(test)]
+    pub fn test_set_root(root: Option<Option<u64>>) {
+        TEST_ROOT.with(|s| *s.borrow_mut() = root);
+    }
+
     struct WinMouseHookState {
-        /// Tiled-only managed origins plus member tags published by the
-        /// owner every iteration; the callback binds against this map only.
-        /// Floating, sticky, unmanaged, and unknown subjects pass through
-        /// natively.
-        origins: HashMap<u64, WinDragPublished>,
-        /// Takeover gate published by the owner. Fresh downs consume iff
-        /// this holds; without it every button passes through.
-        active: bool,
+        /// Applied owner snapshot shared by pointer with the keyboard hook
+        /// state: tiled-only managed origins plus the takeover gate. Swapped
+        /// on the pump thread outside callbacks; callbacks only read one
+        /// entry through the `Arc`. Floating, sticky, unmanaged, and unknown
+        /// subjects pass through natively.
+        snapshot: SharedSnapshot,
+        /// Keyboard hook installed alongside. Fresh downs consume only with
+        /// both hooks installed, since a missing keyboard cannot send the
+        /// Start-menu mask at release.
+        keyboard_installed: bool,
         queue: WinDragQueue,
         arm: WinHookArm,
         /// Callback delivery counters (counts only, no identity): observed
@@ -717,11 +752,13 @@ pub mod sys {
     /// Owner publish: tiled-only origin/tag map plus the takeover gate.
     /// Cheap clone of the last observation's managed set; exactness stays
     /// with the owner's per-edge recheck against fresh evidence.
-    pub fn publish(origins: &HashMap<u64, WinDragPublished>, active: bool) {
+    pub fn publish(origins: &HashMap<u64, WindragOrigin>, active: bool) {
         STATE.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
-                st.origins = origins.clone();
-                st.active = active;
+                let mut snapshot = (*st.snapshot).clone();
+                snapshot.windrag_origins = origins.clone();
+                snapshot.active = active;
+                st.snapshot = Arc::new(snapshot);
             }
         });
     }
@@ -784,9 +821,80 @@ pub mod sys {
                     kind: WinDragKind::Cancel,
                     x: 0,
                     y: 0,
-                    esc_seq: crate::snapkey::sys::windrag_esc_seq(),
+                    esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
                     snapshot: None,
                 });
+            }
+        });
+    }
+
+    /// Ordered windrag invalidation from the input pump (FIFO between
+    /// snapshots): disarms with Cancel like [`invalidate`] and drops the
+    /// published origin so later Downs cannot rebind until a fresh snapshot
+    /// republishes it. Clone-on-write on the shared map (invalidations are
+    /// rare); the swallow obligation is retained.
+    pub fn apply_invalidate(hwnd: u64) {
+        STATE.with(|s| {
+            let mut borrow = s.borrow_mut();
+            let Some(st) = borrow.as_mut() else {
+                return;
+            };
+            if st.snapshot.windrag_origins.contains_key(&hwnd) {
+                let mut snapshot = (*st.snapshot).clone();
+                snapshot.windrag_origins.remove(&hwnd);
+                st.snapshot = Arc::new(snapshot);
+            }
+            if st.arm.invalidate(hwnd) {
+                st.queue.push_terminal(WinDragEdge {
+                    hwnd,
+                    kind: WinDragKind::Cancel,
+                    x: 0,
+                    y: 0,
+                    esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
+                    snapshot: None,
+                });
+            }
+        });
+    }
+
+    /// Suspend/teardown path only: drop all published origins and disarm
+    /// with Cancel like [`clear_armed`]. Held-pair swallow obligations are
+    /// retained; no new Down binds until a fresh snapshot.
+    pub fn apply_clear() {
+        STATE.with(|s| {
+            let mut borrow = s.borrow_mut();
+            let Some(st) = borrow.as_mut() else {
+                return;
+            };
+            if !st.snapshot.windrag_origins.is_empty() {
+                let mut snapshot = (*st.snapshot).clone();
+                snapshot.windrag_origins.clear();
+                st.snapshot = Arc::new(snapshot);
+            }
+            let hwnd = st.arm.armed_hwnd();
+            if st.arm.clear() {
+                st.queue.push_terminal(WinDragEdge {
+                    hwnd: hwnd.unwrap_or(0),
+                    kind: WinDragKind::Cancel,
+                    x: 0,
+                    y: 0,
+                    esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
+                    snapshot: None,
+                });
+            }
+        });
+    }
+
+    /// Apply one whole owner snapshot outside callbacks (input pump only).
+    /// Swaps the shared `Arc`: no map clones on the pump, no conversion.
+    /// `keyboard_installed` gates fresh consumption alongside the snapshot
+    /// gate, since a missing keyboard cannot send the mask. Exactness stays
+    /// with the per-edge owner recheck.
+    pub fn apply_snapshot(snap: &SharedSnapshot, keyboard_installed: bool) {
+        STATE.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.snapshot = Arc::clone(snap);
+                st.keyboard_installed = keyboard_installed;
             }
         });
     }
@@ -807,7 +915,7 @@ pub mod sys {
                     kind: WinDragKind::Cancel,
                     x: 0,
                     y: 0,
-                    esc_seq: crate::snapkey::sys::windrag_esc_seq(),
+                    esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
                     snapshot: None,
                 });
             }
@@ -829,26 +937,39 @@ pub mod sys {
         // the event itself, so no later re-read can tear it.
         let hook = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
         let x = hook.pt.x;
-        let y = hook.pt.y;
-        // Both physical and synthetic (unmarked, same as the native caption
+        let y = hook.pt.y; // Both physical and synthetic (unmarked, same as the native caption
         // proof path) mouse input binds identically; no physical-mask claim
         // is made here. Injected Win-ups never reach the keyboard reserve,
         // so synthetic holds never send the product mask.
         let _flags = hook.flags;
         match wparam as u32 {
             WM_LBUTTONDOWN => {
+                // Trace-only native delivery gap: native event timestamp to
+                // callback entry, tick-count domain. Moves skip this
+                // entirely; no timing work unless tracing.
+                if STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.snapshot.trace)) {
+                    let gap = unsafe { GetTickCount() }.saturating_sub(hook.time);
+                    record_delivery_gap_ms(gap);
+                }
                 let consume = STATE.with(|s| {
                     let mut borrow = s.borrow_mut();
                     let st = borrow.as_mut()?;
                     st.downs_seen += 1;
-                    if !st.active {
+                    // Both hooks installed plus the snapshot gate: a missing
+                    // keyboard cannot send the Start-menu mask, so fresh
+                    // downs pass through until it recovers. The publication
+                    // fence closes the gate further while a newer policy is
+                    // published but not yet applied, so fresh Downs refuse
+                    // instead of consuming under stale policy; the paired Up
+                    // of a consumed Down still swallows via the arm.
+                    if !mouse_fresh_gate(st.snapshot.active, st.keyboard_installed) {
                         return None;
                     }
                     if !win_held_now() {
                         return None;
                     }
                     let hwnd = root_at(x, y)?;
-                    let published = st.origins.get(&hwnd)?.clone();
+                    let published = st.snapshot.windrag_origins.get(&hwnd)?.clone();
                     if st.queue.is_full() {
                         // Saturated Down passes through with nothing armed:
                         // no gesture, no strand, counted loss.
@@ -868,7 +989,7 @@ pub mod sys {
                         kind: WinDragKind::Down,
                         x,
                         y,
-                        esc_seq: crate::snapkey::sys::windrag_esc_seq(),
+                        esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
                         snapshot: Some(WinDragSnapshot {
                             origin: published.origin.clone(),
                             tag: published.tag.clone(),
@@ -904,6 +1025,12 @@ pub mod sys {
                 unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
             }
             WM_LBUTTONUP => {
+                // Trace-only native delivery gap for the terminal edge, same
+                // contract as the Down path above.
+                if STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.snapshot.trace)) {
+                    let gap = unsafe { GetTickCount() }.saturating_sub(hook.time);
+                    record_delivery_gap_ms(gap);
+                }
                 // The paired Up is always swallowed once a Down was
                 // consumed, even when saturated: terminal edges use the
                 // guaranteed push, so a lost Up can never leave an owner
@@ -920,7 +1047,7 @@ pub mod sys {
                                 kind: WinDragKind::Up,
                                 x: bound.cur_x,
                                 y: bound.cur_y,
-                                esc_seq: crate::snapkey::sys::windrag_esc_seq(),
+                                esc_seq: crate::snapkey::sys::shared_windrag_esc_seq(),
                                 snapshot: None,
                             });
                             st.ups_consumed += 1;
@@ -948,8 +1075,17 @@ pub mod sys {
     pub fn install() -> std::result::Result<HHOOK, String> {
         STATE.with(|s| {
             *s.borrow_mut() = Some(WinMouseHookState {
-                origins: HashMap::new(),
-                active: false,
+                snapshot: Arc::new(crate::input_handoff::InputSnapshot {
+                    generation: 0,
+                    keyboard: crate::snapkey::KeyboardConfig::disabled(),
+                    remap: Vec::new(),
+                    disabled: Vec::new(),
+                    snap_origins: HashMap::new(),
+                    windrag_origins: HashMap::new(),
+                    active: false,
+                    trace: false,
+                }),
+                keyboard_installed: false,
                 queue: WinDragQueue::new(),
                 arm: WinHookArm::default(),
                 downs_seen: 0,
@@ -967,12 +1103,256 @@ pub mod sys {
         Ok(hook)
     }
 
-    /// Release the hook. Process exit releases it in any case; success is
-    /// recorded, never fabricated.
+    /// Release the hook. Process exit releases it in any case, but success
+    /// is never fabricated. State mutates only on success: a failed unhook
+    /// retains arm/swallow obligations for a creator-side retry.
     pub fn uninstall(hook: &mut HHOOK) -> bool {
         let ok = unsafe { UnhookWindowsHookEx(*hook) } != 0;
+        if !ok {
+            return false;
+        }
         *hook = std::ptr::null_mut();
         STATE.with(|s| *s.borrow_mut() = None);
-        ok
+        true
+    }
+
+    /// Test-only keyboard-presence probe (no hooks, no native calls): the
+    /// gate fresh Downs require alongside the snapshot gate.
+    #[cfg(test)]
+    pub fn test_keyboard_installed() -> bool {
+        STATE.with(|s| s.borrow().as_ref().is_some_and(|st| st.keyboard_installed))
+    }
+
+    /// Test-only applied-snapshot handle (no hooks, no native calls).
+    #[cfg(test)]
+    pub fn test_snapshot() -> SharedSnapshot {
+        STATE.with(|s| {
+            s.borrow()
+                .as_ref()
+                .map(|st| Arc::clone(&st.snapshot))
+                .expect("test state installed")
+        })
+    }
+
+    /// Test-only hook-state installer (no `SetWindowsHookExW`, no native
+    /// effects): mirrors [`install`](Self::install)'s TLS init so step tests
+    /// drive the production apply/drain logic without hooks.
+    #[cfg(test)]
+    pub fn test_ensure_state() {
+        STATE.with(|s| {
+            *s.borrow_mut() = Some(WinMouseHookState {
+                snapshot: Arc::new(crate::input_handoff::InputSnapshot {
+                    generation: 0,
+                    keyboard: crate::snapkey::KeyboardConfig::disabled(),
+                    remap: Vec::new(),
+                    disabled: Vec::new(),
+                    snap_origins: HashMap::new(),
+                    windrag_origins: HashMap::new(),
+                    active: false,
+                    trace: false,
+                }),
+                keyboard_installed: false,
+                queue: WinDragQueue::new(),
+                arm: WinHookArm::default(),
+                downs_seen: 0,
+                downs_consumed: 0,
+                ups_seen: 0,
+                ups_consumed: 0,
+            });
+        });
+    }
+
+    /// Test-only state teardown (no native calls).
+    #[cfg(test)]
+    pub fn test_clear_state() {
+        STATE.with(|s| *s.borrow_mut() = None);
+    }
+
+    /// Test-only edge injection (no hooks, no native calls): push one edge
+    /// straight into the hook queue for drain/offer tests.
+    #[cfg(test)]
+    pub fn test_push_edge(edge: WinDragEdge) {
+        STATE.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.queue.push(edge);
+            }
+        });
+    }
+
+    /// Test-only production-callback drive (no hooks, no native input
+    /// calls): feeds one fabricated mouse button event through the real
+    /// `llproc`. The Win-hold sample and the bound subject come from the
+    /// [`test_set_win_held`]/[`test_set_root`] seams; callers must fix both
+    /// before driving a Down (an unset seam would perform native reads).
+    /// Up/Down outcomes are the production verdicts (`1` = consumed or
+    /// swallowed, `CallNextHookEx` result = pass-through).
+    ///
+    /// # Safety
+    ///
+    /// Test-only: the fabricated `MSLLHOOKSTRUCT` lives on the stack for
+    /// the synchronous call; the callback only reads it and passes it to
+    /// `CallNextHookEx` (no hook installed, no effects).
+    #[cfg(test)]
+    pub unsafe fn test_drive_mouse(
+        wparam: u32,
+        x: i32,
+        y: i32,
+    ) -> windows_sys::Win32::Foundation::LRESULT {
+        use windows_sys::Win32::Foundation::POINT;
+        let hook = MSLLHOOKSTRUCT {
+            pt: POINT { x, y },
+            mouseData: 0,
+            flags: 0,
+            time: 0,
+            dwExtraInfo: 0,
+        };
+        unsafe {
+            llproc(
+                HC_ACTION as i32,
+                wparam as usize,
+                &hook as *const MSLLHOOKSTRUCT as isize,
+            )
+        }
+    }
+
+    #[cfg(test)]
+    mod sys_tests {
+        use super::super::WinDragKind;
+        use super::*;
+        use crate::input_handoff::{
+            InputSnapshot, SharedSnapshot, WindragOrigin, fence_test_allocate, fence_test_serial,
+            mouse_fresh_gate, note_policy_applied, note_policy_published, policy_fence_pending,
+        };
+        use crate::snapkey::{KeyboardConfig, SnapOrigin};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        fn snapshot_with_origins(hwnds: &[u64]) -> SharedSnapshot {
+            let mut snap = InputSnapshot {
+                generation: 0,
+                keyboard: KeyboardConfig {
+                    takeover: true,
+                    allow_win_l: false,
+                },
+                remap: Vec::new(),
+                disabled: Vec::new(),
+                snap_origins: HashMap::new(),
+                windrag_origins: HashMap::new(),
+                active: true,
+                trace: false,
+            };
+            for hwnd in hwnds {
+                let origin = SnapOrigin {
+                    hwnd: *hwnd,
+                    token: format!("token-{hwnd}"),
+                    pid: 1,
+                    creation: "c".to_owned(),
+                };
+                snap.snap_origins.insert(*hwnd, origin.clone());
+                snap.windrag_origins.insert(
+                    *hwnd,
+                    WindragOrigin {
+                        origin,
+                        tag: Some(format!("tag-{hwnd}")),
+                    },
+                );
+            }
+            Arc::new(snap)
+        }
+
+        fn install_both(snap: &SharedSnapshot, keyboard_installed: bool) {
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            test_ensure_state();
+            crate::snapkey::sys::apply_snapshot(snap, true);
+            apply_snapshot(snap, keyboard_installed);
+        }
+
+        fn clear_both() {
+            test_set_win_held(None);
+            test_set_root(None);
+            crate::snapkey::sys::test_clear_state();
+            test_clear_state();
+        }
+
+        #[test]
+        fn mouse_down_needs_keyboard_present_then_consumes_with_mask() {
+            // Keyboard-absent fresh Down passes (no mask source); once the
+            // keyboard installs, the same Down consumes through the real
+            // callback and arms the shared Win-up mask obligation. Serial
+            // guard: the Down verdict reads the process-global fence, so a
+            // concurrent pending fence would flake the gate-open assertions.
+            let _guard = fence_test_serial();
+            let snap = snapshot_with_origins(&[7]);
+            install_both(&snap, false);
+            // Tracked physical Win hold so the mask arm can latch (no
+            // `SendInput`: only the classifier tracks the down).
+            unsafe {
+                crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_LWIN, 0, 0, 0);
+            }
+            test_set_win_held(Some(true));
+            test_set_root(Some(Some(7)));
+            assert!(!mouse_fresh_gate(true, false));
+            let verdict = unsafe { test_drive_mouse(WM_LBUTTONDOWN, 10, 20) };
+            assert_ne!(verdict, 1);
+            assert!(drain_up_to(8).is_empty());
+            // Keyboard recovers: the gate reopens and the Down consumes.
+            apply_snapshot(&snap, true);
+            assert!(mouse_fresh_gate(true, true));
+            let verdict = unsafe { test_drive_mouse(WM_LBUTTONDOWN, 10, 20) };
+            assert_eq!(verdict, 1);
+            assert!(crate::snapkey::sys::test_mask_pending());
+            let edges = drain_up_to(8);
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0].kind, WinDragKind::Down);
+            assert_eq!(edges[0].hwnd, 7);
+            clear_both();
+        }
+
+        #[test]
+        fn mouse_fence_refuses_fresh_down_but_swallows_consumed_up() {
+            // Real-callback freshness: a consumed Down's paired Up stays
+            // swallowed while the fence is pending, fresh Downs pass, and
+            // the mask obligation survives until the pump applies.
+            let _guard = fence_test_serial();
+            let base = fence_test_allocate();
+            note_policy_applied(base);
+            let snap = snapshot_with_origins(&[7]);
+            install_both(&snap, true);
+            unsafe {
+                crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_LWIN, 0, 0, 0);
+            }
+            test_set_win_held(Some(true));
+            test_set_root(Some(Some(7)));
+            let verdict = unsafe { test_drive_mouse(WM_LBUTTONDOWN, 10, 20) };
+            assert_eq!(verdict, 1);
+            assert!(crate::snapkey::sys::test_mask_pending());
+            // Newer policy publishes before the pump applies: fresh refuses
+            // fail-closed while the in-flight pair rides its verdict.
+            note_policy_published(base + 1);
+            assert!(policy_fence_pending());
+            assert!(!mouse_fresh_gate(true, true));
+            let verdict = unsafe { test_drive_mouse(WM_LBUTTONUP, 11, 21) };
+            assert_eq!(verdict, 1);
+            // The consumed pair drained in order behind the fence.
+            let pair = drain_up_to(8);
+            assert_eq!(pair.len(), 2);
+            assert_eq!(pair[0].kind, WinDragKind::Down);
+            assert_eq!(pair[1].kind, WinDragKind::Up);
+            // The next Down is fresh under the fence: passes through, never
+            // converted into a swallow, nothing queued behind the pair.
+            test_set_root(Some(Some(7)));
+            let verdict = unsafe { test_drive_mouse(WM_LBUTTONDOWN, 10, 20) };
+            assert_ne!(verdict, 1);
+            assert!(crate::snapkey::sys::test_mask_pending());
+            assert!(drain_up_to(8).is_empty());
+            // Pump applies: fresh consumption resumes.
+            note_policy_applied(base + 1);
+            assert!(!policy_fence_pending());
+            assert!(mouse_fresh_gate(true, true));
+            clear_both();
+        }
     }
 }
