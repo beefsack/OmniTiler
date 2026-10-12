@@ -70,12 +70,12 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Remaining six 0.1 triage units and Proposal B / N1-N4 are tentative,
+- Remaining five 0.1 triage units and Proposal B / N1-N4 are tentative,
   pending user review (updated 2026-10-12). Proposed classification: 39
   must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
   Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  The six units are PROVISIONAL, distinct from batch 1 and the seven units
+  The five units are PROVISIONAL, distinct from batch 1 and the eight units
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
   native evidence and implementation gaps remain separate.
 
@@ -168,7 +168,7 @@ platform API behavior.
   approved post-0.1 D09, D10 and D27 settings, with names/options/WM tooltips
   under [Move commands](#move-layout-and-output-commands) and
   [Activation requests](#activation-requests).
-  D03, D12 and D13 have no setting.
+  D03, D12, D13 and D16 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
     mutates shortcuts or host keys, and installation/startup never mutates
@@ -278,12 +278,22 @@ platform API behavior.
 
 ## Workspaces
 
-- Tentative 2026-10-11, pending user review: D16(a) retains float
-  on transfer, taking the 7/8 cross-family majority over COSMIC fresh-readmit
-  for classification continuity and predictable roundtrips. Existing tiled-only
-  send eligibility is an implementation gap against this tentative target;
-  floating-workspace boundary sends are a distinct approved journey.
-  [D16](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+- User decision 2026-10-12, D16 / REQ-WS-05 / R-WS-05, option (a): sending
+  a floating window to another workspace keeps it floating on arrival and
+  keeps its size; destination tiles are untouched. Applies to follow and stay,
+  numbered and relative sends. No setting.
+- D16 [tier rule](#reference-tiers) basis: Hyprland, i3 and sway (Tier 1)
+  plus xmonad, qtile and awesome (Tier 2) retain float against COSMIC fresh
+  re-tile. COSMIC's alternative has no second Tier 1/2 reference, so it does
+  not qualify as a setting.
+- D16 needs code: shared core currently refuses `NotTiled` and KDE send
+  eligibility is tiled-only ([revision-bound gap assessment](backlog.md)).
+  Verify the untested native WS1 -> WS2 -> WS1 roundtrip first, then shared
+  core first (serves Windows) and KDE adapter; Windows adapter work goes to
+  handoff item 22. Selection is not native evidence. Floating-workspace
+  boundary sends remain a distinct approved journey; their current
+  intentional-float restriction is an implementation gap under D16.
+  [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - R-CLOSE-03: closing the sole window retains the shown workspace empty, with no focused client (User 2026-10-10, 0.1 triage D08).
 - R-WS-09: workspace return restores remembered focus (User 2026-10-10, 0.1 triage D17).
   Windows dogfood fix delivered offline 2026-10-11: explicit numbered/history/
@@ -311,10 +321,11 @@ platform API behavior.
   - Sends touching a floating workspace transfer project membership without a
     two-domain Engine plan; only the tiled side reconciles. Floating-side
     frames stay untouched. Sticky movers refuse; intentional floats on tiled
-    sources stay ineligible.
+    sources are currently ineligible, a D16 implementation gap.
   - `Meta/Win+1..9` select an existing workspace without creation; `0` reuses
-    or creates the trailing empty. `Meta/Win+Shift+1..9` send only the focused
-    tiled window; send follows by default (R-WS-01) with a bindable unbound
+    or creates the trailing empty. `Meta/Win+Shift+1..9` send the focused
+    window; floating retention is selected by D16, currently tiled-only.
+    Send follows by default (R-WS-01) with a bindable unbound
     send-and-stay counterpart. Relative sends use the scoped ring (item 2).
     Exact follow is one fresh mover-absent-from-source/present-in-target
     proof, switch-before-focus without waiting unrelated geometry; no
@@ -763,7 +774,7 @@ platform API behavior.
 ## Reference Matrix and Spec Authority
 
 - Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
-  D10, D12, D13 and D27 are now user-decided 2026-10-12.
+  D10, D12, D13, D16 and D27 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of

@@ -3,16 +3,17 @@
 ## Goal And Scope
 
 - Record the user's 2026-10-12 reference tiers and D01, D03, D09, D10,
-  D12, D13 and D27 selections in decisions, triage, spec, outcome cells and backlog.
+  D12, D13, D16 and D27 selections in decisions, triage, spec, outcome cells and backlog.
 - Preserve historical proposals and untested outcomes; update the Windows
   handoff and existing shortcut-dialog parity item.
 - Documentation only; D01's KDE fullscreen focus fence remains code work,
+  D16 needs shared-core/KDE float transfer after native roundtrip verification,
   and D27 requires a native KWin trace before implementation assessment.
 
 ## Acceptance And Approach
 
-- Promote nine selected requirement rows to NORMATIVE with decision links.
-- Retain six pending units (D16, D22, D23, D25, D26, D28) plus Proposal B /
+- Promote ten selected requirement rows to NORMATIVE with decision links.
+- Retain five pending units (D22, D23, D25, D26, D28) plus Proposal B /
   N1-N4; limit the P2 settings list to approved D09, D10 and D27.
 - Reconcile current summaries and indexes, verify changed local links and
   anchors, and run `git diff --check`.
@@ -39,20 +40,34 @@
   native workspace/focus switching makes an urgency-only override conflict
   with D01, requiring a return to the user before code. Otherwise request/urgency
   handling needs code per the gap row; native outcomes stay TBD.
+- [D16 floating transfer](../../decisions.md#workspaces), approved option (a):
+  retain float and size on arrival, destination tiles untouched, for follow/stay
+  and numbered/relative sends. Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
+  Tier 2 retain float against COSMIC fresh re-tile. No setting: the alternative
+  has no second Tier 1/2 reference.
+- D16 needs code: shared core `NotTiled` and KDE non-tiled send refusals remain
+  gaps. First verify untested native WS1 -> WS2 -> WS1 roundtrip, then shared
+  core first (serves Windows), then KDE adapter; Windows adapter work goes to
+  item 22. Reconcile earlier intentional-float ineligibility as a D16 gap,
+  retaining the separate floating-workspace boundary journey and sticky refusal.
 
 ## Evidence And Outcome
 
 - Initial 2026-10-12 record promoted eight rows (129 NORMATIVE / 9 PROVISIONAL /
-  28 OPEN). D27 approval promotes REQ-ACT-01, yielding verified current totals
-  of 130 NORMATIVE / 8 PROVISIONAL / 28 OPEN (166 rows).
-- Six pending units (D16, D22, D23, D25, D26, D28) and Proposal B / N1-N4
+  28 OPEN). D27 approval promoted REQ-ACT-01 (130 NORMATIVE / 8 PROVISIONAL /
+  28 OPEN). D16 approval promotes REQ-WS-05, yielding verified current totals
+  of 131 NORMATIVE / 7 PROVISIONAL / 28 OPEN (166 rows).
+- Five pending units (D22, D23, D25, D26, D28) and Proposal B / N1-N4
   remain tentative. Historical options/tallies and unsupported reference
-  outcomes are retained; D27 tier rescoring and user approval are recorded.
+  outcomes are retained; D16/D27 tier rationale and user approval are recorded.
 - Windows item 22 updated for approved defaults/settings and native foreground
   considerations; existing shortcut-dialog parity item updated to P2, with
   KDE user live review linked. No duplicate item added.
 - D27 updated in decisions, triage, spec/counts/index, Ours target cells,
   backlog gap/settings and Windows item 22; no product code or live tests.
+- D16 updated in decisions, triage, spec/counts/index, R-WS-05 Ours targets,
+  backlog approved gap/implementation queue and Windows item 22. Existing
+  R-WS-05 supplies the roundtrip discriminator; no product code or live tests.
 - Requirement counts, changed local link targets/anchors, ASCII additions,
-  unchanged foreign R-ACT-01 outcomes and `git diff --check` passed. Native
+  unchanged foreign R-ACT-01/R-WS-05 outcomes and `git diff --check` passed. Native
   outcomes remain TBD; D01's fullscreen focus fence remains implementation work.

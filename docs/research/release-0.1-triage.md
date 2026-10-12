@@ -1,7 +1,7 @@
 # Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 22 units approved by User (15 on 2026-10-10, seven on 2026-10-12);
-six units plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: 23 units approved by User (15 on 2026-10-10, eight on 2026-10-12);
+five units plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes nine rows: current spec
-130 NORMATIVE / 8 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes ten rows: current spec
+131 NORMATIVE / 7 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -66,10 +66,21 @@ REQ-MAX-09b. User 2026-10-12 promotes nine rows: current spec
   an override conflicting with D01 native activation ownership, so stop and
   return to the user before code. Otherwise request/urgency handling needs code
   per the gap row; selection supplies no native evidence.
+- D16 (a) / REQ-WS-05 / R-WS-05 is user-decided: sending a floating window
+  to another workspace retains float and size on arrival, leaving destination
+  tiles untouched, for follow/stay and numbered/relative sends. No setting:
+  Hyprland, i3 and sway (Tier 1) plus xmonad, qtile and awesome (Tier 2) retain
+  float against COSMIC fresh re-tile; COSMIC's alternative has no second
+  Tier 1/2 reference. [Decision](../decisions.md#workspaces).
+- D16 needs code: shared core `NotTiled` refusal and KDE tiled-only send
+  eligibility remain gaps. Verify the untested native WS1 -> WS2 -> WS1
+  roundtrip first; implement shared core first (serves Windows), then KDE
+  adapter; Windows adapter work goes to handoff item 22. No native outcome
+  is inferred from approval.
 - D01 needs a KDE convergence fullscreen focus fence; close and the
   D03/D09/D10/D12/D13 defaults are verification-only. [Gap assessment](../backlog.md).
   Native outcomes remain TBD; selection does not establish implementation.
-- Remaining tentative units: D16, D22, D23, D25, D26, D28;
+- Remaining tentative units: D22, D23, D25, D26, D28;
   Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
@@ -79,9 +90,6 @@ No selection is approved until user review. No implementation is authorized by t
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D16 (a) retain float on transfer: 7/8 majority exception over COSMIC
-  fresh-readmit for continuity/predictability; native host float roundtrip is
-  the live leg.
 - D22 (a) ratio-preserved reflow; disclosed thin basis: COSMIC observed plus
   I/S one family.
 - D23 (a) minimize releases allocation and reflows with a stored restore slot;
@@ -114,6 +122,10 @@ unchanged; source observations are not marked as approved.
 - D27 proposed default Switch and focus plus a fullscreen/game-focused
   urgency-only guard. User 2026-10-12 selected Mark urgent only after tier
   rescoring, retaining the guard in both modes and a two-option post-0.1 setting.
+- D16 proposed retain float as a 7/8 cross-family majority exception. User
+  2026-10-12 approved retention of float/size and untouched destination tiles
+  under the tier rule for follow/stay and numbered/relative sends, no setting;
+  native roundtrip verification comes first.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -304,6 +316,11 @@ await approval. Current implementation status is in the spec/backlog.
 | MOU-01 ([spec](../spec/functional-spec.md#L303)) | host journeys TBD | plain click focuses (press-focus) | U click-8/8 4fam; [R-MOU-01](../spec/reference-outcomes/mouse.md#r-mou-01-pointer-hover-vs-click-focus) | (a) click focuses, hover off (matches COSMIC shipped `focus_follows_cursor=false`); (b) hover-focus (no votes). -> (a) |
 
 ### D16 floating transfer (WS-05)
+
+User 2026-10-12 selected option (a), retaining float and size with destination
+tiles untouched, no setting, for follow/stay and numbered/relative sends.
+See [current approval, tier rationale and roundtrip-first condition](#user-decisions-2026-10-12).
+The original proposal/tally below is historical, not the current selection rule.
 
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|
