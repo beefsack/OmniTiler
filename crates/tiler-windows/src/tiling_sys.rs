@@ -406,6 +406,7 @@ fn pump_wait_with_intent(
         ack: false,
         message: false,
         timeout: false,
+        failed: false,
     };
     unsafe {
         let mut handles = [std::ptr::null_mut(); 2];
@@ -439,9 +440,12 @@ fn pump_wait_with_intent(
         } else if result == WAIT_OBJECT_0 + count {
             woke.message = true;
         } else {
-            // WAIT_FAILED or abandoned: fall through to the periodic work
-            // below rather than spinning or stalling.
-            woke.timeout = true;
+            // WAIT_FAILED or abandoned: counted separately as `failed`, never
+            // merged into `timeout` (genuine 258 only). Control flow keeps the
+            // existing fallback: a failed return takes the periodic-work path
+            // below like before, with no new recovery and no timing claim (a
+            // failed wait returns immediately; not proven delayed).
+            woke.failed = true;
         }
     }
     loop {
@@ -462,24 +466,74 @@ fn pump_wait_with_intent(
 }
 
 /// What woke the product outer wait: any combination may hold (an ack plus
-/// queued messages is common). Ack-only turns drain acks and service the
-/// pending finish without reposting, reconciling, or settings/input work.
+/// queued messages is common). `timeout` is the genuine deadline expiry
+/// (`WAIT_TIMEOUT` 258) only; `failed` is `WAIT_FAILED`/abandoned, counted
+/// separately and never merged into timeout. Ack-only turns drain acks and
+/// service the pending finish without reposting, reconciling, or
+/// settings/input work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WaitWake {
     input: bool,
     ack: bool,
     message: bool,
     timeout: bool,
+    failed: bool,
 }
 
 impl WaitWake {
-    /// Full owner turn: fresh input, real messages, or the periodic timeout
-    /// (which preserves the timed follow/reassert cadence). Hook-callback
-    /// events collected after the wait also force a full turn at the call
-    /// site, so no input starves behind ack traffic.
+    /// Full owner turn: fresh input, real messages, the genuine periodic
+    /// timeout (which preserves the timed follow/reassert cadence), or the
+    /// pre-existing failed-wait fallback path (unchanged control flow; only
+    /// the counter differs). Hook-callback events collected after the wait
+    /// also force a full turn at the call site, so no input starves behind
+    /// ack traffic.
     #[must_use]
     const fn full_turn(self) -> bool {
-        self.input || self.message || self.timeout
+        self.input || self.message || self.timeout || self.failed
+    }
+}
+
+/// Trace-only outer-wait return counts (outer product wait only; the
+/// focus/proof `pump_wait` path never constructs one of these). Reason hits
+/// count set `WaitWake` flags per return, so combinations (ack plus messages
+/// is common) can exceed `waits`; `timeout` counts genuine 258 expiries only
+/// while `failed` counts `WAIT_FAILED`/abandoned separately; `ack_only`
+/// counts the early-return subset.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OwnerWaitCounts {
+    waits: u64,
+    ack_only: u64,
+    input: u64,
+    ack: u64,
+    msg: u64,
+    timeout: u64,
+    failed: u64,
+}
+
+impl OwnerWaitCounts {
+    /// One outer wait return: one `waits` plus one hit per set reason flag.
+    fn note_wait(&mut self, wait: WaitWake) {
+        self.waits = self.waits.saturating_add(1);
+        if wait.input {
+            self.input = self.input.saturating_add(1);
+        }
+        if wait.ack {
+            self.ack = self.ack.saturating_add(1);
+        }
+        if wait.message {
+            self.msg = self.msg.saturating_add(1);
+        }
+        if wait.timeout {
+            self.timeout = self.timeout.saturating_add(1);
+        }
+        if wait.failed {
+            self.failed = self.failed.saturating_add(1);
+        }
+    }
+
+    /// One ack-only early return (a subset of `waits`, never a full turn).
+    fn note_ack_only(&mut self) {
+        self.ack_only = self.ack_only.saturating_add(1);
     }
 }
 
@@ -487,7 +541,10 @@ impl WaitWake {
 /// [`pump_wait_with_intent`] with no intent or ack wake, so those paths never
 /// consume or spin on the owner wakes. The recursive focus-settle pump
 /// deliberately excludes the ack wake: ack accounting runs on the outer
-/// loop, never inside nested settlement.
+/// loop, never inside nested settlement. These nested waits never touch the
+/// outer `ow_*` wait counters below: only the product outer wait returns
+/// count, so the trace summary distinguishes outer returns from
+/// focus/proof waits by construction.
 fn pump_wait(timeout_ms: u32) {
     pump_wait_with_intent(timeout_ms, None, None);
 }
@@ -2213,6 +2270,9 @@ fn offer_input_control(state: &mut TileLoop, item: InboxItem) -> bool {
     match bridge.sender.offer(item) {
         Ok(()) => {
             log_input_faults(bridge, &log_path);
+            // Accepted control: wake the pump so deadline-idle waits apply
+            // it promptly (auto-reset, coalesces bursts).
+            bridge.channels.notify_work();
             true
         }
         Err(refused) => {
@@ -2295,7 +2355,11 @@ fn offer_input_snapshot(state: &mut TileLoop, mut candidate: crate::input_handof
             // ack on apply even for equal content, clearing the fence.
             candidate.generation = generation;
             // Retry preserved sender payloads before the fresh snapshot (FIFO).
+            let had = bridge.sender.pending_len() + bridge.sender.safety_len();
             bridge.sender.flush();
+            if had > 0 {
+                bridge.channels.notify_work();
+            }
             let shared: SharedSnapshot = std::sync::Arc::new(candidate);
             match bridge
                 .sender
@@ -2305,6 +2369,7 @@ fn offer_input_snapshot(state: &mut TileLoop, mut candidate: crate::input_handof
                     bridge.last_snapshot = Some(shared);
                     bridge.retry_gen = None;
                     bridge.force_snapshot = false;
+                    bridge.channels.notify_work();
                 }
                 Err(_) => {
                     // Still stalled: the retry stays armed for the next tick.
@@ -2326,7 +2391,11 @@ fn offer_input_snapshot(state: &mut TileLoop, mut candidate: crate::input_handof
             }
             candidate.generation = bridge.published_gen;
             // Retry preserved sender payloads before the fresh snapshot (FIFO).
+            let had = bridge.sender.pending_len() + bridge.sender.safety_len();
             bridge.sender.flush();
+            if had > 0 {
+                bridge.channels.notify_work();
+            }
             let shared: SharedSnapshot = std::sync::Arc::new(candidate);
             match bridge
                 .sender
@@ -2335,6 +2404,7 @@ fn offer_input_snapshot(state: &mut TileLoop, mut candidate: crate::input_handof
                 Ok(()) => {
                     bridge.last_snapshot = Some(shared);
                     bridge.force_snapshot = false;
+                    bridge.channels.notify_work();
                 }
                 Err(_) => {
                     // Regenerable: map-only refusals rebuild next tick
@@ -23063,6 +23133,15 @@ fn run_tile_loop(
             None
         };
         let mut owner_seq: u64 = 0;
+        // Trace-only outer-wait return counts (outer product wait only;
+        // focus/proof `pump_wait` calls never touch these). `waits` counts
+        // outer returns, `ack_only` the ack-only subset that returns early
+        // before slow maintenance, and the reason hits count `WaitWake` flags
+        // per return (combinations possible: ack plus messages is common, so
+        // reason hits can exceed `waits`). Native wait returns only, never
+        // thread context switches. Counted only when tracing so default runs
+        // pay no counter work.
+        let mut ow_counts = OwnerWaitCounts::default();
         loop {
             if stop_requested(dir, me)? || tray.as_ref().is_some_and(|t| t.stop_requested()) {
                 return Ok(());
@@ -23085,10 +23164,15 @@ fn run_tile_loop(
             // Trace-only owner-work clock starts here: `busy_us` excludes the
             // wait above plus callbacks delivered inside it. Scoped to this
             // iteration so every `continue`/error path below still samples.
+            // Outer-wait return accounting lives here too (trace-only): one
+            // `ow_waits` per outer return plus one hit per set `WaitWake`
+            // flag. The ack-only subset increments later at the early return,
+            // once hook events are known.
             let mut owner_work =
                 OwnerWorkGuard::begin(state.trace, &log_path, owner_epoch, owner_seq, state.tick);
             if state.trace {
-                owner_seq += 1;
+                owner_seq = owner_seq.saturating_add(1);
+                ow_counts.note_wait(wait);
             }
             let events = hook_queue()
                 .lock()
@@ -23220,6 +23304,9 @@ fn run_tile_loop(
             // follow/reassert cadence, and the pending finish above still
             // completes with no added latency.
             if !(wait.full_turn() || woke) {
+                if state.trace {
+                    ow_counts.note_ack_only();
+                }
                 continue;
             }
             let now = Instant::now();
@@ -23258,7 +23345,14 @@ fn run_tile_loop(
                             },
                         );
                     });
+                    let had = bridge.sender.pending_len() + bridge.sender.safety_len();
                     bridge.sender.flush();
+                    // Retry payload moved into the inbox: wake the pump so a
+                    // deadline-idle wait applies it promptly. Quiet when
+                    // nothing was outstanding (no per-tick spurious wake).
+                    if had > 0 {
+                        bridge.channels.notify_work();
+                    }
                     log_input_faults(bridge, &log_path);
                 }
                 poll_input_ack(&mut state);
@@ -23429,10 +23523,17 @@ fn run_tile_loop(
                     trace: state.trace,
                 };
                 offer_input_snapshot(&mut state, candidate);
-                let taken: Option<crate::input_handoff::TaggedBatch<QueuedSnapEvent>> = state
-                    .input_bridge
-                    .as_ref()
-                    .and_then(|bridge| bridge.channels.snap_outbox.take());
+                let taken: Option<crate::input_handoff::TaggedBatch<QueuedSnapEvent>> =
+                    state.input_bridge.as_ref().and_then(|bridge| {
+                        let taken = bridge.channels.snap_outbox.take();
+                        // Freed outbox space: wake the pump so parked
+                        // pending batches and retained queue terminals retry
+                        // promptly instead of stranding behind an idle wait.
+                        if taken.is_some() {
+                            bridge.channels.notify_work();
+                        }
+                        taken
+                    });
                 let mut batch = Vec::new();
                 if let Some(tagged) = taken {
                     if tagged.is_empty() {
@@ -23561,10 +23662,17 @@ fn run_tile_loop(
             // Cancels still flow (owner-side closes are no-ops without open
             // gestures, preserving pair hygiene).
             let windrag_edges: Vec<WinDragEdge> = if state.input_bridge.is_some() {
-                let taken: Option<crate::input_handoff::TaggedBatch<WinDragEdge>> = state
-                    .input_bridge
-                    .as_ref()
-                    .and_then(|bridge| bridge.channels.windrag_outbox.take());
+                let taken: Option<crate::input_handoff::TaggedBatch<WinDragEdge>> =
+                    state.input_bridge.as_ref().and_then(|bridge| {
+                        let taken = bridge.channels.windrag_outbox.take();
+                        // Freed outbox space: wake the pump so retained
+                        // terminal Up/Cancel edges retry promptly instead of
+                        // stranding behind an idle wait.
+                        if taken.is_some() {
+                            bridge.channels.notify_work();
+                        }
+                        taken
+                    });
                 let mut edges = Vec::new();
                 if let Some(tagged) = taken
                     && !tagged.is_empty()
@@ -23878,7 +23986,13 @@ fn run_tile_loop(
                         match state.input_bridge.as_ref() {
                             Some(bridge) => {
                                 let diag = bridge.channels.diag.snapshot();
-                                let batch = bridge.channels.cb_outbox.take().unwrap_or_default();
+                                let batch = bridge.channels.cb_outbox.take();
+                                // Freed trace slot: wake the pump so a parked
+                                // callback summary retries promptly.
+                                if batch.is_some() {
+                                    bridge.channels.notify_work();
+                                }
+                                let batch = batch.unwrap_or_default();
                                 (
                                     batch,
                                     diag.cb_dropped,
@@ -23979,6 +24093,82 @@ fn run_tile_loop(
                         snap_primed = true;
                     }
                     woke = true;
+                }
+                // Trace-only pump-wait summary at the existing slow cadence:
+                // one cumulative line per slow tick, no new timer or events.
+                // Reads only (diag snapshot plus renderer atomics/ack seq);
+                // never arms owner work and never signals a pump wake, so the
+                // summary cannot induce a wake. Owner counts cover outer
+                // product waits only (focus/proof nested waits excluded by
+                // construction); ack-only turns counted in `owner_ack_only`
+                // return before this block, so this line rides full turns.
+                // Input `turns` counts completed iterations and equals
+                // `input_waits`; stop before the wait increments neither;
+                // `*_timeout` fields count genuine `WAIT_TIMEOUT` (258)
+                // expiries only while `*_failed` counts `WAIT_FAILED` /
+                // unrecognized codes separately (a failed wait returns
+                // immediately; not proven delayed). Reason splits count native
+                // wait returns only, never context switches; render acks ride
+                // `render_acks` (`ack_seq`), never the wait counts. The input
+                // struct arrives under one diag-slot lock (one coherent
+                // snapshot); the renderer tuple is four independent atomic
+                // loads, so a concurrent bump can skew the sum by one, and
+                // cross-pump coherence is not claimed. Idle diffs take
+                // start/end lines from one traced run; stop short-circuits
+                // (owner return, input early return, renderer counted stop
+                // wait) are the only lifecycle exclusions.
+                if state.trace {
+                    let (in_turns, in_waits, in_work, in_msg, in_timeout, in_failed) =
+                        match state.input_bridge.as_ref() {
+                            Some(bridge) => {
+                                let diag = bridge.channels.diag.snapshot();
+                                (
+                                    diag.turns,
+                                    diag.waits,
+                                    diag.wait_work,
+                                    diag.wait_msg,
+                                    diag.wait_timeout,
+                                    diag.wait_failed,
+                                )
+                            }
+                            None => (0, 0, 0, 0, 0, 0),
+                        };
+                    let (re_waits, re_work, re_msg, re_timeout, re_failed, re_acks) =
+                        match state.render_bridge.as_ref() {
+                            Some(bridge) => {
+                                let (waits, work, msg, timeout, failed) =
+                                    bridge.channels.wait_counts();
+                                (waits, work, msg, timeout, failed, bridge.channels.ack_seq())
+                            }
+                            None => (0, 0, 0, 0, 0, 0),
+                        };
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "pump-waits",
+                            "owner_waits": ow_counts.waits,
+                            "owner_ack_only": ow_counts.ack_only,
+                            "owner_input": ow_counts.input,
+                            "owner_ack": ow_counts.ack,
+                            "owner_msg": ow_counts.msg,
+                            "owner_timeout": ow_counts.timeout,
+                            "owner_failed": ow_counts.failed,
+                            "input_turns": in_turns,
+                            "input_waits": in_waits,
+                            "input_work": in_work,
+                            "input_msg": in_msg,
+                            "input_timeout": in_timeout,
+                            "input_failed": in_failed,
+                            "render_waits": re_waits,
+                            "render_work": re_work,
+                            "render_msg": re_msg,
+                            "render_timeout": re_timeout,
+                            "render_failed": re_failed,
+                            "render_acks": re_acks,
+                            "scope": "outer-only-plus-native-waits",
+                            "excludes": "focus-proof-nested-waits,stop-short-circuit",
+                        }),
+                    );
                 }
             }
             // Exact-owner out-of-hook select wakes the loop even with no other
@@ -24526,9 +24716,6 @@ fn run_tile_loop(
             }
         }
         let _ = bridge.handle.as_mut().map(|handle| handle.request_stop());
-        if let Some(handle) = bridge.handle.as_ref() {
-            handle.notify_work();
-        }
     }
     // Product path graceful stop: close admission (owner stops pushing),
     // keep consumed pairs handled until the hook release, unhook on the
@@ -24566,9 +24753,6 @@ fn run_tile_loop(
     let mut render_stop_clean = true;
     if let Some(bridge) = state.render_bridge.as_mut() {
         let _ = bridge.handle.as_mut().map(|handle| handle.request_stop());
-        if let Some(handle) = bridge.handle.as_ref() {
-            handle.notify_work();
-        }
         let report = bridge
             .handle
             .as_mut()
@@ -36619,9 +36803,10 @@ mod intent_wake_tests {
         assert!(woke.input && woke.full_turn());
         assert!(!wake_signaled(wake), "pending wake is consumed by the wait");
         let woke = pump_wait_with_intent(0, Some(wake), None);
-        // No signal and no pump traffic: timeout (which is a full turn by
-        // design, preserving the timed cadence) or an ambient message.
-        assert!(woke.timeout || woke.message);
+        // No signal and no pump traffic: genuine timeout (which is a full
+        // turn by design, preserving the timed cadence), an ambient message,
+        // or the pre-existing failed-wait fallback (also a full turn).
+        assert!(woke.timeout || woke.message || woke.failed);
         assert!(!wake_signaled(wake));
         let _ = pump_wait_with_intent(0, None, None);
     }
@@ -36631,7 +36816,7 @@ mod intent_wake_tests {
         // The feedback-loop guard: an ack-only wake reports exactly that,
         // so the loop drains acks and services the pending finish without
         // reposting, reconciling, or settings/input work. A bare wait with
-        // nothing signaled reports timeout (the periodic full turn).
+        // nothing signaled normally reports timeout (the periodic full turn).
         use super::WaitWake;
         use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
         fn event() -> OwnedHandle {
@@ -36662,14 +36847,16 @@ mod intent_wake_tests {
         // either a pure timeout or a timeout plus ambient messages (a busy
         // desktop may deliver broadcasts through the pump drains).
         let idle = pump_wait_with_intent(0, Some(&intent), Some(&ack));
-        assert!(idle.timeout || idle.message);
+        assert!(idle.timeout || idle.message || idle.failed);
         assert!(!idle.input && !idle.ack);
-        // Reason bits compose honestly: ack-only is never a full turn.
+        // Reason bits compose honestly: ack-only is never a full turn, while
+        // the pre-existing failed-wait fallback still takes the full path.
         let ack_only = WaitWake {
             input: false,
             ack: true,
             message: false,
             timeout: false,
+            failed: false,
         };
         assert!(!ack_only.full_turn());
         assert!(woke.ack);
@@ -36679,8 +36866,20 @@ mod intent_wake_tests {
                 ack: false,
                 message: false,
                 timeout: false,
+                failed: false,
             }
             .full_turn()
+        );
+        assert!(
+            WaitWake {
+                input: false,
+                ack: false,
+                message: false,
+                timeout: false,
+                failed: true,
+            }
+            .full_turn(),
+            "failed keeps the existing fallback path; only the counter differs"
         );
     }
 
@@ -36719,6 +36918,56 @@ mod intent_wake_tests {
         assert!(!wake_signaled(&intent), "outer wait consumes the intent");
         assert!(!wake_signaled(&ack), "peer wake stays unsignaled");
         pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    }
+
+    #[test]
+    fn work_wake_created_nonsignaled_and_signals() {
+        // Owner-to-input direction: fresh channels carry a non-signaled
+        // auto-reset work wake; one signal pends exactly once (a publish
+        // before the pump wait is never lost, bursts coalesce).
+        let channels = crate::input_pump::InputChannels::new();
+        let wake = channels.work_wake().expect("work wake created");
+        assert!(!wake_signaled(wake), "no spurious pump wake");
+        channels.notify_work();
+        assert!(wake_signaled(wake), "owner publish wakes the pump");
+        assert!(!wake_signaled(wake), "auto-reset consumes the wake");
+    }
+
+    #[test]
+    fn outer_wait_counts_split_reasons_with_ack_only_subset() {
+        // Trace discriminator shape: combined ack-plus-message reasons each
+        // count (hits can exceed waits), genuine timeout stays separate from
+        // failed, while the ack-only early return is a counted subset that
+        // never claims a full turn.
+        use super::{OwnerWaitCounts, WaitWake};
+        let mut counts = OwnerWaitCounts::default();
+        counts.note_wait(WaitWake {
+            input: false,
+            ack: true,
+            message: true,
+            timeout: false,
+            failed: false,
+        });
+        counts.note_ack_only();
+        counts.note_wait(WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            timeout: true,
+            failed: false,
+        });
+        counts.note_wait(WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            timeout: false,
+            failed: true,
+        });
+        assert_eq!(counts.waits, 3);
+        assert_eq!(counts.ack_only, 1);
+        assert_eq!((counts.ack, counts.msg, counts.timeout), (1, 1, 1));
+        assert_eq!(counts.failed, 1);
+        assert_eq!(counts.input, 0);
     }
 }
 
@@ -36941,6 +37190,605 @@ mod launch_dispatch_tests {
         let _ = SystemLaunchBackend;
         assert_eq!(LaunchKind::Browser.as_str(), "browser");
         assert_eq!(LaunchKind::Terminal.as_str(), "terminal");
+    }
+}
+
+#[cfg(test)]
+/// Stage 3 combined transport/fault stress over the real production
+/// primitives (no TileLoop, no threads, no native calls): the input
+/// sender stall/escalation contract and the render latest-wins/safety
+/// contract hold simultaneously, pinning the suspend-path dual handoff
+/// (infallible input clears plus all-carrier render hides with no stale
+/// show presentable afterwards).
+mod stage3_combined_tests {
+    use crate::input_handoff::{INBOX_CAP, Inbox, InboxItem};
+    use crate::input_pump::{InboxSender, SAFETY_INVALIDATES_CAP};
+    use crate::render_handoff::{
+        BorderDesired, DesiredFrame, RenderCarrier, RenderChannels, WindowLifetime,
+    };
+    use crate::render_pump::{FakePresent, RenderCore};
+    use std::sync::Arc;
+    use tiler_core::geometry::Rect;
+
+    fn test_lifetime() -> WindowLifetime {
+        WindowLifetime {
+            pid: 7001,
+            creation: "creation-7001".to_owned(),
+            member_tag: Some("tag-7001".to_owned()),
+        }
+    }
+
+    fn test_border(generation: u64, safety: u64) -> DesiredFrame {
+        DesiredFrame::Border(BorderDesired {
+            generation,
+            safety,
+            outer: Rect {
+                x: 10,
+                y: 10,
+                w: 100,
+                h: 80,
+            },
+            style_px: (3, 0, 6),
+            color: (0x2a, 0x82, 0xda),
+            use_theme: false,
+            target_token: "token-7001".to_owned(),
+            target_hwnd: 7001,
+            lifetime: test_lifetime(),
+            foreground: test_lifetime(),
+            fulls: vec![Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            }],
+            fullscreen_bypass: false,
+            topmost: false,
+        })
+    }
+
+    /// Stall the input sender exactly like a wedged pump, then drive the
+    /// suspend dual handoff: clears absorb infallibly while stalled, every
+    /// carrier hide bumps the shared epoch and drops the queued show, and
+    /// the flush drains FIFO-before-slots once the pump releases.
+    #[test]
+    fn suspend_clears_and_hides_leave_nothing_presentable() {
+        let inbox = Arc::new(Inbox::new());
+        for _ in 0..INBOX_CAP {
+            inbox.push(InboxItem::ClearEsc).expect("fits to capacity");
+        }
+        let mut sender = InboxSender::new(Arc::clone(&inbox));
+        sender.offer(InboxItem::ClearEsc).expect("slotted");
+        assert!(sender.admission_closed);
+        sender.offer(InboxItem::ClearWindrag).expect("slotted");
+
+        let render = Arc::new(RenderChannels::new());
+        render.post(test_border(1, render.safety()));
+        let safety_before = render.safety();
+        for carrier in RenderCarrier::all() {
+            render.hide(carrier, 1);
+        }
+        assert_eq!(render.safety(), safety_before + 3);
+        // The queued pre-hide show is dropped at the transport edge on
+        // every carrier; no acknowledgement is fabricated.
+        for carrier in RenderCarrier::all() {
+            assert!(render.take_desired(carrier).is_none());
+            assert!(render.take_ack(carrier).is_none());
+        }
+
+        // The renderer proves the hides with no new owner transition.
+        let mut core = RenderCore::new(FakePresent::new(), Arc::clone(&render));
+        core.step();
+        assert!(core.present().shown.is_empty());
+        for carrier in RenderCarrier::all() {
+            let ack = render.take_ack(carrier).expect("hide ack");
+            assert_eq!(ack.outcome, crate::render_handoff::RenderOutcome::Hidden);
+            assert!(ack.hidden_proven);
+        }
+
+        // Release the stall: the real pump drains, then the sender flush
+        // moves FIFO-before-slots (the buffered ClearEsc ahead of the
+        // slotted ClearWindrag) and reopens admission.
+        assert_eq!(inbox.drain().len(), INBOX_CAP);
+        assert_eq!(sender.flush(), 0);
+        assert!(!sender.admission_closed);
+        assert_eq!(
+            inbox.drain(),
+            vec![InboxItem::ClearEsc, InboxItem::ClearWindrag]
+        );
+    }
+
+    /// Saturate the safety slots to clear escalation while render bursts
+    /// coalesce: invalidations stay fixed-bound, and three posted frames
+    /// present exactly once with the newest generation.
+    #[test]
+    fn saturation_escalates_while_frames_coalesce() {
+        let inbox = Arc::new(Inbox::new());
+        for _ in 0..INBOX_CAP {
+            inbox.push(InboxItem::ClearEsc).expect("fits to capacity");
+        }
+        let mut sender = InboxSender::new(Arc::clone(&inbox));
+        sender
+            .offer(InboxItem::InvalidateWindrag(1))
+            .expect("buffered");
+        for hwnd in 2..=(SAFETY_INVALIDATES_CAP as u64 + 2) {
+            sender
+                .offer(InboxItem::InvalidateWindrag(hwnd))
+                .expect("absorbed");
+        }
+        // Overflow escalated to a full clear: fixed bound holds regardless
+        // of window churn, and the clear is counted for forced republish.
+        assert_eq!(sender.safety_len(), 1);
+        assert_eq!(sender.windrag_cleared(), 1);
+
+        let render = Arc::new(RenderChannels::new());
+        render.post(test_border(1, render.safety()));
+        render.post(test_border(2, render.safety()));
+        render.post(test_border(3, render.safety()));
+        let mut core = RenderCore::new(FakePresent::new(), Arc::clone(&render));
+        core.step();
+        assert_eq!(core.present().shown.len(), 1);
+        let ack = render.take_ack(RenderCarrier::Border).expect("present ack");
+        assert_eq!(ack.generation, 3);
+
+        // Drain order behind the stall: the first buffered invalidate,
+        // then the escalated clear (slots expand after pending).
+        assert_eq!(inbox.drain().len(), INBOX_CAP);
+        assert_eq!(sender.flush(), 0);
+        assert_eq!(
+            inbox.drain(),
+            vec![InboxItem::InvalidateWindrag(1), InboxItem::ClearWindrag,]
+        );
+    }
+
+    /// Long deterministic stage-3 stress (3000 rounds) over the real
+    /// transports and both real cores (no TileLoop, no threads, no native
+    /// calls): variable owner/pump/render stalls, inbox saturation with
+    /// fixed-bound escalation, outbox backpressure with parked retries,
+    /// render burst coalescing with hide-epoch before/after-take races, and
+    /// a fault matrix over the real fake seams (hook install fail/retry,
+    /// renderer create/hide/destroy failure, unclean teardown with a missing
+    /// then late ack). Per-round invariants: fixed slot bounds, FIFO order,
+    /// monotonic generations/acks, no presentable stale show. Transport-level
+    /// offers only (hand-built items with owner-style flush/take/notify);
+    /// no owner policy logic is duplicated.
+    #[test]
+    fn stage3_long_interleaved_stress() {
+        use crate::input_handoff::{InputSnapshot, WindragOrigin};
+        use crate::input_pump::{FakeBackend, InputChannels, PumpCore, PumpSignals};
+        use crate::render_handoff::RenderOutcome;
+        use crate::render_pump::Present;
+        use crate::render_pump::native::RenderSignals;
+        use crate::snapkey::{
+            KeyboardConfig, QueuedIntent, QueuedSnapEvent, SnapEdge, SnapOp, SnapOrigin,
+        };
+        use crate::win_mouse::{WinDragEdge, WinDragKind};
+        use std::collections::HashMap;
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+        use tiler_core::directional::Direction;
+
+        // Process-global fence guard: applied snapshot generations touch the
+        // shared fence. Classifier TLS itself is thread-local and needs no
+        // guard; no global Esc edge is touched (no ClearEsc items).
+        let _guard = crate::input_handoff::fence_test_serial();
+
+        // Deterministic xorshift64 (fixed seed, no new deps).
+        let mut rng: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+
+        let snap_event = || {
+            QueuedSnapEvent::Intent(QueuedIntent {
+                op: SnapOp::Focus,
+                direction: Direction::Left,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: true,
+                announce: true,
+                tick: Instant::now(),
+            })
+        };
+        let edge = |kind: WinDragKind, hwnd: u64| WinDragEdge {
+            hwnd,
+            kind,
+            x: 1,
+            y: 2,
+            esc_seq: 0,
+            snapshot: None,
+        };
+        let build_snapshot = |generation: u64, take: bool, hwnds: &[u64]| {
+            let mut snap_origins = HashMap::new();
+            let mut windrag_origins = HashMap::new();
+            for hwnd in hwnds {
+                let origin = SnapOrigin {
+                    hwnd: *hwnd,
+                    token: format!("token-{hwnd}"),
+                    pid: 1000 + *hwnd as u32,
+                    creation: format!("creation-{hwnd}"),
+                };
+                snap_origins.insert(*hwnd, origin.clone());
+                windrag_origins.insert(
+                    *hwnd,
+                    WindragOrigin {
+                        origin,
+                        tag: Some(format!("tag-{hwnd}")),
+                    },
+                );
+            }
+            Arc::new(InputSnapshot {
+                generation,
+                keyboard: KeyboardConfig {
+                    takeover: take,
+                    allow_win_l: false,
+                },
+                remap: Vec::new(),
+                disabled: Vec::new(),
+                snap_origins,
+                windrag_origins,
+                active: take,
+                trace: false,
+            })
+        };
+
+        let pump_channels = Arc::new(InputChannels::new());
+        // The sender shares the pump's inbox (like the production bridge):
+        // separate FIFOs would never drain.
+        let inbox = Arc::clone(&pump_channels.inbox);
+        let mut sender = InboxSender::new(Arc::clone(&inbox));
+        let (fail_tx, fail_rx) = std::sync::mpsc::sync_channel(16);
+        let pump_signals = Arc::new(PumpSignals::new(fail_tx));
+        // Install faults up front (keyboard fails twice, mouse once);
+        // teardown faults pre-scripted for the end matrix (5 falses: the
+        // keyboard release fails all bounded attempts).
+        let mut backend = FakeBackend::new(vec![false, false, true], vec![false, true], true);
+        backend.unhook_script.clear();
+        for _ in 0..5 {
+            backend.unhook_script.push_back(false);
+        }
+        let mut pump = PumpCore::new(
+            backend,
+            Arc::clone(&pump_channels),
+            Arc::clone(&pump_signals),
+            KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            },
+        );
+        let mut install_events = 0;
+        for _ in 0..10 {
+            assert!(!pump.step());
+            while fail_rx.try_recv().is_ok() {
+                install_events += 1;
+            }
+            if pump_signals.is_ready() {
+                break;
+            }
+            pump.test_force_retry_due();
+        }
+        assert!(pump_signals.is_ready(), "hooks recover through retries");
+        assert!(install_events >= 3, "every install failure is reported");
+
+        // Renderer creation fault up front: refused narrowly, then recovery
+        // presents with the exact generation.
+        let render = Arc::new(RenderChannels::new());
+        let mut fake = FakePresent::new();
+        fake.fail_ensure = Some("error: stress create failed".to_owned());
+        let mut renderer = RenderCore::new(fake, Arc::clone(&render));
+        render.post(test_border(1, render.safety()));
+        renderer.step();
+        let ack = render.take_ack(RenderCarrier::Border).expect("refused ack");
+        assert_eq!(ack.outcome, RenderOutcome::Refused("carrier-lost"));
+        renderer.present_mut().fail_ensure = None;
+        render.post(test_border(2, render.safety()));
+        renderer.step();
+        assert_eq!(renderer.present().shown.len(), 1);
+        let ack = render.take_ack(RenderCarrier::Border).expect("present ack");
+        assert_eq!(ack.generation, 2);
+        assert_eq!(ack.outcome, RenderOutcome::Shown);
+
+        const ROUNDS: u64 = 3000;
+        let mut published_gen = 0u64;
+        let mut posted_gen = 2u64;
+        let mut hide_gens = [0u64; 3];
+        let mut refused_snaps = 0u64;
+        let mut snap_taken = 0u64;
+        let mut windrag_taken = 0u64;
+        let mut ups_pushed = 0u64;
+        let mut ups_taken = 0u64;
+        let mut last_applied = 0u64;
+        let mut last_safety = render.safety();
+
+        for round in 0..ROUNDS {
+            let r = next();
+            // Owner offers (stalled 1/4 of rounds: nothing enters and the
+            // retry flush is skipped, so the inbox fills behind the stall).
+            if r & 3 != 0 {
+                match (r >> 2) % 10 {
+                    0..=3 => {
+                        published_gen += 1;
+                        let take = (r >> 6) & 1 == 0;
+                        let count = (r >> 8) % 3;
+                        let hwnds: Vec<u64> =
+                            (0..count).map(|i| 7 + ((r >> (10 + i)) % 3)).collect();
+                        match sender.offer(InboxItem::Snapshot(build_snapshot(
+                            published_gen,
+                            take,
+                            &hwnds,
+                        ))) {
+                            Ok(()) => {}
+                            Err(_) => refused_snaps += 1,
+                        }
+                    }
+                    4..=6 => {
+                        let hwnd = 7 + (r >> 6) % 4;
+                        sender
+                            .offer(InboxItem::InvalidateWindrag(hwnd))
+                            .expect("controls absorb");
+                    }
+                    7 if (r >> 6) & 7 == 0 => {
+                        sender
+                            .offer(InboxItem::ClearWindrag)
+                            .expect("controls absorb");
+                    }
+                    _ => {}
+                }
+                let had = sender.pending_len() + sender.safety_len();
+                sender.flush();
+                if had > 0 {
+                    pump_channels.notify_work();
+                }
+            }
+            // Deterministic wedged-pump saturation: fill the inbox, then two
+            // policy snapshots while wedged. The inbox is wedged full, so
+            // the second snapshot refuses unless an earlier stall already
+            // closed admission (then the first refused instead): at least
+            // one refusal per fill is guaranteed, proving the fault path
+            // fires under real stalls.
+            if round % 97 == 0 {
+                while inbox.len() < INBOX_CAP {
+                    inbox.push(InboxItem::InvalidateWindrag(0)).expect("fill");
+                }
+                published_gen += 1;
+                let first = build_snapshot(published_gen, true, &[7]);
+                published_gen += 1;
+                let second = build_snapshot(published_gen, false, &[]);
+                if sender.offer(InboxItem::Snapshot(first)).is_err() {
+                    refused_snaps += 1;
+                }
+                if sender.offer(InboxItem::Snapshot(second)).is_err() {
+                    refused_snaps += 1;
+                }
+            }
+            // Deterministic churn far past the fixed cap while wedged: must
+            // escalate to a clear with the bound intact.
+            if round == 2000 {
+                while inbox.len() < INBOX_CAP {
+                    inbox.push(InboxItem::InvalidateWindrag(0)).expect("fill");
+                }
+                let cleared_before = sender.windrag_cleared();
+                sender
+                    .offer(InboxItem::InvalidateWindrag(500))
+                    .expect("buffered");
+                for hwnd in 1000..1030u64 {
+                    sender
+                        .offer(InboxItem::InvalidateWindrag(hwnd))
+                        .expect("absorbed");
+                }
+                assert!(
+                    sender.windrag_cleared() > cleared_before,
+                    "window churn escalates to a clear"
+                );
+                assert!(sender.safety_len() <= SAFETY_INVALIDATES_CAP + 2);
+            }
+            // Classifier pushes (mirror callbacks; single-round pump stalls
+            // can never fill the deep real queues, so every Up is retained).
+            if r & 7 == 0 {
+                crate::snapkey::sys::test_push_queued(snap_event());
+            }
+            if r & 7 == 4 {
+                let kind = if (r >> 5) & 1 == 0 {
+                    WinDragKind::Down
+                } else {
+                    WinDragKind::Up
+                };
+                if kind == WinDragKind::Up {
+                    ups_pushed += 1;
+                }
+                crate::win_mouse::sys::test_push_edge(edge(kind, 7));
+            }
+            // Pump turn (stalled ~1/8 of rounds).
+            if r & 7 != 7 {
+                assert!(!pump.step());
+                let applied = pump_channels.applied_policy_gen.load(Ordering::SeqCst);
+                assert!(applied >= last_applied, "apply acks never regress");
+                last_applied = applied;
+            }
+            // Owner drains (skipped ~1/4 of rounds: the outbox saturates and
+            // the pump parks its pending retry, woken by the take below).
+            if r & 3 != 2 {
+                if let Some(batch) = pump_channels.snap_outbox.take() {
+                    assert!(!batch.items.is_empty());
+                    snap_taken += 1;
+                    pump_channels.notify_work();
+                }
+                if let Some(batch) = pump_channels.windrag_outbox.take() {
+                    assert!(!batch.items.is_empty());
+                    windrag_taken += 1;
+                    ups_taken += batch
+                        .items
+                        .iter()
+                        .filter(|e| e.kind == WinDragKind::Up)
+                        .count() as u64;
+                    pump_channels.notify_work();
+                }
+            }
+            // Render burst posts coalesce latest-wins; rotating hides race
+            // the take (before-take leg) against the ack (after-take leg).
+            if r & 1 == 0 {
+                posted_gen += 1;
+                render.post(test_border(posted_gen, render.safety()));
+            }
+            if r % 11 == 0 {
+                let carrier = RenderCarrier::all()[(r / 11 % 3) as usize];
+                let _pre = render.take_desired(carrier);
+                hide_gens[carrier.index()] += 1;
+                let (echoed, _) = render.hide(carrier, hide_gens[carrier.index()]);
+                assert_eq!(echoed, hide_gens[carrier.index()]);
+            }
+            // Hide-failure fault in the middle: unverified, then recovery
+            // without any new owner transition (one bounded 60ms wait for
+            // the 50ms backoff).
+            if round == 1500 {
+                renderer
+                    .present_mut()
+                    .fail_hides
+                    .insert(RenderCarrier::Border);
+                let _pre = render.take_desired(RenderCarrier::Border);
+                hide_gens[0] += 1;
+                render.hide(RenderCarrier::Border, hide_gens[0]);
+                renderer.step();
+                let ack = render
+                    .take_ack(RenderCarrier::Border)
+                    .expect("hide-fail ack");
+                assert_eq!(ack.outcome, RenderOutcome::Unknown("hide-failed"));
+                assert!(!ack.hidden_proven);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                renderer.step();
+                let ack = render
+                    .take_ack(RenderCarrier::Border)
+                    .expect("recovery ack");
+                assert_eq!(ack.outcome, RenderOutcome::Hidden);
+                assert!(ack.hidden_proven);
+                assert_eq!(ack.generation, hide_gens[0]);
+            }
+            let shown_before = renderer.present().shown.len();
+            if r % 3 != 0 {
+                renderer.step();
+                assert!(
+                    renderer.present().shown.len() - shown_before <= 1,
+                    "bursts coalesce to at most one present"
+                );
+                for carrier in RenderCarrier::all() {
+                    while let Some(ack) = render.take_ack(carrier) {
+                        if ack.hidden_proven {
+                            assert_eq!(
+                                ack.generation,
+                                hide_gens[carrier.index()],
+                                "hide ack pairs its epoch"
+                            );
+                        } else if ack.outcome == RenderOutcome::Shown {
+                            assert_eq!(
+                                carrier,
+                                RenderCarrier::Border,
+                                "only the posted carrier shows"
+                            );
+                            assert_eq!(
+                                ack.generation, posted_gen,
+                                "latest-wins presents the newest frame"
+                            );
+                        }
+                    }
+                }
+            }
+            // Per-round transport invariants.
+            assert!(sender.safety_len() <= SAFETY_INVALIDATES_CAP + 2);
+            assert!(inbox.len() <= INBOX_CAP);
+            let safety = render.safety();
+            assert!(safety >= last_safety, "safety epoch never regresses");
+            last_safety = safety;
+        }
+        assert!(refused_snaps >= 30, "wedged fills faulted snapshots");
+        assert!(sender.faults >= 1, "stalls faulted the transport");
+        assert!(ups_pushed > 100, "meaningful terminal volume");
+
+        // Converge: bounded drain of every queue, outbox, pending slot and
+        // render ack with no new work entering.
+        let mut quiet = 0;
+        for _ in 0..2000 {
+            let had = sender.pending_len() + sender.safety_len();
+            sender.flush();
+            if had > 0 {
+                pump_channels.notify_work();
+            }
+            assert!(!pump.step());
+            let mut active = had > 0 || !inbox.is_empty();
+            if pump_channels.snap_outbox.take().is_some() {
+                snap_taken += 1;
+                active = true;
+                pump_channels.notify_work();
+            }
+            if let Some(batch) = pump_channels.windrag_outbox.take() {
+                windrag_taken += 1;
+                ups_taken += batch
+                    .items
+                    .iter()
+                    .filter(|e| e.kind == WinDragKind::Up)
+                    .count() as u64;
+                active = true;
+                pump_channels.notify_work();
+            }
+            renderer.step();
+            for carrier in RenderCarrier::all() {
+                if render.take_ack(carrier).is_some() {
+                    active = true;
+                }
+                if render.take_desired(carrier).is_some() {
+                    active = true;
+                }
+            }
+            if active {
+                quiet = 0;
+            } else {
+                quiet += 1;
+                if quiet >= 3 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(sender.pending_len(), 0, "nothing parked");
+        assert_eq!(sender.safety_len(), 0, "no slot retained");
+        assert!(!sender.admission_closed, "admission reopened");
+        assert!(inbox.is_empty(), "inbox drained in order");
+        assert!(!pump_channels.snap_outbox.occupied());
+        assert!(!pump_channels.windrag_outbox.occupied());
+        assert_eq!(ups_taken, ups_pushed, "every terminal Up delivered");
+        assert!(snap_taken > 100 && windrag_taken > 100);
+        assert_eq!(
+            pump_channels.applied_policy_gen.load(Ordering::SeqCst),
+            published_gen,
+            "every published policy applied"
+        );
+
+        // Teardown matrix: input stop observed promptly; the pre-scripted
+        // failing release reports unclean; a missing ack reads None (never
+        // fabricated) and the late ack reads back exactly.
+        pump_channels.stop_flag.store(true, Ordering::SeqCst);
+        pump_channels.notify_work();
+        assert!(pump.step(), "stop observed promptly");
+        assert_eq!(pump_signals.stopped(), None, "missing ack never fabricated");
+        let report = pump.shutdown();
+        assert!(!report.clean && !report.unhook_ok);
+        pump_signals.note_stopped(report.unhook_ok);
+        assert_eq!(pump_signals.stopped(), Some(false));
+        // Render teardown: failed destroy reports false, recovery destroys;
+        // same missing-then-late ack contract.
+        let (render_fail_tx, _render_fail_rx) = std::sync::mpsc::sync_channel(8);
+        let render_signals = Arc::new(RenderSignals::new(render_fail_tx));
+        assert_eq!(render_signals.stopped(), None);
+        renderer.present_mut().destroy_ok = false;
+        assert!(!renderer.present_mut().destroy_all());
+        render_signals.note_stopped(false);
+        assert_eq!(render_signals.stopped(), Some(false));
+        renderer.present_mut().destroy_ok = true;
+        assert!(renderer.present_mut().destroy_all());
+
+        while fail_rx.try_recv().is_ok() {}
+        crate::snapkey::sys::test_clear_state();
+        crate::win_mouse::sys::test_clear_state();
     }
 }
 

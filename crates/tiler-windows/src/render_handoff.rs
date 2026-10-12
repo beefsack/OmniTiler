@@ -656,6 +656,18 @@ pub struct RenderChannels {
     /// thread and acks. Polled on the renderer quantum: no kernel wait
     /// handle crosses threads here.
     stop_flag: AtomicU64,
+    /// Cumulative native renderer-wait returns by reason (owner work wake,
+    /// queued broadcast messages, genuine hide-retry deadline timeout
+    /// (`WAIT_TIMEOUT` 258), or failed / unrecognized `WAIT_FAILED` et al).
+    /// Exactly one per wait; counts native `MsgWaitForMultipleObjectsEx`
+    /// returns only, never thread context switches and never ack posts (acks
+    /// ride `ack_seq`). Standard atomics only (`fetch_add` wraps on overflow;
+    /// no saturation claimed); the renderer bumps, the owner reads trace-only
+    /// at the existing slow cadence.
+    wait_work: AtomicU64,
+    wait_msg: AtomicU64,
+    wait_timeout: AtomicU64,
+    wait_failed: AtomicU64,
 }
 
 impl Default for RenderChannels {
@@ -687,6 +699,10 @@ impl RenderChannels {
             ack_signal: Condvar::new(),
             ack_guard: Mutex::new(0),
             stop_flag: AtomicU64::new(0),
+            wait_work: AtomicU64::new(0),
+            wait_msg: AtomicU64::new(0),
+            wait_timeout: AtomicU64::new(0),
+            wait_failed: AtomicU64::new(0),
         }
     }
 
@@ -980,6 +996,59 @@ impl RenderChannels {
     #[must_use]
     pub fn stop_requested(&self) -> bool {
         self.stop_flag.load(Ordering::SeqCst) != 0
+    }
+
+    /// Record one native renderer-wait return (renderer side only).
+    /// Wrapping `fetch_add`; never wakes the owner (the ack wake signals only
+    /// on new acks via `ack_seq`).
+    pub fn note_wait_work(&self) {
+        self.wait_work.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one native renderer-wait message return (renderer side only).
+    /// Wrapping `fetch_add`; never wakes the owner.
+    pub fn note_wait_msg(&self) {
+        self.wait_msg.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one genuine renderer-wait timeout return: the hide-retry
+    /// deadline fired (`WAIT_TIMEOUT` 258, renderer side only). A fully idle
+    /// `u32::MAX` wait never times out; only a scheduled hide retry does.
+    /// Wrapping `fetch_add`.
+    pub fn note_wait_timeout(&self) {
+        self.wait_timeout.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record one failed / unrecognized renderer-wait return (`WAIT_FAILED`
+    /// et al, renderer side only). Counted separately, never merged into
+    /// timeout. Telemetry only: the loop keeps its existing path with no new
+    /// recovery. Wrapping `fetch_add`.
+    pub fn note_wait_failed(&self) {
+        self.wait_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Cumulative native renderer-wait returns
+    /// `(waits, work, msg, timeout, failed)` for the trace-only owner
+    /// summary. `waits` is the sum; ack posts are counted separately by
+    /// [`Self::ack_seq`], never here. Owner side only reads; never arms owner
+    /// work. Not a coherent sample under concurrency: four independent atomic
+    /// loads, so a concurrent renderer bump can skew the sum by one; cross-pump
+    /// coherence with the input diag snapshot is likewise not claimed.
+    #[must_use]
+    pub fn wait_counts(&self) -> (u64, u64, u64, u64, u64) {
+        let work = self.wait_work.load(Ordering::Relaxed);
+        let msg = self.wait_msg.load(Ordering::Relaxed);
+        let timeout = self.wait_timeout.load(Ordering::Relaxed);
+        let failed = self.wait_failed.load(Ordering::Relaxed);
+        (
+            work.wrapping_add(msg)
+                .wrapping_add(timeout)
+                .wrapping_add(failed),
+            work,
+            msg,
+            timeout,
+            failed,
+        )
     }
 }
 

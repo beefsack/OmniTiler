@@ -60,11 +60,49 @@ pub const READY_WAIT: Duration = Duration::from_secs(2);
 /// retains `Stopping` (never claims clean, never starts an overlapping
 /// worker).
 pub const STOP_WAIT: Duration = Duration::from_secs(5);
-/// Input pump exchange cadence: inbox apply plus outbox offer between native
-/// message pumps. Short enough to keep intents flowing, long enough to avoid
-/// a busy loop. Hook callbacks deliver through the native message queue
-/// regardless of this timeout.
-pub const PUMP_QUANTUM_MS: u32 = 10;
+/// Bounded transient-contention retry: one-shot wait while a try-lock
+/// exchange reported WouldBlock (contended, possibly free). Lock holds are
+/// sub-millisecond by construction (try-locks only, never held across
+/// waits), so this fires at most once per contention sighting; steady state
+/// returns to deadline/indefinite waits. Never a fixed idle poll.
+pub const CONTENTION_RETRY: Duration = Duration::from_millis(5);
+
+/// Native pump wait return reason: exactly one per wait. Counts native
+/// `MsgWaitForMultipleObjectsEx` returns only, never thread context switches.
+/// `Timeout` is the genuine deadline expiry (`WAIT_TIMEOUT`, 258) only;
+/// `Failed` is `WAIT_FAILED` or any unrecognized code, counted separately and
+/// never merged into timeout. Classification is telemetry only: the loop keeps
+/// its existing fallthrough to periodic work either way, with no new recovery
+/// and no timing claim (a failed wait returns immediately; not proven delayed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputWaitReason {
+    Work,
+    Message,
+    Timeout,
+    Failed,
+}
+
+/// Classify one native input-wait return code. Pure (no native calls) so
+/// tests prove the work/message/timeout/failed split without a desktop.
+#[must_use]
+pub(crate) fn classify_input_wait(result: u32, has_work: bool) -> InputWaitReason {
+    const WAIT_OBJECT_0: u32 = 0;
+    const WAIT_TIMEOUT: u32 = 258;
+    if result == WAIT_TIMEOUT {
+        return InputWaitReason::Timeout;
+    }
+    if has_work {
+        if result == WAIT_OBJECT_0 {
+            return InputWaitReason::Work;
+        }
+        if result == WAIT_OBJECT_0 + 1 {
+            return InputWaitReason::Message;
+        }
+    } else if result == WAIT_OBJECT_0 {
+        return InputWaitReason::Message;
+    }
+    InputWaitReason::Failed
+}
 
 /// Fixed cap on distinct stalled-transport invalidated HWNDs held in the
 /// safety slots. Overflow escalates conservatively to a full windrag clear
@@ -377,6 +415,13 @@ pub struct InputChannels {
     /// `None` only when creation failed (spawn refuses cleanly).
     #[cfg(windows)]
     pub intent_wake: Option<OwnedHandle>,
+    /// Owner-to-input work wake: auto-reset kernel event signaled by the
+    /// owner after every accepted inbox publish/control, retry flush with
+    /// payload, outbox drain, and stop request. Breaks the pump wait early
+    /// so no fixed idle quantum is needed; coalesces bursts. `None` only
+    /// when creation failed (spawn refuses cleanly).
+    #[cfg(windows)]
+    pub work_wake: Option<OwnedHandle>,
 }
 
 /// Create the owner-intent wake: auto-reset, initially non-signaled.
@@ -412,6 +457,8 @@ impl InputChannels {
             stop_flag: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             intent_wake: create_intent_event().ok(),
+            #[cfg(windows)]
+            work_wake: create_intent_event().ok(),
         }
     }
 }
@@ -427,6 +474,22 @@ impl InputChannels {
     /// No-op when creation failed; the owner keeps its periodic fallback.
     pub fn notify_intent(&self) {
         if let Some(handle) = self.intent_wake.as_ref() {
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
+            }
+        }
+    }
+
+    /// Borrow the owner-to-input work wake, if creation succeeded.
+    pub fn work_wake(&self) -> Option<&OwnedHandle> {
+        self.work_wake.as_ref()
+    }
+
+    /// Signal the owner-to-input work wake (best-effort, never waits, never
+    /// logs). No-op when creation failed; the pump falls back to its retry
+    /// deadlines and message-queue wake.
+    pub fn notify_work(&self) {
+        if let Some(handle) = self.work_wake.as_ref() {
             unsafe {
                 windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
             }
@@ -490,12 +553,28 @@ pub struct FakeBackend {
     pub keyboard_attempts: u32,
     /// Mouse install attempts so far.
     pub mouse_attempts: u32,
-    /// Message-pump turns requested.
+    /// Message drains requested (two per completed pump step).
     pub pump_turns: u32,
+    /// Message-pump timeout per turn in milliseconds (deadline evidence:
+    /// install-retry deadline while hooks are down, `u32::MAX` while idle).
+    pub pump_timeouts: Vec<u32>,
+    /// Scripted classifier items enqueued during each message drain,
+    /// mimicking LL callbacks that ran on the pump thread (test-only: no
+    /// native effects). Drained by the pre-wait transfer on the same turn.
+    pub snap_on_drain: Vec<QueuedSnapEvent>,
+    /// Scripted windrag edges enqueued during each message drain, like
+    /// [`Self::snap_on_drain`].
+    pub windrag_on_drain: Vec<WinDragEdge>,
+    /// When true (test-only), the wait asserts no classifier work remains
+    /// queued: pre-wait callback work must transfer
+    /// before blocking.
+    pub assert_transferred_before_wait: bool,
     /// Keyboard config seen at each install attempt (stale-init evidence).
     pub keyboard_configs: Vec<KeyboardConfig>,
     /// Retry backoffs recorded (evidence).
     pub retry_secs: Vec<u64>,
+    /// Scripted native wait reasons, consumed in order (defaults to timeout).
+    pub wait_script: VecDeque<InputWaitReason>,
 }
 
 impl FakeBackend {
@@ -513,8 +592,13 @@ impl FakeBackend {
             keyboard_attempts: 0,
             mouse_attempts: 0,
             pump_turns: 0,
+            pump_timeouts: Vec::new(),
+            snap_on_drain: Vec::new(),
+            windrag_on_drain: Vec::new(),
+            assert_transferred_before_wait: false,
             keyboard_configs: Vec::new(),
             retry_secs: Vec::new(),
+            wait_script: VecDeque::new(),
         }
     }
 
@@ -554,7 +638,7 @@ pub fn shared_snapshot(
 
 #[cfg(windows)]
 mod native {
-    use super::{InputChannels, PUMP_QUANTUM_MS, install_backoff_secs, snap_batch_age_us};
+    use super::{InputChannels, install_backoff_secs, snap_batch_age_us};
     use crate::input_handoff::{
         InboxItem, InputDiag, InputSnapshot, OUTBOX_BATCH_CAP, PumpLifecycle, SharedSnapshot,
         StopReport, TaggedBatch, note_policy_applied, snapshot_policy_eq, take_delivery_gap_ms,
@@ -562,6 +646,7 @@ mod native {
     use crate::snapkey::{KeyboardConfig, QueuedSnapEvent};
     use crate::win_mouse::WinDragEdge;
     use std::collections::VecDeque;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _, OwnedHandle};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -594,8 +679,21 @@ mod native {
         fn uninstall_keyboard(&mut self, hook: &mut Self::KeyboardHook) -> bool;
         /// Release the mouse hook on the creator thread.
         fn uninstall_mouse(&mut self, hook: &mut Self::MouseHook) -> bool;
-        /// Deliver one message turn on the creator thread.
-        fn pump_messages(&mut self, timeout_ms: u32);
+        /// Deliver pending messages (LL callbacks) on the creator thread
+        /// without waiting. Callbacks queue classifier work that the core
+        /// transfers before blocking, so the final callback never strands
+        /// behind an idle wait.
+        fn drain_messages(&mut self);
+        /// Wait for owner work, queued hook-callback messages, or the
+        /// deadline (`u32::MAX` while fully idle). The owner work wake and
+        /// the message queue break the wait early; `None` keeps the legacy
+        /// queue-only wait. Never transfers: the core drains and offers
+        /// before and after. Returns the native wait reason (one per wait).
+        fn wait_messages(
+            &mut self,
+            timeout_ms: u32,
+            work_wake: Option<&OwnedHandle>,
+        ) -> super::InputWaitReason;
     }
 
     /// Production backend: real hook install/uninstall plus the creator-side
@@ -624,8 +722,16 @@ mod native {
             crate::win_mouse::sys::uninstall(hook)
         }
 
-        fn pump_messages(&mut self, timeout_ms: u32) {
-            pump_messages(timeout_ms);
+        fn drain_messages(&mut self) {
+            drain_messages();
+        }
+
+        fn wait_messages(
+            &mut self,
+            timeout_ms: u32,
+            work_wake: Option<&OwnedHandle>,
+        ) -> super::InputWaitReason {
+            wait_messages(timeout_ms, work_wake)
         }
     }
 
@@ -692,8 +798,43 @@ mod native {
             self.unhook_script.pop_front().unwrap_or(true)
         }
 
-        fn pump_messages(&mut self, _timeout_ms: u32) {
+        fn drain_messages(&mut self) {
             self.pump_turns += 1;
+            #[cfg(test)]
+            {
+                for event in std::mem::take(&mut self.snap_on_drain) {
+                    crate::snapkey::sys::test_push_queued(event);
+                }
+                for edge in std::mem::take(&mut self.windrag_on_drain) {
+                    crate::win_mouse::sys::test_push_edge(edge);
+                }
+            }
+        }
+
+        fn wait_messages(
+            &mut self,
+            timeout_ms: u32,
+            _work_wake: Option<&OwnedHandle>,
+        ) -> super::InputWaitReason {
+            self.pump_timeouts.push(timeout_ms);
+            // S1 seam assertion (test builds only): classifier work queued
+            // by callbacks during the pre-wait drain must already be
+            // transferred before blocking. Drains at most one probe batch,
+            // so a violation fails loudly instead of stranding silently.
+            #[cfg(test)]
+            if self.assert_transferred_before_wait {
+                let snap_left =
+                    crate::snapkey::sys::drain_up_to(crate::input_handoff::OUTBOX_BATCH_CAP);
+                let mouse_left =
+                    crate::win_mouse::sys::drain_up_to(crate::input_handoff::OUTBOX_BATCH_CAP);
+                assert!(
+                    snap_left.is_empty() && mouse_left.is_empty(),
+                    "pre-wait drain queued work that never transferred before blocking"
+                );
+            }
+            self.wait_script
+                .pop_front()
+                .unwrap_or(super::InputWaitReason::Timeout)
         }
     }
 
@@ -775,6 +916,9 @@ mod native {
         failures: std::sync::mpsc::Receiver<FailEvent>,
         lifecycle: PumpLifecycle,
         thread: Option<std::thread::JoinHandle<StopReport>>,
+        /// Completed stop report: a second `wait_stopped` returns the
+        /// stored report instead of joining a consumed handle.
+        stop_report: Option<StopReport>,
         keyboard_config: KeyboardConfig,
     }
 
@@ -793,9 +937,9 @@ mod native {
                 return Err("error: input pump already active".to_owned());
             }
             let channels = Arc::new(InputChannels::new());
-            if channels.intent_wake().is_none() {
+            if channels.intent_wake().is_none() || channels.work_wake().is_none() {
                 crate::input_handoff::pump_slot_release();
-                return Err("error: intent wake creation failed".to_owned());
+                return Err("error: input wake creation failed".to_owned());
             }
             let (fail_tx, fail_rx) = sync_channel(16);
             let signals = Arc::new(PumpSignals::new(fail_tx));
@@ -818,6 +962,7 @@ mod native {
                 failures: fail_rx,
                 lifecycle,
                 thread: Some(thread),
+                stop_report: None,
                 keyboard_config,
             })
         }
@@ -884,36 +1029,51 @@ mod native {
         pub fn request_stop(&mut self) -> Result<(), crate::input_handoff::LifecycleError> {
             self.lifecycle.request_stop()?;
             self.channels.stop_flag.store(true, Ordering::SeqCst);
+            // Wake the pump so a fully idle wait observes the stop promptly.
+            self.channels.notify_work();
             Ok(())
         }
 
-        /// Bounded stop wait. The pump records its stop acknowledgement as
-        /// its terminal act, so joining after an ack is safe. With no ack
-        /// the thread is joined only when already finished; a still-running
-        /// thread keeps its handle (no detach) and the call returns unclean
-        /// while retaining `Stopping`, so no overlapping worker can start.
-        /// Only a clean stop (successful unhook acknowledgement plus exit)
-        /// releases the process pump slot for a later spawn; every unclean
-        /// path keeps the reserve, including a dropped handle. Never waits
+        /// Bounded stop wait. Clean requires the unhook acknowledgement
+        /// *and* a finished thread whose join succeeds: a thread wedged
+        /// between its ack and its return keeps its handle (no detach) and
+        /// the call returns unclean, and a thread that panicked reports
+        /// unclean even when the ack claimed success, so clean is never
+        /// fabricated from an ack alone. A still-running thread keeps its
+        /// handle for a later bounded wait; a second call returns the
+        /// stored report instead of joining a consumed handle. Only a
+        /// clean stop releases the process pump slot; every unclean path
+        /// keeps the reserve, including a dropped handle. Never waits
         /// indefinitely and never holds channel locks while joining.
         pub fn wait_stopped(&mut self, timeout: Duration) -> StopReport {
+            if let Some(report) = self.stop_report {
+                return report;
+            }
             let deadline = Instant::now() + timeout;
             loop {
                 if let Some(unhook_ok) = self.signals.stopped() {
-                    let thread = self.thread.take().expect("stop joins once");
-                    let _ = thread.join();
-                    return match self.lifecycle.note_unhooked(unhook_ok) {
-                        Ok(report) => {
-                            if report.clean {
-                                crate::input_handoff::pump_slot_release();
-                            }
-                            report
+                    // Ack arrived: complete only against a finished thread
+                    // whose join succeeds. A thread wedged between its ack
+                    // and its return, or one that panicked, keeps unclean:
+                    // the handle is retained for a later bounded wait (or
+                    // the panic is recorded) instead of blocking this call
+                    // past the deadline or fabricating clean.
+                    if let Some(thread) = self.thread.take() {
+                        if thread.is_finished() {
+                            let joined_ok = thread
+                                .join()
+                                .map(|report| report.unhook_ok)
+                                .unwrap_or(false);
+                            let report = self.complete_stop(unhook_ok && joined_ok);
+                            self.stop_report = Some(report);
+                            return report;
                         }
-                        Err(_) => StopReport {
-                            unhook_ok,
-                            clean: false,
-                        },
-                    };
+                        self.thread = Some(thread);
+                    } else {
+                        let report = self.complete_stop(unhook_ok);
+                        self.stop_report = Some(report);
+                        return report;
+                    }
                 }
                 if Instant::now() >= deadline {
                     break;
@@ -926,18 +1086,9 @@ mod native {
                         .join()
                         .map(|report| report.unhook_ok)
                         .unwrap_or(false);
-                    return match self.lifecycle.note_unhooked(unhook_ok) {
-                        Ok(report) => {
-                            if report.clean {
-                                crate::input_handoff::pump_slot_release();
-                            }
-                            report
-                        }
-                        Err(_) => StopReport {
-                            unhook_ok,
-                            clean: false,
-                        },
-                    };
+                    let report = self.complete_stop(unhook_ok);
+                    self.stop_report = Some(report);
+                    return report;
                 }
                 // Still running (hung native call): keep the handle so a
                 // later bounded wait can still join; never detach.
@@ -948,13 +1099,30 @@ mod native {
                 clean: false,
             }
         }
+
+        /// Fold one unhook acknowledgement into the lifecycle, releasing
+        /// the process slot only on a clean stop.
+        fn complete_stop(&mut self, unhook_ok: bool) -> StopReport {
+            match self.lifecycle.note_unhooked(unhook_ok) {
+                Ok(report) => {
+                    if report.clean {
+                        crate::input_handoff::pump_slot_release();
+                    }
+                    report
+                }
+                Err(_) => StopReport {
+                    unhook_ok,
+                    clean: false,
+                },
+            }
+        }
     }
 
-    /// One pump message turn on the creator thread: delivers LL callbacks for
-    /// hooks installed here, then waits briefly for more. The owner focus
-    /// settle pump must not call this: it would not deliver this thread's
-    /// callbacks anyway, and LL delivery stays isolated here.
-    fn pump_messages(timeout_ms: u32) {
+    /// Deliver pending LL callbacks for hooks installed here, without
+    /// waiting. The owner focus settle pump must not call this: it would
+    /// not deliver this thread's callbacks anyway, and LL delivery stays
+    /// isolated here.
+    fn drain_messages() {
         let mut msg: MSG = unsafe { std::mem::zeroed() };
         loop {
             let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
@@ -966,19 +1134,29 @@ mod native {
                 DispatchMessageW(&msg);
             }
         }
-        unsafe {
-            MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0);
-        }
-        loop {
-            let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-            if has == 0 {
-                break;
+    }
+
+    /// Wait for owner work, queued hook-callback messages, or the deadline.
+    /// `u32::MAX` waits indefinitely: the work wake and the message queue
+    /// still wake the pump; nothing polls. No locks are held across the wait
+    /// (callers drain/apply outside callbacks with try-locks before and
+    /// after, and transfer classifier work before blocking). Returns the
+    /// native wait reason; failed/unrecognized codes classify as `Failed`
+    /// with no behavior change (the step keeps its existing fallthrough).
+    fn wait_messages(timeout_ms: u32, work_wake: Option<&OwnedHandle>) -> super::InputWaitReason {
+        let has_work = work_wake.is_some();
+        let result = unsafe {
+            match work_wake {
+                Some(wake) => {
+                    let raw = wake.as_handle().as_raw_handle();
+                    MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0)
+                }
+                None => {
+                    MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0)
+                }
             }
-            unsafe {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-        }
+        };
+        super::classify_input_wait(result, has_work)
     }
 
     /// Production pump step shared by the real thread and fake-backend
@@ -987,7 +1165,10 @@ mod native {
     /// [`NativeHooks`] backend. Fake backends perform no native effects, and
     /// every `sys` helper used here is a no-op without installed hook state,
     /// so step tests exercise the production logic with zero native calls.
-    struct PumpCore<B: NativeHooks> {
+    /// `pub(crate)` (not public API) so the stage-3 combined stress can drive
+    /// the real core over the real transports; every member stays private
+    /// except the few marked `pub(crate)` below.
+    pub(crate) struct PumpCore<B: NativeHooks> {
         backend: B,
         channels: Arc<InputChannels>,
         signals: Arc<PumpSignals>,
@@ -998,6 +1179,12 @@ mod native {
         mouse_failures: u32,
         keyboard_retry_at: Option<Instant>,
         mouse_retry_at: Option<Instant>,
+        /// Transient try-lock contention observed on the last transfer
+        /// (inbox drain, outbox probe/offer, callback summaries). Arms one
+        /// bounded retry deadline; never a fixed poll.
+        contention: bool,
+        /// One-shot retry deadline while [`Self::contention`] is outstanding.
+        contention_retry_at: Option<Instant>,
         /// Latest snapshot seen (install/apply source of truth).
         latest: Option<SharedSnapshot>,
         /// Last applied snapshot (policy baseline for change detection).
@@ -1008,12 +1195,21 @@ mod native {
         pending_windrag: Option<TaggedBatch<WinDragEdge>>,
         diag: InputDiag,
         turns: u64,
+        /// Cumulative native wait returns by reason (exactly one per wait;
+        /// native returns only, never context switches). `wait_timeout` is the
+        /// genuine deadline (`WAIT_TIMEOUT` 258) only; `WAIT_FAILED` and any
+        /// unrecognized code count under `wait_failed`. Published into
+        /// [`InputDiag`] each turn for the trace-only owner summary.
+        wait_work: u64,
+        wait_msg: u64,
+        wait_timeout: u64,
+        wait_failed: u64,
         cb_outbox_dropped: u32,
     }
 
     impl<B: NativeHooks> PumpCore<B> {
         /// New core over shared channels; installs on the first [`Self::step`].
-        fn new(
+        pub(crate) fn new(
             backend: B,
             channels: Arc<InputChannels>,
             signals: Arc<PumpSignals>,
@@ -1030,6 +1226,8 @@ mod native {
                 mouse_failures: 0,
                 keyboard_retry_at: None,
                 mouse_retry_at: None,
+                contention: false,
+                contention_retry_at: None,
                 latest: None,
                 applied: None,
                 last_mouse_gate: None,
@@ -1037,6 +1235,10 @@ mod native {
                 pending_windrag: None,
                 diag: InputDiag::default(),
                 turns: 0,
+                wait_work: 0,
+                wait_msg: 0,
+                wait_timeout: 0,
+                wait_failed: 0,
                 cb_outbox_dropped: 0,
             }
         }
@@ -1268,75 +1470,118 @@ mod native {
         /// Drain classifier queues into tagged outbox batches. Occupied
         /// outboxes skip draining so records wait in the real queues under
         /// their own bounds; refused offers park thread-locally with their
-        /// generation and retry before any newer drain.
+        /// generation and retry before any newer drain. A WouldBlock probe
+        /// (contended, possibly free) sets [`Self::contention`] for one
+        /// bounded retry instead of stranding behind an idle wait; a refused
+        /// offer re-probes so true occupancy (owner wakes on take) never
+        /// arms the retry.
         fn offer_batches(&mut self) {
             let generation = self.applied_generation();
             let trace = self.latest.as_ref().is_some_and(|snap| snap.trace);
             if let Some(pending) = self.pending_snap.take() {
                 match self.channels.snap_outbox.try_put(pending) {
                     Ok(_) => self.channels.notify_intent(),
-                    Err(batch) => self.pending_snap = Some(batch),
-                }
-            } else if self.channels.snap_outbox.try_occupied() != Some(true)
-                && self.keyboard_hook.is_some()
-            {
-                let items = crate::snapkey::sys::drain_up_to(OUTBOX_BATCH_CAP);
-                if !items.is_empty() {
-                    let age = if trace {
-                        snap_batch_age_us(&items, Instant::now())
-                    } else {
-                        0
-                    };
-                    match self
-                        .channels
-                        .snap_outbox
-                        .try_put(TaggedBatch::new(generation, items))
-                    {
-                        Ok(_) => {
-                            if trace {
-                                self.diag.note_offer(age, Instant::now());
-                            }
-                            self.channels.notify_intent();
+                    Err(batch) => {
+                        if self.channels.snap_outbox.try_occupied() != Some(true) {
+                            self.contention = true;
                         }
-                        Err(batch) => self.pending_snap = Some(batch),
+                        self.pending_snap = Some(batch);
                     }
+                }
+            } else {
+                match self.channels.snap_outbox.try_occupied() {
+                    Some(true) => {}
+                    Some(false) if self.keyboard_hook.is_some() => {
+                        let items = crate::snapkey::sys::drain_up_to(OUTBOX_BATCH_CAP);
+                        if !items.is_empty() {
+                            let age = if trace {
+                                snap_batch_age_us(&items, Instant::now())
+                            } else {
+                                0
+                            };
+                            match self
+                                .channels
+                                .snap_outbox
+                                .try_put(TaggedBatch::new(generation, items))
+                            {
+                                Ok(_) => {
+                                    if trace {
+                                        self.diag.note_offer(age, Instant::now());
+                                    }
+                                    self.channels.notify_intent();
+                                }
+                                Err(batch) => {
+                                    if self.channels.snap_outbox.try_occupied() != Some(true) {
+                                        self.contention = true;
+                                    }
+                                    self.pending_snap = Some(batch);
+                                }
+                            }
+                        }
+                    }
+                    Some(false) => {}
+                    None => self.contention = true,
                 }
             }
             if let Some(pending) = self.pending_windrag.take() {
                 match self.channels.windrag_outbox.try_put(pending) {
                     Ok(_) => self.channels.notify_intent(),
-                    Err(batch) => self.pending_windrag = Some(batch),
-                }
-            } else if self.channels.windrag_outbox.try_occupied() != Some(true)
-                && self.mouse_hook.is_some()
-            {
-                let items = crate::win_mouse::sys::drain_up_to(OUTBOX_BATCH_CAP);
-                if !items.is_empty() {
-                    match self
-                        .channels
-                        .windrag_outbox
-                        .try_put(TaggedBatch::new(generation, items))
-                    {
-                        Ok(_) => {
-                            self.diag.windrag_offers += 1;
-                            self.diag.windrag_last_offer = trace.then(Instant::now);
-                            self.channels.notify_intent();
+                    Err(batch) => {
+                        if self.channels.windrag_outbox.try_occupied() != Some(true) {
+                            self.contention = true;
                         }
-                        Err(batch) => self.pending_windrag = Some(batch),
+                        self.pending_windrag = Some(batch);
                     }
                 }
-            }
-            if self.channels.cb_outbox.try_occupied() != Some(true) {
-                let diags = crate::snapkey::sys::drain_callback_diag();
-                if !diags.is_empty() && self.channels.cb_outbox.try_put(diags).is_err() {
-                    self.cb_outbox_dropped += 1;
+            } else {
+                match self.channels.windrag_outbox.try_occupied() {
+                    Some(true) => {}
+                    Some(false) if self.mouse_hook.is_some() => {
+                        let items = crate::win_mouse::sys::drain_up_to(OUTBOX_BATCH_CAP);
+                        if !items.is_empty() {
+                            match self
+                                .channels
+                                .windrag_outbox
+                                .try_put(TaggedBatch::new(generation, items))
+                            {
+                                Ok(_) => {
+                                    self.diag.windrag_offers += 1;
+                                    self.diag.windrag_last_offer = trace.then(Instant::now);
+                                    self.channels.notify_intent();
+                                }
+                                Err(batch) => {
+                                    if self.channels.windrag_outbox.try_occupied() != Some(true) {
+                                        self.contention = true;
+                                    }
+                                    self.pending_windrag = Some(batch);
+                                }
+                            }
+                        }
+                    }
+                    Some(false) => {}
+                    None => self.contention = true,
                 }
+            }
+            match self.channels.cb_outbox.try_occupied() {
+                Some(true) => {}
+                Some(false) => {
+                    let diags = crate::snapkey::sys::drain_callback_diag();
+                    if !diags.is_empty() && self.channels.cb_outbox.try_put(diags).is_err() {
+                        self.cb_outbox_dropped += 1;
+                    }
+                }
+                // Unknown occupancy: summaries stay queued under their own
+                // bound for the contention retry instead of draining into a
+                // counted drop.
+                None => self.contention = true,
             }
         }
 
         /// Publish bounded diagnostics without waiting. Queue age and the
         /// per-turn dispatch span carry explicit non-latency limits; the
-        /// heartbeat turn count proves liveness only.
+        /// heartbeat turn count proves liveness only. A contended publish
+        /// skips the turn with no retry flag: the next turn republishes a
+        /// fresher sample, so nothing strands.
         fn publish_diag(&mut self, dispatch_us: u64) {
             let trace = self.latest.as_ref().is_some_and(|snap| snap.trace);
             self.diag.snap_dropped = crate::snapkey::sys::queue_dropped();
@@ -1348,6 +1593,15 @@ mod native {
             self.diag.mask_send_max_us = max_us;
             self.diag.hook_stats = crate::win_mouse::sys::hook_stats();
             self.diag.turns = self.turns;
+            self.diag.waits = self
+                .wait_work
+                .saturating_add(self.wait_msg)
+                .saturating_add(self.wait_timeout)
+                .saturating_add(self.wait_failed);
+            self.diag.wait_work = self.wait_work;
+            self.diag.wait_msg = self.wait_msg;
+            self.diag.wait_timeout = self.wait_timeout;
+            self.diag.wait_failed = self.wait_failed;
             self.diag.dispatch_us = if trace { dispatch_us } else { 0 };
             self.diag.delivery_gap_ms = if trace { take_delivery_gap_ms() } else { 0 };
             self.diag.pending_snap =
@@ -1356,33 +1610,126 @@ mod native {
             let _ = self.channels.diag.try_publish(&self.diag);
         }
 
-        /// One pump turn: install/retry, FIFO apply, message delivery,
-        /// batch offers, diagnostics. Returns true when a stop was
-        /// requested.
-        fn step(&mut self) -> bool {
+        /// Next wait deadline, if any. Install-retry dues plus one bounded
+        /// transient-contention retry. `None` means fully idle: both hooks
+        /// installed and no contention outstanding, so the pump may wait
+        /// indefinitely. No wake is lost: owner inbox/control/flush/drain/
+        /// stop signals break the wait through the work wake, hook-callback
+        /// messages arrive through the message queue itself, and callback
+        /// work queued during the pre-wait drain transfers before blocking.
+        /// A missing hook with no backoff scheduled is due immediately.
+        pub(crate) fn next_timer(&self) -> Option<Instant> {
+            let mut earliest: Option<Instant> = None;
+            if self.keyboard_hook.is_none() {
+                match self.keyboard_retry_at {
+                    Some(due) => {
+                        earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
+                    }
+                    None => return Some(Instant::now()),
+                }
+            }
+            if self.mouse_hook.is_none() {
+                match self.mouse_retry_at {
+                    Some(due) => {
+                        earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
+                    }
+                    None => return Some(Instant::now()),
+                }
+            }
+            if let Some(due) = self.contention_retry_at {
+                earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
+            }
+            earliest
+        }
+
+        /// Test-only: make pending install retries due now, so recovery runs
+        /// through the real step without wall-clock backoff waits.
+        #[cfg(test)]
+        pub(crate) fn test_force_retry_due(&mut self) {
+            let now = Instant::now();
+            if self.keyboard_hook.is_none() {
+                self.keyboard_retry_at = Some(now);
+            }
+            if self.mouse_hook.is_none() {
+                self.mouse_retry_at = Some(now);
+            }
+        }
+
+        /// One pump turn: install/retry, FIFO apply, pre-wait message
+        /// delivery plus batch transfer, deadline wait, post-wait delivery
+        /// plus transfer, diagnostics. Returns true when a stop was
+        /// requested. The pre-wait transfer is load-bearing: callbacks
+        /// delivered during the pre-wait drain queue classifier work that
+        /// must offer before blocking, or the final callback strands behind
+        /// an idle wait with nothing left to wake the pump.
+        pub(crate) fn step(&mut self) -> bool {
             if self.channels.stop_flag.load(Ordering::SeqCst) {
                 return true;
             }
+            self.contention = false;
             // FIFO apply before install/retry so a policy snapshot that
             // arrived while hooks were down is the config of the next
-            // install attempt, never a stale spawn init.
-            if let Some(items) = self.channels.inbox.try_drain() {
-                for item in &items {
-                    self.apply_item(item);
+            // install attempt, never a stale spawn init. A contended drain
+            // (lock held by an owner offer) arms the bounded retry below.
+            match self.channels.inbox.try_drain() {
+                Some(items) => {
+                    for item in &items {
+                        self.apply_item(item);
+                    }
                 }
+                None => self.contention = true,
             }
             let now = Instant::now();
             self.install_due(now);
             self.refresh_mouse_gate();
-            let dispatch_start = Instant::now();
-            self.backend.pump_messages(PUMP_QUANTUM_MS);
-            let dispatch_us = dispatch_start
-                .elapsed()
-                .as_micros()
-                .min(u128::from(u64::MAX)) as u64;
-            self.turns += 1;
+            let pre_start = Instant::now();
+            self.backend.drain_messages();
             self.offer_batches();
-            self.publish_diag(dispatch_us);
+            let pre_us = pre_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            // Deadline-driven wait: install retries plus one bounded
+            // transient-contention retry; fully idle waits indefinitely.
+            // Owner signals and queued hook callbacks break the wait early,
+            // so nothing polls.
+            if self.contention {
+                self.contention_retry_at = Some(Instant::now() + super::CONTENTION_RETRY);
+            } else {
+                self.contention_retry_at = None;
+            }
+            let timeout_ms = match self.next_timer() {
+                Some(due) => due
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(u128::from(u32::MAX)) as u32,
+                None => u32::MAX,
+            };
+            let reason = self
+                .backend
+                .wait_messages(timeout_ms, self.channels.work_wake());
+            match reason {
+                super::InputWaitReason::Work => {
+                    self.wait_work = self.wait_work.saturating_add(1);
+                }
+                super::InputWaitReason::Message => {
+                    self.wait_msg = self.wait_msg.saturating_add(1);
+                }
+                super::InputWaitReason::Timeout => {
+                    self.wait_timeout = self.wait_timeout.saturating_add(1);
+                }
+                super::InputWaitReason::Failed => {
+                    self.wait_failed = self.wait_failed.saturating_add(1);
+                }
+            }
+            self.contention = false;
+            let post_start = Instant::now();
+            self.backend.drain_messages();
+            self.offer_batches();
+            let post_us = post_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            if self.contention {
+                self.contention_retry_at = Some(Instant::now() + super::CONTENTION_RETRY);
+            }
+            self.turns += 1;
+            // Dispatch covers delivery plus transfer only, never the wait.
+            self.publish_diag(pre_us.saturating_add(post_us));
             self.channels.stop_flag.load(Ordering::SeqCst)
         }
 
@@ -1391,7 +1738,9 @@ mod native {
         /// no synthetic key cleanup. Hook state is retained on failure (the
         /// `sys` uninstalls only mutate on success), so a failed release
         /// never strands a swallowed pair as a passed-through Up.
-        fn shutdown(&mut self) -> StopReport {
+        /// `pub(crate)` for the stage-3 teardown matrix; the production path
+        /// runs it on the pump thread via [`run_pump`].
+        pub(crate) fn shutdown(&mut self) -> StopReport {
             const RETRY_DELAYS_MS: [u64; 3] = [100, 500, 1000];
             let mut unhook_ok = true;
             if let Some(mut hook) = self.keyboard_hook.take() {
@@ -1425,8 +1774,11 @@ mod native {
 
     /// Pump thread body: installs both hooks on this thread, reports
     /// readiness, exchanges batches, and unhooks here on stop. Never logs.
-    /// The stop acknowledgement is the terminal act, so the owner's bounded
-    /// join after an ack is safe.
+    /// The stop acknowledgement is recorded as the terminal act before
+    /// returning; clean still requires a finished thread whose join succeeds
+    /// (`is_finished` first, so a wedged thread never blocks the owner past
+    /// the bound and a panicked thread never reports clean from an ack
+    /// alone).
     fn run_pump(
         channels: Arc<InputChannels>,
         signals: Arc<PumpSignals>,
@@ -2295,6 +2647,192 @@ mod native {
             assert!(!report.clean && !report.unhook_ok);
         }
 
+        /// Test-only owner handle over a fake pump thread: the thread runs
+        /// no hooks, installs nothing, and only returns a [`StopReport`]
+        /// (or blocks/panics as scripted), so stop-seam behavior is
+        /// exercised with zero native effects.
+        fn test_handle(thread: Option<std::thread::JoinHandle<StopReport>>) -> InputHandle {
+            let (fail_tx, fail_rx) = sync_channel(16);
+            let mut handle = InputHandle {
+                channels: Arc::new(InputChannels::new()),
+                signals: Arc::new(PumpSignals::new(fail_tx)),
+                failures: fail_rx,
+                lifecycle: PumpLifecycle::new(),
+                thread,
+                stop_report: None,
+                keyboard_config: KeyboardConfig {
+                    takeover: true,
+                    allow_win_l: false,
+                },
+            };
+            handle.lifecycle.start().expect("fresh handle starts");
+            handle.request_stop().expect("stop requested");
+            handle
+        }
+
+        #[test]
+        fn second_wait_returns_cached_report_without_panic() {
+            // Terminal waits are idempotent: a second bounded wait returns
+            // the stored report instead of joining a consumed handle.
+            let _serial = crate::input_handoff::pump_slot_test_serial();
+            let thread = std::thread::Builder::new()
+                .name("fake-input-stop".to_owned())
+                .spawn(|| StopReport {
+                    unhook_ok: true,
+                    clean: true,
+                })
+                .expect("fake thread spawns");
+            let mut handle = test_handle(Some(thread));
+            handle.signals.note_stopped(true);
+            let first = handle.wait_stopped(Duration::from_secs(10));
+            assert!(first.clean && first.unhook_ok);
+            let second = handle.wait_stopped(Duration::from_secs(10));
+            assert_eq!(second, first);
+            crate::input_handoff::pump_slot_release();
+        }
+
+        #[test]
+        fn ack_with_stalled_thread_stays_bounded_then_completes() {
+            // An ack published before the thread finishes must not block
+            // the owner past the bound: the handle is retained and the
+            // call reports unclean; a later wait still joins cleanly.
+            let _serial = crate::input_handoff::pump_slot_test_serial();
+            let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::Builder::new()
+                .name("fake-input-stall".to_owned())
+                .spawn(move || {
+                    let _ = gate_rx.recv();
+                    StopReport {
+                        unhook_ok: true,
+                        clean: true,
+                    }
+                })
+                .expect("fake thread spawns");
+            let mut handle = test_handle(Some(thread));
+            handle.signals.note_stopped(true);
+            let started = Instant::now();
+            let first = handle.wait_stopped(Duration::from_millis(100));
+            let elapsed = started.elapsed();
+            assert!(!first.clean, "stalled thread must not report clean");
+            assert!(
+                elapsed < Duration::from_secs(10),
+                "stop wait stayed bounded, took {elapsed:?}"
+            );
+            assert!(
+                handle.thread.is_some(),
+                "stalled handle retained for a later wait"
+            );
+            drop(gate_tx);
+            let second = handle.wait_stopped(Duration::from_secs(10));
+            assert!(second.clean && second.unhook_ok);
+            crate::input_handoff::pump_slot_release();
+        }
+
+        #[test]
+        fn join_panic_reports_unclean_not_clean() {
+            // A thread that acks then panics must not report clean from
+            // the ack alone: the failed join folds into the report.
+            let _serial = crate::input_handoff::pump_slot_test_serial();
+            let (fail_tx, fail_rx) = sync_channel(16);
+            let signals = Arc::new(PumpSignals::new(fail_tx));
+            let thread_signals = Arc::clone(&signals);
+            let thread = std::thread::Builder::new()
+                .name("fake-input-panic".to_owned())
+                .spawn(move || -> StopReport {
+                    thread_signals.note_stopped(true);
+                    panic!("simulated pump panic");
+                })
+                .expect("fake thread spawns");
+            let mut handle = InputHandle {
+                channels: Arc::new(InputChannels::new()),
+                signals,
+                failures: fail_rx,
+                lifecycle: PumpLifecycle::new(),
+                thread: Some(thread),
+                stop_report: None,
+                keyboard_config: KeyboardConfig {
+                    takeover: true,
+                    allow_win_l: false,
+                },
+            };
+            handle.lifecycle.start().expect("fresh handle starts");
+            handle.request_stop().expect("stop requested");
+            let report = handle.wait_stopped(Duration::from_secs(10));
+            assert!(
+                !report.clean,
+                "panicked thread must not report clean, got {report:?}"
+            );
+            assert!(
+                handle.lifecycle.state() == crate::input_handoff::PumpState::Stopping,
+                "unclean stop retains Stopping, never frees the slot"
+            );
+            crate::input_handoff::pump_slot_release();
+        }
+
+        #[test]
+        fn failed_ack_retains_slot_and_refuses_overlap() {
+            // A failed unhook ack reports unclean and keeps the process
+            // slot, so no overlapping worker can start; a clean stop
+            // releases it.
+            let _serial = crate::input_handoff::pump_slot_test_serial();
+            assert!(!crate::input_handoff::pump_slot_reserved());
+            assert!(crate::input_handoff::pump_slot_try_reserve());
+            let thread = std::thread::Builder::new()
+                .name("fake-input-fail".to_owned())
+                .spawn(|| StopReport {
+                    unhook_ok: false,
+                    clean: false,
+                })
+                .expect("fake thread spawns");
+            let mut handle = test_handle(Some(thread));
+            handle.signals.note_stopped(false);
+            let report = handle.wait_stopped(Duration::from_secs(10));
+            assert!(!report.clean && !report.unhook_ok);
+            assert!(
+                crate::input_handoff::pump_slot_reserved(),
+                "unclean stop retains the slot"
+            );
+            assert!(
+                !crate::input_handoff::pump_slot_try_reserve(),
+                "no overlapping worker while retained"
+            );
+            crate::input_handoff::pump_slot_release();
+            assert!(crate::input_handoff::pump_slot_try_reserve());
+            let thread = std::thread::Builder::new()
+                .name("fake-input-clean".to_owned())
+                .spawn(|| StopReport {
+                    unhook_ok: true,
+                    clean: true,
+                })
+                .expect("fake thread spawns");
+            let mut handle = test_handle(Some(thread));
+            handle.signals.note_stopped(true);
+            let report = handle.wait_stopped(Duration::from_secs(10));
+            assert!(report.clean && report.unhook_ok);
+            assert!(
+                !crate::input_handoff::pump_slot_reserved(),
+                "clean stop releases the slot"
+            );
+        }
+
+        #[test]
+        fn missing_ack_with_failed_thread_reports_unclean() {
+            // No ack, already-finished thread: the bounded wait joins and
+            // folds the thread's own unhook failure, never claiming clean.
+            let _serial = crate::input_handoff::pump_slot_test_serial();
+            let thread = std::thread::Builder::new()
+                .name("fake-input-noack".to_owned())
+                .spawn(|| StopReport {
+                    unhook_ok: false,
+                    clean: false,
+                })
+                .expect("fake thread spawns");
+            let mut handle = test_handle(Some(thread));
+            let report = handle.wait_stopped(Duration::from_secs(10));
+            assert!(!report.clean && !report.unhook_ok);
+            crate::input_handoff::pump_slot_release();
+        }
+
         #[test]
         fn esc_clocks_are_process_singletons() {
             // No per-handle mismatch possible: callbacks and the owner share
@@ -2522,11 +3060,323 @@ mod native {
             crate::snapkey::sys::test_clear_state();
             crate::win_mouse::sys::test_clear_state();
         }
+
+        fn work_signaled(channels: &InputChannels) -> bool {
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            let Some(handle) = channels.work_wake() else {
+                panic!("work wake missing");
+            };
+            let raw = handle.as_handle().as_raw_handle();
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
+                    == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            }
+        }
+
+        #[test]
+        fn work_wake_created_nonsignaled() {
+            // Owner-to-input direction: fresh channels carry a non-signaled
+            // auto-reset work wake (no spurious pump wake).
+            let (channels, _signals) = test_channels();
+            assert!(channels.work_wake().is_some());
+            assert!(!work_signaled(&channels));
+        }
+
+        #[test]
+        fn wait_reason_splits_work_message_and_retry_timeout() {
+            // Native return-code split (no desktop): work wake, queued
+            // messages, and the genuine deadline (`WAIT_TIMEOUT` 258) map
+            // distinctly; `WAIT_FAILED` and any unrecognized code count as
+            // `Failed`, never merged into timeout.
+            use super::super::{InputWaitReason, classify_input_wait};
+            assert_eq!(classify_input_wait(0, true), InputWaitReason::Work);
+            assert_eq!(classify_input_wait(1, true), InputWaitReason::Message);
+            assert_eq!(classify_input_wait(258, true), InputWaitReason::Timeout);
+            assert_eq!(classify_input_wait(0, false), InputWaitReason::Message);
+            assert_eq!(classify_input_wait(258, false), InputWaitReason::Timeout);
+            assert_eq!(
+                classify_input_wait(0xFFFF_FFFF, true),
+                InputWaitReason::Failed
+            );
+            assert_eq!(
+                classify_input_wait(0xFFFF_FFFF, false),
+                InputWaitReason::Failed
+            );
+            assert_eq!(classify_input_wait(7, true), InputWaitReason::Failed);
+        }
+
+        #[test]
+        fn step_counts_native_waits_by_reason_with_turns_equal() {
+            // Wait-return evidence through the production step: scripted
+            // work/message/timeout/failed returns accumulate by reason and the
+            // completed-turn count stays equal (no stop short-circuit here).
+            // Timeout holds the genuine deadline only; failures stay separate.
+            use super::super::InputWaitReason;
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            let base_turns = channels.diag.snapshot().turns;
+            core.backend.wait_script.push_back(InputWaitReason::Work);
+            core.backend.wait_script.push_back(InputWaitReason::Message);
+            core.backend.wait_script.push_back(InputWaitReason::Timeout);
+            core.backend.wait_script.push_back(InputWaitReason::Failed);
+            assert!(!core.step());
+            assert!(!core.step());
+            assert!(!core.step());
+            assert!(!core.step());
+            let diag = channels.diag.snapshot();
+            assert_eq!(diag.turns, base_turns + 4);
+            assert_eq!(diag.waits, base_turns + 4);
+            assert_eq!(diag.wait_work, 1);
+            assert_eq!(diag.wait_msg, 1);
+            // installed_core's setup turn plus the four scripted turns: the
+            // setup wait defaults to timeout.
+            assert_eq!(diag.wait_timeout, base_turns + 1);
+            assert_eq!(diag.wait_failed, 1);
+        }
+
+        #[test]
+        fn next_timer_idles_without_deadline_and_retries_on_deadline() {
+            // Deadline evidence through the production step: fully installed
+            // idles with `u32::MAX` (INFINITE); a failed install schedules
+            // its backoff as the wait deadline; recovery idles again.
+            let (channels, signals) = test_channels();
+            let backend = super::super::FakeBackend::new(vec![false], vec![true], true);
+            let mut core = PumpCore::new(
+                backend,
+                Arc::clone(&channels),
+                Arc::clone(&signals),
+                KeyboardConfig {
+                    takeover: true,
+                    allow_win_l: false,
+                },
+            );
+            assert!(!core.step());
+            assert!(core.keyboard_hook.is_none());
+            assert!(core.mouse_hook.is_some());
+            let due = core.next_timer().expect("keyboard retry pending");
+            let secs = due.saturating_duration_since(Instant::now()).as_secs();
+            assert!(
+                (9..=10).contains(&secs),
+                "keyboard backoff is 10s after the first failure, got {secs}s"
+            );
+            let waited = core
+                .backend
+                .pump_timeouts
+                .last()
+                .copied()
+                .expect("wait recorded");
+            assert!(
+                (9900..=10000).contains(&waited),
+                "wait matches the retry deadline, got {waited}ms"
+            );
+            // Recovery installs and the pump idles with no deadline.
+            core.keyboard_retry_at = Some(Instant::now());
+            core.backend.keyboard_script.push_back(true);
+            assert!(!core.step());
+            assert!(core.keyboard_hook.is_some());
+            assert_eq!(core.next_timer(), None);
+            assert_eq!(
+                core.backend.pump_timeouts.last().copied(),
+                Some(u32::MAX),
+                "fully idle waits indefinitely"
+            );
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn publish_after_wait_race_applies_without_loss() {
+            // Publish-after-wait race: a work signal offered before the pump
+            // wait stays pending (auto-reset), so the inbox control the owner
+            // just published is never lost behind an idle wait.
+            let _guard = crate::input_handoff::fence_test_serial();
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            channels.inbox.push(InboxItem::ClearEsc).expect("fits");
+            channels.notify_work();
+            assert!(work_signaled(&channels), "publish wakes the idle pump");
+            assert!(!core.step());
+            assert!(channels.inbox.is_empty(), "published control applied");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn drain_wakes_parked_retry_after_backpressure() {
+            // Saturation/backpressure: an occupied outbox parks the retry
+            // silently; the owner drain wakes the pump so the retained event
+            // does not strand behind an idle wait.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            channels
+                .snap_outbox
+                .put(TaggedBatch::new(0, vec![dummy_snap()]))
+                .expect("occupy");
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            assert!(!core.step());
+            assert!(!work_signaled(&channels), "no spurious wake while stalled");
+            channels.snap_outbox.take().expect("owner drain");
+            channels.notify_work();
+            assert!(work_signaled(&channels), "drain wakes the pump");
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied());
+            channels.snap_outbox.take().expect("batch");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn stop_wakes_idle_pump() {
+            // Stop path: the flag plus the work signal (what `request_stop`
+            // publishes) makes the next turn report stop promptly.
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            assert_eq!(core.next_timer(), None, "installed pump idles");
+            channels
+                .stop_flag
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            channels.notify_work();
+            assert!(work_signaled(&channels), "stop wakes the idle pump");
+            assert!(core.step(), "stop reports promptly");
+        }
+
+        #[test]
+        fn pre_wait_callback_work_transfers_before_blocking() {
+            // S1: callbacks delivered during the pre-wait drain queue
+            // classifier work; the pre-wait transfer must offer it before
+            // the wait blocks, or the final callback strands behind an idle
+            // wait with nothing left to wake the pump. The fake asserts the
+            // queues are empty at wait time, so the old drain-before-INFINITE
+            // ordering fails loudly here with no external wake.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            core.backend.assert_transferred_before_wait = true;
+            core.backend.snap_on_drain.push(dummy_snap());
+            core.backend.windrag_on_drain.push(dummy_windrag());
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied());
+            assert!(channels.windrag_outbox.occupied());
+            assert_eq!(
+                core.backend.pump_timeouts.last().copied(),
+                Some(u32::MAX),
+                "installed pump still idles after transferring"
+            );
+            channels.snap_outbox.take().expect("batch");
+            channels.windrag_outbox.take().expect("batch");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn inbox_contention_arms_bounded_retry_without_loss() {
+            // S2: inbox `try_drain` WouldBlock (owner mid-offer) arms one
+            // short retry instead of stranding; the control applies on the
+            // next turn once released. Bounded queues preserved throughout.
+            let _guard = crate::input_handoff::fence_test_serial();
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            channels.inbox.push(InboxItem::ClearEsc).expect("fits");
+            {
+                let _held = channels.inbox.test_lock_held();
+                assert!(channels.inbox.try_drain().is_none());
+                assert!(!core.step());
+                let due = core.next_timer().expect("contention retry armed");
+                assert!(
+                    due.saturating_duration_since(Instant::now())
+                        <= super::super::CONTENTION_RETRY + Duration::from_millis(50),
+                    "retry is bounded and short, got {due:?}"
+                );
+                let waited = core
+                    .backend
+                    .pump_timeouts
+                    .last()
+                    .copied()
+                    .expect("wait recorded");
+                assert!(
+                    waited <= super::super::CONTENTION_RETRY.as_millis() as u32,
+                    "wait matches the contention retry, got {waited}ms"
+                );
+            }
+            assert!(!core.step());
+            assert!(channels.inbox.is_empty(), "control applied, never lost");
+            assert_eq!(core.next_timer(), None, "clean turn clears the retry");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn outbox_contention_parks_and_retries_without_loss() {
+            // S2: outbox `try_occupied` WouldBlock on a free outbox (owner
+            // mid-take) skips the drain but arms the retry; queued records
+            // wait in the real queue under their own bound and offer next
+            // turn. A parked pending batch under contention re-parks and
+            // then offers; terminals never strand.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            channels.snap_outbox.test_with_lock_held(|| {
+                assert!(!core.step());
+            });
+            assert!(
+                core.pending_snap.is_none(),
+                "nothing drained, nothing parked"
+            );
+            assert!(
+                core.next_timer().is_some(),
+                "unknown occupancy arms the retry"
+            );
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied(), "retained event offered");
+            // Parked pending under contention: re-parks, then offers.
+            core.pending_snap = Some(TaggedBatch::new(1, vec![dummy_snap()]));
+            channels.snap_outbox.test_with_lock_held(|| {
+                assert!(!core.step());
+            });
+            assert!(core.pending_snap.is_some(), "contended retry re-parks");
+            assert!(core.next_timer().is_some());
+            channels.snap_outbox.take().expect("owner drain");
+            assert!(!core.step());
+            assert!(core.pending_snap.is_none(), "parked batch offered");
+            assert_eq!(core.next_timer(), None, "clean turn clears the retry");
+            channels.snap_outbox.take().expect("batch");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
     }
 }
 
 #[cfg(windows)]
 pub use native::{FailEvent, InputHandle, NativeHooks, PumpSignals};
+
+/// Test-only real-core seam for the stage-3 combined stress: no production
+/// visibility change (the `native` module stays private).
+#[cfg(all(windows, test))]
+pub(crate) use native::PumpCore;
 
 #[cfg(test)]
 mod tests {

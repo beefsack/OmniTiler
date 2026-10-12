@@ -76,7 +76,33 @@
 - Native gates, checksum fixtures and scoped agent live carrier/finish/restore
   evidence are in the [Stage 2 record](../../changes/archive/windows-render-thread.md).
   Physical visuals, settings/DPI journeys and latency acceptance remain pending.
-  Stage 3 has not started; this is not gaming-cost or containment acceptance.
+  Stage 3 single-output evidence follows below; this is not gaming-cost or
+  containment acceptance.
+
+## Stage 3 single-output hardening, 2026-10-13
+
+- Combined transport/core stress and retry/teardown seams are delivered;
+  [acceptance record](../../changes/windows-owner-threading-acceptance.md)
+  separates native gates, agent live evidence and remaining physical checks.
+- Input stop now caches terminal reports and requires finished successful exit
+  as well as hook-release proof. A stalled exit never enters an unbounded join;
+  panic or missing completion cannot release the process reservation as clean.
+- Input/render fixed 10 ms exchange timers were removed. Input work/control,
+  outbox drain and stop signal its work event; install retries and transient
+  contention use deadlines. Message delivery transfers intents before blocking
+  and after return. Renderer waits on its existing work event/native messages
+  with outstanding hide-retry deadlines only; stop signals internally.
+- Owner still blocks on messages/events or its 100 ms maintenance deadline.
+  Existing slower native follow/reassertion work wakes renderer when needed.
+  Trace-only native wait-return counters distinguish actual wakes from applied
+  acknowledgements, context switches and throttled trace samples.
+- Five scoped desktop lifecycle runs stopped cleanly. Long burst evidence:
+  238 native move/resize requests and ten close/recreate cycles, with final
+  convergence and zero geometry mismatches. Final trace-on idle measurement:
+  328.125 ms CPU over 32.05 seconds (about 1.024% of one core); input zero wait
+  returns, renderer thirty work wakes across in-window slow-cadence samples.
+  No idle input/render timeout polling was observed. This is single-output
+  development-build agent evidence, not physical latency or gaming acceptance.
 
 ## Options
 
@@ -189,7 +215,7 @@ If B-first is preferred, retain those residual input costs explicitly.
 | --- | --- | --- | --- |
 | 1: complete A | Remove owner work from LL pump; retain existing renderer and all current input semantics. Include startup/stop/failure handling in this stage. | Existing classifier/queue fixtures plus deterministic snapshot/config races, consumed-pair/saturation/terminal edges, Esc ordering, mask reentry, install/retry/stop fault seams. Native common DoD gates. | Same scoped edge drags, dev/release and trace-on/off; chord holds/releases, preheld modifiers, Win+drag/Esc, focus/workspace actions, graceful stop/restore. Establish input improvement separately from settlement speed. |
 | 2: complete B, reaching C | Move all three carriers to renderer; reduce owner presentation work without changing pixels, follow or z-order. Include affinity/acknowledgement/recovery in this stage. | Latest-wins/hide/cancel/reset race fixtures, stale target/recycled-ID refusal, applied-state inspection, raster checksum equivalence, creator-thread cleanup and shutdown failures; native DoD gates. | Border/underlay/preview follow and placement, no stale show after cancel/suspend/drop, accent/settings/DPI changes, workspace hide/reveal and stop cleanup. |
-| 3: C acceptance/hardening | Validate combined latency/resilience and gaming-cost target; correct concrete integration failures. No shutdown basics deferred here. | Stress bounded queues and cross-thread epochs; retry/teardown fault matrix; native gates and applicable CI/Linux handback. Portable tests cover contracts, not HWND/hook delivery. | Multi-output/mixed-DPI, later gaming/suspension cost and lifecycle journeys, including separately scoped exact-owner emergency/crash recovery. |
+| 3: C acceptance/hardening | Single-output combined transport/resilience hardening delivered; physical latency and gaming-cost target remain. Correct concrete integration failures; no shutdown basics deferred here. | Delivered: 3,000-round bounded queue/epoch stress, retry/teardown fault seams and native gates; scoped lifecycle/burst/idle evidence. Publication CI pending. Portable tests cover contracts, not HWND/hook delivery. | Single-output physical visuals/input pending. Multi-output/mixed-DPI, gaming/suspension cost and separately scoped exact-owner emergency/crash recovery remain deferred. |
 
 - Native gates: root mise-selected MSVC locked four-package build/test, fmt,
   strict all-target Clippy and whitespace per [common DoD](../../backlog.md).
@@ -203,7 +229,9 @@ If B-first is preferred, retain those residual input costs explicitly.
 
 - Target C, A then B early, was selected on 2026-10-12. Stage 1 physical input
   improvement was user-accepted; Stage 2 is delivered offline with scoped agent
-  live evidence. Stage 2 physical visual/follow and latency checks remain pending.
+  live evidence. Stage 3 single-output combined hardening has offline and scoped
+  agent live evidence. Physical visual/follow and post-hardening input/latency
+  checks remain pending, together with multi-output/DPI and gaming-cost legs.
   Preserve the contracts above rather than changing consumption, fullscreen
   policy or recovery behavior as part of thread placement.
 - A latency threading selection does not select a Win+G/F11 containment remedy.

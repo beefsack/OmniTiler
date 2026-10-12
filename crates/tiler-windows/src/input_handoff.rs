@@ -495,6 +495,14 @@ impl Inbox {
         self.inner.lock().expect("inbox lock").len()
     }
 
+    /// Test-only: hold the FIFO lock across a pump turn, so `try_drain`
+    /// reports WouldBlock and the contention retry is exercised over the
+    /// real seam (no sleeps, no threads).
+    #[cfg(test)]
+    pub fn test_lock_held(&self) -> std::sync::MutexGuard<'_, VecDeque<InboxItem>> {
+        self.inner.lock().expect("inbox lock")
+    }
+
     /// True when no item is pending.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -603,6 +611,16 @@ impl<T> Outbox<T> {
     pub fn taken(&self) -> u64 {
         self.inner.lock().expect("outbox lock").taken
     }
+
+    /// Test-only: hold the slot lock while `f` runs, so `try_occupied`
+    /// and `try_put` report WouldBlock and the contention retry is exercised
+    /// over the real seam (no sleeps, no threads). Closure style keeps the
+    /// private slot type out of the signature.
+    #[cfg(test)]
+    pub fn test_with_lock_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _guard = self.inner.lock().expect("outbox lock");
+        f()
+    }
 }
 
 /// Bounded input -> owner diagnostics published by the input pump outside
@@ -641,10 +659,26 @@ pub struct InputDiag {
     /// Last windrag offer time for pump-to-owner transport measurement
     /// (trace-only log; excludes queue wait and native delivery).
     pub windrag_last_offer: Option<Instant>,
-    /// Pump message turns completed (heartbeat liveness, always counted).
+    /// Pump message turns completed: one drain-wait-drain-publish iteration
+    /// (heartbeat liveness, always counted). Equals `waits`; stop before
+    /// the wait returns early with neither a wait nor a turn.
     pub turns: u64,
-    /// Last message-turn dispatch span in microseconds: time spent inside
-    /// the native message pump (callback execution), trace-only. Covers
+    /// Native wait returns since pump start (one per `MsgWaitForMultipleObjectsEx`
+    /// return in the pump step). Counts native wait returns only, never thread
+    /// context switches. The owner reads the whole struct under one diag-slot
+    /// lock, so one `snapshot()` is coherent; cross-pump coherence with the
+    /// renderer atomics is not claimed (see `RenderChannels::wait_counts`).
+    pub waits: u64,
+    /// Native wait returns by reason: owner work wake, queued callback
+    /// messages, genuine deadline timeout (`WAIT_TIMEOUT` 258), or failed /
+    /// unrecognized (`WAIT_FAILED` et al). Exactly one per `waits`; failures
+    /// are counted separately and never merged into timeout.
+    pub wait_work: u64,
+    pub wait_msg: u64,
+    pub wait_timeout: u64,
+    pub wait_failed: u64,
+    /// Last message-turn dispatch span in microseconds: message delivery plus
+    /// batch transfer, excluding the native wait, trace-only. Covers
     /// neither OS scheduling before the native event timestamp nor the
     /// downstream hook chain; never end-to-end latency.
     pub dispatch_us: u64,

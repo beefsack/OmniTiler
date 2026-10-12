@@ -47,11 +47,6 @@ pub const RENDER_STOP_WAIT: Duration = Duration::from_secs(5);
 /// truthfully and the owner proceeds, with the bumped safety epoch alone
 /// preventing any stale-show replay.
 pub const FINISH_WAIT: Duration = Duration::from_millis(500);
-/// Renderer exchange cadence: desired-slot drain plus ack post between
-/// native message pumps. Short enough to keep overlays following, long
-/// enough to avoid a busy loop. Broadcasts (accent/theme) deliver through
-/// the native message queue regardless of this timeout.
-pub const RENDER_QUANTUM_MS: u32 = 10;
 
 /// Native present outcome for one carrier: what actually happened plus the
 /// owned-pixel checksum of what was presented (0 when hidden). `resolved`
@@ -327,6 +322,30 @@ impl<P: Present> RenderCore<P> {
     /// True when an unverified-hide retry is due (first attempt always).
     fn hide_attempt_due(&self, index: usize) -> bool {
         self.hide_due[index].is_none_or(|due| Instant::now() >= due)
+    }
+
+    /// Next renderer-side timer deadline (hide-retry), if any. `None`
+    /// means fully idle: no hide is pending, so the pump may wait
+    /// indefinitely. No wake is lost: owner posts, hides, and stop
+    /// requests always signal the work wake, and broadcast messages arrive
+    /// through the message queue itself. Desired frames never need a
+    /// timer: their post already signaled the wake.
+    #[must_use]
+    pub fn next_timer(&self) -> Option<Instant> {
+        let mut earliest: Option<Instant> = None;
+        for carrier in RenderCarrier::all() {
+            let index = carrier.index();
+            if self.channels.hide_mark(carrier) > self.acked_safety[index] {
+                match self.hide_due[index] {
+                    Some(due) => {
+                        earliest = Some(earliest.map_or(due, |prev| prev.min(due)));
+                    }
+                    // Pending with no backoff scheduled: due immediately.
+                    None => return Some(Instant::now()),
+                }
+            }
+        }
+        earliest
     }
 
     /// One hide-watermark attempt: only a surface that reads hidden
@@ -1130,9 +1149,7 @@ pub mod native {
     //! `unsafe` at call sites only; all handoff state stays in safe
     //! [`crate::render_handoff`] primitives.
 
-    use super::{
-        FreshQuery, Present, PresentOutcome, RENDER_QUANTUM_MS, RenderCore, ResolvedAnchor,
-    };
+    use super::{FreshQuery, Present, PresentOutcome, RenderCore, ResolvedAnchor};
     use crate::active_border_sys::{
         BorderOverlay, OverlayOutcome, PreviewOverlay, UnderlayOverlay, lowest_in_z,
     };
@@ -1965,12 +1982,15 @@ pub mod native {
         }
 
         /// Request graceful stop: closes admission (owner stops posting) and
-        /// signals the renderer. Idempotent in `Stopping` so the owner can
-        /// re-drive after a failure. The renderer destroys on its creator
-        /// thread and acks.
+        /// signals the renderer through the work wake. Idempotent in
+        /// `Stopping` so the owner can re-drive after a failure. The renderer
+        /// destroys on its creator thread and acks.
         pub fn request_stop(&mut self) -> Result<(), crate::render_handoff::RenderLifecycleError> {
             self.lifecycle.request_stop()?;
             self.channels.request_stop();
+            // Wake the pump so a fully idle wait observes the stop promptly;
+            // owner call sites must not signal again.
+            signal_owned(&self.work_wake);
             Ok(())
         }
 
@@ -2062,13 +2082,49 @@ pub mod native {
         }
     }
 
+    /// Native renderer-wait return reason: exactly one per wait. Counts
+    /// native `MsgWaitForMultipleObjectsEx` returns only, never thread
+    /// context switches and never ack posts (acks ride `ack_seq`). `Timeout`
+    /// is the genuine hide-retry deadline (`WAIT_TIMEOUT` 258) only; `Failed`
+    /// is `WAIT_FAILED` or any unrecognized code, counted separately and never
+    /// merged into timeout. Classification is telemetry only: the loop keeps
+    /// its existing path with no new recovery and no timing claim (a failed
+    /// wait returns immediately; not proven delayed).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RenderWait {
+        Work,
+        Message,
+        Timeout,
+        Failed,
+    }
+
+    /// Classify one native renderer-wait return code. Pure (no native calls)
+    /// so tests prove the work/message/timeout/failed split without a desktop.
+    #[must_use]
+    fn classify_render_wait(result: u32) -> RenderWait {
+        const WAIT_OBJECT_0: u32 = 0;
+        const WAIT_TIMEOUT: u32 = 258;
+        if result == WAIT_TIMEOUT {
+            RenderWait::Timeout
+        } else if result == WAIT_OBJECT_0 {
+            RenderWait::Work
+        } else if result == WAIT_OBJECT_0 + 1 {
+            RenderWait::Message
+        } else {
+            RenderWait::Failed
+        }
+    }
+
     /// One renderer message turn on the creator thread: delivers broadcast
-    /// messages (accent/theme) for windows created here, then waits for more
-    /// or for owner work. Windows created on this thread require a queue on
-    /// this thread; no other thread pumps it. The thread-owned work wake
-    /// breaks the quantum early on new desired frames, hides, or stop;
-    /// otherwise the bounded timeout keeps the follow cadence.
-    fn pump_messages(timeout_ms: u32, work_wake: &OwnedHandle) {
+    /// messages (accent/theme) for windows created here, then waits for more,
+    /// owner work, or the next hide-retry deadline. Windows created on this
+    /// thread require a queue on this thread; no other thread pumps it. The
+    /// thread-owned work wake breaks the wait early on new desired frames,
+    /// hides, or stop; otherwise the hide-retry deadline (or an indefinite
+    /// idle wait) applies. No fixed idle quantum: every wait source is an
+    /// explicit wake or deadline. Returns the native wait reason (one per
+    /// wait) for the cumulative trace counters.
+    fn pump_messages(timeout_ms: u32, work_wake: &OwnedHandle) -> RenderWait {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, MSG, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
             QS_ALLINPUT, TranslateMessage,
@@ -2084,10 +2140,11 @@ pub mod native {
                 DispatchMessageW(&msg);
             }
         }
-        unsafe {
+        let result = unsafe {
             let raw = work_wake.as_handle().as_raw_handle();
-            MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0);
-        }
+            MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0)
+        };
+        let reason = classify_render_wait(result);
         loop {
             let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
             if has == 0 {
@@ -2098,6 +2155,7 @@ pub mod native {
                 DispatchMessageW(&msg);
             }
         }
+        reason
     }
 
     /// Renderer thread entry: creator-side ensure with narrow bounded retry
@@ -2161,12 +2219,34 @@ pub mod native {
             }
         };
         if ready {
-            // Event-driven pump: every ack post signals the owner wake (on
-            // real ack traffic only, tracked by sequence, never a busy
-            // loop); owner work breaks the quantum early through its wake.
+            // Deadline-driven pump: the wait breaks on owner work, queued
+            // broadcast messages, or the next hide-retry deadline - never
+            // on a fixed idle quantum. Every ack post signals the owner
+            // wake on real ack traffic only (tracked by sequence, never a
+            // busy loop); owner work breaks the wait early through its wake.
             let mut last_seq = channels.ack_seq();
             loop {
-                pump_messages(RENDER_QUANTUM_MS, &work_wake);
+                let timeout_ms = match core.next_timer() {
+                    Some(due) => due
+                        .saturating_duration_since(Instant::now())
+                        .as_millis()
+                        .min(u128::from(u32::MAX)) as u32,
+                    // Fully idle: INFINITE. The work wake and the message
+                    // queue still wake the pump; nothing polls.
+                    None => u32::MAX,
+                };
+                let reason = pump_messages(timeout_ms, &work_wake);
+                // Cumulative native wait returns (one per wait, by reason);
+                // ack posts stay on `ack_seq`, never here. A stop wait still
+                // counts its return: the break below only skips the step.
+                // Failed returns keep the existing path (step, then stop
+                // check); only the counter differs.
+                match reason {
+                    RenderWait::Work => channels.note_wait_work(),
+                    RenderWait::Message => channels.note_wait_msg(),
+                    RenderWait::Timeout => channels.note_wait_timeout(),
+                    RenderWait::Failed => channels.note_wait_failed(),
+                }
                 if channels.stop_requested() {
                     break;
                 }
@@ -2193,6 +2273,100 @@ pub mod native {
         RenderStopReport {
             destroyed_ok,
             clean: destroyed_ok,
+        }
+    }
+
+    /// Handle-level tests without a live renderer thread (no carrier windows,
+    /// no native effects): the stop wake is asserted as bare kernel state.
+    #[cfg(test)]
+    mod native_tests {
+        use super::*;
+
+        fn signaled(handle: &OwnedHandle) -> bool {
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            let raw = handle.as_handle().as_raw_handle();
+            unsafe { WaitForSingleObject(raw, 0) == WAIT_OBJECT_0 }
+        }
+
+        fn bare_handle() -> RenderHandle {
+            let (fail_tx, fail_rx) = sync_channel(8);
+            let mut lifecycle = RenderLifecycle::new();
+            lifecycle.start().expect("fresh handle starts");
+            RenderHandle {
+                channels: Arc::new(RenderChannels::new()),
+                signals: Arc::new(RenderSignals::new(fail_tx)),
+                failures: fail_rx,
+                lifecycle,
+                thread: None,
+                stop_report: None,
+                ack_wake: create_event().expect("ack wake"),
+                work_wake: create_event().expect("work wake"),
+            }
+        }
+
+        #[test]
+        fn request_stop_signals_work_wake_without_owner_notify() {
+            // Bare stop event: `request_stop` alone (no explicit owner
+            // `notify_work`) leaves the work wake pending, so a fully idle
+            // renderer wait observes the stop promptly.
+            let mut handle = bare_handle();
+            assert!(!signaled(&handle.work_wake), "no spurious renderer wake");
+            handle.request_stop().expect("stop requested");
+            assert!(
+                signaled(&handle.work_wake),
+                "bare request_stop wakes the renderer"
+            );
+            assert!(!signaled(&handle.work_wake), "auto-reset consumes the wake");
+        }
+
+        #[test]
+        fn wait_reason_splits_work_message_and_retry_timeout() {
+            // Native return-code split (no desktop): owner work, queued
+            // broadcast messages, and the genuine hide-retry deadline (258)
+            // map distinctly; `WAIT_FAILED` and any unrecognized code count
+            // as `Failed`, never merged into timeout.
+            assert_eq!(classify_render_wait(0), RenderWait::Work);
+            assert_eq!(classify_render_wait(1), RenderWait::Message);
+            assert_eq!(classify_render_wait(258), RenderWait::Timeout);
+            assert_eq!(classify_render_wait(0xFFFF_FFFF), RenderWait::Failed);
+            assert_eq!(classify_render_wait(7), RenderWait::Failed);
+        }
+
+        #[test]
+        fn wait_counts_sum_with_acks_tracked_separately() {
+            // Wake-evidence shape: wait returns sum by reason while ack posts
+            // stay on `ack_seq`, so a trace diff distinguishes a blocking
+            // wait from ack traffic (the Stage3 idle question). Failures stay
+            // separate from genuine timeouts.
+            use crate::render_handoff::{CarrierAck, RenderCarrier, RenderOutcome};
+            let channels = RenderChannels::new();
+            assert_eq!(channels.wait_counts(), (0, 0, 0, 0, 0));
+            assert_eq!(channels.ack_seq(), 0);
+            channels.note_wait_work();
+            channels.note_wait_msg();
+            channels.note_wait_timeout();
+            channels.note_wait_timeout();
+            channels.note_wait_failed();
+            assert_eq!(channels.wait_counts(), (5, 1, 1, 2, 1));
+            channels.post_ack(
+                RenderCarrier::Border,
+                CarrierAck {
+                    generation: 1,
+                    safety: 1,
+                    outcome: RenderOutcome::Hidden,
+                    checksum: 0,
+                    span_us: 0,
+                    queue_age_us: 0,
+                    last_error: None,
+                    hidden_proven: true,
+                    identity_proven: true,
+                    applied: None,
+                },
+            );
+            assert_eq!(channels.ack_seq(), 1);
+            // An ack never moves the wait counters.
+            assert_eq!(channels.wait_counts(), (5, 1, 1, 2, 1));
         }
     }
 }
@@ -2672,6 +2846,67 @@ mod tests {
         assert_eq!(ack.outcome, RenderOutcome::Hidden);
         assert!(ack.hidden_proven);
         assert_eq!((ack.generation, ack.safety), (generation, safety));
+    }
+
+    #[test]
+    fn idle_core_arms_no_timer() {
+        // Fully idle: no hide pending anywhere, so the pump wait plan is
+        // indefinite (work wake and messages still wake; nothing polls).
+        let channels = Arc::new(RenderChannels::new());
+        let core = RenderCore::new(FakePresent::new(), Arc::clone(&channels));
+        assert_eq!(core.next_timer(), None);
+        // A presented frame with no hide is equally idle: applied work
+        // needs no timer.
+        channels.post(border_frame(1, 0, 10, 1001));
+        let mut core = RenderCore::new(FakePresent::new(), Arc::clone(&channels));
+        core.step();
+        assert!(channels.take_ack(RenderCarrier::Border).is_some());
+        assert_eq!(core.next_timer(), None);
+    }
+
+    #[test]
+    fn pending_hide_arms_immediate_timer() {
+        // A hide with no backoff scheduled is due immediately: the wait
+        // plan breaks at once instead of idling.
+        let channels = Arc::new(RenderChannels::new());
+        let core = RenderCore::new(FakePresent::new(), Arc::clone(&channels));
+        channels.post(border_frame(1, 0, 10, 1001));
+        let (_generation, _safety) = channels.hide(RenderCarrier::Border, 2);
+        let due = core.next_timer().expect("hide pending");
+        assert!(
+            due.saturating_duration_since(Instant::now()) < Duration::from_secs(1),
+            "pending hide is due immediately, got {due:?}"
+        );
+    }
+
+    #[test]
+    fn failed_hide_backs_off_timer() {
+        // An unverified hide arms exactly the bounded backoff: the wait
+        // plan sleeps until the retry is due, then success clears the
+        // timer back to idle.
+        let channels = Arc::new(RenderChannels::new());
+        let mut fake = FakePresent::new();
+        fake.fail_hides.insert(RenderCarrier::Border);
+        let mut core = RenderCore::new(fake, Arc::clone(&channels));
+        channels.post(border_frame(1, 0, 10, 1001));
+        channels.hide(RenderCarrier::Border, 2);
+        let start = Instant::now();
+        core.step();
+        let due = core.next_timer().expect("retry pending");
+        assert!(due >= start, "backoff is in the future");
+        assert!(
+            due <= start + hide_backoff(0) + Duration::from_millis(500),
+            "backoff is bounded, got {due:?}"
+        );
+        // Recovery (fail_hides consumed once) clears the timer to idle
+        // without any new owner transition.
+        std::thread::sleep(hide_backoff(0) + Duration::from_millis(20));
+        core.step();
+        let ack = channels
+            .take_ack(RenderCarrier::Border)
+            .expect("recovery ack");
+        assert_eq!(ack.outcome, RenderOutcome::Hidden);
+        assert_eq!(core.next_timer(), None);
     }
 
     #[test]

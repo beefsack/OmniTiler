@@ -147,6 +147,20 @@ platform API behavior.
   drop/snap-back writes; an overlapping pending finish refuses narrowly.
 - Stage 2 native offline and scoped agent live evidence, with physical checks
   still pending: [render-thread record](changes/archive/windows-render-thread.md).
+- Stage 3 single-output hardening, 2026-10-13: input/render idle waits are
+  event/deadline-driven, with no fixed exchange quantum. Owner retains its
+  existing 100 ms maintenance cadence. Input transfers callback work before
+  blocking and after return; transient transport contention gets a bounded
+  retry, while occupied outboxes resume on owner drain notification.
+- Input clean stop requires successful hook release and successful finished
+  thread join; repeated terminal waits return the cached result. Missing or
+  unclean completion keeps the process reservation. Render stop signals its
+  own work event. Native wait-return diagnostics stay bounded and trace-only,
+  with no diagnostic-induced wake or new timer.
+- Combined offline and scoped automated desktop acceptance is recorded in
+  [Stage 3 evidence](changes/windows-owner-threading-acceptance.md). Physical
+  visual/input checks, multi-output/mixed-DPI and gaming cost remain pending;
+  a bounded trace-on idle CPU result is not gaming-cost acceptance.
 
 ### Rust unsafe guardrail
 
