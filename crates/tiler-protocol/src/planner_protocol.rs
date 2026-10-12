@@ -8882,8 +8882,11 @@ mod tests {
 
     #[test]
     fn reconcile_retained_empty_reconcile_retires_slot() {
-        // A retained domain whose complete observation is empty retires on
-        // reconcile, freeing the slot for a later admission.
+        // D23 tentative: omission at the converge layer is ambiguous (close
+        // vs minimize indistinguishable), so an empty complete observation
+        // retains the session with stored minimize slots instead of
+        // retiring; explicit removal still retires. Session-level Remove
+        // proposals stage no slots (`PendingDesired` carries none).
         let mut planner = seed_two_window_planner();
         let mut value: serde_json::Value = serde_json::from_str(&retained_request(
             "empty-retire-rec",
@@ -8903,6 +8906,15 @@ mod tests {
             Some(0),
             "{reply}"
         );
+        assert!(reply["desired_focus"].is_null(), "{reply}");
+        assert_eq!(planner.retained_domains(), 1);
+        // Genuine retire still occurs via explicit removal: release-domain
+        // drops the slot with no native writes.
+        value["correlation_id"] = serde_json::json!("empty-retire-release");
+        value["command"] = serde_json::json!({"op": "release-domain"});
+        let release = parse_reply(&planner.evaluate(&value.to_string()));
+        assert_eq!(release["outcome"], "released", "{release}");
+        assert_eq!(release["kind"], "release-domain", "{release}");
         assert_eq!(planner.retained_domains(), 0);
     }
 
@@ -12245,8 +12257,10 @@ mod tests {
 
     #[test]
     fn retained_empty_reconcile_retires_session_and_frees_slot() {
-        // An empty complete observation retires the session at the same
-        // committed boundary so a later background domain can be admitted.
+        // D23 tentative: an empty complete observation retains the session
+        // with stored minimize slots (omission is ambiguous at the converge
+        // layer); explicit release-domain retires the slot so a later
+        // background domain can be admitted.
         // Offline only: retained Planner evaluation, no bus.
         let mut planner = Planner::new();
         let seed = retained_request_for_domain(
@@ -12279,6 +12293,22 @@ mod tests {
             Some(0),
             "{empty_reply}"
         );
+        assert!(empty_reply["desired_focus"].is_null(), "{empty_reply}");
+        assert_eq!(planner.retained_domains(), 1);
+        // Explicit removal retires the retained slot.
+        let release = retained_request_for_domain(
+            "empty-retire-release",
+            "owner-1",
+            "gen-1",
+            "out-1",
+            "ws-2",
+            "",
+            &[],
+            serde_json::json!({"op": "release-domain"}),
+        );
+        let release_reply = parse_reply(&planner.evaluate(&release));
+        assert_eq!(release_reply["outcome"], "released", "{release_reply}");
+        assert_eq!(release_reply["kind"], "release-domain", "{release_reply}");
         assert_eq!(planner.retained_domains(), 0);
         // The freed slot admits a subsequent background domain.
         let next = retained_request_for_domain(
@@ -12319,9 +12349,10 @@ mod tests {
             assert_eq!(reply["outcome"], "planned", "{reply} {index}");
         }
         assert_eq!(planner.retained_domains(), 24);
-        // An empty complete observation for the first domain retires it.
-        let retire = retained_request_for_domain(
-            "many-domain-retire-1",
+        // D23 tentative: an empty complete observation retains the session
+        // with stored minimize slots instead of retiring it.
+        let empty = retained_request_for_domain(
+            "many-domain-empty-1",
             "owner-1",
             "gen-1",
             "out-1",
@@ -12330,14 +12361,44 @@ mod tests {
             &[],
             serde_json::json!({"op": "reconcile"}),
         );
-        let retire_reply = parse_reply(&planner.evaluate(&retire));
-        assert_eq!(retire_reply["outcome"], "planned", "{retire_reply}");
+        let empty_reply = parse_reply(&planner.evaluate(&empty));
+        assert_eq!(empty_reply["outcome"], "planned", "{empty_reply}");
         assert_eq!(
-            retire_reply["desired_geometry"].as_array().map(Vec::len),
+            empty_reply["desired_geometry"].as_array().map(Vec::len),
             Some(0),
-            "{retire_reply}"
+            "{empty_reply}"
         );
+        assert!(empty_reply["desired_focus"].is_null(), "{empty_reply}");
+        assert_eq!(planner.retained_domains(), 24);
+        // Genuine retire still occurs via explicit removal.
+        let retire = retained_request_for_domain(
+            "many-domain-retire-1",
+            "owner-1",
+            "gen-1",
+            "out-1",
+            "ws-1",
+            "",
+            &[],
+            serde_json::json!({"op": "release-domain"}),
+        );
+        let retire_reply = parse_reply(&planner.evaluate(&retire));
+        assert_eq!(retire_reply["outcome"], "released", "{retire_reply}");
+        assert_eq!(retire_reply["kind"], "release-domain", "{retire_reply}");
         assert_eq!(planner.retained_domains(), 23);
+        // No count cap: a further background domain is still admitted.
+        let next = retained_request_for_domain(
+            "many-domain-admit-1",
+            "owner-1",
+            "gen-1",
+            "out-1",
+            "ws-25",
+            "win-25",
+            &[("win-25", 0, 0, 100, 80)],
+            serde_json::json!({"op": "reconcile"}),
+        );
+        let next_reply = parse_reply(&planner.evaluate(&next));
+        assert_eq!(next_reply["outcome"], "planned", "{next_reply}");
+        assert_eq!(planner.retained_domains(), 24);
     }
 
     #[test]
