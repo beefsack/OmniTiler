@@ -84,6 +84,7 @@ pub enum InputWaitReason {
 
 /// Classify one native input-wait return code. Pure (no native calls) so
 /// tests prove the work/message/timeout/failed split without a desktop.
+#[cfg(windows)]
 #[must_use]
 pub(crate) fn classify_input_wait(result: u32, has_work: bool) -> InputWaitReason {
     const WAIT_OBJECT_0: u32 = 0;
