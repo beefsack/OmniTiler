@@ -23,16 +23,16 @@ decisions of 2026-09-24 are under
     User 2026-10-10 approved recommendation (a) for 15 units: D02, D04, D05,
     D06, D07, D08, D11, D14, D15, D17, D18 (no setting), D19, D20 (no lower
     verb for now), D21, D24; 16 rows approved. User 2026-10-12 also approved
-    D01, D03, D09, D10, D12, D13, D16, D22, D27 (eleven rows). Remaining tentative units:
-    D23, D25, D26, D28.
-    Spec now 132 NORMATIVE / 6 PROVISIONAL / 28 OPEN; verification and
+    D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 (fourteen rows).
+    Remaining tentative units: D25, D26, D28.
+    Spec now 135 NORMATIVE / 3 PROVISIONAL / 28 OPEN; verification and
     implementation gaps are below.
   - Proposal B classification (39 must-pass / 12 known-issue-allowed / 2
     Windows-release) and new must-pass checks N1-N4 are tentative, awaiting
     user review. Original 53-check classification remains separate from the
     four additions (57 total: 43 must-pass / 12 known-issue-allowed / 2 Windows).
   - Original 60 OPEN rows triaged: 32 relevant / 28 post-0.1. P2 settings now
-    contain approved D09/D10/D27; D03/D12/D13/D16/D22
+    contain approved D09/D10/D27; D03/D12/D13/D16/D22/D23
     have no setting. [User decisions](research/release-0.1-triage.md#user-decisions-2026-10-12).
   - P1 0.1 packaging: offline recipes/archive/tag workflows and
     Revert-before-removal guidance prepared 2026-10-11; distro offline
@@ -108,7 +108,7 @@ decisions of 2026-09-24 are under
     exclusion is the approved divergence; D17 remembered focus and D19 hide/
     reveal are already wired. No new Windows-specific handoff item warranted.
 - P1 | 0.1 triage decisions - implementation and verification (KDE/shared) |
-  D01, D03, D09, D10, D12, D13, D16, D22, D27 approved by User 2026-10-12; the other units
+  D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 approved by User 2026-10-12; the other units
   remain tentative. Historical gap assessment at `fafcd31`, D01 refined by
   [research](research/d01-fullscreen-admission.md) at `01be284`; no behavior
   implemented by this record. [Selections and caveats](research/release-0.1-triage.md#user-decisions-2026-10-12).
@@ -127,7 +127,7 @@ decisions of 2026-09-24 are under
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
   | D16 | approved; needs code, native roundtrip first | Floating send retains float and size on arrival, destination tiles untouched, for follow/stay and numbered/relative sends; no setting. Core exceptions refuse `NotTiled` and KDE refuses non-tiled movers (`crates/tiler-core/src/session/ops/workspace.rs:131-136`, `kwin/src/workspace-send-adapter.ts:1701,1841` at `fafcd31`); float-preserving transfer absent, unlike floating-workspace boundary sends. Verify untested native WS1 -> WS2 -> WS1 roundtrip first, then shared core first (serves Windows), then KDE adapter; Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
-  | D23 | needs code | Valid minimize omission can collapse/reflow (`kwin/src/plan-adapter-entry.ts:2003,3876`, `crates/tiler-core/src/session/world.rs:850-868`), but no stored old-slot/no-steal restore; sole null-focus can fail closed, so native release/retention still needs proof. |
+  | D23 | approved; needs code, shared core first | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Valid minimize omission can collapse/reflow (`kwin/src/plan-adapter-entry.ts:2003,3876`, `crates/tiler-core/src/session/world.rs:850-868` at `fafcd31`, revision-bound), but old-slot storage/no-focus-write restore absent and sole null-focus can fail closed. Shared core first, then KDE; Windows retained allocation is divergence to change later via item 22, not an approved exception. Native journeys pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | verification-only | Generic fresh snapshot/rebuild/converge re-observes host membership and provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799`); native orderly restart pending, no layout restore. |
   | D26 | needs code for full (a); fallback (b) and remaining legs verification-only | Gaps/settings reload exists (`kwin/src/domain-gap.ts:90`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). List that known limitation under tentative (b); no expansion of approved REQ-RST-01d lifetime. |
   | D27 | approved; KDE trace-first, then verification-only or contingent code | Default Mark urgent only, no workspace/focus change; fullscreen/game-focused guard urgency-only in both modes. First trace native KWin Wayland xdg-activation and Xwayland under default focus-stealing prevention: attention-only means verification-only; native workspace/focus switching would make urgency-only override KWin and conflict with D01, so stop and return to the user before code. Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
@@ -141,9 +141,14 @@ decisions of 2026-09-24 are under
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
+  - D23 implementation queue: shared-core stored restore slots and minimize
+    release/reflow/MRU first, then KDE observation/restore wiring including
+    sole-minimize null focus. Acceptance: old-slot restore with no OmniTiler
+    focus write (host handles restore focus); sole minimize retains workspace,
+    focus none, stored slot. No setting; Windows adapter follows in item 22.
   - Windows impact: shared core fixes serve Windows; Linux work owns KDE/core,
     Windows adapter/settings/native work goes to handoff item 22 below.
-    D23 Windows retained allocation is an observed divergence from the tentative
+    D23 Windows retained allocation is a divergence to change to the approved
     release/reflow target, not an approved exception. D28's KDE hold does not
     revoke approved Windows carry (item 9). No Windows code changes here.
 - P2 | 0.1 triage settings follow-up | User 2026-10-12 approved post-0.1
@@ -2702,7 +2707,7 @@ decisions of 2026-09-24 are under
     physical/restart/preset checks remain below.
 
   - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-12).
-    D01, D03, D09, D10, D12, D13, D16, D22, D27 are approved; other units remain tentative.
+    D01, D03, D09, D10, D12, D13, D16, D22, D23, D27 are approved; other units remain tentative.
     Shared core delivery serves Windows; Windows adapter/native work follows
     the shared contract. D01's fullscreen focus fence is shared/KDE
     focus-path work; Windows has its own foreground rules. Consider native
@@ -2715,9 +2720,11 @@ decisions of 2026-09-24 are under
     preservation after shared-core delivery, keeping destination tiles untouched
     with existing follow/stay fences for numbered/relative sends; no setting.
     Untested native WS1 -> WS2 -> WS1 roundtrip is verified first.
-    Pending decision: D23 needs
-    review of retained Windows minimize allocation against the tentative shared
-    release/reflow plus stored old-slot/no-steal restore target. Approved D27
+    Approved D23 follows later after shared-core delivery: replace retained
+    Windows minimize allocation (divergence, not an approved exception) with
+    release/reflow/MRU and stored old slot. Restore to stored slot with no
+    OmniTiler focus write, leaving host restore focus native; sole minimize
+    retains workspace, focus none, stored slot. No setting. Approved D27
     needs supported activation-request/urgency observation, default Mark urgent
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.
@@ -2763,9 +2770,9 @@ decisions of 2026-09-24 are under
   [grouped open-decisions index](spec/functional-spec.md#open-index).
   Current review 2026-10-12: all nine prior provisional requirements ratified;
   B9 no-refusal sub-leg selected; R-LAY-04 parked OPEN; G-06 makes
-  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; nine units / eleven rows
-  approved 2026-10-12, four units awaiting review. Totals: 132 NORMATIVE,
-  28 OPEN, 6 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
+  REQ-MAX-08 NORMATIVE. Batch 1 approved 16 more rows; ten units / fourteen rows
+  approved 2026-10-12, three units awaiting review. Totals: 135 NORMATIVE,
+  28 OPEN, 3 PROVISIONAL requirement rows; 156 scenarios including R-WS-27 with TBD
   reference outcomes. Platform implementation/native gaps stay
   distinct from selected intent; Windows control cells now cite Windows evidence.
   [Cross-WM consensus analysis](research/reference-wm-consensus.md) Table A
@@ -3515,16 +3522,15 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   and recommendation for hidden-workspace Alt+Tab/taskbar semantics plus
   taskbar workspace indicator (parity 10), as a Windows release gate.
   [note](research/windows-port/alt-tab-hidden-workspaces.md)
-- 0.1 remaining four triage units (D23, D25, D26, D28)
+- 0.1 remaining three triage units (D25, D26, D28)
   plus Proposal B / N1-N4: tentative, awaiting user review, distinct from
-  batch 1 and the nine units approved 2026-10-12. Review
+  batch 1 and the ten units approved 2026-10-12. Review
   [tentative decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
-  especially D23 Windows
-  divergence, D26 cross-login fallback, D28 listed refusal,
+  especially D26 cross-login fallback, D28 listed refusal,
   and M39/K12/W2 plus N1-N4 classification.
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
-  requirement rows; 6 PROVISIONAL rows await tentative-decision review.
+  requirement rows; 3 PROVISIONAL rows await tentative-decision review.
   KDE fullscreen carry policy remains observe-first, distinct from tentative
   REQ-MAX-09b refusal hold.
   Design questions remain distinct from delivered implementation/live gaps.

@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 132 NORMATIVE, 28 OPEN, 6 PROVISIONAL requirement rows (166 rows);
+Draft totals: 135 NORMATIVE, 28 OPEN, 3 PROVISIONAL requirement rows (166 rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -68,14 +68,22 @@ User 2026-10-10 0.1 triage batch 1 selects 15 units / 16 rows
 float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
 behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
-D13, D16, D22 and D27 (eleven formerly PROVISIONAL rows); six 2026-10-11 tentative rows
-remain pending review, including KDE fullscreen-send refusal REQ-MAX-09b.
-D09/D10/D27 settings are post-0.1; D16 and D22 have no setting. D16 tier-rescored
+D13, D16, D22, D23 and D27 (fourteen formerly PROVISIONAL rows across ten units);
+three rows/units D25, D26, D28 remain pending review, including KDE
+fullscreen-send refusal REQ-MAX-09b.
+D09/D10/D27 settings are post-0.1; D16, D22 and D23 have no setting. D16 tier-rescored
 under reference tiers (Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
 Tier 2 retain float against COSMIC fresh re-tile); D22 tier basis is COSMIC observed
 (not source-proven) plus i3/sway Tier 1 agree with no evidenced alternative,
-Hyprland/Tier 2 untraced, thin i3/sway one-family basis disclosed; D27 tier-rescored under
+Hyprland/Tier 2 untraced, thin i3/sway one-family basis disclosed. D23 follows
+COSMIC Tier 1 source-proven default; qtile/awesome Tier 2 also vacate, awesome
+restores old slot; Hyprland/i3/sway no counterpart or untraced (non-voting),
+no evidenced alternative to allocation release. D27 tier-rescored under
 reference tiers (Hyprland/i3/sway Tier 1 against COSMIC).
+D23 Windows retained allocation is divergence to change via handoff item 22,
+not an approved exception. KDE/shared-core old-slot storage, no-focus-write
+restore and sole-minimize null focus need code per gap assessment at `fafcd31`,
+shared core first.
 [Gap assessment](../backlog.md) separates code work from verification-only
 defaults and D26's cross-login known-limitation fallback.
 Windows wiring and item-2/3/4/5/Q4 native journeys
@@ -266,9 +274,9 @@ is separate from the user physical owned-exit results below
 
 | Req | Scenario | Requirement / current | KDE | Win | macOS | Status | Source |
 |---|---|---|---|---|---|---|---|
-| REQ-MNZ-01 | [R-MNZ-01](reference-outcomes/minimize.md#r-mnz-01-native-minimize-of-a-middle-tile) native minimize of middle tile | PROVISIONAL tentative (a) release allocation and reflow with a stored restore slot. Windows retains allocation: observed divergence, tentative shared parity target, not user-approved | NEEDS CODE: old-slot/no-steal storage and sole-focus legs pending; minimized-omission generic collapse present only if a valid snapshot exists (`world.rs:850-868`; `plan-adapter-entry.ts:2003/3876`); native may fail closed to null so release is not claimed fully proven | current: retains (observed divergence) | provisional target; implementation absent | PROVISIONAL | [tentative D23](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
-| REQ-MNZ-02 | [R-MNZ-02](reference-outcomes/minimize.md#r-mnz-02-native-restore-of-the-minimized-tile) native restore | PROVISIONAL tentative (a) restore to the old slot with no focus steal | NEEDS CODE: stored restore-slot path pending; generic collapse present as in REQ-MNZ-01, native may fail closed to null | current: old slot | provisional target; implementation absent | PROVISIONAL | [tentative D23](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
-| REQ-MNZ-03 | [R-MNZ-03](reference-outcomes/minimize.md#r-mnz-03-native-minimize-of-a-sole-workspace-window) minimize sole window | PROVISIONAL tentative joint consequence: retain the workspace with a stored restore and focus none | NEEDS CODE: sole-focus-none storage pending; generic path as in REQ-MNZ-01 | current: TBD | provisional target; implementation absent | PROVISIONAL | [tentative D23](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-MNZ-01 | [R-MNZ-01](reference-outcomes/minimize.md#r-mnz-01-native-minimize-of-a-middle-tile) native minimize of middle tile | Minimize tile releases allocation; siblings reflow; focus falls to MRU window; store old slot; no setting. Tier basis: COSMIC Tier 1 source-proven default, qtile/awesome Tier 2 also vacate; Hyprland/i3/sway no counterpart or untraced non-voting, no evidenced alternative. Windows retained allocation is observed divergence to change via handoff item 22, not an approved exception | NEEDS CODE at `fafcd31`: old-slot storage, no-focus-write restore and sole-minimize null focus pending, shared core first; minimized-omission generic collapse present only if a valid snapshot exists (`world.rs:850-868`; `plan-adapter-entry.ts:2003/3876`); native may fail closed to null so release is not claimed fully proven | current: retains allocation (observed divergence to change via handoff item 22); native journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) User 2026-10-12, D23 (a) |
+| REQ-MNZ-02 | [R-MNZ-02](reference-outcomes/minimize.md#r-mnz-02-native-restore-of-the-minimized-tile) native restore | Restore to stored old slot; OmniTiler writes no focus (host handles any restore focus). No setting | NEEDS CODE at `fafcd31`: stored restore-slot and no-focus-write restore path pending, shared core first; generic collapse present as in REQ-MNZ-01, native may fail closed to null | current: old slot; no-focus-write acceptance/native journey pending; shared delivery then Windows handoff item 22 | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) User 2026-10-12, D23 (a) |
+| REQ-MNZ-03 | [R-MNZ-03](reference-outcomes/minimize.md#r-mnz-03-native-minimize-of-a-sole-workspace-window) minimize sole window | Sole window minimize retains workspace, focus none, stored restore slot. No setting | NEEDS CODE at `fafcd31`: sole-focus-none storage pending, shared core first; generic path as in REQ-MNZ-01 | current: TBD; same selected target, native journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) User 2026-10-12, D23 (a) |
 
 <a id="minimum"></a>
 ## 10. Minimum size ([R-MIN](reference-outcomes/minimum-size.md#minimum-size-transitions-reference-outcomes))
@@ -548,7 +556,7 @@ marked with literal status in-row):
 - [Workspaces](#workspaces): REQ-WS-07, REQ-WS-10.
 - [Floating](#floating): none.
 - [Maximize](#maximize): no OPEN requirement row; KDE carry policy remains unselected/observe-first under PROVISIONAL REQ-MAX-09b refusal hold (D28). REQ-MAX-09 maximize/Windows carry and REQ-MAX-08 remain NORMATIVE.
-- [Minimize](#minimize): none (REQ-MNZ-01/02/03 are PROVISIONAL tentative D23).
+- [Minimize](#minimize): none.
 - [Close](#close): none.
 - [Output](#output): none.
 - [Activation](#activation): REQ-ACT-02.
@@ -557,11 +565,10 @@ marked with literal status in-row):
   Q2 edge clauses REQ-SPC-04a..h are NORMATIVE (User 2026-10-08), not OPEN rows.
 - [Columns](#columns): REQ-COL-01, REQ-COL-02, REQ-COL-03, REQ-COL-04, REQ-COL-05, REQ-COL-06, REQ-COL-07, REQ-COL-08, REQ-COL-09, REQ-COL-10.
 
-PROVISIONAL discussion group: 6 rows, all
+PROVISIONAL discussion group: 3 rows, all
 [tentative 2026-10-11](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
 pending user review; no implementation authorization:
 
-- [Minimize](#minimize): REQ-MNZ-01, REQ-MNZ-02, REQ-MNZ-03 (D23).
 - [Restart](#startup): REQ-RST-01c (D25); REQ-RST-02 (D26, fallback (b) and
   REQ-RST-01d cross-login limitation).
 - [Maximize](#maximize): REQ-MAX-09b (D28 KDE fullscreen-send refusal).

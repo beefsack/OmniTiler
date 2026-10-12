@@ -1,7 +1,7 @@
 # Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 24 units approved by User (15 on 2026-10-10, nine on 2026-10-12);
-four units plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: 25 units approved by User (15 on 2026-10-10, ten on 2026-10-12);
+three units plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes eleven rows: current spec
-132 NORMATIVE / 6 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes fourteen rows: current spec
+135 NORMATIVE / 3 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -89,7 +89,19 @@ REQ-MAX-09b. User 2026-10-12 promotes eleven rows: current spec
 - D01 needs a KDE convergence fullscreen focus fence; close and the
   D03/D09/D10/D12/D13/D22 defaults are verification-only. [Gap assessment](../backlog.md).
   Native outcomes remain TBD; selection does not establish implementation.
-- Remaining tentative units: D23, D25, D26, D28;
+- D23 (a) / REQ-MNZ-01/02/03 / R-MNZ-01..03 is user-decided: minimize
+  releases the tile's allocation, siblings reflow, focus falls to MRU, and
+  the old slot is stored. Restore returns to the stored slot; OmniTiler writes
+  no focus (host handles any restore focus). Sole-window minimize retains the
+  workspace, focus none, stored restore slot. No setting. COSMIC Tier 1
+  source-proven default; qtile/awesome Tier 2 also vacate, awesome restores old
+  slot; Hyprland/i3/sway no counterpart or untraced (non-voting); no evidenced
+  alternative to release. [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
+- D23 needs KDE/shared-core code for stored old slot, no-focus-write restore
+  and sole-minimize null focus. Shared core first; Windows follows later via
+  handoff item 22. Current Windows retained allocation is a divergence to be
+  changed, not an approved exception; approval establishes no native evidence.
+- Remaining tentative units: D25, D26, D28;
   Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
@@ -99,10 +111,6 @@ No selection is approved until user review. No implementation is authorized by t
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D23 (a) minimize releases allocation and reflows with a stored restore slot;
-  restore to the old slot with no focus steal; sole-workspace minimize retains
-  the workspace with focus none. Windows retains allocation: observed
-  divergence, tentative shared parity target, not user-approved.
 - D25 (a) re-observe membership, keep the host-owned set, restore focus only
   where provable.
 - D26 (a) restore owned gaps/settings/intent and re-observe host
@@ -136,6 +144,10 @@ unchanged; source observations are not marked as approved.
 - D22's ratio-preserved float-out reflow is now user-approved, no setting;
   the thin i3/sway one-family basis plus COSMIC observation remains disclosed,
   and native reflow evidence is pending.
+- D23's release/reflow and old-slot restore proposal is now user-approved.
+  Restore means no OmniTiler focus write, with host restore focus left native;
+  minimize uses MRU focus, sole minimize retains workspace/focus none and
+  stored slot. Windows retained allocation must change; no setting.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -377,6 +389,13 @@ The original proposal/tally below is historical; fallback (b) is not selected.
 | FLT-03 ([spec](../spec/functional-spec.md#L185)) | removal reflow TBD | observed ratio-preserved (ER observed; thin 2/2ev 1fam I/S) | W thin; [R-FLT-03](../spec/reference-outcomes/floating.md#r-flt-03-float-out-survivor-widths) | (a) ratio-preserved reflow (follow COSMIC-observed, disclosed thin); (b) hold TBD-known past 0.1 (needs approval). -> (a) preferred, (b) explicit fallback |
 
 ### D23 minimize + restore (MNZ-01, MNZ-02, MNZ-03)
+
+User 2026-10-12 selected option (a) for all three rows, no setting; see
+[current approval, tier rationale and shared-core-first implementation](#user-decisions-2026-10-12).
+The historical proposal's "no focus steal" restore wording is superseded by
+no OmniTiler focus write, leaving restore focus to the host. Windows retained
+allocation is a divergence to change, not an approved exception. Source
+observations and the original proposal/tallies below remain evidence/history.
 
 | Row | KDE current | COSMIC (source-proven) | Tally / source | Options -> recommendation |
 |---|---|---|---|---|

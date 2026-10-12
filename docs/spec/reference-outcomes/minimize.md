@@ -77,12 +77,9 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   cross-column rescale); refocus runs nearest-center `give_away_focus`
   on the active strip, exact target TBD (F: missing frame/display
   geometry). `S(S-pan-minimize)` + `S(S-pan-stripwidth)`.
-- Then Ours KDE: TBD (`observeNative` has no minimized filter, so the
-  minimized frame read decides between stale-frame observation and
-  fail-closed whole-domain null; Engine effect TBD). `S(S-ours-minkde)`;
+- Then Ours KDE: TBD (`observeNative` has no minimized filter, so minimized frame reads decide between stale-frame observation and fail-closed whole-domain null); selected User 2026-10-12 D23 (a) target: B releases allocation, siblings reflow, focus falls to MRU C, old slot stored; no setting ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). NEEDS CODE per gap assessment at `fafcd31`, shared core first; native release/retention and exact frames/focus TBD. `S(S-ours-minkde)`;
   queued.
-- Then Ours Windows: B keeps its Engine slot (last-known rect, hintless,
-  no writes) with retained membership; focus TBD. `S(S-ours-minwin)`;
+- Then Ours Windows: Same selected D23 (a) target; current retains allocation with retained membership (last-known rect, hintless, no writes), observed divergence to change via handoff item 22, not an approved exception; native journey pending; exact native frames/focus TBD. `S(S-ours-minwin)`;
   queued.
 - Variant hook: provisional/TBD (minimize-slot hook, to discuss).
 
@@ -137,10 +134,8 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   restore issues no focus write, so focus stays at the R-MNZ-01 target,
   exact identity TBD with it (F: same missing geometry).
   `S(S-pan-minimize)`.
-- Then Ours KDE: TBD (re-observation over the restored frame; slot
-  TBD). `S(S-ours-minkde)`; queued.
-- Then Ours Windows: B is observed eligible again over its kept slot;
-  focus TBD. `S(S-ours-minwin)`; focus queued.
+- Then Ours KDE: TBD (re-observation over restored frame; exact slot/focus unestablished); selected User 2026-10-12 D23 (a) target: restore to stored old slot; OmniTiler writes no focus (host handles any restore focus); no setting ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). NEEDS CODE per gap assessment at `fafcd31`: stored restore-slot/no-focus-write path pending, shared core first. `S(S-ours-minkde)`; queued.
+- Then Ours Windows: Same selected D23 (a) target; current B observed eligible again over its kept slot; no-focus-write acceptance/native journey pending; exact native focus TBD (host). Shared delivery then handoff item 22. `S(S-ours-minwin)`; focus queued.
 - Variant hook: provisional/TBD (restore-slot hook, to discuss).
 
 ### R-MNZ-03: native minimize of a sole workspace window
@@ -188,9 +183,6 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   so paneru issues no refocus; which window the host focuses instead is
   TBD (host). `S(S-pan-minimize)` + `S(S-pan-ws)`; focus queued (H:
   opaque host minimize-focus journey).
-- Then Ours KDE: TBD (sole minimize's native active-window value and
-  Engine occupancy/focus unestablished; a null active window makes
-  observation fail closed). `S(S-ours-minkde)`; queued.
-- Then Ours Windows: A stays retained on its kept slot (cleanup drops
-  only absent HWNDs); focus TBD. `S(S-ours-minwin)`; focus queued.
+- Then Ours KDE: TBD (sole minimize's native active-window value and Engine occupancy/focus unestablished; null active window makes observation fail closed); selected User 2026-10-12 D23 (a) target: retain workspace, focus none, stored restore slot; no setting ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). NEEDS CODE per gap assessment at `fafcd31`: sole-minimize null focus and stored slot pending, shared core first; exact native occupancy/focus TBD. `S(S-ours-minkde)`; queued.
+- Then Ours Windows: Same selected D23 (a) target; current retains A on its kept slot (cleanup drops only absent HWNDs); focus-none acceptance/native journey pending; exact native focus TBD. Shared delivery then handoff item 22. `S(S-ours-minwin)`; focus queued.
 - Variant hook: provisional/TBD (minimized-occupancy hook, to discuss).
