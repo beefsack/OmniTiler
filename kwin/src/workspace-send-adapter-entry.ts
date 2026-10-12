@@ -56,7 +56,7 @@ export interface WorkspaceSendEntryOverrides {
 
 export interface WorkspaceSendEntryHandle {
     readonly stop: () => void;
-    readonly requestSend: (targetWorkspace: unknown) => boolean;
+    readonly requestSend: (targetWorkspace: unknown, follow?: unknown) => boolean;
     // Live flight state only. Deprecated alias `blocksPlan` was retired with
     // the transaction protocol: send flights never block Plan; terminal
     // settlement is observed through the adapter's `onSettled` edge (left
@@ -694,9 +694,9 @@ export function startWorkspaceSendAdapterEntry(
                 void error;
             }
         },
-        requestSend: (targetWorkspace) => {
+        requestSend: (targetWorkspace, follow?) => {
             try {
-                return adapter.requestSend(targetWorkspace);
+                return adapter.requestSend(targetWorkspace, undefined, follow);
             } catch (error) {
                 void error;
                 return false;

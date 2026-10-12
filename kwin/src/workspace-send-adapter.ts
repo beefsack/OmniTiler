@@ -921,12 +921,19 @@ interface WorkspacePlanned {
     readonly geometry: ReadonlyArray<WorkspaceGeometryEntry>;
     readonly preconditions: readonly string[];
     readonly operation: Record<string, unknown>;
-    // Explicit follow/stay selection echoed by the Rust move-tiled
-    // operation. Legacy replies omit it and default to follow.
+    // Explicit follow/stay selection echoed by the Rust move operation.
+    // Legacy replies omit it and default to follow.
     readonly follow: boolean;
+    // True for the slotless deferred transfer (`move-deferred`, D28): the
+    // operation names no leaf and the reply geometry covers tiled survivors
+    // only (empty when neither side has tiled members). Follow carries the
+    // target bookkeeping MRU or null (native follow addresses the mover
+    // ref); stay resolves the source MRU exactly like tiled stays.
+    readonly deferred: boolean;
     // Planned desired focus: the mover leaf in the target domain for
-    // follow; the source-MRU survivor (or null when the source is left
-    // empty or MRU-less) for stay. Never the mover for stay.
+    // tiled follow (target bookkeeping MRU or null for deferred follow);
+    // the source-MRU survivor (or null when the source is left empty or
+    // MRU-less) for stay. Never the mover for stay.
     readonly followFocus: WorkspaceFollowFocus | null;
     // Stay-only source-MRU focus target as a stable window id, bound from
     // the reply geometry before any native write (leaf plus source domain
@@ -1013,6 +1020,50 @@ function validateMoveTiledOperation(value: unknown): { record: Record<string, un
     return { record: value, follow };
 }
 
+// Slotless deferred-transfer operation (D28 born-fullscreen carry): window
+// plus source/target identities with NO leaf (never fabricated). Exact keys
+// plus the same optional explicit follow echo as the tiled operation; a
+// deferred operation carrying a leaf is malformed and never actuates.
+function validateMoveDeferredOperation(value: unknown): { record: Record<string, unknown>; follow: boolean } | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const fields: readonly string[] = [
+        "op",
+        "window",
+        "source_output",
+        "source_workspace",
+        "target_output",
+        "target_workspace",
+    ];
+    let follow = true;
+    if (
+        Object.keys(value).length === fields.length + 1 &&
+        Object.prototype.hasOwnProperty.call(value, "follow")
+    ) {
+        if (typeof value["follow"] !== "boolean") {
+            return null;
+        }
+        follow = value["follow"] as boolean;
+        for (const field of fields) {
+            if (!Object.prototype.hasOwnProperty.call(value, field)) {
+                return null;
+            }
+        }
+    } else if (!hasExactKeys(value, fields)) {
+        return null;
+    }
+    if (value["op"] !== "move-deferred") {
+        return null;
+    }
+    for (const field of ["window", "source_output", "source_workspace", "target_output", "target_workspace"]) {
+        if (!isOpaqueId(value[field])) {
+            return null;
+        }
+    }
+    return { record: value, follow };
+}
+
 function validatePlanned(
     reply: unknown,
     correlationId: string,
@@ -1044,12 +1095,18 @@ function validatePlanned(
     if (!isExactPreconditions(preconditions)) {
         return null;
     }
-    const operationValidated = validateMoveTiledOperation(reply["operation"]);
+    const tiledValidated = validateMoveTiledOperation(reply["operation"]);
+    const deferredValidated =
+        tiledValidated === null ? validateMoveDeferredOperation(reply["operation"]) : null;
+    const operationValidated = tiledValidated ?? deferredValidated;
     if (operationValidated === null) {
         return null;
     }
     const operation = operationValidated.record;
     const opFollow = operationValidated.follow;
+    // Slotless deferred transfers name no leaf; follow carries tiled
+    // bookkeeping focus or null (native follow addresses the mover ref).
+    const deferred = deferredValidated !== null;
     // Follow is target-bound: the planned desired focus must name the moved
     // leaf in the operation target domain. Stay is source-bound: the
     // planned desired focus is null (or absent on the wire, which Rust
@@ -1061,28 +1118,62 @@ function validatePlanned(
     const focusRaw = reply["desired_focus"];
     let followFocus: WorkspaceFollowFocus | null = null;
     if (opFollow) {
-        if (!isRecord(focusRaw) || !hasExactKeys(focusRaw, ["domain_output", "domain_workspace", "leaf"])) {
-            return null;
+        if (deferred) {
+            // Slotless follow: null focus (member-less target), or a
+            // target-domain tiled focus (bookkeeping MRU; native follow
+            // still addresses the mover ref, never a tile). Any carried
+            // focus outside the target domain is a mismatched reply and
+            // never actuates or follows; resolvability against the reply
+            // geometry is enforced below.
+            if (focusRaw === null || focusRaw === undefined) {
+                followFocus = null;
+            } else {
+                if (!isRecord(focusRaw) || !hasExactKeys(focusRaw, ["domain_output", "domain_workspace", "leaf"])) {
+                    return null;
+                }
+                if (
+                    !isOpaqueId(focusRaw["domain_output"]) ||
+                    !isOpaqueId(focusRaw["domain_workspace"]) ||
+                    !isOpaqueId(focusRaw["leaf"])
+                ) {
+                    return null;
+                }
+                if (
+                    (focusRaw["domain_output"] as string) !== (operation["target_output"] as string) ||
+                    (focusRaw["domain_workspace"] as string) !== (operation["target_workspace"] as string)
+                ) {
+                    return null;
+                }
+                followFocus = Object.freeze({
+                    output: focusRaw["domain_output"] as string,
+                    workspace: focusRaw["domain_workspace"] as string,
+                    leaf: focusRaw["leaf"] as string,
+                });
+            }
+        } else {
+            if (!isRecord(focusRaw) || !hasExactKeys(focusRaw, ["domain_output", "domain_workspace", "leaf"])) {
+                return null;
+            }
+            if (
+                !isOpaqueId(focusRaw["domain_output"]) ||
+                !isOpaqueId(focusRaw["domain_workspace"]) ||
+                !isOpaqueId(focusRaw["leaf"])
+            ) {
+                return null;
+            }
+            if (
+                (focusRaw["domain_output"] as string) !== (operation["target_output"] as string) ||
+                (focusRaw["domain_workspace"] as string) !== (operation["target_workspace"] as string) ||
+                (focusRaw["leaf"] as string) !== (operation["leaf"] as string)
+            ) {
+                return null;
+            }
+            followFocus = Object.freeze({
+                output: focusRaw["domain_output"] as string,
+                workspace: focusRaw["domain_workspace"] as string,
+                leaf: focusRaw["leaf"] as string,
+            });
         }
-        if (
-            !isOpaqueId(focusRaw["domain_output"]) ||
-            !isOpaqueId(focusRaw["domain_workspace"]) ||
-            !isOpaqueId(focusRaw["leaf"])
-        ) {
-            return null;
-        }
-        if (
-            (focusRaw["domain_output"] as string) !== (operation["target_output"] as string) ||
-            (focusRaw["domain_workspace"] as string) !== (operation["target_workspace"] as string) ||
-            (focusRaw["leaf"] as string) !== (operation["leaf"] as string)
-        ) {
-            return null;
-        }
-        followFocus = Object.freeze({
-            output: focusRaw["domain_output"] as string,
-            workspace: focusRaw["domain_workspace"] as string,
-            leaf: focusRaw["leaf"] as string,
-        });
     } else {
         if (focusRaw === null || focusRaw === undefined) {
             followFocus = null;
@@ -1112,7 +1203,11 @@ function validatePlanned(
         }
     }
     const geometryRaw = reply["desired_geometry"];
-    if (!Array.isArray(geometryRaw) || geometryRaw.length === 0) {
+    // A sole slotless source sent to an empty target legitimately carries
+    // no geometry (no tiled members on either side, mover slotless). Empty
+    // geometry is accepted for the deferred transfer only; tiled replies
+    // keep the exact non-empty refusal.
+    if (!Array.isArray(geometryRaw) || (geometryRaw.length === 0 && !deferred)) {
         return null;
     }
     const geometry: WorkspaceGeometryEntry[] = [];
@@ -1136,6 +1231,14 @@ function validatePlanned(
             return null;
         }
     }
+    if (deferred && opFollow && followFocus !== null) {
+        // Deferred-follow bookkeeping MRU must resolve through the reply
+        // geometry to a non-mover window or the reply is mismatched and
+        // never actuates. Native follow still addresses the mover ref.
+        if (resolveStayFocusWindow(operation, followFocus, geometry) === null) {
+            return null;
+        }
+    }
     return {
         correlationId,
         baseRevision: baseRevision as number,
@@ -1143,6 +1246,7 @@ function validatePlanned(
         preconditions: Object.freeze([...(preconditions as string[])]),
         operation,
         follow: opFollow,
+        deferred,
         followFocus,
         stayFocusWindow,
     };
@@ -1352,6 +1456,27 @@ function snapshotsEqual(a: WorkspaceSendSnapshot, b: WorkspaceSendSnapshot): boo
         }
     }
     return true;
+}
+
+// Deferred-operation snapshot eligibility: the dispatch snapshot mover
+// must carry the held overlay flags (fullscreen, never
+// floating/sticky/maximized, fit-excluded). Test shape only proves the
+// flags; the actual held topology stays shared Engine ownership, with no
+// new state or provenance schema on this side.
+function snapshotMoverHeld(snapshot: WorkspaceSendSnapshot, moverId: string): boolean {
+    for (const entry of [...snapshot.sourceWindows, ...snapshot.targetWindows]) {
+        if (entry.id !== moverId) {
+            continue;
+        }
+        return (
+            entry.fullscreen === true &&
+            entry.floating !== true &&
+            entry.sticky !== true &&
+            entry.maximized !== true &&
+            entry.fitExcluded === true
+        );
+    }
+    return false;
 }
 
 // Per-survivor equality: identical rect plus identical complete-observation
@@ -1952,16 +2077,22 @@ export class WorkspaceSendAdapter {
         follow: boolean,
         op: "send-to-workspace" | "send-to-output",
     ): string | null {
-        // Portable wire fields only: `floating` and `fit_excluded` (the
+        // Portable wire fields: `floating` and `fit_excluded` (the
         // observer-carried fit opt-out, already ORed over floating, sticky,
-        // fullscreen, and maximized at observation). Native
-        // fullscreen/maximized/sticky never ride the wire; they stay local
-        // snapshot semantics for the dispatch-frozen fence.
+        // fullscreen, and maximized at observation) plus `fullscreen` for
+        // the focused mover only. The mover flag lets the shared Engine
+        // preserve a held born-fullscreen exception across the combined
+        // convergence instead of retiling it on the source (D28 slotless
+        // carry); every other member keeps the exact legacy encoding, so
+        // tiled fullscreen survivors and all existing transfers are
+        // unchanged. Native maximized/sticky never ride the wire; they
+        // stay local snapshot semantics for the dispatch-frozen fence.
         const wireFlags = (entry: WorkspaceSendObservedWindow): Record<string, boolean> => ({
             ...(entry.floating === true ? { floating: true } : {}),
             ...(entry.floating === true || entry.fitExcluded === true || entry.fit_excluded === true
                 ? { fit_excluded: true }
                 : {}),
+            ...(entry.id === observed.focusedId && entry.fullscreen === true ? { fullscreen: true } : {}),
         });
         const sourceWindows = observed.sourceWindows.map((entry) => ({
             window: entry.id,
@@ -2403,16 +2534,18 @@ export class WorkspaceSendAdapter {
     // !== true). Floating exceptions stay observed but carry no planned
     // geometry. Fullscreen/maximized overlays stay tiled: fit_excluded
     // alone is NOT floating. Unknown, missing, duplicate, or floated
-    // windows never reach native writes.
+    // windows never reach native writes. Slotless deferred transfers
+    // additionally exclude the mover (no tile slot, no allocation).
     private geometryCovers(planned: WorkspacePlanned, flightState: WorkspacePendingFlight): boolean {
+        const moverId = planned.deferred ? (planned.operation["window"] as string) : null;
         const wanted = new Set<string>();
         for (const entry of flightState.snapshot.sourceWindows) {
-            if (entry.floating !== true) {
+            if (entry.floating !== true && entry.id !== moverId) {
                 wanted.add(entry.id);
             }
         }
         for (const entry of flightState.snapshot.targetWindows) {
-            if (entry.floating !== true) {
+            if (entry.floating !== true && entry.id !== moverId) {
                 wanted.add(entry.id);
             }
         }
@@ -2429,13 +2562,19 @@ export class WorkspaceSendAdapter {
         return true;
     }
 
-    // Operation-to-snapshot binding: the move-tiled operation must name the
+    // Operation-to-snapshot binding: the move operation must name the
     // flight mover plus the exact captured source/target domains, and its
     // echoed follow selection must equal the flight's requested selection.
     // Any other target/object/selection is a mismatched reply and never
-    // actuates. Focus binding is selection-aware: follow names the mover in
-    // the target; stay is null (emptied source) or names the source domain
-    // with a non-mover survivor leaf.
+    // actuates. A deferred operation additionally requires the snapshot
+    // mover to carry the held overlay flags (fullscreen, never
+    // floating/sticky/maximized, fit-excluded): an ordinary tiled or
+    // non-fullscreen mover can never sneak a leafless transfer and drop
+    // its own allocation. Focus binding is selection-aware: tiled follow
+    // names the mover in the target; deferred follow is null
+    // (member-less target) or a target-domain bookkeeping MRU; stay is
+    // null (emptied source) or names the source domain with a non-mover
+    // survivor leaf.
     private operationMatchesSnapshot(planned: WorkspacePlanned, flightState: WorkspacePendingFlight): boolean {
         const operation = planned.operation;
         const snapshot = flightState.snapshot;
@@ -2448,11 +2587,25 @@ export class WorkspaceSendAdapter {
         ) {
             return false;
         }
+        if (planned.deferred && !snapshotMoverHeld(snapshot, flightState.moverId)) {
+            return false;
+        }
         if (planned.follow !== flightState.follow) {
             return false;
         }
         const focus = planned.followFocus;
         if (planned.follow) {
+            if (planned.deferred) {
+                // Slotless follow carries null focus (member-less target)
+                // or a target-domain bookkeeping MRU; native follow
+                // addresses the mover ref either way.
+                if (focus === null) {
+                    return true;
+                }
+                return (
+                    focus.output === snapshot.targetOutput && focus.workspace === snapshot.targetWorkspace
+                );
+            }
             if (focus === null) {
                 return false;
             }
@@ -2470,9 +2623,13 @@ export class WorkspaceSendAdapter {
         }
         if (
             focus.output !== snapshot.sourceOutput ||
-            focus.workspace !== snapshot.sourceWorkspace ||
-            focus.leaf === (operation["leaf"] as string)
+            focus.workspace !== snapshot.sourceWorkspace
         ) {
+            return false;
+        }
+        // The tiled operation names its mover leaf; a stay focus naming it
+        // is the mover, never a survivor. Deferred operations name no leaf.
+        if (!planned.deferred && focus.leaf === (operation["leaf"] as string)) {
             return false;
         }
         return true;
@@ -3791,6 +3948,15 @@ export class WorkspaceSendAdapter {
         planned: WorkspacePlanned,
         writeRefs?: ReadonlyMap<string, object> | null,
     ): boolean {
+        // Slotless deferred transfers never actuate geometry: shared trees
+        // are untouched by construction, so neither the mover nor any
+        // survivor takes a native write even when observed frames drift
+        // from retained allocations (the next ordinary reconcile reflows).
+        // The reply still passed the operation, coverage, flag, and scope
+        // fences before this call; tiled paths below are unchanged.
+        if (planned.deferred) {
+            return true;
+        }
         // Stable ordering baseline from the dispatch snapshot; per-setter
         // targets and scope fences below always resolve from a fresh
         // observation unless dispatch-captured refs ride along (cross-output
