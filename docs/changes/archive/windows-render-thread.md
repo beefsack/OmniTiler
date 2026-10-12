@@ -113,6 +113,11 @@
   one pre-existing ignored benchmark. Windows library: 502 passed; Windows
   integration: 364 passed. All-workspace fmt, locked four-package strict
   all-target Clippy with warnings denied and `git diff --check` passed.
+- Post-rebase combined tree `8fe0224`: all native gates passed again,
+  1,661 passed, zero failed, one ignored; the additional 13 tests came from
+  concurrent shared-core delivery. Windows counts remain 502 + 364.
+- Implementation `8fe0224`: [publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38271368694)
+  passed all seven jobs (Windows, Rust, KWin, native, shell, macOS and licenses).
 - Deterministic fixtures cover latest-wins, Hide/Cancel/reset epoch ordering,
   stale/recycled tagged identity refusal, ordinary preview bands, resolved
   underlay identities/bands, unverified-hide retry, applied/unknown snapshots,
