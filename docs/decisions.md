@@ -924,7 +924,11 @@ platform API behavior.
   (notification area / taskbar cycling; general knowledge, unverified in
   repo) and follow the conflict model
   (Authentic takes over, Compatible disables). KDE/macOS counterparts are
-  not yet selected.
+  not yet selected. Delivered offline 2026-10-12
+  ([record](changes/archive/windows-launcher-shortcuts.md)); physical check
+  pending. Tentative, pending user review: the browser opens an empty
+  `https://` URL through the shell `open` verb, and a missing `wt.exe`
+  logs narrowly with no fallback.
 - Conflict model (user 2026-10-03, all platforms): a per-binding conflict
   list. Settings show each binding conflicting with an OS/desktop shortcut
   and let the user keep (override), disable or rebind it. Quick-set presets:
