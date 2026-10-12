@@ -98,7 +98,11 @@ the user's window handles (HWNDs) [V: W1,W2].
 
 - [I: W2,W3; `docs/decisions.md:50-58`] The executable hosts event listeners,
   `tiler-core`, window control, recovery state, tray and an on-demand settings
-  window. Add a separate input thread only if interception tests require it.
+  window. Stage 1 now puts both low-level hooks and synchronous classifiers on
+  a dedicated input pump for latency (target C selected 2026-10-12, A then B);
+  the owner retains Engine, actuation, rendering and recovery. See
+  [threading contracts](owner-threading.md) and
+  [offline delivery](../../changes/archive/windows-input-thread.md).
   KWin's planner/script/effect/tray responsibilities need no matching Windows
   processes or D-Bus/JSON hop. Use `tiler-protocol` for external IPC only.
 - [V: W4] User Interface Privilege Isolation (UIPI) restricts lower-integrity

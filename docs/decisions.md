@@ -86,6 +86,36 @@ platform API behavior.
   are NORMATIVE;
   native evidence and implementation gaps remain separate.
 
+## Windows Owner Threading
+
+- User selection 2026-10-12: target C (dedicated input and render pumps),
+  delivering complete A first (stage 1), then B early (stage 2). Selected for
+  latency only, with no Win+G/Win+F11 containment claim.
+- Stage 1 implementation, 2026-10-12: both low-level hooks and synchronous
+  consume/pass classifiers share one dedicated input pump. One owner retains
+  observation, Engine, foreign/foreground actuation, rendering, services,
+  Mouse Snap SPI and the existing recovery ledger/watcher.
+- Owner-built immutable whole snapshots cross a bounded ordered handoff.
+  Callbacks never wait for owner replies or locks; a publication/application
+  atomic fence refuses fresh stale-policy consumption while retaining stored
+  press verdicts, consumed pairs/repeats and Win-up mask obligations. One
+  retained retry generation covers refused policy publication and reversion.
+- Fixed safety slots preserve invalidation/clear obligations under saturation.
+  Distinct-invalidation overflow conservatively clears all origins/armed
+  windrag state, preserving swallowed Up/Cancel obligations; the owner forces
+  a fresh whole snapshot behind that clear. Controls invalidate retained
+  origins, and every successful installation reapplies the retained snapshot.
+- Bounded tagged intent batches preserve classifier queue/terminal guarantees;
+  monotonic atomic Esc sequences keep START/END ordering independent of owner
+  drain timing. Logs stay on owner, with bounded input timing diagnostics and
+  explicit limits on what they measure.
+- Creator-thread install/retry/unhook, readiness and bounded stop acknowledgement
+  are part of stage 1. Missing/unclean stop retains a process-level pump
+  reservation; no overlapping replacement pump or new recovery authority.
+- Offline delivery and physical-check limits:
+  [stage 1 record](changes/archive/windows-input-thread.md);
+  [thread contracts and stage 2 design](research/windows-port/owner-threading.md).
+
 ## Project Name
 
 - User decision 2026-10-11: the project is **OmniTiler**, reflecting KDE,

@@ -11,7 +11,7 @@
 - Source locators below are in `crates/tiler-windows/src/`, base `e506350`
   plus the current Windows follow-ups. No shared-core policy change proposed.
 
-## Current model
+## Model before stage 1
 
 | Placement | Responsibilities and source |
 | --- | --- |
@@ -21,6 +21,34 @@
 | Owner overlays | Border/underlay/drop-preview state and HWNDs; refresh before/after owner operations (`tiling_sys.rs:20932-20935,21245-21248`); create/paint/layered upload/place/destroy (`active_border_sys.rs:907-970,997-1046,1061-1353`). |
 | Owner service work | Tray HWND/notifications (`tiling_sys.rs:20052-20098,20361-20440`), first-run dialog on caller/owner thread (`tray_sys.rs:809-818`), settings polling (`tiling_sys.rs:19642`), synchronous trace append (`:1096-1105`), recovery-ledger/SPI lifecycle (`lifecycle.rs:800-859`). Mouse Snap prevention is a session SPI setting, not a mouse-event classifier (`mouse_snap.rs:28-58`). |
 | Separate processes, not owner worker threads | Crash watcher (`product_hide.rs:1578-1616`) and Settings UI child (`tray_sys.rs:436-444`, `settings_ui.rs:1409`). The watcher is process-loss recovery, not an input/render executor. |
+
+## Implemented stage 1, 2026-10-12
+
+- Complete A is delivered offline; see the
+  [delivery record](../../changes/archive/windows-input-thread.md) for gates
+  and pending physical checks. `input_pump.rs` now installs/pumps/unhooks both
+  product LL hooks and owns their synchronous classifiers. Owner observation,
+  Engine, actuation, all three overlays, tray/settings/trace, SPI and recovery
+  stay on the original owner. Proof commands retain their same-thread path.
+- `input_handoff.rs` carries whole immutable snapshots through an eight-item
+  ordered inbox, plus bounded sender retry and safety slots. Safety overflow
+  escalates to an all-origin windrag clear with paired-Up/Cancel retention;
+  owner forces current origins to republish behind clears even when unchanged.
+  No invalidation or suspend-clear obligation is explicitly dropped.
+- Callback-visible published/applied policy atomics close fresh classification
+  before changed policy transport, preserving stored press/mask obligations.
+  Refused publication retains one retry generation through a policy revert;
+  every apply acknowledges it. Same-process runs start above prior generations.
+- Initial and partial-failure installs reapply retained snapshots; controls
+  remove retained origins so gate refresh/retry cannot resurrect invalidation.
+  Single-outstanding bounded tagged batches carry intents back, while Esc
+  sequences are sampled directly through monotonic atomics at START/END.
+- Readiness, per-hook backoff, creator-side unhook retries and bounded stop
+  reporting are implemented. A process-level pump reservation survives missing
+  or unclean stop and dropped handles, preventing overlapping replacements.
+- Input timing summaries go to the owner writer. Native timestamp-to-callback
+  gap, message dispatch span and queue/transport age have separate exclusions;
+  none is end-to-end physical input latency. Stage 2 has not started.
 
 ## Options
 
@@ -143,11 +171,12 @@ If B-first is preferred, retain those residual input costs explicitly.
 - Physical checks follow [live Windows testing](../../live-windows-testing.md).
   This assessment supplies no new performance or lifecycle acceptance.
 
-## Selection needed
+## Selection and remaining acceptance
 
-- Choose target A, B or C and delivery order; recommendation C, A then B early.
-  Preserve the contracts above rather than changing consumption, visual follow,
-  fullscreen policy or recovery behavior as part of thread placement.
+- Target C, A then B early, was selected on 2026-10-12. Stage 1 is complete
+  offline; scoped physical input/profile comparisons remain pending. Preserve
+  the contracts above during stage 2 rather than changing consumption, visual
+  follow, fullscreen policy or recovery behavior as part of thread placement.
 - A latency threading selection does not select a Win+G/F11 containment remedy.
   New behavior tradeoffs discovered in implementation require their own outcome
   discriminator; do not resolve them by weakening pairing or game safety.
