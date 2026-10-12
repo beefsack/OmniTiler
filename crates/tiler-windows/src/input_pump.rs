@@ -35,6 +35,8 @@
 //! `shortcut-proof` command; the product run uses this pump.
 
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 
@@ -369,6 +371,30 @@ pub struct InputChannels {
     pub acked_stale: Arc<std::sync::atomic::AtomicU32>,
     /// Stop requested by the owner; pump unhooks on its own thread and acks.
     pub stop_flag: Arc<AtomicBool>,
+    /// Owner-intent wake: auto-reset kernel event signaled by the pump after
+    /// each accepted keyboard/mouse batch (fresh or pending-retry). Stays
+    /// pending between offer and the owner outer wait; coalesces bursts.
+    /// `None` only when creation failed (spawn refuses cleanly).
+    #[cfg(windows)]
+    pub intent_wake: Option<OwnedHandle>,
+}
+
+/// Create the owner-intent wake: auto-reset, initially non-signaled.
+#[cfg(windows)]
+fn create_intent_event() -> Result<OwnedHandle, String> {
+    let handle = unsafe {
+        windows_sys::Win32::System::Threading::CreateEventW(
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+        )
+    };
+    if handle.is_null() {
+        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        return Err(format!("error: intent wake creation failed: win32-{code}"));
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
 impl InputChannels {
@@ -384,6 +410,26 @@ impl InputChannels {
             applied_policy_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             acked_stale: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             stop_flag: Arc::new(AtomicBool::new(false)),
+            #[cfg(windows)]
+            intent_wake: create_intent_event().ok(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl InputChannels {
+    /// Borrow the owner-intent wake, if creation succeeded.
+    pub fn intent_wake(&self) -> Option<&OwnedHandle> {
+        self.intent_wake.as_ref()
+    }
+
+    /// Signal the owner-intent wake (best-effort, never waits, never logs).
+    /// No-op when creation failed; the owner keeps its periodic fallback.
+    pub fn notify_intent(&self) {
+        if let Some(handle) = self.intent_wake.as_ref() {
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
+            }
         }
     }
 }
@@ -746,6 +792,10 @@ mod native {
                 return Err("error: input pump already active".to_owned());
             }
             let channels = Arc::new(InputChannels::new());
+            if channels.intent_wake().is_none() {
+                crate::input_handoff::pump_slot_release();
+                return Err("error: intent wake creation failed".to_owned());
+            }
             let (fail_tx, fail_rx) = sync_channel(16);
             let signals = Arc::new(PumpSignals::new(fail_tx));
             let thread_channels = Arc::clone(&channels);
@@ -1223,7 +1273,7 @@ mod native {
             let trace = self.latest.as_ref().is_some_and(|snap| snap.trace);
             if let Some(pending) = self.pending_snap.take() {
                 match self.channels.snap_outbox.try_put(pending) {
-                    Ok(_) => {}
+                    Ok(_) => self.channels.notify_intent(),
                     Err(batch) => self.pending_snap = Some(batch),
                 }
             } else if self.channels.snap_outbox.try_occupied() != Some(true)
@@ -1245,6 +1295,7 @@ mod native {
                             if trace {
                                 self.diag.note_offer(age, Instant::now());
                             }
+                            self.channels.notify_intent();
                         }
                         Err(batch) => self.pending_snap = Some(batch),
                     }
@@ -1252,7 +1303,7 @@ mod native {
             }
             if let Some(pending) = self.pending_windrag.take() {
                 match self.channels.windrag_outbox.try_put(pending) {
-                    Ok(_) => {}
+                    Ok(_) => self.channels.notify_intent(),
                     Err(batch) => self.pending_windrag = Some(batch),
                 }
             } else if self.channels.windrag_outbox.try_occupied() != Some(true)
@@ -1268,6 +1319,7 @@ mod native {
                         Ok(_) => {
                             self.diag.windrag_offers += 1;
                             self.diag.windrag_last_offer = trace.then(Instant::now);
+                            self.channels.notify_intent();
                         }
                         Err(batch) => self.pending_windrag = Some(batch),
                     }
@@ -2253,6 +2305,221 @@ mod native {
             assert!(global_esc_clock().load() >= before.wrapping_add(2));
             let _ = SnapClassify::new(KeyboardConfig::disabled());
             let _ = global_windrag_esc_clock().load();
+        }
+
+        fn wake_signaled(channels: &InputChannels) -> bool {
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            let Some(handle) = channels.intent_wake() else {
+                panic!("intent wake missing");
+            };
+            let raw = handle.as_handle().as_raw_handle();
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
+                    == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            }
+        }
+
+        fn dummy_snap() -> crate::snapkey::QueuedSnapEvent {
+            use crate::snapkey::{QueuedIntent, QueuedSnapEvent, SnapEdge, SnapOp};
+            use tiler_core::directional::Direction;
+            QueuedSnapEvent::Intent(QueuedIntent {
+                op: SnapOp::Focus,
+                direction: Direction::Left,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: true,
+                announce: true,
+                tick: Instant::now(),
+            })
+        }
+
+        fn dummy_windrag() -> crate::win_mouse::WinDragEdge {
+            crate::win_mouse::WinDragEdge {
+                hwnd: 7,
+                kind: crate::win_mouse::WinDragKind::Down,
+                x: 1,
+                y: 2,
+                esc_seq: 0,
+                snapshot: None,
+            }
+        }
+
+        fn installed_core(
+            channels: &Arc<InputChannels>,
+            signals: &Arc<PumpSignals>,
+        ) -> PumpCore<super::super::FakeBackend> {
+            let backend = super::super::FakeBackend::new(vec![true], vec![true], true);
+            let mut core = PumpCore::new(
+                backend,
+                Arc::clone(channels),
+                Arc::clone(signals),
+                KeyboardConfig {
+                    takeover: true,
+                    allow_win_l: false,
+                },
+            );
+            assert!(!core.step());
+            assert!(core.keyboard_hook.is_some());
+            assert!(core.mouse_hook.is_some());
+            assert!(!wake_signaled(channels));
+            core
+        }
+
+        #[test]
+        fn intent_wake_created_nonsignaled() {
+            // Lifecycle happy path: fresh channels carry a non-signaled
+            // auto-reset wake (no spurious owner wake).
+            let (channels, _signals) = test_channels();
+            assert!(channels.intent_wake().is_some());
+            assert!(!wake_signaled(&channels));
+        }
+
+        #[test]
+        fn snap_offer_signals_single_publication() {
+            // Publication: one accepted snap batch leaves one pending wake
+            // for the owner wait; the first probe consumes it (auto-reset)
+            // and the second finds nothing.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied());
+            assert!(wake_signaled(&channels));
+            assert!(!wake_signaled(&channels));
+            channels.snap_outbox.take().expect("batch");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn snap_and_windrag_offers_share_one_pending_wake() {
+            // Coalescing: one turn offering both a snap and a windrag batch
+            // occupies both outboxes but leaves a single pending wake.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            crate::win_mouse::sys::test_push_edge(dummy_windrag());
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied());
+            assert!(channels.windrag_outbox.occupied());
+            assert!(wake_signaled(&channels));
+            assert!(!wake_signaled(&channels));
+            assert_eq!(channels.snap_outbox.take().expect("batch").items.len(), 1);
+            assert_eq!(
+                channels.windrag_outbox.take().expect("batch").items.len(),
+                1
+            );
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn take_republish_interleaving_delivers_next_wake() {
+            // Interleaving: offer/wake, consume wake, take batch, publish
+            // another batch, and the next wake plus data arrive. A notify
+            // landing after the take (owner already drained) is a harmless
+            // extra wake: the following drain finds no data and the signal
+            // does not stick.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            assert!(!core.step());
+            assert!(wake_signaled(&channels));
+            assert_eq!(channels.snap_outbox.take().expect("batch").items.len(), 1);
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            assert!(!core.step());
+            assert!(wake_signaled(&channels));
+            assert_eq!(channels.snap_outbox.take().expect("batch").items.len(), 1);
+            // Take-before-notify: extra wake with empty outboxes drains to
+            // nothing and leaves no stuck signal.
+            channels.notify_intent();
+            assert!(wake_signaled(&channels));
+            assert!(channels.snap_outbox.take().is_none());
+            assert!(!wake_signaled(&channels));
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn occupied_snap_waits_without_wake_and_retry_signals() {
+            // Occupied outboxes skip draining (items wait in the real queue,
+            // no wake); the drain after release wakes, as does a parked
+            // pending retry once space frees.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            channels
+                .snap_outbox
+                .put(TaggedBatch::new(0, vec![dummy_snap()]))
+                .expect("occupy");
+            assert!(crate::snapkey::sys::test_push_queued(dummy_snap()));
+            assert!(!core.step());
+            assert!(!wake_signaled(&channels));
+            let filler = channels.snap_outbox.take().expect("release");
+            assert_eq!(filler.items.len(), 1);
+            assert!(!core.step());
+            assert!(channels.snap_outbox.occupied());
+            assert!(wake_signaled(&channels));
+            let batch = channels.snap_outbox.take().expect("batch");
+            assert_eq!(batch.items.len(), 1);
+            // Thread-local parked batch: refused retry stays silent, the
+            // retry after release wakes.
+            core.pending_snap = Some(TaggedBatch::new(1, vec![dummy_snap()]));
+            channels
+                .snap_outbox
+                .put(TaggedBatch::new(1, vec![dummy_snap()]))
+                .expect("occupy");
+            assert!(!core.step());
+            assert!(core.pending_snap.is_some());
+            assert!(!wake_signaled(&channels));
+            channels.snap_outbox.take().expect("release");
+            assert!(!core.step());
+            assert!(core.pending_snap.is_none());
+            assert!(wake_signaled(&channels));
+            channels.snap_outbox.take().expect("batch");
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
+        }
+
+        #[test]
+        fn windrag_offer_signals_while_diag_only_step_does_not() {
+            // Mouse batches wake; a diagnostics-only turn never does.
+            crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+                takeover: true,
+                allow_win_l: false,
+            });
+            crate::win_mouse::sys::test_ensure_state();
+            let (channels, signals) = test_channels();
+            let mut core = installed_core(&channels, &signals);
+            crate::win_mouse::sys::test_push_edge(dummy_windrag());
+            assert!(!core.step());
+            assert!(channels.windrag_outbox.occupied());
+            assert!(wake_signaled(&channels));
+            channels.windrag_outbox.take().expect("batch");
+            // Diagnostics publish every turn; with empty queues nothing wakes.
+            assert!(!core.step());
+            assert!(!wake_signaled(&channels));
+            crate::snapkey::sys::test_clear_state();
+            crate::win_mouse::sys::test_clear_state();
         }
     }
 }

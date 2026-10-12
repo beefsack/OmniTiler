@@ -12,6 +12,7 @@
 //! only: no HWNDs, pids, process creation strings, SIDs, paths, or titles.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _, OwnedHandle};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -368,9 +369,12 @@ unsafe extern "system" fn winevent_proc(
     }
 }
 
-/// Pump loop-thread messages (delivering hook callbacks) then wait for more.
-/// One thread owns install, pump, and uninstall: no join, no hang.
-fn pump_wait(timeout_ms: u32) {
+/// Product outer wait: pump loop-thread messages (delivering hook callbacks)
+/// then wait for more plus the input-pump intent wake. A pending wake
+/// (offered before this wait) returns immediately; bursts coalesce to one
+/// wake; the timeout keeps the periodic fallback. One thread owns install,
+/// pump, and uninstall: no join, no hang.
+fn pump_wait_with_intent(timeout_ms: u32, wake: Option<&OwnedHandle>) {
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
@@ -383,7 +387,15 @@ fn pump_wait(timeout_ms: u32) {
         }
     }
     unsafe {
-        MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0);
+        match wake {
+            Some(handle) => {
+                let raw = handle.as_handle().as_raw_handle();
+                MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0);
+            }
+            None => {
+                MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0);
+            }
+        }
     }
     loop {
         let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
@@ -395,6 +407,13 @@ fn pump_wait(timeout_ms: u32) {
             DispatchMessageW(&msg);
         }
     }
+}
+
+/// Message-only wait for the focus-settle and proof paths: the same pump as
+/// [`pump_wait_with_intent`] with no intent wake, so those paths never
+/// consume or spin on the owner-intent event.
+fn pump_wait(timeout_ms: u32) {
+    pump_wait_with_intent(timeout_ms, None);
 }
 
 #[derive(Debug, Clone)]
@@ -20592,7 +20611,13 @@ fn run_tile_loop(
             if deadline.is_some_and(|end| Instant::now() >= end) {
                 return Ok(());
             }
-            pump_wait(TICK_POLL_MS);
+            pump_wait_with_intent(
+                TICK_POLL_MS,
+                state
+                    .input_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.channels.intent_wake()),
+            );
             // Trace-only owner-work clock starts here: `busy_us` excludes the
             // wait above plus callbacks delivered inside it. Scoped to this
             // iteration so every `continue`/error path below still samples.
@@ -33993,5 +34018,35 @@ mod windrag_press_focus_tests {
             }
             other => panic!("carried drop must plan, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod intent_wake_tests {
+    use super::pump_wait_with_intent;
+
+    fn wake_signaled(handle: &std::os::windows::io::OwnedHandle) -> bool {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        let raw = handle.as_handle().as_raw_handle();
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
+                == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+        }
+    }
+
+    #[test]
+    fn wait_consumes_pending_wake_and_keeps_fallback() {
+        // Race-safe: a signal offered before the wait stays pending and the
+        // wait consumes it; an unsignaled wait and the degraded `None` path
+        // both return via the retained periodic fallback (zero timeout here
+        // keeps the test deterministic with no desktop effects).
+        let channels = crate::input_pump::InputChannels::new();
+        let wake = channels.intent_wake().expect("wake created");
+        channels.notify_intent();
+        pump_wait_with_intent(0, Some(wake));
+        assert!(!wake_signaled(wake), "pending wake is consumed by the wait");
+        pump_wait_with_intent(0, Some(wake));
+        assert!(!wake_signaled(wake));
+        pump_wait_with_intent(0, None);
     }
 }

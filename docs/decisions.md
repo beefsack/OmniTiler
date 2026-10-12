@@ -109,11 +109,18 @@ platform API behavior.
   monotonic atomic Esc sequences keep START/END ordering independent of owner
   drain timing. Logs stay on owner, with bounded input timing diagnostics and
   explicit limits on what they measure.
+- Accepted keyboard/mouse intent batches signal one auto-reset owner event;
+  the outer owner wait watches it alongside messages, retaining the periodic
+  fallback. Diagnostics alone do not wake the owner. Focus-settle/proof waits
+  remain message-only: pending intents do not trigger recursive dispatch or
+  spin during foreground settlement. The event has shared owned-handle lifetime;
+  creation failure refuses input-pump startup before hook installation.
 - Creator-thread install/retry/unhook, readiness and bounded stop acknowledgement
   are part of stage 1. Missing/unclean stop retains a process-level pump
   reservation; no overlapping replacement pump or new recovery authority.
 - Offline delivery and physical-check limits:
   [stage 1 record](changes/archive/windows-input-thread.md);
+  [owner-wake correction](changes/archive/windows-input-owner-wake.md);
   [thread contracts and stage 2 design](research/windows-port/owner-threading.md).
 
 ## Project Name
