@@ -288,10 +288,15 @@ pub fn session_usable(session: &Session) -> bool {
     session.divergence().is_none() && !session.has_pending()
 }
 
-/// A committed session with no tiled members and no deferred exceptions holds
-/// no topology and must not consume a domain slot.
+/// A committed session with no tiled members, no deferred exceptions, and no
+/// live-homed D23 minimize slots holds no topology and must not consume a
+/// domain slot. A session holding only stored minimize slots is retained
+/// while a slot home domain still exists so a later native restore can
+/// return to the old slot; orphan-homed slots never retain.
 pub fn committed_session_is_empty(session: &Session) -> bool {
-    session.snapshot().windows.is_empty() && session.exception_count() == 0
+    session.snapshot().windows.is_empty()
+        && session.exception_count() == 0
+        && !session.has_live_minimized_slot()
 }
 
 /// Trace-only ordered tree description with axes and nested shares:
@@ -1061,6 +1066,8 @@ impl Engine {
         match &event.command {
             CoreCommand::Reconcile => {
                 // All-new IDs need fresh spatial adoption, not arbitrary ID-order convergence.
+                // Known minimized restore slots are not all-new: a native restore
+                // converges back to its stored old slot on the retained session.
                 let disjoint = !event.windows.is_empty()
                     && self.sessions.get(&event.domain_key).is_some_and(|session| {
                         if session.owner() != &event.owner
@@ -1072,6 +1079,7 @@ impl Engine {
                         !event.windows.iter().any(|w| {
                             snapshot.windows.iter().any(|link| link.window == w.window)
                                 || session.is_exception(&w.window)
+                                || session.minimized_slot(&w.window).is_some()
                         })
                     });
                 if disjoint {
@@ -5319,31 +5327,13 @@ mod tests {
         engine.sync_binding(&owner, &gen_id);
         let d = domain("out", "ws");
         let key = d.key();
-        let order = ["win-1", "win-2"]
-            .iter()
-            .map(|window| EngineWindow {
-                window: WindowId(window.to_string()),
-                output: OutputId("out".to_owned()),
-                workspace: WorkspaceId("ws".to_owned()),
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    w: 10,
-                    h: 10,
-                },
-                floating: false,
-                fit_excluded: false,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-                fixed_auto: false,
-                fixed_suppress: false,
-                hints: crate::size_hints::WindowSizeHints::none(),
-            })
-            .collect::<Vec<_>>();
-        let seeded = crate::seed::seed_session(&owner, &gen_id, 7, &d, &order).expect("seeds");
-        let pre = seeded.accepted_revision();
-        engine.store_committed(key.clone(), seeded, 0);
+        // Genuinely empty slot-free session: omitting tiled windows now
+        // stores D23 minimize slots and retains the session (covered by
+        // the MNZ-03 engine regression), so the retire path is set up
+        // with a session that never held members.
+        let session = new_session(&owner, &gen_id, d.clone());
+        let pre = session.accepted_revision();
+        engine.insert_raw(key.clone(), session, 0);
         let event = CoreEvent {
             owner: owner.clone(),
             generation: gen_id.clone(),
@@ -5365,8 +5355,7 @@ mod tests {
             CoreReply::Projection(plan) => {
                 assert!(plan.geometry.is_empty());
                 assert_eq!(
-                    plan.base_revision,
-                    pre + 1,
+                    plan.base_revision, pre,
                     "retire reports the converged revision"
                 );
             }

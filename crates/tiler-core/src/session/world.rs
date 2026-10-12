@@ -185,6 +185,22 @@ pub struct ExceptionRecord {
     pub floating_geometry: Option<Rect>,
 }
 
+/// D23 stored old slot for one minimized tiled window (REQ-MNZ-01/02/03).
+/// Session-runtime only, never persisted: the homing domain, the removed
+/// leaf id, and the full pre-minimize domain tree. Restore is valid only
+/// while the domain still exists, the homing matches the observation, the
+/// leaf id is unused, and removing the leaf from this stored tree yields
+/// exactly the current tree (any sibling close, restructure, or send
+/// invalidates it into fresh ordinary admission).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MinimizedSlot {
+    pub window: WindowId,
+    pub output: OutputId,
+    pub workspace: WorkspaceId,
+    pub leaf: NodeId,
+    pub tree: Node,
+}
+
 impl super::Session {
     /// Logical domains in deterministic construction order.
     #[must_use]
@@ -317,6 +333,11 @@ impl super::Session {
         for record in self.exceptions.values_mut() {
             if record.output == source.output && record.workspace == source.workspace {
                 record.output = target.output.clone();
+            }
+        }
+        for slot in self.minimized_slots.values_mut() {
+            if slot.output == source.output && slot.workspace == source.workspace {
+                slot.output = target.output.clone();
             }
         }
         if self.focused_domain.as_ref() == Some(source) {
@@ -498,6 +519,30 @@ impl super::Session {
     #[must_use]
     pub fn is_exception(&self, window: &WindowId) -> bool {
         self.exceptions.contains_key(window)
+    }
+
+    /// Stored D23 minimize restore slot for a window, if any.
+    #[must_use]
+    pub fn minimized_slot(&self, window: &WindowId) -> Option<&MinimizedSlot> {
+        self.minimized_slots.get(window)
+    }
+
+    /// Number of stored D23 minimize restore slots.
+    #[must_use]
+    pub fn minimized_count(&self) -> usize {
+        self.minimized_slots.len()
+    }
+
+    /// Whether any stored D23 minimize slot is still homed on a retained
+    /// domain. Slots homed on removed workspaces are dropped at convergence,
+    /// so only live-homed slots retain the session against empty retirement.
+    #[must_use]
+    pub fn has_live_minimized_slot(&self) -> bool {
+        self.minimized_slots.values().any(|slot| {
+            self.domains
+                .iter()
+                .any(|d| d.id == slot.output && d.workspace == slot.workspace)
+        })
     }
 
     /// Whether opt-in Q2 fixed-size float admission is enabled (D1-D8).
@@ -887,6 +932,7 @@ impl super::Session {
         let new_retained = self.retained_float_geometry.clone();
         let mut new_automatic = self.automatic_fixed.clone();
         let mut new_override = self.fixed_tile_override.clone();
+        let mut new_minimized = self.minimized_slots.clone();
         let mut removed: usize = 0;
         let mut admitted: usize = 0;
         let mut flags_adopted: usize = 0;
@@ -917,8 +963,26 @@ impl super::Session {
                     workspace: link.workspace.clone(),
                 };
                 let current = new_trees.get(&key).cloned().flatten();
+                // D23 MNZ-01/03: a missing tiled window releases its
+                // allocation through the existing collapse below and stores
+                // its old slot (pre-minimize tree plus leaf) for restore.
+                // A sole-window minimize empties the tree while the domain
+                // slot is retained; focus resolves to none below.
+                let stored = current.clone();
                 let next = super::remove_leaf_from_tree(self.policy(), current, &link.leaf);
                 new_trees.insert(key, next);
+                if let Some(tree) = stored {
+                    new_minimized.insert(
+                        (*id).clone(),
+                        MinimizedSlot {
+                            window: (*id).clone(),
+                            output: link.output.clone(),
+                            workspace: link.workspace.clone(),
+                            leaf: link.leaf.clone(),
+                            tree,
+                        },
+                    );
+                }
                 removed += 1;
             } else if new_exceptions.remove(id).is_some() {
                 removed += 1;
@@ -1089,6 +1153,11 @@ impl super::Session {
             new_automatic.insert((*id).clone());
             flags_adopted += 1;
         }
+        // D23: slots for windows that are present again (known tiled or
+        // exception) are stale fresh-admission history, never restore
+        // sources; drop them before the restore pass below.
+        new_minimized
+            .retain(|id, _| !new_windows.contains_key(id) && !new_exceptions.contains_key(id));
         // Normal admissions: brand-new tiled windows plus unfloats, in
         // window-id order through the existing normal-placement helper.
         // Successive admissions split the previous leaf; without eligible
@@ -1097,6 +1166,73 @@ impl super::Session {
         let mut existing_ids: BTreeSet<NodeId> = BTreeSet::new();
         for tree in new_trees.values().flatten() {
             super::collect_node_ids(tree, &mut existing_ids);
+        }
+        // D23 MNZ-02: native restore returns a minimized window to its
+        // stored old slot. The slot is valid only while the domain still
+        // exists, the observed homing matches, the leaf id is unused, the
+        // observation is purely tiled, and removing the leaf from the
+        // stored tree yields exactly the current tree. Anything else
+        // (sibling closed, tree restructured, window sent elsewhere,
+        // workspace removed) drops the slot and falls through to fresh
+        // ordinary admission below. Restore takes precedence over the
+        // fixed-size classifier: a tiled minimize always comes back tiled.
+        let mut restored: BTreeSet<WindowId> = BTreeSet::new();
+        for (id, entry) in &observed {
+            if entry.floating
+                || entry.fullscreen
+                || entry.maximized
+                || entry.sticky
+                || new_windows.contains_key(*id)
+                || new_exceptions.contains_key(*id)
+            {
+                continue;
+            }
+            let Some(slot) = new_minimized.get(*id).cloned() else {
+                continue;
+            };
+            let valid = entry.output == slot.output
+                && entry.workspace == slot.workspace
+                && self
+                    .domains
+                    .iter()
+                    .any(|d| d.id == slot.output && d.workspace == slot.workspace)
+                && !existing_ids.contains(&slot.leaf);
+            let valid = valid && {
+                let key = DomainKey {
+                    output: slot.output.clone(),
+                    workspace: slot.workspace.clone(),
+                };
+                let current = new_trees.get(&key).cloned().flatten();
+                let expected = super::remove_leaf_from_tree(
+                    self.policy(),
+                    Some(slot.tree.clone()),
+                    &slot.leaf,
+                );
+                current == expected
+            };
+            // The slot is consumed either way: a valid restore uses it,
+            // an invalid one must not linger for a later observation.
+            new_minimized.remove(*id);
+            if !valid {
+                continue;
+            }
+            let key = DomainKey {
+                output: slot.output.clone(),
+                workspace: slot.workspace.clone(),
+            };
+            new_trees.insert(key.clone(), Some(slot.tree.clone()));
+            new_windows.insert(
+                (*id).clone(),
+                WindowLink {
+                    window: (*id).clone(),
+                    leaf: slot.leaf.clone(),
+                    output: slot.output.clone(),
+                    workspace: slot.workspace.clone(),
+                },
+            );
+            existing_ids.insert(slot.leaf.clone());
+            restored.insert((*id).clone());
+            admitted += 1;
         }
         let (mut adomain, mut aleaf) = (self.focused_domain.clone(), self.focused_leaf.clone());
         for (id, entry) in &observed {
@@ -1162,9 +1298,14 @@ impl super::Session {
         }
         // Focus: observed tiled focus when valid, else retained focus when it
         // still resolves, else the existing MRU stack fallback, else None.
+        // D23 MNZ-02: a just-restored minimized window never takes focus
+        // from the observation; the host owns any restore focus, so the
+        // pre-restore MRU focus (or none) stays valid.
         let (mut next_focus_domain, mut next_focus_leaf): (Option<DomainKey>, Option<NodeId>) =
             (None, None);
-        if let Some(focused) = observed_focus
+        let observed_is_restored = observed_focus.is_some_and(|focused| restored.contains(focused));
+        if !observed_is_restored
+            && let Some(focused) = observed_focus
             && let Some(link) = new_windows.get(focused)
         {
             next_focus_domain = Some(DomainKey {
@@ -1198,14 +1339,22 @@ impl super::Session {
         }
         // Removed windows drop fixed-size bookkeeping so a reused id
         // classifies again (D3); overrides never cross restart (D7).
+        // Minimize slots homed on removed workspaces are dropped; slots
+        // for present windows were already pruned above.
         new_automatic.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
         new_override.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
+        new_minimized.retain(|_, slot| {
+            self.domains
+                .iter()
+                .any(|d| d.id == slot.output && d.workspace == slot.workspace)
+        });
         let changed = new_trees != self.trees
             || new_windows != self.windows
             || new_exceptions != self.exceptions
             || new_retained != self.retained_float_geometry
             || new_automatic != self.automatic_fixed
-            || new_override != self.fixed_tile_override;
+            || new_override != self.fixed_tile_override
+            || new_minimized != self.minimized_slots;
         let fingerprint = observation.observation.fingerprint;
         if changed {
             // Exhaustion guard before the advance: refuse without recording a
@@ -1230,6 +1379,7 @@ impl super::Session {
             self.retained_float_geometry = new_retained;
             self.automatic_fixed = new_automatic;
             self.fixed_tile_override = new_override;
+            self.minimized_slots = new_minimized;
             self.accepted_fingerprint = fingerprint;
         }
         self.focused_domain = next_focus_domain;

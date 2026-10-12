@@ -104,8 +104,9 @@ mod ops;
 mod world;
 
 pub use world::{
-    DomainKey, ExceptionBehavior, ExceptionFlags, ExceptionRecord, ObservationConvergence,
-    ObservedWindow, OutputDomain, SessionDomainView, SessionObservation, SessionSnapshot,
+    DomainKey, ExceptionBehavior, ExceptionFlags, ExceptionRecord, MinimizedSlot,
+    ObservationConvergence, ObservedWindow, OutputDomain, SessionDomainView, SessionObservation,
+    SessionSnapshot,
 };
 
 /// Lifecycle command against the accepted session.
@@ -639,6 +640,14 @@ pub struct Session {
     /// live client (D3). Cleared when the window leaves membership, so a
     /// removed/replaced native reference with a reused id classifies again.
     fixed_tile_override: BTreeSet<WindowId>,
+    /// D23 minimize restore slots (REQ-MNZ-01/02/03, option (a)): one stored
+    /// old slot per minimized tiled window, keyed by window id. Session-runtime
+    /// only: seeded empty, never persisted, dropped on owner restart with the
+    /// world map. A slot holds the pre-minimize domain tree plus the removed
+    /// leaf so restore can return the window to its old slot; any tree
+    /// restructure, sibling close/send, homing change, or workspace removal
+    /// invalidates it and restore falls back to fresh ordinary admission.
+    minimized_slots: BTreeMap<WindowId, MinimizedSlot>,
     // Only a transient canonical pair uses this. It restores target-local node
     // identities after pair-wide planning, whose snapshot requires uniqueness.
     canonical_pair_target_restore: BTreeMap<NodeId, NodeId>,
@@ -729,6 +738,7 @@ impl Session {
             maximized_focus_fence: false,
             automatic_fixed: BTreeSet::new(),
             fixed_tile_override: BTreeSet::new(),
+            minimized_slots: BTreeMap::new(),
             canonical_pair_target_restore: BTreeMap::new(),
             reconciler,
             pending_desired: None,
@@ -990,6 +1000,7 @@ impl Session {
         }
         let mut focused_leaf = source.focused_leaf.clone();
         let mut target_restore = BTreeMap::new();
+        let mut pair_minimized = source.minimized_slots.clone();
         if let Some(target) = target {
             let target_key = target.domains[0].key();
             let target_remap = pair_target_node_remap(source, target);
@@ -1007,6 +1018,15 @@ impl Session {
             }
             for (id, rect) in &target.retained_float_geometry {
                 retained.insert(id.clone(), *rect);
+            }
+            for (id, slot) in &target.minimized_slots {
+                if pair_minimized.contains_key(id) {
+                    return Err(CanonicalPairError::DuplicateState);
+                }
+                let mut slot = slot.clone();
+                remap_node_id(&mut slot.leaf, &target_remap);
+                remap_tree_node_ids(&mut slot.tree, &target_remap);
+                pair_minimized.insert(id.clone(), slot);
             }
             for (key, leaves) in &target.focus_stack {
                 let remapped = if key == &target_key {
@@ -1067,6 +1087,12 @@ impl Session {
             pair.fixed_tile_override
                 .extend(target.fixed_tile_override.iter().cloned());
         }
+        // D23 minimize slots ride the pair verbatim (source slots keep
+        // their node ids, target slots were remapped above). Stale slots
+        // for now-present windows are dropped so restores stay exact.
+        pair.minimized_slots = pair_minimized;
+        pair.minimized_slots
+            .retain(|id, _| !pair.windows.contains_key(id) && !pair.exceptions.contains_key(id));
         pair.canonical_pair_target_restore = target_restore;
         if !pair.validate_current_topology() {
             return Err(CanonicalPairError::DomainMismatch);
@@ -1221,6 +1247,30 @@ impl Session {
         source.windows = source_windows;
         source.exceptions = source_exceptions;
         source.retained_float_geometry = source_retained;
+        // D23 minimize slots partition by homing like exceptions; orphans
+        // stay with the source so the union round-trips. Target slots ride
+        // the same target node remaps as trees and links.
+        let mut source_minimized: BTreeMap<WindowId, MinimizedSlot> = BTreeMap::new();
+        let mut target_minimized: BTreeMap<WindowId, MinimizedSlot> = BTreeMap::new();
+        for (id, slot) in &self.minimized_slots {
+            if slot.output == pair_source_key.output && slot.workspace == pair_source_key.workspace
+            {
+                source_minimized.insert(id.clone(), slot.clone());
+            } else if slot.output == pair_target_key.output
+                && slot.workspace == pair_target_key.workspace
+            {
+                let mut slot = slot.clone();
+                remap_node_id(&mut slot.leaf, &moved_target_remap);
+                remap_node_id(&mut slot.leaf, &self.canonical_pair_target_restore);
+                remap_tree_node_ids(&mut slot.tree, &moved_target_remap);
+                remap_tree_node_ids(&mut slot.tree, &self.canonical_pair_target_restore);
+                target_minimized.insert(id.clone(), slot);
+            } else {
+                source_minimized.insert(id.clone(), slot.clone());
+            }
+        }
+        source.minimized_slots = source_minimized;
+        target.minimized_slots = target_minimized;
         target.trees = target_trees;
         target.windows = target_windows;
         target.exceptions = target_exceptions;
@@ -1298,7 +1348,8 @@ impl Session {
         }
         let target_empty = target.trees.get(&target_key).cloned().flatten().is_none()
             && target.windows.is_empty()
-            && target.exceptions.is_empty();
+            && target.exceptions.is_empty()
+            && target.minimized_slots.is_empty();
         if target_empty {
             Ok((source, None))
         } else {
