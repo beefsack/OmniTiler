@@ -19,6 +19,16 @@ trivially different start state.
 
 Minimal variants of [R-FLT-06](reference-outcomes/floating.md#r-flt-06-float-toggle-over-a-maximized-window), recorded with the [B9 delivery](../changes/archive/maximized-intentional-unfloat.md). These qualify the ordinary-float row without changing fullscreen or sticky policy.
 
+Windows delivered the same fixed-override, unconfirmed-clear and sticky-boundary
+readings offline 2026-10-12 ([record](../changes/archive/windows-maximized-intentional-unfloat.md));
+scripted native effects plus real Engine admission prove ordering and later-press
+recovery, not real native settlement or marker readback.
+
+| Windows discriminator | Minimal action sequence | Windows offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| B9 fullscreen transition | Float and maximize B; toggle float off; owned fullscreen metadata appears after clear with a non-covering fresh frame | Tentative 2026-10-12, pending user review: re-read metadata after clear and refuse fresh admission; retain float intent. Fresh captionless fullscreen also vetoes admission | Exact reference outcomes and native transition timing TBD; no game experiment inferred |
+| R-MAX-03 setting independence | Under each born-maximized setting, first admit maximized A on a floating workspace beside B; enable tiling; restore A | Reserved slot without clear under both settings; B keeps its share and restored A projects to the slot. Born R-MAX-06 setting affects only its separate admission lane | Ordinary Windows retile/restore physically user-accepted 2026-10-12 under conditions below; exact setting-qualified retile repetitions/reference outcomes TBD |
+
 | Variant | Action sequence | Ours KDE offline outcome / reading | References / native |
 | --- | --- | --- | --- |
 | Fixed explicit override | Admit fixed B as an automatic float; maximize B; toggle ordinary float off once; observe again | Clear maximize, observe clear, fresh-admit; successful explicit tile commits D3/D7 override, so B does not re-auto-float | Fixed admission floats per profile: COSMIC min-max `S(S-cos-min)`; Hyprland `suggestsFloat` min-max `S(S-hyp-float)`; bspwm fixed admission `S(S-bsp-admit)`; i3 fixed floats `S(S-i3-min)`; xmonad fixed/transient `S(S-xmo-float)`; sway `wants_floating` fixed `S(S-sway-max)`; qtile fixed-size rules `S(S-qti-float)`; awesome fixed implicit `S(S-awe-fixed-dynamic)`; niri `compute_open_floating` `S(S-nir-spc)`; karousel shapeability gate `S(S-kar-spc)`; PaperWM `add_filter` admits Normal non-transient only with rejects floating `S(S-pap-spc)` (fixed-size mapping TBD). Maximize legs per R-MAX-01 (bspwm/i3/xmonad/sway no maximize counterpart; PaperWM width-only `S(S-pap-widthmax)`; paneru host-only `S(S-pan-axfs)`). Toggle legs per R-FLT-06: COSMIC unmaximize-first `S(S-cos-flttoggle)`; Hyprland clear/re-apply retaining `S(S-hyp-float)`; qtile unfloat with maximize dropped `S(S-qti-float)` + `S(S-qti-fs)`; awesome explicit-only flip `S(S-awe-float)` + `S(S-awe-fs)`; i3/sway standard disable `S(S-i3-flt-toggle)` / `S(S-sway-float)`; niri plain move `S(S-nir-flttoggle)`; karousel state flip `S(S-kar-acts)` + `S(S-kar-float)`. Explicit-override commit has no reference counterpart (Ours-only); settled frames/focus TBD |
@@ -72,16 +82,65 @@ user review. [Offline evidence](../changes/archive/kde-shortcut-result-dialogs.m
 ### 2026-10-10 reference comparison discriminators
 
 Minimal variants of existing R-MAX-08 and R-WS-23. Selected intent is recorded
-below; shared-core/KDE delivery is offline, Windows wiring and native
-outcomes remain pending ([record](../changes/archive/reference-comparison-implementation.md)).
+below; shared-core/KDE delivery is offline. Windows G-06 is delivered offline
+2026-10-12 ([record](../changes/archive/windows-maximized-directional-navigation.md));
+G-37 Windows wiring and native outcomes remain pending
+([shared record](../changes/archive/reference-comparison-implementation.md)).
 
 | Variant | Minimal action sequence | Selected Ours KDE / Windows target | Reference / native evidence |
 | --- | --- | --- | --- |
-| Isolated maximized mover (G-06, R-MAX-08) | Prepare `H[A,B*,C]`, maximize B; move B right once without a preceding focus command | One unmaximize attempt, ordinary move only after observed clear in that invocation; otherwise narrow refusal/no structural move. KDE production-entry real-Engine fixture delivered offline; Windows pending | Existing R-MAX-08 traces COSMIC unmax-move and Hyprland refusal on still-focused maximized B; profiles whose focus step changed the mover do not establish this isolated variant. Other exact reference outcomes and both Ours native journeys TBD |
+| Isolated maximized mover (G-06, R-MAX-08) | Prepare `H[A,B*,C]`, maximize B; move B right once without a preceding focus command | One unmaximize attempt, ordinary move only after observed clear in that invocation; otherwise narrow refusal/no structural move. KDE production-entry real-Engine fixture and Windows guarded routing/pre-post-clear policy delivered offline | Existing R-MAX-08 traces COSMIC unmax-move and Hyprland refusal on still-focused maximized B; Windows ordinary clear-then-tiled-move physically user-accepted 2026-10-12 under conditions below; exact tree fixture/other references and KDE native TBD |
 | Source MRU differs from order (G-37, R-WS-23) | L has occupied WS1, occupied WS2, trailing E; visit WS1 then WS2, migrate active WS2 to R; repeat fresh under each source-refill value | Default `last-remaining-workspace` shows E; `most-recently-used-workspace` shows eligible WS1 from L history. KDE production-entry real-Engine fixtures delivered offline; Windows pending | Existing R-WS-23 gives reference policies, but exact history-qualified outcomes for this added variant are TBD; Ours native journeys TBD |
 | Source MRU fallback (G-37, R-WS-23) | Same source order; no eligible previous entry on L; migrate active WS2 to R with MRU selected; repeat with the remembered entry removed or migrated out of L's scope | Fall back to last remaining; do not recreate or follow an out-of-scope ID. Eligibility: pre-mutation previous stable ID must remain live in the source scoped ring excluding the migrated ID; surviving empty eligible, invalidated IDs excluded. Offline shared/KDE fixtures delivered | All exact reference outcomes and Ours native journeys TBD; global-history models are not substituted for the selected per-output model |
-| Unconfirmed maximize clear (G-06, R-MAX-08) | Maximize B; move right while native clear refuses or remains unobserved; later press after restore | One attempt per invocation; log refusal, keep structural state, no delayed move. Later press can move. KDE refusal fixtures delivered offline | Exact reference and native failure-timing outcomes TBD |
+| Unconfirmed maximize clear (G-06, R-MAX-08) | Maximize B; move right while native clear refuses or remains unobserved; later press after restore | One attempt per invocation; log refusal, keep structural state, no delayed move. Later press can move. KDE refusal fixtures and Windows pre/post-clear policy tests delivered offline | Exact reference and native failure-timing outcomes TBD |
 | Surviving-empty MRU (G-37, R-WS-23) | Visit empty WS1 then occupied WS2 on L; keep WS1 live, migrate WS2 right with MRU | WS1 qualifies while still in the remaining source ring, even empty. If lifecycle removes it, fall back to last remaining; never recreate. Shared/KDE selector fixtures delivered offline | Exact reference outcomes and native lifecycle timing TBD |
+
+### Windows floating candidate discriminator (2026-10-12)
+
+| Variant | Minimal action sequence | Windows offline outcome / decision | Reference / native |
+| --- | --- | --- | --- |
+| Observed/retained equal-axis tie (R-FLT-09) | Float F and G; maximize another float M; arrange G's top-left x equal to M's visible top-left x; focus F to their right and press Left, then repeat from their left with Right; reverse G/M stacking and repeat | Tentative 2026-10-12, pending user review: observed G precedes retained M within its ordinary layer, Left keeps G and Right keeps M. One shared axis-distance race across classes/layers, so nearer M still beats farther G; encounter order affects ties only ([record](../changes/archive/windows-floating-directional-navigation.md)) | Exact combined-order/stacking outcomes and Windows physical tie order TBD. Source tally: COSMIC 3d55cba0 and Hyprland ae50c4d6 use unified live-list races, no comparable observed/retained split; 7 other available profiles lack the exact maximize/float-origin leg. No reference majority for observed-first; native maximum geometry need not equal restore geometry |
+| Owned fullscreen transition (G-06, R-MAX-08) | Maximize B; enter project fullscreen; during a transitional non-covering frame press move Right while owned fullscreen metadata is present | Tentative 2026-10-12, pending user review: metadata vetoes maximize clear even if the fresh geometry is not a full cover; no clear or move. Pre-clear fullscreen precedence is pinned offline; actual transition routing is native TBD ([record](../changes/archive/windows-maximized-directional-navigation.md)) | Exact reference outcomes and Windows native transition timing TBD; no game experiment inferred |
+
+### Windows fullscreen-exit discriminators (2026-10-12)
+
+User rule: a window leaving fullscreen, including borderless, uses ordinary
+admission/tiling; D5 fixed-size and intentional-float identities remain applicable.
+No target writes while fullscreen. [Offline record](../changes/archive/windows-fullscreen-exit-acceptance.md).
+
+| Variant | Minimal action sequence | Windows offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| First fullscreen exit | Start owner with ordinary A already fullscreen; repeat fresh by opening fullscreen A after owner start; exit A through its app. Repeat with captionless full-monitor cover becoming a smaller borderless frame | Same first-exit current-hint admission route; non-fixed/unknown tiles, fixed automatically floats; commit consumes the exit mark | Owned Notepad startup variant physically user-accepted 2026-10-12 under conditions below: stop/relaunch while fullscreen then owned exit tiles. App-native/born/borderless/fixed/game/DPI/multi-output and exact reference outcomes TBD |
+| Retained fullscreen return | Tile A beside B; fullscreen A; observe again; exit A | Retains A's allocation; retained-only fullscreen excluded from writable subset; exit returns to same slot | Win+F11 owned tiled Notepad/exit slot return physically user-accepted 2026-10-12 under conditions below; focus-away/back/app-native and other exact reference/native variants TBD |
+| Owned veto recovery | Enter owned fullscreen on maximized A; observe non-covering transition with metadata; attempt move/unfloat; exit through owned toggle; attempt again | Pre/post-clear veto until metadata absent; owned exit verifies restore before removal, failed exit preserves retry; later clear/admission succeeds | Native metadata removal/transition timing and exact reference outcomes TBD |
+| Stale owned preimage | Enter owned fullscreen; owner restarts with properties still present; frame becomes normal without owned exit; maximize then move/unfloat | User 2026-10-12: automatic retirement on fresh proven exit. Nonzero owned chrome mask restored plus fullscreen false, exact lifetime/preimage revalidation and second live proof retire metadata only. Reconcile sweep requires no explicit command; move/unfloat then proceed. Mere non-coverage never retires | Retirement/native transition timing and exact references TBD; captionless zero-bit policy is decided in the next row |
+| Captionless owned preimage | Enter owned fullscreen on originally captionless A; return to a non-covering frame without owned exit; attempt maximized move/unfloat; exit with Win+F11 owned toggle; retry | User follow-up 2026-10-12: without a restoration witness, zero-bit metadata stays fail-closed and vetoes maximize clear; no automatic retirement. Owned toggle exit verifies restoration before metadata removal and remains the release path | Exact reference outcomes and captionless native restore/retry timing TBD; user watches for windows failing to tile during dogfood |
+| Re-fullscreen after retirement | Leave owned fullscreen by other means with restored chrome; reconcile retires stale marker; enter genuine owned fullscreen again; move/unfloat | Fresh owned preimage/fullscreen keeps the veto; no removal during re-fullscreen. Changed preimage or re-fullscreen between retirement probes also preserves metadata | Exact reference and native race outcomes TBD |
+
+- Owned fullscreen physical conditions, 2026-10-12: scoped single-output
+  Notepad/Paint, physical keyboard/mouse; base `e506350` plus directional,
+  retile/B9 and fullscreen-exit regression changes before automatic retirement.
+  Owned managed-slot and startup-exit tiling passed. Every Win+F11 also raised
+  the known Xbox full screen experience prompt; containment remains parked.
+  These results do not establish the later automatic-retirement behavior.
+
+### Windows user-accepted physical evidence (2026-10-12)
+
+- Conditions: scoped normal owner, single output, Notepad/Paint, physical
+  keyboard/mouse; base `e506350` plus combined directional, retile-overlay and
+  B9 Windows deliveries. These results qualify the linked Windows cells; exact
+  unreported fixtures/variants stay TBD.
+- Float-origin Win+arrow focus and Win+Shift+arrow half-snaps accepted; maximized
+  tiled Win+arrow keeps focus; maximized float clears then all four half-snaps;
+  maximized tiled clears then moves (user finds it sensible).
+- Floating workspace -> maximize -> retile retains maximize; unmaximize lands
+  in reserved slot. Both born-maximized values accepted with maximized Paint
+  launch. Radius 6 correct, live Settings Apply accepted (styling evidence only).
+- Observation only: tray workspace tiling toggles do not restore previous window
+  focus; may suit tray keyboard accessibility, no behavior change requested.
+- Game/DPI/multi-output/fixed-size and exact tie/sticky/failure/race legs pending.
+  Existing ordinary B9 native evidence remains distinct from physical item-11
+  acceptance.
 
 ### Triage discriminators 2026-10-11 (D01 selected 2026-10-12)
 
@@ -4917,7 +4976,7 @@ Legend:
 | V-FLOAT-SNAP | Float directional move: half/quarter/maximize/transfer vs pixel move vs refusal | User 2026-10-05 selects COSMIC; KDE first half-snap delivered, later stateful transitions and Windows pending `D-float-nav` |
 | V-FLOAT-REFLOW | Float-removal survivor reflow: equalize vs ratio-preserve | Provisional, to discuss |
 | V-STICKY-SCOPE | Sticky scope: all-workspaces floating-only vs monitor-desktop | `D-ref` recommends Hyprland/COSMIC; ours selects all-ws float-only; user 2026-10-07: Windows sticky survives restart with R-RST-01 (implementation pending; KDE already retains sticky) |
-| V-MAX-MODEL | Maximize: retained-slot overlay vs layout reflow vs no state | Selected: retained-slot overlay (`D-dec-ww` KDE + `D-dec-max`); [Q3](../decisions.md#window-state-float-sticky-maximize-fullscreen) includes born-maximized R-MAX-06, KDE [delivered offline](../changes/archive/kde-born-maximized-overlay.md) ([adapter](../../kwin/src/plan-adapter.ts)); user 2026-10-07: Q3 also covers R-MAX-03 (stays maximized over reserved slot), KDE [delivered offline](../changes/archive/kde-maximized-floating-retile-overlay.md); native journeys TBD; Windows parity (b) pending |
+| V-MAX-MODEL | Maximize: retained-slot overlay vs layout reflow vs no state | Selected: retained-slot overlay (`D-dec-ww` KDE + `D-dec-max`); [Q3](../decisions.md#window-state-float-sticky-maximize-fullscreen) includes R-MAX-03 (stays maximized over reserved slot), KDE [delivered offline](../changes/archive/kde-maximized-floating-retile-overlay.md) and Windows [delivered offline 2026-10-12](../changes/archive/windows-maximized-floating-retile-overlay.md). R-MAX-06 changed 2026-10-11 to default tile-on-launch with overlay alternative ([Windows setting](../changes/archive/windows-born-maximized-setting.md)); R-MAX-03 independent. Native journeys TBD |
 | V-FS-SLOT | In-place fullscreen: retain slot vs remove/reflow | Retained slot selected (`D-dec-ww`); born-fullscreen is a separate future row |
 | V-START-SEED | Startup non-fitting topology: centre-cut inference vs long-edge seed | Selected: sequential long-edge seed, no centre inference (startup hybrid User 2026-10-08) |
 | V-START-MIN | Minimum-infeasible writes: origin+minimum vs skip vs float | B6 selected on both platforms, no setting (user 2026-10-07); KDE [delivered offline](../changes/archive/kde-minimum-origin-placement.md), native journey TBD (`D-place`; [adapter](../../kwin/src/plan-adapter.ts) `overconstrainedEffective`) |

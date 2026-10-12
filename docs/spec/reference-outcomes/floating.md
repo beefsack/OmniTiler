@@ -304,7 +304,7 @@ Column legs below use separately stated column Givens with the same identities a
   has no maximize verb and no zoom AX read, so the toggle has no native
   subject). `S(S-pan-cmds)` + `S(S-pan-axfs)`; journey queued.
 - Then Ours KDE: B9 delivered offline 2026-10-09: one native maximize clear under the existing echo fence; fresh exact-ref observation must show clear before the ordinary fresh-admission dispatch and geometry writes. Carries the restored frame, not the maximized frame; refused/unobserved/raced clear logs a narrow refusal, preserves float intent and allows a later press. Real Planner ordinary/fixed fixtures and shared-core pre/post-clear regression pass; fixed unfloat commits the existing explicit tile override. [Record](../../changes/archive/maximized-intentional-unfloat.md); native frame/focus journey TBD.
-- Then Ours Windows: current code refuses `float-refused-maximize` (B9 implementation gap, not target); replace with unmaximize/observe/fresh-admit under [handoff item 15](../../backlog.md). `S(S-ours-overlay-unfloat)`; physical outcome TBD.
+- Then Ours Windows: B9 delivered offline 2026-10-12: ordinary maximized unfloat holds the exact lifetime, issues one nonactivating clear, observes clear and fresh-admits using the restored frame. Agent-observed native 2026-10-12, scoped Notepad/Paint, base `e506350` plus combined Windows changes: exact-owner float CLI on maximized Paint clears, observes clear before geometry, fresh-tiles with focus retained; both tile readbacks match and subsequent reconcile applies zero writes. Refused/unobserved/raced clear retains float intent and permits a later press, covered offline. Scripted seams pin lifetime/focus/domain/fullscreen races and fixed D3/D7 overrides; native failure/race, marker/restart and physical-feel/game/DPI/multi-output remain TBD. [Record](../../changes/archive/windows-maximized-intentional-unfloat.md).
 - Discriminating variants: [R-FLT-06 readings](../reference-outcomes.md#r-flt-06-readings); unsupported reference/native outcomes remain TBD.
 - Variant hook: V-FLOAT-GEO / V-MAX-MODEL.
 
@@ -348,7 +348,7 @@ Column legs below use separately stated column Givens with the same identities a
 - Then paneru: A; F is off-strip so never a strip peer for the West
   step. `S(S-pan-cmds)` + `S(S-pan-focus)` + `S(S-pan-flt)`.
 - Then Ours KDE: KDE/Windows: A; ordinary/sticky F has no tile leaf, hence never a target; unchanged, KDE regression `D(D-float-nav)` + `S(S-ours-flt-target)`
-- Then Ours Windows: KDE/Windows: A; ordinary/sticky F has no tile leaf, hence never a target; unchanged, KDE regression `D(D-float-nav)` + `S(S-ours-flt-target)`
+- Then Ours Windows: A; tile-origin Engine focus still excludes ordinary/sticky floats. Adapter candidate exclusion and existing Engine navigation regressions pass offline 2026-10-12, base `e506350`; item-10 ordinary physical focus/half-snaps user-accepted 2026-10-12, scoped normal owner, single-output Notepad/Paint, combined Windows deliveries. Exact tile-origin fixture native TBD; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-FOCUS.
 
 <a id="r-flt-08-backfill-float-origin-focus-miss-scrolling"></a>
@@ -390,7 +390,7 @@ Column legs below use separately stated column Givens with the same identities a
   only, and with no other float there is no target and no tile
   fallback. `S(S-pan-cmds)` + `S(S-pan-flt)`.
 - Then Ours KDE: F retained, no local float or adjacent output, tiles excluded; ordinary/sticky same; offline `D(D-float-nav)`, live TBD
-- Then Ours Windows: existing `focus-refused-floating` / `focus-refused-sticky`; parity pending; `S(S-ours-flt-subject)`
+- Then Ours Windows: F retained on local miss, ordinary/sticky same; no workspace cycling or cross-output actuation (item 5 gap). Offline 2026-10-12, base `e506350`: selection/candidate/Engine fixtures pass. Ordinary float-origin physical focus user-accepted 2026-10-12 under R-FLT-07's conditions; exact miss native fixture remains TBD; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-FOCUS.
 
 <a id="r-flt-09-backfill-float-origin-focus-toward-a-farther-float-scrolling"></a>
@@ -434,7 +434,7 @@ Column legs below use separately stated column Givens with the same identities a
   1950, positive-delta nearest); tiles excluded. `S(S-pan-cmds)` +
   `S(S-pan-flt)`.
 - Then Ours KDE: G by top-left x delta; ordinary/sticky share candidates, nearer B excluded; offline `D(D-float-nav)`, live TBD
-- Then Ours Windows: F retained, existing subject refusal; parity pending; `S(S-ours-flt-subject)`
+- Then Ours Windows: G selected by top-left x delta; sticky-first single race, nearer tiles excluded; visible non-home sticky and retained maximized float targets participate. Offline 2026-10-12, base `e506350`, axis/tie/candidate fixtures. Float-origin Win+arrow focus physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact tie/non-home sticky/game/DPI/multi-output TBD. Observed-before-retained tie order remains Tentative 2026-10-12, pending user review; no comparable reference majority; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-FOCUS.
 
 <a id="r-flt-10-backfill-semantic-float-move-scrolling"></a>
@@ -482,7 +482,7 @@ Column legs below use separately stated column Givens with the same identities a
   falls through to another display. `S(S-pan-move)` + `S(S-pan-swap)` +
   `S(S-pan-swap-peer)` + `S(S-pan-flt)`.
 - Then Ours KDE: right-half `(1280,0,1280,1440)`, remains floating/focused, sticky same; signal/reconcile retention regression `D(D-float-nav)`, live TBD
-- Then Ours Windows: existing `move-refused-floating` / `move-refused-sticky`; parity pending; `S(S-ours-flt-subject)`
+- Then Ours Windows: right-half `(1280,0,1280,1440)` in the zero-gap fixture; ordinary/sticky remain floating and focused. One guarded geometry write; incompatible declared sizes refuse, no client-clamp reassertion. Offline arithmetic/constraints/reconcile fixtures 2026-10-12, base `e506350`. Win+Shift+arrow half-snaps physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact zero-gap readback/sticky/fixed/clamp/preset/game/DPI/multi-output TBD; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-SNAP.
 
 <a id="r-flt-11-backfill-second-float-move-and-snap-state-scrolling"></a>
@@ -522,7 +522,7 @@ Column legs below use separately stated column Givens with the same identities a
   as R-FLT-10 with no snap state in the swap path. `S(S-pan-move)` +
   `S(S-pan-swap)` + `S(S-pan-swap-peer)` + `S(S-pan-flt)`.
 - Then Ours KDE: top half `(0,0,2560,720)`, remains floating/focused, sticky same; stateless subset tested `D(D-float-nav)`; stateful transitions deferred, live TBD
-- Then Ours Windows: implementation pending
+- Then Ours Windows: top half `(0,0,2560,720)` after Right then Up in the zero-gap fixture; repeats request the same half. Stateless arithmetic/reconcile covered offline 2026-10-12, base `e506350`. Item-10 half-snaps physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact repetition/zero-gap/sticky fixture TBD. Quarter/maximize/outward-transfer states deferred; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-SNAP.
 
 ## New scenarios (GWT; fixtures/actions/discriminators per the approved expansion record)

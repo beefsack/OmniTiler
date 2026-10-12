@@ -104,7 +104,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   fullscreen strip; the exit issues no focus write, so focus stays B.
   `S(S-pan-model)` + `S(S-pan-fsfocus)`.
 - Then Ours KDE: Retained slot overlay; focus may enter/leave; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof; physical focus sequence pending
-- Then Ours Windows: Retained slot overlay; focus may enter/leave; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof; physical focus sequence pending
+- Then Ours Windows: Retained slot overlay; focus may enter/leave; `D(D-dec-ww)` KDE + `D(D-fs)` Windows scoped proof. Physically user-accepted 2026-10-12, scoped single-output Notepad/Paint, base `e506350` plus directional/retile/B9 and fullscreen-exit regression changes before automatic retirement: Win+F11 owned fullscreen on tiled Notepad then exit returned it to its slot; stop/relaunch with Notepad still fullscreen then exit tiled it. Each Win+F11 also raised the known Xbox full screen experience prompt (containment parked). Exact focus-away/back/app-native, fixed/game/DPI/multi-output and later stale-retirement behavior TBD; [record](../../changes/archive/windows-fullscreen-exit-acceptance.md).
 - Variant hook: V-FS-SLOT.
 
 <a id="r-max-03-backfill-workspace-floating-toggle-over-a-slotless-maximum-scrolling"></a>
@@ -143,8 +143,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: fixture-inapplicable (no floating workspace mode; window
   management is per-window). `S(S-pan-cmds)`.
 - Then Ours KDE: Selected Q3 scope, delivered offline: floating skips slot seeding and preserves native maximize; toggling tiled reserves non-fixed A's tile slot without clearing or toggling maximize. Siblings receive their allocated shares; later native unmaximize lands A in its reserved slot. D6 exception: fixed automatic clients remain slotless floats on workspace enable, including under maximize; explicit user tile overrides retain Q3 slots ([R-SPC-12](special-windows.md#r-spc-12-enable-workspace-tiling-with-an-automatic-fixed-float)). Existing `fit_excluded` / `skip-maximized` overlay isolation keeps repeated maximize signals and synchronous geometry-write signals from fighting native state. `clearMaximizeAtAdmission` clears only non-fixed held born-fullscreen exits (D5 fixed exits untouched); R-MAX-03 and born-maximized R-MAX-06 share the overlay path ([adapter](../../../kwin/src/plan-adapter.ts), real Engine [fixtures](../../../kwin/tests/plan-adapter.test.ts), [record](../../changes/archive/kde-maximized-floating-retile-overlay.md)); [Q3 scope decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen). Native toggle/restore and session-restore no-loop acceptance remain user-owned, TBD.
-- Then Ours Windows: slotless membership preserves floating maximum and hide/reveal, then one clear and fresh tiled plan/native write/matched target readback proven with Notepad/Paint; slotted overlays skip re-clear [accepted correction](../../changes/archive/windows-workspace-tiling.md#r-max-03-accepted-correction); physical feel TBD
-- Variant hook: V-WS-TILING plus V-MAX-MODEL - selected Q3 reserved-slot overlay includes floating-to-tiled admission; KDE delivered offline, live TBD; Windows parity (b) pending.
+- Then Ours Windows: Q3 delivered offline 2026-10-12: floating membership remains slotless; retile reserves non-fixed A's slot without a maximize clear under either born-maximized setting. Real Engine fixtures cover sibling share, overlay write exclusion, exact reserved-slot restore projection, repeated observations and lifetime reuse. D6 automatic fixed clients remain slotless; explicit fixed tile overrides reuse their existing slot route. Physically user-accepted 2026-10-12, scoped normal owner, single output, Notepad/Paint, physical keyboard/mouse, base `e506350` plus combined directional/retile/B9 deliveries: floating workspace -> maximize -> retile keeps maximize; unmaximize lands in reserved slot. Tray previous-focus non-restoration is observation only, may suit keyboard accessibility; no change requested. Hidden retile, exact both-setting retile repetitions, session-restore no-loop, fixed/game/DPI/multi-output TBD. [Record](../../changes/archive/windows-maximized-floating-retile-overlay.md). Supersedes the historical [one-shot retile correction](../../changes/archive/windows-workspace-tiling.md#r-max-03-accepted-correction).
+- Variant hook: V-WS-TILING plus V-MAX-MODEL - selected Q3 reserved-slot overlay includes floating-to-tiled admission; Windows ordinary retile/restore physically accepted, remaining Windows and KDE native legs TBD.
 
 <a id="r-max-04-backfill-shortcut-maximize-native-restore-repress-scrolling"></a>
 ### R-MAX-04: shortcut maximize, native restore, repress
@@ -276,8 +276,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   owner-specific with admission/restore behavior TBD.
   `S(S-pan-cmds)` + `S(S-pan-axfs)`; journey queued.
 - Then Ours KDE: Selected Q3, delivered offline: first-seen maximized A on a tiled domain reserves a tile slot and retains native maximize as an overlay; no launch unmaximize. B receives its ordinary admission share; native restore of A lands in the reserved slot. Repeated maximized observations settle without native clear, toggle or geometry fighting. Existing `fit_excluded` / `skip-maximized` preserve the overlay ([adapter](../../../kwin/src/plan-adapter.ts), real Engine admission/restore [fixtures](../../../kwin/tests/plan-adapter.test.ts), [change](../../changes/archive/kde-born-maximized-overlay.md)); [Q3 decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen). R-MAX-03 now shares this path ([scope delivery](../../changes/archive/kde-maximized-floating-retile-overlay.md)); the first-domain origin gate is retired. Exact native launch/session-restore journey remains user-owned, TBD.
-- Then Ours Windows: Offline-delivered 2026-10-11: schema-v1 `core.born_maximized` defaults to `tile-on-launch` (one launch clear, then ordinary admission); `keep-maximized-overlay` retains native maximize over a reserved slot, with B allocated alongside and A restoring exactly into that slot. Repeated overlay observations take no native clear or geometry writes. Choice binds on first-seen tiled admission: live Apply leaves admitted clients/tree unchanged and affects subsequent admissions only. Fullscreen and later maximizes stay untouched; generic R-MAX-03 retile retains its existing one-shot clear under either value (item 11 gap). Item 13 now keeps fixed automatic births slotless under both choices; hydrated fixed-origin overrides use a reserved overlay across hint loss (tentative route, native TBD; [record](../../changes/archive/windows-fixed-size-admission.md)). [Born-maximized record](../../changes/archive/windows-born-maximized-setting.md); [decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen). Native launch/restore, focus, browser session restore and gaming journey TBD.
-- Variant hook: V-MAX-MODEL - retained-slot overlay for ordinary maximize and R-MAX-03; R-MAX-06 changed 2026-10-11 to default tile-on-launch with an overlay alternative. Windows setting delivered offline; KDE setting delivery and all native journeys tracked separately. Windows R-MAX-03 parity remains pending.
+- Then Ours Windows: Offline-delivered 2026-10-11: schema-v1 `core.born_maximized` defaults to `tile-on-launch` (one launch clear, then ordinary admission); `keep-maximized-overlay` retains native maximize over a reserved slot, with B allocated alongside and A restoring exactly into that slot. Repeated overlay observations take no native clear or geometry writes. Choice binds on first-seen tiled admission: live Apply leaves admitted clients/tree unchanged and affects subsequent admissions only. Fullscreen and later maximizes stay untouched; R-MAX-03 retile independently retains its overlay under both values (item 11 delivered offline 2026-10-12, [record](../../changes/archive/windows-maximized-floating-retile-overlay.md)). Item 13 now keeps fixed automatic births slotless under both choices; hydrated fixed-origin overrides use a reserved overlay across hint loss (tentative route, native TBD; [record](../../changes/archive/windows-fixed-size-admission.md)). Both values physically user-accepted 2026-10-12 with maximized Paint launch under R-MAX-03's conditions. Browser/session restore, detailed settings adoption, fixed/game/DPI/multi-output TBD. [Born-maximized record](../../changes/archive/windows-born-maximized-setting.md); [decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen).
+- Variant hook: V-MAX-MODEL - retained-slot overlay for ordinary maximize and R-MAX-03; R-MAX-06 changed 2026-10-11 to default tile-on-launch with an overlay alternative. Windows setting and R-MAX-03 parity delivered offline; KDE setting delivery and all native journeys tracked separately.
 
 <a id="r-max-07-backfill-captionless-full-monitor-cover-scrolling"></a>
 ### R-MAX-07: captionless full-monitor cover
@@ -419,15 +419,24 @@ rectangles where geometry is load-bearing.
   unchanged. [Production-entry real-Engine discriminator](../../../kwin/tests/g06-g37-entry-discrimination.test.ts),
   [race/refusal fixtures](../../../kwin/tests/plan-maximized-focus-move.test.ts).
   Native timing/visuals remain TBD.
-- Then Ours Windows: current-code gap against G-06 (User 2026-10-10): same shared-Engine journey as KDE (focus to A,
-  R2c wrap with B retained); the snap overlay refusal only fires for an
-  overlaid focused mover, so A moves normally. `S(S-ours-focus)` +
-  `S(S-ours-move)` + `S(S-ours-ovref)`.
+- Then Ours Windows: G-06 delivered offline 2026-10-12, base `e506350`:
+  focus keeps maximized B; move clears once under fresh lifetime/fullscreen/
+  focus/domain/suspension fences, reobserves, then uses the ordinary Engine move
+  or eligible float half-snap only after confirmed clear. Unconfirmed clear
+  refuses with no structural move or delayed retry; focus TO a maximum remains
+  valid. Pre/post-clear policy and retained candidate tests pass native MSVC
+  offline gates; [record](../../changes/archive/windows-maximized-directional-navigation.md).
+   Physically user-accepted 2026-10-12 under R-MAX-03's conditions: maximized
+   tiled Win+arrow keeps focus; maximized float Win+Shift+arrow clears then
+   snaps left/top/right/bottom; maximized tiled clears then moves (sensible to
+   user). Exact tree fixture, failure/race/held-repeat/preset/fixed/game/DPI/
+   multi-output and later fullscreen-transition safety hunk remain native TBD.
 - Selected target (REQ-MAX-08 NORMATIVE, G-06 User 2026-10-10): on both
   platforms focus left keeps maximized B (no-op); move right then unmaximizes
   B before the ordinary move. Leave the focus fence via unmaximize or Alt+Tab.
-  KDE/shared opt-in focus fence delivered offline; Windows implementation
-  pending and its current-code Then remains a gap. Native journey TBD.
+  KDE/shared opt-in focus fence and Windows local observed-flag guard delivered
+   offline. Windows ordinary physical journey accepted 2026-10-12 above;
+   remaining Windows variants and KDE native journey TBD.
   Existing maximized-subject pointer refusals remain unchanged.
 
 ### R-MAX-09: send a maximized/fullscreen window to another workspace

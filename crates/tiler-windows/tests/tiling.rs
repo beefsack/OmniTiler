@@ -2839,8 +2839,10 @@ fn r_max_03_floating_first_seen_max_defers_clear_then_tiles_on_retile() {
     // R-MAX-03 parity with KDE `plan-adapter.ts` floating admission: a
     // first-seen maximized window on a floating workspace keeps workspace
     // membership (hide/reveal) with no retained tile slot and no native
-    // clear; the first tiled admission restores once, refetches normal state,
-    // and receives an actual fresh Engine tile with an eligible write.
+    // clear; the first tiled admission reserves the overlay slot with no
+    // one-shot clear under either `core.born_maximized` value (only born
+    // R-MAX-06 reads that setting), the native restore lands in that slot,
+    // and the restored observation receives an actual fresh Engine tile.
     // Previously slotted overlays never re-clear; intentional floats ride on
     // untouched as Engine exceptions with no tile geometry.
     use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -2851,6 +2853,7 @@ fn r_max_03_floating_first_seen_max_defers_clear_then_tiles_on_retile() {
     use tiler_windows::tiling::{
         INNER_GAP, OUTER_GAP, build_reconcile_event_for_floating, fingerprint,
         should_admit_slotless_maximized, should_clear_maximize_at_admission,
+        should_clear_maximize_at_admission_with_mode,
     };
     use tiler_windows::workspace::{ManagedWorkspaces, WindowKey};
     use tiler_windows::workspace_owner::{
@@ -2907,12 +2910,19 @@ fn r_max_03_floating_first_seen_max_defers_clear_then_tiles_on_retile() {
         "slotless floating maximum takes no tiled write"
     );
 
-    // Toggle tiled: the unslotted maximum restores exactly once, with no
-    // automatic retry.
+    // Toggle tiled: the R-MAX-03 retile latch (bound at floating-first
+    // admission, both `core.born_maximized` values) reserves the overlay
+    // slot with no one-shot clear; only the unlatched born-tile lane still
+    // restores once, with no automatic retry.
     assert!(spaces.set_tiled("mon-1", &active, true));
-    assert!(should_clear_maximize_at_admission(
-        false, true, false, false, true
-    ));
+    assert!(
+        !should_clear_maximize_at_admission_with_mode(false, true, false, false, true, true),
+        "retile overlay never clears under either born value"
+    );
+    assert!(
+        should_clear_maximize_at_admission_with_mode(false, true, false, false, true, false),
+        "unlatched born-tile lane still restores once"
+    );
     assert!(
         !should_clear_maximize_at_admission(false, true, false, true, true),
         "one-shot clear never retries"
@@ -3677,4 +3687,517 @@ fn plan_focus_leaf(rig: &ResizeRig) -> tiler_core::directional::NodeId {
         .focus()
         .1
         .expect("focus leaf")
+}
+
+use tiler_core::size_hints::WindowSizeHints;
+use tiler_windows::tiling::{
+    FloatFocusCandidate, authorize_maximize_clear, float_half_snap_rect, half_snap_constraints_ok,
+    maximize_clear_refusal, maximized_focus_fence, postclear_fullscreen_now,
+    select_float_focus_target, sticky_toggle_refusal, unfloat_maximize_clear_eligible,
+};
+
+fn float_candidate(token: &str, x: i32, y: i32, sticky: bool) -> FloatFocusCandidate {
+    FloatFocusCandidate {
+        token: token.to_owned(),
+        x,
+        y,
+        sticky,
+    }
+}
+
+// R-FLT-07..09 float-origin focus: COSMIC top-left axis rule with the sticky
+// layer first (ported case-for-case from
+// `kwin/tests/plan-float-focus.test.ts` selection semantics).
+#[test]
+fn float_focus_right_selects_nearest_positive_x_delta() {
+    let candidates = vec![
+        float_candidate("win-g", 1800, 500, false),
+        float_candidate("win-far", 2000, 0, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "right", &candidates),
+        Some("win-g".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_ignores_perpendicular_distance() {
+    // Same x delta, wildly different y: the axis alone decides, first kept.
+    let candidates = vec![
+        float_candidate("win-a", 600, 0, false),
+        float_candidate("win-b", 600, 900, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "left", &candidates),
+        None,
+        "both deltas are positive for left"
+    );
+    let candidates = vec![
+        float_candidate("win-a", 400, 0, false),
+        float_candidate("win-b", 400, 900, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "left", &candidates),
+        Some("win-a".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_left_admits_equal_deltas_and_keeps_first_tie() {
+    // Equal (delta 0) beats -100: zero distance is nearer.
+    let candidates = vec![
+        float_candidate("win-g1", 900, 0, false),
+        float_candidate("win-g2", 1000, 900, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(1000, 500, "left", &candidates),
+        Some("win-g2".to_owned())
+    );
+    // Two equidistant negatives keep the first in encounter order.
+    let candidates = vec![
+        float_candidate("win-g1", 900, 0, false),
+        float_candidate("win-g2", 900, 900, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(1000, 500, "left", &candidates),
+        Some("win-g1".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_right_keeps_last_of_two_equidistant() {
+    let candidates = vec![
+        float_candidate("win-g1", 600, 0, false),
+        float_candidate("win-g2", 600, 900, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "right", &candidates),
+        Some("win-g2".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_down_requires_strictly_positive_deltas() {
+    let candidates = vec![float_candidate("win-g", 900, 500, false)];
+    assert_eq!(
+        select_float_focus_target(500, 500, "down", &candidates),
+        None
+    );
+    let candidates = vec![float_candidate("win-g", 900, 501, false)];
+    assert_eq!(
+        select_float_focus_target(500, 500, "down", &candidates),
+        Some("win-g".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_up_selects_above_on_y_axis_only() {
+    let candidates = vec![
+        float_candidate("win-near", 0, 400, false),
+        float_candidate("win-far", 500, 100, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "up", &candidates),
+        Some("win-near".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_sticky_layer_wins_left_ties_loses_right_ties() {
+    // One shared race in sticky-first encounter order: left keeps the first
+    // (sticky), right keeps the last (ordinary).
+    let left = vec![
+        float_candidate("win-ord", 900, 0, false),
+        float_candidate("win-sticky", 900, 900, true),
+    ];
+    assert_eq!(
+        select_float_focus_target(1000, 500, "left", &left),
+        Some("win-sticky".to_owned())
+    );
+    let right = vec![
+        float_candidate("win-ord", 600, 0, false),
+        float_candidate("win-sticky", 600, 900, true),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "right", &right),
+        Some("win-ord".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_nearer_ordinary_beats_farther_sticky() {
+    let candidates = vec![
+        float_candidate("win-sticky", 900, 900, true),
+        float_candidate("win-ord", 600, 0, false),
+    ];
+    assert_eq!(
+        select_float_focus_target(500, 500, "right", &candidates),
+        Some("win-ord".to_owned())
+    );
+}
+
+#[test]
+fn float_focus_miss_and_invalid_direction_select_nothing() {
+    assert_eq!(
+        select_float_focus_target(500, 500, "right", &[]),
+        None,
+        "lone float retains"
+    );
+    let candidates = vec![float_candidate("win-g", 700, 500, false)];
+    assert_eq!(
+        select_float_focus_target(500, 500, "diagonal", &candidates),
+        None
+    );
+    assert_eq!(select_float_focus_target(500, 500, "", &candidates), None);
+}
+
+// R-FLT-10..11 half-snaps: COSMIC `relative_geometry` arithmetic (ported
+// case-for-case from `kwin/tests/plan-float-move.test.ts`).
+#[test]
+fn float_half_snap_zero_gap_covers_all_four_directions() {
+    let bounds = rect(0, 0, 2560, 1440);
+    assert_eq!(
+        float_half_snap_rect(bounds, 0, "right"),
+        Some(rect(1280, 0, 1280, 1440))
+    );
+    assert_eq!(
+        float_half_snap_rect(bounds, 0, "left"),
+        Some(rect(0, 0, 1280, 1440))
+    );
+    assert_eq!(
+        float_half_snap_rect(bounds, 0, "up"),
+        Some(rect(0, 0, 2560, 720))
+    );
+    assert_eq!(
+        float_half_snap_rect(bounds, 0, "down"),
+        Some(rect(0, 720, 2560, 720))
+    );
+}
+
+#[test]
+fn float_half_snap_odd_sizes_use_trunc_division() {
+    // W=1001: halfW=500; inner=7: halfInner=3, threeHalf=10.
+    let bounds = rect(0, 0, 1001, 501);
+    assert_eq!(
+        float_half_snap_rect(bounds, 7, "right"),
+        Some(rect(503, 7, 490, 487))
+    );
+    assert_eq!(
+        float_half_snap_rect(bounds, 7, "left"),
+        Some(rect(7, 7, 490, 487))
+    );
+    assert_eq!(
+        float_half_snap_rect(rect(10, 20, 1001, 501), 7, "down"),
+        Some(rect(17, 273, 987, 240))
+    );
+}
+
+#[test]
+fn float_half_snap_ignores_outer_gap_and_offsets_by_global_origin() {
+    assert_eq!(
+        float_half_snap_rect(rect(800, 100, 800, 600), 4, "right"),
+        Some(rect(1202, 104, 394, 592))
+    );
+}
+
+#[test]
+fn float_half_snap_repeats_are_stateless() {
+    // Every repeated arrow requests the same half again: no snap state.
+    let bounds = rect(0, 0, 2560, 1440);
+    let first = float_half_snap_rect(bounds, 0, "right");
+    assert_eq!(float_half_snap_rect(bounds, 0, "right"), first);
+    assert_eq!(
+        float_half_snap_rect(bounds, 0, "left"),
+        Some(rect(0, 0, 1280, 1440))
+    );
+}
+
+#[test]
+fn float_half_snap_rejects_invalid_input() {
+    // Tiny work area with a large inner gap goes nonpositive.
+    assert_eq!(float_half_snap_rect(rect(0, 0, 10, 10), 8, "right"), None);
+    assert_eq!(float_half_snap_rect(rect(0, 0, 0, 600), 0, "left"), None);
+    assert_eq!(
+        float_half_snap_rect(rect(0, 0, 2560, 1440), 65, "right"),
+        None,
+        "inner gap above 64 refused"
+    );
+    assert_eq!(
+        float_half_snap_rect(rect(0, 0, 2560, 1440), 0, "diagonal"),
+        None
+    );
+}
+
+// G-06 maximized directional operations (REQ-MAX-08): focus fenced while the
+// focused window is maximized; move proceeds only after an observed clear
+// with the same reference, focus and domain.
+#[test]
+fn maximized_focus_fence_covers_tiles_with_fullscreen_exempt() {
+    assert!(maximized_focus_fence(true, false));
+    assert!(!maximized_focus_fence(true, true));
+    assert!(!maximized_focus_fence(false, false));
+    assert!(!maximized_focus_fence(false, true));
+}
+
+fn size_hints(
+    min_w: Option<i32>,
+    min_h: Option<i32>,
+    max_w: Option<i32>,
+    max_h: Option<i32>,
+) -> WindowSizeHints {
+    WindowSizeHints {
+        min_w,
+        min_h,
+        max_w,
+        max_h,
+    }
+}
+
+// G-06 pre-clear authorization: the exact subject must already be revalidated
+// and home/view stability, suspension and elevation must all hold just before
+// the single native clear. Any failure authorizes no clear and no move.
+#[test]
+fn maximize_clear_authorizer_pins_pre_write_gates() {
+    assert_eq!(
+        authorize_maximize_clear(false, true, true, false, false),
+        None,
+        "authorized: clear may issue"
+    );
+    // Fresh fullscreen precedence wins first: a subject that transitioned
+    // after the tick snapshot is never cleared, never moved.
+    assert_eq!(
+        authorize_maximize_clear(true, true, true, false, false),
+        Some("fullscreen-raced")
+    );
+    assert_eq!(
+        authorize_maximize_clear(true, false, false, false, false),
+        Some("fullscreen-raced"),
+        "fullscreen dominates every other race"
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, false, true, false, false),
+        Some("domain-raced")
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, true, false, false, false),
+        Some("focus-raced")
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, true, true, true, false),
+        Some("suspended")
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, true, true, false, true),
+        Some("elevated-foreground")
+    );
+    // Priority: fullscreen, domain, focus, suspension, elevation.
+    assert_eq!(
+        authorize_maximize_clear(false, false, false, true, true),
+        Some("domain-raced")
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, true, false, true, true),
+        Some("focus-raced")
+    );
+    assert_eq!(
+        authorize_maximize_clear(false, true, true, true, true),
+        Some("suspended")
+    );
+}
+
+// R-FLT-10..11 declared-size gate: an incompatible half never fights the
+// client. Per-axis-zero bounds ride unset, so only genuinely constrained axes
+// decide (G-05 consistency).
+#[test]
+fn half_snap_constraints_pin_min_max_and_per_axis_zero() {
+    let half = rect(1202, 104, 394, 592);
+    assert!(half_snap_constraints_ok(half, WindowSizeHints::none()));
+    // Minimums refuse per axis; exact fits pass.
+    assert!(!half_snap_constraints_ok(
+        half,
+        size_hints(Some(400), None, None, None)
+    ));
+    assert!(half_snap_constraints_ok(
+        half,
+        size_hints(Some(394), None, None, None)
+    ));
+    assert!(!half_snap_constraints_ok(
+        half,
+        size_hints(None, Some(600), None, None)
+    ));
+    assert!(half_snap_constraints_ok(
+        half,
+        size_hints(None, Some(592), None, None)
+    ));
+    // Maximums refuse per axis; exact fits pass.
+    assert!(!half_snap_constraints_ok(
+        half,
+        size_hints(None, None, Some(300), None)
+    ));
+    assert!(half_snap_constraints_ok(
+        half,
+        size_hints(None, None, Some(394), None)
+    ));
+    assert!(!half_snap_constraints_ok(
+        half,
+        size_hints(None, None, None, Some(500))
+    ));
+    assert!(half_snap_constraints_ok(
+        half,
+        size_hints(None, None, None, Some(592))
+    ));
+    // Per-axis-zero is unset: only the genuinely fixed nonzero axis decides.
+    assert!(
+        !half_snap_constraints_ok(half, size_hints(Some(640), Some(0), None, None)),
+        "nonzero width axis still refuses"
+    );
+    assert!(
+        half_snap_constraints_ok(half, size_hints(Some(0), Some(0), Some(0), Some(0))),
+        "all-zero hints constrain nothing"
+    );
+    assert!(
+        half_snap_constraints_ok(half, size_hints(None, None, Some(0), Some(600))),
+        "zero max width is unset; tall max height passes"
+    );
+    assert!(
+        !half_snap_constraints_ok(half, size_hints(None, None, Some(0), Some(400))),
+        "nonzero max height still refuses"
+    );
+}
+
+#[test]
+fn maximize_clear_refusal_pins_the_post_clear_decision_table() {
+    // Undispatched clears never proceed, even with matching observation.
+    assert_eq!(
+        maximize_clear_refusal("threw", true, true, true, true, false),
+        Some("native-write")
+    );
+    assert_eq!(
+        maximize_clear_refusal("denied", true, true, true, true, false),
+        Some("native-write")
+    );
+    // Async dispatched is not observed completion: still-maximized refuses.
+    assert_eq!(
+        maximize_clear_refusal("dispatched", false, true, true, true, false),
+        Some("still-maximized")
+    );
+    // Observed clear with the same reference, focus and domain proceeds.
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, true, false),
+        None
+    );
+    assert_eq!(
+        maximize_clear_refusal("dispatched", true, true, true, true, false),
+        None,
+        "late async completion observed before routing still proceeds"
+    );
+    // Each race refuses narrowly with no structural move.
+    assert_eq!(
+        maximize_clear_refusal("restored", true, false, true, true, false),
+        Some("identity-raced")
+    );
+    assert_eq!(
+        maximize_clear_refusal("restored", false, true, true, true, false),
+        Some("still-maximized")
+    );
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, false, true, false),
+        Some("domain-raced")
+    );
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, true, true),
+        Some("fullscreen-raced")
+    );
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, false, false),
+        Some("focus-raced")
+    );
+}
+
+#[test]
+fn postclear_fullscreen_derivation_refuses_owned_non_covering() {
+    // Directional/B9 post-clear gap shape: an owned transition whose frame
+    // never covered a monitor is eligible-observed (no captionless flag) with
+    // no retained fullscreen flag, yet metadata is present. The pre-fix
+    // directional policy derived retained-flag-only and would proceed here.
+    assert!(postclear_fullscreen_now(false, false, true));
+    assert!(postclear_fullscreen_now(true, false, false));
+    assert!(postclear_fullscreen_now(false, true, false));
+    assert!(!postclear_fullscreen_now(false, false, false));
+    let old_policy = false;
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, true, old_policy),
+        None,
+        "retained-flag-only proceeds on the owned non-covering shape: unsafe"
+    );
+    let now = postclear_fullscreen_now(false, false, true);
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, true, now),
+        Some("fullscreen-raced"),
+        "shared derivation refuses the owned non-covering shape"
+    );
+    let clear = postclear_fullscreen_now(false, false, false);
+    assert_eq!(
+        maximize_clear_refusal("restored", true, true, true, true, clear),
+        None,
+        "metadata absence with a cleared frame allows routing"
+    );
+}
+
+#[test]
+fn unfloat_clear_lane_takes_only_ordinary_maximized_floats() {
+    // B9 (R-FLT-06, items 11+15): only an ordinary maximized float takes the
+    // one-shot nonactivating clear plus observed-clear route before fresh
+    // Engine admission. Portable pin of the lane definition; the native
+    // clear/observe/settle legs stay Windows-owned.
+    assert!(unfloat_maximize_clear_eligible(false, true, true, false));
+    assert!(!unfloat_maximize_clear_eligible(true, true, true, false));
+    assert!(!unfloat_maximize_clear_eligible(true, false, true, false));
+    assert!(!unfloat_maximize_clear_eligible(false, true, true, true));
+    assert!(!unfloat_maximize_clear_eligible(false, true, false, false));
+    assert!(!unfloat_maximize_clear_eligible(false, false, true, false));
+    assert!(!unfloat_maximize_clear_eligible(false, false, false, false));
+}
+
+#[test]
+fn unfloat_clear_lane_matches_snapshot_vocabulary() {
+    // The lane it replaces still reports through the existing snapshot
+    // vocabulary: fullscreen wins, sticky keeps its own refusal, and only
+    // the ordinary maximized float reports the B9 entry refusal.
+    assert_eq!(
+        float_toggle_refusal(false, true),
+        Some("float-refused-maximize")
+    );
+    assert!(unfloat_maximize_clear_eligible(false, true, true, false));
+    assert_eq!(
+        float_toggle_refusal(true, true),
+        Some("float-refused-fullscreen")
+    );
+    assert!(!unfloat_maximize_clear_eligible(true, true, true, false));
+    assert_eq!(
+        sticky_toggle_refusal(false, true),
+        Some("sticky-refused-maximize")
+    );
+    assert!(!unfloat_maximize_clear_eligible(false, true, true, true));
+    assert_eq!(float_toggle_refusal(false, false), None);
+    assert!(!unfloat_maximize_clear_eligible(false, false, true, false));
+}
+
+#[test]
+fn retile_overlay_stays_independent_of_born_setting() {
+    // R-MAX-03 (item 11): the floating-to-tiled overlay keeps no one-shot
+    // clear under either `core.born_maximized` value; only born R-MAX-06
+    // reads that setting. Portable pin of the pure gate both lanes share:
+    // the latched (overlay) form never clears, the unlatched (tile) form
+    // clears exactly once for a slotless maximized tiled admission.
+    use tiler_windows::tiling::should_clear_maximize_at_admission_with_mode as gate;
+    for keep in [false, true] {
+        assert!(!gate(false, true, true, false, true, keep));
+        assert!(!gate(true, true, false, false, true, keep));
+        assert!(!gate(false, true, false, true, true, keep));
+        assert!(!gate(false, true, false, false, false, keep));
+        assert!(!gate(false, false, false, false, true, keep));
+    }
+    assert!(gate(false, true, false, false, true, false));
+    assert!(!gate(false, true, false, false, true, true));
 }

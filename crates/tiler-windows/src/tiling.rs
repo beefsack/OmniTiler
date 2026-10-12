@@ -488,6 +488,11 @@ pub const fn overlay_refusal(fullscreen: bool, maximized: bool) -> Option<&'stat
 /// that the user maximized or fullscreened natively never unfloats until it
 /// reads normal again. Fullscreen wins when both hold. `None` when the route
 /// may proceed.
+///
+/// B9 exception (R-FLT-06): an ordinary maximized float being explicitly
+/// tiled takes the adapter one-shot nonactivating clear plus observed-clear
+/// route (see [`unfloat_maximize_clear_eligible`]) instead of ending here;
+/// this snapshot vocabulary still reports that lane.
 #[must_use]
 pub const fn float_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<&'static str> {
     if fullscreen {
@@ -513,6 +518,26 @@ pub const fn sticky_toggle_refusal(fullscreen: bool, maximized: bool) -> Option<
     } else {
         None
     }
+}
+
+/// B9 unfloat lane definition (R-FLT-06, COSMIC unmaximize-then-fresh-admit
+/// parity): only an ordinary currently-floating target being explicitly tiled
+/// takes the one-shot nonactivating clear plus observed-clear route before
+/// fresh Engine admission. Fullscreen floats, sticky origins, tiled targets,
+/// and non-maximized floats keep their existing refusal or admission paths;
+/// the snapshot vocabulary ([`float_toggle_refusal`] /
+/// [`sticky_toggle_refusal`]) still reports those. `is_float` is the Engine
+/// exception state at dispatch. Production selects the lane off that live
+/// vocabulary plus Engine/sticky state; this pure predicate pins the lane
+/// definition for offline regressions without native windows.
+#[must_use]
+pub const fn unfloat_maximize_clear_eligible(
+    fullscreen: bool,
+    maximized: bool,
+    is_float: bool,
+    is_sticky_origin: bool,
+) -> bool {
+    is_float && !is_sticky_origin && maximized && !fullscreen
 }
 
 /// Orientation-toggle refusal for an overlay target (item 4, R-LAY-01): a
@@ -545,6 +570,312 @@ pub const fn sticky_directional_refusal(is_sticky: bool, is_move: bool) -> Optio
     } else {
         Some("focus-refused-sticky")
     }
+}
+
+/// One same-domain floating/sticky candidate for float-origin directional
+/// focus (R-FLT-07..11, KDE `selectFloatFocusTarget` parity). `x`/`y` are the
+/// observed visible top-left coordinates; `sticky` selects the sticky layer.
+/// Callers pass encounter order with the subject already excluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloatFocusCandidate {
+    pub token: String,
+    pub x: i32,
+    pub y: i32,
+    pub sticky: bool,
+}
+
+/// Float-origin directional focus target (R-FLT-07..11, KDE
+/// `selectFloatFocusTarget` parity): strictly same-domain floating/sticky
+/// candidates compared by top-left coordinate on the requested axis only,
+/// ignoring the perpendicular coordinate. Candidate order is the sticky layer
+/// first in encounter order, then ordinary floats in encounter order; one
+/// shared distance race, so a nearer ordinary entry can win over a farther
+/// sticky one. Up/Left admit non-positive deltas (equal included) and keep
+/// the first nearest tie; Down/Right require strictly positive deltas and keep
+/// the last nearest tie. Tiles are never candidates (callers exclude them).
+/// Returns the winning token, or `None` for a miss, an unknown subject (the
+/// caller gates subject eligibility), or an invalid direction.
+#[must_use]
+pub fn select_float_focus_target(
+    subject_x: i32,
+    subject_y: i32,
+    direction: &str,
+    candidates: &[FloatFocusCandidate],
+) -> Option<String> {
+    let vertical = match direction {
+        "up" | "down" => true,
+        "left" | "right" => false,
+        _ => return None,
+    };
+    let negative = matches!(direction, "up" | "left");
+    let mut best: Option<&FloatFocusCandidate> = None;
+    let mut best_dist: i64 = 0;
+    // Sticky layer first in encounter order, then ordinary floats in encounter
+    // order, through one shared race.
+    for entry in candidates
+        .iter()
+        .filter(|c| c.sticky)
+        .chain(candidates.iter().filter(|c| !c.sticky))
+    {
+        let delta: i64 = if vertical {
+            i64::from(entry.y) - i64::from(subject_y)
+        } else {
+            i64::from(entry.x) - i64::from(subject_x)
+        };
+        if negative {
+            if delta > 0 {
+                continue;
+            }
+        } else if delta <= 0 {
+            continue;
+        }
+        let dist = delta.abs();
+        if best.is_none() || dist < best_dist {
+            best = Some(entry);
+            best_dist = dist;
+        } else if dist == best_dist && !negative {
+            // Down/Right keep the last nearest tie; Up/Left keep the first.
+            best = Some(entry);
+        }
+    }
+    best.map(|b| b.token.clone())
+}
+
+/// COSMIC float half-snap rectangle (stateless first step, R-FLT-10..11, KDE
+/// `floatHalfSnapRect` parity): left/top origin `loc + inner`; right
+/// `x = loc.x + trunc(W/2) + trunc(inner/2)`; widths
+/// `trunc(W/2) - trunc(3*inner/2)`; height `H - 2*inner` (up/down analogous).
+/// `bounds` is the current monitor work area in global coordinates,
+/// `inner_gap` the configured inner gap (outer gap ignored, matching COSMIC's
+/// `relative_geometry`). Every repeated arrow requests the same half again;
+/// quarter/maximize/outward transfer states stay deferred (callers refuse
+/// them, never infer them here). `None` for invalid/nonpositive input or
+/// output rectangles.
+#[must_use]
+pub fn float_half_snap_rect(bounds: Rect, inner_gap: i32, direction: &str) -> Option<Rect> {
+    if !target_rect_valid(bounds) {
+        return None;
+    }
+    if !(0..=64).contains(&inner_gap) {
+        return None;
+    }
+    match direction {
+        "left" | "right" | "up" | "down" => {}
+        _ => return None,
+    }
+    let inner = i64::from(inner_gap);
+    let (bx, by, w, h) = (
+        i64::from(bounds.x),
+        i64::from(bounds.y),
+        i64::from(bounds.w),
+        i64::from(bounds.h),
+    );
+    let half_w = w / 2;
+    let half_h = h / 2;
+    let half_inner = inner / 2;
+    let three_half_inner = (3 * inner) / 2;
+    let rect = match direction {
+        "left" => Rect {
+            x: bounded_i32(bx + inner)?,
+            y: bounded_i32(by + inner)?,
+            w: bounded_i32(half_w - three_half_inner)?,
+            h: bounded_i32(h - 2 * inner)?,
+        },
+        "right" => Rect {
+            x: bounded_i32(bx + half_w + half_inner)?,
+            y: bounded_i32(by + inner)?,
+            w: bounded_i32(half_w - three_half_inner)?,
+            h: bounded_i32(h - 2 * inner)?,
+        },
+        "up" => Rect {
+            x: bounded_i32(bx + inner)?,
+            y: bounded_i32(by + inner)?,
+            w: bounded_i32(w - 2 * inner)?,
+            h: bounded_i32(half_h - three_half_inner)?,
+        },
+        _ => Rect {
+            x: bounded_i32(bx + inner)?,
+            y: bounded_i32(by + half_h + half_inner)?,
+            w: bounded_i32(w - 2 * inner)?,
+            h: bounded_i32(half_h - three_half_inner)?,
+        },
+    };
+    if !target_rect_valid(rect) {
+        return None;
+    }
+    Some(rect)
+}
+
+/// Native target-rectangle validity (KDE `isTargetRect` parity): finite
+/// coordinates in `[-16384, 16384]` with strictly positive extents capped at
+/// `16384`. Guards half-snap input and output without touching tiles.
+#[must_use]
+pub const fn target_rect_valid(rect: Rect) -> bool {
+    rect.x >= -16384
+        && rect.x <= 16384
+        && rect.y >= -16384
+        && rect.y <= 16384
+        && rect.w >= 1
+        && rect.h >= 1
+        && rect.w <= 16384
+        && rect.h <= 16384
+}
+
+/// Range-checked `i64` to `i32` for half-snap arithmetic: `None` on overflow
+/// so the caller refuses instead of clamping geometry.
+fn bounded_i32(value: i64) -> Option<i32> {
+    if value < i64::from(i32::MIN) || value > i64::from(i32::MAX) {
+        None
+    } else {
+        Some(value as i32)
+    }
+}
+
+/// G-06 maximized directional focus fence (REQ-MAX-08): directional focus is
+/// fenced while the focused window is maximized (no-op; leave via unmaximize
+/// or Alt+Tab). Fullscreen stays exempt: it carries no geometry write. Pure
+/// so both tile-origin and float-origin focus arms pin without native calls.
+#[must_use]
+pub const fn maximized_focus_fence(maximized: bool, fullscreen: bool) -> bool {
+    maximized && !fullscreen
+}
+
+/// Post-clear routing cause for G-06 unmaximize-before-move (REQ-MAX-08, KDE
+/// `requestMove` clear discipline parity): exactly one nonactivating native
+/// clear attempt precedes eligible-origin routing, and only an observed clear
+/// with the same reference, focus and domain continues in that invocation
+/// (a cleared float takes the half-snap, a cleared tile the ordinary move).
+/// `clear_outcome` is the native attempt result (`restored` when the window no
+/// longer reads maximized, `dispatched` when the setter accepted but async
+/// completion is still pending, anything else when nothing was dispatched).
+/// Returns `None` when the move may proceed on the fresh observation, else the
+/// narrow refusal cause for `move-refused-maximize-clear` (a later press can
+/// retry; never a structural move, delayed intent, or automatic retry).
+#[must_use]
+pub fn maximize_clear_refusal(
+    clear_outcome: &str,
+    observed_cleared: bool,
+    same_ref: bool,
+    same_domain: bool,
+    same_focus: bool,
+    fullscreen_now: bool,
+) -> Option<&'static str> {
+    // Async `dispatched` is not observed completion: the fresh checks below
+    // still decide. Anything undispatched never proceeds.
+    if clear_outcome != "restored" && clear_outcome != "dispatched" {
+        return Some("native-write");
+    }
+    if !same_ref {
+        return Some("identity-raced");
+    }
+    if !observed_cleared {
+        return Some("still-maximized");
+    }
+    if !same_domain {
+        return Some("domain-raced");
+    }
+    if fullscreen_now {
+        return Some("fullscreen-raced");
+    }
+    if !same_focus {
+        return Some("focus-raced");
+    }
+    None
+}
+
+/// Pre-clear authorization for G-06 unmaximize-before-move (REQ-MAX-08):
+/// the exact subject must already be revalidated and fresh fullscreen
+/// precedence plus the focused origin, live domain, suspension gate and
+/// foreground elevation must all still hold just before the single native
+/// clear. The focus-relaxed revalidation deliberately allows fullscreen
+/// facts, so this fresh check closes the transition-after-snapshot hole: a
+/// subject that became captionless-fullscreen (or carries project-owned
+/// fullscreen metadata) is never cleared. Returns `None` when the clear may
+/// be issued, else the narrow `move-refused-maximize-clear` cause (no clear,
+/// no move; a later press retries). Fullscreen precedence wins first, then
+/// domain and focus races, suspension, elevation last.
+#[must_use]
+pub const fn authorize_maximize_clear(
+    fullscreen_now: bool,
+    same_domain: bool,
+    same_focus: bool,
+    suspend_blocked: bool,
+    elevated: bool,
+) -> Option<&'static str> {
+    if fullscreen_now {
+        Some("fullscreen-raced")
+    } else if !same_domain {
+        Some("domain-raced")
+    } else if !same_focus {
+        Some("focus-raced")
+    } else if suspend_blocked {
+        Some("suspended")
+    } else if elevated {
+        Some("elevated-foreground")
+    } else {
+        None
+    }
+}
+
+/// Post-clear fullscreen derivation shared by the directional and B9
+/// maximize-clear routes: refuse when the fresh observed frame reads
+/// captionless-fullscreen, the retained row still carries fullscreen, or
+/// project-owned restoration metadata is present (a non-covering owned
+/// transition is eligible-observed with no retained flag, so metadata alone
+/// must still veto). Pure so both routes pin without native calls; callers
+/// pass live reads.
+#[must_use]
+pub const fn postclear_fullscreen_now(
+    observed_captionless: bool,
+    retained_fullscreen: bool,
+    owned_meta: bool,
+) -> bool {
+    observed_captionless || retained_fullscreen || owned_meta
+}
+
+/// Stale owned-fullscreen retirement eligibility: positive restoration proof
+/// only. `changed` is the stored cleared-bits mask, `style_restored` is
+/// whether the live style again contains all of `changed`, and `fullscreen`
+/// is the live fullscreen probe (`None` when unreadable). True only when the
+/// originally cleared chrome bits read back restored plus fresh proof the
+/// frame no longer covers a monitor. A merely non-covering geometry (owned
+/// transition) never retires; unreadable style/frame never retires. A
+/// zero-bit preimage (originally captionless entry) never retires: it is
+/// indistinguishable from a captionless non-cover transition with the stored
+/// facts, so it stays vetoed for an explicit exit.
+#[must_use]
+pub const fn stale_fullscreen_retire_eligible(
+    changed: u32,
+    style_restored: bool,
+    fullscreen: Option<bool>,
+) -> bool {
+    changed != 0 && style_restored && matches!(fullscreen, Some(false))
+}
+
+/// Declared-size gate for one computed half-snap rectangle (R-FLT-10..11, KDE
+/// `move-float-refused-constraints` parity): an incompatible half never
+/// fights the client. True when the half meets every meaningful declared
+/// bound; per-axis-zero bounds are unset (`meaningful` filters them), so only
+/// genuinely constrained axes decide. Pure so the refusal pins without
+/// native calls.
+#[must_use]
+pub fn half_snap_constraints_ok(
+    half: Rect,
+    hints: tiler_core::size_hints::WindowSizeHints,
+) -> bool {
+    if hints.meaningful_min_w().is_some_and(|min| half.w < min) {
+        return false;
+    }
+    if hints.meaningful_min_h().is_some_and(|min| half.h < min) {
+        return false;
+    }
+    if hints.meaningful_max_w().is_some_and(|max| max < half.w) {
+        return false;
+    }
+    if hints.meaningful_max_h().is_some_and(|max| max < half.h) {
+        return false;
+    }
+    true
 }
 
 /// Sticky marker value for one pre-sticky float state: 1 when the window was

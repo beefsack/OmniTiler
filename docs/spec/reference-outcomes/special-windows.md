@@ -778,7 +778,18 @@ All fresh variants below reset the client and WM state independently.
   first exit consumes its lifetime mark; repeated toggles and previously
   automatic floats preserve admission identity. Offline 2026-10-11, production
   assembly/stamped Engine fixtures; [record](../../changes/archive/windows-fixed-size-admission.md).
-  Native/game journey TBD; borderless-game inference unchanged.
+   Native/game journey TBD; borderless-game inference unchanged.
+   User 2026-10-12 explicitly confirms leaving fullscreen including borderless
+   uses ordinary admission/tiling subject to D5 fixed/intentional exceptions.
+   Startup/born exits, managed slot return/write exclusion and borderless exit
+   pinned offline; owned exit verifies restore before metadata removal, with
+    failure/later-press retry coverage. Owned Notepad startup adoption physically
+    user-accepted 2026-10-12, scoped single-output Notepad/Paint, base `e506350`
+    plus pre-retirement Windows changes: stop/relaunch while fullscreen then
+    Win+F11 exit tiles. Every Win+F11 raised the known parked Xbox prompt.
+    App-native/born-after-start/borderless, fixed/game/DPI/multi-output and
+    later automatic-retirement physical acceptance remain TBD
+   ([record](../../changes/archive/windows-fullscreen-exit-acceptance.md)).
 - Variant hook: NORMATIVE first normal admission vs fullscreen restore
   identity (User 2026-10-08; first-exit classification delivered offline).
 

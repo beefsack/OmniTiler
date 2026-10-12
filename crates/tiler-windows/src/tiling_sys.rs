@@ -389,6 +389,7 @@ fn pump_wait(timeout_ms: u32) {
     }
 }
 
+#[derive(Debug, Clone)]
 struct ObservedWindow {
     hwnd: u64,
     token: String,
@@ -1103,6 +1104,162 @@ fn log_json_at(path: &Path, value: serde_json::Value) {
     }
 }
 
+/// Trace-only non-wait owner-work timing sample for one pump iteration.
+/// Created immediately after `pump_wait` returns (so `busy_us` excludes the
+/// wait plus any hook callbacks delivered inside the pump) and scoped to the
+/// iteration: every `continue`/error path drops through here. `Drop` emits at
+/// most one `owner-work` line via the existing infallible `log_json_at` and
+/// never logs from a callback. Fields are closed aggregates only (sequence,
+/// tick, microsecond offsets, batch counts, held flag): no HWNDs, PIDs, input
+/// content, or absolute clocks. Quiet short-poll iterations stay disabled and
+/// drop silently; the caller arms only active wakes.
+struct OwnerWorkGuard {
+    enabled: bool,
+    log_path: Option<std::path::PathBuf>,
+    seq: u64,
+    tick_at_start: u64,
+    start_us: u64,
+    start: Option<Instant>,
+    border_refresh_us: u64,
+    batch_events: u64,
+    wakes: u64,
+    starts: u64,
+    ends: u64,
+    gesture_held: bool,
+}
+
+impl OwnerWorkGuard {
+    /// Starts the non-wait clock. Timer creation, path clone, and sequence
+    /// accounting happen only when `trace` holds, so default runs create
+    /// no timers or log records (callers gate border
+    /// timing on [`OwnerWorkGuard::timing_active`]). The guard starts
+    /// disabled; the caller arms it after the wake gate.
+    fn begin(trace: bool, log_path: &Path, epoch: Option<Instant>, seq: u64, tick: u64) -> Self {
+        if !trace {
+            return Self {
+                enabled: false,
+                log_path: None,
+                seq: 0,
+                tick_at_start: tick,
+                start_us: 0,
+                start: None,
+                border_refresh_us: 0,
+                batch_events: 0,
+                wakes: 0,
+                starts: 0,
+                ends: 0,
+                gesture_held: false,
+            };
+        }
+        let start = Instant::now();
+        let start_us = match epoch {
+            Some(epoch) => start
+                .duration_since(epoch)
+                .as_micros()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            None => 0,
+        };
+        Self {
+            enabled: false,
+            log_path: Some(log_path.to_path_buf()),
+            seq,
+            tick_at_start: tick,
+            start_us,
+            start: Some(start),
+            border_refresh_us: 0,
+            batch_events: 0,
+            wakes: 0,
+            starts: 0,
+            ends: 0,
+            gesture_held: false,
+        }
+    }
+
+    /// Arms the one sample for an active wake. No-op unless tracing: quiet
+    /// iterations never enable, so their `continue` drops silently.
+    fn arm(&mut self, batch_events: u64, wakes: u64, starts: u64, ends: u64, gesture_held: bool) {
+        if self.log_path.is_none() {
+            return;
+        }
+        self.batch_events = batch_events;
+        self.wakes = wakes;
+        self.starts = starts;
+        self.ends = ends;
+        self.gesture_held = gesture_held;
+        self.enabled = true;
+    }
+
+    /// Whether border-refresh timing should run (trace plus armed). Callers
+    /// must not create an `Instant` per refresh when this is false.
+    fn timing_active(&self) -> bool {
+        self.enabled
+    }
+
+    fn add_border_refresh(&mut self, elapsed: Duration) {
+        if !self.enabled {
+            return;
+        }
+        self.border_refresh_us = self
+            .border_refresh_us
+            .saturating_add(elapsed.as_micros().try_into().unwrap_or(u64::MAX));
+    }
+}
+
+impl Drop for OwnerWorkGuard {
+    fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let Some(log_path) = self.log_path.as_ref() else {
+            return;
+        };
+        let Some(start) = self.start else {
+            return;
+        };
+        // `busy_us` covers owner work after the pump only. The write cost of
+        // this sample itself is not included (elapsed is captured before the
+        // append). Delivered callback time inside `pump_wait` is not covered
+        // either; neither is the quiet stop probe (quiet iterations emit no
+        // sample at all).
+        let busy_us: u64 = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "owner-work",
+                "seq": self.seq,
+                "tick_at_start": self.tick_at_start,
+                "start_us": self.start_us,
+                "busy_us": busy_us,
+                "border_refresh_us": self.border_refresh_us,
+                "batch_events": self.batch_events,
+                "wakes": self.wakes,
+                "starts": self.starts,
+                "ends": self.ends,
+                "gesture_held": self.gesture_held,
+            }),
+        );
+    }
+}
+
+/// Fresh-border refresh (foreground query plus overlay presentation together)
+/// with trace-only timing into the owner-work guard. `refresh_active_border`
+/// itself is unchanged: no paint-API signature churn.
+fn refresh_border_timed(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    guard: &mut OwnerWorkGuard,
+) {
+    if guard.timing_active() {
+        let started = Instant::now();
+        refresh_active_border(state, me, fulls);
+        guard.add_border_refresh(started.elapsed());
+    } else {
+        refresh_active_border(state, me, fulls);
+    }
+}
+
 /// Trace-only placement diagnostic for the just-completed Engine op:
 /// bounded startup inputs (opaque window token plus rectangle) with fit
 /// outcome/reason and the resulting ordered tree description, and the
@@ -1478,11 +1635,18 @@ struct TileLoop {
     maximize_admission_attempted: HashSet<String>,
     /// R-MAX-06 keep-overlay latch: exact fresh lifetimes bound at tiled-first
     /// slotless admission under the live overlay value. Keyed by full member
-    /// identity, never HWND alone; pruned with membership. Floating-first
-    /// (R-MAX-03), pre-existing, and born-fullscreen lifetimes never enter,
-    /// so their tiled admission keeps the existing one-shot clear under both
-    /// setting values.
+    /// identity, never HWND alone; pruned with membership. Pre-existing and
+    /// born-fullscreen lifetimes never enter; floating-first (R-MAX-03) binds
+    /// `retile_keep_overlay` below instead, so the born tile default keeps
+    /// clearing tiled-first admissions while retile always overlays.
     born_keep_overlay: BTreeSet<crate::workspace::WindowKey>,
+    /// R-MAX-03 retile latch: exact fresh lifetimes bound at floating-first
+    /// slotless admission. A floating-to-tiled workspace admission keeps the
+    /// native maximize over the reserved tile slot with no one-shot clear,
+    /// independent of `core.born_maximized` (only born R-MAX-06 reads that
+    /// setting). Keyed by full member identity, never HWND alone; pruned
+    /// with membership like `born_keep_overlay`.
+    retile_keep_overlay: BTreeSet<crate::workspace::WindowKey>,
     /// Born-fullscreen hold (KDE initial-fullscreen-hold parity): first-seen
     /// fullscreen windows without a retained tile slot, tracked slotless as a
     /// planner-only exception until their first exit. Keyed by full member
@@ -1955,6 +2119,34 @@ fn snap_origin_of(window: &ObservedWindow) -> SnapOrigin {
     }
 }
 
+/// Record a verified own focus advance for later intents in the same batch
+/// and across bounded drains; cleared on external focus, mismatch,
+/// suspension, or gesture. Retained-aware: a focus-ok into a maximized member
+/// advances from its retained row, never a stale None. Shared by the ordinary
+/// tiled focus arm and the float-origin focus arm.
+fn note_focus_advance(
+    state: &mut TileLoop,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    to: &str,
+) {
+    state.snap_advance = observed
+        .iter()
+        .find(|w| w.token == to)
+        .map(snap_origin_of)
+        .or_else(|| {
+            retained
+                .iter()
+                .find(|r| r.token == to)
+                .map(|row| crate::snapkey::SnapOrigin {
+                    hwnd: row.key.hwnd,
+                    token: row.token.clone(),
+                    pid: row.key.pid,
+                    creation: row.key.creation.clone(),
+                })
+        });
+}
+
 /// Managed origins for chord resolution: eligible observed windows plus
 /// verified overlay-retained members (maximized/fullscreen). An overlay
 /// member is retained, never eligible, so eligible-only origins break Win+M
@@ -2133,17 +2325,6 @@ fn hide_border(state: &mut TileLoop, reason: &str) {
     state.border_overlay.hide();
     let signature = format!("hidden:{reason}");
     if state.border_last.as_deref() == Some(signature.as_str()) && !was_visible {
-        if state.trace {
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "active-border",
-                    "tick": state.tick,
-                    "outcome": "hidden",
-                    "reason": reason,
-                }),
-            );
-        }
         return;
     }
     state.border_last = Some(signature);
@@ -2436,17 +2617,6 @@ fn hide_underlay(state: &mut TileLoop, reason: &str) {
     state.underlay_overlay.hide();
     let signature = format!("hidden:{reason}");
     if state.underlay_last.as_deref() == Some(signature.as_str()) && !was_visible {
-        if state.trace {
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "group-underlay",
-                    "tick": state.tick,
-                    "outcome": "hidden",
-                    "reason": reason,
-                }),
-            );
-        }
         return;
     }
     state.underlay_last = Some(signature);
@@ -3854,6 +4024,98 @@ fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
     read_fullscreen_meta(hwnd_u64).is_none()
 }
 
+/// Live style read for stale-metadata retirement: `None` when the window is
+/// dead or the style word is unreadable (fail closed, never guessed).
+fn live_style_for_retire(hwnd_u64: u64) -> Option<u32> {
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return None;
+    }
+    unsafe {
+        SetLastError(0);
+    }
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let style_err = unsafe { GetLastError() };
+    if style == 0 && style_err != 0 {
+        return None;
+    }
+    Some(style)
+}
+
+/// Shared stale-retirement ordering for owned fullscreen markers (user
+/// decision 2026-10-12): the single production sequence used by the
+/// directional move-clear, the B9 unfloat-clear, and the reconcile sweep, so
+/// no special action is needed to trigger it. A stale marker whose chrome
+/// provably restored by other means retires here (metadata removal only,
+/// never a geometry write); every other shape keeps its marker so the veto
+/// below still holds.
+///
+/// Sequence: no work without a pre-read marker or when the caller's
+/// home/focus/suspend/elevation guards already fail (no mutation then,
+/// preserving scope and game safety); quick pid fence; first live
+/// restoration proof (style contains all `changed` plus live no-cover);
+/// immediately-before-removal exact revalidation (member key, window tag,
+/// held process/identity, scope/hosted/proof via the existing target
+/// fences); re-read metadata must equal the probed preimage; second live
+/// proof must still hold; pid still current; only then best-effort removal
+/// with an absence re-read. Any unreadable leg, drift, re-fullscreen, tag
+/// change, same-PID reuse, zero-bit preimage, or failed removal keeps the
+/// marker for a later press. No resurrection of incomplete preimages (a
+/// missing companion never reads as a preimage), no writes whatsoever on
+/// fullscreen/transition.
+#[allow(clippy::too_many_arguments)]
+fn effective_stale_meta_via_effects(
+    effects: &mut dyn UnfloatClearEffects,
+    state: &mut TileLoop,
+    member_key: &crate::workspace::WindowKey,
+    expected: &ObservedWindow,
+    me: &ProcessIdentity,
+    meta: Option<FullscreenMeta>,
+    guards_ok: bool,
+    fulls: &[Rect],
+) -> Option<FullscreenMeta> {
+    let pre = meta?;
+    if !guards_ok {
+        return Some(pre);
+    }
+    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
+        return Some(pre);
+    }
+    let (style_opt, fullscreen_opt) = effects.retire_probe(member_key.hwnd, fulls);
+    let restored = style_opt.is_some_and(|live| live & pre.changed == pre.changed);
+    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored, fullscreen_opt) {
+        return Some(pre);
+    }
+    // Immediately-before-removal lifetime pin: member key, window tag, held
+    // process/identity, scope/hosted/proof. Any drift fails closed.
+    let held = match effects.revalidate(state, member_key, expected, me, fulls) {
+        Ok(target) => target.held,
+        Err(_) => return Some(pre),
+    };
+    let _ = &held;
+    // The marker must still equal the probed preimage: a changed marker
+    // (including a genuine re-fullscreen) never deletes another preimage.
+    // An externally vanished marker reads absent and stays absent.
+    let cur = effects.fullscreen_meta(member_key.hwnd);
+    if cur != Some(pre) {
+        return cur;
+    }
+    // The restoration proof must still be live after the pin.
+    let (style2, fullscreen2) = effects.retire_probe(member_key.hwnd, fulls);
+    let restored2 = style2.is_some_and(|live| live & pre.changed == pre.changed);
+    if !crate::tiling::stale_fullscreen_retire_eligible(pre.changed, restored2, fullscreen2) {
+        return Some(pre);
+    }
+    if !effects.pid_current(member_key.hwnd, expected.identity.pid) {
+        return effects.fullscreen_meta(member_key.hwnd).or(Some(pre));
+    }
+    if effects.retire_clear(member_key.hwnd) {
+        effects.fullscreen_meta(member_key.hwnd)
+    } else {
+        effects.fullscreen_meta(member_key.hwnd).or(Some(pre))
+    }
+}
+
 /// Enter project-owned fullscreen: store the restoration preimage first, then
 /// clear the frame bits and cover the monitor without activating. No blind
 /// input synthesis; the official style/frame APIs only. Re-entry never
@@ -3920,41 +4182,110 @@ fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
 /// retries automatically. `meta.changed` is already validated to the owned
 /// mask on read, so restoration never touches arbitrary bits.
 fn exit_fullscreen_owned(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta)
+}
+
+/// Native effects behind the project-owned fullscreen exit, split from the
+/// effect ordering so hermetic tests can substitute scripted answers while
+/// the production sequence (style restore, frame reapply, readback verify,
+/// maximize reassert, metadata removal) runs unchanged. [`NativeOwnedExit`]
+/// calls exactly the functions the inline code called; behavior is identical.
+/// Message-only owned windows cannot carry this path (never enumerated with
+/// live frames), so scripted stubs are the hermetic route.
+trait OwnedExitEffects {
+    fn is_window(&mut self, hwnd: u64) -> bool;
+    fn current_style(&mut self, hwnd: u64) -> u32;
+    /// Exactly like `SetWindowLongW` plus `GetLastError`: `(prev, err)`.
+    fn restore_style(&mut self, hwnd: u64, next: i32) -> (i32, u32);
+    fn reapply_frame(&mut self, hwnd: u64) -> bool;
+    fn style_readback(&mut self, hwnd: u64) -> u32;
+    fn reassert_maximize(&mut self, hwnd: u64) -> bool;
+    fn clear_meta(&mut self, hwnd: u64) -> bool;
+}
+
+/// Production native effects for the owned exit: exact pass-throughs to the
+/// Win32 reads/writes the route requires.
+struct NativeOwnedExit;
+
+impl OwnedExitEffects for NativeOwnedExit {
+    fn is_window(&mut self, hwnd: u64) -> bool {
+        let hwnd = hwnd as isize as HWND;
+        let live = unsafe { IsWindow(hwnd) };
+        live != 0
+    }
+
+    fn current_style(&mut self, hwnd: u64) -> u32 {
+        let style = unsafe { GetWindowLongW(hwnd as isize as HWND, GWL_STYLE) };
+        style as u32
+    }
+
+    fn restore_style(&mut self, hwnd: u64, next: i32) -> (i32, u32) {
+        unsafe {
+            SetLastError(0);
+        }
+        let prev = unsafe { SetWindowLongW(hwnd as isize as HWND, GWL_STYLE, next) };
+        let err = unsafe { GetLastError() };
+        (prev, err)
+    }
+
+    fn reapply_frame(&mut self, hwnd: u64) -> bool {
+        let placed = unsafe {
+            SetWindowPos(
+                hwnd as isize as HWND,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        };
+        placed != 0
+    }
+
+    fn style_readback(&mut self, hwnd: u64) -> u32 {
+        let style = unsafe { GetWindowLongW(hwnd as isize as HWND, GWL_STYLE) };
+        style as u32
+    }
+
+    fn reassert_maximize(&mut self, hwnd: u64) -> bool {
+        let shown = unsafe { ShowWindowAsync(hwnd as isize as HWND, SW_MAXIMIZE) };
+        shown != 0
+    }
+
+    fn clear_meta(&mut self, hwnd: u64) -> bool {
+        clear_fullscreen_meta(hwnd)
+    }
+}
+
+/// Owned-exit effect ordering shared by the native wrapper and hermetic
+/// tests: metadata is removed only after the style restore, frame reapply,
+/// style readback, and maximize reassert all verify. Any failure keeps the
+/// metadata so a later explicit press can retry.
+fn exit_fullscreen_owned_with(
+    effects: &mut dyn OwnedExitEffects,
+    hwnd_u64: u64,
+    meta: &FullscreenMeta,
+) -> &'static str {
+    if !effects.is_window(hwnd_u64) {
         return "threw";
     }
-    let current = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let current = effects.current_style(hwnd_u64);
     let next = (current | meta.changed) as i32;
-    unsafe {
-        SetLastError(0);
-    }
-    let prev = unsafe { SetWindowLongW(hwnd, GWL_STYLE, next) };
-    let style_err = unsafe { GetLastError() };
+    let (prev, style_err) = effects.restore_style(hwnd_u64, next);
     if prev == 0 && style_err != 0 {
         return "threw";
     }
-    let placed = unsafe {
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        )
-    };
-    if placed == 0 {
+    if !effects.reapply_frame(hwnd_u64) {
         return "threw";
     }
-    if unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & meta.changed != meta.changed {
+    if effects.style_readback(hwnd_u64) & meta.changed != meta.changed {
         return "dispatched";
     }
-    if meta.was_maximized && unsafe { ShowWindowAsync(hwnd, SW_MAXIMIZE) } == 0 {
+    if meta.was_maximized && !effects.reassert_maximize(hwnd_u64) {
         return "dispatched";
     }
-    if clear_fullscreen_meta(hwnd_u64) {
+    if effects.clear_meta(hwnd_u64) {
         "restored"
     } else {
         "dispatched"
@@ -4289,7 +4620,9 @@ fn admission_clear_planned(state: &TileLoop, row: &RetainedRow, hint_cx: &HintCx
     if state.member_rects.contains_key(&row.token) {
         return false;
     }
-    if state.born_keep_overlay.contains(&row.key) {
+    // R-MAX-06 born overlay and R-MAX-03 retile overlay converge through the
+    // retained-slot machinery with no native clear, under their own lanes.
+    if state.born_keep_overlay.contains(&row.key) || state.retile_keep_overlay.contains(&row.key) {
         return false;
     }
     if committed_ordinary_pin(state, &row.key, &row.token) {
@@ -4324,9 +4657,10 @@ fn admission_clear_planned(state: &TileLoop, row: &RetainedRow, hint_cx: &HintCx
 /// instead (slotless admission seeds the slot on the tiled domain, row
 /// assembly rides the canonical retained rect, and the retained-only token
 /// takes no geometry write until a native restore lands it in the slot).
-/// Floating-first (R-MAX-03), pre-existing, born-fullscreen-exit, and later
-/// maxima rows never latch, so they keep the existing one-shot clear (or no
-/// clear) under both setting values; a live flip applies only to subsequent
+/// R-MAX-03 floating-first rows bind `retile_keep_overlay` at the same
+/// admission and converge through the same machinery under both
+/// `core.born_maximized` values. Pre-existing, born-fullscreen-exit, and
+/// later maxima rows never latch; a live flip applies only to subsequent
 /// first admissions and never moves an already-bound lifetime.
 ///
 /// Attempts key on HWND plus process creation plus the live lifetime tag, so
@@ -4460,7 +4794,8 @@ fn clear_maximize_at_admission(
             false,
             state.maximize_admission_attempted.contains(&attempt_key),
             tiled,
-            state.born_keep_overlay.contains(&row.key),
+            state.born_keep_overlay.contains(&row.key)
+                || state.retile_keep_overlay.contains(&row.key),
         ) {
             continue;
         }
@@ -4568,6 +4903,108 @@ fn is_automatic_in(
         .engine
         .session(domain_key)
         .is_some_and(|session| session.is_automatic_fixed_float(&WindowId(token.to_owned())))
+}
+
+/// Float-focus candidates for one float-origin subject (R-FLT-07..11, KDE
+/// `selectFloatFocusTarget` caller parity): observed rows in encounter order,
+/// then verified retained maximized rows in row order, each with the subject
+/// excluded. Sticky windows show on every workspace of their output, so an
+/// observed/visible sticky homes anywhere on the subject's output qualifies;
+/// other-output stickies never do. Ordinary floats keep strict home-domain
+/// membership. Retained rows qualify only maximized, never fullscreen, with a
+/// usable live frame, the same lifetime (token still maps to the key) and
+/// domain, and float/sticky state. Tiles never enter; automatic fixed floats
+/// (R-SPC-04 D8 membership-only) never take focus writes so they never enter
+/// either. The selected target still revalidates fresh at actuation. Pure
+/// observation read, no Engine mutation, no native calls.
+fn float_focus_candidates(
+    state: &TileLoop,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    output: &str,
+    workspace: &str,
+    from: &str,
+) -> Vec<crate::tiling::FloatFocusCandidate> {
+    /// Shared per-row gate: sticky qualifies output-wide, ordinary floats only
+    /// in the strict subject domain; automatic fixed never qualifies.
+    fn gate(
+        state: &TileLoop,
+        key: &crate::workspace::WindowKey,
+        token: &str,
+        output: &str,
+        workspace: &str,
+    ) -> Option<bool> {
+        let home = state.workspaces.member_loc(key)?;
+        let sticky_candidate = state.sticky.contains_key(key);
+        if sticky_candidate {
+            if home.output != output {
+                return None;
+            }
+        } else {
+            if home.output != output || home.workspace != workspace {
+                return None;
+            }
+            if !engine_is_float(state, &home.output, &home.workspace, token) {
+                return None;
+            }
+        }
+        // Automatic fixed floats never take focus writes.
+        if engine_is_automatic_fixed(state, &home.output, &home.workspace, token) {
+            return None;
+        }
+        Some(sticky_candidate)
+    }
+    let mut candidates = Vec::new();
+    for window in observed.iter() {
+        if window.token == from {
+            continue;
+        }
+        let key = crate::workspace::WindowKey {
+            hwnd: window.hwnd,
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+        };
+        let Some(sticky) = gate(state, &key, &window.token, output, workspace) else {
+            continue;
+        };
+        candidates.push(crate::tiling::FloatFocusCandidate {
+            token: window.token.clone(),
+            x: window.visible.x,
+            y: window.visible.y,
+            sticky,
+        });
+    }
+    // Retained maximized floats/stickies (never eligible-observed): the
+    // ordinary-origin TO-maximized focus leg and float-origin ties need them
+    // as targets, actuated through the retained-aware focus path.
+    for row in retained.iter() {
+        if row.token == from {
+            continue;
+        }
+        if !row.maximized || row.fullscreen {
+            continue;
+        }
+        let Some(rect) = row.rect else {
+            continue;
+        };
+        if state
+            .member_tokens
+            .get(&row.key)
+            .is_none_or(|live| *live != row.token)
+        {
+            continue;
+        }
+        let Some(sticky) = gate(state, &row.key, &row.token, output, workspace) else {
+            continue;
+        };
+        candidates.push(crate::tiling::FloatFocusCandidate {
+            token: row.token.clone(),
+            x: rect.x,
+            y: rect.y,
+            sticky,
+        });
+    }
+    candidates
 }
 
 /// Whether one member key floats by automatic fixed-size classification in
@@ -5042,6 +5479,7 @@ fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::WindowKey) {
         state.restore_wake = None;
     }
     state.born_keep_overlay.remove(key);
+    state.retile_keep_overlay.remove(key);
     state.born_first_exit.remove(key);
     state.fixed_auto_seen.remove(key);
     state.fixed_origin_overrides.remove(key);
@@ -5188,8 +5626,9 @@ fn assemble_domain_rows(
         float_tokens.insert(token);
     }
     // A slotless maximized row on a floating domain keeps no tile slot, so
-    // the deferred admission clear still fires on retile. Unknown domains
-    // seed as today (assembly implies a live domain).
+    // the R-MAX-03 retile latch still sees it slotless on retile and reserves
+    // the overlay slot then. Unknown domains seed as today (assembly implies
+    // a live domain).
     let domain_tiled = workspace_mode_known(state, output, workspace).unwrap_or(true);
     for key in &members {
         let born = state.born_fullscreen.contains(key);
@@ -5408,9 +5847,10 @@ fn assemble_domain_rows(
                 // non-fixed/unknown (clear pending, including budget-unknown),
                 // ride slotless so the next clear still sees no slot; seed
                 // only for fresh-fixed (floats via the Engine), keep-overlay
-                // (needs the reserved slot), attempted (one-shot done),
-                // ineligible/fullscreen/floating (never clear), or rows that
-                // already hold a slot. Durable fixed-origin overrides never
+                // (needs the reserved slot), retile-overlay (R-MAX-03 reserves
+                // the same slot under both born values), attempted (one-shot
+                // done), ineligible/fullscreen/floating (never clear), or rows
+                // that already hold a slot. Durable fixed-origin overrides never
                 // defer: they reserve the maximized slot up front (no clear
                 // is ever planned for them). No hold or retry is invented: a
                 // deferred row re-probes next tick.
@@ -5420,6 +5860,7 @@ fn assemble_domain_rows(
                     && !state.member_rects.contains_key(&row.token)
                     && domain_tiled
                     && !state.born_keep_overlay.contains(key)
+                    && !state.retile_keep_overlay.contains(key)
                     && row.facts.is_some_and(admission_clear_eligible)
                     && {
                         let prefix =
@@ -5639,6 +6080,54 @@ fn writable_tokens(
     )
 }
 
+/// Auto-retire positively restored owned-fullscreen markers on verified
+/// workspace members through the shared exact-lifetime sequence, so no
+/// special clear action is needed to trigger it. Global game/elevated gate
+/// only: per-action home/focus do not apply to background retirement, but
+/// every candidate still passes the exact member/window-tag/held-identity/
+/// scope proof inside the sequence plus the double live restoration proof.
+/// Metadata removal only, never a geometry write; fullscreen, transitional,
+/// unreadable, recycled, and zero-bit shapes keep their markers. Candidates
+/// need verified workspace membership; `overlay_expected` supplies the
+/// retained-aware expectation the pin requires.
+fn sweep_retire_stale_fullscreen(
+    effects: &mut dyn UnfloatClearEffects,
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    fulls: &[Rect],
+) {
+    if effects.suspend_block(state, me, fulls) || effects.elevated(me) {
+        return;
+    }
+    let candidates: Vec<(crate::workspace::WindowKey, String)> = state
+        .member_tokens
+        .iter()
+        .map(|(key, token)| (key.clone(), token.clone()))
+        .collect();
+    for (key, token) in candidates {
+        if state.workspaces.member_loc(&key).is_none() {
+            continue;
+        }
+        let Some(expected) = overlay_expected(state, observed, retained, &token) else {
+            continue;
+        };
+        if expected.hwnd != key.hwnd
+            || expected.identity.pid != key.pid
+            || expected.identity.process_creation != key.creation
+        {
+            continue;
+        }
+        let pre = effects.fullscreen_meta(key.hwnd);
+        if pre.is_none() {
+            continue;
+        }
+        let _ =
+            effective_stale_meta_via_effects(effects, state, &key, &expected, me, pre, true, fulls);
+    }
+}
+
 /// Run one reconcile tick partitioned per output-local domain: enumerate
 /// once, then converge each monitor's current workspace through its own
 /// retained Engine session with that monitor's `rcWork` bounds. Hidden
@@ -5663,6 +6152,10 @@ fn reconcile_tick(
         );
         return;
     };
+    {
+        let mut native_retire = NativeUnfloatClear;
+        sweep_retire_stale_fullscreen(&mut native_retire, state, me, &observed, &retained, fulls);
+    }
     publish_managed(state, me, &observed, &retained);
     ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
     // First-seen maximized windows restore once here: lifetime tags are
@@ -6368,6 +6861,65 @@ fn prime_foreground_rights() -> u8 {
     inserted.min(u32::from(u8::MAX)) as u8
 }
 
+/// Exact write/focus expectation for one managed window: the eligible
+/// observed row first, otherwise a retained overlay member (KDE `requestFocus`
+/// overlay exemption: maximized and fullscreen members are retained, never
+/// eligible). Retained rows rebuild from stored identity plus the fresh
+/// overlay facts; the caller still revalidates fresh with the full
+/// identity/scope/hosted/proof/lifetime gates before any native call. `None`
+/// when the token is live nowhere.
+fn overlay_expected(
+    state: &TileLoop,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    to_token: &str,
+) -> Option<ObservedWindow> {
+    if let Some(found) = observed.iter().find(|w| w.token == to_token) {
+        return Some(found.clone());
+    }
+    let row = retained.iter().find(|r| r.token == to_token)?;
+    let stored = state.member_identity.get(&row.key).cloned()?;
+    Some(ObservedWindow {
+        hwnd: row.key.hwnd,
+        token: row.token.clone(),
+        outer: Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        },
+        visible: Rect {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        },
+        insets: FrameInsets::default(),
+        identity: crate::tiling::ObservedTarget {
+            hwnd: row.key.hwnd,
+            pid: row.key.pid,
+            process_creation: row.key.creation.clone(),
+            exe_path: stored.exe_path,
+            user_sid: stored.user_sid,
+            session_id: stored.session_id,
+            tag: String::new(),
+        },
+        facts: row.facts.unwrap_or(crate::tiling::WindowFacts {
+            visible: true,
+            minimized: false,
+            maximized: true,
+            cloaked: false,
+            elevated: false,
+            shell: false,
+            tool_window: false,
+            owned: false,
+            captionless_fullscreen: false,
+            no_activate: false,
+            dialog: false,
+        }),
+    })
+}
+
 /// Actuate one Engine focus plan on the exact target window: fresh
 /// revalidation with the process held open across the call, one bounded E8
 /// `SendInput` last-input prime, a bounded `AttachThreadInput` coupling of
@@ -6409,56 +6961,9 @@ fn actuate_focus(
     // the full identity/scope/hosted/proof/lifetime gates; only the geometry
     // classifier is focus-relaxed (overlays allowed, everything else still
     // refused). Reuses the retained-aware origin set's membership rule.
-    let owned_expected: Option<ObservedWindow>;
-    let expected = if let Some(found) = observed.iter().find(|w| w.token == to_token) {
-        found
-    } else {
-        let Some(row) = retained.iter().find(|r| r.token == to_token) else {
-            return unsettled("vanished");
-        };
-        let Some(stored) = state.member_identity.get(&row.key).cloned() else {
-            return unsettled("vanished");
-        };
-        owned_expected = Some(ObservedWindow {
-            hwnd: row.key.hwnd,
-            token: row.token.clone(),
-            outer: Rect {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0,
-            },
-            visible: Rect {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0,
-            },
-            insets: FrameInsets::default(),
-            identity: crate::tiling::ObservedTarget {
-                hwnd: row.key.hwnd,
-                pid: row.key.pid,
-                process_creation: row.key.creation.clone(),
-                exe_path: stored.exe_path,
-                user_sid: stored.user_sid,
-                session_id: stored.session_id,
-                tag: String::new(),
-            },
-            facts: row.facts.unwrap_or(crate::tiling::WindowFacts {
-                visible: true,
-                minimized: false,
-                maximized: true,
-                cloaked: false,
-                elevated: false,
-                shell: false,
-                tool_window: false,
-                owned: false,
-                captionless_fullscreen: false,
-                no_activate: false,
-                dialog: false,
-            }),
-        });
-        owned_expected.as_ref().expect("retained expected built")
+    let owned_expected = overlay_expected(state, observed, retained, to_token);
+    let Some(expected) = owned_expected.as_ref() else {
+        return unsettled("vanished");
     };
     let proof_mode = state.allowlist.is_some();
     let member_key = crate::workspace::WindowKey {
@@ -6869,7 +7374,7 @@ fn keyboard_tick(
                     );
                     continue;
                 }
-                let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+                let Some(mut loc) = state.workspaces.member_loc(&member_key).cloned() else {
                     state.snap_advance = None;
                     log_json_at(
                         &log_path,
@@ -6887,6 +7392,20 @@ fn keyboard_tick(
                     );
                     continue;
                 };
+                // Home truth for lifetime/domain stability checks below.
+                let home = loc.clone();
+                // Sticky subjects show on every workspace of their output:
+                // route in the displayed (active) workspace when homed
+                // elsewhere so focus races, half-snaps and clear routing
+                // match the visible workspace. Ordinary windows keep strict
+                // home-domain routing.
+                let sticky_subject = state.sticky.contains_key(&member_key);
+                if sticky_subject
+                    && let Some(active) = state.workspaces.active_id(&home.output)
+                    && active != loc.workspace
+                {
+                    loc.workspace = active;
+                }
                 let Some((domain, domain_key)) = workspace_domain_for(
                     &loc.output,
                     &loc.workspace,
@@ -6910,35 +7429,21 @@ fn keyboard_tick(
                     );
                     continue;
                 };
-                // A focused float never starts directional navigation; floats
-                // hold no tile slot so the Engine observation already excludes
-                // them as targets. Sticky rides the same slotless float plus
-                // an explicit subject gate so a pruned-domain sticky (no
-                // Engine session) still refuses instead of navigating.
-                if state.sticky.contains_key(&member_key) {
-                    let outcome = match intent.op {
-                        SnapOp::Focus => "focus-refused-sticky",
-                        SnapOp::Move => "move-refused-sticky",
-                    };
-                    state.snap_advance = None;
-                    log_json_at(
-                        &log_path,
-                        serde_json::json!({
-                            "event": "snap",
-                            "tick": tick,
-                            "correlation": correlation.as_str(),
-                            "op": intent.op.as_str(),
-                            "direction": direction_name(intent.direction),
-                            "edge": intent.edge.as_str(),
-                            "disposition": "consumed",
-                            "outcome": outcome,
-                            "origin": origin.token,
-                            "window": from,
-                        }),
-                    );
-                    continue;
-                }
-                if engine_is_float(state, &loc.output, &loc.workspace, &from) {
+                // Float-origin subject classification (R-FLT-07..11): sticky
+                // and intentional floats share the floating layer for
+                // directional focus and half-snaps below; tile origins keep
+                // skipping floats exactly as before. Automatic fixed floats
+                // (R-SPC-04 D8 membership-only) keep the existing floating
+                // refusal: classification takes no geometry, focus, stacking,
+                // or keep-above writes. A pruned-domain sticky (no Engine
+                // session) routes below and safely misses/retains instead of
+                // refusing, since every float actuation revalidates first.
+                // Float state reads home truth: a sticky subject routed in its
+                // displayed workspace still classifies from its home session.
+                let float_subject = engine_is_float(state, &home.output, &home.workspace, &from);
+                let automatic_subject =
+                    engine_is_automatic_fixed(state, &home.output, &home.workspace, &from);
+                if automatic_subject && (sticky_subject || float_subject) {
                     let outcome = match intent.op {
                         SnapOp::Focus => "focus-refused-floating",
                         SnapOp::Move => "move-refused-floating",
@@ -6961,6 +7466,7 @@ fn keyboard_tick(
                     );
                     continue;
                 }
+                let float_origin = (sticky_subject || float_subject) && !automatic_subject;
                 // Floating workspaces run no tile layout: both focus and move
                 // refuse with the matching workspace-floating vocabulary (KDE
                 // plan-adapter parity). Frames stay native.
@@ -6986,14 +7492,43 @@ fn keyboard_tick(
                     );
                     continue;
                 }
-                // KDE maximize/fullscreen isolation parity: a maximized
-                // focused window keeps its tile slot but a directional move
-                // would change its retained position/share, so refuse
-                // fail-closed before any Engine mutation. Focus carries no
-                // geometry write and stays allowed. Fullscreen wins.
-                if intent.op == SnapOp::Move
-                    && let Some(row) = retained.iter().find(|r| r.key == member_key)
-                    && let Some(cause) = overlay_refusal_for(row)
+                // Subject overlay flags from the fresh per-tick snapshot:
+                // retained rows carry maximized/fullscreen members while an
+                // observed eligible subject holds neither.
+                let (subject_maximized, subject_fullscreen) = retained
+                    .iter()
+                    .find(|r| r.key == member_key)
+                    .map(|r| (r.maximized, r.fullscreen))
+                    .unwrap_or((false, false));
+                // Fullscreen precedence (both origins, KDE parity): a
+                // fullscreen subject is never cleared or moved. Focus carries
+                // no geometry write and stays allowed.
+                if intent.op == SnapOp::Move && subject_fullscreen {
+                    state.snap_advance = None;
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-refused-fullscreen",
+                            "origin": origin.token,
+                            "window": from,
+                        }),
+                    );
+                    continue;
+                }
+                // G-06 maximized directional focus fence (REQ-MAX-08):
+                // directional focus no-ops while the focused window is
+                // maximized (leave via unmaximize or Alt+Tab). Covers
+                // tile-origin and float-origin subjects; fullscreen stays
+                // exempt above.
+                if intent.op == SnapOp::Focus
+                    && crate::tiling::maximized_focus_fence(subject_maximized, subject_fullscreen)
                 {
                     state.snap_advance = None;
                     log_json_at(
@@ -7006,14 +7541,739 @@ fn keyboard_tick(
                             "direction": direction_name(intent.direction),
                             "edge": intent.edge.as_str(),
                             "disposition": "consumed",
-                            "outcome": if cause == "fullscreen" { "move-refused-fullscreen" } else { "move-refused-maximize" },
+                            "outcome": "focus-refused-maximize",
                             "origin": origin.token,
                             "window": from,
                         }),
                     );
                     continue;
                 }
+                // G-06 unmaximize-before-move (REQ-MAX-08): authorize the
+                // exact subject first, issue exactly one nonactivating
+                // clear, then only an observed clear with the same
+                // reference, focus and domain continues in this invocation
+                // (a cleared float takes the half-snap below, a cleared tile
+                // the ordinary move). Any refusal is narrow with no clear
+                // and no structural move; a later press retries. Fullscreen
+                // precedence is handled above.
+                if intent.op == SnapOp::Move
+                    && crate::tiling::maximized_focus_fence(subject_maximized, subject_fullscreen)
+                {
+                    // Exact subject with retained-overlay support:
+                    // chord-time membership alone never authorizes the
+                    // native clear. The expectation must pin the chord-time
+                    // member key exactly, or a token/observation skew would
+                    // clear the wrong window.
+                    let Some(expected) = overlay_expected(state, &observed, &retained, &from)
+                    else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-refused-maximize-clear",
+                                "cause": "vanished",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    };
+                    if expected.hwnd != member_key.hwnd
+                        || expected.identity.pid != member_key.pid
+                        || expected.identity.process_creation != member_key.creation
+                    {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-refused-maximize-clear",
+                                "cause": "identity-raced",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    // Fresh exact-lifetime revalidation with the process held
+                    // open across the clear; overlays stay allowed (the
+                    // subject is maximized by construction here).
+                    let stored_tag = state.member_tags.get(&member_key).map(String::as_str);
+                    let proof = state.allowlist.is_some();
+                    let target = match revalidate_target(
+                        &expected,
+                        me,
+                        fulls,
+                        &mut state.tokens,
+                        proof,
+                        state.allowlist.as_ref(),
+                        &state.scope,
+                        stored_tag,
+                        &state.scope_hosts,
+                        true,
+                    ) {
+                        Ok(target) => target,
+                        Err(reason) => {
+                            state.snap_advance = None;
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "snap",
+                                    "tick": tick,
+                                    "correlation": correlation.as_str(),
+                                    "op": intent.op.as_str(),
+                                    "direction": direction_name(intent.direction),
+                                    "edge": intent.edge.as_str(),
+                                    "disposition": "consumed",
+                                    "outcome": "move-refused-maximize-clear",
+                                    "cause": reason,
+                                    "origin": origin.token,
+                                    "window": from,
+                                }),
+                            );
+                            continue;
+                        }
+                    };
+                    // Home/view stability plus suspension/elevation just
+                    // before the write: a veto authorizes no clear and no
+                    // move. Games and elevated foregrounds stay untouched.
+                    let same_home = state
+                        .workspaces
+                        .member_loc(&member_key)
+                        .is_some_and(|fresh| {
+                            fresh.output == home.output && fresh.workspace == home.workspace
+                        });
+                    let same_view = if sticky_subject {
+                        state
+                            .workspaces
+                            .active_id(&home.output)
+                            .is_some_and(|active| active == loc.workspace)
+                    } else {
+                        true
+                    };
+                    let same_focus_pre =
+                        unsafe { GetForegroundWindow() } as usize as u64 == member_key.hwnd;
+                    let read = suspend_read(state, me, fulls);
+                    let elevated = foreground_elevated(me);
+                    // Fresh fullscreen precedence on the revalidated
+                    // subject: the tick snapshot may predate a native or
+                    // project-owned fullscreen transition (a managed
+                    // fullscreen foreground bypasses the suspend veto, and
+                    // the focus-relaxed revalidation allows fullscreen
+                    // facts). Owned restoration metadata wins over
+                    // geometry, matching the fullscreen toggle decision;
+                    // uncertainty fails closed. The shared stale-retirement
+                    // sequence below is the same production ordering the B9
+                    // route drives hermetically (metadata removal only, no
+                    // geometry write); a captionless non-cover transition
+                    // never retires. Never cleared, never moved on veto.
+                    let pre_meta = read_fullscreen_meta(member_key.hwnd);
+                    let mut native_retire = NativeUnfloatClear;
+                    let effective_pre = effective_stale_meta_via_effects(
+                        &mut native_retire,
+                        state,
+                        &member_key,
+                        &expected,
+                        me,
+                        pre_meta,
+                        same_home && same_view && same_focus_pre && !read.veto.block && !elevated,
+                        fulls,
+                    );
+                    let fresh_fullscreen =
+                        target.window.facts.captionless_fullscreen || effective_pre.is_some();
+                    if let Some(cause) = crate::tiling::authorize_maximize_clear(
+                        fresh_fullscreen,
+                        same_home && same_view,
+                        same_focus_pre,
+                        read.veto.block,
+                        elevated,
+                    ) {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-refused-maximize-clear",
+                                "cause": cause,
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-maximize-clear",
+                            "result": "issued",
+                            "origin": origin.token,
+                            "window": from,
+                        }),
+                    );
+                    let clear = restore_zoom_placement(member_key.hwnd);
+                    // The held process keeps liveness authority across the
+                    // clear; recheck the HWND pid afterward against recycling.
+                    let _ = &target.held;
+                    if !pid_current(target.window.hwnd, target.window.identity.pid) {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-refused-maximize-clear",
+                                "cause": "identity-raced",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-maximize-clear",
+                            "result": clear,
+                            "origin": origin.token,
+                            "window": from,
+                        }),
+                    );
+                    // Fresh re-observation: pre-clear topology must never
+                    // drive the move.
+                    let mut skipped_fresh: Vec<(String, String)> = Vec::new();
+                    let mut retained_fresh: Vec<RetainedRow> = Vec::new();
+                    let Some(observed_fresh) =
+                        state.observe(me, fulls, &mut skipped_fresh, &mut retained_fresh)
+                    else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "observation-failed",
+                                "origin": origin.token,
+                            }),
+                        );
+                        continue;
+                    };
+                    let same_ref = state
+                        .member_tokens
+                        .get(&member_key)
+                        .is_some_and(|token| token.as_str() == from.as_str());
+                    let fresh_row = retained_fresh.iter().find(|r| r.key == member_key);
+                    // Eligible again means cleared: observed windows hold no
+                    // overlay state. Otherwise the fresh retained flags decide.
+                    let observed_cleared = if observed_fresh.iter().any(|w| w.token == from) {
+                        true
+                    } else {
+                        fresh_row.is_some_and(|row| !row.maximized)
+                    };
+                    // Home stability after the clear: pre-clear topology
+                    // (and, for sticky subjects, the displayed workspace)
+                    // must never drive the move.
+                    let same_domain =
+                        state
+                            .workspaces
+                            .member_loc(&member_key)
+                            .is_some_and(|fresh| {
+                                fresh.output == home.output && fresh.workspace == home.workspace
+                            });
+                    let same_view_post = !sticky_subject
+                        || state
+                            .workspaces
+                            .active_id(&home.output)
+                            .is_some_and(|active| active == loc.workspace);
+                    let same_focus =
+                        unsafe { GetForegroundWindow() } as usize as u64 == member_key.hwnd;
+                    // Post-clear fullscreen fence through the shared
+                    // derivation (same as the B9 route): the fresh observed
+                    // captionless flag plus the retained row flag plus a
+                    // fresh owned-metadata read. A retained row's flag alone
+                    // misses an owned transition whose frame never covered a
+                    // monitor; uncertainty fails closed and a later press
+                    // retries.
+                    let fresh_captionless = observed_fresh
+                        .iter()
+                        .find(|w| w.token == from)
+                        .map(|w| w.facts.captionless_fullscreen)
+                        .unwrap_or(false);
+                    let fullscreen_now = crate::tiling::postclear_fullscreen_now(
+                        fresh_captionless,
+                        fresh_row.is_some_and(|row| row.fullscreen),
+                        read_fullscreen_meta(member_key.hwnd).is_some(),
+                    );
+                    if let Some(cause) = crate::tiling::maximize_clear_refusal(
+                        clear,
+                        observed_cleared,
+                        same_ref,
+                        same_domain && same_view_post,
+                        same_focus,
+                        fullscreen_now,
+                    ) {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-refused-maximize-clear",
+                                "cause": cause,
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-maximize-clear",
+                            "result": "observed-cleared",
+                            "origin": origin.token,
+                            "window": from,
+                        }),
+                    );
+                    // Route below on the fresh observation.
+                    observed = observed_fresh;
+                    retained = retained_fresh;
+                    skipped = skipped_fresh;
+                }
                 let mut hint_cx = HintCx::new();
+                // Float-origin directional commands (R-FLT-07..11): local
+                // synchronous routing over same-domain observed floats with
+                // exactly one native actuation and no Engine admission. Tile
+                // origins skip floats exactly as before.
+                if float_origin {
+                    let direction = direction_name(intent.direction);
+                    // The subject must still read as the focused observed
+                    // float; a vanished subject refuses stale with no writes.
+                    let Some(subject) = observed.iter().find(|w| w.token == from) else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": match intent.op {
+                                    SnapOp::Focus => "focus-float-refused-stale",
+                                    SnapOp::Move => "move-float-refused-stale",
+                                },
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    };
+                    if intent.op == SnapOp::Focus {
+                        let candidates = float_focus_candidates(
+                            state,
+                            &observed,
+                            &retained,
+                            &loc.output,
+                            &loc.workspace,
+                            &from,
+                        );
+                        let Some(target) = crate::tiling::select_float_focus_target(
+                            subject.visible.x,
+                            subject.visible.y,
+                            direction,
+                            &candidates,
+                        ) else {
+                            // Miss retains focus: single-output has no
+                            // cross-output leg (multi-output foundation
+                            // pending) and never cycles workspaces.
+                            state.snap_advance = None;
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "snap",
+                                    "tick": tick,
+                                    "correlation": correlation.as_str(),
+                                    "op": intent.op.as_str(),
+                                    "direction": direction_name(intent.direction),
+                                    "edge": intent.edge.as_str(),
+                                    "disposition": "consumed",
+                                    "outcome": "focus-float-retained",
+                                    "reason": "no-target",
+                                    "origin": origin.token,
+                                    "window": from,
+                                }),
+                            );
+                            continue;
+                        };
+                        let actuation =
+                            actuate_focus(state, me, fulls, &observed, &retained, &target);
+                        if actuation.outcome == "focus-ok" {
+                            note_focus_advance(state, &observed, &retained, &target);
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "snap",
+                                    "tick": tick,
+                                    "correlation": correlation.as_str(),
+                                    "op": intent.op.as_str(),
+                                    "direction": direction_name(intent.direction),
+                                    "edge": intent.edge.as_str(),
+                                    "disposition": "consumed",
+                                    "outcome": "focus-float-applied",
+                                    "setter_accepted": actuation.setter_accepted,
+                                    "prime_inserted": actuation.prime_inserted,
+                                    "attach_ok": actuation.attach_ok,
+                                    "eventual": actuation.eventual,
+                                    "deferred": actuation.deferred,
+                                    "origin": origin.token,
+                                    "window": from,
+                                    "continued": continued,
+                                }),
+                            );
+                        } else {
+                            state.snap_advance = None;
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "snap",
+                                    "tick": tick,
+                                    "correlation": correlation.as_str(),
+                                    "op": intent.op.as_str(),
+                                    "direction": direction_name(intent.direction),
+                                    "edge": intent.edge.as_str(),
+                                    "disposition": "consumed",
+                                    "outcome": actuation.outcome,
+                                    "setter_accepted": actuation.setter_accepted,
+                                    "prime_inserted": actuation.prime_inserted,
+                                    "attach_ok": actuation.attach_ok,
+                                    "eventual": actuation.eventual,
+                                    "deferred": actuation.deferred,
+                                    "origin": origin.token,
+                                    "window": from,
+                                    "continued": continued,
+                                }),
+                            );
+                        }
+                        continue;
+                    }
+                    // Half-snap: the stateless work-area half for the
+                    // direction; the window stays floating and focused. No
+                    // Engine call, no overlay clear, no transfer; repeats
+                    // request the same half again.
+                    let Some(area) = areas.iter().find(|a| a.device == loc.output) else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "unknown-output",
+                                "origin": origin.token,
+                            }),
+                        );
+                        continue;
+                    };
+                    let Some(half) =
+                        crate::tiling::float_half_snap_rect(area.work, state.inner_gap, direction)
+                    else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-refused-invalid-geometry",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    };
+                    // Declared-size constraints refuse without writes (KDE
+                    // `move-float-refused-constraints` parity): an
+                    // incompatible half never fights the client. Maximum
+                    // track rides the same query; unknown stays unknown.
+                    let (hints, _) = min_hint_for(subject, &hint_cx);
+                    if !crate::tiling::half_snap_constraints_ok(half, hints) {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-refused-constraints",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    let Some(outer) = subject.insets.visible_to_outer(half) else {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-refused-invalid-geometry",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    };
+                    // Revalidate immediately before the single write, mirroring
+                    // the shared write path minus the tile-membership fences.
+                    let member_key_float = crate::workspace::WindowKey {
+                        hwnd: subject.hwnd,
+                        pid: subject.identity.pid,
+                        creation: subject.identity.process_creation.clone(),
+                    };
+                    let stored_tag_float =
+                        state.member_tags.get(&member_key_float).map(String::as_str);
+                    let proof_float = state.allowlist.is_some();
+                    let target = match revalidate_target(
+                        subject,
+                        me,
+                        fulls,
+                        &mut state.tokens,
+                        proof_float,
+                        state.allowlist.as_ref(),
+                        &state.scope,
+                        stored_tag_float,
+                        &state.scope_hosts,
+                        false,
+                    ) {
+                        Ok(target) => target,
+                        Err(reason) => {
+                            state.snap_advance = None;
+                            log_json_at(
+                                &log_path,
+                                serde_json::json!({
+                                    "event": "snap",
+                                    "tick": tick,
+                                    "correlation": correlation.as_str(),
+                                    "op": intent.op.as_str(),
+                                    "direction": direction_name(intent.direction),
+                                    "edge": intent.edge.as_str(),
+                                    "disposition": "consumed",
+                                    "outcome": reason,
+                                    "origin": origin.token,
+                                    "window": from,
+                                }),
+                            );
+                            continue;
+                        }
+                    };
+                    // User safety at write time: a vetoing foreground that
+                    // arrived during validation vetoes this write, never rides
+                    // along. Games stay untouched.
+                    let read = suspend_read(state, me, fulls);
+                    if read.veto.block {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-skipped-fence",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    let hwnd = target.window.hwnd as isize as HWND;
+                    let ok = unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            outer.x,
+                            outer.y,
+                            outer.w,
+                            outer.h,
+                            SWP_NOACTIVATE | SWP_NOZORDER,
+                        )
+                    };
+                    // The held process keeps liveness authority across the
+                    // write; recheck the HWND pid afterward against recycling.
+                    let _ = &target.held;
+                    let pid_ok = pid_current(target.window.hwnd, target.window.identity.pid);
+                    if proof_float {
+                        audit_json(
+                            state,
+                            serde_json::json!({
+                                "event": "proof-write",
+                                "tick": tick,
+                                "op": "move-float",
+                                "window": from,
+                                "requested": [half.x, half.y, half.w, half.h],
+                                "outer": [outer.x, outer.y, outer.w, outer.h],
+                                "flags": "SWP_NOACTIVATE|SWP_NOZORDER",
+                                "outcome": if ok != 0 && pid_ok { "written" } else if ok == 0 { "setter-failed" } else { "pid-changed" },
+                            }),
+                        );
+                    }
+                    if !pid_ok {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-refused-stale",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    if ok == 0 {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-write-failed",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    // The half-snap retains focus on the same subject, exactly
+                    // like KDE's post-write retention.
+                    let actuation = actuate_focus(state, me, fulls, &observed, &retained, &from);
+                    if actuation.outcome != "focus-ok" {
+                        state.snap_advance = None;
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "snap",
+                                "tick": tick,
+                                "correlation": correlation.as_str(),
+                                "op": intent.op.as_str(),
+                                "direction": direction_name(intent.direction),
+                                "edge": intent.edge.as_str(),
+                                "disposition": "consumed",
+                                "outcome": "move-float-focus-failed",
+                                "origin": origin.token,
+                                "window": from,
+                            }),
+                        );
+                        continue;
+                    }
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "snap",
+                            "tick": tick,
+                            "correlation": correlation.as_str(),
+                            "op": intent.op.as_str(),
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "consumed",
+                            "outcome": "move-float-applied",
+                            "origin": origin.token,
+                            "window": from,
+                            "continued": continued,
+                        }),
+                    );
+                    continue;
+                }
                 let Some(rows) = assemble_domain_rows(
                     state,
                     &loc.output,
@@ -7129,27 +8389,7 @@ fn keyboard_tick(
                                 actuate_focus(state, me, fulls, &observed, &retained, &to);
                             let outcome = actuation.outcome;
                             if outcome == "focus-ok" {
-                                // Verified own advance: later intents in this
-                                // batch and across bounded drains may continue
-                                // from it; cleared on external focus,
-                                // mismatch, suspension, or gesture.
-                                // Retained-aware: a focus-ok into a maximized
-                                // member advances from its retained row, never
-                                // a stale None.
-                                state.snap_advance = observed
-                                    .iter()
-                                    .find(|w| w.token == to)
-                                    .map(snap_origin_of)
-                                    .or_else(|| {
-                                        retained.iter().find(|r| r.token == to).map(|row| {
-                                            crate::snapkey::SnapOrigin {
-                                                hwnd: row.key.hwnd,
-                                                token: row.token.clone(),
-                                                pid: row.key.pid,
-                                                creation: row.key.creation.clone(),
-                                            }
-                                        })
-                                    });
+                                note_focus_advance(state, &observed, &retained, &to);
                             } else {
                                 state.snap_advance = None;
                             }
@@ -9239,6 +10479,336 @@ fn apply_unfloat_to_tiled(
     log_json_at(log_path, line);
 }
 
+/// Fresh observation promoted after one observed B9 clear: the ordinary
+/// fresh-admission route below runs on this instead of the pre-clear
+/// snapshot, so the restored frame (not the maximized one) drives placement.
+#[derive(Debug, Clone)]
+struct FreshFloatObservation {
+    observed: Vec<ObservedWindow>,
+    retained: Vec<RetainedRow>,
+    skipped: Vec<(String, String)>,
+}
+
+/// Native effects behind the B9 one-shot clear, split from the guard
+/// ordering so hermetic tests can substitute scripted answers while the
+/// production route (pre-guards, clear issue, fresh observe, post-guards,
+/// admission gating, logs) runs unchanged. [`NativeUnfloatClear`] calls
+/// exactly the functions the inline code called; behavior is identical.
+/// Message-only owned windows cannot carry this path (never foreground,
+/// never enumerated, machine-dependent suspend reads), so scripted stubs are
+/// the hermetic route, not the `AdoptWindow` harness.
+trait UnfloatClearEffects {
+    fn revalidate(
+        &mut self,
+        state: &mut TileLoop,
+        member_key: &crate::workspace::WindowKey,
+        expected: &ObservedWindow,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+    ) -> std::result::Result<WriteTarget, &'static str>;
+    fn foreground(&mut self) -> u64;
+    fn suspend_block(&mut self, state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Rect])
+    -> bool;
+    fn elevated(&mut self, me: &ProcessIdentity) -> bool;
+    fn fullscreen_meta(&mut self, hwnd: u64) -> Option<FullscreenMeta>;
+    /// Live stale-retirement probe: `(style, fullscreen)` where `None` on
+    /// either leg means unreadable (fail closed). No writes.
+    fn retire_probe(&mut self, hwnd: u64, fulls: &[Rect]) -> (Option<u32>, Option<bool>);
+    /// Best-effort stale-marker removal with absence readback. No geometry
+    /// writes. Returns true only when the marker reads absent afterward.
+    fn retire_clear(&mut self, hwnd: u64) -> bool;
+    fn restore(&mut self, hwnd: u64) -> &'static str;
+    fn pid_current(&mut self, hwnd: u64, pid: u32) -> bool;
+    fn observe(
+        &mut self,
+        state: &mut TileLoop,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+    ) -> Option<FreshFloatObservation>;
+}
+
+/// Production native effects for the B9 clear: exact pass-throughs to the
+/// Win32 reads/writes the route requires.
+struct NativeUnfloatClear;
+
+impl UnfloatClearEffects for NativeUnfloatClear {
+    fn revalidate(
+        &mut self,
+        state: &mut TileLoop,
+        member_key: &crate::workspace::WindowKey,
+        expected: &ObservedWindow,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+    ) -> std::result::Result<WriteTarget, &'static str> {
+        let stored_tag = state.member_tags.get(member_key).map(String::as_str);
+        let proof = state.allowlist.is_some();
+        revalidate_target(
+            expected,
+            me,
+            fulls,
+            &mut state.tokens,
+            proof,
+            state.allowlist.as_ref(),
+            &state.scope,
+            stored_tag,
+            &state.scope_hosts,
+            true,
+        )
+    }
+
+    fn foreground(&mut self) -> u64 {
+        (unsafe { GetForegroundWindow() }) as usize as u64
+    }
+
+    fn suspend_block(
+        &mut self,
+        state: &mut TileLoop,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+    ) -> bool {
+        suspend_read(state, me, fulls).veto.block
+    }
+
+    fn elevated(&mut self, me: &ProcessIdentity) -> bool {
+        foreground_elevated(me)
+    }
+
+    fn fullscreen_meta(&mut self, hwnd: u64) -> Option<FullscreenMeta> {
+        read_fullscreen_meta(hwnd)
+    }
+
+    fn retire_probe(&mut self, hwnd: u64, fulls: &[Rect]) -> (Option<u32>, Option<bool>) {
+        (
+            live_style_for_retire(hwnd),
+            live_overlay_flags(hwnd, fulls).1,
+        )
+    }
+
+    fn retire_clear(&mut self, hwnd: u64) -> bool {
+        clear_fullscreen_meta(hwnd)
+    }
+
+    fn restore(&mut self, hwnd: u64) -> &'static str {
+        restore_zoom_placement(hwnd)
+    }
+
+    fn pid_current(&mut self, hwnd: u64, pid: u32) -> bool {
+        pid_current(hwnd, pid)
+    }
+
+    fn observe(
+        &mut self,
+        state: &mut TileLoop,
+        me: &ProcessIdentity,
+        fulls: &[Rect],
+    ) -> Option<FreshFloatObservation> {
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut retained: Vec<RetainedRow> = Vec::new();
+        let observed = state.observe(me, fulls, &mut skipped, &mut retained)?;
+        Some(FreshFloatObservation {
+            observed,
+            retained,
+            skipped,
+        })
+    }
+}
+
+/// B9 one-shot clear for an ordinary maximized float toggle (R-FLT-06,
+/// COSMIC unmaximize-then-fresh-admit parity): exactly one nonactivating
+/// native restore plus fresh re-observation. Only an observed clear with the
+/// same reference, domain, and focus and no fullscreen promotes the fresh
+/// observation (`Ok`) for ordinary fresh admission below; every other outcome
+/// returns its settle `(outcome, cause)` with float membership and preimages
+/// retained (no Engine commit, no marker change): the caller settles and ends
+/// only this toggle, so a later press retries, with no delayed intent and no
+/// automatic retry. The caller gates fullscreen, sticky, tiled, and
+/// non-maximized lanes before calling; reused pure gates
+/// (`authorize_maximize_clear`, `maximize_clear_refusal`) keep the item-18
+/// clear discipline. One native attempt per explicit activation.
+#[allow(clippy::too_many_arguments)]
+fn unfloat_maximize_clear(
+    state: &mut TileLoop,
+    effects: &mut dyn UnfloatClearEffects,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    member_key: &crate::workspace::WindowKey,
+    from: &str,
+    loc: &crate::workspace::MemberLoc,
+    origin_token: &str,
+    log_path: &Path,
+    tick: u64,
+    correlation: &CorrelationId,
+) -> std::result::Result<FreshFloatObservation, (&'static str, Option<&'static str>)> {
+    // Exact subject with retained-overlay support: chord-time membership
+    // alone never authorizes the native clear. The expectation must pin the
+    // chord-time member key exactly, or a token/observation skew would clear
+    // the wrong window. A maximized float is retained (never eligible), so
+    // the retained fallback applies here.
+    let Some(expected) = overlay_expected(state, observed, retained, from) else {
+        return Err(("float-refused-maximize", None));
+    };
+    if expected.hwnd != member_key.hwnd
+        || expected.identity.pid != member_key.pid
+        || expected.identity.process_creation != member_key.creation
+    {
+        return Err(("float-refused-maximize-clear", Some("identity-raced")));
+    }
+    // Fresh exact-lifetime revalidation with the process held open across
+    // the clear; overlays stay allowed (the subject is maximized by
+    // construction here).
+    let target = match effects.revalidate(state, member_key, &expected, me, fulls) {
+        Ok(target) => target,
+        Err(reason) => return Err(("float-refused-maximize-clear", Some(reason))),
+    };
+    // Home/focus stability plus suspension/elevation just before the write:
+    // a veto authorizes no clear and no unfloat. Games and elevated
+    // foregrounds stay untouched. Fresh fullscreen precedence on the
+    // revalidated subject: the tick snapshot may predate a native or
+    // project-owned fullscreen transition. Owned restoration metadata wins
+    // over geometry, matching the fullscreen toggle decision; uncertainty
+    // fails closed. A stale marker whose chrome provably restored and whose
+    // frame provably no longer covers retires here (metadata removal only,
+    // no geometry write) so an exit by other means does not strand the
+    // clear; a captionless non-cover transition never retires. Never
+    // cleared, never unfloated on veto.
+    let same_home = state
+        .workspaces
+        .member_loc(member_key)
+        .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
+    let same_focus_pre = effects.foreground() == member_key.hwnd;
+    let suspend_blocked = effects.suspend_block(state, me, fulls);
+    let elevated = effects.elevated(me);
+    let pre_meta = effects.fullscreen_meta(member_key.hwnd);
+    let effective_pre = effective_stale_meta_via_effects(
+        effects,
+        state,
+        member_key,
+        &expected,
+        me,
+        pre_meta,
+        same_home && same_focus_pre && !suspend_blocked && !elevated,
+        fulls,
+    );
+    let fresh_fullscreen = target.window.facts.captionless_fullscreen || effective_pre.is_some();
+    if let Some(cause) = crate::tiling::authorize_maximize_clear(
+        fresh_fullscreen,
+        same_home,
+        same_focus_pre,
+        suspend_blocked,
+        elevated,
+    ) {
+        return Err(("float-refused-maximize-clear", Some(cause)));
+    }
+    log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "float-toggle",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "edge": "consumed",
+            "disposition": "consumed",
+            "outcome": "float-maximize-clear",
+            "result": "issued",
+            "origin": origin_token,
+            "window": from,
+        }),
+    );
+    let clear = effects.restore(member_key.hwnd);
+    // The held process keeps liveness authority across the clear; recheck
+    // the HWND pid afterward against recycling.
+    let _ = &target.held;
+    if !effects.pid_current(member_key.hwnd, target.window.identity.pid) {
+        return Err(("float-refused-maximize-clear", Some("identity-raced")));
+    }
+    log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "float-toggle",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "edge": "consumed",
+            "disposition": "consumed",
+            "outcome": "float-maximize-clear",
+            "result": clear,
+            "origin": origin_token,
+            "window": from,
+        }),
+    );
+    // Fresh re-observation: pre-clear topology must never drive admission.
+    let Some(fresh) = effects.observe(state, me, fulls) else {
+        return Err(("observation-failed", None));
+    };
+    let observed_fresh = fresh.observed;
+    let retained_fresh = fresh.retained;
+    let skipped_fresh = fresh.skipped;
+    let same_ref = state
+        .member_tokens
+        .get(member_key)
+        .is_some_and(|token| token.as_str() == from);
+    let fresh_row = retained_fresh.iter().find(|r| r.key == *member_key);
+    // Eligible again means cleared: a maximized member is retained, never
+    // eligible, so observed presence proves the clear. Otherwise the fresh
+    // retained flags decide.
+    let observed_cleared = if observed_fresh.iter().any(|w| w.token == from) {
+        true
+    } else {
+        fresh_row.is_some_and(|row| !row.maximized)
+    };
+    // Home stability after the clear: pre-clear topology must never drive
+    // admission.
+    let same_domain = state
+        .workspaces
+        .member_loc(member_key)
+        .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
+    let same_focus = effects.foreground() == member_key.hwnd;
+    // Post-clear fullscreen fence through the shared derivation (same as
+    // the directional route): the fresh observed captionless flag plus the
+    // retained row flag plus a fresh owned-metadata read. A retained row's
+    // flag alone misses an owned transition whose frame never covered a
+    // monitor; uncertainty fails closed and a later press retries.
+    let fresh_captionless = observed_fresh
+        .iter()
+        .find(|w| w.token == from)
+        .map(|w| w.facts.captionless_fullscreen)
+        .unwrap_or(false);
+    let fullscreen_now = crate::tiling::postclear_fullscreen_now(
+        fresh_captionless,
+        fresh_row.is_some_and(|row| row.fullscreen),
+        effects.fullscreen_meta(member_key.hwnd).is_some(),
+    );
+    if let Some(cause) = crate::tiling::maximize_clear_refusal(
+        clear,
+        observed_cleared,
+        same_ref,
+        same_domain,
+        same_focus,
+        fullscreen_now,
+    ) {
+        return Err(("float-refused-maximize-clear", Some(cause)));
+    }
+    log_json_at(
+        log_path,
+        serde_json::json!({
+            "event": "float-toggle",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "edge": "consumed",
+            "disposition": "consumed",
+            "outcome": "float-maximize-clear",
+            "result": "observed-cleared",
+            "origin": origin_token,
+            "window": from,
+        }),
+    );
+    Ok(FreshFloatObservation {
+        observed: observed_fresh,
+        retained: retained_fresh,
+        skipped: skipped_fresh,
+    })
+}
+
 /// Win+G float toggle (KDE Meta+G parity): fresh observation, exact origin
 /// re-resolution, full gates, one Engine `ToggleFloat` evaluated on a local
 /// candidate that commits only after the target native effects verify, then
@@ -9307,9 +10877,9 @@ fn dispatch_float_intent(
         return;
     };
     let ChordObserved {
-        observed,
-        retained,
-        skipped,
+        mut observed,
+        mut retained,
+        mut skipped,
     } = chord;
     let ChordTarget {
         from,
@@ -9339,16 +10909,54 @@ fn dispatch_float_intent(
     }
     // Overlay fences on live state: overlay targets never float, and a
     // natively overlaid float never unfloats until it reads normal again.
-    // Sticky origins refuse with the sticky vocabulary (KDE parity).
+    // Sticky origins refuse with the sticky vocabulary (KDE parity). B9
+    // exception (R-FLT-06): an ordinary maximized float takes one
+    // nonactivating clear plus observed-clear before fresh admission instead
+    // of refusing; fullscreen, sticky, and tiled lanes keep refusing here.
     let is_sticky_origin = state.sticky.contains_key(&member_key);
     if let Some(refusal) =
         chord_overlay_refusal(is_sticky_origin, &observed, &retained, &member_key)
     {
-        let mut line = settle(refusal);
-        line["origin"] = serde_json::Value::from(origin.token.clone());
-        line["window"] = serde_json::Value::from(from.clone());
-        log_json_at(&log_path, line);
-        return;
+        if refusal == "float-refused-maximize" && is_float && !is_sticky_origin {
+            match unfloat_maximize_clear(
+                state,
+                &mut NativeUnfloatClear,
+                me,
+                fulls,
+                &observed,
+                &retained,
+                &member_key,
+                &from,
+                &loc,
+                &origin.token,
+                &log_path,
+                tick,
+                &correlation,
+            ) {
+                Ok(fresh) => {
+                    observed = fresh.observed;
+                    retained = fresh.retained;
+                    skipped = fresh.skipped;
+                }
+                Err((outcome, cause)) => {
+                    state.snap_advance = None;
+                    let mut line = settle(outcome);
+                    line["origin"] = serde_json::Value::from(origin.token.clone());
+                    line["window"] = serde_json::Value::from(from.clone());
+                    if let Some(cause) = cause {
+                        line["cause"] = serde_json::Value::from(cause);
+                    }
+                    log_json_at(&log_path, line);
+                    return;
+                }
+            }
+        } else {
+            let mut line = settle(refusal);
+            line["origin"] = serde_json::Value::from(origin.token.clone());
+            line["window"] = serde_json::Value::from(from.clone());
+            log_json_at(&log_path, line);
+            return;
+        }
     }
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let live_visible = by_hwnd.get(&member_key.hwnd).map(|w| w.visible);
@@ -10606,9 +12214,10 @@ fn admit_born_fullscreen(
 /// and focus, but no `member_rects` tile slot, no Engine exception, and no
 /// hold set. A floating workspace therefore preserves the native frame (the
 /// mode-gated clear skips) while select-away/back still hides and reveals;
-/// the first tiled admission clears once through the existing gate and the
-/// refetched normal observation tiles normally. Same exact-lifetime, scope,
-/// hosted-child, and proof fences as the born-fullscreen admission.
+/// the first tiled admission reserves the overlay slot through the R-MAX-03
+/// retile latch (both `core.born_maximized` values) and the refetched normal
+/// observation tiles into it. Same exact-lifetime, scope, hosted-child, and
+/// proof fences as the born-fullscreen admission.
 fn admit_slotless_maximized(
     state: &mut TileLoop,
     me: &ProcessIdentity,
@@ -10723,19 +12332,23 @@ fn admit_slotless_maximized(
             // R-MAX-06 latch, bound here after every ownership fence above
             // (exact-lifetime, scope, hosted-child, proof, fresh tag): only a
             // tiled-first admission under the live overlay value keeps the
-            // overlay. Fixed births never latch (D4 wins). Floating-first rows take the unchanged R-MAX-03 lane
-            // (no latch, one-shot clear on retile under both values), and a
-            // later live flip cannot move this lifetime. Hydrated tile
-            // overrides ride their own reserved-overlay lane under both
-            // values and never take this latch either.
-            if !fixed_birth
-                && !hydrated_override
-                && crate::tiling::born_keep_latch(
-                    state.workspaces.is_tiled(&output, &active),
+            // overlay. Fixed births never latch (D4 wins). A later live flip
+            // cannot move this lifetime. Hydrated tile overrides ride their
+            // own reserved-overlay lane under both values and never take
+            // either latch. R-MAX-03 floating-first rows bind
+            // `retile_keep_overlay` instead: their later floating-to-tiled
+            // admission keeps the overlay under both `core.born_maximized`
+            // values with no one-shot clear.
+            if !fixed_birth && !hydrated_override {
+                let tiled_first = state.workspaces.is_tiled(&output, &active);
+                if crate::tiling::born_keep_latch(
+                    tiled_first,
                     born_maximized_keep_overlay_for(state.settings_live.as_ref()),
-                )
-            {
-                state.born_keep_overlay.insert(row.key.clone());
+                ) {
+                    state.born_keep_overlay.insert(row.key.clone());
+                } else if !tiled_first {
+                    state.retile_keep_overlay.insert(row.key.clone());
+                }
             }
             // No tile seed here: tiled row assembly reserves the overlay slot,
             // or the one-shot clear permits ordinary observed admission.
@@ -11407,6 +13020,9 @@ fn workspace_close_cleanup(state: &mut TileLoop) {
         .retain(|key| state.last_hwnds.contains(&key.hwnd));
     state
         .born_keep_overlay
+        .retain(|key| state.member_tokens.contains_key(key));
+    state
+        .retile_keep_overlay
         .retain(|key| state.member_tokens.contains_key(key));
     state
         .fixed_tile_overrides
@@ -18264,6 +19880,7 @@ fn run_tile_loop(
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),
         born_keep_overlay: BTreeSet::new(),
+        retile_keep_overlay: BTreeSet::new(),
         born_fullscreen: BTreeSet::new(),
         seen_nonfullscreen: BTreeSet::new(),
         last_foreground: 0,
@@ -18547,6 +20164,15 @@ fn run_tile_loop(
             refresh_active_border(&mut state, me, &fulls);
             refresh_group_underlay(&mut state, me, &fulls, &areas);
         }
+        // Trace-only owner-work epoch/sequence: created only when tracing so
+        // default runs pay no timer/counter work. The per-iteration guard
+        // below derives its relative start from this single epoch.
+        let owner_epoch: Option<Instant> = if state.trace {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let mut owner_seq: u64 = 0;
         loop {
             if stop_requested(dir, me)? || tray.as_ref().is_some_and(|t| t.stop_requested()) {
                 return Ok(());
@@ -18555,11 +20181,25 @@ fn run_tile_loop(
                 return Ok(());
             }
             pump_wait(TICK_POLL_MS);
+            // Trace-only owner-work clock starts here: `busy_us` excludes the
+            // wait above plus callbacks delivered inside it. Scoped to this
+            // iteration so every `continue`/error path below still samples.
+            let mut owner_work =
+                OwnerWorkGuard::begin(state.trace, &log_path, owner_epoch, owner_seq, state.tick);
+            if state.trace {
+                owner_seq += 1;
+            }
             let events = hook_queue()
                 .lock()
                 .map(|mut queue| std::mem::take(&mut *queue))
                 .unwrap_or_default();
             let mut woke = false;
+            // Trace-only batch breakdown for the owner-work sample; default
+            // runs skip the counting.
+            let ow_batch_total: u64 = if state.trace { events.len() as u64 } else { 0 };
+            let mut ow_wakes: u64 = 0;
+            let mut ow_starts: u64 = 0;
+            let mut ow_ends: u64 = 0;
             for event in events {
                 match event {
                     HookEvent::Wake(raw) => {
@@ -18572,6 +20212,9 @@ fn run_tile_loop(
                             continue;
                         }
                         woke = true;
+                        if state.trace {
+                            ow_wakes += 1;
+                        }
                     }
                     HookEvent::MoveSizeStart(raw, start_seq) => {
                         if state.border_overlay.hwnd() == Some(raw as u64)
@@ -18581,6 +20224,9 @@ fn run_tile_loop(
                             continue;
                         }
                         woke = true;
+                        if state.trace {
+                            ow_starts += 1;
+                        }
                         let hwnd = raw as u64;
                         // Shared START capture (Esc snapshot, PRE frame,
                         // identity fence); see `capture_gesture_start`. The
@@ -18623,6 +20269,9 @@ fn run_tile_loop(
                             continue;
                         }
                         woke = true;
+                        if state.trace {
+                            ow_ends += 1;
+                        }
                         let hwnd = raw as u64;
                         // Release cursor carried from the WinEvent callback,
                         // never re-read later. A missing capture fails closed
@@ -19153,6 +20802,13 @@ fn run_tile_loop(
             {
                 woke = true;
             }
+            // Trace-only owner-work gate: quiet short-poll iterations drop the
+            // disabled guard silently above via `continue`. Active wakes arm
+            // the single sample; RAII then records suspend/held/error exits.
+            if state.trace && (woke || slow) {
+                let gesture_held = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
+                owner_work.arm(ow_batch_total, ow_wakes, ow_starts, ow_ends, gesture_held);
+            }
             if !(woke || slow) {
                 continue;
             }
@@ -19273,7 +20929,7 @@ fn run_tile_loop(
             // Border follows the live foreground on every active wake,
             // including managed gestures that pause tiling below: the refresh
             // reads one fresh frame and never waits for reconciliation.
-            refresh_active_border(&mut state, me, &fulls);
+            refresh_border_timed(&mut state, me, &fulls, &mut owner_work);
             // The group fill follows on the same wake: chord/move trigger over
             // the Engine-projected source union, same freshness contract.
             refresh_group_underlay(&mut state, me, &fulls, &areas);
@@ -19586,7 +21242,7 @@ fn run_tile_loop(
             // target this tick, so re-read the fresh frame instead of leaving
             // the pre-reconcile geometry stale until the next wake. Own
             // overlay events are filtered above, so no feedback loop.
-            refresh_active_border(&mut state, me, &fulls);
+            refresh_border_timed(&mut state, me, &fulls, &mut owner_work);
             // Same for the group fill: a moved target may have joined another
             // group, so the projected union re-resolves instead of lingering.
             refresh_group_underlay(&mut state, me, &fulls, &areas);
@@ -23311,6 +24967,353 @@ mod fixed_predicate_tests {
     }
 
     #[test]
+    fn startup_fullscreen_exit_tiles_like_new() {
+        // Leg (a): already fullscreen at owner startup then exit admits like
+        // newly admitted window through production assembly. Fresh state
+        // carries no lifetime-known non-fullscreen identity, so the hold is
+        // allowed; the visible exit rides tiled hintless and tiles.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wnew");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wnew", "w1");
+        assert!(
+            !state.seen_nonfullscreen.contains(&key),
+            "startup carries no lifetime-known non-fullscreen identity"
+        );
+        assert!(
+            crate::tiling::should_hold_born_fullscreen(true, false, false),
+            "slotless first-seen fullscreen holds"
+        );
+        state.born_fullscreen.insert(key.clone());
+        let observed = vec![d5_observed("wnew", &key), d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(
+            state.born_first_exit.contains(&key),
+            "exit inserts the mark"
+        );
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-startup-exit",
+        )
+        .expect("exit classifies");
+        let row = rows.iter().find(|row| row.token == "wnew").expect("row");
+        assert!(!row.floating, "startup exit rides the tiled lane");
+        assert!(row.hints.is_empty(), "unknown flows as no hints");
+        let geometry = match &reply {
+            tiler_core::boundary::CoreReply::Tiled(plan) => &plan.geometry,
+            tiler_core::boundary::CoreReply::Projection(plan) => &plan.geometry,
+            other => panic!("startup exit commits tiled/projection, got {other:?}"),
+        };
+        assert!(
+            geometry.iter().any(|g| g.window.0 == "wnew"),
+            "tiled exit takes a tile slot"
+        );
+        assert!(d5_is_tiled(&state, &domain, "wnew"), "startup exit tiles");
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "tiling commit consumes the mark"
+        );
+    }
+
+    #[test]
+    fn born_after_startup_exit_tiles_like_new() {
+        // Leg (b): born fullscreen after owner startup then exit admits like
+        // newly admitted window. Existing members are lifetime-known
+        // non-fullscreen, but the new fullscreen key is not, so the hold is
+        // allowed; the exit tiles through production assembly.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wborn");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wborn", "w1");
+        // Existing member observed non-fullscreen first: lifetime-known.
+        let live = vec![d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &live, &[]);
+        assert!(
+            state.seen_nonfullscreen.contains(&w1key),
+            "existing member is lifetime-known"
+        );
+        assert!(
+            !state.seen_nonfullscreen.contains(&key),
+            "new fullscreen key is not lifetime-known"
+        );
+        assert!(
+            crate::tiling::should_hold_born_fullscreen(true, false, false),
+            "new slotless fullscreen holds"
+        );
+        state.born_fullscreen.insert(key.clone());
+        let observed = vec![d5_observed("wborn", &key), d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(state.born_first_exit.contains(&key));
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-born-exit",
+        )
+        .expect("exit classifies");
+        let geometry = match &reply {
+            tiler_core::boundary::CoreReply::Tiled(plan) => &plan.geometry,
+            tiler_core::boundary::CoreReply::Projection(plan) => &plan.geometry,
+            other => panic!("born exit commits tiled/projection, got {other:?}"),
+        };
+        assert!(
+            geometry.iter().any(|g| g.window.0 == "wborn"),
+            "tiled exit takes a tile slot"
+        );
+        let row = rows.iter().find(|row| row.token == "wborn").expect("row");
+        assert!(!row.floating, "born exit rides the tiled lane");
+        assert!(d5_is_tiled(&state, &domain, "wborn"), "born exit tiles");
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(!state.born_first_exit.contains(&key));
+    }
+
+    #[test]
+    fn managed_fullscreen_returns_tile_without_writes() {
+        // Leg (c): managed tiled fullscreen/unfullscreen returns its tile.
+        // A lifetime-known tiled member transitioning to fullscreen is a
+        // managed overlay (never a born hold): while fullscreen the window
+        // is absent from the eligible observation and rides retained-only,
+        // the reserved slot topology is unchanged, the plan carries no
+        // native geometry write for the member, and the next exit returns
+        // the same slot mark-free.
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wm");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        // Tile both members first so `wm` is lifetime-known ordinary.
+        let observed = vec![d5_observed("wm", &key), d5_observed("w1", &w1key)];
+        let (tiled_rows, tiled_reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-managed-tile",
+        )
+        .expect("initial tiles");
+        match &tiled_reply {
+            tiler_core::boundary::CoreReply::Tiled(_)
+            | tiler_core::boundary::CoreReply::Projection(_) => {}
+            other => panic!("initial commit converges, got {other:?}"),
+        }
+        let slot0 = state.member_rects.get("wm").copied().expect("slot");
+        let tile_rect0 = tiled_rows
+            .iter()
+            .find(|row| row.token == "wm")
+            .expect("row")
+            .rect;
+        assert!(d5_is_tiled(&state, &domain, "wm"));
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(state.seen_nonfullscreen.contains(&key));
+        // Fullscreen phase: the member leaves the eligible observation and
+        // rides retained-only, the possible production shape.
+        let observed_full = vec![d5_observed("w1", &w1key)];
+        let retained = vec![d5_retained(&key, "wm", false, true)];
+        super::track_fullscreen_holds(&mut state, &observed_full, &retained);
+        assert!(
+            !state.born_fullscreen.contains(&key),
+            "lifetime-known fullscreen never re-holds"
+        );
+        assert!(
+            !state.born_first_exit.contains(&key),
+            "no exit mark without a hold"
+        );
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed_full,
+            &retained,
+            "w1",
+            "d5-managed-full",
+        )
+        .expect("overlay rides");
+        let geometry = match &reply {
+            tiler_core::boundary::CoreReply::Tiled(plan) => &plan.geometry,
+            tiler_core::boundary::CoreReply::Projection(plan) => &plan.geometry,
+            other => panic!("overlay commits tiled/projection, got {other:?}"),
+        };
+        let overlay_row = rows.iter().find(|row| row.token == "wm").expect("row");
+        assert_eq!(
+            overlay_row.rect, slot0,
+            "overlay rides the last-known slot rect"
+        );
+        assert_eq!(
+            state.member_rects.get("wm").copied(),
+            Some(slot0),
+            "fullscreen keeps the reserved slot topology"
+        );
+        assert!(d5_is_tiled(&state, &domain, "wm"), "overlay keeps the slot");
+        assert!(
+            geometry.iter().any(|g| g.window.0 == "wm"),
+            "Engine plan retains the slot allocation while native writes skip it"
+        );
+        // The Engine plan still carries the slot allocation; the production
+        // write path excludes the retained-only member because its token is
+        // absent from the fresh eligible observation (same
+        // `writable_subset` the tick calls).
+        let members: std::collections::BTreeSet<crate::workspace::WindowKey> =
+            [key.clone(), w1key.clone()].into_iter().collect();
+        let token_of: std::collections::BTreeMap<crate::workspace::WindowKey, String> = [
+            (key.clone(), "wm".to_owned()),
+            (w1key.clone(), "w1".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let fresh: std::collections::HashSet<String> = ["w1".to_owned()].into_iter().collect();
+        let writable = crate::workspace_owner::writable_subset(
+            &members,
+            |_: &crate::workspace::WindowKey| false,
+            &token_of,
+            &fresh,
+        );
+        assert!(
+            !writable.contains("wm"),
+            "retained-only fullscreen member takes no geometry write"
+        );
+        // Exit again: ordinary, mark-free, same slot.
+        let observed_exit = vec![d5_observed("wm", &key), d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &observed_exit, &[]);
+        assert!(!state.born_first_exit.contains(&key));
+        let (exit_rows, exit_reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed_exit,
+            &[],
+            "w1",
+            "d5-managed-exit",
+        )
+        .expect("exit classifies");
+        match &exit_reply {
+            tiler_core::boundary::CoreReply::Tiled(_)
+            | tiler_core::boundary::CoreReply::Projection(_) => {}
+            other => panic!("exit commit converges, got {other:?}"),
+        }
+        assert_eq!(
+            exit_rows
+                .iter()
+                .find(|row| row.token == "wm")
+                .expect("row")
+                .rect,
+            tile_rect0,
+            "exit returns the same tile rect"
+        );
+        assert_eq!(
+            state.member_rects.get("wm").copied(),
+            Some(slot0),
+            "exit preserves the slot topology"
+        );
+        assert!(d5_is_tiled(&state, &domain, "wm"), "exit returns its tile");
+        assert!(!state.born_first_exit.contains(&key));
+    }
+
+    #[test]
+    fn borderless_exit_tiles_like_new() {
+        // Leg (e): borderless windowed fullscreen exit admits like newly
+        // admitted window. The production borderless predicate derives the
+        // hold flag from a captionless full-monitor frame; the exit then
+        // tiles through production assembly.
+        let full = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        assert!(
+            crate::tiling::is_borderless_fullscreen(true, full, &[full]),
+            "captionless full-monitor frame is fullscreen"
+        );
+        assert!(
+            !crate::tiling::is_borderless_fullscreen(
+                true,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                &[full]
+            ),
+            "small borderless window stays eligible"
+        );
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-a";
+        state.workspaces.ensure_output(output);
+        let ws = state.workspaces.active_id(output).expect("active");
+        let domain = d5_domain(output, &ws);
+        let key = d5_member(&mut state, output, &ws, "wbl");
+        let w1key = d5_member(&mut state, output, &ws, "w1");
+        d5_hold(&mut state, &domain, "wbl", "w1");
+        // Predicate-derived hold flag feeds the production hold gate.
+        let hold = crate::tiling::should_hold_born_fullscreen(
+            crate::tiling::is_borderless_fullscreen(true, full, &[full]),
+            false,
+            state.seen_nonfullscreen.contains(&key),
+        );
+        assert!(hold, "borderless cover holds slotless");
+        state.born_fullscreen.insert(key.clone());
+        let observed = vec![d5_observed("wbl", &key), d5_observed("w1", &w1key)];
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(state.born_first_exit.contains(&key));
+        let (rows, reply) = d5_assemble_and_commit(
+            &mut state,
+            output,
+            &ws,
+            &domain,
+            &observed,
+            &[],
+            "w1",
+            "d5-borderless-exit",
+        )
+        .expect("exit classifies");
+        let geometry = match &reply {
+            tiler_core::boundary::CoreReply::Tiled(plan) => &plan.geometry,
+            tiler_core::boundary::CoreReply::Projection(plan) => &plan.geometry,
+            other => panic!("borderless exit commits tiled/projection, got {other:?}"),
+        };
+        let row = rows.iter().find(|row| row.token == "wbl").expect("row");
+        assert!(!row.floating, "borderless exit rides the tiled lane");
+        assert!(
+            geometry.iter().any(|g| g.window.0 == "wbl"),
+            "tiled exit takes a tile slot"
+        );
+        assert!(d5_is_tiled(&state, &domain, "wbl"), "borderless exit tiles");
+        super::track_fullscreen_holds(&mut state, &observed, &[]);
+        assert!(!state.born_first_exit.contains(&key));
+    }
+
+    #[test]
     fn released_formerly_fixed_latch_now_plans_clear() {
         // D6: a confirmed release resets the latch and last-known hints, so a
         // formerly fixed maximum with current ordinary hints plans CLEAR.
@@ -23781,11 +25784,12 @@ mod born_maximized_tests {
     }
 
     /// Stage the slotless-admission outcome for one fresh lifetime through the
-    /// actual production binding helper: workspace membership without a tile
-    /// slot, plus the latch exactly when production binds it. Returns the key.
+    /// actual production binding helpers: workspace membership without a tile
+    /// slot, plus the born latch exactly when production binds it and the
+    /// R-MAX-03 retile latch for floating-first admissions. Returns the key.
     /// (`admit_slotless_maximized` itself needs live HWNDs for its ownership
-    /// fences, so staging its committed outcome through the real helper is
-    /// the hermetic boundary; the helper, the latch set, and the gate below
+    /// fences, so staging its committed outcome through the real helpers is
+    /// the hermetic boundary; the helpers, the latch sets, and the gate below
     /// are the production selection.)
     fn admit_slotless(
         state: &mut super::TileLoop,
@@ -23798,11 +25802,14 @@ mod born_maximized_tests {
         assert!(state.workspaces.assign(key.clone(), output, active, false));
         state.member_tokens.insert(key.clone(), token.to_owned());
         assert!(!state.member_rects.contains_key(token));
+        let tiled_first = state.workspaces.is_tiled(output, active);
         if crate::tiling::born_keep_latch(
-            state.workspaces.is_tiled(output, active),
+            tiled_first,
             born_maximized_keep_overlay_for(state.settings_live.as_ref()),
         ) {
             state.born_keep_overlay.insert(key.clone());
+        } else if !tiled_first {
+            state.retile_keep_overlay.insert(key.clone());
         }
         key
     }
@@ -24174,16 +26181,23 @@ mod born_maximized_tests {
     }
 
     #[test]
-    fn floating_first_retile_clears_under_both_values() {
-        // R-MAX-03 invariant: a floating-first admission never latches, so
-        // its first tiled admission keeps the existing one-shot clear under
-        // BOTH setting values, including a flip while it sits slotless.
+    fn floating_first_retile_overlays_under_both_values() {
+        // R-MAX-03: a floating-first admission binds the retile latch under
+        // EITHER `core.born_maximized` value (only born R-MAX-06 reads that
+        // setting), so its first tiled admission reserves the overlay slot
+        // with no one-shot clear; a live flip cannot move the bound lifetime.
+        // Real retained Engine proof: sibling share, overlay write exclusion,
+        // exact restore, and repeat stability.
         let (mut state, output, active) = harness(false);
-        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_TILE));
         let max = admit_slotless(&mut state, &output, &active, 101, "w8");
         assert!(
+            state.retile_keep_overlay.contains(&max),
+            "R-MAX-03 binds independently of the born setting"
+        );
+        assert!(
             !state.born_keep_overlay.contains(&max),
-            "R-MAX-03 never latches"
+            "R-MAX-03 never takes the born latch"
         );
         // Floating assembly keeps it slotless (existing outcome).
         let retained = vec![maximized_row(&max, "w8", NATIVE_MAX, true)];
@@ -24193,24 +26207,191 @@ mod born_maximized_tests {
             !state.member_rects.contains_key("w8"),
             "floating maximum stays slotless"
         );
-        // Retile: the still-slotless maximum clears under both live values.
+        // Retile under a flipped live value: no clear planned, slot seeds.
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
         assert!(state.workspaces.set_tiled(&output, &active, true));
-        for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
-            state.settings_live = Some(live_with(born));
-            assert!(
-                crate::tiling::should_clear_maximize_at_admission_with_mode(
-                    false,
-                    true,
-                    state.member_rects.contains_key("w8"),
-                    false,
-                    true,
-                    state.born_keep_overlay.contains(&max)
-                ),
-                "R-MAX-03 retile must clear under {born}"
-            );
-        }
+        assert!(
+            state.retile_keep_overlay.contains(&max),
+            "live flip cannot move the bound lifetime"
+        );
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &super::HintCx::new()),
+            "retile overlay never plans the one-shot clear"
+        );
+        // Sibling already tiled; production row assembly over the retained
+        // maximum plus the live sibling reserves the slot with no clear.
+        let sib = max_key(100);
+        assert!(
+            state
+                .workspaces
+                .assign(sib.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(sib.clone(), "w7".to_owned());
+        state.member_rects.insert("w7".to_owned(), SIBLING);
+        let observed = vec![observed_normal(100, "w7", SIBLING)];
+        let rows = assemble(&mut state, &output, &active, &observed, &retained);
+        assert_eq!(rows.len(), 2);
+        let overlaid = rows.iter().find(|r| r.token == "w8").expect("slot row");
+        assert!(
+            !overlaid.floating,
+            "retile overlay keeps a tile slot, not a float exception"
+        );
+        assert!(
+            state.member_rects.contains_key("w8"),
+            "tiled retile must seed the retained slot"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "retile overlay arms no clear attempt"
+        );
+        let writes = reconcile(&mut state, &output, &active, &rows, 0);
+        let reserved = writes
+            .iter()
+            .find(|w| w.window.0 == "w8")
+            .expect("reserved slot")
+            .rect;
+        assert_ne!(reserved, NATIVE_MAX, "slot is layout, not the max frame");
+        assert!(
+            writes.iter().any(|w| w.window.0 == "w7"),
+            "sibling keeps its allocated share beside the overlay"
+        );
+        let writable = super::writable_tokens(&state, &output, &active, &observed);
+        assert!(
+            writable.contains("w7"),
+            "sibling takes the production tiled write"
+        );
+        assert!(
+            !writable.contains("w8"),
+            "retained-only overlay takes no geometry write: no native fight"
+        );
+
+        // Flipping live back to the tile default cannot move the bound
+        // lifetime either: still no clear planned, still no attempt.
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_TILE));
+        assert!(state.retile_keep_overlay.contains(&max));
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &super::HintCx::new()),
+            "retile overlay never plans the one-shot clear under either value"
+        );
         assert!(state.maximize_admission_attempted.is_empty());
-        assert!(state.born_keep_overlay.is_empty());
+
+        // Repeated maximized signals settle: reassembly is stable, still no
+        // attempt arms, still no writable fight.
+        let slot = state.member_rects.get("w8").copied().expect("slot");
+        let again = assemble(&mut state, &output, &active, &observed, &retained);
+        assert_eq!(again.len(), 2);
+        assert_eq!(
+            state.member_rects.get("w8").copied(),
+            Some(slot),
+            "repeat signals must not move the reserved slot"
+        );
+        assert!(state.maximize_admission_attempted.is_empty());
+        assert!(
+            !super::writable_tokens(&state, &output, &active, &observed).contains("w8"),
+            "repeat signals must not fight native state"
+        );
+
+        // Native restore refetches ordinary beside the sibling and lands
+        // EXACTLY the reserved Engine geometry on the next Engine round.
+        let refetched = vec![
+            observed_normal(100, "w7", SIBLING),
+            observed_normal(101, "w8", RESTORED),
+        ];
+        let rows = assemble(&mut state, &output, &active, &refetched, &[]);
+        assert_eq!(rows.len(), 2);
+        let revision = accepted_revision(&state, &output, &active);
+        let writes = reconcile(&mut state, &output, &active, &rows, revision);
+        let landed = writes
+            .iter()
+            .find(|w| w.window.0 == "w8")
+            .expect("restored tile")
+            .rect;
+        assert_eq!(
+            landed, reserved,
+            "restore must land exactly the reserved slot"
+        );
+        assert_eq!(
+            super::writable_tokens(&state, &output, &active, &refetched),
+            std::collections::HashSet::from(["w7".to_owned(), "w8".to_owned()]),
+            "restored member rejoins production writes beside its sibling"
+        );
+
+        // A recycled HWND mints a fresh lifetime: the stale member drops the
+        // retile latch with its slot, so no retained overlay leaks across
+        // windows.
+        let fresh = crate::workspace::WindowKey {
+            hwnd: 101,
+            pid: 9,
+            creation: "creation-new".to_owned(),
+        };
+        let stale = crate::workspace_owner::reused_hwnd_stale(
+            &state.member_tokens.keys().cloned().collect::<Vec<_>>(),
+            &state.hidden_claims.keys().cloned().collect(),
+            &fresh,
+        );
+        assert_eq!(stale, vec![max.clone()]);
+        for dead in stale {
+            super::drop_member_state(&mut state, &dead);
+        }
+        assert!(
+            !state.retile_keep_overlay.contains(&max),
+            "latch drops with the lifetime"
+        );
+    }
+
+    #[test]
+    fn floating_first_overlay_value_binds_retile_lane() {
+        // LOW control beside the TILE-first main test: floating-first under
+        // the OVERLAY value also binds the retile latch (never the born
+        // latch); no clear planned; production assembly seeds the slot and
+        // the real Engine reserves it beside the sibling.
+        let (mut state, output, active) = harness(false);
+        state.settings_live = Some(live_with(BORN_MAXIMIZED_OVERLAY));
+        let max = admit_slotless(&mut state, &output, &active, 101, "w8");
+        assert!(
+            state.retile_keep_overlay.contains(&max),
+            "floating-first binds retile under either value"
+        );
+        assert!(
+            !state.born_keep_overlay.contains(&max),
+            "floating-first never takes the born latch"
+        );
+        assert!(state.workspaces.set_tiled(&output, &active, true));
+        let retained = vec![maximized_row(&max, "w8", NATIVE_MAX, true)];
+        assert!(
+            !super::admission_clear_planned(&state, &retained[0], &super::HintCx::new()),
+            "overlay value keeps the retile overlay too"
+        );
+        let sib = max_key(100);
+        assert!(
+            state
+                .workspaces
+                .assign(sib.clone(), &output, &active, false)
+        );
+        state.member_tokens.insert(sib.clone(), "w7".to_owned());
+        state.member_rects.insert("w7".to_owned(), SIBLING);
+        let observed = vec![observed_normal(100, "w7", SIBLING)];
+        let rows = assemble(&mut state, &output, &active, &observed, &retained);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            state.member_rects.contains_key("w8"),
+            "tiled retile seeds the slot"
+        );
+        let writes = reconcile(&mut state, &output, &active, &rows, 0);
+        let reserved = writes
+            .iter()
+            .find(|w| w.window.0 == "w8")
+            .expect("reserved slot")
+            .rect;
+        assert_ne!(reserved, NATIVE_MAX, "slot is layout, not the max frame");
+        assert!(
+            writes.iter().any(|w| w.window.0 == "w7"),
+            "sibling keeps its share"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "retile overlay arms no clear attempt"
+        );
     }
 
     #[test]
@@ -24471,6 +26652,2509 @@ mod born_maximized_tests {
 }
 
 #[cfg(test)]
+mod float_unfloat_clear_tests {
+    use super::UnfloatClearEffects;
+    use super::rmax03_adapter_tests::test_state;
+    use tiler_core::geometry::Rect;
+
+    fn float_key(hwnd: u64) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid: 7,
+            creation: "creation-float".to_owned(),
+        }
+    }
+
+    fn float_me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        }
+    }
+
+    fn float_loc(output: &str, workspace: &str) -> crate::workspace::MemberLoc {
+        crate::workspace::MemberLoc {
+            output: output.to_owned(),
+            workspace: workspace.to_owned(),
+            hidden: false,
+        }
+    }
+
+    fn maximized_retained(key: &crate::workspace::WindowKey, token: &str) -> super::RetainedRow {
+        super::RetainedRow {
+            key: key.clone(),
+            token: token.to_owned(),
+            rect: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            }),
+            maximized: true,
+            fullscreen: false,
+            facts: None,
+        }
+    }
+
+    /// Stage membership tables for one fake-HWND member (deterministic,
+    /// never a real window): every native query fails closed with no effect.
+    fn stage_member(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        key: &crate::workspace::WindowKey,
+        token: &str,
+    ) {
+        assert!(state.workspaces.assign(key.clone(), output, active, false));
+        state.member_tokens.insert(key.clone(), token.to_owned());
+        state.member_identity.insert(
+            key.clone(),
+            crate::model::ProcessIdentity {
+                pid: key.pid,
+                process_creation: key.creation.clone(),
+                user_sid: "S-1-5-test".to_owned(),
+                session_id: 1,
+                exe_path: "test.exe".to_owned(),
+            },
+        );
+        state
+            .member_tags
+            .insert(key.clone(), "float-tag".to_owned());
+    }
+
+    /// Scripted B9 native effects (test-only): deterministic answers for
+    /// every Win32 read/write on the clear route, plus a call log pinning
+    /// production ordering. Message-only owned windows cannot carry this
+    /// path (never foreground, never enumerated, machine-dependent suspend
+    /// reads), so scripts — not the `AdoptWindow` harness — are the
+    /// hermetic route here.
+    struct ScriptedClear {
+        revalidate_err: Option<&'static str>,
+        revalidate_fail_second: bool,
+        revalidate_captionless: bool,
+        foreground_pre: u64,
+        foreground_post: u64,
+        suspend_block: bool,
+        elevated: bool,
+        meta_pre: Option<super::FullscreenMeta>,
+        meta_cur_set: bool,
+        meta_cur_val: Option<super::FullscreenMeta>,
+        meta_post: Option<super::FullscreenMeta>,
+        retire_style: Option<u32>,
+        retire_fullscreen: Option<bool>,
+        retire_probe2_set: bool,
+        retire_style2: Option<u32>,
+        retire_fullscreen2: Option<bool>,
+        retire_clear_ok: bool,
+        retire_clear_called: bool,
+        verify_returned: bool,
+        restore: &'static str,
+        pid_current: bool,
+        observe: Option<super::FreshFloatObservation>,
+        relocate_post_clear: Option<(crate::workspace::WindowKey, String, String)>,
+        fg_calls: u32,
+        meta_calls: u32,
+        revalidate_calls: u32,
+        probe_calls: u32,
+        calls: Vec<&'static str>,
+    }
+
+    impl ScriptedClear {
+        fn passing(fg: u64, fresh: super::FreshFloatObservation) -> Self {
+            ScriptedClear {
+                revalidate_err: None,
+                revalidate_fail_second: false,
+                revalidate_captionless: false,
+                foreground_pre: fg,
+                foreground_post: fg,
+                suspend_block: false,
+                elevated: false,
+                meta_pre: None,
+                meta_cur_set: false,
+                meta_cur_val: None,
+                meta_post: None,
+                retire_style: None,
+                retire_fullscreen: None,
+                retire_probe2_set: false,
+                retire_style2: None,
+                retire_fullscreen2: None,
+                retire_clear_ok: true,
+                retire_clear_called: false,
+                verify_returned: false,
+                restore: "restored",
+                pid_current: true,
+                observe: Some(fresh),
+                relocate_post_clear: None,
+                fg_calls: 0,
+                meta_calls: 0,
+                revalidate_calls: 0,
+                probe_calls: 0,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl UnfloatClearEffects for ScriptedClear {
+        fn revalidate(
+            &mut self,
+            _state: &mut super::TileLoop,
+            _member: &crate::workspace::WindowKey,
+            expected: &super::ObservedWindow,
+            _me: &crate::model::ProcessIdentity,
+            _fulls: &[Rect],
+        ) -> std::result::Result<super::WriteTarget, &'static str> {
+            self.calls.push("revalidate");
+            self.revalidate_calls += 1;
+            if let Some(reason) = self.revalidate_err {
+                return Err(reason);
+            }
+            if self.revalidate_fail_second && self.revalidate_calls >= 2 {
+                return Err("identity-changed");
+            }
+            let mut window = expected.clone();
+            window.facts.captionless_fullscreen = self.revalidate_captionless;
+            let held = crate::native::HeldProcess::open(std::process::id())
+                .expect("stub holds own process");
+            Ok(super::WriteTarget { window, held })
+        }
+
+        fn foreground(&mut self) -> u64 {
+            self.calls.push("foreground");
+            self.fg_calls += 1;
+            if self.fg_calls == 1 {
+                self.foreground_pre
+            } else {
+                self.foreground_post
+            }
+        }
+
+        fn suspend_block(
+            &mut self,
+            _state: &mut super::TileLoop,
+            _me: &crate::model::ProcessIdentity,
+            _fulls: &[Rect],
+        ) -> bool {
+            self.calls.push("suspend");
+            self.suspend_block
+        }
+
+        fn elevated(&mut self, _me: &crate::model::ProcessIdentity) -> bool {
+            self.calls.push("elevated");
+            self.elevated
+        }
+
+        fn fullscreen_meta(&mut self, _hwnd: u64) -> Option<super::FullscreenMeta> {
+            self.calls.push("meta");
+            self.meta_calls += 1;
+            // Read role follows the production order, not the call count, so
+            // the B9 route and the background sweep share one double: the
+            // post-clear post fence always runs after `observe`, a pre-read
+            // runs before any retire probe, the equality re-read runs between
+            // the pin and the removal, and the removal verify runs once right
+            // after the clear.
+            if self.calls.contains(&"observe") {
+                self.meta_post
+            } else if self.probe_calls == 0 {
+                self.meta_pre
+            } else if !self.retire_clear_called {
+                if self.meta_cur_set {
+                    self.meta_cur_val
+                } else {
+                    self.meta_pre
+                }
+            } else if !self.verify_returned {
+                self.verify_returned = true;
+                if self.retire_clear_ok {
+                    None
+                } else {
+                    self.meta_pre
+                }
+            } else {
+                self.meta_post
+            }
+        }
+
+        fn retire_probe(&mut self, _hwnd: u64, _fulls: &[Rect]) -> (Option<u32>, Option<bool>) {
+            self.calls.push("retire-probe");
+            self.probe_calls += 1;
+            if self.probe_calls >= 2 && self.retire_probe2_set {
+                (self.retire_style2, self.retire_fullscreen2)
+            } else {
+                (self.retire_style, self.retire_fullscreen)
+            }
+        }
+
+        fn retire_clear(&mut self, _hwnd: u64) -> bool {
+            self.calls.push("retire-clear");
+            self.retire_clear_called = true;
+            self.retire_clear_ok
+        }
+
+        fn restore(&mut self, _hwnd: u64) -> &'static str {
+            self.calls.push("restore");
+            self.restore
+        }
+
+        fn pid_current(&mut self, _hwnd: u64, _pid: u32) -> bool {
+            self.calls.push("pid");
+            self.pid_current
+        }
+
+        fn observe(
+            &mut self,
+            state: &mut super::TileLoop,
+            _me: &crate::model::ProcessIdentity,
+            _fulls: &[Rect],
+        ) -> Option<super::FreshFloatObservation> {
+            self.calls.push("observe");
+            if let Some((key, output, ws)) = self.relocate_post_clear.clone() {
+                assert!(
+                    state.workspaces.assign(key, &output, &ws, false),
+                    "race target workspace exists"
+                );
+            }
+            self.observe.clone()
+        }
+    }
+
+    #[test]
+    fn refused_clear_retains_float_with_no_commit_or_attempt() {
+        // B9 fail-closed leg through real adapter code: a retained maximized
+        // float on a fake HWND fails identity revalidation before any native
+        // write, so the toggle ends with float membership, preimages, and
+        // Engine state untouched, no clear attempt recorded, and no tile
+        // override installed. A later press retries.
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        let key = float_key(101);
+        stage_member(&mut state, &output, &active, &key, "w8");
+        state.floated.insert(key.clone());
+        let retained = vec![maximized_retained(&key, "w8")];
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut super::NativeUnfloatClear,
+            &float_me(),
+            &[],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("fake HWND must fail closed");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("pid-changed")),
+            "revalidation races end the toggle before any write"
+        );
+        assert!(
+            state.member_tokens.contains_key(&key),
+            "refused clear retains membership"
+        );
+        assert!(
+            state.floated.contains(&key),
+            "refused clear retains float intent"
+        );
+        assert!(
+            state.member_identity.contains_key(&key) && state.member_tags.contains_key(&key),
+            "refused clear retains preimages for a later press"
+        );
+        assert!(
+            state.maximize_admission_attempted.is_empty(),
+            "B9 records no one-shot attempt: every press tries once"
+        );
+        assert!(
+            !state.fixed_tile_overrides.contains(&key)
+                && !state.fixed_origin_overrides.contains(&key),
+            "no admission means no intent marker override"
+        );
+    }
+
+    #[test]
+    fn identity_skew_clears_nothing_and_keeps_plain_state() {
+        // The clear must pin the chord-time member key exactly: an observed
+        // token bound to another HWND races closed with no native write.
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        let key = float_key(101);
+        stage_member(&mut state, &output, &active, &key, "w8");
+        state.floated.insert(key.clone());
+        let observed = vec![super::ObservedWindow {
+            hwnd: 102,
+            token: "w8".to_owned(),
+            outer: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            visible: Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd: 102,
+                pid: 9,
+                process_creation: "creation-other".to_owned(),
+                exe_path: "test.exe".to_owned(),
+                user_sid: "S-1-5-test".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }];
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut super::NativeUnfloatClear,
+            &float_me(),
+            &[],
+            &observed,
+            &[],
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("skewed observation must race closed");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("identity-raced"))
+        );
+        assert!(state.member_tokens.contains_key(&key));
+        assert!(state.floated.contains(&key));
+        assert!(state.maximize_admission_attempted.is_empty());
+    }
+
+    #[test]
+    fn unknown_subject_keeps_plain_refusal_with_no_clear() {
+        // No observed or retained row for the token: the plain snapshot
+        // refusal stands and no clear is attempted.
+        let mut state = test_state();
+        let loc = float_loc("mon-1", "ws-1");
+        let key = float_key(101);
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut super::NativeUnfloatClear,
+            &float_me(),
+            &[],
+            &[],
+            &[],
+            &key,
+            "w-missing",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("unknown subject attempts no clear");
+        assert_eq!(err, ("float-refused-maximize", None));
+        assert!(state.maximize_admission_attempted.is_empty());
+    }
+
+    #[test]
+    fn fullscreen_and_sticky_lanes_stay_plain_refusals() {
+        // Hermetic adapter seam: a fullscreen float refuses in both
+        // vocabularies regardless of the (fake, reads-clear) zoom flag, so
+        // production keeps those lanes on the plain refusal branch; the pure
+        // lane predicate pins the full matrix beside it.
+        let key = float_key(101);
+        let fullscreen_observed = vec![super::ObservedWindow {
+            hwnd: 101,
+            token: "w8".to_owned(),
+            outer: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            visible: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd: 101,
+                pid: 7,
+                process_creation: "creation-float".to_owned(),
+                exe_path: "test.exe".to_owned(),
+                user_sid: "S-1-5-test".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: true,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: true,
+                no_activate: false,
+                dialog: false,
+            },
+        }];
+        assert_eq!(
+            super::chord_overlay_refusal(false, &fullscreen_observed, &[], &key),
+            Some("float-refused-fullscreen"),
+            "fullscreen floats never enter the B9 lane"
+        );
+        assert_eq!(
+            super::chord_overlay_refusal(true, &fullscreen_observed, &[], &key),
+            Some("sticky-refused-fullscreen"),
+            "sticky vocabulary unchanged"
+        );
+        let fullscreen_retained = vec![super::RetainedRow {
+            key: key.clone(),
+            token: "w8".to_owned(),
+            rect: None,
+            maximized: false,
+            fullscreen: true,
+            facts: None,
+        }];
+        assert_eq!(
+            super::chord_overlay_refusal(false, &[], &fullscreen_retained, &key),
+            Some("float-refused-fullscreen")
+        );
+        assert_eq!(
+            super::chord_overlay_refusal(true, &[], &fullscreen_retained, &key),
+            Some("sticky-refused-fullscreen")
+        );
+        // Pure lane matrix beside the seam: only the ordinary maximized
+        // float proceeds to the clear route.
+        use crate::tiling::unfloat_maximize_clear_eligible as lane;
+        assert!(
+            lane(false, true, true, false),
+            "ordinary maximized float clears"
+        );
+        assert!(!lane(true, true, true, false), "fullscreen never clears");
+        assert!(
+            !lane(true, false, true, false),
+            "fullscreen wins over maximize"
+        );
+        assert!(!lane(false, true, true, true), "sticky keeps its refusal");
+        assert!(
+            !lane(false, true, false, false),
+            "tiled targets never clear"
+        );
+        assert!(
+            !lane(false, false, true, false),
+            "normal floats admit directly"
+        );
+        assert!(
+            crate::tiling::float_toggle_refusal(false, true) == Some("float-refused-maximize")
+                && lane(false, true, true, false),
+            "lane matches the snapshot vocabulary it replaces"
+        );
+    }
+
+    const BOUNDS: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1040,
+    };
+    const RESTORED: Rect = Rect {
+        x: 120,
+        y: 120,
+        w: 800,
+        h: 600,
+    };
+    const SIBLING: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 600,
+    };
+
+    fn sibling_key() -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd: 100,
+            pid: 8,
+            creation: "creation-sib".to_owned(),
+        }
+    }
+
+    fn observed_normal(
+        hwnd: u64,
+        token: &str,
+        frame: Rect,
+        key: &crate::workspace::WindowKey,
+    ) -> super::ObservedWindow {
+        super::ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer: frame,
+            visible: frame,
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd,
+                pid: key.pid,
+                process_creation: key.creation.clone(),
+                exe_path: "C:\\test\\app.exe".to_owned(),
+                user_sid: "S-1-5-test".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    fn areas_for(output: &str) -> Vec<super::MonitorArea> {
+        vec![super::MonitorArea {
+            device: output.to_owned(),
+            work: BOUNDS,
+            full: BOUNDS,
+        }]
+    }
+
+    fn snap_origin(key: &crate::workspace::WindowKey, token: &str) -> crate::snapkey::SnapOrigin {
+        crate::snapkey::SnapOrigin {
+            hwnd: key.hwnd,
+            token: token.to_owned(),
+            pid: key.pid,
+            creation: key.creation.clone(),
+        }
+    }
+
+    fn engine_float(state: &super::TileLoop, output: &str, active: &str, token: &str) -> bool {
+        use tiler_core::directional::WindowId;
+        let (_, key) = crate::workspace_owner::workspace_domain(
+            output,
+            active,
+            BOUNDS,
+            crate::tiling::INNER_GAP,
+        );
+        state
+            .engine
+            .session(&key)
+            .is_some_and(|s| s.is_exception(&WindowId(token.to_owned())))
+    }
+
+    fn engine_tiled(state: &super::TileLoop, output: &str, active: &str, token: &str) -> bool {
+        use tiler_core::directional::WindowId;
+        let (_, key) = crate::workspace_owner::workspace_domain(
+            output,
+            active,
+            BOUNDS,
+            crate::tiling::INNER_GAP,
+        );
+        state.engine.session(&key).is_some_and(|s| {
+            s.snapshot().windows.iter().any(|l| l.window.0 == token)
+                && !s.is_exception(&WindowId(token.to_owned()))
+        })
+    }
+
+    /// Production domain constructor for one output/active pair: the same
+    /// outer-gap-inset bounds `prepare_toggle_float` resolves, so staged
+    /// Engine sessions match the admission domain exactly (the Engine binds
+    /// sessions by bounds/gap, not just output/workspace).
+    fn domain_for(
+        state: &super::TileLoop,
+        output: &str,
+        active: &str,
+    ) -> (
+        tiler_core::session::OutputDomain,
+        tiler_core::session::DomainKey,
+    ) {
+        let areas = areas_for(output);
+        super::workspace_domain_for(output, active, &areas, state.inner_gap, state.outer_gap)
+            .expect("domain resolves")
+    }
+
+    /// Reconcile two tiles through production assembly plus the stamped
+    /// Engine handle; returns the committed rows.
+    fn commit_two_tiles(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        observed: &[super::ObservedWindow],
+        focus: &str,
+        correlation: &str,
+    ) -> Vec<crate::workspace_owner::OwnerRow> {
+        use tiler_core::boundary::CoreReply;
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        use tiler_core::size_hints::WindowSizeHints;
+        let (domain, domain_key) = domain_for(state, output, active);
+        let mut hint_cx = super::HintCx::new();
+        let rows = super::assemble_domain_rows(
+            state,
+            output,
+            active,
+            observed,
+            &[],
+            "b9-test",
+            correlation,
+            &mut hint_cx,
+        )
+        .expect("rows assemble");
+        let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        let owner = state.owner.clone();
+        let generation = state.generation.clone();
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &CorrelationId::parse(correlation).expect("correlation"),
+            super::revision_for(state, output, active),
+            fp,
+            &domain,
+            &domain_key,
+            crate::tiling::OUTER_GAP,
+            &windows,
+            Some(&WindowId(focus.to_owned())),
+        );
+        let reply = super::handle_engine_event(state, &mut event);
+        assert!(
+            matches!(reply, CoreReply::Tiled(_) | CoreReply::Projection(_)),
+            "commit converges, got {reply:?}"
+        );
+        rows
+    }
+
+    /// Float one member through the production stamped handle.
+    fn commit_toggle_float(
+        state: &mut super::TileLoop,
+        output: &str,
+        active: &str,
+        rows: &[crate::workspace_owner::OwnerRow],
+        focus: &str,
+        window: &str,
+        correlation: &str,
+    ) {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        use tiler_core::size_hints::WindowSizeHints;
+        let (domain, domain_key) = domain_for(state, output, active);
+        let carried: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let fp = crate::tiling::fingerprint(
+            &rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        let owner = state.owner.clone();
+        let generation = state.generation.clone();
+        let revision = state
+            .engine
+            .session(&domain_key)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &owner,
+            &generation,
+            &CorrelationId::parse(correlation).expect("correlation"),
+            revision,
+            fp,
+            &domain,
+            &domain_key,
+            crate::tiling::OUTER_GAP,
+            &carried,
+            Some(&WindowId(focus.to_owned())),
+        );
+        event.command = CoreCommand::ToggleFloat {
+            window: window.to_owned(),
+            float_rect: None,
+        };
+        let reply = super::handle_engine_event(state, &mut event);
+        assert!(
+            matches!(reply, CoreReply::Tiled(_)),
+            "toggle converges, got {reply:?}"
+        );
+    }
+
+    /// Shared staging for the clear-then-admit tests: two tiles with w8
+    /// floated through the real Engine. Returns output, active, w8 key,
+    /// sibling key.
+    fn stage_floating_pair() -> (
+        super::TileLoop,
+        String,
+        String,
+        crate::workspace::WindowKey,
+        crate::workspace::WindowKey,
+    ) {
+        super::clear_test_hints();
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        let key = float_key(101);
+        let sib = sibling_key();
+        stage_member(&mut state, &output, &active, &key, "w8");
+        stage_member(&mut state, &output, &active, &sib, "w7");
+        let observed = vec![
+            observed_normal(101, "w8", RESTORED, &key),
+            observed_normal(100, "w7", SIBLING, &sib),
+        ];
+        let rows = commit_two_tiles(&mut state, &output, &active, &observed, "w7", "b9-stage");
+        commit_toggle_float(&mut state, &output, &active, &rows, "w7", "w8", "b9-float");
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "staged ordinary float"
+        );
+        state.floated.insert(key.clone());
+        (state, output, active, key, sib)
+    }
+
+    fn fresh_restored(
+        key: &crate::workspace::WindowKey,
+        sib: &crate::workspace::WindowKey,
+    ) -> super::FreshFloatObservation {
+        super::FreshFloatObservation {
+            observed: vec![
+                observed_normal(101, "w8", RESTORED, key),
+                observed_normal(100, "w7", SIBLING, sib),
+            ],
+            retained: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cleared_float_admits_tiled_through_real_engine() {
+        // HIGH: production ordering clear -> fresh observe -> existing
+        // admission end to end with the real Engine and scripted native
+        // effects (no mirrors). The stub call log pins the order; the fresh
+        // observation carries the restored frame; the settled unfloat commits
+        // a real tiled admission with the runtime (non-durable) override.
+        // Geometry writes on invalid handles fail closed after the commit.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let fresh = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect("scripted clear succeeds");
+        assert_eq!(
+            script.calls,
+            vec![
+                "revalidate",
+                "foreground",
+                "suspend",
+                "elevated",
+                "meta",
+                "restore",
+                "pid",
+                "observe",
+                "foreground",
+                "meta"
+            ],
+            "clear issues before the fresh observe; post guards re-read"
+        );
+        assert!(
+            fresh
+                .observed
+                .iter()
+                .any(|w| w.token == "w8" && w.visible == RESTORED),
+            "admission below runs on the restored frame"
+        );
+        let origin = snap_origin(&key, "w8");
+        let outcomes = std::cell::RefCell::new(Vec::new());
+        let settle = |outcome: &'static str| {
+            outcomes.borrow_mut().push(outcome.to_owned());
+            serde_json::json!({"event": "float-toggle", "outcome": outcome})
+        };
+        let areas = areas_for(&output);
+        let correlation2 = state.correlation();
+        super::apply_unfloat_to_tiled(
+            &mut state,
+            &float_me(),
+            &[BOUNDS],
+            &areas,
+            &fresh.observed,
+            &fresh.retained,
+            fresh.skipped,
+            &key,
+            "w8",
+            &loc,
+            Some(RESTORED),
+            &origin,
+            &settle,
+            &log_path,
+            2,
+            &correlation2,
+            "float",
+            "unfloated",
+            false,
+        );
+        assert!(
+            engine_tiled(&state, &output, &active, "w8"),
+            "fresh admission tiles the cleared float: {:?}",
+            outcomes.borrow()
+        );
+        assert!(
+            engine_tiled(&state, &output, &active, "w7"),
+            "sibling survives"
+        );
+        assert!(
+            !state.floated.contains(&key),
+            "settled unfloat drops float intent"
+        );
+        assert!(
+            state.fixed_tile_overrides.contains(&key),
+            "explicit win records runtime suppress"
+        );
+        assert!(
+            !state.fixed_origin_overrides.contains(&key),
+            "generic unfloat installs no durable marker"
+        );
+        let outcomes = outcomes.borrow();
+        assert_eq!(
+            outcomes.as_slice(),
+            ["unfloat-applied"],
+            "settled unfloat applies: the Engine commits first, then geometry \
+             finds planned == visible (no native write needed on these frames); \
+             invalid handles take no writes: {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn dispatched_clear_refuses_and_later_press_recovers() {
+        // HIGH race: async completion still pending at observe time refuses
+        // (still-maximized) with no admission; a later press with an observed
+        // clear succeeds.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let pending = super::FreshFloatObservation {
+            observed: Vec::new(),
+            retained: vec![maximized_retained(&key, "w8")],
+            skipped: Vec::new(),
+        };
+        let mut script = ScriptedClear::passing(101, pending);
+        script.restore = "dispatched";
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("pending async completion refuses");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("still-maximized"))
+        );
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "refused toggle admits nothing"
+        );
+        assert!(state.floated.contains(&key));
+        assert!(!state.fixed_tile_overrides.contains(&key));
+        // Later press observes the completed clear and proceeds.
+        let mut script2 = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        let correlation2 = state.correlation();
+        let fresh = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script2,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-2",
+            &log_path,
+            2,
+            &correlation2,
+        )
+        .expect("later press observes the clear");
+        assert!(
+            fresh
+                .observed
+                .iter()
+                .any(|w| w.token == "w8" && w.visible == RESTORED)
+        );
+    }
+
+    #[test]
+    fn refocus_between_clear_and_observe_refuses() {
+        // HIGH race: focus leaving the subject after the clear ends the
+        // toggle with no admission; the float stays for a later press.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.foreground_post = 100;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("refocused subject refuses");
+        assert_eq!(err, ("float-refused-maximize-clear", Some("focus-raced")));
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "refused toggle admits nothing"
+        );
+        assert!(state.floated.contains(&key));
+    }
+
+    #[test]
+    fn domain_move_between_clear_and_observe_refuses() {
+        // HIGH race: the member leaving the domain after the clear ends the
+        // toggle; pre-clear topology never drives admission.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let other = state
+            .workspaces
+            .workspace_ids(&output)
+            .into_iter()
+            .find(|id| id != &active)
+            .expect("second workspace");
+        let retained = vec![maximized_retained(&key, "w8")];
+        // Eligible fresh frame so evaluation reaches the domain fence rather
+        // than stopping at still-maximized: the move races closed here.
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.relocate_post_clear = Some((key.clone(), output.clone(), other.clone()));
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("moved member refuses");
+        assert_eq!(err, ("float-refused-maximize-clear", Some("domain-raced")));
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "refused toggle admits nothing"
+        );
+    }
+
+    #[test]
+    fn recycled_handle_between_clear_and_observe_refuses() {
+        // HIGH race: pid turnover after the clear ends the toggle.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.pid_current = false;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("recycled handle refuses");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("identity-raced"))
+        );
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "refused toggle admits nothing"
+        );
+        assert!(state.floated.contains(&key));
+    }
+
+    #[test]
+    fn owned_fullscreen_transition_post_clear_refuses() {
+        // MEDIUM: an owned fullscreen transition landing between the clear
+        // and the fresh observe refuses even when the restored frame reads
+        // eligible — post-clear re-reads owned metadata plus the fresh
+        // captionless flag, same fence as pre-clear.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let log_path = state.log_path.clone();
+        let loc = float_loc(&output, &active);
+        // Owned metadata appears post-clear.
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_post = Some(super::FullscreenMeta {
+            changed: 0,
+            was_maximized: true,
+        });
+        let correlation = state.correlation();
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("owned transition refuses");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            engine_float(&state, &output, &active, "w8"),
+            "refused toggle admits nothing"
+        );
+        // Fresh captionless flag without metadata refuses the same way.
+        let mut captionless = observed_normal(101, "w8", RESTORED, &key);
+        captionless.facts.captionless_fullscreen = true;
+        let mut script2 = ScriptedClear::passing(
+            101,
+            super::FreshFloatObservation {
+                observed: vec![captionless, observed_normal(100, "w7", SIBLING, &sib)],
+                retained: Vec::new(),
+                skipped: Vec::new(),
+            },
+        );
+        let correlation2 = state.correlation();
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script2,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-2",
+            &log_path,
+            2,
+            &correlation2,
+        )
+        .expect_err("captionless fresh frame refuses");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(engine_float(&state, &output, &active, "w8"));
+    }
+
+    #[test]
+    fn retry_after_metadata_absence_proves_fresh_admission() {
+        // Owned-metadata veto is per-attempt, not sticky: metadata present
+        // post-clear refuses through the production B9 route, while a later
+        // press with metadata absent and a cleared frame promotes the fresh
+        // observation and settles a real tiled admission. This pins retry
+        // behavior only; it does not test production metadata retirement
+        // (only `exit_fullscreen_owned` clears the live props, which no
+        // hermetic fixture drives).
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let log_path = state.log_path.clone();
+        let loc = float_loc(&output, &active);
+        let mut refusing = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        refusing.meta_post = Some(super::FullscreenMeta {
+            changed: 0,
+            was_maximized: true,
+        });
+        let correlation = state.correlation();
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut refusing,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("owned transition refuses");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(engine_float(&state, &output, &active, "w8"));
+        // Later press with metadata absent and a cleared frame: the route
+        // promotes the fresh observation, and the settled unfloat commits a
+        // real tiled admission with the runtime (non-durable) override.
+        let mut retry = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        retry.meta_pre = None;
+        retry.meta_post = None;
+        let correlation2 = state.correlation();
+        let fresh = super::unfloat_maximize_clear(
+            &mut state,
+            &mut retry,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-2",
+            &log_path,
+            2,
+            &correlation2,
+        )
+        .expect("metadata absence promotes the cleared frame");
+        assert!(
+            fresh
+                .observed
+                .iter()
+                .any(|w| w.token == "w8" && w.visible == RESTORED),
+            "retry admits the restored frame"
+        );
+        let origin = snap_origin(&key, "w8");
+        let outcomes = std::cell::RefCell::new(Vec::new());
+        let settle = |outcome: &'static str| {
+            outcomes.borrow_mut().push(outcome.to_owned());
+            serde_json::json!({"event": "float-toggle", "outcome": outcome})
+        };
+        let areas = areas_for(&output);
+        let correlation3 = state.correlation();
+        super::apply_unfloat_to_tiled(
+            &mut state,
+            &float_me(),
+            &[BOUNDS],
+            &areas,
+            &fresh.observed,
+            &fresh.retained,
+            fresh.skipped,
+            &key,
+            "w8",
+            &loc,
+            Some(RESTORED),
+            &origin,
+            &settle,
+            &log_path,
+            3,
+            &correlation3,
+            "float",
+            "unfloated",
+            false,
+        );
+        assert!(
+            engine_tiled(&state, &output, &active, "w8"),
+            "retry settles a real tiled admission: {:?}",
+            outcomes.borrow()
+        );
+        assert!(
+            !state.floated.contains(&key),
+            "settled unfloat drops float intent"
+        );
+        assert_eq!(
+            outcomes.borrow().as_slice(),
+            ["unfloat-applied"],
+            "settled retry applies: {outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn stale_restored_marker_retires_through_production_ordering() {
+        // Stale owned marker whose chrome provably restored plus a live
+        // no-cover probe retires via the production B9 ordering (metadata
+        // removal only, no geometry write before the veto) and the cleared
+        // frame promotes to a real tiled admission.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        script.meta_post = None;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script.retire_clear_ok = true;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let fresh = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect("stale restored marker must retire and promote");
+        assert_eq!(
+            script.calls,
+            vec![
+                "revalidate",
+                "foreground",
+                "suspend",
+                "elevated",
+                "meta",
+                "pid",
+                "retire-probe",
+                "revalidate",
+                "meta",
+                "retire-probe",
+                "pid",
+                "retire-clear",
+                "meta",
+                "restore",
+                "pid",
+                "observe",
+                "foreground",
+                "meta"
+            ],
+            "shared retirement (fence, proof, second lifetime pin, equality \
+             re-read, second live proof, removal-only clear, verify) runs \
+             before the maximize clear; the post fence re-reads"
+        );
+        assert!(
+            fresh
+                .observed
+                .iter()
+                .any(|w| w.token == "w8" && w.visible == RESTORED),
+            "retired route promotes the restored frame"
+        );
+        let origin = snap_origin(&key, "w8");
+        let outcomes = std::cell::RefCell::new(Vec::new());
+        let settle = |outcome: &'static str| {
+            outcomes.borrow_mut().push(outcome.to_owned());
+            serde_json::json!({"event": "float-toggle", "outcome": outcome})
+        };
+        let areas = areas_for(&output);
+        let correlation2 = state.correlation();
+        super::apply_unfloat_to_tiled(
+            &mut state,
+            &float_me(),
+            &[BOUNDS],
+            &areas,
+            &fresh.observed,
+            &fresh.retained,
+            fresh.skipped,
+            &key,
+            "w8",
+            &loc,
+            Some(RESTORED),
+            &origin,
+            &settle,
+            &log_path,
+            2,
+            &correlation2,
+            "float",
+            "unfloated",
+            false,
+        );
+        assert!(
+            engine_tiled(&state, &output, &active, "w8"),
+            "retired stale marker settles a real admission: {:?}",
+            outcomes.borrow()
+        );
+    }
+
+    #[test]
+    fn captionless_noncover_transition_keeps_veto_without_removal() {
+        // Owned captionless frame that merely stopped covering (style still
+        // cleared) is the existing veto purpose: no removal, still vetoed,
+        // no maximize clear attempted.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(0);
+        script.retire_fullscreen = Some(false);
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("transitional non-cover must still veto");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !script.calls.contains(&"retire-clear"),
+            "transitional geometry never removes the marker: {:?}",
+            script.calls
+        );
+        assert!(
+            !script.calls.contains(&"restore"),
+            "vetoed route issues no maximize clear: {:?}",
+            script.calls
+        );
+        assert!(engine_float(&state, &output, &active, "w8"));
+    }
+
+    #[test]
+    fn live_cover_and_unreadable_and_identity_keep_veto() {
+        // Real cover, unreadable style/frame, and recycled-HWND identity all
+        // fail closed: no removal, still vetoed.
+        for (name, style, fullscreen, pid_ok) in [
+            ("cover", Some(0), Some(true), true),
+            ("unreadable-style", None, Some(false), true),
+            (
+                "unreadable-frame",
+                Some(super::FULLSCREEN_STYLE_BITS),
+                None,
+                true,
+            ),
+            (
+                "identity-raced",
+                Some(super::FULLSCREEN_STYLE_BITS),
+                Some(false),
+                false,
+            ),
+        ] {
+            let (mut state, output, active, key, sib) = stage_floating_pair();
+            let retained = vec![maximized_retained(&key, "w8")];
+            let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+            script.meta_pre = Some(super::FullscreenMeta {
+                changed: super::FULLSCREEN_STYLE_BITS,
+                was_maximized: false,
+            });
+            script.meta_post = script.meta_pre;
+            script.retire_style = style;
+            script.retire_fullscreen = fullscreen;
+            script.pid_current = pid_ok;
+            let log_path = state.log_path.clone();
+            let correlation = state.correlation();
+            let loc = float_loc(&output, &active);
+            let err = super::unfloat_maximize_clear(
+                &mut state,
+                &mut script,
+                &float_me(),
+                &[BOUNDS],
+                &[],
+                &retained,
+                &key,
+                "w8",
+                &loc,
+                "origin-1",
+                &log_path,
+                1,
+                &correlation,
+            )
+            .expect_err("must fail closed");
+            assert_eq!(
+                err,
+                ("float-refused-maximize-clear", Some("fullscreen-raced")),
+                "{name} must still veto"
+            );
+            assert!(
+                !script.calls.contains(&"retire-clear"),
+                "{name} never removes the marker: {:?}",
+                script.calls
+            );
+            if !pid_ok {
+                assert!(
+                    !script.calls.contains(&"retire-probe"),
+                    "recycled identity probes nothing: {:?}",
+                    script.calls
+                );
+            }
+            assert!(
+                engine_float(&state, &output, &active, "w8"),
+                "{name} admits nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_changed_and_failed_removal_keep_veto() {
+        // Originally captionless entry (changed == 0) is indistinguishable
+        // from a captionless non-cover transition: never retires. A failed
+        // removal readback also keeps the veto for a later press.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(super::FullscreenMeta {
+            changed: 0,
+            was_maximized: false,
+        });
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(0);
+        script.retire_fullscreen = Some(false);
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("zero-bit preimage never retires");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(!script.calls.contains(&"retire-clear"));
+        // Eligible proof with a failed removal still vetoes.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script.retire_clear_ok = false;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("failed removal keeps the veto");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(script.calls.contains(&"retire-clear"));
+    }
+
+    #[test]
+    fn stale_retire_pure_gate_pins_proof_matrix() {
+        use crate::tiling::stale_fullscreen_retire_eligible as eligible;
+        assert!(eligible(super::FULLSCREEN_STYLE_BITS, true, Some(false)));
+        assert!(!eligible(super::FULLSCREEN_STYLE_BITS, false, Some(false)));
+        assert!(!eligible(super::FULLSCREEN_STYLE_BITS, true, Some(true)));
+        assert!(!eligible(super::FULLSCREEN_STYLE_BITS, true, None));
+        assert!(!eligible(super::FULLSCREEN_STYLE_BITS, false, None));
+        assert!(!eligible(0, true, Some(false)));
+        assert!(!eligible(0, false, Some(false)));
+        assert!(!eligible(0, true, None));
+    }
+
+    #[test]
+    fn retirement_race_after_proof_keeps_veto_without_removal() {
+        // Races landing after the first proof must not delete: a changed
+        // marker, a re-fullscreen second proof, and a member-tag change
+        // (second revalidation fails, covering same-PID HWND reuse) all keep
+        // the veto with no removal.
+        let stale = || super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        // Metadata changed between proof and pin.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(stale());
+        script.meta_cur_set = true;
+        script.meta_cur_val = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: true,
+        });
+        script.meta_post = script.meta_cur_val;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("changed marker keeps the veto");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !script.calls.contains(&"retire-clear"),
+            "changed preimage removes nothing"
+        );
+        assert!(!script.calls.contains(&"restore"));
+        // Genuine re-fullscreen racing the pin: second live proof covers.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(stale());
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script.retire_probe2_set = true;
+        script.retire_style2 = Some(0);
+        script.retire_fullscreen2 = Some(true);
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("re-fullscreen race keeps the veto");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !script.calls.contains(&"retire-clear"),
+            "re-fullscreen removes nothing"
+        );
+        // Member-tag change / same-PID reuse: second revalidation fails.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(stale());
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script.revalidate_fail_second = true;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("tag drift keeps the veto");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !script.calls.contains(&"retire-clear"),
+            "drifted lifetime removes nothing"
+        );
+        assert!(engine_float(&state, &output, &active, "w8"));
+    }
+
+    #[test]
+    fn retirement_guards_block_mutation_before_proof() {
+        // A failing home/focus/suspend/elevation guard authorizes no removal:
+        // the sequence returns before any retire probe or clear.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let mut script = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        script.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        script.meta_post = script.meta_pre;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script.suspend_block = true;
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect_err("suspended guard blocks before retirement");
+        // Fullscreen precedence wins over suspension in the shared gate, so
+        // the veto reads fullscreen-raced; the point below is that the
+        // guarded route probed and removed nothing.
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !script.calls.contains(&"retire-probe"),
+            "guarded route probes nothing"
+        );
+        assert!(
+            !script.calls.contains(&"retire-clear"),
+            "guarded route removes nothing"
+        );
+        assert!(engine_float(&state, &output, &active, "w8"));
+    }
+
+    #[test]
+    fn refullscreen_after_completed_retirement_stays_protected() {
+        // A genuine re-fullscreen after a completed retirement mints a fresh
+        // marker that the next press protects: live cover keeps the veto with
+        // no removal.
+        let (mut state, output, active, key, sib) = stage_floating_pair();
+        let retained = vec![maximized_retained(&key, "w8")];
+        let log_path = state.log_path.clone();
+        let loc = float_loc(&output, &active);
+        let mut first = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        first.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        first.meta_post = None;
+        first.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        first.retire_fullscreen = Some(false);
+        let correlation = state.correlation();
+        super::unfloat_maximize_clear(
+            &mut state,
+            &mut first,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect("first press retires the stale marker");
+        // New owned marker from a genuine re-fullscreen.
+        let mut second = ScriptedClear::passing(101, fresh_restored(&key, &sib));
+        second.meta_pre = Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        });
+        second.meta_post = second.meta_pre;
+        second.retire_style = Some(0);
+        second.retire_fullscreen = Some(true);
+        let correlation2 = state.correlation();
+        let err = super::unfloat_maximize_clear(
+            &mut state,
+            &mut second,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "w8",
+            &loc,
+            "origin-2",
+            &log_path,
+            2,
+            &correlation2,
+        )
+        .expect_err("fresh fullscreen marker stays vetoed");
+        assert_eq!(
+            err,
+            ("float-refused-maximize-clear", Some("fullscreen-raced"))
+        );
+        assert!(
+            !second.calls.contains(&"retire-clear"),
+            "new marker is never removed"
+        );
+    }
+
+    fn sweep_state() -> (super::TileLoop, crate::workspace::WindowKey) {
+        super::clear_test_hints();
+        let mut state = test_state();
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        let key = float_key(101);
+        stage_member(&mut state, &output, &active, &key, "w8");
+        (state, key)
+    }
+
+    fn empty_fresh() -> super::FreshFloatObservation {
+        super::FreshFloatObservation {
+            observed: Vec::new(),
+            retained: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+
+    fn sweep_script(marker: Option<super::FullscreenMeta>) -> ScriptedClear {
+        let mut script = ScriptedClear::passing(101, empty_fresh());
+        script.meta_pre = marker;
+        script.meta_post = marker;
+        script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
+        script.retire_fullscreen = Some(false);
+        script
+    }
+
+    #[test]
+    fn sweep_retires_restored_marker_without_explicit_action() {
+        // Automatic retirement needs no move/unfloat press: a verified normal
+        // member whose chrome provably restored plus a live no-cover probe
+        // runs the shared sequence (metadata removal only) and drops the
+        // marker.
+        let (mut state, key) = sweep_state();
+        let observed = vec![observed_normal(101, "w8", RESTORED, &key)];
+        let retained = Vec::new();
+        let mut script = sweep_script(Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        }));
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert_eq!(
+            script.calls,
+            vec![
+                "suspend",
+                "elevated",
+                "meta",
+                "pid",
+                "retire-probe",
+                "revalidate",
+                "meta",
+                "retire-probe",
+                "pid",
+                "retire-clear",
+                "meta"
+            ],
+            "sweep runs the shared ordering with no explicit action"
+        );
+        assert!(script.retire_clear_called, "restored marker is removed");
+    }
+
+    #[test]
+    fn sweep_retires_restored_marker_on_intentional_float() {
+        // Float intent does not shield a positively restored marker: the
+        // sweep retires it while leaving float membership for the next
+        // toggle to admit.
+        let (mut state, key) = sweep_state();
+        state.floated.insert(key.clone());
+        let observed = vec![observed_normal(101, "w8", RESTORED, &key)];
+        let retained = Vec::new();
+        let mut script = sweep_script(Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        }));
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert!(script.retire_clear_called, "float member marker is removed");
+        assert!(
+            state.floated.contains(&key),
+            "sweep leaves float intent untouched"
+        );
+    }
+
+    #[test]
+    fn sweep_transient_and_unreadable_keep_marker() {
+        // A captionless non-cover transition plus unreadable style/frame all
+        // fail closed with no removal.
+        for (name, style, fullscreen) in [
+            ("transient", Some(0), Some(false)),
+            ("unreadable-style", None, Some(false)),
+            ("unreadable-frame", Some(super::FULLSCREEN_STYLE_BITS), None),
+        ] {
+            let (mut state, key) = sweep_state();
+            let observed = vec![observed_normal(101, "w8", RESTORED, &key)];
+            let retained = Vec::new();
+            let mut script = sweep_script(Some(super::FullscreenMeta {
+                changed: super::FULLSCREEN_STYLE_BITS,
+                was_maximized: false,
+            }));
+            script.retire_style = style;
+            script.retire_fullscreen = fullscreen;
+            super::sweep_retire_stale_fullscreen(
+                &mut script,
+                &mut state,
+                &float_me(),
+                &observed,
+                &retained,
+                &[BOUNDS],
+            );
+            assert!(
+                !script.retire_clear_called,
+                "{name} removes nothing: {:?}",
+                script.calls
+            );
+        }
+        // Absent markers probe nothing.
+        let (mut state, key) = sweep_state();
+        let observed = vec![observed_normal(101, "w8", RESTORED, &key)];
+        let retained = Vec::new();
+        let mut script = sweep_script(None);
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert!(!script.calls.contains(&"retire-probe"));
+        assert!(!script.retire_clear_called);
+    }
+
+    #[test]
+    fn sweep_guards_and_lifetime_block_mutation() {
+        // Suspended, elevated, and recycled-identity sweeps mutate nothing:
+        // no probe and no removal.
+        let (mut state, key) = sweep_state();
+        let observed = vec![observed_normal(101, "w8", RESTORED, &key)];
+        let retained: Vec<super::RetainedRow> = Vec::new();
+        let mut script = sweep_script(Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        }));
+        script.suspend_block = true;
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert_eq!(script.calls, vec!["suspend"]);
+        let mut script = sweep_script(Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        }));
+        script.elevated = true;
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert_eq!(script.calls, vec!["suspend", "elevated"]);
+        let mut script = sweep_script(Some(super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        }));
+        script.pid_current = false;
+        super::sweep_retire_stale_fullscreen(
+            &mut script,
+            &mut state,
+            &float_me(),
+            &observed,
+            &retained,
+            &[BOUNDS],
+        );
+        assert_eq!(script.calls, vec!["suspend", "elevated", "meta", "pid"]);
+        assert!(!script.calls.contains(&"retire-probe"));
+        assert!(!script.retire_clear_called);
+    }
+
+    #[test]
+    fn fixed_automatic_float_clears_then_records_durable_override() {
+        // D3/D7 user-win: a maximized fixed-automatic float takes the B9
+        // clear, then the settled unfloat tiles with the durable
+        // fixed-origin override. Marker install on invalid handles degrades
+        // to the log (real marker IO rides the owned-window fixtures); the
+        // runtime sets below are the persistence contract.
+        super::clear_test_hints();
+        let mut state = test_state();
+        state.engine.set_fixed_size_admission(true);
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let active = state.workspaces.active_id(&output).expect("active");
+        let key = crate::workspace::WindowKey {
+            hwnd: 2101,
+            pid: 9,
+            creation: "creation-fix".to_owned(),
+        };
+        let sib = crate::workspace::WindowKey {
+            hwnd: 2100,
+            pid: 8,
+            creation: "creation-sib2".to_owned(),
+        };
+        stage_member(&mut state, &output, &active, &key, "wfix");
+        stage_member(&mut state, &output, &active, &sib, "w1");
+        let fixed_hints = crate::tiling::hints_from_outer(
+            Some((656, 496)),
+            Some((656, 496)),
+            crate::tiling::FrameInsets {
+                left: 8,
+                top: 8,
+                right: 8,
+                bottom: 8,
+            },
+        );
+        super::inject_test_hints(2101, fixed_hints);
+        let observed = vec![
+            observed_normal(2101, "wfix", SIBLING, &key),
+            observed_normal(2100, "w1", SIBLING, &sib),
+        ];
+        commit_two_tiles(
+            &mut state,
+            &output,
+            &active,
+            &observed,
+            "w1",
+            "b9-fix-stage",
+        );
+        let (_, domain_key) = crate::workspace_owner::workspace_domain(
+            output.as_str(),
+            active.as_str(),
+            BOUNDS,
+            crate::tiling::INNER_GAP,
+        );
+        assert!(
+            state.engine.session(&domain_key).is_some_and(|s| s
+                .is_automatic_fixed_float(&tiler_core::directional::WindowId("wfix".to_owned()))),
+            "fixed hints classify automatic on admission"
+        );
+        let retained = vec![maximized_retained(&key, "wfix")];
+        let fresh_observed = vec![
+            observed_normal(2101, "wfix", RESTORED, &key),
+            observed_normal(2100, "w1", SIBLING, &sib),
+        ];
+        let mut script = ScriptedClear::passing(
+            2101,
+            super::FreshFloatObservation {
+                observed: fresh_observed,
+                retained: Vec::new(),
+                skipped: Vec::new(),
+            },
+        );
+        let log_path = state.log_path.clone();
+        let correlation = state.correlation();
+        let loc = float_loc(&output, &active);
+        let fresh = super::unfloat_maximize_clear(
+            &mut state,
+            &mut script,
+            &float_me(),
+            &[BOUNDS],
+            &[],
+            &retained,
+            &key,
+            "wfix",
+            &loc,
+            "origin-1",
+            &log_path,
+            1,
+            &correlation,
+        )
+        .expect("fixed clear succeeds");
+        assert!(
+            fresh
+                .observed
+                .iter()
+                .any(|w| w.token == "wfix" && w.visible == RESTORED)
+        );
+        let origin = snap_origin(&key, "wfix");
+        let settle = |_: &'static str| serde_json::json!({"event": "float-toggle"});
+        let areas = areas_for(&output);
+        let correlation2 = state.correlation();
+        super::apply_unfloat_to_tiled(
+            &mut state,
+            &float_me(),
+            &[BOUNDS],
+            &areas,
+            &fresh.observed,
+            &fresh.retained,
+            fresh.skipped,
+            &key,
+            "wfix",
+            &loc,
+            Some(RESTORED),
+            &origin,
+            &settle,
+            &log_path,
+            2,
+            &correlation2,
+            "float",
+            "unfloated",
+            false,
+        );
+        assert!(
+            engine_tiled(&state, &output, &active, "wfix"),
+            "explicit tile wins over automatic"
+        );
+        assert!(
+            state.fixed_tile_overrides.contains(&key),
+            "user win records runtime suppress"
+        );
+        assert!(
+            state.fixed_origin_overrides.contains(&key),
+            "fixed origin records the durable D7 override"
+        );
+        super::clear_test_hints();
+    }
+}
+
+#[cfg(test)]
+mod owned_exit_tests {
+    /// Scripted owned-exit native effects (test-only): a fake style word plus
+    /// a scripted metadata store, with a call log pinning production
+    /// ordering. No live HWND API is ever touched; the suite runs wherever
+    /// the crate builds.
+    struct ScriptedOwnedExit {
+        alive: bool,
+        style: u32,
+        fail_style_write: bool,
+        fail_frame: bool,
+        /// Style bits the readback reports instead of the written style, for
+        /// the unobserved-restore leg (`None` reads back the write).
+        readback_override: Option<u32>,
+        fail_maximize: bool,
+        fail_clear: bool,
+        meta_present: bool,
+        calls: Vec<&'static str>,
+    }
+
+    impl ScriptedOwnedExit {
+        fn passing(style: u32) -> Self {
+            ScriptedOwnedExit {
+                alive: true,
+                style,
+                fail_style_write: false,
+                fail_frame: false,
+                readback_override: None,
+                fail_maximize: false,
+                fail_clear: false,
+                meta_present: true,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl super::OwnedExitEffects for ScriptedOwnedExit {
+        fn is_window(&mut self, _hwnd: u64) -> bool {
+            self.calls.push("is-window");
+            self.alive
+        }
+
+        fn current_style(&mut self, _hwnd: u64) -> u32 {
+            self.calls.push("style");
+            self.style
+        }
+
+        fn restore_style(&mut self, _hwnd: u64, next: i32) -> (i32, u32) {
+            self.calls.push("restore");
+            if self.fail_style_write {
+                return (0, 1);
+            }
+            self.style = next as u32;
+            (1, 0)
+        }
+
+        fn reapply_frame(&mut self, _hwnd: u64) -> bool {
+            self.calls.push("frame");
+            !self.fail_frame
+        }
+
+        fn style_readback(&mut self, _hwnd: u64) -> u32 {
+            self.calls.push("readback");
+            self.readback_override.unwrap_or(self.style)
+        }
+
+        fn reassert_maximize(&mut self, _hwnd: u64) -> bool {
+            self.calls.push("maximize");
+            !self.fail_maximize
+        }
+
+        fn clear_meta(&mut self, _hwnd: u64) -> bool {
+            self.calls.push("clear");
+            if self.fail_clear {
+                return false;
+            }
+            self.meta_present = false;
+            true
+        }
+    }
+
+    /// Application style bits outside the owned mask, standing in for window
+    /// state the client changed while fullscreen was held.
+    const UNRELATED: u32 = 0x1000_0000;
+
+    #[test]
+    fn successful_exit_restores_mask_and_clears_meta() {
+        // Leg (d) retirement: a verified style/frame restoration clears the
+        // metadata through the production ordering, restoring exactly the
+        // owned mask while unrelated client bits survive.
+        let changed = super::FULLSCREEN_STYLE_BITS;
+        let style = UNRELATED | 0x0000_0001;
+        assert_eq!(
+            style & changed,
+            0,
+            "fixture starts with the owned bits cleared"
+        );
+        let meta = super::FullscreenMeta {
+            changed,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(style);
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "restored");
+        assert_eq!(
+            script.calls,
+            vec![
+                "is-window",
+                "style",
+                "restore",
+                "frame",
+                "readback",
+                "clear"
+            ],
+            "clear runs only after verified restoration"
+        );
+        assert_eq!(
+            script.style,
+            style | changed,
+            "restore ORs exactly the owned mask over the live style"
+        );
+        assert_eq!(
+            script.style & UNRELATED,
+            UNRELATED,
+            "unrelated client bits are preserved"
+        );
+        assert!(
+            !script.meta_present,
+            "verified restoration drops the metadata"
+        );
+    }
+
+    #[test]
+    fn successful_exit_with_prior_maximize_reasserts_then_clears() {
+        // A preexisting maximize reasserts before metadata removal; the
+        // reassert refusal below keeps the metadata instead.
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: true,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "restored");
+        assert_eq!(
+            script.calls,
+            vec![
+                "is-window",
+                "style",
+                "restore",
+                "frame",
+                "readback",
+                "maximize",
+                "clear"
+            ]
+        );
+        assert!(!script.meta_present);
+    }
+
+    #[test]
+    fn dead_window_throws_before_any_effect() {
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.alive = false;
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "threw");
+        assert_eq!(script.calls, vec!["is-window"]);
+        assert!(script.meta_present, "nothing ran, metadata untouched");
+    }
+
+    #[test]
+    fn style_write_failure_keeps_metadata() {
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.fail_style_write = true;
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "threw");
+        assert_eq!(script.calls, vec!["is-window", "style", "restore"]);
+        assert!(script.meta_present, "failed restore keeps the preimage");
+    }
+
+    #[test]
+    fn frame_failure_keeps_metadata() {
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.fail_frame = true;
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "threw");
+        assert_eq!(script.calls, vec!["is-window", "style", "restore", "frame"]);
+        assert!(script.meta_present, "failed restore keeps the preimage");
+    }
+
+    #[test]
+    fn unobserved_restore_keeps_metadata_for_explicit_retry() {
+        // The style readback does not show the owned bits: `dispatched`
+        // with metadata kept, and a later explicit press with a verifying
+        // readback finishes the same production sequence.
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.readback_override = Some(UNRELATED);
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "dispatched");
+        assert_eq!(
+            script.calls,
+            vec!["is-window", "style", "restore", "frame", "readback"]
+        );
+        assert!(
+            script.meta_present,
+            "unverified restoration never drops the preimage"
+        );
+        // Later explicit retry on the same press path.
+        script.readback_override = None;
+        script.calls.clear();
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "restored");
+        assert!(!script.meta_present, "verified retry finishes the exit");
+    }
+
+    #[test]
+    fn maximize_reapply_refusal_keeps_metadata() {
+        // A refused preexisting-maximize reassert keeps the metadata for a
+        // later press; removal never precedes the reassert.
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: true,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.fail_maximize = true;
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "dispatched");
+        assert_eq!(
+            script.calls,
+            vec![
+                "is-window",
+                "style",
+                "restore",
+                "frame",
+                "readback",
+                "maximize"
+            ]
+        );
+        assert!(
+            script.meta_present,
+            "refused reassert keeps the preimage for retry"
+        );
+    }
+
+    #[test]
+    fn clear_failure_reports_dispatched_and_keeps_meta() {
+        // Verified restoration with a failed removal readback reports
+        // `dispatched` and keeps the marker so a later exit still finds its
+        // preimage rather than stranding the frame.
+        let meta = super::FullscreenMeta {
+            changed: super::FULLSCREEN_STYLE_BITS,
+            was_maximized: false,
+        };
+        let mut script = ScriptedOwnedExit::passing(UNRELATED);
+        script.fail_clear = true;
+        let outcome = super::exit_fullscreen_owned_with(&mut script, 101, &meta);
+        assert_eq!(outcome, "dispatched");
+        assert_eq!(
+            script.calls,
+            vec![
+                "is-window",
+                "style",
+                "restore",
+                "frame",
+                "readback",
+                "clear"
+            ]
+        );
+        assert!(script.meta_present, "failed removal keeps the marker");
+    }
+}
+
+#[cfg(test)]
 mod send_preflight_tests {
     use super::SendPreflight;
     use crate::workspace_owner::SendFenceSnapshot;
@@ -24577,6 +29261,145 @@ mod border_shell_tests {
         assert!(!is_border_shell_popup("#32770", "notepad.exe"));
         assert!(!is_border_shell_popup("MSPaintApp", "mspaint.exe"));
         assert!(!is_border_shell_popup("CabinetWClass", "explorer.exe"));
+    }
+}
+
+#[cfg(test)]
+mod owner_work_trace_tests {
+    use super::{OwnerWorkGuard, hide_border, hide_underlay};
+    use std::time::{Duration, Instant};
+
+    fn temp_log(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "tiler-owner-work-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn log_lines(path: &std::path::Path) -> Vec<String> {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        text.lines().map(|line| line.to_owned()).collect()
+    }
+
+    #[test]
+    fn hidden_hide_dedupes_identical_repeats_but_keeps_first_and_reason_change() {
+        let log_path = temp_log("hide-dedup");
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.log_path = log_path.clone();
+        state.trace = true;
+        // First hide logs (proof scripts need the first hide, not repeats).
+        hide_border(&mut state, "idle");
+        hide_underlay(&mut state, "idle");
+        // Identical already-hidden repeats stay silent, even when tracing.
+        hide_border(&mut state, "idle");
+        hide_underlay(&mut state, "idle");
+        hide_border(&mut state, "idle");
+        hide_underlay(&mut state, "idle");
+        // Reason changes still log.
+        hide_border(&mut state, "suspended");
+        hide_underlay(&mut state, "suspended");
+        let lines = log_lines(&log_path);
+        let _ = std::fs::remove_file(&log_path);
+        let borders: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("active-border"))
+            .collect();
+        let underlays: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("group-underlay"))
+            .collect();
+        assert_eq!(borders.len(), 2, "first + reason change: {lines:?}");
+        assert_eq!(underlays.len(), 2, "first + reason change: {lines:?}");
+        assert!(borders[0].contains("\"reason\":\"idle\""), "{lines:?}");
+        assert!(borders[1].contains("\"reason\":\"suspended\""), "{lines:?}");
+        assert!(underlays[0].contains("\"reason\":\"idle\""), "{lines:?}");
+        assert!(
+            underlays[1].contains("\"reason\":\"suspended\""),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn owner_work_guard_stays_silent_when_trace_disabled_or_quiet() {
+        // Trace-disabled: arm is a no-op and no file appears.
+        let log_path = temp_log("disabled");
+        {
+            let mut guard = OwnerWorkGuard::begin(false, &log_path, None, 0, 7);
+            guard.arm(3, 1, 1, 1, true);
+            guard.add_border_refresh(Duration::from_micros(5));
+        }
+        assert!(
+            !log_path.exists(),
+            "trace-disabled guard must not touch the log"
+        );
+        // Quiet trace (never armed): drops silently with no lines.
+        let log_path = temp_log("quiet");
+        {
+            let _guard = OwnerWorkGuard::begin(true, &log_path, Some(Instant::now()), 0, 7);
+        }
+        assert_eq!(log_lines(&log_path).len(), 0);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn owner_work_guard_emits_one_closed_sample_on_scope_exit_and_early_return() {
+        let log_path = temp_log("sample");
+        let epoch = Instant::now();
+        {
+            let mut guard = OwnerWorkGuard::begin(true, &log_path, Some(epoch), 4, 9);
+            assert!(
+                !guard.timing_active(),
+                "guard starts disarmed so quiet paths stay silent"
+            );
+            guard.arm(3, 1, 1, 1, true);
+            assert!(guard.timing_active());
+            guard.add_border_refresh(Duration::from_micros(12));
+            guard.add_border_refresh(Duration::from_micros(8));
+        }
+        // Early-exit path still samples exactly once via RAII.
+        (|early: bool| {
+            let mut guard = OwnerWorkGuard::begin(true, &log_path, Some(epoch), 5, 10);
+            guard.arm(1, 0, 1, 0, false);
+            if early {
+                return;
+            }
+            guard.arm(0, 0, 0, 0, false);
+        })(true);
+        let lines = log_lines(&log_path);
+        let _ = std::fs::remove_file(&log_path);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        let first: serde_json::Value = serde_json::from_str(&lines[0]).expect("sample parses");
+        assert_eq!(first["event"], "owner-work");
+        assert_eq!(first["seq"], 4);
+        assert_eq!(first["tick_at_start"], 9);
+        assert!(first["start_us"].is_u64(), "{first}");
+        assert!(first["busy_us"].is_u64(), "{first}");
+        assert_eq!(first["border_refresh_us"], 20);
+        assert_eq!(first["batch_events"], 3);
+        assert_eq!(first["wakes"], 1);
+        assert_eq!(first["starts"], 1);
+        assert_eq!(first["ends"], 1);
+        assert_eq!(first["gesture_held"], true);
+        for line in &lines {
+            for banned in ["hwnd", "pid", "exe", "title", "token"] {
+                assert!(
+                    !line.to_lowercase().contains(banned),
+                    "no identity in {line}"
+                );
+            }
+            let value: serde_json::Value = serde_json::from_str(line).expect("sample parses");
+            assert_eq!(value["event"], "owner-work");
+        }
+        let second: serde_json::Value = serde_json::from_str(&lines[1]).expect("sample parses");
+        assert_eq!(second["seq"], 5);
+        assert_eq!(second["tick_at_start"], 10);
+        assert_eq!(second["batch_events"], 1);
     }
 }
 
@@ -25249,6 +30072,7 @@ mod rmax03_adapter_tests {
             workspace_proof: false,
             maximize_admission_attempted: std::collections::HashSet::new(),
             born_keep_overlay: std::collections::BTreeSet::new(),
+            retile_keep_overlay: std::collections::BTreeSet::new(),
             born_fullscreen: std::collections::BTreeSet::new(),
             seen_nonfullscreen: std::collections::BTreeSet::new(),
             last_foreground: 0,
@@ -25766,6 +30590,538 @@ mod rmax03_adapter_tests {
             return_target(&state, &ws1, &observed, &retained),
             Some(steam_key.clone())
         );
+    }
+}
+
+#[cfg(test)]
+mod float_nav_adapter_tests {
+    // Items 10 + 18 adapter seams through a real `TileLoop` against the real
+    // retained Engine (no HWNDs, hooks, or live effects): float-subject
+    // classification reads the Engine exception lane, candidate assembly
+    // honors domain/sticky/automatic boundaries, and the shared selection
+    // picks through the assembled layer. Native clear/actuation timing stays
+    // user-owned live acceptance.
+    use super::rmax03_adapter_tests::test_state;
+    use super::{
+        ObservedWindow, RetainedRow, engine_is_automatic_fixed, engine_is_float,
+        float_focus_candidates,
+    };
+
+    fn key(hwnd: u64) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid: 1000 + hwnd as u32,
+            creation: format!("c{hwnd:016x}"),
+        }
+    }
+
+    fn mk_observed(hwnd: u64, token: &str, x: i32, y: i32) -> ObservedWindow {
+        let rect = tiler_core::geometry::Rect {
+            x,
+            y,
+            w: 300,
+            h: 200,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer: rect,
+            visible: rect,
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd,
+                pid: 1000 + hwnd as u32,
+                process_creation: format!("c{hwnd:016x}"),
+                exe_path: "app.exe".to_owned(),
+                user_sid: "sid".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    fn seed_domain(
+        state: &mut super::TileLoop,
+        output: &str,
+        workspace: &str,
+        bounds: tiler_core::geometry::Rect,
+        members: &[(&str, bool)],
+        focused: &str,
+    ) -> (
+        tiler_core::session::OutputDomain,
+        tiler_core::session::DomainKey,
+    ) {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        let domain = crate::workspace_owner::workspace_domain(output, workspace, bounds, 8);
+        let carried: Vec<(
+            WindowId,
+            tiler_core::geometry::Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = members
+            .iter()
+            .map(|(token, floating)| {
+                (
+                    WindowId((*token).to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    *floating,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("float-nav-seed").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &members
+                .iter()
+                .map(|(t, _)| ((*t).to_owned(), bounds))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed must converge, got {reply:?}"
+        );
+        let _ = CoreCommand::Reconcile;
+        domain
+    }
+
+    fn float_token(
+        state: &mut super::TileLoop,
+        domain: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        bounds: tiler_core::geometry::Rect,
+        members: &[(&str, bool)],
+        focused: &str,
+        window: &str,
+    ) {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        let carried: Vec<(
+            WindowId,
+            tiler_core::geometry::Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = members
+            .iter()
+            .map(|(token, floating)| {
+                (
+                    WindowId((*token).to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    *floating,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("float-nav-float").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &members
+                .iter()
+                .map(|(t, _)| ((*t).to_owned(), bounds))
+                .collect::<Vec<_>>(),
+        );
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        event.command = CoreCommand::ToggleFloat {
+            window: window.to_owned(),
+            float_rect: None,
+        };
+        let reply = state.engine.handle(&event);
+        assert!(matches!(reply, CoreReply::Tiled(_)), "float must commit");
+    }
+
+    #[test]
+    fn float_subject_gate_reads_the_engine_exception_lane() {
+        // Intentional floats hold no tile slot: the subject gate keys off the
+        // Engine exception, not geometry or membership. Automatic fixed marks
+        // stay absent for intentional floats.
+        let mut state = test_state();
+        let bounds = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let ws = state.workspaces.active_id(&output).expect("active");
+        let domain = seed_domain(
+            &mut state,
+            &output,
+            &ws,
+            bounds,
+            &[("w1", false), ("w2", false)],
+            "w1",
+        );
+        assert!(!engine_is_float(&state, &output, &ws, "w1"));
+        float_token(
+            &mut state,
+            &domain,
+            bounds,
+            &[("w1", false), ("w2", false)],
+            "w1",
+            "w1",
+        );
+        assert!(engine_is_float(&state, &output, &ws, "w1"));
+        assert!(!engine_is_float(&state, &output, &ws, "w2"));
+        assert!(!engine_is_automatic_fixed(&state, &output, &ws, "w1"));
+        assert!(!engine_is_automatic_fixed(&state, &output, &ws, "w2"));
+        // Unknown domain/session reads false, never guesses.
+        assert!(!engine_is_float(&state, "mon-9", &ws, "w1"));
+    }
+
+    fn mk_retained(
+        hwnd: u64,
+        token: &str,
+        rect: Option<(i32, i32)>,
+        maximized: bool,
+        fullscreen: bool,
+        minimized: bool,
+    ) -> RetainedRow {
+        RetainedRow {
+            key: key(hwnd),
+            token: token.to_owned(),
+            rect: rect.map(|(x, y)| tiler_core::geometry::Rect {
+                x,
+                y,
+                w: 300,
+                h: 200,
+            }),
+            maximized,
+            fullscreen,
+            facts: Some(crate::tiling::WindowFacts {
+                visible: true,
+                minimized,
+                maximized,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: fullscreen,
+                no_activate: false,
+                dialog: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn float_focus_candidates_share_one_domain_layer() {
+        // Observed encounter order, then verified retained maximized rows.
+        // Tiles, other-output windows, unassigned windows, fullscreen and
+        // stale rows never enter. Sticky rides without an Engine exception
+        // and qualifies output-wide (even homed off-workspace); ordinary
+        // floats ride the exception lane in the strict subject domain.
+        let mut state = test_state();
+        let bounds = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let ws = state.workspaces.active_id(&output).expect("active");
+        let ws_b = state
+            .workspaces
+            .workspace_ids(&output)
+            .into_iter()
+            .find(|id| *id != ws)
+            .expect("sibling");
+        let other_output = "mon-2".to_owned();
+        state.workspaces.ensure_output(&other_output);
+        let ws2 = state.workspaces.active_id(&other_output).expect("active");
+        let domain = seed_domain(
+            &mut state,
+            &output,
+            &ws,
+            bounds,
+            &[("w1", false), ("w2", false), ("w7", false)],
+            "w1",
+        );
+        // Carried observations track prior floats: a stale all-tiled
+        // observation would converge the earlier floats back into tiles.
+        float_token(
+            &mut state,
+            &domain,
+            bounds,
+            &[("w1", false), ("w2", false), ("w7", false)],
+            "w1",
+            "w1",
+        );
+        float_token(
+            &mut state,
+            &domain,
+            bounds,
+            &[("w1", true), ("w2", false), ("w7", false)],
+            "w2",
+            "w2",
+        );
+        float_token(
+            &mut state,
+            &domain,
+            bounds,
+            &[("w1", true), ("w2", true), ("w7", false)],
+            "w7",
+            "w7",
+        );
+        let domain2 = seed_domain(
+            &mut state,
+            &other_output,
+            &ws2,
+            bounds,
+            &[("w3", false)],
+            "w3",
+        );
+        float_token(&mut state, &domain2, bounds, &[("w3", false)], "w3", "w3");
+        // Membership: subject, ordinary float and tiled control home ws; w3
+        // homes the other output; w5 stays unassigned. Sticky s1 homes ws
+        // with no Engine exception (pruned-domain shape), s2 a sibling
+        // workspace on the same output, s3 the other output (excluded).
+        assert!(state.workspaces.assign(key(101), &output, &ws, false));
+        assert!(state.workspaces.assign(key(102), &output, &ws, false));
+        assert!(state.workspaces.assign(key(104), &output, &ws, false));
+        assert!(
+            state
+                .workspaces
+                .assign(key(103), &other_output, &ws2, false)
+        );
+        assert!(state.workspaces.assign(key(106), &output, &ws, false));
+        assert!(state.workspaces.assign(key(107), &output, &ws_b, false));
+        assert!(
+            state
+                .workspaces
+                .assign(key(108), &other_output, &ws2, false)
+        );
+        for (hwnd, token, home_output, home_ws) in [
+            (101, "w1", &output, &ws),
+            (102, "w2", &output, &ws),
+            (104, "w4", &output, &ws),
+            (106, "s1", &output, &ws),
+            (107, "s2", &output, &ws_b),
+            (103, "w3", &other_output, &ws2),
+            (108, "s3", &other_output, &ws2),
+            (109, "w7", &output, &ws),
+            (110, "w9", &output, &ws),
+            (111, "w8", &output, &ws),
+            // w10's live token disagrees with its retained row: recycled
+            // identity must never ride the stale row into candidacy.
+            (112, "wX", &output, &ws),
+        ] {
+            assert!(
+                state
+                    .workspaces
+                    .assign(key(hwnd), home_output, home_ws, false),
+                "assign {token}"
+            );
+            state.member_tokens.insert(key(hwnd), token.to_owned());
+        }
+        state.sticky.insert(key(106), false);
+        state.sticky.insert(key(107), false);
+        state.sticky.insert(key(108), false);
+        let observed = vec![
+            mk_observed(101, "w1", 500, 500),
+            mk_observed(104, "w4", 100, 100),
+            mk_observed(103, "w3", 700, 100),
+            mk_observed(105, "w5", 800, 100),
+            mk_observed(106, "s1", 900, 900),
+            mk_observed(102, "w2", 600, 0),
+            mk_observed(107, "s2", 700, 100),
+            mk_observed(108, "s3", 750, 100),
+        ];
+        // Retained union: maximized float w7 qualifies; maximized
+        // fullscreen w9, frameless minimized w8 and token-mismatched w10
+        // refuse.
+        let retained = vec![
+            mk_retained(109, "w7", Some((400, 300)), true, false, false),
+            mk_retained(110, "w9", Some((450, 320)), true, true, false),
+            mk_retained(111, "w8", None, false, false, true),
+            mk_retained(112, "w10", Some((420, 310)), true, false, false),
+        ];
+        let candidates = float_focus_candidates(&state, &observed, &retained, &output, &ws, "w1");
+        let tokens: Vec<&str> = candidates.iter().map(|c| c.token.as_str()).collect();
+        assert_eq!(
+            tokens,
+            vec!["s1", "w2", "s2", "w7"],
+            "observed encounter order then retained maximized union"
+        );
+        assert!(
+            candidates
+                .iter()
+                .find(|c| c.token == "s1")
+                .expect("sticky")
+                .sticky
+        );
+        assert!(
+            candidates
+                .iter()
+                .find(|c| c.token == "s2")
+                .expect("non-home sticky")
+                .sticky
+        );
+        assert!(
+            !candidates
+                .iter()
+                .find(|c| c.token == "w2")
+                .expect("float")
+                .sticky
+        );
+        assert!(
+            !candidates
+                .iter()
+                .find(|c| c.token == "w7")
+                .expect("retained maximized float")
+                .sticky
+        );
+        // End to end through the shared race: nearer ordinary w2 wins right.
+        assert_eq!(
+            crate::tiling::select_float_focus_target(500, 500, "right", &candidates),
+            Some("w2".to_owned())
+        );
+    }
+
+    #[test]
+    fn snapped_float_reconciles_without_losing_exception_focus_or_frame() {
+        // Post-snap steady state through the real Engine: a reconcile
+        // carrying the moved float frame converges, keeps the float
+        // exception, retains the moved frame, and leaves tiled focus
+        // untouched, so the next tick never fights the snapped window.
+        use tiler_core::boundary::CoreReply;
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        let mut state = test_state();
+        let bounds = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let output = "mon-1".to_owned();
+        state.workspaces.ensure_output(&output);
+        let ws = state.workspaces.active_id(&output).expect("active");
+        let domain = seed_domain(
+            &mut state,
+            &output,
+            &ws,
+            bounds,
+            &[("w1", false), ("w2", false)],
+            "w1",
+        );
+        float_token(
+            &mut state,
+            &domain,
+            bounds,
+            &[("w1", false), ("w2", false)],
+            "w1",
+            "w1",
+        );
+        let moved = tiler_core::geometry::Rect {
+            x: 1202,
+            y: 104,
+            w: 394,
+            h: 592,
+        };
+        let focus_before = state.engine.session(&domain.1).expect("session").focus();
+        let carried = vec![
+            (
+                WindowId("w1".to_owned()),
+                moved,
+                tiler_core::size_hints::WindowSizeHints::none(),
+                true,
+            ),
+            (
+                WindowId("w2".to_owned()),
+                bounds,
+                tiler_core::size_hints::WindowSizeHints::none(),
+                false,
+            ),
+        ];
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("float-nav-reconcile").expect("correlation");
+        let fp = crate::tiling::fingerprint(&[("w1".to_owned(), moved), ("w2".to_owned(), bounds)]);
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId("w2".to_owned())),
+        );
+        let reply = state.engine.handle(&event);
+        match &reply {
+            CoreReply::Projection(plan) => assert!(
+                !plan.geometry.iter().any(|g| g.window.0 == "w1"),
+                "snapped float takes no correction write"
+            ),
+            CoreReply::Tiled(plan) => assert!(
+                !plan.geometry.iter().any(|g| g.window.0 == "w1"),
+                "snapped float takes no correction write"
+            ),
+            other => panic!("moved float must converge, got {other:?}"),
+        }
+        let session = state.engine.session(&domain.1).expect("session");
+        assert!(
+            session.is_exception(&WindowId("w1".to_owned())),
+            "snapped window stays floating"
+        );
+        assert_eq!(session.focus(), focus_before, "tiled focus untouched");
     }
 }
 

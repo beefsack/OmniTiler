@@ -1254,7 +1254,10 @@ platform API behavior.
   all platforms (looked right in Windows dogfood); revisit per platform if
   it does not suit a host. Other border defaults unchanged.
   - Windows offline-delivered: settings and CLI/proof defaults, missing-field
-    handling and Apply/Revert coverage; visual acceptance pending
+    handling and Apply/Revert coverage; radius 6 and live Settings Apply
+    physically user-accepted 2026-10-12, scoped normal owner, single output,
+    Notepad/Paint, base `e506350` plus combined directional/retile/B9 deliveries;
+    Revert/game/DPI/multi-output pending
     ([record](changes/archive/windows-border-radius-default.md)).
 - Windows active border (selected 2026-10-02): default-on owned per-pixel-alpha layered,
   click-through, nonactivating tool-window surface. Do not mutate foreign
@@ -1857,9 +1860,10 @@ platform API behavior.
   `Meta+G` on a plain floating window must still tile it; moving or resizing
   a float alone never tiles it.
 - User decision 2026-10-05: float-origin directional focus and move follow
-  COSMIC. KDE delivers focus plus the first half-snap step; Windows wiring
-  remains pending because Linux gates do not verify native
-  Windows actuation. Tile-origin navigation continues to skip floats.
+  COSMIC. KDE and Windows deliver focus plus the first half-snap step offline;
+  native actuation acceptance remains separate. Tile-origin navigation continues
+  to skip floats. Windows delivery 2026-10-12 from base `e506350`:
+  [record](changes/archive/windows-floating-directional-navigation.md).
 - KDE float-origin focus searches only ordinary/sticky floats on the current
   output/workspace, by top-left position on the requested axis, ignoring the
   perpendicular coordinate. Up/Left include equal positions and select the
@@ -1886,6 +1890,20 @@ platform API behavior.
 - Offline regression gates pass; physical acceptance remains user-owned.
   Evidence and next checks:
   [KDE floating navigation](changes/archive/kde-floating-directional-navigation.md).
+  [Windows floating navigation](changes/archive/windows-floating-directional-navigation.md)
+  passes native MSVC offline gates; Windows local misses retain until the
+  existing cross-output actuation gap is delivered under handoff item 5.
+- Tentative 2026-10-12, pending user review: Windows float candidate encounter
+  order is eligible observations followed by retained maximized rows, with
+  sticky-first layering over the combined list. Equal-axis ties between the
+  two sets can differ from host enumeration order. Visible sticky candidates
+   participate across home workspaces on the same output; automatic fixed floats
+   retain the selected D8 no-touch rule.
+  Reference tally: 0 explicit observed-first outcomes, 2 applicable but
+  incomparable live-list mechanisms (COSMIC/Hyprland), 7 unavailable profiles.
+  Distance still wins across classes/layers; only equal-axis ties use this order.
+  Keep tentative pending deeper comparable tie-order research
+  ([basis](changes/archive/windows-floating-directional-navigation.md#user-accepted-physical-evidence---2026-10-12)).
 
 - Intentional normal and sticky floating request KWin's public `keepAbove=true`.
   KWin owns the normal keep-above/keep-below exclusive transition. The adapter
@@ -1947,8 +1965,46 @@ platform API behavior.
   Fullscreen precedence is unchanged. KDE's maximized flag remains local
   to preserve born-maximized admission; the adapter enforces its focus fence.
   The shared Engine focus fence is opt-in for direct flag observers, default
-  off for Windows until handoff item 18 is wired.
-  Status: shared-core/KDE delivered offline ([record](changes/archive/reference-comparison-implementation.md)); Windows adapter wiring and native timing checks pending.
+  off for Windows because its reconcile observation omits maximize; the native
+  directional guard reads fresh retained flags, preserving admission semantics.
+  Status: shared-core/KDE delivered offline ([record](changes/archive/reference-comparison-implementation.md)); Windows ordinary focus fence/clear-then-move/float-four-halves physically user-accepted 2026-10-12, scoped normal owner, single-output Notepad/Paint, physical keyboard/mouse, base `e506350` plus combined directional/retile/B9 deliveries ([record](changes/archive/windows-maximized-directional-navigation.md)); failure/race/preset/fixed/game/DPI/multi-output pending.
+- Tentative 2026-10-12, pending user review: Windows pre-clear diagnostics
+  prioritize `fullscreen-raced`, `domain-raced`, `focus-raced`, `suspended`,
+  then `elevated-foreground`. Existing project fullscreen metadata also vetoes
+  clear when a transitional frame no longer covers the output, preserving
+  owned restore state. This is a narrow refusal, without delayed move/retry.
+- User 2026-10-12: a window leaving fullscreen, including borderless windowed
+  fullscreen, is admitted/tiled like a newly admitted window; no target writes
+  while fullscreen. Startup-fullscreen and born-after-start first exits share
+  D5 current-hint admission; fixed clients remain automatic floats, intentional
+  floats/sticky preserve their selected identity, floating workspaces defer
+  tiling. Previously tiled fullscreen members return to their retained slot.
+  Windows lifecycle/owned-exit regression coverage is
+  [recorded](changes/archive/windows-fullscreen-exit-acceptance.md).
+- User decision 2026-10-12: automatically clear stale owned fullscreen
+  metadata when fresh observation proves the window left fullscreen by other
+  means, so explicit maximized move/unfloat is not stranded. Non-covering
+  transition geometry alone is not exit proof; fullscreen/game safety wins.
+  Windows retires only after the originally cleared nonzero chrome mask reads
+  restored and fresh fullscreen reads false, with exact-lifetime/preimage
+  revalidation and a second proof immediately before metadata removal.
+  Reconcile and both maximize-clear routes share this metadata-only sequence.
+  Fullscreen, transition, unreadable, changed-preimage and identity-race cases
+  keep the veto; genuine re-fullscreen remains protected. No geometry write is
+  added. Owned toggle exit still removes metadata after verified restore.
+  User follow-up 2026-10-12: originally captionless zero-bit preimages stay
+  fail-closed without a restoration witness; no automatic retirement inferred
+  from time or non-coverage. Win+F11 owned toggle exit remains the release path.
+  The user will watch for windows failing to tile during dogfood. This is the
+  selected policy, not a remaining exit-proof decision.
+  [Delivery and evidence](changes/archive/windows-fullscreen-exit-acceptance.md).
+- User-accepted physical 2026-10-12: scoped single-output Notepad/Paint,
+  base `e506350` plus directional/retile/B9 and fullscreen-exit regression
+  changes before automatic-retirement delivery. Win+F11 owned fullscreen on
+  tiled Notepad then exit returned it to its slot; stop/relaunch with Notepad
+  still fullscreen then exit tiled it. Each Win+F11 also raised the known
+  Xbox full screen experience prompt; containment remains parked under
+  Windows gaming coexistence. This does not accept the later retirement hunks.
 - Maximized workspace sends (G-D2, User 2026-10-10; REQ-MAX-09 maximize
   leg): sending a maximized window to another workspace keeps it maximized
   on arrival, cross-platform. Deliberate COSMIC/niri deviation (they
@@ -1985,10 +2041,10 @@ platform API behavior.
     the focused window is maximized; directional move unmaximizes first,
     then moves (shared rule above). Pointer operations still refuse a
     maximized subject; Win+Arrow stays focus, never Snap. Send/follow,
-    select-away hiding and return preserve maximize. Current code makes one admission-time restore attempt
-    for a first-seen maximized window without a tile slot (gap: Q3 selects
-    no launch unmaximize with a reserved slot); retained slots exempt;
-    fullscreen wins. Stop/crash preserve
+    select-away hiding and return preserve maximize. Born admission follows
+    `core.born_maximized`; floating-to-tiled admission keeps maximize over a
+    reserved slot independently of that setting (item 11 delivered offline
+    2026-10-12). Retained slots exempt; fullscreen wins. Stop/crash preserve
     frames and maximize state; identity-safe recovery reveals hidden members.
     One native toggle attempt per discrete Win+M down (the discrete rule also
     fixes KDE's map-refusal case); held repeats consumed without dispatch.
@@ -1996,7 +2052,9 @@ platform API behavior.
     double-click paths proven in scoped runs; physical input and other output/DPI
     arrangements remain user-owned
     ([maximise](changes/archive/windows-maximise.md)).
-    Status: G-06 focus fence/unmaximize-before-move pending Windows wiring;
+    Status: G-06 focus fence/unmaximize-before-move delivered offline 2026-10-12
+    ([record](changes/archive/windows-maximized-directional-navigation.md)); ordinary
+    physical single-output acceptance 2026-10-12, variants/game/DPI pending;
     maximized-send preservation remains the existing Windows policy.
   - Fullscreen (Win+F11 matches Meta+F11): managed fullscreen retains
     membership/tree/shares, pauses geometry writes, restores the current
@@ -2026,19 +2084,24 @@ platform API behavior.
     and siblings reflow; first float uses the centered 60% fallback,
     later floats reuse retained geometry. Unfloat carries the live frame with
     ordinary admission placement, never a remembered slot. Directional
-    focus/move and tiled pointer operations refuse a floating subject; native
+    focus searches ordinary/sticky floats, directional move requests stateless
+    half-snaps (delivered offline 2026-10-12); tiled pointer operations refuse a
+    floating subject; native
     moving and resizing remain free and never implicitly unfloat; send refuses
     a focused float while selection hide/reveal keeps geometry intact.
-    Current code holds natively overlaid floats until normal again (gap:
-    B9 selects unmaximize-then-fresh-admit instead);
-    fullscreen/maximized targets refuse. Topmost is the keep-above analogue
+    Explicit ordinary maximized unfloat clears once, observes clear, then
+    fresh-admits (B9 delivered offline 2026-10-12); unconfirmed clears retain
+    float intent for a later press. Fullscreen, sticky maximize and
+    normal-to-float maximize targets refuse. Topmost is the keep-above analogue
     with no keep-below; record the original band, verify effects, restore only
     a project-raised band, never clear a pre-existing band, and preserve band
     preimages even without later readback. Evaluate on a local Engine clone
     and commit after target effects verify; failed effects never strand
     membership. Born-fullscreen holds stay distinct from intentional float
     actuation. One attempt per discrete down. B9 selected behavior
-    (unmaximize-then-fresh-admit) is delivered offline on KDE; Windows pending.
+    (unmaximize-then-fresh-admit) is delivered offline on KDE and Windows
+    ([Windows record](changes/archive/windows-maximized-intentional-unfloat.md));
+    native clear/frame/focus timing remains pending.
     Status: scoped evidence proves activation and cleanup only; float
     behavior, physical input/display and other arrangements remain user-owned
     ([float](changes/archive/windows-float.md)).
@@ -2070,7 +2133,9 @@ platform API behavior.
   hold. Fixed first exits float with no writes (D5 delivered offline).
   D6 workspace enable leaves fixed automatic clients floating, including
   maximized clients; explicit user tile overrides retain the Q3 slot route.
-  - KDE: R-MAX-06 and R-MAX-03 delivered offline, the latter at `29c75fe` ([record](changes/archive/kde-maximized-floating-retile-overlay.md)); Windows parity and native acceptance pending.
+  - KDE: R-MAX-06 and R-MAX-03 delivered offline, the latter at `29c75fe` ([record](changes/archive/kde-maximized-floating-retile-overlay.md)). Windows R-MAX-03 ordinary retile/restore physically user-accepted 2026-10-12 under the G-06 conditions above ([record](changes/archive/windows-maximized-floating-retile-overlay.md)); hidden/session/fixed/game/DPI/multi-output pending. Tray previous-focus non-restoration is observation only, possibly suitable for keyboard accessibility; no behavior change requested.
+    Tentative 2026-10-12, pending user review: separate lifetime-bound born and
+    retile overlay latches keep born-setting adoption independent of retile.
   - CHANGED by user 2026-10-11 (R-MAX-06 born-maximized setting, option B,
     cross-platform): first-seen maximized admission becomes a setting.
     Default tiles: one launch unmaximize, then ordinary admission (tooltip
@@ -2085,15 +2150,24 @@ platform API behavior.
     user's gaming test. R-MAX-03 floating-to-tiled overlay, D4 fixed
     born-maximized float and later user maximizes are unchanged.
     - Windows offline-delivered: both values, Settings Apply/Revert and
-      lifetime-bound subsequent-admission adoption; native launch/restore and
-      gaming acceptance pending ([record](changes/archive/windows-born-maximized-setting.md)).
-      R-MAX-03 parity remains item 11; fixed-client detection remains item 13.
+      lifetime-bound subsequent-admission adoption; both-values maximized Paint
+      launch physically user-accepted 2026-10-12 under G-06's conditions;
+      browser/session/fixed/game/DPI/multi-output acceptance pending
+      ([record](changes/archive/windows-born-maximized-setting.md)).
+      R-MAX-03 parity delivered offline with item 11; fixed-client detection
+      delivered offline with item 13.
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06
   observation confirmation
   remains (not an implementation gate).
-  - Status: shared-core regression/KDE delivered offline ([record](changes/archive/maximized-intentional-unfloat.md)); Windows handoff item 15 and native KDE acceptance pending.
+  - Status: shared-core regression/KDE delivered offline ([record](changes/archive/maximized-intentional-unfloat.md)); Windows item 15 ordinary scoped Notepad/Paint clear/frame/focus agent-observed 2026-10-12 ([record](changes/archive/windows-maximized-intentional-unfloat.md)); physical B9/fixed marker/restart/failure/game/DPI/multi-output and KDE native pending.
+    Windows reuses D3/D7 fixed override settlement after observed clear and
+    fresh admission; no marker/intent commit on an unconfirmed clear.
+    Tentative 2026-10-12, pending user review: `float-maximize-clear` and
+    `float-refused-maximize-clear` diagnostics carry the clear result/cause,
+    matching directional clear diagnostics. Owned fullscreen metadata vetoes
+    B9 both before and after clear, including non-covering transition frames.
   Analysis: [post-Windows audit](research/cross-platform-core/post-windows-audit.md),
   [cross-WM consensus](research/reference-wm-consensus.md).
 - Observation-driven reconciliation, three-strike anti-fighting acceptance,

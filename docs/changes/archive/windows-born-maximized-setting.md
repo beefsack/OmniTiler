@@ -48,7 +48,8 @@
   contract review found no blocking issue. Publication CI follows separately.
 - Existing Windows fixed-size detection is unwired (handoff item 13): this
   delivery preserves that gap and does not claim D4 fixed-client acceptance.
-- Offline-delivered; user-owned native acceptance remains pending.
+- Offline-delivered; both-values ordinary launch physically accepted below;
+  remaining native legs pending.
 
 ## Pending user-owned checks
 
@@ -60,4 +61,13 @@
   saved value and independent workspace/same-axis controls.
 - Check browser session-restored launch, fullscreen/borderless game isolation
   and a game launching maximized-windowed; stop and verify cleanup. Game safety
-  wins. Physical input/display, session-boundary and recovery remain user-owned.
+   wins. Physical input/display, session-boundary and recovery remain user-owned.
+
+## User-accepted physical evidence - 2026-10-12
+
+- Scoped normal owner, single output, Notepad/Paint, physical keyboard/mouse;
+  base `e506350` plus combined directional, retile-overlay and B9 Windows changes.
+  Paint launched maximized under both `core.born_maximized` values; user
+  accepts the specified tile-on-launch and keep-maximized-overlay behavior.
+- Browser session restore, detailed Apply/Revert/admitted-client adoption,
+  fixed-size, game/DPI/multi-output remain pending.

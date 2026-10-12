@@ -363,3 +363,13 @@
   DPI/output setups remain user-owned. Decisions/matrix updated and record
   archived after hosted CI green. Exact next action: none for this correction;
   backlog advancement and its archived-record link remain queued.
+
+## User observation - 2026-10-12
+
+- Scoped normal owner, single output, Notepad/Paint, physical keyboard/mouse;
+  base `e506350` plus combined directional, retile-overlay and B9 Windows changes.
+  Tray workspace tiling toggles do not restore the previously focused window.
+  User notes this may be acceptable for keyboard accessibility of the tray;
+  observation only, no behavior change requested. The current R-MAX-03 overlay
+  retile/restore is physically accepted in
+  [item 11](windows-maximized-floating-retile-overlay.md#user-accepted-physical-evidence---2026-10-12).

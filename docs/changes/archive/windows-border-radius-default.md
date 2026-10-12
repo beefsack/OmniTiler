@@ -18,8 +18,8 @@
   CLI override/argv consistency, owner options and byte-identical reload.
 - Native MSVC Rust 1.99.0: allowlisted build/test, all-package fmt check,
   allowlisted all-targets clippy with warnings denied and diff check passed.
-- Offline-delivered; no live tests run. Publication CI and user-owned visual
-  acceptance remain separate from offline evidence.
+- Offline-delivered; user visual/live-Apply acceptance is recorded below;
+  publication CI remains separate from offline evidence.
 
 ## Pending user-owned checks
 
@@ -27,3 +27,10 @@
   stage another edit and Revert, confirming the saved value and appearance.
 - Check default outline appearance at the active display DPI, including
   maximize/fullscreen suppression; stop and verify normal cleanup.
+
+## User-accepted physical evidence - 2026-10-12
+
+- Scoped normal owner, single output, Notepad/Paint, physical keyboard/mouse;
+  base `e506350` plus combined directional, retile-overlay and B9 Windows changes.
+  User accepts radius 6 as correct and confirms changes apply live through
+  Settings Apply. Revert, game/DPI/multi-output remain pending.
