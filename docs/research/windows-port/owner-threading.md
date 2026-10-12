@@ -82,7 +82,7 @@
 ## Stage 3 single-output hardening, 2026-10-13
 
 - Combined transport/core stress and retry/teardown seams are delivered;
-  [acceptance record](../../changes/windows-owner-threading-acceptance.md)
+  [acceptance record](../../changes/archive/windows-owner-threading-acceptance.md)
   separates native gates, agent live evidence and remaining physical checks.
 - Input stop now caches terminal reports and requires finished successful exit
   as well as hook-release proof. A stalled exit never enters an unbounded join;
@@ -215,7 +215,7 @@ If B-first is preferred, retain those residual input costs explicitly.
 | --- | --- | --- | --- |
 | 1: complete A | Remove owner work from LL pump; retain existing renderer and all current input semantics. Include startup/stop/failure handling in this stage. | Existing classifier/queue fixtures plus deterministic snapshot/config races, consumed-pair/saturation/terminal edges, Esc ordering, mask reentry, install/retry/stop fault seams. Native common DoD gates. | Same scoped edge drags, dev/release and trace-on/off; chord holds/releases, preheld modifiers, Win+drag/Esc, focus/workspace actions, graceful stop/restore. Establish input improvement separately from settlement speed. |
 | 2: complete B, reaching C | Move all three carriers to renderer; reduce owner presentation work without changing pixels, follow or z-order. Include affinity/acknowledgement/recovery in this stage. | Latest-wins/hide/cancel/reset race fixtures, stale target/recycled-ID refusal, applied-state inspection, raster checksum equivalence, creator-thread cleanup and shutdown failures; native DoD gates. | Border/underlay/preview follow and placement, no stale show after cancel/suspend/drop, accent/settings/DPI changes, workspace hide/reveal and stop cleanup. |
-| 3: C acceptance/hardening | Single-output combined transport/resilience hardening delivered; physical latency and gaming-cost target remain. Correct concrete integration failures; no shutdown basics deferred here. | Delivered: 3,000-round bounded queue/epoch stress, retry/teardown fault seams and native gates; scoped lifecycle/burst/idle evidence. Publication CI pending. Portable tests cover contracts, not HWND/hook delivery. | Single-output physical visuals/input pending. Multi-output/mixed-DPI, gaming/suspension cost and separately scoped exact-owner emergency/crash recovery remain deferred. |
+| 3: C acceptance/hardening | Single-output combined transport/resilience hardening delivered; physical latency and gaming-cost target remain. Correct concrete integration failures; no shutdown basics deferred here. | Delivered: 3,000-round bounded queue/epoch stress, retry/teardown fault seams and native gates; scoped lifecycle/burst/idle evidence; seven-job publication CI/Linux handback. Portable tests cover contracts, not HWND/hook delivery. | Single-output physical visuals/input pending. Multi-output/mixed-DPI, gaming/suspension cost and separately scoped exact-owner emergency/crash recovery remain deferred. |
 
 - Native gates: root mise-selected MSVC locked four-package build/test, fmt,
   strict all-target Clippy and whitespace per [common DoD](../../backlog.md).

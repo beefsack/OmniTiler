@@ -158,7 +158,7 @@ platform API behavior.
   own work event. Native wait-return diagnostics stay bounded and trace-only,
   with no diagnostic-induced wake or new timer.
 - Combined offline and scoped automated desktop acceptance is recorded in
-  [Stage 3 evidence](changes/windows-owner-threading-acceptance.md). Physical
+  [Stage 3 evidence](changes/archive/windows-owner-threading-acceptance.md). Physical
   visual/input checks, multi-output/mixed-DPI and gaming cost remain pending;
   a bounded trace-on idle CPU result is not gaming-cost acceptance.
 

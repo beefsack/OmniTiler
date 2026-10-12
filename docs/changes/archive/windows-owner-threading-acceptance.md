@@ -1,7 +1,7 @@
 # Windows owner threading combined acceptance (Stage 3)
 
-- Outcome: single-output offline hardening and scoped agent live evidence
-  complete; publication CI pending. Physical acceptance and deferred legs below
+- Outcome: single-output offline hardening, scoped agent live evidence and
+  publication CI complete. Physical acceptance and deferred legs below
   are not claimed.
 
 ## Goal and scope
@@ -11,7 +11,7 @@
 - Correct concrete integration defects with small production fixes and
   deterministic regression/stress fixtures. Preserve one owner authority,
   existing input semantics and recovery contracts.
-- Binding design: [owner threading](../research/windows-port/owner-threading.md).
+- Binding design: [owner threading](../../research/windows-port/owner-threading.md).
 - Multi-output/mixed-DPI, multi-output foundation, gaming/suspension cost,
   intentional process-loss recovery and physical visual/latency acceptance
   remain separate evidence legs.
@@ -76,10 +76,18 @@
 ## Verification and outcome
 
 - Native Rust 1.99.0, MSVC target. Locked four-package build/test (`tiler-core`,
-  `tiler-protocol`, `tiler-kwin-effect-ffi`, `tiler-windows`): 1,687 passed,
+  `tiler-protocol`, `tiler-kwin-effect-ffi`, `tiler-windows`): 1,688 passed,
   zero failed, one pre-existing ignored benchmark. Windows library: 528 passed;
   Windows integration: 364 passed. All-workspace fmt, locked strict four-package
   all-target Clippy with warnings denied and whitespace gates passed.
+- Implementation `baee279`, portability correction `2fce63f`:
+  [publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38285336533)
+  passed all seven jobs (Windows, Rust, KWin, native, shell, macOS and licenses).
+  Initial Linux strict Clippy found the Windows-only wait classifier compiled
+  unused; `cfg(windows)` fixes the boundary without changing native behavior.
+  Post-rebase native gates include the concurrent shared-core restore change;
+  it adds one passing test to the pre-rebase 1,687 total. Windows counts are
+  unchanged. No Linux physical acceptance is inferred from CI.
 - Twenty-six added regression/stress tests cover teardown idempotence, ack with
   stalled exit, panic/failed/missing completion, held process reservation,
   deadline plans and actual wake events, pre-wait callback transfer, real-lock
@@ -112,14 +120,16 @@
 - Final instrumented artifact SHA-256:
   `029E00BAEFB1993341B6D0EB830CBEA0E68B83229E0692475AAB4D1F419B0AD3`,
   from `7c35412` plus this delivery's production changes. Subsequent changes
-  affect comments and an offline stress filler only. Final trace SHA-256:
+  affect comments, an offline stress filler and non-Windows compilation gating;
+  the subsequent rebase also includes an independent shared-core restore change.
+  Final trace SHA-256:
   `FFCD1A2CCC448AE933184DD2CA163377BD973A0EFEF1A0E219204C61C640CF96`.
 - Final settled idle CPU interval: 32.05 seconds, 328.125 ms process CPU
   (62.5 ms user, 265.625 ms kernel), approximately 1.024% of one core, trace-on.
   Two other steady thread CPU deltas rounded to zero at the native counter's
   resolution; thread-name mapping was unavailable. This is a bounded
-  development-build measurement, not
-  a release/trace-off comparison or gaming-cost acceptance.
+  development-build measurement, not a release/trace-off comparison or
+  gaming-cost acceptance.
 - Fifteen in-window `pump-waits` samples: owner +281 returns (265 maintenance
   timeouts, 15 ack-only, one message); input +0 returns/turns; renderer +30
   returns, all work-event wakes. Input/render timeout deltas were zero, and all
@@ -143,5 +153,5 @@
   pending. These results do not select or prove Win+G/F11 containment.
 - Existing untagged targets retain the process-fenced native reuse race;
   tagged lifetime proof and honest `id_proven:false` reporting are unchanged.
-- Exact next action: publication CI, then physical single-output visual/input
-  checks; retain the deferred multi-output/DPI/gaming legs explicitly.
+- Exact next action: physical single-output visual/input checks; retain the
+  deferred multi-output/DPI/gaming legs explicitly.
