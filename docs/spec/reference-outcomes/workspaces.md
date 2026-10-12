@@ -310,8 +310,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   path), focusing B. The emptied source forces the Follow path, so
   the Stay run also switches the view and focuses B. `S(S-pan-ws)` +
   `S(S-pan-flt)`.
-- Then Ours KDE: TBD (explicit send applies to focused tiled windows `D(D-dec-cos)`; floated roundtrip untested); selected User 2026-10-12 D16 (a) target: floating send (follow or stay, numbered or relative) keeps float on arrival with size kept; destination tiles untouched; no setting ([User 2026-10-12 D16](../../decisions.md#workspaces)). NEEDS CODE at `fafcd31`: shared core refuses NotTiled (`workspace.rs:131-136`) and KDE sender is tiled-only (`workspace-send-adapter.ts:1701/1841`); untested native WS1 -> WS2 -> WS1 roundtrip to verify first; exact native frames/focus TBD
-- Then Ours Windows: TBD (explicit send applies to focused tiled windows `D(D-dec-cos)`; floated roundtrip untested); same selected D16 (a) target; shared core first, then Windows adapter (handoff item 22); native roundtrip journey pending; exact native frames/focus TBD
+- Then Ours KDE: delivered offline (selected User 2026-10-12 D16 (a) target): floating send (follow or stay, numbered or relative) keeps float on arrival with size kept via the slotless deferred transfer; destination/source tiles untouched; sticky still refuses; no setting. Native WS1 -> WS2 -> WS1 roundtrip pending; exact native frames/focus TBD
+- Then Ours Windows: shared core served (same selected D16 (a) target); Windows adapter/native acceptance in handoff item 22; native roundtrip journey pending; exact native frames/focus TBD
 - Variant hook: V-FLOAT-GEO.
 
 <a id="r-ws-06-backfill-send-to-a-floating-workspace-scrolling"></a>
