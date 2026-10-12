@@ -312,7 +312,12 @@ decisions of 2026-09-24 are under
   Tentative guardrail (pending user review): `#![forbid(unsafe_code)]` on
   `tiler-core`, `tiler-protocol` and unsafe-free Windows modules; new
   threading code shares state only through safe std primitives; FFI `unsafe`
-  stays at call sites. Consolidating existing Windows FFI behind a small safe
+   stays at call sites. Guardrail applied 2026-10-12 (tentative, pending
+  user review): `#![forbid(unsafe_code)]` on `tiler-core`, `tiler-protocol`
+  and unsafe-free Windows modules (`25de29a`; workspace build/test, clippy
+  `-D warnings` and fmt pass). `crates/omnitiler` left without the guardrail:
+  it contains `unsafe` env set/remove calls in `planner_service.rs` tests.
+  Consolidating existing Windows FFI behind a small safe
   wrapper layer (or another crate choice) is a user decision.
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered
   offline, pending live checks + review: R-MAX-06 born-maximized setting
