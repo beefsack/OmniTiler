@@ -172,6 +172,13 @@ await approval. Current implementation status is in the spec/backlog.
 
 ### D01 fullscreen admission + close cleanup (INS-06, CLOSE-05)
 
+- Research update 2026-10-12: [fullscreen admission and explicit focus](d01-fullscreen-admission.md)
+  records pinned defaults, the tally, native KWin/Windows baselines, current
+  convergence behavior and four options. It recommends native activation
+  ownership rather than forcing fullscreen B to remain shown/focused. This
+  challenges the historical tentative (a) above; it is not an approval or a
+  change to REQ-INS-06. CLOSE-05's proposal is unaffected by this research.
+
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|
 | INS-06 ([spec](../spec/functional-spec.md#L79)) | admission over maximized/fullscreen TBD | TBD (all `B:full` legs TBD) | C audit-only; `B:max` no-counterpart B/I/X/S; [R-INS-06](../spec/reference-outcomes/insertion.md#r-ins-06-open-over-an-overlay-maximized-plus-fresh-fullscreen-variant) | (a) tile behind overlay with explicit focus/visibility rules, no writes/steal while fullscreen; (b) fail-closed queue until clear (confusing everyday-maximize no-ops); (c) disturb overlay (rejected: gaming). -> (a) for both states; joint native-cleanup live leg with CLOSE-05 |

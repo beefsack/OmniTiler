@@ -207,24 +207,31 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   and focus paths).
 - Observe: overlay retained, cleared, or covering a newly admitted window;
   newcomer focus/visibility and underlying layout.
+- Source audit 2026-10-12: [D01 evidence and native baseline](../../research/d01-fullscreen-admission.md)
+  supplies pinned defaults and line-level citations for the non-scrolling
+  profiles and niri. Focus, visibility and fullscreen state are independent;
+  retaining fullscreen need not retain its cover. Source analysis only,
+  runtime/native settlement unverified. Transients are separate from ordinary C.
 - Then COSMIC: `B:max` leg - opening C first unmaximizes B back to its
   tiling slot, then C fresh-maps at the MRU anchor B splitting B's long
   edge after B with newcomer focus. Fresh `B:full` leg - B stays a
   retained fullscreen target (no exit path in admission); C admits at
   the last-active tile A (fullscreen B is not in the tiling tree, so
   the anchor skips it), splitting A's long edge after A with newcomer
-  focus while B's fullscreen cover is retained. Exact axes/frames TBD
+  focus; B's fullscreen state is retained but rendered below C (normal
+  layers precede unfocused fullscreen in front-to-back render order).
+  Exact axes/frames TBD
   (F: anchor frames plus output and work-area geometry unrecorded).
   `S(S-cos-maxpolicy)` + `S(S-cos-admit)` + `S(S-cos-last)` +
   `S(S-cos-axis)` + `S(S-cos-newgroup)` + `S(S-cos-mapfocus)` +
-  `S(S-cos-fsreq)`.
+  `S(S-cos-fsreq)`; [render-order audit](../../research/d01-fullscreen-admission.md#cosmic).
 - Then Hyprland/Dwindle: `B:max` leg - C ordinary-admits at the active-tile anchor B splitting B's long edge with newcomer focus, while the existing maximize is cleared first (shipped `on_focus_under_fullscreen=2` exits the covering window to NONE on the newcomer map); B retained tiled. Fresh `B:full` leg - same path: B's fullscreen is exited on C's admission and C admits at B with newcomer focus. Newcomer before/after B TBD in both legs (F: pointer unstated, follow_mouse half decides). `S(S-hyp-ins)` + `S(S-hyp-newfocus)` + `S(S-hyp-fs)`.
 - Then bspwm: `B:max` leg no-counterpart (no maximize in the state inventory: maximize flags are client-hint bits, not tree state, so the maximized qualifier is void on admission; `S(S-bsp-fs)`); fresh `B:full` leg: opening C focus-clears B's fullscreen to its last state via `neutralize_occluding_windows` (fullscreen outranks tiled in `stack_level`, so the newcomer focus sees B covered and restores it), B is retained tiled, and C splits B as second child after B with newcomer focus; the split axis follows B's realized frame, exact axis TBD (F: anchor frames plus output and work-area geometry unrecorded). `S(S-bsp-fs)` + `S(S-bsp-insert)` + `S(S-bsp-ins)`.
 - Then i3: `B:max` leg no-counterpart (no maximize verb; `S(S-i3-max)`); fresh `B:full` leg: C tiles after B with no newcomer focus (cover inserts after the focused head with `set_focus` false), B's fullscreen cover retained with no exit path in admission (transient-only `PDF_LEAVE` exit inapplicable to ordinary C), focus stays B. `S(S-i3-max)` + `S(S-i3-fs)` + `S(S-i3-ins)`.
 - Then xmonad/Tall+Navigation2D: `B:max` leg no-counterpart (no maximize state; `S(S-xmo-layout)`); fresh `B:full` leg applicable via `S(S-xmo-ewmh)` (float-based EWMH fullscreen; admission itself tiles, fullscreen arrives only via the post-map ClientMessage path): opening C has no overlay-clear branch in `manage`, so B's fullscreen float is retained; C fresh-admits tiled via `insertUp` above B with newcomer StackSet and X focus (`setTopFocus` on the newcomer peek); C tiles underneath B's covering full-screen float (arrange restacks floats first-on-top). `S(S-xmo-layout)` + `S(S-xmo-ewmh)` + `S(S-xmo-ins)` + `S(S-xmo-admit)` + `S(S-xmo-arrange)` + `S(S-xmo-topfocus)`.
 - Then sway: `B:max` leg no-counterpart (no maximize verb; `S(S-sway-max)`); fresh `B:full` leg: C admits after B as a sibling with no newcomer focus (active-workspace fullscreen blocks `should_focus`), B's fullscreen cover retained with no exit path in admission, focus stays B. `S(S-sway-max)` + `S(S-sway-full)` + `S(S-sway-ins)`.
 - Then qtile/Columns: `B:max` leg - maximizing B floats it out of the tiled Columns (`mark_floating` removal, overlay retained at work-area size), collapsing the group to single `C1[A]`; C then fresh-admits as a new column after A with newcomer group-focus while B's maximized overlay is retained (no clear path in admission). Fresh `B:full` leg - fullscreen B keeps its tiled slot (`mark_floating` skips removal for fullscreen), so C inserts at current in C2 above B with newcomer group-focus while B's fullscreen state is retained. Final cover in both legs (C underneath vs raised over B) TBD (F: backend unspecified - X11 restacks on focus via `check_stacking`/`change_layer` while Wayland reparents to `LAYER_MAX`/`LAYER_FULLSCREEN` with no shared order; L: overlay render/pixel settlement is the row's live-test leg; newcomer focus itself is code-sourced via stealable-focus admission). `S(S-qti-fs)` + `S(S-qti-maxfloat)` + `S(S-qti-float)` + `S(S-qti-add)` + `S(S-qti-remove)`.
-- Then awesome/tile: `B:max` leg applicable via the maximized boolean and fresh `B:full` leg applicable via the fullscreen boolean (`S(S-awe-fs)`; both imply implicit float per `S(S-awe-float)` and exclusion from `tiled_clients` per `S(S-awe-tile)`): opening C has no overlay-clear branch in manage, so B's maximized/fullscreen overlay is retained; C fresh-admits tiled prepending first with newcomer focus via the shipped global rule (ordinary resizable); C tiles underneath B's covering overlay (tiled `[C,A]` allocation, C master, A stack; arrange applies tile allocations unconditionally with hint shaping only). Exact axes/frames TBD (F: anchor frames plus output and work-area geometry unrecorded; L: client settle timing). `S(S-awe-tile)` + `S(S-awe-manage)` + `S(S-awe-fs)` + `S(S-awe-float)`; queued.
+- Then awesome/tile: `B:max` and fresh `B:full` retain B's respective boolean/geometry and exclude B from tiled clients (`S(S-awe-fs)` + `S(S-awe-float)` + `S(S-awe-tile)`). C tiles with newcomer focus and is raised by shipped rule activation; C is above B, not underneath. B's fullscreen stacking layer depends on being most recently raised, so raising C demotes B without clearing fullscreen; maximize already uses normal stacking. Tiled allocation `[C,A]` (C master, A stack); exact frames/runtime settlement TBD. `S(S-awe-manage)`; [raise/layer source correction](../../research/d01-fullscreen-admission.md#awesome).
 - Then niri: `B:max` leg - C opens as a new column after the active B at
   the default width with existing widths kept; B's maximized flag is
   retained (no clear path in admission) and under Smart C activates and
@@ -237,10 +244,33 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then PaperWM: `B:max` leg - at shipped defaults native maximize converts to width-maximize, so B stays tiled and wide; C inserts at selected+1 and activates on show with B retaining its width. Fresh `B:full` leg - C inserts tiled at selected+1 and is selected/activated while B's fullscreen state is retained (no exit path in admission). `S(S-pap-ins)` + `S(S-pap-widthmax)` + `S(S-pap-layout)` + `S(S-pap-fsframe)`.
 - Then karousel/Lazy: C opens a new column after B's column, appended at the bottom; existing widths stable; B's max/fullscreen overlay is retained on admission with no clear path (existing-member `skipArrange`), and a later focus change restores the old focus-taker to tiled; whether C is accepted (and thus whether B is cleared and the viewport moves under the Lazy conditional) stays TBD (fixture states no protocol, X11 user-time/startup/session, Wayland token/app-id/transient-serial, or FSP/rules inputs selecting the host activation fork). `S(S-kar-ins)` + `S(S-kar-maxfs)` + `S(S-kar-fltanchor)` + `S(S-kar-scroll)` + `S(S-kwin-manage)` + `S(S-kwin-add)`.
 - Then paneru: TBD (both legs; `Fullscren` is a column kind per `S(S-pan-model)`, native preparation requires confirmation). `B:max` preparation is host zoom with no paneru counterpart (AX observes `AXFullScreen` only per `S(S-pan-axfs)`; no public macOS source). Fresh `B:full` pins a host `Fullscren` strip per `S(S-pan-fsfocus)`; ordinary admission over that pinned strip inserts as a Single column per the fresh path (`S(S-pan-fresh)`), with native-Space visibility/focus TBD.
-- Then Ours KDE: TBD (both legs; overlay-unfloat `S(S-ours-overlay-unfloat)` covers toggle refusal, not admission over an overlay).
+- Then Ours KDE: at `01be284`, C structurally admits; B keeps its slot and fullscreen/maximized geometry writes are skipped. Convergence follows valid observed tiled focus (B if native kept B, C if native activated C), otherwise retained focus/MRU; it does not unconditionally focus C. Apply writes focus only when reply target differs from live active, with no fullscreen-specific fence on that divergent path. Stable native B/C cases normally issue no focus write. Final native focus/stacking/input and overlay-close cleanup TBD; [current-source chain](../../research/d01-fullscreen-admission.md#current-omnitiler-kde-behavior). Overlay-unfloat `S(S-ours-overlay-unfloat)` is not admission evidence.
 - Then Ours Windows: TBD, same split as Ours KDE.
 - Variant hook: V-MAX-MODEL for the `B:max` leg; V-FS-SLOT for the fresh
   `B:full` leg.
+
+#### R-INS-06 explicit-selection discriminator (fresh fullscreen leg)
+
+- Given: the same A/B membership, B fullscreen and focused; do not open C.
+- When: explicitly select existing A by target/cycle/taskbar-equivalent.
+  Directional navigation is recorded separately; it is not the same action.
+- Observe: A focus and visibility, B fullscreen flag versus stacking/viewport.
+- Evidence: source-only [per-WM citations](../../research/d01-fullscreen-admission.md#reference-source-evidence);
+  game/runtime settlement unverified. This discriminator selects no Ours policy.
+
+| Profile | Sourced explicit-selection outcome / uncertainty |
+|---|---|
+| COSMIC | A focused/rendered above B; B fullscreen retained below |
+| Hyprland | Default tiled target selection exits B and focuses A; modes ignore/take-over differ. Directional movefocus fenced by default |
+| bspwm | A focus neutralizes occluding B to last state |
+| i3 | Criteria focus / pager activation calls unblock, exits B, focuses A; directional/relative navigation can be fenced |
+| sway | Explicit target focus disables covering fullscreen, focuses A; directional focus instead goes to outputs |
+| xmonad profile | A focused below retained B fullscreen float |
+| awesome | Shipped focus.byidx raises A above retained B; focus-only without raise differs |
+| qtile | A group-focused, B fullscreen retained; final cover backend-dependent/TBD. X11 layer demotion can keep B atop shared layer |
+| niri (non-voting) | View moves to A; B remains fullscreen offscreen |
+| Ours KDE | Explicit focus uses the host active-window setter; native settled result TBD, not an admission-policy vote |
+| Ours Windows | TBD |
 
 ### R-INS-07: open with a destination rule into an inactive workspace/output
 

@@ -86,6 +86,19 @@ lifetime, linking existing fixtures:
 | Ordinary activation vs fullscreen/game-focused guard (D27) | From an ordinary hidden window, send one unsolicited activation; repeat while a fullscreen/game window is focused | Ordinary: switch and focus; fullscreen/game-focused: urgency-only guard | Ours TBD; ref/native TBD beyond linked R-ACT-01 |
 | New-login intent scoped-store vs fallback (D26) | End session; start a new login and observe owned intent | Session-scoped store (REQ-RST-01d) cannot restore cross-login intent with no implicit namespace expansion; tentative fallback (b) listed known limitation applies to that leg unless a later design is authorized | Ours TBD; ref/native TBD beyond linked R-RST-02 |
 
+### D01 native-activation discriminators (research, no selected target)
+
+Source-only update 2026-10-12; [D01 research](../research/d01-fullscreen-admission.md)
+reassesses the tentative fullscreen rule above. These fresh sequences
+distinguish native activation ownership from blanket retention or forced
+newcomer activation; no Ours target is approved.
+
+| Variant | Minimal action sequence | Source evidence | Native / Ours runtime |
+| --- | --- | --- | --- |
+| Wayland admission, host policy | With tiler disabled, focus fullscreen B; open ordinary C on that output at Low FSP; repeat fresh at Medium without a valid activation token; compare with tiler enabled | KWin v6.6.3 Low ordinary-map path activates C; Medium requires native activation authorization. B's fullscreen flag is not cleared by activation. [Baseline](../research/d01-fullscreen-admission.md#native-kwin-baseline) | Untested; native pixels/input and tiler parity TBD |
+| Explicit target versus navigation | Focus fullscreen B; explicitly select existing unrelated A by Alt+Tab/taskbar/target command; repeat fresh with directional focus | KWin Alt+Tab activates A without clearing B fullscreen; i3/sway target focus exits B while directional navigation can be fenced. [R-INS-06 discriminator](reference-outcomes/insertion.md#r-ins-06-explicit-selection-discriminator-fresh-fullscreen-leg) | Untested; native settlement/Ours result TBD |
+| Xwayland launch provenance | Focus fullscreen B; open C with fresh user-launch timestamp; repeat with stale/zero user-time; compare tiler-off/on | KWin v6.6.3 X11 map uses timestamps/FSP; fresh authorization can activate, zero/stale can deny/restack underneath. [Baseline](../research/d01-fullscreen-admission.md#native-kwin-baseline) | Untested; exact launch provenance and runtime outcomes TBD |
+
 ### 0.1 package split discriminator (Settings decision pending)
 
 | Variant | Minimal action sequence | Offline evidence | Desired / native outcome |
