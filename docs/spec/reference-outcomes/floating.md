@@ -164,8 +164,8 @@ Column legs below use separately stated column Givens with the same identities a
 - Then paneru: B/C keep their independent widths 576/384 (floating A
   out drops its column with no survivor rescale). `S(S-pan-flt)` +
   `S(S-pan-stripwidth)`.
-- Then Ours KDE: TBD (Engine removal reflow not checked here)
-- Then Ours Windows: TBD (Engine removal reflow not checked here)
+- Then Ours KDE: TBD (Engine removal reflow not checked here); selected User 2026-10-12 D22 (a) target: floating out a tile leaves survivors in the same relative proportions (this fixture: float A, B/C become 60/40); no setting ([User 2026-10-12 D22](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Verification-only per gap assessment at `fafcd31` (`cosmic_v1.rs:175-198`, `session.rs:2398-2399`, revision-bound); native reflow live check pending; exact native frames TBD
+- Then Ours Windows: TBD (Engine removal reflow not checked here); same selected D22 (a) target; native reflow journey pending; exact native frames TBD
 - Variant hook: V-FLOAT-REFLOW.
 
 <a id="scrolling-backfill-additive-existing-wide-tables-above-unchanged"></a>

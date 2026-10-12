@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 131 NORMATIVE, 28 OPEN, 7 PROVISIONAL requirement rows (166 rows);
+Draft totals: 132 NORMATIVE, 28 OPEN, 6 PROVISIONAL requirement rows (166 rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -68,11 +68,13 @@ User 2026-10-10 0.1 triage batch 1 selects 15 units / 16 rows
 float-focus admission is proven offline under the existing shared route;
 focused-output opening and KDE return focus are observe-first; other selected
 behaviors need verification. User 2026-10-12 selects D01, D03, D09, D10, D12,
-D13, D16 and D27 (ten formerly PROVISIONAL rows); seven 2026-10-11 tentative rows
+D13, D16, D22 and D27 (eleven formerly PROVISIONAL rows); six 2026-10-11 tentative rows
 remain pending review, including KDE fullscreen-send refusal REQ-MAX-09b.
-D09/D10/D27 settings are post-0.1; D16 has no setting. D16 tier-rescored
+D09/D10/D27 settings are post-0.1; D16 and D22 have no setting. D16 tier-rescored
 under reference tiers (Hyprland/i3/sway Tier 1 plus xmonad/qtile/awesome
-Tier 2 retain float against COSMIC fresh re-tile); D27 tier-rescored under
+Tier 2 retain float against COSMIC fresh re-tile); D22 tier basis is COSMIC observed
+(not source-proven) plus i3/sway Tier 1 agree with no evidenced alternative,
+Hyprland/Tier 2 untraced, thin i3/sway one-family basis disclosed; D27 tier-rescored under
 reference tiers (Hyprland/i3/sway Tier 1 against COSMIC).
 [Gap assessment](../backlog.md) separates code work from verification-only
 defaults and D26's cross-login known-limitation fallback.
@@ -199,7 +201,7 @@ Hooks: V-FLOAT-FOCUS, V-FLOAT-SNAP, V-FLOAT-GEO, V-FLOAT-REFLOW, V-STICKY-SCOPE.
 |---|---|---|---|---|---|---|---|
 | REQ-FLT-01 | [R-FLT-01](reference-outcomes/floating.md#r-flt-01-toggle-float-then-unfloat) toggle float then unfloat | Unfloat is fresh admission (new-window rule, no old slot); first float centered 60% only as fallback, previously floated retains placement, exact live-frame carried on unfloat | current: fresh admission | current: fresh admission (parity 2026-10-03) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) option A 2026-09-28 + retained placement [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) lines 1197-1204; [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) parity 5 |
 | REQ-FLT-02 | [R-FLT-02](reference-outcomes/floating.md#r-flt-02-sticky-across-a-workspace-switch) sticky across switch | Intentional float outside tree; sticky via all-desktops; exact-toggle focus retention; restart identity under REQ-RST-01b / REQ-FLT-05 | current: sticky float | current: sticky float (parity 2026-10-03) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) 2026-09-21 adoption, option A 2026-09-25, focus retention; [restart decision](../decisions.md#restart-persistence) 2026-10-07 |
-| REQ-FLT-03 | [R-FLT-03](reference-outcomes/floating.md#r-flt-03-float-out-survivor-widths) float-out survivor widths | PROVISIONAL tentative (a) ratio-preserved reflow; disclosed thin basis: COSMIC observed plus I/S one family | current: ratio-preserved reflow to verify against `cosmic_v1.rs:175-198` collapse | current: TBD | provisional target; implementation absent | PROVISIONAL | [tentative D22](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review) pending user review |
+| REQ-FLT-03 | [R-FLT-03](reference-outcomes/floating.md#r-flt-03-float-out-survivor-widths) float-out survivor widths | Floating out a tile leaves surviving siblings in the same relative proportions (e.g. 50/25/25, float middle 25 -> approximately 67/33); no setting. Tier basis: COSMIC observed (not source-proven), i3 and sway (Tier 1) agree; no evidenced alternative. Hyprland/Tier 2 untraced; thin i3/sway one-family basis disclosed | verification-only: removal retains survivor share ratios per gap assessment at `fafcd31` (`cosmic_v1.rs:175-198`, `session.rs:2398-2399`, revision-bound); native reflow live check pending | current: TBD; native reflow journey pending | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) User 2026-10-12, D22 (a) |
 | REQ-FLT-04 | [R-FLT-04](reference-outcomes/floating.md#r-flt-04-workspace-floating-toggle) workspace floating toggle | Per-workspace tiled/floating flag; floating stops domain tiling; retile releases domain without writes then fresh-adopts | current: toggle | current: toggle (2026-10-04) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#workspaces) KDE parity 2026-10-04 |
 | REQ-FLT-05 | [R-FLT-05](reference-outcomes/floating.md#r-flt-05-restart-with-a-sticky-float) restart with sticky float | Sticky floats stay sticky across owner restart, including Windows; deliver with R-RST-01 | current: sticky survives; native journey TBD | delivered 2026-10-11, base e48aed1 + delivery commit: both origins survive two graceful restarts and WS2 visibility, agent-owned helpers; un-stick TBD, physical/app checks user-owned ([record](../changes/archive/windows-restart-intent.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) R-FLT-05 2026-10-07 |
 | REQ-FLT-06 | [R-FLT-06](reference-outcomes/floating.md#r-flt-06-float-toggle-over-a-maximized-window) float toggle over maximized | Selected (User 2026-10-08 B9): explicit unfloat of an intentionally floating maximized window unmaximizes then fresh-admits (COSMIC); no retained-maximize unfloat, no Windows refusal | implemented offline: one native clear, observed settlement before fresh admission; refused/unobserved clear retains float intent with log and later-press recovery; fixed explicit tile override preserved; native TBD ([record](../changes/archive/maximized-intentional-unfloat.md)) | delivered offline; ordinary scoped Notepad/Paint native clear-before-admission/frame/focus agent-observed 2026-10-12, base e506350 plus combined Windows deliveries; physical B9, fixed marker/restart, failure/race/game/DPI/multi-output TBD ([record](../changes/archive/windows-maximized-intentional-unfloat.md)) | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) B9 User 2026-10-08 |
@@ -544,7 +546,7 @@ marked with literal status in-row):
 - [Resize](#resize): REQ-RSZ-04.
 - [Layout](#layout): REQ-LAY-02, REQ-LAY-03, REQ-LAY-04 (parked User decision 2026-10-09).
 - [Workspaces](#workspaces): REQ-WS-07, REQ-WS-10.
-- [Floating](#floating): none (REQ-FLT-03 is PROVISIONAL tentative D22).
+- [Floating](#floating): none.
 - [Maximize](#maximize): no OPEN requirement row; KDE carry policy remains unselected/observe-first under PROVISIONAL REQ-MAX-09b refusal hold (D28). REQ-MAX-09 maximize/Windows carry and REQ-MAX-08 remain NORMATIVE.
 - [Minimize](#minimize): none (REQ-MNZ-01/02/03 are PROVISIONAL tentative D23).
 - [Close](#close): none.
@@ -555,11 +557,10 @@ marked with literal status in-row):
   Q2 edge clauses REQ-SPC-04a..h are NORMATIVE (User 2026-10-08), not OPEN rows.
 - [Columns](#columns): REQ-COL-01, REQ-COL-02, REQ-COL-03, REQ-COL-04, REQ-COL-05, REQ-COL-06, REQ-COL-07, REQ-COL-08, REQ-COL-09, REQ-COL-10.
 
-PROVISIONAL discussion group: 7 rows, all
+PROVISIONAL discussion group: 6 rows, all
 [tentative 2026-10-11](../research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review),
 pending user review; no implementation authorization:
 
-- [Floating](#floating): REQ-FLT-03 (D22).
 - [Minimize](#minimize): REQ-MNZ-01, REQ-MNZ-02, REQ-MNZ-03 (D23).
 - [Restart](#startup): REQ-RST-01c (D25); REQ-RST-02 (D26, fallback (b) and
   REQ-RST-01d cross-login limitation).

@@ -70,12 +70,12 @@ platform API behavior.
 - Windows package/update channel (user 2026-10-10): deferred to Windows
   release planning, then decided from a short research refresh under the
   existing most-obvious-and-unsurprising criterion.
-- Remaining five 0.1 triage units and Proposal B / N1-N4 are tentative,
+- Remaining four 0.1 triage units and Proposal B / N1-N4 are tentative,
   pending user review (updated 2026-10-12). Proposed classification: 39
   must-pass / 12 known-issue-allowed / 2 Windows-release, plus must-pass N1-N4.
   Recorded in
   [tentative triage decisions](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
-  The five units are PROVISIONAL, distinct from batch 1 and the eight units
+  The four units are PROVISIONAL, distinct from batch 1 and the nine units
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12);
   native evidence and implementation gaps remain separate.
 
@@ -168,7 +168,7 @@ platform API behavior.
   approved post-0.1 D09, D10 and D27 settings, with names/options/WM tooltips
   under [Move commands](#move-layout-and-output-commands) and
   [Activation requests](#activation-requests).
-  D03, D12, D13 and D16 have no setting.
+  D03, D12, D13, D16 and D22 have no setting.
 - Shared:
   - Apply/Force/Revert is the only correction flow; ordinary Save never
     mutates shortcuts or host keys, and installation/startup never mutates
@@ -774,7 +774,7 @@ platform API behavior.
 ## Reference Matrix and Spec Authority
 
 - Unreviewed 2026-10-11 triage clauses remain PROVISIONAL; D01, D03, D09,
-  D10, D12, D13, D16 and D27 are now user-decided 2026-10-12.
+  D10, D12, D13, D16, D22 and D27 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User direction 2026-10-03: the [reference-WM outcome matrix](spec/reference-outcomes.md)
   records minimal action sequences and per-WM outcomes as the evidence source of
@@ -1834,14 +1834,23 @@ platform API behavior.
 
 ## Window State: Float, Sticky, Maximize, Fullscreen
 
-- Tentative 2026-10-11, pending user review: D22(a) ratio-preserved
-  float-out reflow follows COSMIC-observed behavior, with thin I/S one-family
-  corroboration disclosed. D23(a) releases minimized allocation with stored
+- User decision 2026-10-12, D22 / REQ-FLT-03 / R-FLT-03, option (a): when
+  a tile is floated out, surviving siblings keep their relative proportions
+  (e.g. 50/25/25, float the middle 25 -> approximately 67/33). No setting.
+  [Tier rule](#reference-tiers) basis: COSMIC (observed, not source-proven),
+  i3 and sway (Tier 1) agree; no evidenced alternative. Hyprland and Tier 2
+  remain untraced for this outcome. Thin basis disclosed: i3/sway are one
+  family, with separate COSMIC observation.
+  Verification-only: removal already retains survivor share ratios
+  ([revision-bound assessment](backlog.md)); native reflow live check remains
+  pending. [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
+- Tentative 2026-10-11, pending user review: D23(a) releases minimized
+  allocation with stored
   old-slot/no-focus-steal restore; sole minimize retains workspace, focus none.
   Windows retains allocation, an observed divergence from this tentative target.
   D28(a) lists KDE fullscreen-send refusal as a 0.1
   known issue pending observation, without altering approved Windows carry.
-  [D22/D23/D28](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
+  [D23/D28](research/release-0.1-triage.md#tentative-decisions-2026-10-11-pending-user-review).
 - R-SPC-01: transient dialogs float rather than tile; Windows owned-dialog exclusion remains an intentional divergence, with parent-focus/modal legs TBD (User 2026-10-10, 0.1 triage D02).
 - R-FLT-13: ordinary floats hide while their workspace is not shown and retain their frame across the switch (User 2026-10-10, 0.1 triage D19).
 - R-FLT-12: focusing an overlapping float raises it; no project lower verb for now (User 2026-10-10, 0.1 triage D20).

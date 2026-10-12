@@ -3,7 +3,7 @@
 ## Goal And Scope
 
 - Record the user's 2026-10-12 reference tiers and D01, D03, D09, D10,
-  D12, D13, D16 and D27 selections in decisions, triage, spec, outcome cells and backlog.
+  D12, D13, D16, D22 and D27 selections in decisions, triage, spec, outcome cells and backlog.
 - Preserve historical proposals and untested outcomes; update the Windows
   handoff and existing shortcut-dialog parity item.
 - Documentation only; D01's KDE fullscreen focus fence remains code work,
@@ -12,8 +12,8 @@
 
 ## Acceptance And Approach
 
-- Promote ten selected requirement rows to NORMATIVE with decision links.
-- Retain five pending units (D22, D23, D25, D26, D28) plus Proposal B /
+- Promote eleven selected requirement rows to NORMATIVE with decision links.
+- Retain four pending units (D23, D25, D26, D28) plus Proposal B /
   N1-N4; limit the P2 settings list to approved D09, D10 and D27.
 - Reconcile current summaries and indexes, verify changed local links and
   anchors, and run `git diff --check`.
@@ -50,16 +50,26 @@
   core first (serves Windows), then KDE adapter; Windows adapter work goes to
   item 22. Reconcile earlier intentional-float ineligibility as a D16 gap,
   retaining the separate floating-workspace boundary journey and sticky refusal.
+- [D22 float-out reflow](../../decisions.md#window-state-float-sticky-maximize-fullscreen),
+  approved option (a): surviving siblings keep relative proportions (50/25/25,
+  float middle 25 -> approximately 67/33). No setting. COSMIC (observed, not
+  source-proven), i3 and sway (Tier 1) agree; no evidenced alternative;
+  Hyprland/Tier 2 untraced. Thin basis disclosed: i3/sway one family plus
+  separate COSMIC observation.
+- D22 is verification-only: shared removal retains survivor share ratios per
+  the revision-bound gap assessment. Native R-FLT-03 reflow live check remains
+  pending; selection establishes no native evidence.
 
 ## Evidence And Outcome
 
 - Initial 2026-10-12 record promoted eight rows (129 NORMATIVE / 9 PROVISIONAL /
   28 OPEN). D27 approval promoted REQ-ACT-01 (130 NORMATIVE / 8 PROVISIONAL /
-  28 OPEN). D16 approval promotes REQ-WS-05, yielding verified current totals
-  of 131 NORMATIVE / 7 PROVISIONAL / 28 OPEN (166 rows).
-- Five pending units (D22, D23, D25, D26, D28) and Proposal B / N1-N4
+  28 OPEN). D16 approval promoted REQ-WS-05 (131 NORMATIVE / 7 PROVISIONAL /
+  28 OPEN). D22 approval promotes REQ-FLT-03, yielding verified current totals
+  of 132 NORMATIVE / 6 PROVISIONAL / 28 OPEN (166 rows).
+- Four pending units (D23, D25, D26, D28) and Proposal B / N1-N4
   remain tentative. Historical options/tallies and unsupported reference
-  outcomes are retained; D16/D27 tier rationale and user approval are recorded.
+  outcomes are retained; D16/D22/D27 tier rationale and user approval are recorded.
 - Windows item 22 updated for approved defaults/settings and native foreground
   considerations; existing shortcut-dialog parity item updated to P2, with
   KDE user live review linked. No duplicate item added.
@@ -68,6 +78,9 @@
 - D16 updated in decisions, triage, spec/counts/index, R-WS-05 Ours targets,
   backlog approved gap/implementation queue and Windows item 22. Existing
   R-WS-05 supplies the roundtrip discriminator; no product code or live tests.
+- D22 updated in decisions, triage, spec/counts/index, R-FLT-03 Ours targets,
+  backlog approved verification row/queue and Windows item 22. Existing
+  R-FLT-03 supplies the ratio-vs-equalize discriminator; no product code or live tests.
 - Requirement counts, changed local link targets/anchors, ASCII additions,
-  unchanged foreign R-ACT-01/R-WS-05 outcomes and `git diff --check` passed. Native
+  unchanged foreign R-ACT-01/R-WS-05/R-FLT-03 outcomes and `git diff --check` passed. Native
   outcomes remain TBD; D01's fullscreen focus fence remains implementation work.

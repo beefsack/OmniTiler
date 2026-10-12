@@ -1,7 +1,7 @@
 # Release 0.1 triage - user decisions and remaining tentative units
 
-Status: 23 units approved by User (15 on 2026-10-10, eight on 2026-10-12);
-five units plus Proposal B / N1-N4 remain tentative, pending user review.
+Status: 24 units approved by User (15 on 2026-10-10, nine on 2026-10-12);
+four units plus Proposal B / N1-N4 remain tentative, pending user review.
 Original proposal base HEAD `4281e73`, report commit `27a97c4`.
 No live tests run. Rules: 0.1-relevant = touches must-pass core KDE journey
 ([decisions](../decisions.md#scope-and-platform-goals)) AND current KDE
@@ -16,8 +16,8 @@ Original proposal counts: 60/60 then-OPEN rows covered (32 relevant / 28
 post-0.1); 28 decision units (D01-D27 + separate D28 MAX-09); 53/53 then-pending
 checks (proposed M39 / K12 / W2). Batch 1 promoted 16 rows, leaving 44 OPEN.
 Tentative decisions moved 16 of those to PROVISIONAL and split out KDE D28 as
-REQ-MAX-09b. User 2026-10-12 promotes ten rows: current spec
-131 NORMATIVE / 7 PROVISIONAL / 28 OPEN.
+REQ-MAX-09b. User 2026-10-12 promotes eleven rows: current spec
+132 NORMATIVE / 6 PROVISIONAL / 28 OPEN.
 
 ## User decisions 2026-10-10
 
@@ -77,10 +77,19 @@ REQ-MAX-09b. User 2026-10-12 promotes ten rows: current spec
   roundtrip first; implement shared core first (serves Windows), then KDE
   adapter; Windows adapter work goes to handoff item 22. No native outcome
   is inferred from approval.
+- D22 (a) / REQ-FLT-03 / R-FLT-03 is user-decided: floating out a tile
+  preserves the relative proportions of surviving siblings (e.g. 50/25/25,
+  float the middle 25 -> approximately 67/33). No setting. COSMIC observed
+  (not source-proven), i3 and sway (Tier 1) agree; no evidenced alternative;
+  Hyprland and Tier 2 remain untraced. Thin basis disclosed: i3/sway one
+  family plus separate COSMIC observation. Verification-only: removal already
+  retains survivor share ratios per the revision-bound gap assessment;
+  native reflow live check remains pending.
+  [Decision](../decisions.md#window-state-float-sticky-maximize-fullscreen).
 - D01 needs a KDE convergence fullscreen focus fence; close and the
-  D03/D09/D10/D12/D13 defaults are verification-only. [Gap assessment](../backlog.md).
+  D03/D09/D10/D12/D13/D22 defaults are verification-only. [Gap assessment](../backlog.md).
   Native outcomes remain TBD; selection does not establish implementation.
-- Remaining tentative units: D22, D23, D25, D26, D28;
+- Remaining tentative units: D23, D25, D26, D28;
   Proposal B / N1-N4 remain pending user review.
 
 ## Tentative decisions 2026-10-11 (pending user review)
@@ -90,8 +99,6 @@ No selection is approved until user review. No implementation is authorized by t
 Historical proposals A1/A2/A3/B and reference evidence below are preserved
 unchanged; source observations are not marked as approved.
 
-- D22 (a) ratio-preserved reflow; disclosed thin basis: COSMIC observed plus
-  I/S one family.
 - D23 (a) minimize releases allocation and reflows with a stored restore slot;
   restore to the old slot with no focus steal; sole-workspace minimize retains
   the workspace with focus none. Windows retains allocation: observed
@@ -126,6 +133,9 @@ unchanged; source observations are not marked as approved.
   2026-10-12 approved retention of float/size and untouched destination tiles
   under the tier rule for follow/stay and numbered/relative sends, no setting;
   native roundtrip verification comes first.
+- D22's ratio-preserved float-out reflow is now user-approved, no setting;
+  the thin i3/sway one-family basis plus COSMIC observation remains disclosed,
+  and native reflow evidence is pending.
 - The six-setting defaults-only proposal (D03, D09, D10, D12, D13, D27)
   is superseded by the current P2 list above. Original options/tallies in A2/A3
   below remain historical proposals, not current settings commitments.
@@ -357,6 +367,10 @@ The original proposal/tally below is historical, not the current selection rule.
 | FLT-14 ([spec](../spec/functional-spec.md#L198)) | host TBD, project resize refuses | floating move/resize grabs keep free frame | U free-8/8 4fam; [R-FLT-14](../spec/reference-outcomes/floating.md#r-flt-14-drag-and-resize-a-float-by-pointer) | (a) host path keeps frame, project keeps refusing (matches all 8 + current); (b) project resize for floats (new surface, no votes). -> (a) |
 
 ### D22 float-out survivor widths (FLT-03)
+
+User 2026-10-12 selected option (a), preserving survivor proportions, no setting.
+See [current approval, tier rationale and verification-only status](#user-decisions-2026-10-12).
+The original proposal/tally below is historical; fallback (b) is not selected.
 
 | Row | KDE current | COSMIC | Tally / source | Options -> recommendation |
 |---|---|---|---|---|
