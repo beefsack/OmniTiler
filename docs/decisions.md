@@ -1336,6 +1336,8 @@ platform API behavior.
     Notepad/Paint, base `e506350` plus combined directional/retile/B9 deliveries;
     Revert/game/DPI/multi-output pending
     ([record](changes/archive/windows-border-radius-default.md)).
+  - KDE offline-delivered: kcfg default 6.0, explicit radii preserved, no
+    migration; live appearance pending.
 - Windows active border (selected 2026-10-02): default-on owned per-pixel-alpha layered,
   click-through, nonactivating tool-window surface. Do not mutate foreign
   window attributes. `DWMWA_BORDER_COLOR` controls colour only and cannot
@@ -2326,6 +2328,8 @@ platform API behavior.
       ([record](changes/archive/windows-born-maximized-setting.md)).
       R-MAX-03 parity delivered offline with item 11; fixed-client detection
       delivered offline with item 13.
+      - KDE offline-delivered: setting + KCM + adapter subsequent-only
+      adoption; R-MAX-03 independence preserved; live checks pending.
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06

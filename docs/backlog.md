@@ -306,10 +306,11 @@ decisions of 2026-09-24 are under
   threading code shares state only through safe std primitives; FFI `unsafe`
   stays at call sites. Consolidating existing Windows FFI behind a small safe
   wrapper layer (or another crate choice) is a user decision.
-- P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Cross-platform
-  decisions for the KDE session: R-MAX-06 born-maximized setting (default
-  tile) and active border radius default 6; underlay default visibility
-  review shared with Windows (g).
+- P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered
+  offline, pending live checks + review: R-MAX-06 born-maximized setting
+  (default tile), active border radius default 6, underlay research note
+  ([options](changes/kde-dogfood-underlay-options.md)); Settings UI,
+  born-maximized launch both values, radius appearance pending.
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in
