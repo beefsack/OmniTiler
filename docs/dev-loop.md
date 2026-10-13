@@ -1,5 +1,50 @@
 # Development Loop
 
+Cross-platform entry point: the root `justfile` requires just >= 1.56 and
+conditionally imports `just/linux.just`, `just/windows.just`, and
+`just/macos.just`; only the current OS recipes load.
+`just dev [verbose|trace]` is the foreground entry point on each desktop. Linux
+dispatches on `XDG_CURRENT_DESKTOP`: KDE runs `dev-kde`, GNOME reports
+unsupported, anything else fails with the detected value. Windows runs the
+native dev session (`just stop` recovers via the current payload pointer;
+`just lifecycle-smoke [trace]` is the previous non-tiling loop; `just tile`
+still requires explicit `--user-start`). macOS reports unsupported.
+
+## Windows
+
+Run from the repository root with mise-managed tools:
+
+```powershell
+mise exec -- just dev
+mise exec -- just dev verbose
+mise exec -- just dev trace --scope-exe notepad.exe
+mise exec -- just stop
+```
+
+- `dev` builds, refuses an existing owner or recovery ledger, copies the
+  owner and helper into a unique directory under `target/windows-dev`, and
+  launches normal `tile --user-start` through Explorer's desktop broker.
+  The owner stays outside the terminal process tree. Readiness and provenance
+  are printed before the per-run log streams to the terminal.
+- `verbose` uses default logging; `trace` adds `--trace`. Arguments after the
+  mode pass through to tiling. No scope arguments means normal whole-desktop
+  tiling, including the owner's hooks, overlays and tray.
+- Ctrl+C or owner exit runs verified stop, independent restore and a clean
+  ledger/request check inside PowerShell `finally`. Clean interruption prints
+  `dev interrupted: verified stop+restore, owner exited and ledger clean`.
+  Windows just may itself return a nonzero interruption status; the explicit
+  cleanup result, not that status alone, establishes teardown.
+- Startup interruption uses the unique payload's ledger identity, including a
+  bounded wait for publication. Failure or unconfirmed exit is reported
+  explicitly and retains the recovery pointer for `just stop`; it never
+  claims a clean exit or stops an owner belonging to another payload.
+- `just lifecycle-smoke [trace]` retains the old non-tiling ten-minute
+  lifecycle smoke. `just tile --user-start [--trace]` retains detached normal
+  tiling; `just settings` launches settings. See the
+  [Windows recovery guide](live-windows-testing.md#recovery-ladder).
+
+## Linux (KDE)
+
 Run from inside the devenv shell (`just` is provided by `devenv.nix`).
 These recipes never stop or mask units, never resolve the Planner through
 `/nix/store`, and never create a `result` symlink. Preconditions fail closed.

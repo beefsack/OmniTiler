@@ -391,9 +391,12 @@ $env:INCLUDE
 - **P:** Windows sessions touching shared code must pass these native gates
   plus all applicable Linux gates via CI or Linux.
   Report Linux gates pending until green; physical KDE/Windows acceptance is
-  user-owned. Do not claim deferred gates passed. Root `just dev` remains
-  Linux-only. Native loop: `just --justfile windows.justfile dev`, `dev trace`,
-  `stop`; bounded owned-window journey: `proof`, under recorded live authority.
+  user-owned. Do not claim deferred gates passed. `just dev` dispatches per OS
+  from the root justfile (requires just >= 1.56; conditional imports of
+  `just/linux.just`, `just/windows.just`, `just/macos.just`). Native Windows
+  loop: `just dev`, `just dev trace`, `just stop`; bounded owned-window
+  journey: `just proof`. `just lifecycle-smoke [trace]` covers the previous
+  non-tiling loop; `just tile` still requires explicit `--user-start`.
 - The dev loop copies binaries before launch so builds do not overwrite running
   images. Explorer's desktop `Document.Application` broker keeps dev/test actors
   outside the protected Terminal tree; plain Shell.Application is caller-context.

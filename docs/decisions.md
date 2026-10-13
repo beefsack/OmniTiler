@@ -4,6 +4,22 @@ Active, user-approved choices are recorded here. Explicitly flagged tentative
 clauses are pending user review, not user-approved current rules.
 Historical implementation detail is recoverable in Git history.
 
+## Development Entry Point
+
+- User decision 2026-10-13: `just dev [verbose|trace]` is the single
+  foreground full-solution dogfooding entry point: tiling, hooks, effects or
+  overlays, and tray, with terminal log streaming and verified Ctrl+C teardown.
+- The root `justfile` selects only the current OS recipes using conditional
+  imports and requires just 1.56.0 or newer. Linux selects the desktop from
+  case-insensitive, colon-separated `XDG_CURRENT_DESKTOP`: KDE uses `dev-kde`,
+  GNOME has an explicit unsupported stub, other desktops fail clearly.
+- Windows uses normal `tile --user-start` through the existing Explorer
+  broker, readiness and provenance path. `trace` adds tracing; `verbose`
+  retains default logging. Additional arguments pass through to tiling.
+  The prior non-tiling ten-minute Windows loop is `lifecycle-smoke`.
+- Unsupported platforms fail explicitly rather than starting a partial loop.
+  [Implementation and acceptance](changes/dev-entry-point.md).
+
 ## Scope and Platform Goals
 
 User decisions 2026-09-30. These select goals and sequencing, not untested
@@ -174,22 +190,6 @@ platform API behavior.
   dereferencing. Native Win32 unsafe remains at minimal FFI call sites; no broad
   refactor of existing FFI. [Delivery evidence](changes/archive/windows-render-thread.md).
 
-## Project Name
-
-- User decision 2026-10-11: the project is **OmniTiler**, reflecting KDE,
-  Windows and later macOS targets.
-- Naming: display and upper CamelCase `OmniTiler`; lower CamelCase `omniTiler`;
-  lowercase IDs, packages, binaries, filenames, snake identifiers, KWin/KPackage
-  IDs, systemd units, Nix attributes/options and shortcut prefixes `omnitiler`;
-  environment variables/macros `OMNITILER_`; reverse-DNS IDs `com.omnitiler.*`
-  and object paths `/com/omnitiler/...`. Preserve functional suffixes. Generic
-  internal crate names remain unchanged. No host-format exceptions are needed.
-- GitHub repository: `github.com/beefsack/OmniTiler`. OBS/AUR package names:
-  `omnitiler` and `omnitiler-native-effect`.
-- User decision 2026-10-11: the registered domain `omnitiler.com` belongs to the
-  project and backs its `com.omnitiler.*` reverse-DNS IDs. It is the future
-  project home page, not yet live; package homepage fields retain the GitHub URL.
-- Pre-release rename: no migrations or compatibility shims; old installed state
 ## Windows Multi-Output Foundation
 
 - Tentative, pending user review (2026-10-13): cross-output keyboard moves and
@@ -208,6 +208,22 @@ platform API behavior.
   wire fields. Physical multi-output acceptance remains pending in the
   [foundation record](changes/windows-multi-output-foundation.md).
 
+## Project Name
+
+- User decision 2026-10-11: the project is **OmniTiler**, reflecting KDE,
+  Windows and later macOS targets.
+- Naming: display and upper CamelCase `OmniTiler`; lower CamelCase `omniTiler`;
+  lowercase IDs, packages, binaries, filenames, snake identifiers, KWin/KPackage
+  IDs, systemd units, Nix attributes/options and shortcut prefixes `omnitiler`;
+  environment variables/macros `OMNITILER_`; reverse-DNS IDs `com.omnitiler.*`
+  and object paths `/com/omnitiler/...`. Preserve functional suffixes. Generic
+  internal crate names remain unchanged. No host-format exceptions are needed.
+- GitHub repository: `github.com/beefsack/OmniTiler`. OBS/AUR package names:
+  `omnitiler` and `omnitiler-native-effect`.
+- User decision 2026-10-11: the registered domain `omnitiler.com` belongs to the
+  project and backs its `com.omnitiler.*` reverse-DNS IDs. It is the future
+  project home page, not yet live; package homepage fields retain the GitHub URL.
+- Pre-release rename: no migrations or compatibility shims; old installed state
   stops being used.
 
 ## Licensing

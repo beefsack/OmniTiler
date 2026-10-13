@@ -26,7 +26,7 @@
 - `test_window.rs`: disposable ordinary tagged HWND, atomic receipt, inspect
   and exact-window graceful close. Owner and helper require medium integrity
   and exclude Windows Terminal and its descendants.
-- `windows-dev.ps1`/`windows.justfile`: copied payloads under `target/windows-dev`
+- `windows-dev.ps1`/`just/windows.just` (via the root `justfile`): copied payloads under `target/windows-dev`
   avoid running-image build locks. Explorer desktop broker uses
   `ShellWindows.FindWindowSW(...).Document.Application.ShellExecute`.
   Plain `Shell.Application.ShellExecute` is caller-context and cannot supply
@@ -75,7 +75,7 @@
   actor exit plus absent ledger/request. No Terminal-tree window is a target.
 - Re-proof: PASS, once on 2026-10-01 08:36:26-08:36:59 +10, physical Windows
   build 26200, source `f767de8` plus the simplified milestone 2 working tree.
-  `just --justfile windows.justfile proof` exited 0. Report and helper receipt:
+  `just --justfile windows.justfile proof` (historical command) exited 0. Report and helper receipt:
   `target/windows-proof/20261001-083638-9232/{report,window}.json`.
 - Actual SHA-256 (payloads under `target/windows-dev`):
   - Owner: `0A351F46163F28401C200FBB839A5E3F5E091830FD5A8DDA398EFA109D18BD95`
@@ -142,7 +142,7 @@
   setup, delivery, consumption, repeat, action, release and restoration evidence.
 - `WM_HOTKEY` has no raw down/up stream; those counts must be reported as
   unavailable for the registration method rather than inferred.
-- `just --justfile windows.justfile winarrow` is the timed comparison entry point;
+- `just winarrow` is the timed comparison entry point;
   `winarrow-stop <exact-run-directory>` is independent recovery. Recorded owner
   identity is published before input phases; an abort marker prevents continuation
   and coordinates the two controllers without duplicate ledger writes.
@@ -212,7 +212,7 @@
   root-relative paths for both arguments and a missing absolute executable;
   valid absolute paths reach only the mocked COM sentinel. Independent review
   and whitespace checks pass. No Rust source changed in this repair.
-- One normal `just --justfile windows.justfile winarrow` hands-off rerun completed
+- One normal `just --justfile windows.justfile winarrow` (historical command) hands-off rerun completed
   at `target/windows-winarrow/20261001-141827-29400`, source `c25c7d6` plus the
   recorded spike working tree. `machine.json` binds absolute payload paths,
   SHA-256, session 1 and medium integrity (account IDs dropped).

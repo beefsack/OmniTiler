@@ -58,8 +58,9 @@ remains in [Windows decisions](decisions.md#scope-and-platform-goals).
 
 Current CLI: `stop` requests verified owner exit; `emergency-stop` forces only
 that exact verified owner. Both leave recovery state for independent `restore`.
-`just --justfile windows.justfile stop` performs graceful stop then restore.
-Dev/test actors use Explorer's desktop broker, not the protected Terminal tree.
+`just stop` performs graceful stop then restore, resolving the current dev
+payload pointer. Dev/test actors use Explorer's desktop broker, not the
+protected Terminal tree.
 
 1. Request graceful stop of the verified experiment owner. Check that hooks
    and overlays are released and affected owned windows return to baseline.

@@ -269,7 +269,7 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runDir = Join-Path $RunRoot "$stamp-$PID"
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 $commit = (& git rev-parse HEAD | Out-String).Trim()
-$dirty = (& git status --short -- crates/tiler-windows scripts/windows-winarrow.ps1 scripts/windows-dev.ps1 windows.justfile | Out-String).Trim()
+$dirty = (& git status --short -- crates/tiler-windows scripts/windows-winarrow.ps1 scripts/windows-dev.ps1 justfile just/windows.just | Out-String).Trim()
 $actorPid = $PID
 $actorExe = (Get-Process -Id $PID).Path
 $actorPar = (Get-CimProc $PID).ParentProcessId

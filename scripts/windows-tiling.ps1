@@ -511,7 +511,8 @@ $SOURCE_FILES = @(
   "crates/tiler-windows/Cargo.toml",
   "scripts/windows-tiling.ps1",
   "scripts/windows-dev.ps1",
-  "windows.justfile"
+  "justfile",
+  "just/windows.just"
 )
 function Get-SourceHashes {
   $rows = @()

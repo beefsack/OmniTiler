@@ -169,6 +169,16 @@ lifecycle setup/restore smoke. It establishes only operational binding, not
 direct evaluated-memory source proof. A separately authorized Custom Tile
 journey is a later gate and has not occurred.
 
+### Development entry point (`just dev`)
+
+The root `justfile` requires just >= 1.56 and loads only the current OS
+recipes from `just/`. `just dev [verbose|trace]` is the foreground dev
+session on each desktop: Linux KDE runs `dev-kde` (GNOME reports
+unsupported), Windows runs the native tile loop with Explorer launch and
+verified stop/restore (`just stop` recovers via the current pointer;
+`just lifecycle-smoke [trace]` is the non-tiling loop), macOS reports
+unsupported. See `docs/dev-loop.md`.
+
 ### Prerequisites
 
 Build prerequisite:

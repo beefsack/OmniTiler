@@ -61,15 +61,16 @@ not the safety net.
   baseline. A separate Windows install/test system avoids rebooting but does not make
   Windows monitor IDs equal to KDE's DP-6 and HDMI-A-2. Verify the single Windows
   display identity on this test system; verify multi-monitor identities only on the other Win11 test system.
-- [R: milestone 2] Windows-specific PowerShell justfile:
-  `just --justfile windows.justfile dev` builds with
-  `cargo build -p tiler-windows`, exits the verified dev owner, restores,
-  copies the new payload, starts via Explorer's desktop broker, checks ready
-  state and prints the log path. This keeps actors outside the protected Terminal tree.
-  `just --justfile windows.justfile dev trace` adds redacted tracing;
-  `just --justfile windows.justfile stop` exits the owner then independently
-  restores owned windows. Hooks and overlays are not implemented yet. The existing root `justfile` sets `bash` globally
-  and uses Linux-specific tools; do not route Windows through it unchanged.
+- [R: milestone 2] Windows recipes in `just/windows.just`, loaded by the root
+  `justfile` (requires just >= 1.56; platform imports are conditional):
+  `just dev` builds, refuses an existing owner, copies a fresh GUID payload
+  under `target/windows-dev`, starts via Explorer's desktop broker, runs the
+  native tile loop, streams the log, and verifies stop/restore/ledger on exit.
+  `just dev trace` adds redacted tracing (`verbose` keeps default logging);
+  `just stop` exits the owner then independently restores via the current
+  payload pointer. `just lifecycle-smoke [trace]` is the non-tiling loop;
+  `just tile` still requires explicit `--user-start`. The normal tile owner
+  includes hooks, overlays and tray; the lifecycle smoke is non-tiling.
 - [I] On the daily-use system, start with dedicated test apps where practical;
   first experiments must not hide real user windows. Keep a desktop/Start
   recovery shortcut outside the hotkey hook: `tiler-windows restore` reads

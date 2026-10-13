@@ -473,7 +473,7 @@
      and restoration baselines, including SPI 0x0082=1 and pen 0x201E=35. Preserve
      the hosting Terminal process/tree and establish the out-of-hook stop route.
   2. Open four disposable Notepad windows. Run
-     `just --justfile windows.justfile tile --user-start --trace --scope-exe notepad.exe`
+     `just tile --user-start --trace --scope-exe notepad.exe`
      through the approved launcher. Confirm owner-ready and `snap-available`
      before any gaming chord. Terminal and other executables remain unmanaged.
   3. Physical taps and bounded two-second holds: arrows/H/J/K, Shift+direction,
@@ -492,7 +492,7 @@
      Verify sibling workspace state after physical workspace select/send.
      Any unexpected Xbox entry ends the run: user uses Task View's desktop
      return surface and the out-of-hook exact-owner stop, not more injected keys.
-  6. Graceful `just --justfile windows.justfile stop` and restore; verify released
+  6. Graceful `just stop` and restore; verify released
      hook/overlays, revealed windows, no project owner/watcher/ledger residue,
      SPI and pen baselines. If needed use exact-identity emergency-stop then
      restore per the guide. Close only newly opened disposable windows.

@@ -1,11 +1,17 @@
-set windows-shell := ["pwsh", "-NoProfile", "-Command"]
+# Windows GUI-subsystem recipes (PowerShell). Imported by the root justfile.
 
-default:
-    @just --list
+# Bounded lifecycle smoke: build, stop old fixed payload, launch run --seconds 600 via Explorer, poll ready, return.
+lifecycle-smoke *mode:
+    pwsh -NoProfile -File scripts/windows-dev.ps1 -Action lifecycle-smoke {{mode}}
 
-# Windows GUI-subsystem dev loop: build first, stop old payload copy, launch owner via Explorer, poll ready.
-dev *mode:
-    pwsh -NoProfile -File scripts/windows-dev.ps1 -Action dev {{mode}}
+# Foreground dev session: normal user tiling (tile --user-start) via the Explorer broker.
+# Forwards Mode (""|verbose|trace, only trace adds --trace) plus raw TileArgs; the script
+# assembles final args, streams the owner log until exit, and cleans up in try/finally.
+# Each dev run copies the payload into a fresh GUID dir under target/windows-dev;
+# stop resolves that payload via the session pointer (current-dev-payload.txt).
+[continue]
+dev mode="" *args:
+    pwsh -NoProfile -File scripts/windows-dev.ps1 -Action dev -Mode "{{mode}}" -TileArgs "{{args}}"
 
 stop:
     pwsh -NoProfile -File scripts/windows-dev.ps1 -Action stop
@@ -90,7 +96,7 @@ workspace-normal-stop run_dir:
 winarrow-stop run_dir:
     pwsh -NoProfile -File scripts/windows-winarrow.ps1 -Stop -RunDir {{run_dir}}
 
-# Native settings window (no tray exists): build then launch via the Explorer
+# Native settings window (tray icon unaffected): build then launch via the Explorer
 # broker like dev/tile. Close the window to finish; nothing is applied on close.
 settings:
     pwsh -NoProfile -File scripts/windows-dev.ps1 -Action settings

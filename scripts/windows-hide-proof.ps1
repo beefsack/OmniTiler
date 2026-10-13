@@ -82,7 +82,8 @@ $SOURCE_FILES = @(
   "crates/tiler-windows/tests/tiling.rs",
   "scripts/windows-hide-proof.ps1",
   "scripts/windows-dev.ps1",
-  "windows.justfile"
+  "justfile",
+  "just/windows.just"
 )
 function Get-SourceHashes {
   $rows = @()
