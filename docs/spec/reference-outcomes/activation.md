@@ -143,12 +143,17 @@ sandboxed route exposes the workspace-level marker only.
   at design ([decision](../../decisions.md#activation-requests),
   [trace](../../research/d27-kwin-activation-trace.md)). `S(S-ours-act)`
   establishes observation only, not native acceptance.
-- Then Ours Windows: TBD (same Engine observation path; host
-  foreground-request journey and marker behavior untraced). Offline
-  verification 2026-10-13 found foreground observation but no dedicated
-  Windows activation-request/urgency observer or marker
-  ([record](../../changes/archive/windows-item22-verification.md)); this is
-  policy-preservation evidence, not implemented guard/marker proof.
+- Then Ours Windows: partial native evidence 2026-10-14 at `f4b9f41`:
+  fresh background PowerShell `SetForegroundWindow` against current and
+  product-hidden owned helpers was denied, focus/visibility unchanged and no
+  foreground-driven workspace switch. Shell `HSHELL_FLASH` observed for probe
+  targets including hidden helpers, not proof of visible urgency. Previously
+  input-thread-attached caller could activate hidden B and trigger workspace
+  convergence; not helper self-request or physical selection evidence.
+  No dedicated product request/urgency observer, marker or classifier.
+  Helper-originated/native-permitted clean requests, visual mark/clear,
+  fullscreen/game and explicit selection remain TBD
+  ([record/options](../../changes/archive/windows-d27-activation-verification.md)).
   `S(S-ours-act)`; default Mark urgent only and fullscreen/game urgency-only
   guard unchanged; post-0.1 two-option setting, queued. KDE exception is not
   Windows evidence.
@@ -248,8 +253,11 @@ sandboxed route exposes the workspace-level marker only.
   attention/urgency signal and the adapter actuates `setActive`
   only, so both the native mark and the focus-time clear are
   untraced). `S(S-ours-act)`; queued.
-- Then Ours Windows: TBD (same Engine observation path; the
-  Windows adapter records foreground observation only, with no
-  flash/marker path, so both the native mark and the focus-time
-  clear are untraced). `S(S-ours-act)`; queued.
+- Then Ours Windows: partial evidence 2026-10-14 at `f4b9f41`:
+  background `FlashWindowEx(FLASHW_TRAY)` on current/native-hidden/product-hidden
+  helpers left focus/visibility unchanged; shell flash notifications heard.
+  Return value is previous caption state, not mark success. Visible marker and
+  focus-time clear remain TBD; no product observer/marker path
+  ([record](../../changes/archive/windows-d27-activation-verification.md)).
+  `S(S-ours-act)`; queued.
 - Variant hook: provisional/TBD (urgency hook, to discuss).

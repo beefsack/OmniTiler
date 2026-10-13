@@ -2,6 +2,11 @@
 
 ## Scope and outcome (2026-10-13)
 
+- D27 follow-up 2026-10-14: [native request/flash verification and options](windows-d27-activation-verification.md)
+  supersedes the untraced ordinary-request status below. Fresh background calls
+  were denied with no switch; shell flash observed, visible urgency and guard
+  still unproven. Other units retain their original evidence.
+
 - D01, D03, D09, D10, D12, D13, D22, D25, D26, D27 and D28 require no new
   Windows adapter behavior in this delivery. Approved targets are unchanged;
   exact native outcomes remain user-owned and pending.
@@ -33,12 +38,13 @@
 | D22 | Shared removal preserves survivor share ratios | Tile 50/25/25, float the middle 25. Verify remaining shares approximately 67/33 and the float remains independent. Repeat R-FLT-03's 60/40 survivor fixture. |
 | D25 | Existing re-adoption and Windows restart-intent record | Record workspace set/membership/focus and intentional/sticky floats; orderly restart with apps alive. Verify no membership moves, only provable focus restore, rebuilt layout and preserved same-lifetime float intent. |
 | D26 | Existing saved gaps/settings and re-observation; approved cross-login float-memory loss | Save owned gaps/settings, record host set/membership/maximize, logout/login with reopened apps. Verify saved settings reload and native state re-observation; record new identities and intentional-float-memory loss, without saved-layout restoration. |
-| D27 | Policy unchanged; dedicated request/urgency observation not found | From hidden B, trigger an unsolicited request with ordinary A focused, then with fullscreen/game A focused in active and idle/paused play; compare tiler off/on. Inspect marker, selected workspace/focus, then explicitly Alt+Tab/taskbar-select B. Supported request classification and guard/marker behavior remain unproven. |
+| D27 | Policy unchanged; 2026-10-14 ordinary fresh background current/hidden calls denied without focus/workspace switch, shell flash traffic observed; no product request/urgency observer | [Follow-up evidence](windows-d27-activation-verification.md): helper-originated/native-permitted requests, visible hidden urgency/clear, fullscreen/game active and idle/paused play, and explicit Alt+Tab/taskbar selection remain TBD. Classification/presentation choices remain open. |
 | D28 | Existing Windows fullscreen-send delivery, separate from D16 intentional-float combos | Retained tiled fullscreen and never-tiled born-fullscreen: numbered/relative x follow/stay, sole held source/empty target, real game. Inspect membership/view/focus/flags/frame/input; first exit of born hold admits on destination. Preserve earlier evidence; remaining physical/game/cross-output legs pending. |
 
 ## Remaining review
 
-- D27 needs supported Windows request/urgency evidence before implementation or
-  native behavior can be accepted; no urgency feature was inferred here.
+- D27 has bounded ordinary denied-request evidence in the 2026-10-14 follow-up;
+  full native mark-only/guard acceptance still needs the listed discriminators
+  and presentation/classification decisions. No urgency feature was inferred.
 - D23 source-slot lifetime after membership rehoming while minimized is the
   unchanged shared behavior and a separate TBD reference discriminator.

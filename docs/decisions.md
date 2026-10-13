@@ -2064,11 +2064,23 @@ platform API behavior.
   (Alt+Tab/taskbar) is separate from
   unsolicited activation. INS-07 no-steal covers tiling admission into
   inactive workspaces only; it is not an existing-window activation rule.
-- Windows offline verification 2026-10-13: approved default/guard policy
-  unchanged; source has foreground observation but no dedicated request/urgency
-  observer or marker, so implementation/native behavior remains unproven.
-  Exact ordinary/fullscreen/game and explicit-selection checks are pending
-  ([record](changes/archive/windows-item22-verification.md)).
+- Windows verification 2026-10-14 at `f4b9f41`: fresh background PowerShell
+  requests against owned helpers were natively denied on current and hidden
+  workspaces, with unchanged focus/visibility and no tiler workspace switch.
+  Shell flash notifications were observed, including hidden targets, but visible
+  urgency was not proven. A previously input-thread-attached caller could
+  activate a hidden target and trigger foreground workspace convergence; this
+  is not clean background/helper self-request or physical selection evidence.
+  No dedicated product request/urgency observer, marker or classifier exists.
+  Default/guard unchanged; native-permitted/helper-originated requests, visible
+  marking/clearing, fullscreen/game and explicit selection remain TBD
+  ([delivery and options](changes/archive/windows-d27-activation-verification.md),
+  [earlier assessment](changes/archive/windows-item22-verification.md)).
+- Tentative, pending user review (2026-10-14): assess hidden urgency presentation
+  in the existing Windows workspace presentation research; recommendation is
+  workspace-level urgency rather than reliance on an unproven hidden taskbar
+  flash. Appearance/mark-clear semantics and request-versus-selection handling
+  remain unselected; no Windows native-switch exception or new UI is adopted.
 - Post-0.1 setting `Activation request` has two options: `Mark urgent only`
   (default; tooltip Hyprland, i3, sway) and `Switch and focus` (tooltip
   COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad
