@@ -95,6 +95,14 @@
   baseline. Package totals: core 580, protocol 183, KWin FFI 40, Windows 945
   (580 library and 365 integration; one library test ignored).
 - No physical or Linux/KWin-native acceptance is inferred from portable gates.
+- Follow-up review (2026-10-13): `f2169d6` correctly initializes D23
+  `closed_windows` in all three Windows cross-output test constructors and the
+  shared Engine test helper. Production directional move/focus and both drag
+  event paths inherit an empty set from the reconcile builder: transfer is not
+  close, and absence alone must not clear restore slots. No defect found;
+  explicit Windows close tracking remains handoff item 22. Current native
+  four-package build/tests/fmt/strict clippy and whitespace gates pass:
+  **1,790 passed, zero failed, one ignored**.
 
 ## Remaining Physical Check
 
