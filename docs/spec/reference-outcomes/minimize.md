@@ -78,8 +78,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   on the active strip, exact target TBD (F: missing frame/display
   geometry). `S(S-pan-minimize)` + `S(S-pan-stripwidth)`.
 - Then Ours KDE: delivered offline: B releases allocation, siblings reflow, MRU C focus, session-only restore context; explicit `closed_windows` clears closed slots through core/protocol/KDE, including hidden domains ([rework](../../changes/archive/d23-rework.md)). Native release/frames/focus/close ordering TBD. `S(S-ours-minkde)`.
-- Then Ours Windows: Same selected D23 (a) target; current retains allocation with retained membership (last-known rect, hintless, no writes), observed divergence to change via handoff item 22, not an approved exception; native journey pending; exact native frames/focus TBD. `S(S-ours-minwin)`;
-  queued; shared-core MinimizedSlot delivery serves the later adapter change.
+- Then Ours Windows: adapter delivered offline 2026-10-13: known minimized rows omit, allocation releases/reflows with MRU and session-only MinimizedSlot. Verified `closed_windows` clears closed slots including automatic hidden-domain fanout; unreadable/rejected observations retain reports ([record](../../changes/archive/windows-d23-restore-close.md)). Former retained-allocation divergence removed. Native frames/focus/close ordering TBD. `S(S-ours-minwin)`.
 - Variant hook: provisional/TBD (minimize-slot hook, to discuss).
 
 ### R-MNZ-02: native restore of the minimized tile
@@ -134,7 +133,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   exact identity TBD with it (F: same missing geometry).
   `S(S-pan-minimize)`.
 - Then Ours KDE: delivered offline under User 2026-10-13 option (b): best-effort rejoin beside former neighbor, same side/group/index where possible, comparable old share; exact equality is only a fast path. Resize/new windows/other-sibling closes/swaps do not invalidate alone; session-only, no restore focus write. COSMIC `3d55cba0` source gate passed ([rework](../../changes/archive/d23-rework.md)). Native slot/share/focus TBD. `S(S-ours-minkde)`.
-- Then Ours Windows: Same revised D23 best-effort target; current B observed eligible again over retained allocation, not selected release/rejoin; revised shared delivery then adapter via item 22. No-focus-write acceptance/native slot/focus TBD (host). `S(S-ours-minwin)`; focus queued.
+- Then Ours Windows: adapter delivered offline 2026-10-13: tiled restore uses shared best-effort neighborhood rejoin; actual resize/swap, admission, sibling-close, bounds/gaps and interleaved-minimize fixtures pass. Observed focus naming restored B keeps prior Engine MRU; reconcile writes no focus. Session-only, native slot/share/focus TBD ([record](../../changes/archive/windows-d23-restore-close.md)). `S(S-ours-minwin)`.
 - Variant hook: provisional/TBD (restore-slot hook, to discuss).
 
 ### R-MNZ-03: native minimize of a sole workspace window
@@ -183,7 +182,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   TBD (host). `S(S-pan-minimize)` + `S(S-pan-ws)`; focus queued (H:
   opaque host minimize-focus journey).
 - Then Ours KDE: delivered offline: workspace retained, focus none, stored restore slot via shared core plus KDE sole-minimize null-focus wiring; shared-core-first target met ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Exact native occupancy/focus TBD user-owned. `S(S-ours-minkde)`.
-- Then Ours Windows: Same selected D23 (a) target; current retains A on its kept slot (cleanup drops only absent HWNDs); focus-none acceptance/native journey pending; exact native focus TBD. Shared delivery then handoff item 22. `S(S-ours-minwin)`; focus queued.
+- Then Ours Windows: adapter delivered offline 2026-10-13: sole-minimize observation empty, slot-aware Engine session retained and focus none; verified sole-close report forgets slot before session retirement. Native workspace/focus journey TBD ([record](../../changes/archive/windows-d23-restore-close.md)). `S(S-ours-minwin)`.
 - Variant hook: provisional/TBD (minimized-occupancy hook, to discuss).
 
 #### D23 restore and close-cleanup discriminators (2026-10-13)
@@ -198,6 +197,13 @@ outcomes below remain TBD; general source behavior is not native evidence.
 Shared-core fixtures: `crates/tiler-core/tests/minimize_restore.rs`;
 production-entry fixtures: `kwin/tests/minimize-close-cleanup-entry.test.ts`;
 [offline evidence](../../changes/archive/d23-rework.md).
+
+Windows adapter boundary evidence 2026-10-13: actual resize/swap, focus naming
+the restored member, newcomer/sibling close/interleaving, bounds/gaps,
+restart/fallback, hidden iconic refresh and automatic hidden-domain close drain
+pass ([record](../../changes/archive/windows-d23-restore-close.md)). Source-slot
+lifetime after send elsewhere is separately TBD in the
+[minimal discriminator](../reference-outcomes.md#d23-best-effort-restore-and-close-discriminators).
 
 | Intervening action | Selected Ours target | Delivered offline regression |
 | --- | --- | --- |

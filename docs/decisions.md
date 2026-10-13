@@ -2128,8 +2128,13 @@ platform API behavior.
   valid convergence forgets reported slots before session retirement. KDE
   retains undelivered close reports, including hidden-domain closes. Native
   close/minimize ordering remains pending ([evidence](changes/archive/d23-rework.md)).
-- Shared core first. Windows follows in handoff item 22: its current
-  retained allocation is a divergence to change, not an approved exception.
+- Windows adapter delivered offline 2026-10-13
+  ([record](changes/archive/windows-d23-restore-close.md)): retained-allocation
+  divergence replaced with release/reflow/rejoin, no restore focus write,
+  sole-null-focus and verified closed-slot cleanup, including inactive-domain
+  fanout without geometry/focus writes. Native journeys remain in item 22.
+  Source-slot lifetime after send elsewhere is unchanged shared behavior, with
+  a TBD discriminator; no adapter-specific exception or cleanup policy added.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
   R-MAX-09, option (b): KDE fullscreen carry ships in 0.1. An explicit send

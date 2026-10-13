@@ -69,7 +69,8 @@
 ## Outcome and pending acceptance
 
 - D16 shared-core and KDE delivery is complete offline, including the approved
-  floating+fullscreen/maximized follow-up. Windows adapter work remains
+  floating+fullscreen/maximized follow-up. Windows adapter delivered offline
+  2026-10-13 ([record](windows-d16-floating-transfer.md)); native journeys remain
   [handoff item 22](../../backlog.md#open-work).
 - User-owned native checks: ordinary and combo WS1 -> WS2 -> WS1 roundtrips;
   numbered/relative follow/stay, sole-window source and empty target; exact

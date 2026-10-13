@@ -61,7 +61,9 @@ persistence are added.
   cleanup requires prior applied-empty evidence.
 - Linux planner uses the shared protocol/Engine route without planner-local
   policy. Windows changes initialize the additive field empty only;
-  adapter release/rejoin/close wiring is [handoff item 22](../../backlog.md).
+  subsequent Windows adapter release/rejoin/close wiring delivered offline
+  2026-10-13 ([record](windows-d23-restore-close.md)); native journeys remain
+  [handoff item 22](../../backlog.md).
 
 ## Accepted evidence
 
