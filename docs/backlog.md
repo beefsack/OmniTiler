@@ -23,6 +23,13 @@ decisions of 2026-09-24 are under
   delivered 2026-10-13; recommendation pending user review. Informs post-0.1
   Push code down and KDE interaction performance/threading; no implementation
   or 0.1 schedule change.
+- PRE-0.1 | KDE multi-output test environment | Narrowed slice promoted
+  2026-10-13: provide a user-operated two-output environment for the must-pass
+  gate. [Research and coverage](research/two-output-test-environment.md)
+  delivered; full Plasma VM recommended, route selection and setup pending.
+  Check 2 additionally needs three outputs; physical hotplug, sleep/wake and
+  native gaming fidelity remain explicit gaps, not reclassified checks.
+  General live-test reference environments remain parked.
 
 - P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
   [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
@@ -3224,7 +3231,9 @@ decisions of 2026-09-24 are under
   [audit](research/cross-platform-core/extraction.md)
 - PARKED | Live-test reference environments | Deferred until after 0.1;
   revisit when a specific decision needs live reference evidence or tabbed
-  stacks are designed (user 2026-10-10). Keep the proposal as research.
+  stacks are designed (user 2026-10-10). Exception 2026-10-13: the narrowed
+  KDE multi-output must-pass environment slice is pre-0.1, listed above;
+  the general reference-environments proposal remains parked research.
   [proposal](research/live-test-vms/proposal.md)
 - P3 | Gap-drag anchor (post-0.1) | No anchor at gap 0; gap-drag exists only
   with gaps above 0, edge-drag covers gap 0 (user 2026-10-10). Research complete

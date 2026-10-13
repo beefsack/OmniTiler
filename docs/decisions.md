@@ -101,6 +101,13 @@ platform API behavior.
   [approved 2026-10-12](research/release-0.1-triage.md#user-decisions-2026-10-12)
   are NORMATIVE;
   native evidence and implementation gaps remain separate.
+- User direction 2026-10-13: promote only a user-operated two-output KDE
+  environment for the 0.1 multi-output must-pass checks from the parked
+  live-test reference-environments proposal to pre-0.1. General reference
+  environments remain parked. [Route research](research/two-output-test-environment.md)
+  recommends a full Plasma VM; route selection and setup remain pending.
+  Synthetic output events do not automatically close physical reliability
+  or native gaming checks; the approved must-pass gate is unchanged.
 
 ## Windows Owner Threading
 
