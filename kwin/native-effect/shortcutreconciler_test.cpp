@@ -380,12 +380,10 @@ public:
             }
             return false;
         }
-        if (writeLog.size() >= 64) {
-            if (error) {
-                *error = QStringLiteral("refusing write beyond the lifetime bound");
-            }
-            return false;
-        }
+        // No lifetime accumulation cap: the reconciler enforces the
+        // operation-scoped budget before the overflowing write, so repeated
+        // legitimate operations stay available. writeCount stays monotonic
+        // for per-operation deltas.
         if (failNextWrite) {
             failNextWrite = false;
             // Transport failure after the daemon may still have changed;
@@ -480,12 +478,7 @@ public:
             }
             return false;
         }
-        if (writeLog.size() + foreignWriteLog.size() >= 64) {
-            if (error) {
-                *error = QStringLiteral("refusing write beyond the lifetime bound");
-            }
-            return false;
-        }
+        // No lifetime accumulation cap (see writeKeys above).
         foreignWriteLog.append({component, action, keys, componentFriendly, friendly});
         for (ShortcutTuple &tuple : tuples) {
             if (tuple.component == component && tuple.action == action) {
@@ -3156,17 +3149,19 @@ void defaultAndForeignTransportSeam()
         }
         store.writeLog.clear();
         store.foreignWriteLog.clear();
-        for (int i = 0; i < 63; ++i) {
-            store.writeLog.append({QStringLiteral("kwin"), QStringLiteral("x"), QList<int>{}, QString(), QString()});
+        // No lifetime accumulation cap: repeated legitimate transport writes
+        // stay available past the old 64-write lifetime. The reconciler
+        // enforces the operation-scoped budget instead (see the full-catalog
+        // and repeated-operation regressions below).
+        for (int i = 0; i < 200; ++i) {
+            CHECK(store.setForeignShortcutKeys(QStringLiteral("org.example"), QStringLiteral("arbitrary-action"),
+                                               QStringLiteral("Example"), QStringLiteral("Arbitrary"),
+                                               QList<int>{META_L}, &error));
         }
-        CHECK(store.setForeignShortcutKeys(QStringLiteral("org.example"), QStringLiteral("arbitrary-action"),
-                                           QStringLiteral("Example"), QStringLiteral("Arbitrary"),
-                                           QList<int>{META_L}, &error));
-        CHECK(store.writeCount() == 64);
-        CHECK(!store.setForeignShortcutKeys(QStringLiteral("org.example"), QStringLiteral("arbitrary-action"),
-                                            QStringLiteral("Example"), QStringLiteral("Arbitrary"), QList<int>{},
-                                            &error));
-        CHECK(error == QStringLiteral("refusing write beyond the lifetime bound"));
+        CHECK(store.writeCount() == 200);
+        CHECK(shortcutMaxForeignClears() == SHORTCUT_MAX_TUPLES);
+        CHECK(shortcutMaxForceWrites(43) == 43 + shortcutMaxProjectWrites());
+        CHECK(shortcutMaxRevertWrites(43) == 43);
     }
     {
         FakeShortcutStore store;
@@ -3420,6 +3415,90 @@ void forceUnknownAndLegacyPreviewAndClear()
     }
 }
 
+void historicalIdentityRevertSkipsForceClears()
+{
+    // Pre-rename catalog was kwin/plasma-auto-tiler-*: the previous
+    // OmniTiler identity. Revert skips it (stays cleared, no setter
+    // even with nonempty defaults); Force still lists it as a conflict
+    // and clears only the exact required chord, preserving unrelated.
+    CHECK(ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("kwin"),
+                                                       QStringLiteral("plasma-auto-tiler-toggle-float")));
+    CHECK(ShortcutReconciler::isProjectOwned(QStringLiteral("kwin"),
+                                             QStringLiteral("plasma-auto-tiler-toggle-float")));
+    CHECK(!ShortcutReconciler::isProjectAction(QStringLiteral("kwin"),
+                                               QStringLiteral("plasma-auto-tiler-toggle-float")));
+    CHECK(!ShortcutReconciler::isHolderExempt(QStringLiteral("kwin"),
+                                              QStringLiteral("plasma-auto-tiler-toggle-float"), META_G));
+    CHECK(!ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("kwin"),
+                                                        QStringLiteral("omnitiler-toggle-float")));
+    CHECK(!ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("org.example"),
+                                                        QStringLiteral("plasma-auto-tiler-toggle-float")));
+    // Direct Revert: persisted historical ID with nonempty defaults stays
+    // cleared with no setter call.
+    {
+        FakeShortcutStore store;
+        seedQuietState(store, QList<int>{META_L}, QList<int>{META_ESC});
+        store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float"),
+                                      QList<int>{}));
+        store.defaultKeysById[QStringLiteral("kwin/plasma-auto-tiler-toggle-float")] = QList<int>{META_G};
+        FakeClearedActions cleared;
+        cleared.stored = {
+            {QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float")},
+        };
+        const ShortcutRevertResult result = ShortcutReconciler(&store, &cleared).revert();
+        CHECK(result.ok);
+        CHECK(result.writes == 0);
+        CHECK(store.foreignWriteLog.isEmpty());
+        CHECK(store.defaultCallLog.isEmpty());
+        CHECK(cleared.stored.isEmpty());
+        for (const ShortcutTuple &tuple : store.tuples) {
+            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
+                CHECK(tuple.active.isEmpty());
+            }
+        }
+    }
+    // Force: historical holder of a required chord is a listed conflict;
+    // confirmed Force clears exactly that chord and keeps unrelated keys.
+    {
+        FakeShortcutStore store;
+        seedQuietState(store, QList<int>{1}, QList<int>{META_L});
+        store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float"),
+                                      QList<int>{META_G, 999}));
+        store.defaultKeysById[QStringLiteral("kwin/plasma-auto-tiler-toggle-float")] = QList<int>{META_G};
+        FakeClearedActions cleared;
+        const ShortcutForcePreview preview = ShortcutReconciler(&store, &cleared).previewForceApply();
+        CHECK(preview.forceable);
+        CHECK(preview.mismatches.size() == 1);
+        CHECK(preview.mismatches.at(0).component == QStringLiteral("kwin"));
+        CHECK(preview.mismatches.at(0).action == QStringLiteral("plasma-auto-tiler-toggle-float"));
+        CHECK(preview.mismatches.at(0).expectedPre == (QList<int>{META_G}));
+        CHECK(preview.mismatches.at(0).post == (QList<int>{999}));
+        const ShortcutForceApplyResult forced = ShortcutReconciler(&store, &cleared).applyForced(preview);
+        CHECK(forced.ok);
+        CHECK(store.foreignWriteLog.size() == 1);
+        CHECK(store.foreignWriteLog.at(0).keys == (QList<int>{999}));
+        for (const ShortcutTuple &tuple : store.tuples) {
+            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
+                CHECK(tuple.active == (QList<int>{999}));
+            }
+        }
+        // Persisted historical ID stays cleared through Revert despite
+        // nonempty defaults: no setter, list emptied.
+        store.foreignWriteLog.clear();
+        store.defaultCallLog.clear();
+        const ShortcutRevertResult reverted = ShortcutReconciler(&store, &cleared).revert();
+        CHECK(reverted.ok);
+        CHECK(cleared.stored.isEmpty());
+        CHECK(store.foreignWriteLog.isEmpty());
+        CHECK(store.defaultCallLog.isEmpty());
+        for (const ShortcutTuple &tuple : store.tuples) {
+            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
+                CHECK(tuple.active == (QList<int>{999}));
+            }
+        }
+    }
+}
+
 void forceMultiKeyPreservesUnrelated()
 {
     FakeShortcutStore store;
@@ -3447,6 +3526,110 @@ void forceMultiKeyPreservesUnrelated()
             CHECK(tuple.active == (QList<int>{META_G}));
         }
     }
+}
+
+// Full-catalog Authentic Apply needs more than the old 64-write lifetime:
+// every bound row emptied plus the lock on its preimage. The
+// operation-scoped budget (at most one write per catalog row plus the
+// lock) covers it, and a repeated Apply stays available afterwards.
+void seedFullQuiet(FakeShortcutStore &store);
+void applyFullCatalogBeyondOldLifetime()
+{
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    int boundRows = 0;
+    for (ShortcutTuple &tuple : store.tuples) {
+        if (tuple.action == QStringLiteral("Lock Session")) {
+            tuple.active = QList<int>{META_L};
+            continue;
+        }
+        if (ShortcutReconciler::isProjectAction(tuple.component, tuple.action) && !tuple.active.isEmpty()) {
+            tuple.active.clear();
+            ++boundRows;
+        }
+    }
+    CHECK(boundRows > 64);
+    FakeClearedActions cleared;
+    const ShortcutApplyResult result = ShortcutReconciler(&store, &cleared).apply();
+    CHECK(result.ok);
+    CHECK(result.writes == boundRows + 1);
+    CHECK(result.writes > 64);
+    CHECK(result.writes <= shortcutMaxProjectWrites());
+    // Repeated Apply is a no-op success with the lifetime total past 64.
+    const ShortcutApplyResult again = ShortcutReconciler(&store, &cleared).apply();
+    CHECK(again.ok);
+    CHECK(again.writes == 0);
+    CHECK(store.writeCount() == result.writes);
+    CHECK(store.writeCount() > 64);
+    CHECK(ShortcutReconciler(&store, &cleared).revert().ok);
+}
+
+// Full Force: 43 foreign clears plus the full project assignment in one
+// operation, then Revert and a repeated Apply, with the lifetime total far
+// past the old 64-write cap throughout.
+void forceFullCatalogBeyondOldLifetime()
+{
+    FakeShortcutStore store;
+    seedFullQuiet(store);
+    int boundRows = 0;
+    for (ShortcutTuple &tuple : store.tuples) {
+        if (tuple.action == QStringLiteral("Lock Session")) {
+            tuple.active = QList<int>{META_L};
+            continue;
+        }
+        if (ShortcutReconciler::isProjectAction(tuple.component, tuple.action) && !tuple.active.isEmpty()) {
+            tuple.active.clear();
+            ++boundRows;
+        }
+    }
+    CHECK(boundRows > 64);
+    const QList<ShortcutCatalogEntry> &catalog = shortcutProjectCatalog();
+    QSet<int> usedKeys;
+    int foreigns = 0;
+    for (const ShortcutCatalogEntry &entry : catalog) {
+        if (foreigns == 43) {
+            break;
+        }
+        if (entry.canonicalKey == 0 || usedKeys.contains(entry.canonicalKey)) {
+            continue;
+        }
+        usedKeys.insert(entry.canonicalKey);
+        const QString action = QStringLiteral("foreign-%1").arg(foreigns);
+        store.tuples.append(makeTuple(QStringLiteral("org.example"), action,
+                                      QList<int>{entry.canonicalKey, 9000 + foreigns}));
+        store.defaultKeysById[QStringLiteral("org.example/") + action] = QList<int>{entry.canonicalKey};
+        ++foreigns;
+    }
+    CHECK(foreigns == 43);
+    FakeClearedActions cleared;
+    CHECK(!ShortcutReconciler(&store, &cleared).apply().ok);
+    const ShortcutForcePreview preview = ShortcutReconciler(&store, &cleared).previewForceApply();
+    CHECK(preview.forceable);
+    CHECK(preview.mismatches.size() == 43);
+    const ShortcutForceApplyResult forced = ShortcutReconciler(&store, &cleared).applyForced(preview);
+    CHECK(forced.ok);
+    CHECK(forced.writes == 43 + boundRows + 1);
+    CHECK(forced.writes > 64);
+    CHECK(forced.writes <= shortcutMaxForceWrites(43));
+    CHECK(cleared.stored.size() == 43);
+    // Repeated Apply is a no-op success with the lifetime total past 64.
+    const ShortcutApplyResult again = ShortcutReconciler(&store, &cleared).apply();
+    CHECK(again.ok);
+    CHECK(again.writes == 0);
+    CHECK(store.writeCount() == forced.writes);
+    // Revert restores the 43 foreign defaults and empties the list.
+    const ShortcutRevertResult reverted = ShortcutReconciler(&store, &cleared).revert();
+    CHECK(reverted.ok);
+    CHECK(reverted.writes == 43);
+    CHECK(reverted.writes <= shortcutMaxRevertWrites(43));
+    CHECK(cleared.stored.isEmpty());
+    CHECK(store.writeCount() == forced.writes + 43);
+    // The restored defaults conflict again: Apply refuses with zero writes.
+    const ShortcutApplyResult refused = ShortcutReconciler(&store, &cleared).apply();
+    CHECK(!refused.ok);
+    CHECK(refused.conflictRefused);
+    CHECK(refused.writes == 0);
+    CHECK(store.writeCount() == forced.writes + 43);
 }
 
 void forceStaleConfirmationZeroWrites()
@@ -6308,6 +6491,7 @@ int main(int argc, char **argv)
     if (scenario == QStringLiteral("all") || scenario == QStringLiteral("success")) {
         applyAssignsProjectsAndRelocatesLock();
         applyIdempotentNoOp();
+        applyFullCatalogBeyondOldLifetime();
         duplicateMetaEscDeduped();
     }
     if (scenario == QStringLiteral("all") || scenario == QStringLiteral("conflict")) {
@@ -6374,7 +6558,9 @@ int main(int argc, char **argv)
     }
     if (scenario == QStringLiteral("all") || scenario == QStringLiteral("force")) {
         forceUnknownAndLegacyPreviewAndClear();
+        historicalIdentityRevertSkipsForceClears();
         forceMultiKeyPreservesUnrelated();
+        forceFullCatalogBeyondOldLifetime();
         forceStaleConfirmationZeroWrites();
         forceBlockedHolderNotForceable();
         knownForeignHoldersAreConflicts();

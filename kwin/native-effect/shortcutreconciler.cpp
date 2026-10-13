@@ -907,12 +907,26 @@ bool ShortcutReconciler::isProjectAction(const QString &component, const QString
     return shortcutCatalogContains(component, action);
 }
 
+bool ShortcutReconciler::isHistoricalProjectOwned(const QString &component, const QString &action)
+{
+    // Previous OmniTiler identity: the entire pre-rename catalog was
+    // kwin/plasma-auto-tiler-*. Identity only; says nothing about live
+    // callback status.
+    return component == shortcutFocusComponent() && action.startsWith(QStringLiteral("plasma-auto-tiler-"));
+}
+
 bool ShortcutReconciler::isProjectOwned(const QString &component, const QString &action)
 {
     // Own prefix, current and legacy alike (e.g. omnitiler-toggle,
-    // omnitiler-float-toggle). Lock Session and foreign components
-    // never match.
-    return component == shortcutFocusComponent() && action.startsWith(QStringLiteral("omnitiler-"));
+    // omnitiler-float-toggle), plus the previous pre-rename identity
+    // kwin/plasma-auto-tiler-*. Revert-only skip; isProjectAction and
+    // isHolderExempt stay narrow so Force still lists and clears the
+    // historical IDs on confirmation. Lock Session and foreign
+    // components never match.
+    if (component != shortcutFocusComponent()) {
+        return false;
+    }
+    return action.startsWith(QStringLiteral("omnitiler-")) || action.startsWith(QStringLiteral("plasma-auto-tiler-"));
 }
 
 bool ShortcutReconciler::isLockAction(const QString &component, const QString &action)
@@ -2555,14 +2569,10 @@ bool KGlobalAccelStore::writeKeys(const QString &component, const QString &actio
         }
         return false;
     }
-    // Lifetime guard against unbounded use; the per-operation exact-two
-    // bound is enforced by ShortcutReconciler via write-count deltas.
-    if (m_writes >= 64) {
-        if (error) {
-            *error = QStringLiteral("refusing write beyond the lifetime bound");
-        }
-        return false;
-    }
+    // No lifetime accumulation cap here: each operation carries its own
+    // bounded budget enforced by ShortcutReconciler (per-operation deltas
+    // from writeCount), so repeated legitimate Apply/Force/Revert stay
+    // available while a single operation can never exceed its bound.
     if (m_pinnedOwner.isEmpty() || !ShortcutReconciler::uniqueNameValid(m_pinnedOwner)) {
         if (error) {
             *error = QStringLiteral("refusing write without a pinned KGlobalAccel owner");
@@ -2812,12 +2822,10 @@ bool KGlobalAccelStore::setForeignShortcutKeys(const QString &component, const Q
         }
         return false;
     }
-    if (m_writes >= 64) {
-        if (error) {
-            *error = QStringLiteral("refusing write beyond the lifetime bound");
-        }
-        return false;
-    }
+    // No lifetime accumulation cap here: the per-operation budget is
+    // enforced by ShortcutReconciler before the write that would overflow
+    // it (see shortcutMaxForceWrites); successful foreign writes still
+    // count in the monotonic total used for per-operation deltas.
     auto driftCheck = [&](QString *driftError) {
         const QDBusConnection connection = QDBusConnection::sessionBus();
         if (!connection.isConnected()) {
@@ -3565,6 +3573,10 @@ ShortcutApplyResult ShortcutReconciler::writeProjectKeysFor(const char *operatio
     auto usedWrites = [&]() {
         return m_store->writeCount() - startWrites;
     };
+    // Operation-scoped budget: at most one write per catalog row plus the
+    // lock relocation. Checked before every write so the overflowing write
+    // never happens; the post-hoc check below stays as defense in depth.
+    const int maxProjectWrites = shortcutMaxProjectWrites();
     QString error;
     HolderSnapshot snap;
     if (!collectHolderSnapshotFor(&snap, disabledIds, authenticStaged, &error)) {
@@ -3610,6 +3622,12 @@ ShortcutApplyResult ShortcutReconciler::writeProjectKeysFor(const char *operatio
     auto writeOne = [&](const QString &component, const QString &action, const QString &componentFriendly,
                         const QString &friendly, const QList<int> &keys, const char *what, QString *writeError) {
         if (!checkOwner(writeError)) {
+            return false;
+        }
+        if (usedWrites() >= maxProjectWrites) {
+            if (writeError) {
+                *writeError = QStringLiteral("tuple writes exceed the exact %1 writes max").arg(maxProjectWrites);
+            }
             return false;
         }
         QList<int> confirmed;
@@ -4102,6 +4120,10 @@ ShortcutRevertResult ShortcutReconciler::revert()
     auto usedWrites = [&]() {
         return m_store->writeCount() - startWrites;
     };
+    // Operation-scoped budget: one write per persisted cleared ID at most
+    // (project-owned IDs stay cleared and write nothing). Checked before
+    // every foreign write so the overflowing write never happens.
+    const int maxRevertWrites = shortcutMaxRevertWrites(existing.size());
     // Idempotent per-entry restore: resolve each persisted ID to its fresh
     // current tuple from readAll to supply the current friendly labels
     // (empty allowed) for the 4-field actionId. Never assume 2-field
@@ -4153,6 +4175,12 @@ ShortcutRevertResult ShortcutReconciler::revert()
         }
         if (!checkOwner(&error)) {
             result.error = error;
+            result.writes = usedWrites();
+            return result;
+        }
+        if (usedWrites() >= maxRevertWrites) {
+            result.error =
+                QStringLiteral("tuple writes exceed the exact %1 writes max").arg(maxRevertWrites);
             result.writes = usedWrites();
             return result;
         }
@@ -4567,6 +4595,10 @@ ShortcutForceApplyResult ShortcutReconciler::applyForcedSelected(const ShortcutF
     auto usedWrites = [&]() {
         return m_store->writeCount() - startWrites;
     };
+    // Operation-scoped budget: every confirmed cleared holder plus the full
+    // project assignment that follows. Checked before every foreign write
+    // so the overflowing write never happens.
+    const int forceBudget = shortcutMaxForceWrites(confirmed.mismatches.size());
     // Durable union BEFORE clearing: an interrupted Force stays revertible.
     QList<ClearedAction> existing;
     QString storeError;
@@ -4662,6 +4694,13 @@ ShortcutForceApplyResult ShortcutReconciler::applyForcedSelected(const ShortcutF
                 ShortcutDiag::log(QtWarningMsg, "force-apply", "clear", "stale", result.error);
                 return result;
             }
+        }
+        if (usedWrites() >= forceBudget) {
+            result.ok = false;
+            result.error = QStringLiteral("tuple writes exceed the exact %1 writes max").arg(forceBudget);
+            result.writes = usedWrites();
+            ShortcutDiag::log(QtWarningMsg, "force-apply", "clear", "failed", result.error);
+            return result;
         }
         if (!m_store->setForeignShortcutKeys(mismatch.component, mismatch.action, mismatch.componentFriendly,
                                              mismatch.friendly, mismatch.post, &storeError)) {

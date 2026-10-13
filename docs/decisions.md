@@ -1186,6 +1186,15 @@ platform API behavior.
   lost, as the user accepted 2026-09-26. Partial Revert failure retains the
   list for a later resume. Shortcut operations emit bounded structured
   diagnostics (see Observability above); logging never affects behavior.
+- Shortcut Apply reliability (tentative 2026-10-14, pending user review): bound
+  writes per explicit Apply/Force/Revert operation rather than the Settings
+  window lifetime; serialize expensive shortcut work off the UI thread with
+  guarded controls and epoch-bound reload staging. The previous OmniTiler
+  identity `kwin/plasma-auto-tiler-*` remains a confirmed Force conflict and
+  is labeled accordingly; Revert leaves those project-owned actions cleared.
+  Describe an already-relocated Lock Session as unchanged, including preserved
+  alternate keys; retain the approved System Monitor exception. [Delivery and
+  live evidence](changes/archive/kde-shortcut-apply-failure.md).
 - Required-chord corrections (user 2026-09-28; all through reversible
   Apply/Force/Revert, never
   relocated, no broad deletion): project focus/move arrows supersede KWin

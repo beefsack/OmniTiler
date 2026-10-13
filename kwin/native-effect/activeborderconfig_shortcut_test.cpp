@@ -8,6 +8,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QLabel>
 #include <QListWidget>
@@ -16,6 +17,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 
 #include <cstdio>
@@ -95,6 +97,16 @@ public:
     bool failAvailable = false;
     // Fail the Nth project write (0-based) to simulate a partial apply.
     int failWriteAt = -1;
+    // Artificial latency for the guarded responsive-execution test: slept on
+    // the calling thread inside the read paths below.
+    int artificialReadMs = 0;
+    int artificialByKeyMs = 0;
+    // Artificial latency for mutation phases (project and foreign writes).
+    int artificialWriteMs = 0;
+    // Calling-thread identities for the worker-thread affinity assertions.
+    QList<Qt::HANDLE> readThreadIds;
+    QList<Qt::HANDLE> writeThreadIds;
+    int readAllCalls = 0;
     struct WriteRecord
     {
         QString component;
@@ -143,6 +155,11 @@ public:
 
     bool readAll(QList<ShortcutTuple> *out, QString *error) override
     {
+        if (artificialReadMs > 0) {
+            QThread::msleep(static_cast<unsigned long>(artificialReadMs));
+        }
+        ++readAllCalls;
+        readThreadIds.append(QThread::currentThreadId());
         if (malformedRead) {
             if (error) {
                 *error = QStringLiteral("unexpected reply");
@@ -173,6 +190,9 @@ public:
 
     bool shortcutsByKey(int key, QList<ShortcutKeyHolder> *holders, QString *error) override
     {
+        if (artificialByKeyMs > 0) {
+            QThread::msleep(static_cast<unsigned long>(artificialByKeyMs));
+        }
         if (failByKey) {
             if (error) {
                 *error = QStringLiteral("globalShortcutsByKey call failed");
@@ -245,18 +265,19 @@ public:
             }
             return false;
         }
-        if (writeLog.size() >= 64) {
-            if (error) {
-                *error = QStringLiteral("refusing write beyond the lifetime bound");
-            }
-            return false;
-        }
+        // No lifetime accumulation cap: the reconciler enforces the
+        // operation-scoped budget before the overflowing write, so repeated
+        // legitimate operations stay available.
         if (failWriteAt >= 0 && writeLog.size() + foreignWriteLog.size() == failWriteAt) {
             if (error) {
                 *error = QStringLiteral("simulated project write failure");
             }
             return false;
         }
+        if (artificialWriteMs > 0) {
+            QThread::msleep(static_cast<unsigned long>(artificialWriteMs));
+        }
+        writeThreadIds.append(QThread::currentThreadId());
         writeLog.append({component, action, keys});
         for (ShortcutTuple &tuple : tuples) {
             if (tuple.component == component && tuple.action == action) {
@@ -306,12 +327,11 @@ public:
             }
             return false;
         }
-        if (writeLog.size() + foreignWriteLog.size() >= 64) {
-            if (error) {
-                *error = QStringLiteral("refusing write beyond the lifetime bound");
-            }
-            return false;
+        // No lifetime accumulation cap (see writeKeys above).
+        if (artificialWriteMs > 0) {
+            QThread::msleep(static_cast<unsigned long>(artificialWriteMs));
         }
+        writeThreadIds.append(QThread::currentThreadId());
         foreignWriteLog.append({component, action, keys});
         bool found = false;
         for (ShortcutTuple &tuple : tuples) {
@@ -2500,7 +2520,8 @@ void dialogLockRelocationDescribed()
         CHECK(force.text.contains(QStringLiteral("will move to")));
         CHECK(force.text.contains(ShortcutReconciler::keyDisplayName(META_ESC)));
         CHECK(force.text.contains(QStringLiteral("retains its binding")));
-        CHECK(force.text.contains(QStringLiteral("delivers to Lock Session")));
+        CHECK(force.text.contains(QStringLiteral("retained but displaced")));
+        CHECK(!force.text.contains(QStringLiteral("delivers to Lock Session")));
         CHECK(!force.text.contains(QStringLiteral("and stays")));
         CHECK(force.text.contains(QStringLiteral("System Monitor")));
     }
@@ -2527,6 +2548,59 @@ void dialogLockRelocationDescribed()
         module.requestShortcutApply();
         CHECK(force.calls == 1);
         CHECK(force.text.contains(QStringLiteral("Exempt: Lock Session untouched")));
+    }
+}
+
+void dialogLockExemptWording()
+{
+    // Exempt lock wording is exact: an already-relocated lock reports
+    // unchanged (never "will move to"), extra chords are named as preserved
+    // alternates, and the authorized System Monitor holder is described as
+    // retained but displaced without claiming physical key delivery.
+    {
+        ShortcutForcePreview preview;
+        preview.forceable = true;
+        preview.lock.inScope = true;
+        preview.lock.component = QStringLiteral("ksmserver");
+        preview.lock.action = QStringLiteral("Lock Session");
+        preview.lock.actual = QList<int>{META_ESC};
+        preview.lock.post = QList<int>{META_ESC};
+        const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
+        CHECK(text.contains(QStringLiteral("already")));
+        CHECK(text.contains(QStringLiteral("unchanged")));
+        CHECK(!text.contains(QStringLiteral("will move to")));
+    }
+    {
+        ShortcutForcePreview preview;
+        preview.forceable = true;
+        preview.lock.inScope = true;
+        preview.lock.component = QStringLiteral("ksmserver");
+        preview.lock.action = QStringLiteral("Lock Session");
+        preview.lock.actual = QList<int>{META_L, 424242};
+        preview.lock.post = QList<int>{META_ESC, 424242};
+        const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
+        CHECK(text.contains(QStringLiteral("will move to")));
+        CHECK(text.contains(QStringLiteral("Preserves")));
+        CHECK(!text.contains(QStringLiteral("unchanged")));
+    }
+    {
+        ShortcutForcePreview preview;
+        preview.forceable = true;
+        preview.lock.inScope = true;
+        preview.lock.component = QStringLiteral("ksmserver");
+        preview.lock.action = QStringLiteral("Lock Session");
+        preview.lock.actual = QList<int>{META_L};
+        preview.lock.post = QList<int>{META_ESC};
+        preview.lock.authorizedHolderPresent = true;
+        preview.lock.authorizedComponent = shortcutAuthorizedEscComponent();
+        preview.lock.authorizedAction = shortcutAuthorizedEscAction();
+        preview.lock.authorizedActive = QList<int>{META_ESC};
+        preview.lock.authorizedComponentFriendly = QStringLiteral("System Monitor");
+        preview.lock.authorizedFriendly = QStringLiteral("Launch System Monitor");
+        const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
+        CHECK(text.contains(QStringLiteral("retains its binding")));
+        CHECK(text.contains(QStringLiteral("retained but displaced")));
+        CHECK(!text.contains(QStringLiteral("delivers to Lock Session")));
     }
 }
 
@@ -2560,6 +2634,89 @@ void dialogKeyedHolderFriendlyLabels()
     CHECK(force.text.contains(QStringLiteral("org.example/keyed-app")));
     CHECK(force.text.contains(QStringLiteral("Example Component")));
     CHECK(force.text.contains(QStringLiteral("Keyed App")));
+}
+
+void dialogHistoricalIdentityLabel()
+{
+    // Previous OmniTiler identity (kwin/plasma-auto-tiler-*) is labeled
+    // concisely in conflict rows; the exact ID and friendly info stay
+    // readable and no stale-callback claim is made from the ID alone.
+    {
+        ShortcutForcePreview preview;
+        preview.forceable = true;
+        ShortcutForceMismatch mismatch;
+        mismatch.component = QStringLiteral("kwin");
+        mismatch.action = QStringLiteral("plasma-auto-tiler-toggle-float");
+        mismatch.componentFriendly = QStringLiteral("KWin");
+        mismatch.friendly = QStringLiteral("Toggle Float");
+        mismatch.expectedPre = QList<int>{META_G};
+        mismatch.actual = QList<int>{META_G, 9000};
+        mismatch.post = QList<int>{9000};
+        preview.mismatches.append(mismatch);
+        const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
+        CHECK(text.contains(QStringLiteral("kwin/plasma-auto-tiler-toggle-float")));
+        CHECK(text.contains(QStringLiteral("Toggle Float")));
+        CHECK(text.contains(QStringLiteral("[previous OmniTiler identity]")));
+        // The persisted ID alone implies no stale-callback status: the
+        // historical row carries identity only (the header's generic
+        // revalidation "stale state" line is not attached to the row).
+        for (const QString &line : text.split(QStringLiteral("\n"))) {
+            if (line.contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
+                CHECK(line.contains(QStringLiteral("[previous OmniTiler identity]")));
+                CHECK(!line.contains(QStringLiteral("stale")));
+                CHECK(!line.contains(QStringLiteral("callback")));
+            }
+        }
+    }
+    // Per-binding holder reporting reuses the same label through the row
+    // list: a live historical holder of a required chord appears with the
+    // previous-identity note and its exact ID.
+    {
+        FakeShortcutStore store;
+        seedReady(store);
+        ShortcutKeyHolder holder;
+        holder.component = QStringLiteral("kwin");
+        holder.action = QStringLiteral("plasma-auto-tiler-toggle-float");
+        holder.active = QList<int>{META_G, 9000};
+        holder.componentFriendly = QStringLiteral("KWin");
+        holder.friendly = QStringLiteral("Toggle Float");
+        store.extraByKey[META_G].append(holder);
+        FakeClearedStore cleared;
+        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+        ForceCapture force;
+        force.allow = false;
+        wireForceCapture(module, force);
+        module.setShortcutStores(&store, &cleared);
+        module.load();
+        QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
+        if (authentic != nullptr) {
+            authentic->click();
+        }
+        module.requestShortcutApply();
+        CHECK(force.calls == 1);
+        CHECK(force.text.contains(QStringLiteral("kwin/plasma-auto-tiler-toggle-float")));
+        CHECK(force.text.contains(QStringLiteral("[previous OmniTiler identity]")));
+        for (const QString &line : force.text.split(QStringLiteral("\n"))) {
+            if (line.contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
+                CHECK(!line.contains(QStringLiteral("stale")));
+                CHECK(!line.contains(QStringLiteral("callback")));
+            }
+        }
+        QListWidget *list = conflictListByModule(module);
+        CHECK(list != nullptr);
+        bool sawHistorical = false;
+        if (list != nullptr) {
+            for (int i = 0; i < list->count(); ++i) {
+                QListWidgetItem *item = list->item(i);
+                if (item != nullptr && item->text().contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
+                    sawHistorical = true;
+                    CHECK(item->text().contains(QStringLiteral("[previous OmniTiler identity]")));
+                }
+            }
+        }
+        CHECK(sawHistorical);
+    }
 }
 
 void dialogPartialApplyFailureReportsOriginal()
@@ -2621,6 +2778,252 @@ void dialogPartialApplyFailureReportsOriginal()
         CHECK(store.totalWrites() == 0);
         CHECK(cleared.saves == 0);
     }
+}
+
+void waitForShortcutIdle(ActiveBorderConfigModule &module, int timeoutMs = 15000)
+{
+    QEventLoop loop;
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, [&]() {
+        if (!module.isShortcutBusy()) {
+            loop.quit();
+        }
+    });
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, &loop, &QEventLoop::quit);
+    poll.start();
+    watchdog.start(timeoutMs);
+    if (module.isShortcutBusy()) {
+        loop.exec();
+    }
+}
+
+bool waitForStoreReads(FakeShortcutStore &store, int reads, int timeoutMs = 15000)
+{
+    QEventLoop loop;
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, [&]() {
+        if (store.readAllCalls >= reads) {
+            loop.quit();
+        }
+    });
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    QObject::connect(&watchdog, &QTimer::timeout, &loop, &QEventLoop::quit);
+    poll.start();
+    watchdog.start(timeoutMs);
+    if (store.readAllCalls < reads) {
+        loop.exec();
+    }
+    return store.readAllCalls >= reads;
+}
+
+void asyncResponsiveGuardedExecution()
+{
+    // Production async path with a slow store: the UI event loop stays
+    // responsive during discovery, a concurrent shortcut operation is
+    // rejected (never queued or interleaved), a draft edit during flight
+    // stages without racing store work, and destruction waits out the
+    // flight instead of racing it.
+    FakeShortcutStore store;
+    seedReady(store);
+    store.artificialReadMs = 100;
+    store.artificialByKeyMs = 2;
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    module.setShortcutStores(&store, &cleared);
+    module.setShortcutAsyncEnabled(true);
+    CHECK(!module.isShortcutBusy());
+    module.refreshShortcutState();
+    CHECK(module.isShortcutBusy());
+    // The event loop processes timers while the worker flight runs.
+    bool timerFired = false;
+    QTimer probe;
+    probe.setSingleShot(true);
+    QObject::connect(&probe, &QTimer::timeout, [&]() { timerFired = true; });
+    probe.start(25);
+    // A concurrent Apply during the flight is rejected: no writes, no
+    // dialogs, and the flight continues undisturbed.
+    const int writesBefore = store.totalWrites();
+    module.requestShortcutApply();
+    CHECK(store.totalWrites() == writesBefore);
+    CHECK(infos == 0);
+    CHECK(errors == 0);
+    CHECK(module.isShortcutBusy());
+    // A draft edit during the flight stages without racing store work: the
+    // list is disabled, but the staged draft is still recorded and a
+    // refresh follows the flight.
+    QString editedId;
+    if (auto *list = module.widget()->findChild<QListWidget *>(QStringLiteral("shortcutConflictList"))) {
+        if (list->count() > 0) {
+            QListWidgetItem *item = list->item(0);
+            editedId = item->data(Qt::UserRole).toString();
+            item->setCheckState(Qt::Unchecked);
+        }
+    }
+    CHECK(!editedId.isEmpty());
+    CHECK(module.shortcutDisabledIds().contains(editedId));
+    waitForShortcutIdle(module);
+    CHECK(timerFired);
+    CHECK(!module.isShortcutBusy());
+    CHECK(!module.shortcutStatusText().startsWith(QStringLiteral("Working:")));
+    CHECK(module.shortcutStatusText().contains(QStringLiteral("129 rows")));
+    CHECK(module.shortcutDisabledIds().contains(editedId));
+    // Destruction during a flight waits out the worker instead of racing
+    // it: deleting here must not crash.
+    {
+        FakeShortcutStore slow;
+        seedReady(slow);
+        slow.artificialReadMs = 500;
+        FakeClearedStore slowCleared;
+        auto *dying = new ActiveBorderConfigModule(nullptr, KPluginMetaData());
+        dying->setShortcutStores(&slow, &slowCleared);
+        dying->setShortcutAsyncEnabled(true);
+        dying->refreshShortcutState();
+        CHECK(dying->isShortcutBusy());
+        delete dying;
+    }
+    CHECK(true);
+}
+
+void asyncDoubleLoadRestageEpochFreshOnly()
+{
+    // Double load with inter-read drift: load#1 (idle) dispatches R1 with
+    // a restage claim bound to its epoch; load#2 during R1 clears the draft
+    // and re-claims. The row empty in R1's image is rebound before R2
+    // reads, and a different row is emptied. The final draft must be
+    // exactly the fresh set: R1's superseded claim stages nothing and R2
+    // replaces (never unions) the old Disable.
+    FakeShortcutStore store;
+    seedReady(store);
+    store.artificialByKeyMs = 5; // slow the holder-scan phase, not the first read
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutStores(&store, &cleared);
+    module.setShortcutAsyncEnabled(true);
+    CHECK(module.shortcutDisabledIds().isEmpty());
+    // Two distinct bound project rows with canonical chords.
+    QStringList boundIds;
+    for (const ShortcutCatalogEntry &entry : shortcutProjectCatalog()) {
+        if (entry.component == QStringLiteral("kwin") && entry.action.startsWith(QStringLiteral("omnitiler-"))
+            && entry.canonicalKey != 0) {
+            boundIds.append(shortcutCatalogId(entry.component, entry.action));
+            if (boundIds.size() == 2) {
+                break;
+            }
+        }
+    }
+    CHECK(boundIds.size() == 2);
+    const QString idA = boundIds.at(0);
+    const QString idB = boundIds.at(1);
+    QList<int> activeA;
+    for (const ShortcutTuple &tuple : store.tuples) {
+        if (shortcutCatalogId(tuple.component, tuple.action) == idA) {
+            activeA = tuple.active;
+        }
+    }
+    CHECK(!activeA.isEmpty());
+    for (ShortcutTuple &tuple : store.tuples) {
+        if (shortcutCatalogId(tuple.component, tuple.action) == idA) {
+            tuple.active.clear();
+        }
+    }
+    const int readsBefore = store.readAllCalls;
+    module.load(); // load#1, idle: clears the draft, claims, dispatches R1
+    CHECK(module.isShortcutBusy());
+    // Wait until R1 has captured its tuple image (A empty, B bound), then
+    // drift: rebind A, empty B. Only the post-load#2 refresh may stage.
+    CHECK(waitForStoreReads(store, readsBefore + 1));
+    for (ShortcutTuple &tuple : store.tuples) {
+        if (shortcutCatalogId(tuple.component, tuple.action) == idA) {
+            tuple.active = activeA;
+        }
+        if (shortcutCatalogId(tuple.component, tuple.action) == idB) {
+            tuple.active.clear();
+        }
+    }
+    module.load(); // load#2, during R1: clears the draft, re-claims, defers
+    CHECK(module.isShortcutBusy());
+    waitForShortcutIdle(module);
+    CHECK(!module.isShortcutBusy());
+    CHECK(module.shortcutDisabledIds() == QStringList(idB));
+}
+
+void asyncApplyModalQueuedRefreshThenForce()
+{
+    // Async Apply -> conflict preview modal -> refresh requested from the
+    // prompt -> accepted Force must still run to a result (never silently
+    // dropped), with reads and mutation phases on the worker thread.
+    FakeShortcutStore store;
+    seedReady(store);
+    store.artificialReadMs = 20;
+    store.artificialByKeyMs = 1;
+    store.artificialWriteMs = 10;
+    addForeignHolder(store, QStringLiteral("org.example"), QStringLiteral("other-launch"),
+                     QList<int>{META_G, 999}, QList<int>{META_G});
+    FakeClearedStore cleared;
+    ActiveBorderConfigModule module(nullptr, KPluginMetaData());
+    module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
+    int infos = 0;
+    int errors = 0;
+    module.setShortcutInformationHandler([&](const QString &, const QString &) { ++infos; });
+    module.setShortcutErrorHandler([&](const QString &, const QString &) { ++errors; });
+    bool promptSawBusy = false;
+    module.setShortcutForcePromptHandler([&](const QString &, const QString &, bool enabled) {
+        promptSawBusy = module.isShortcutBusy();
+        CHECK(enabled);
+        // A refresh requested from the prompt must defer to pending while
+        // the modal holds the guard; it must not preempt the accepted Force.
+        module.refreshShortcutState();
+        return true; // accept Force
+    });
+    module.setShortcutStores(&store, &cleared);
+    // Stage Authentic synchronously so the foreign Meta+G holder conflicts.
+    if (auto *authentic = module.widget()->findChild<QPushButton *>(QStringLiteral("shortcutAuthenticButton"))) {
+        authentic->click();
+    }
+    CHECK(module.shortcutAuthenticStaged());
+    module.setShortcutAsyncEnabled(true);
+    // Scope the affinity assertions to the async flights below: the
+    // synchronous staging above ran on the UI thread by design.
+    store.readThreadIds.clear();
+    store.writeThreadIds.clear();
+    const Qt::HANDLE uiThread = QThread::currentThreadId();
+    module.requestShortcutApply();
+    CHECK(module.isShortcutBusy());
+    bool timerFired = false;
+    QTimer probe;
+    probe.setSingleShot(true);
+    QObject::connect(&probe, &QTimer::timeout, [&]() { timerFired = true; });
+    probe.start(25);
+    waitForShortcutIdle(module);
+    CHECK(timerFired);
+    CHECK(promptSawBusy);
+    // Accepted Force ran to a result: one foreign clear plus the project
+    // assignment, cleared-ID persisted, success dialog shown.
+    CHECK(infos == 1);
+    CHECK(errors == 0);
+    CHECK(store.foreignWriteLog.size() == 1);
+    CHECK(store.foreignWriteLog.at(0).keys == (QList<int>{999}));
+    CHECK(cleared.stored.size() == 1);
+    CHECK(!store.writeThreadIds.isEmpty());
+    for (Qt::HANDLE thread : store.writeThreadIds) {
+        CHECK(thread != uiThread);
+    }
+    CHECK(!store.readThreadIds.isEmpty());
+    for (Qt::HANDLE thread : store.readThreadIds) {
+        CHECK(thread != uiThread);
+    }
+    CHECK(!module.isShortcutBusy());
+    CHECK(module.shortcutStatusText().contains(QStringLiteral("129 rows")));
 }
 
 void dialogErrorBriefSingleLineCapped()
@@ -2709,6 +3112,9 @@ int main(int argc, char **argv)
         selectionSaveIsolationWithAuthentic();
         selectionAuthenticApplyConsumesPreservesLaterCustom();
         selectionAuthenticForceConsumesRetainsOnFailure();
+        asyncResponsiveGuardedExecution();
+        asyncDoubleLoadRestageEpochFreshOnly();
+        asyncApplyModalQueuedRefreshThenForce();
         dialogApplySuccessNoPreliminaryConfirm();
         dialogConflictCompletenessAndOrder();
         dialogBlockerForceDisabledWithReason();
@@ -2719,7 +3125,9 @@ int main(int argc, char **argv)
         dialogRealBlockedModalForceDisabled();
         dialogPartialApplyFailureReportsOriginal();
         dialogLockRelocationDescribed();
+        dialogLockExemptWording();
         dialogKeyedHolderFriendlyLabels();
+        dialogHistoricalIdentityLabel();
         dialogErrorBriefSingleLineCapped();
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", argv[1]);

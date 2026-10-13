@@ -10,11 +10,10 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
-- P0 | KDE Settings shortcut Apply failure | First-install Settings "apply all
-  shortcuts": Apply froze about 5 s and reported 43 conflicts held by stale
-  `kwin/plasma-auto-tiler-*` records plus `kwin/switch-to-last-desktop`, with
-  a confusing Meta+Esc exempt line; Force Apply then failed with "refusing
-  write beyond the lifetime bound". Investigate root cause, fix, live-verify.
+- DELIVERED | KDE Settings shortcut Apply failure | Operation-scoped bounds,
+  responsive KCM execution and historical-identity/Lock reporting fixed;
+  live 43-holder Force (136 writes) and full Apply (93 writes) passed in about
+  250/187 ms, configuration restored. [Record](changes/archive/kde-shortcut-apply-failure.md).
 - P0 | KDE dual-output live testing and fixes | Comprehensive native
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),

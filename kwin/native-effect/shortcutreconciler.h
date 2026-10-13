@@ -454,6 +454,30 @@ inline int shortcutMaxProjectWrites()
 {
     return static_cast<int>(shortcutProjectCatalog().size()) + 1;
 }
+// Operation-scoped transport budgets (never a lifetime accumulation, so
+// repeated legitimate Apply/Force/Revert stay available while each single
+// operation stays bounded):
+// - foreign clears in one Force: one per distinct cleared holder row,
+//   bounded by the holder enumeration bound;
+// - total writes in one Force: every cleared holder plus the full project
+//   assignment above;
+// - total writes in one Revert: one per persisted cleared ID (project-owned
+//   IDs stay cleared and write nothing).
+// The reconciler refuses before the write that would overflow the bound, so
+// no operation ever exceeds it. writeCount() stays a monotonic total used
+// only for per-operation deltas.
+inline int shortcutMaxForeignClears()
+{
+    return SHORTCUT_MAX_TUPLES;
+}
+inline int shortcutMaxForceWrites(int foreignClears)
+{
+    return foreignClears + shortcutMaxProjectWrites();
+}
+inline int shortcutMaxRevertWrites(int clearedIds)
+{
+    return clearedIds;
+}
 
 // Typed keyed-occupancy outcome (no substring classification):
 // Clear means no foreign occupancy, Conflict means an unexpected holder
@@ -863,9 +887,15 @@ public:
     static bool isProjectAction(const QString &component, const QString &action);
     // Any own-prefix action: kwin/omnitiler-*, covering the current
     // project rows and legacy IDs (e.g. omnitiler-float-toggle,
-    // omnitiler-toggle). Force may clear them; Revert leaves them
-    // cleared.
+    // omnitiler-toggle), plus the previous OmniTiler identity
+    // kwin/plasma-auto-tiler-* (pre-rename catalog). Revert-only skip:
+    // Revert leaves them cleared. Force still lists them as conflicts
+    // via isProjectAction/isHolderExempt (never silently exempt).
     static bool isProjectOwned(const QString &component, const QString &action);
+    // Previous OmniTiler identity: kwin/plasma-auto-tiler-* (the entire
+    // pre-rename catalog). Reporting-only distinction; Revert skips it
+    // via isProjectOwned, Force still clears it on confirmation.
+    static bool isHistoricalProjectOwned(const QString &component, const QString &action);
     static bool isLockAction(const QString &component, const QString &action);
     // Required-chord subset of a live active list (the keys Force removes),
     // order-preserving. Empty means the holder claims no required chord.
