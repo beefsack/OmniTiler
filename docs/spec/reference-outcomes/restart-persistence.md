@@ -223,7 +223,7 @@ Column Given bullets are separate fixtures, never H/V ancestry claims. R-START-0
 - Then karousel/Lazy: no-counterpart (the full Actions/definition inventory lists no Keep/Authentic/Compatible staging/Save/Apply/Force verb); no applicable reference journey. `S(S-kar-acts)`.
 - Then paneru: owner-specific (no Keep/Authentic/Compatible staging/Save/Apply/Force model in the command inventory); no applicable reference journey. `S(S-pan-cmds)`.
 - Then Ours KDE: KDE selected: explicit own-action clear, native storage authoritative, no Lock relocation while disabled; live restart/physical delivery TBD [record](../../changes/kde-shortcut-conflicts.md)
-- Then Ours Windows: Windows Apply validates and atomically saves; Revert discards unsaved edits and reloads the saved file; Close never saves. Per-binding Keep/Disable/Rebind with the interim Win+existing-Shift limit; Compatible resets the catalog then disables 35 OS-conflicting chords with no replacements. KDE Force/foreign-holder clearing has no Windows counterpart (unsupported, TBD). Synthetic/native proof passed; physical input and other DPI/output arrangements remain user-owned [record](../../changes/archive/windows-settings.md)
+- Then Ours Windows: Windows Apply validates and atomically saves; Revert discards unsaved edits and reloads the saved file; Close never saves. Per-binding Keep/Disable/Rebind with the interim Win+existing-Shift limit; Compatible resets the catalog then disables 41 OS-conflicting catalog rows with no replacements, including Win+Y ([shortcut record](../../changes/archive/windows-workspace-tiling-shortcut.md)). KDE Force/foreign-holder clearing has no Windows counterpart (unsupported, TBD). Earlier settings synthetic/native proof passed; Win+Y Apply/Revert and physical input remain user-owned [record](../../changes/archive/windows-settings.md)
 - Variant hook: V-SHORTCUT-CONFLICT.
 
 <a id="r-ctl-06-scrolling-assessment-conflict-preview-and-disable"></a>
@@ -250,7 +250,7 @@ Column Given bullets are separate fixtures, never H/V ancestry claims. R-START-0
 - Then karousel/Lazy: no-counterpart (the full Actions/definition inventory lists no Keep/Authentic/preview/Force/draft verb); no applicable reference journey. `S(S-kar-acts)`.
 - Then paneru: owner-specific (no Keep/Authentic/preview/Force/draft model in the command inventory); no applicable reference journey. `S(S-pan-cmds)`.
 - Then Ours KDE: KDE selected: exact draft/owner/presence/active-image revalidation, no disabled-key holder mutation; live outcome TBD [record](../../changes/kde-shortcut-conflicts.md)
-- Then Ours Windows: Windows Compatible resets the catalog then disables 35 OS-conflicting physical chords, inventing no replacements; actual rebound-chord conflicts are shown. KDE draft/Force preview and disabled-key holder mutation have no Windows counterpart (unsupported, TBD) [record](../../changes/archive/windows-settings.md)
+- Then Ours Windows: Windows Compatible resets the catalog then disables 41 OS-conflicting catalog rows, including Win+Y, inventing no replacements; actual rebound-chord conflicts are shown. Win+Y Compatible settings/classifier coverage passed offline 2026-10-13; physical OS behavior TBD ([shortcut record](../../changes/archive/windows-workspace-tiling-shortcut.md)). KDE draft/Force preview and disabled-key holder mutation have no Windows counterpart (unsupported, TBD) [record](../../changes/archive/windows-settings.md)
 - Variant hook: V-SHORTCUT-CONFLICT.
 
 <a id="r-ctl-07-scrolling-assessment-revert-restores-defaults"></a>

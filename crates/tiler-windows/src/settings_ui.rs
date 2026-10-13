@@ -1302,7 +1302,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 602, w: 200, h: 24, style: radio_first | tab },
         Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 602, w: 200, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 600, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (84 rows)".to_owned(), x: 10, y: 644, w: 904, h: 268, style: group },
+        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (87 rows)".to_owned(), x: 10, y: 644, w: 904, h: 268, style: group },
         Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 666, w: 540, h: 230, style: list_style | tab },
         Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 666, w: 324, h: 100, style: info_style },
         Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 770, w: 100, h: 26, style: push | tab },

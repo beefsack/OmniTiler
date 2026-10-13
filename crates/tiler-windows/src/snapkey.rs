@@ -67,6 +67,11 @@ pub const VK_F11: u32 = 0x7A;
 /// as an orientation arm only unshifted with no Ctrl/Alt (never a
 /// directional/digit/history arm).
 pub const VK_O: u32 = 0x4F;
+/// Workspace-tiling toggle chord key (Win+Y, KDE Meta+Y parity, item 21).
+/// `vk_for_key_name` in settings recognizes `Y`; the classifier treats it
+/// as a workspace-tiling arm only unshifted with no Ctrl/Alt (never a
+/// directional/digit/history arm).
+pub const VK_Y: u32 = 0x59;
 /// Tab chord key for the previous-view toggle (Win+Ctrl+Tab, item 1).
 /// `vk_for_key_name` in settings recognizes `Tab`; the classifier treats it
 /// as a history arm only with Ctrl held (never a directional/digit arm).
@@ -227,6 +232,7 @@ pub enum ChordAction {
     Float,
     Sticky,
     Orientation,
+    WorkspaceTiling,
     LaunchBrowser,
     LaunchTerminal,
     WorkspacePrevious,
@@ -252,6 +258,7 @@ impl ChordAction {
             Self::Float => "float",
             Self::Sticky => "sticky",
             Self::Orientation => "orientation",
+            Self::WorkspaceTiling => "workspace-tiling",
             Self::LaunchBrowser => "launch-browser",
             Self::LaunchTerminal => "launch-terminal",
             Self::WorkspacePrevious => "workspace-previous",
@@ -361,7 +368,7 @@ pub const fn is_digit_vk(vk: u32) -> bool {
 
 /// True for any chord key the single classifier owns: directional catalog
 /// plus workspace digits plus the maximize, fullscreen, float, sticky,
-/// orientation, and launcher toggles plus the item 1 history keys (Tab/H/J/K/L/arrows with
+/// orientation, workspace-tiling, and launcher toggles plus the item 1 history keys (Tab/H/J/K/L/arrows with
 /// Ctrl). Modifiers, Win keys, and ordinary keys are not chord keys.
 #[must_use]
 pub fn is_chord_vk(vk: u32) -> bool {
@@ -371,6 +378,7 @@ pub fn is_chord_vk(vk: u32) -> bool {
         || is_fullscreen_vk(vk)
         || is_float_vk(vk)
         || is_orientation_vk(vk)
+        || is_workspace_tiling_vk(vk)
         || is_launch_browser_vk(vk)
         || is_launch_terminal_vk(vk)
         || is_history_vk(vk)
@@ -492,6 +500,14 @@ pub const fn is_sticky_vk(vk: u32) -> bool {
 #[must_use]
 pub const fn is_orientation_vk(vk: u32) -> bool {
     vk == VK_O
+}
+
+/// True only for the workspace-tiling toggle chord key (Win+Y, KDE Meta+Y
+/// parity, item 21). Like orientation, any Shift/Ctrl/Alt combination passes
+/// through untracked: there is no shifted workspace-tiling arm.
+#[must_use]
+pub const fn is_workspace_tiling_vk(vk: u32) -> bool {
+    vk == VK_Y
 }
 
 /// True only for the default-browser launcher chord key (Win+B). Like
@@ -657,6 +673,12 @@ fn collide_refusal(
             consumed,
             announce: false,
         }),
+        Classified::WorkspaceTiling(_) => Classified::WorkspaceTiling(WorkspaceTilingIntent {
+            edge,
+            foreground,
+            consumed,
+            announce: false,
+        }),
         Classified::Fullscreen(_) => Classified::Fullscreen(FullscreenIntent {
             edge,
             foreground,
@@ -711,6 +733,7 @@ fn collide_trigger(shape: &Classified) -> Option<MaskTrigger> {
         }
         Classified::Maximize(_) => Some(MaskTrigger::Maximize),
         Classified::Orientation(_) => Some(MaskTrigger::Orientation),
+        Classified::WorkspaceTiling(_) => Some(MaskTrigger::WorkspaceTiling),
         Classified::Fullscreen(_) => Some(MaskTrigger::Fullscreen),
         Classified::Float(_) => Some(MaskTrigger::Float),
         Classified::Sticky(_) => Some(MaskTrigger::Sticky),
@@ -893,6 +916,19 @@ pub struct OrientationIntent {
     pub announce: bool,
 }
 
+/// Classifier outcome for one workspace-tiling toggle event (Win+Y, KDE
+/// Meta+Y parity, item 21). The toggle carries no direction and acts on the
+/// current workspace, never a focused window: only the down dispatches, ups
+/// close the pair. Held repeats stay swallowed like orientation (a held Y
+/// would otherwise pingpong the workspace mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceTilingIntent {
+    pub edge: SnapEdge,
+    pub foreground: bool,
+    pub consumed: bool,
+    pub announce: bool,
+}
+
 /// Launcher selector: default browser (Win+B) or Windows Terminal (Win+T).
 /// The kind pins at down time from the explicit bound action; later modifier
 /// flips never rewrite it.
@@ -944,6 +980,7 @@ pub enum Classified {
     Float(FloatIntent),
     Sticky(StickyIntent),
     Orientation(OrientationIntent),
+    WorkspaceTiling(WorkspaceTilingIntent),
     Launch(LaunchIntent),
 }
 
@@ -961,6 +998,7 @@ impl Classified {
             Self::Float(intent) => intent.consumed,
             Self::Sticky(intent) => intent.consumed,
             Self::Orientation(intent) => intent.consumed,
+            Self::WorkspaceTiling(intent) => intent.consumed,
             Self::Launch(intent) => intent.consumed,
         }
     }
@@ -978,6 +1016,7 @@ impl Classified {
             Self::Float(intent) => intent.announce,
             Self::Sticky(intent) => intent.announce,
             Self::Orientation(intent) => intent.announce,
+            Self::WorkspaceTiling(intent) => intent.announce,
             Self::Launch(intent) => intent.announce,
         }
     }
@@ -1016,6 +1055,7 @@ pub enum MaskTrigger {
     Float,
     Sticky,
     Orientation,
+    WorkspaceTiling,
     LaunchBrowser,
     LaunchTerminal,
     WinDrag,
@@ -1079,6 +1119,8 @@ pub struct SnapClassify {
     sticky_origin: bool,
     orientation_down: bool,
     orientation_origin: bool,
+    workspace_tiling_down: bool,
+    workspace_tiling_origin: bool,
     launch_browser_down: bool,
     launch_browser_origin: bool,
     launch_terminal_down: bool,
@@ -1132,6 +1174,7 @@ pub struct SnapClassify {
     pub float_counts: SnapCounts,
     pub sticky_counts: SnapCounts,
     pub orientation_counts: SnapCounts,
+    pub workspace_tiling_counts: SnapCounts,
     pub launch_browser_counts: SnapCounts,
     pub launch_terminal_counts: SnapCounts,
     hist_down: [bool; 9],
@@ -1187,6 +1230,8 @@ impl SnapClassify {
             sticky_origin: false,
             orientation_down: false,
             orientation_origin: false,
+            workspace_tiling_down: false,
+            workspace_tiling_origin: false,
             launch_browser_down: false,
             launch_browser_origin: false,
             launch_terminal_down: false,
@@ -1209,6 +1254,7 @@ impl SnapClassify {
             float_counts: SnapCounts::default(),
             sticky_counts: SnapCounts::default(),
             orientation_counts: SnapCounts::default(),
+            workspace_tiling_counts: SnapCounts::default(),
             launch_browser_counts: SnapCounts::default(),
             launch_terminal_counts: SnapCounts::default(),
             hist_down: [false; 9],
@@ -1362,6 +1408,9 @@ impl SnapClassify {
         }
         if is_orientation_vk(physical) && !self.shift {
             return Some(ChordAction::Orientation);
+        }
+        if is_workspace_tiling_vk(physical) && !self.shift {
+            return Some(ChordAction::WorkspaceTiling);
         }
         if is_launch_browser_vk(physical) && !self.shift {
             return Some(ChordAction::LaunchBrowser);
@@ -1568,6 +1617,17 @@ impl SnapClassify {
                     announce: false,
                 }))
             }
+            ChordAction::WorkspaceTiling => {
+                if !self.workspace_tiling_down {
+                    return None;
+                }
+                Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                    edge: SnapEdge::Down,
+                    foreground: true,
+                    consumed: self.workspace_tiling_origin,
+                    announce: false,
+                }))
+            }
             ChordAction::Fullscreen => {
                 if !self.fullscreen_down {
                     return None;
@@ -1654,6 +1714,7 @@ impl SnapClassify {
             }
             ChordAction::Maximize => self.maximize_down,
             ChordAction::Orientation => self.orientation_down,
+            ChordAction::WorkspaceTiling => self.workspace_tiling_down,
             ChordAction::Fullscreen => self.fullscreen_down,
             ChordAction::Float => self.float_down,
             ChordAction::Sticky => self.sticky_down,
@@ -1898,6 +1959,9 @@ impl SnapClassify {
             }
             ChordAction::Orientation => {
                 return self.push_orientation(is_up, foreground, route_live);
+            }
+            ChordAction::WorkspaceTiling => {
+                return self.push_workspace_tiling(is_up, foreground, route_live);
             }
             ChordAction::Fullscreen => {
                 return self.push_fullscreen(is_up, foreground, route_live);
@@ -2858,6 +2922,109 @@ impl SnapClassify {
                 } else {
                     self.orientation_counts.passed += 1;
                     Some(Classified::Orientation(OrientationIntent {
+                        edge: SnapEdge::Down,
+                        foreground,
+                        consumed: false,
+                        announce: false,
+                    }))
+                }
+            }
+        }
+    }
+
+    /// Workspace-tiling toggle half of the unified classifier (Win+Y, KDE
+    /// Meta+Y parity, item 21): same Win/Ctrl/Alt/armed-hold/gate/mask
+    /// contract as the orientation arm. Any held Shift (or Ctrl/Alt, or
+    /// missing Win) passes a fresh Y through untracked and the paired key-up
+    /// also passes. A consumed hold stays swallowed across later transitions
+    /// until its matching up. Only the down dispatches: held repeats are
+    /// swallowed (mask stays armed) instead of re-toggling the workspace
+    /// mode. Ups close the pair. Fresh downs consume iff takeover is on with
+    /// the shortcut gate active; the owner rechecks the active scope plus
+    /// suspension/elevation before toggling, never touching a window.
+    fn push_workspace_tiling(
+        &mut self,
+        is_up: bool,
+        foreground: bool,
+        route_live: bool,
+    ) -> Option<Classified> {
+        if is_up {
+            if !self.workspace_tiling_down {
+                return None;
+            }
+            self.workspace_tiling_down = false;
+            let origin = self.workspace_tiling_origin;
+            self.workspace_tiling_origin = false;
+            self.workspace_tiling_counts.up += 1;
+            if origin {
+                self.workspace_tiling_counts.consumed += 1;
+                Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                    edge: SnapEdge::Up,
+                    foreground,
+                    consumed: true,
+                    announce: false,
+                }))
+            } else {
+                self.workspace_tiling_counts.passed += 1;
+                Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                    edge: SnapEdge::Up,
+                    foreground,
+                    consumed: false,
+                    announce: false,
+                }))
+            }
+        } else {
+            // Armed-hold repeats classify before the fresh-chord guard: a
+            // consumed Y hold stays swallowed across later Shift/Ctrl/Alt/Win
+            // transitions (never re-dispatched), a passed hold stays passed.
+            if self.workspace_tiling_down {
+                self.workspace_tiling_counts.repeat += 1;
+                if self.workspace_tiling_origin {
+                    // Held repeat: swallowed, never re-dispatched. A Win-held
+                    // hold continues to disguise Win, so the mask stays
+                    // armed; a bare repeat after Win-up must not create a new
+                    // mask obligation.
+                    self.workspace_tiling_counts.consumed += 1;
+                    if self.win_l || self.win_r {
+                        self.mask_pending = true;
+                        self.mask_trigger = Some(MaskTrigger::WorkspaceTiling);
+                    }
+                    Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                        edge: SnapEdge::Repeat,
+                        foreground,
+                        consumed: true,
+                        announce: false,
+                    }))
+                } else {
+                    self.workspace_tiling_counts.passed += 1;
+                    Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                        edge: SnapEdge::Repeat,
+                        foreground,
+                        consumed: false,
+                        announce: false,
+                    }))
+                }
+            } else {
+                if self.ctrl || self.alt || self.shift || !(self.win_l || self.win_r) {
+                    return None;
+                }
+                self.workspace_tiling_down = true;
+                let origin = self.enabled && self.gate_active && route_live;
+                self.workspace_tiling_origin = origin;
+                self.workspace_tiling_counts.down += 1;
+                if origin {
+                    self.workspace_tiling_counts.consumed += 1;
+                    self.mask_pending = true;
+                    self.mask_trigger = Some(MaskTrigger::WorkspaceTiling);
+                    Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
+                        edge: SnapEdge::Down,
+                        foreground,
+                        consumed: true,
+                        announce: true,
+                    }))
+                } else {
+                    self.workspace_tiling_counts.passed += 1;
+                    Some(Classified::WorkspaceTiling(WorkspaceTilingIntent {
                         edge: SnapEdge::Down,
                         foreground,
                         consumed: false,
@@ -3870,6 +4037,19 @@ pub struct QueuedOrientationIntent {
     pub tick: std::time::Instant,
 }
 
+/// One approved workspace-tiling chord captured by the callback (Win+Y,
+/// item 21). The toggle acts on the current workspace, never a focused
+/// window: `origin` rides only for mask/queue parity and is ignored at
+/// dispatch, like the launchers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedWorkspaceTilingIntent {
+    pub edge: SnapEdge,
+    pub origin: Option<SnapOrigin>,
+    pub consumed: bool,
+    pub announce: bool,
+    pub tick: std::time::Instant,
+}
+
 /// One approved launcher chord captured by the callback (Win+B browser,
 /// Win+T terminal). `kind` pins the explicit intent at down time. Launchers
 /// act on no window: `origin` rides only for mask/queue parity and is
@@ -3911,6 +4091,7 @@ pub enum QueuedSnapEvent {
     Float(QueuedFloatIntent),
     Sticky(QueuedStickyIntent),
     Orientation(QueuedOrientationIntent),
+    WorkspaceTiling(QueuedWorkspaceTilingIntent),
     Launch(QueuedLaunchIntent),
     Mask(QueuedMask),
 }
@@ -4110,6 +4291,15 @@ pub fn classify_and_queue(
             announce: intent.announce,
             tick,
         }),
+        Classified::WorkspaceTiling(intent) => {
+            QueuedSnapEvent::WorkspaceTiling(QueuedWorkspaceTilingIntent {
+                edge: intent.edge,
+                origin,
+                consumed: intent.consumed,
+                announce: intent.announce,
+                tick,
+            })
+        }
         Classified::Launch(intent) => QueuedSnapEvent::Launch(QueuedLaunchIntent {
             kind: intent.kind,
             edge: intent.edge,
@@ -5573,6 +5763,9 @@ pub mod sys {
             }),
             super::MaskTrigger::Orientation => serde_json::json!({
                 "trigger_op": "orientation",
+            }),
+            super::MaskTrigger::WorkspaceTiling => serde_json::json!({
+                "trigger_op": "workspace-tiling",
             }),
             super::MaskTrigger::LaunchBrowser => serde_json::json!({
                 "trigger_op": "launch-browser",

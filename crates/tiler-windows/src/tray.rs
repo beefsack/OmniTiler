@@ -340,7 +340,7 @@ pub fn first_run_body() -> String {
 }
 
 /// Validated settings for one first-run choice. Authentic is the catalog
-/// defaults; compatible is the deterministic reset disabling the 38
+/// defaults; compatible is the deterministic reset disabling the 41
 /// OS-conflicting rows (Win+L opt-in preserved in both).
 #[must_use]
 pub fn settings_for_choice(choice: FirstRunChoice) -> Settings {

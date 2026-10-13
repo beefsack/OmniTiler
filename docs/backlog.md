@@ -76,9 +76,11 @@ decisions of 2026-09-24 are under
     [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
   - External NixOS/Home Manager validation (P1 gate).
-  - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11;
-    physical/restart/preset acceptance in Pending live checks. Win+Y remains
-    Windows handoff item 21 ([record](changes/archive/kde-workspace-tiling-shortcut.md)).
+  - Workspace tiling toggle Meta+Y (KDE) delivered offline 2026-10-11
+    ([record](changes/archive/kde-workspace-tiling-shortcut.md)); Win+Y (Windows
+    item 21) delivered offline 2026-10-13
+    ([record](changes/archive/windows-workspace-tiling-shortcut.md)).
+    Native/physical and preset acceptance remains in Pending live checks.
   Windows continues as a development preview with its own later release;
   macOS starts after KDE 0.1 ships. KDE current approach retained; no new
   non-native-research items. Lessons persist linked
@@ -2871,15 +2873,19 @@ decisions of 2026-09-24 are under
     arrival, source reflow/target slot and follow/stay, native unmaximize on
     target; live checks pending, fullscreen controls unchanged.
 
-  - Item 21: workspace tiling toggle default Win+Y (user 2026-10-10), matching
-    COSMIC `ToggleTiling` Super+Y (`cosmic-comp/data/keybindings.ron:85`,
-    pinned `3d55cba0`). Wire the Windows catalog and existing Authentic/
-    Compatible conflict model; Win+Y is recorded as a Mixed Reality conflict.
-    Other currently unbound actions stay unbound. Acceptance: shortcut and
-    tray checkbox toggle the same per-workspace state; Apply/Revert, presets
-    and takeover-off release work; update shortcut records with dated offline
-    evidence, native checks pending. KDE Meta+Y delivered offline 2026-10-11
-    ([record](changes/archive/kde-workspace-tiling-shortcut.md)); user-owned
+  - Item 21: workspace tiling toggle Win+Y delivered offline 2026-10-13
+    ([record](changes/archive/windows-workspace-tiling-shortcut.md)). Default
+    selected user 2026-10-10, matching COSMIC `ToggleTiling` Super+Y
+    (`cosmic-comp/data/keybindings.ron:85`, pinned `3d55cba0`). Catalog,
+    classifier/queue and owner dispatch reuse the tray's per-workspace toggle;
+    Authentic takes the recorded Mixed Reality conflict, Compatible disables
+    it (41 conflicting rows; 87 catalog rows). Rebind/disable and takeover-off
+    are covered offline; Apply/Revert use existing settings paths. Native
+    locked gates passed: 1,803 passed, 0 failed, 1 ignored. Other currently
+    unbound actions stay unbound. Native/physical toggle, tray sync, presets,
+    Apply/Revert and takeover-off acceptance remains user-owned below. KDE
+    Meta+Y delivered offline 2026-10-11
+    ([record](changes/archive/kde-workspace-tiling-shortcut.md)); its
     physical/restart/preset checks remain below.
 
   - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-13).
@@ -3633,6 +3639,15 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   distro/user assignments can differ. User-owned, no live result claimed.
   [Record](changes/archive/kde-workspace-tiling-shortcut.md),
   [steps](live-shortcut-override-verification.md#pending-workspace-tiling-default-metay).
+- Windows workspace tiling Win+Y (offline delivered 2026-10-13): under
+  Authentic, press physical Win+Y on tiled and floating workspaces to toggle
+  both ways; the tray checkbox must stay in sync and another workspace/saved
+  default must remain unchanged. Hold/release/repress: only discrete downs
+  toggle. Under Compatible the project toggle stays inert; record actual
+  Mixed Reality/OS behavior. Verify Settings Apply/Revert and both presets,
+  rebind/disable (old chord released, new chord adopted), and Snap-takeover-off
+  release. Native runtime and physical results TBD, user-owned.
+  [Record](changes/archive/windows-workspace-tiling-shortcut.md).
 - Active border skips Plasma applet popups (user option A, 2026-09-29;
   KRunner out of scope for now): with an ordinary bordered window active,
   opening the Application Launcher or a tray popup hides the border and logs

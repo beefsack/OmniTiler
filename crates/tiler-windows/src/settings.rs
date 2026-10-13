@@ -743,6 +743,7 @@ pub enum ToggleKind {
     Maximize,
     Fullscreen,
     Orientation,
+    WorkspaceTiling,
 }
 
 impl ToggleKind {
@@ -754,6 +755,7 @@ impl ToggleKind {
             Self::Maximize => "maximize",
             Self::Fullscreen => "fullscreen",
             Self::Orientation => "orientation",
+            Self::WorkspaceTiling => "workspace-tiling",
         }
     }
 
@@ -762,7 +764,11 @@ impl ToggleKind {
     pub const fn wants_shift(self) -> bool {
         match self {
             Self::Sticky => true,
-            Self::Float | Self::Maximize | Self::Fullscreen | Self::Orientation => false,
+            Self::Float
+            | Self::Maximize
+            | Self::Fullscreen
+            | Self::Orientation
+            | Self::WorkspaceTiling => false,
         }
     }
 }
@@ -1074,6 +1080,16 @@ pub fn binding_catalog() -> Vec<BindingDef> {
         defaults: &["Win+O"],
         implemented: true,
         conflict: chord_conflict("Win+O"),
+    });
+    rows.push(BindingDef {
+        id: "toggle-workspace-tiling",
+        text: "Toggle tiling for current workspace",
+        family: BindingFamily::Toggle {
+            kind: ToggleKind::WorkspaceTiling,
+        },
+        defaults: &["Win+Y"],
+        implemented: true,
+        conflict: chord_conflict("Win+Y"),
     });
     rows.push(BindingDef {
         id: "launch-browser",
@@ -1706,6 +1722,7 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
             ToggleKind::Maximize => ChordAction::Maximize,
             ToggleKind::Fullscreen => ChordAction::Fullscreen,
             ToggleKind::Orientation => ChordAction::Orientation,
+            ToggleKind::WorkspaceTiling => ChordAction::WorkspaceTiling,
         },
         BindingFamily::Launch { kind } => match kind {
             LaunchKind::Browser => ChordAction::LaunchBrowser,
@@ -2213,7 +2230,8 @@ pub enum Preset {
     /// voice, Win+J recall, Win+K cast, Win+L lock, arrows Snap/maximize/
     /// minimize), all move-arrow rows (Win+Shift+arrows monitor-move/stretch),
     /// float (Win+G Game Bar), maximize (Win+M minimize-all), fullscreen
-    /// (Win+F11 Xbox mode), orientation (Win+O orientation lock), both
+    /// (Win+F11 Xbox mode), orientation (Win+O orientation lock), workspace
+    /// tiling (Win+Y Mixed Reality), both
     /// launchers (Win+B notification-area focus, Win+T taskbar cycle), all
     /// workspace digits (Win[/Shift]+digits
     /// taskbar launch/new-instance), and the two item 1 history arrows
@@ -2277,7 +2295,7 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
 /// under both presets since Windows Alt-chord ownership is unverified;
 /// see [`Preset::Compatible`]).
 #[must_use]
-pub const fn compatible_disabled_ids() -> [&'static str; 40] {
+pub const fn compatible_disabled_ids() -> [&'static str; 41] {
     [
         "focus-left",
         "focus-left-arrow",
@@ -2295,6 +2313,7 @@ pub const fn compatible_disabled_ids() -> [&'static str; 40] {
         "toggle-maximize",
         "toggle-fullscreen",
         "toggle-orientation",
+        "toggle-workspace-tiling",
         "launch-browser",
         "launch-terminal",
         "workspace-select-1",
@@ -2858,14 +2877,14 @@ mod tests {
     #[test]
     fn catalog_covers_kde_actions_without_collisions() {
         let catalog = binding_catalog();
-        // 16 focus/move (letter plus separate arrow rows) + 8 resize + 5
+        // 16 focus/move (letter plus separate arrow rows) + 8 resize + 6
         // toggles + 2 launchers + 20 workspace + 9 item 1 history + 10
-        // numbered stay + 8 relative follow + 8 relative stay (item 2) = 86.
-        assert_eq!(catalog.len(), 86);
+        // numbered stay + 8 relative follow + 8 relative stay (item 2) = 87.
+        assert_eq!(catalog.len(), 87);
         let mut ids: Vec<&str> = catalog.iter().map(|def| def.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 86);
+        assert_eq!(ids.len(), 87);
         // Every default parses and every row (resize included) intercepts.
         for def in &catalog {
             for default in def.defaults {
@@ -3265,7 +3284,7 @@ mod tests {
         assert!(settings.bindings.is_empty());
         assert!(settings.core.keyboard.allow_win_l);
         assert!(validate_settings(&settings).is_ok());
-        // Compatible disables every OS-conflicting row (38), preserving the
+        // Compatible disables every OS-conflicting row (41), preserving the
         // opt-in. From empty state the change is exactly the disable list.
         let changed = apply_preset(&mut settings, Preset::Compatible);
         assert_eq!(changed, compatible_disabled_ids());
@@ -3286,7 +3305,7 @@ mod tests {
         assert!(!settings.bindings.contains_key("toggle-sticky"));
         assert!(!settings.bindings.contains_key("workspace-previous"));
         let effective = effective_bindings(&settings);
-        assert_eq!(effective.len(), 86);
+        assert_eq!(effective.len(), 87);
         for row in &effective {
             if compatible_disabled_ids().contains(&row.id) {
                 assert!(!row.active, "{}", row.id);

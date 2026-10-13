@@ -1212,7 +1212,13 @@ platform API behavior.
   use `Meta+Y`; no stock Plasma 6.7.5 holder found in static source/shortcut
   inventory ([record](changes/archive/kde-workspace-tiling-shortcut.md)).
   Physical delivery, existing-assignment/restart persistence and live presets
-  remain user-owned. Windows wiring remains pending in handoff item 21.
+  remain user-owned. Windows delivered offline 2026-10-13
+  ([record](changes/archive/windows-workspace-tiling-shortcut.md)): Win+Y
+  routes to the existing tray workspace-mode toggle; no new focus/window
+  policy. The recorded Mixed Reality conflict follows Authentic takeover /
+  Compatible disabled (87 catalog rows, 41 Compatible-disabled rows).
+  Native/physical toggle, tray sync, Apply/Revert, presets, rebind/disable and
+  takeover-off release remain user-owned.
 ## Gaming Safety
 
 - Gaming compatibility must be flawless (see Principles). Provide alternate

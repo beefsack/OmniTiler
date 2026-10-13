@@ -715,12 +715,13 @@ fn three_colliders_pair_in_any_release_order_across_remap_change() {
 fn compatible_preset_disables_os_conflicting_rows() {
     let mut settings = Settings::default();
     let changed = tiler_windows::settings::apply_preset(&mut settings, Preset::Compatible);
-    // Every OS-conflicting row: 8 focus + 4 move-arrow + 4 toggles + 2
-    // launchers + 20 workspace digits + 2 history arrows.
-    assert_eq!(changed.len(), 40);
+    // Every OS-conflicting row: 8 focus + 4 move-arrow + 5 toggles
+    // (including workspace tiling) + 2 launchers + 20 workspace digits + 2 history arrows.
+    assert_eq!(changed.len(), 41);
     assert!(changed.contains(&"toggle-float"));
     assert!(changed.contains(&"toggle-fullscreen"));
     assert!(changed.contains(&"toggle-orientation"));
+    assert!(changed.contains(&"toggle-workspace-tiling"));
     assert!(changed.contains(&"launch-browser"));
     assert!(changed.contains(&"launch-terminal"));
     assert!(changed.contains(&"focus-left"));
@@ -730,7 +731,7 @@ fn compatible_preset_disables_os_conflicting_rows() {
     assert!(changed.contains(&"workspace-prev-left-arrow"));
     assert!(changed.contains(&"workspace-next-right-arrow"));
     let effective = tiler_windows::settings::effective_bindings(&settings);
-    assert_eq!(effective.len(), 86);
+    assert_eq!(effective.len(), 87);
     for row in &effective {
         if tiler_windows::settings::compatible_disabled_ids().contains(&row.id) {
             assert!(!row.active, "{}", row.id);
@@ -910,7 +911,8 @@ fn retained_update_gaps_preserves_topology() {
 
 // Item 2 catalog/settings: 26 new rows (10 numbered stay + 8 relative follow
 // + 8 relative stay) for 83 total, plus the item 4 orientation toggle for 84,
-// plus the two launcher rows for 86; follow defaults keep pending evidenced
+// plus the two launcher rows for 86, plus the item 21 workspace-tiling toggle
+// for 87; follow defaults keep pending evidenced
 // conflicts with honest unknown-ownership text (no new Compatible disables);
 // stay rows are bindable unbound with Keep meaning unbound.
 
@@ -922,7 +924,7 @@ fn catalog_exposes_item2_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 86);
+    assert_eq!(catalog.len(), 87);
     // Numbered stay: ten unbound rows on the shifted digit arm through the
     // stay action, sharing the follow digit canonical slot.
     for index in [1u8, 2, 9, 0] {
@@ -1633,7 +1635,7 @@ fn catalog_exposes_resize_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 86);
+    assert_eq!(catalog.len(), 87);
     let resize: Vec<_> = catalog
         .iter()
         .filter(|def| {
@@ -1963,7 +1965,7 @@ fn catalog_exposes_launcher_rows_with_exact_modifiers() {
     }
     // Authentic keeps both launchers live on their defaults.
     let effective = effective_bindings(&Settings::default());
-    assert_eq!(effective.len(), 86);
+    assert_eq!(effective.len(), 87);
     for (id, chord) in [("launch-browser", "Win+B"), ("launch-terminal", "Win+T")] {
         let row = effective.iter().find(|row| row.id == id).expect("row");
         assert!(row.active && row.effective, "{id}");
@@ -2080,5 +2082,148 @@ fn catalog_exposes_launcher_rows_with_exact_modifiers() {
             },
         );
     }
+    assert!(validate_settings(&settings).is_err());
+}
+
+// Item 21 workspace-tiling toggle: default Win+Y through the existing toggle
+// arm, with the recorded Mixed Reality conflict. Authentic keeps it live;
+// Compatible disables it; other unbound actions stay unbound.
+#[test]
+fn catalog_exposes_workspace_tiling_toggle_with_mixed_reality_conflict() {
+    use tiler_windows::settings::{
+        apply_preset, binding_action, binding_canonical_vk, binding_catalog, binding_modifiers_ok,
+        compatible_disabled_ids, effective_bindings, parse_chord, validate_settings,
+    };
+    use tiler_windows::snapkey::ChordAction;
+    let catalog = binding_catalog();
+    let def = catalog
+        .iter()
+        .find(|def| def.id == "toggle-workspace-tiling")
+        .expect("row");
+    assert_eq!(def.defaults, &["Win+Y"]);
+    assert!(def.implemented);
+    let conflict = def.conflict.expect("Mixed Reality conflict");
+    assert!(
+        conflict.contains("Mixed Reality") && conflict.contains("takeover"),
+        "{conflict}"
+    );
+    assert_eq!(binding_action(def), ChordAction::WorkspaceTiling);
+    assert_eq!(binding_canonical_vk(def), Some(0x59));
+    // Exact modifiers: only the unshifted Win chord matches the arm.
+    let parsed = parse_chord("Win+Y").expect("parse");
+    assert!(binding_modifiers_ok(
+        def,
+        parsed.shift,
+        parsed.ctrl,
+        parsed.alt
+    ));
+    for bad in ["Win+Shift+Y", "Win+Ctrl+Y", "Win+Alt+Y"] {
+        let parsed = parse_chord(bad).expect("parse");
+        assert!(
+            !binding_modifiers_ok(def, parsed.shift, parsed.ctrl, parsed.alt),
+            "{bad} must not match"
+        );
+    }
+    // Authentic keeps the toggle live on its default.
+    let effective = effective_bindings(&Settings::default());
+    let row = effective
+        .iter()
+        .find(|row| row.id == "toggle-workspace-tiling")
+        .expect("row");
+    assert!(row.active && row.effective);
+    assert_eq!(row.chords, vec!["Win+Y".to_owned()]);
+    // Compatible disables it (Authentic takes the Mixed Reality conflict).
+    assert!(compatible_disabled_ids().contains(&"toggle-workspace-tiling"));
+    let mut settings = Settings::default();
+    apply_preset(&mut settings, Preset::Compatible);
+    assert_eq!(
+        settings
+            .bindings
+            .get("toggle-workspace-tiling")
+            .map(|b| &b.state),
+        Some(&BindingState::Disabled)
+    );
+    let effective = effective_bindings(&settings);
+    let row = effective
+        .iter()
+        .find(|row| row.id == "toggle-workspace-tiling")
+        .expect("row");
+    assert!(!row.active && !row.effective, "toggle-workspace-tiling");
+    // Disable validates and suppresses the default chord through the shared
+    // suppression table.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "toggle-workspace-tiling".to_owned(),
+        BindingSetting {
+            state: BindingState::Disabled,
+            chord: None,
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    let disabled = tiler_windows::settings::build_disabled(&settings);
+    assert!(disabled.contains(&tiler_windows::snapkey::ChordDisable {
+        vk: 0x59,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }));
+    // Rebind routes the unshifted arm into the workspace-tiling action at the
+    // Y canonical slot and suppresses the old default.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "toggle-workspace-tiling".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+U".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    let remap = tiler_windows::settings::build_remap(&settings);
+    assert_eq!(
+        remap,
+        vec![tiler_windows::snapkey::ChordRemap {
+            from_vk: 0x55,
+            from_shift: false,
+            from_ctrl: false,
+            from_alt: false,
+            action: ChordAction::WorkspaceTiling,
+            to_vk: 0x59,
+        }]
+    );
+    let disabled = tiler_windows::settings::build_disabled(&settings);
+    assert!(disabled.contains(&tiler_windows::snapkey::ChordDisable {
+        vk: 0x59,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }));
+    let effective = effective_bindings(&settings);
+    let row = effective
+        .iter()
+        .find(|row| row.id == "toggle-workspace-tiling")
+        .expect("row");
+    assert!(row.active && row.effective);
+    assert_eq!(row.chords, vec!["Win+U".to_owned()]);
+    // Wrong-arm rebinds refuse.
+    for bad in ["Win+Shift+U", "Win+Ctrl+U", "Win+Alt+U"] {
+        let mut settings = Settings::default();
+        settings.bindings.insert(
+            "toggle-workspace-tiling".to_owned(),
+            BindingSetting {
+                state: BindingState::Rebind,
+                chord: Some(bad.to_owned()),
+            },
+        );
+        assert!(validate_settings(&settings).is_err(), "{bad}");
+    }
+    // Duplicate active chords refuse: rebound onto the orientation default.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "toggle-workspace-tiling".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+O".to_owned()),
+        },
+    );
     assert!(validate_settings(&settings).is_err());
 }

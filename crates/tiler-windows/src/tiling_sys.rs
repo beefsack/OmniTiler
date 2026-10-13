@@ -9631,6 +9631,7 @@ fn keyboard_tick(
                 QueuedSnapEvent::WorkspaceHistory(_) => stale += 1,
                 QueuedSnapEvent::Maximize(_) => stale += 1,
                 QueuedSnapEvent::Orientation(_) => stale += 1,
+                QueuedSnapEvent::WorkspaceTiling(_) => stale += 1,
                 QueuedSnapEvent::Fullscreen(_) => stale += 1,
                 QueuedSnapEvent::Float(_) => stale += 1,
                 QueuedSnapEvent::Sticky(_) => stale += 1,
@@ -11653,6 +11654,18 @@ fn keyboard_tick(
             }
             QueuedSnapEvent::Orientation(intent) => {
                 dispatch_orientation_intent(state, me, fulls, areas, intent);
+            }
+            QueuedSnapEvent::WorkspaceTiling(intent) => {
+                // The suspend/elevated fence reads live foreground state, so
+                // it is computed here at the production call site and injected
+                // below: `dispatch_workspace_tiling_intent` stays a pure
+                // function of its gate argument, which keeps owner-dispatch
+                // tests deterministic on headless runners.
+                let gate = crate::tiling::toggle_gate_outcome(
+                    suspend_read(state, me, fulls).veto.block,
+                    foreground_elevated(me),
+                );
+                dispatch_workspace_tiling_intent(state, me, fulls, areas, intent, gate);
             }
             QueuedSnapEvent::Sticky(intent) => {
                 dispatch_sticky_intent(state, me, fulls, areas, intent);
@@ -13943,6 +13956,84 @@ fn dispatch_orientation_intent(
     line["origin"] = serde_json::Value::from(origin.token.clone());
     line["window"] = serde_json::Value::from(from.clone());
     log_json_at(&log_path, line);
+}
+
+/// Current-workspace tiling toggle dispatch (Win+Y, KDE Meta+Y parity, item
+/// 21): the shortcut arm of the existing tray checkbox path. The toggle acts
+/// on the active workspace of the active output through the shared
+/// [`toggle_workspace_tiling`] (same per-workspace state, same release
+/// domain, same pending-release coverage); the chord-time origin rides only
+/// for mask/queue parity and is ignored, so no focus or window policy is
+/// added. Only the down dispatches; key-ups and repeats are trace-only.
+/// `gate` is the live suspend/elevated fence outcome injected by the
+/// `keyboard_tick` call site (see [`dispatch_launch_intent`]), so dispatch
+/// never depends on ambient foreground state and owner-dispatch tests stay
+/// deterministic on headless runners.
+fn dispatch_workspace_tiling_intent(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    intent: crate::snapkey::QueuedWorkspaceTilingIntent,
+    gate: Option<&'static str>,
+) {
+    let log_path = state.log_path.clone();
+    // Key-ups close the pair and passed chords never dispatch: trace-only so
+    // held-key traffic stays out of normal logs.
+    if !intent.consumed || !intent.announce {
+        if state.trace {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-tiling-toggle",
+                    "tick": state.tick,
+                    "edge": intent.edge.as_str(),
+                    "disposition": if intent.consumed { "consumed" } else { "passed" },
+                    "outcome": if intent.consumed { "key-up" } else { "passed" },
+                }),
+            );
+        }
+        return;
+    }
+    state.tick += 1;
+    let tick = state.tick;
+    let correlation = state.correlation();
+    let settle = |outcome: &'static str| {
+        serde_json::json!({
+            "event": "workspace-tiling-toggle",
+            "tick": tick,
+            "correlation": correlation.as_str(),
+            "edge": intent.edge.as_str(),
+            "disposition": "consumed",
+            "outcome": outcome,
+        })
+    };
+    // KDE `!enabled` parity: chords arriving while keyboard takeover is off
+    // never dispatch (the classifier already passes them through; this
+    // covers the exact-owner test-needed route, which bypasses it).
+    if !state.keyboard.takeover {
+        let line = settle("workspace-tiling-refused-disabled");
+        log_json_at(&log_path, line);
+        return;
+    }
+    // Fresh per-intent suspension/elevation fence (workspace_tick parity),
+    // injected precomputed by the caller: newly intercepted
+    // suspended/elevated chords settle here with no side effects.
+    if let Some(outcome) = gate {
+        let line = settle(outcome);
+        log_json_at(&log_path, line);
+        return;
+    }
+    // Same live scope the tray checkbox toggles: the active workspace of the
+    // active output. Without a readable scope the chord settles with no side
+    // effects (never a guessed fallback).
+    let output = state.active_output.clone();
+    if output.is_empty() {
+        let line = settle("no-scope");
+        log_json_at(&log_path, line);
+        return;
+    }
+    toggle_workspace_tiling(state, me, fulls, areas, &output);
 }
 
 /// Cross-domain sticky-off to the current workspace: drop the float exception
@@ -26945,6 +27036,7 @@ fn run_tile_loop(
                     | QueuedSnapEvent::Resize(_)
                     | QueuedSnapEvent::Maximize(_)
                     | QueuedSnapEvent::Orientation(_)
+                    | QueuedSnapEvent::WorkspaceTiling(_)
                     | QueuedSnapEvent::Fullscreen(_)
                     | QueuedSnapEvent::Float(_)
                     | QueuedSnapEvent::Launch(_)
@@ -40296,8 +40388,13 @@ mod intent_wake_tests {
 #[cfg(test)]
 mod launch_dispatch_tests {
     use super::rmax03_adapter_tests::test_state;
-    use super::{LaunchBackend, SystemLaunchBackend, dispatch_launch_intent, keyboard_tick};
-    use crate::snapkey::{LaunchKind, QueuedLaunchIntent, QueuedSnapEvent, SnapEdge};
+    use super::{
+        LaunchBackend, SystemLaunchBackend, dispatch_launch_intent,
+        dispatch_workspace_tiling_intent, keyboard_tick,
+    };
+    use crate::snapkey::{
+        LaunchKind, QueuedLaunchIntent, QueuedSnapEvent, QueuedWorkspaceTilingIntent, SnapEdge,
+    };
 
     /// Mocked spawn backend: records requested kinds, never touches the OS.
     /// No test in this module launches a real browser or terminal.
@@ -40512,6 +40609,132 @@ mod launch_dispatch_tests {
         let _ = SystemLaunchBackend;
         assert_eq!(LaunchKind::Browser.as_str(), "browser");
         assert_eq!(LaunchKind::Terminal.as_str(), "terminal");
+    }
+
+    fn tiling_intent() -> QueuedWorkspaceTilingIntent {
+        QueuedWorkspaceTilingIntent {
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: true,
+            announce: true,
+            tick: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn workspace_tiling_dispatch_ignores_ups_repeats_and_passed_chords() {
+        // Key-ups, repeats, and passed chords never toggle and never advance
+        // the tick. The chord-time origin is ignored either way: the toggle
+        // acts on the current workspace, never a focused window.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let tick = state.tick;
+        for edge in [SnapEdge::Up, SnapEdge::Repeat] {
+            dispatch_workspace_tiling_intent(
+                &mut state,
+                &fake_me(),
+                &[],
+                &[],
+                QueuedWorkspaceTilingIntent {
+                    edge,
+                    origin: None,
+                    consumed: true,
+                    announce: false,
+                    tick: std::time::Instant::now(),
+                },
+                None,
+            );
+        }
+        dispatch_workspace_tiling_intent(
+            &mut state,
+            &fake_me(),
+            &[],
+            &[],
+            QueuedWorkspaceTilingIntent {
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: false,
+                announce: false,
+                tick: std::time::Instant::now(),
+            },
+            None,
+        );
+        assert_eq!(state.tick, tick);
+    }
+
+    #[test]
+    fn workspace_tiling_dispatch_refuses_without_takeover() {
+        // `test_state` ships with takeover off: the down settles without
+        // toggling, mirroring the classifier's pass-through.
+        let mut state = test_state();
+        assert!(!state.keyboard.takeover);
+        let tick = state.tick;
+        dispatch_workspace_tiling_intent(&mut state, &fake_me(), &[], &[], tiling_intent(), None);
+        assert_eq!(state.tick, tick + 1);
+    }
+
+    #[test]
+    fn workspace_tiling_dispatch_refuses_on_injected_fence() {
+        // A blocked suspend/elevated fence settles without toggling: the
+        // injected outcome pins the refusal deterministically instead of
+        // reading ambient foreground state.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let tick = state.tick;
+        for gate in [Some("suspended"), Some("elevated-foreground")] {
+            dispatch_workspace_tiling_intent(
+                &mut state,
+                &fake_me(),
+                &[],
+                &[],
+                tiling_intent(),
+                gate,
+            );
+        }
+        assert_eq!(state.tick, tick + 2);
+    }
+
+    #[test]
+    fn workspace_tiling_dispatch_refuses_without_scope() {
+        // `test_state` ships with no active output: with takeover on and a
+        // clear fence the down still settles with no side effects (never a
+        // guessed fallback), before any observation or Engine work.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        assert!(state.active_output.is_empty());
+        let tick = state.tick;
+        dispatch_workspace_tiling_intent(&mut state, &fake_me(), &[], &[], tiling_intent(), None);
+        assert_eq!(state.tick, tick + 1);
+        assert!(state.active_output.is_empty());
+    }
+
+    #[test]
+    fn keyboard_tick_routes_workspace_tiling_without_toggling_for_settled_events() {
+        // The `keyboard_tick` workspace-tiling arm routes through the
+        // production dispatch; a settled (non-announced) event returns before
+        // touching the toggle path, so this exercises the routing arm with no
+        // observation, no Engine work, and no ambient foreground reads.
+        let mut state = test_state();
+        state.keyboard.takeover = true;
+        let me = fake_me();
+        let tick = state.tick;
+        keyboard_tick(
+            &mut state,
+            &me,
+            &[],
+            &[],
+            vec![QueuedSnapEvent::WorkspaceTiling(
+                QueuedWorkspaceTilingIntent {
+                    edge: SnapEdge::Up,
+                    origin: None,
+                    consumed: true,
+                    announce: false,
+                    tick: std::time::Instant::now(),
+                },
+            )],
+            None,
+        );
+        assert_eq!(state.tick, tick);
     }
 }
 

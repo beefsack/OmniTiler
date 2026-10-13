@@ -59,6 +59,7 @@ fn push_snap(
         | Classified::Orientation(_)
         | Classified::Sticky(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected directional chord")
         }
@@ -83,6 +84,7 @@ fn push_workspace(
         | Classified::Orientation(_)
         | Classified::Sticky(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected workspace digit")
         }
@@ -107,6 +109,7 @@ fn push_maximize(
         | Classified::Orientation(_)
         | Classified::Sticky(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected maximize chord")
         }
@@ -130,6 +133,7 @@ fn push_fullscreen(
         | Classified::Orientation(_)
         | Classified::Sticky(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected fullscreen chord")
         }
@@ -154,6 +158,7 @@ fn push_float(
         | Classified::Maximize(_)
         | Classified::Orientation(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_)
         | Classified::Fullscreen(_) => {
             panic!("expected float chord")
@@ -179,6 +184,7 @@ fn push_sticky(
         | Classified::Maximize(_)
         | Classified::Orientation(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_)
         | Classified::Fullscreen(_) => {
             panic!("expected sticky chord")
@@ -204,8 +210,34 @@ fn push_orientation(
         | Classified::Float(_)
         | Classified::Resize(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Sticky(_) => {
             panic!("expected orientation chord")
+        }
+    }
+}
+
+fn push_workspace_tiling(
+    m: &mut SnapClassify,
+    is_up: bool,
+    fg: bool,
+    inj: bool,
+) -> Option<tiler_windows::snapkey::WorkspaceTilingIntent> {
+    use tiler_windows::snapkey::VK_Y;
+    match SnapClassify::push(m, VK_Y, is_up, fg, inj)? {
+        Classified::WorkspaceTiling(intent) => Some(intent),
+        Classified::Snap(_)
+        | Classified::Workspace(_)
+        | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceHistory(_)
+        | Classified::Maximize(_)
+        | Classified::Fullscreen(_)
+        | Classified::Float(_)
+        | Classified::Resize(_)
+        | Classified::Launch(_)
+        | Classified::Orientation(_)
+        | Classified::Sticky(_) => {
+            panic!("expected workspace-tiling chord")
         }
     }
 }
@@ -650,6 +682,7 @@ fn saturated_queue_swallows_and_counts_loss() {
         | QueuedSnapEvent::Orientation(_)
         | QueuedSnapEvent::Sticky(_)
         | QueuedSnapEvent::Launch(_)
+        | QueuedSnapEvent::WorkspaceTiling(_)
         | QueuedSnapEvent::Resize(_)
         | QueuedSnapEvent::Mask(_) => panic!("expected intent"),
     }
@@ -1569,6 +1602,194 @@ fn orientation_modifier_exactness_passes_untracked() {
         true,
         std::time::Instant::now()
     ));
+}
+
+#[test]
+fn workspace_tiling_toggle_consumes_down_repeat_up_with_origin_pairing() {
+    // Win+Y (KDE Meta+Y parity, item 21): down consumes with announce, held
+    // repeat is swallowed (no mode pingpong), up closes the pair without
+    // announce. Win released before the key-up still pairs by origin.
+    use tiler_windows::snapkey::{VK_Y, is_workspace_tiling_vk};
+    assert!(is_chord_vk(VK_Y));
+    assert!(is_workspace_tiling_vk(VK_Y));
+    assert_eq!(VK_Y, 0x59);
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    assert!(m.win_held());
+    assert!(!m.key_is_down(VK_Y));
+    let down = push_workspace_tiling(&mut m, false, true, false).expect("tiling down");
+    assert_eq!(down.edge, SnapEdge::Down);
+    assert!(down.consumed && down.announce);
+    assert!(m.key_is_down(VK_Y));
+    let repeat = push_workspace_tiling(&mut m, false, true, false).expect("tiling repeat");
+    assert_eq!(repeat.edge, SnapEdge::Repeat);
+    assert!(repeat.consumed && !repeat.announce);
+    // Win released before the key-up still pairs by origin.
+    push_snap(&mut m, VK_LWIN, true, true, false);
+    let up = push_workspace_tiling(&mut m, true, true, false).expect("paired up");
+    assert_eq!(up.edge, SnapEdge::Up);
+    assert!(up.consumed && !up.announce);
+    assert!(!m.key_is_down(VK_Y));
+    assert_eq!(push_workspace_tiling(&mut m, true, true, false), None);
+    assert_eq!(
+        (
+            m.workspace_tiling_counts.down,
+            m.workspace_tiling_counts.repeat,
+            m.workspace_tiling_counts.up
+        ),
+        (1, 1, 1)
+    );
+    assert_eq!(m.workspace_tiling_counts.consumed, 3);
+    // Directional catalog untouched by the Y chord.
+    assert!(m.counts.iter().all(|c| c.down == 0 && c.up == 0));
+}
+
+#[test]
+fn workspace_tiling_modifier_exactness_passes_untracked() {
+    // Only exact unshifted Win+Y classifies: Shift/Ctrl/Alt, missing Win,
+    // bare Y, and injected Y never classify and never arm the mask.
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    push_snap(&mut m, VK_SHIFT, false, true, false);
+    assert_eq!(push_workspace_tiling(&mut m, false, true, false), None);
+    assert_eq!(push_workspace_tiling(&mut m, true, true, false), None);
+    push_snap(&mut m, VK_SHIFT, true, true, false);
+    assert_eq!(
+        (m.workspace_tiling_counts.down, m.workspace_tiling_counts.up),
+        (0, 0)
+    );
+    for mod_vk in [VK_CONTROL, VK_MENU, VK_LMENU] {
+        let mut m = SnapClassify::new(takeover());
+        win_down(&mut m, VK_LWIN);
+        push_snap(&mut m, mod_vk, false, true, false);
+        assert_eq!(push_workspace_tiling(&mut m, false, true, false), None);
+        assert_eq!(push_workspace_tiling(&mut m, true, true, false), None);
+        push_snap(&mut m, mod_vk, true, true, false);
+    }
+    let mut m = SnapClassify::new(takeover());
+    assert_eq!(push_workspace_tiling(&mut m, false, true, false), None);
+    assert_eq!(push_workspace_tiling(&mut m, false, true, true), None);
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    assert_eq!(push_workspace_tiling(&mut m, false, true, true), None);
+    assert!(!win_up_mask_reserve(
+        &mut m,
+        &mut SnapQueue::new(),
+        VK_LWIN,
+        true,
+        std::time::Instant::now()
+    ));
+}
+
+#[test]
+fn workspace_tiling_unmanaged_consumes_gate_off_passes() {
+    // Unmanaged foreground with the gate on still swallows at interception
+    // (the owner settles without acting); takeover off stays passthrough,
+    // and a fresh chord with the shortcut gate off passes through.
+    use tiler_windows::snapkey::VK_Y;
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    let down = push_workspace_tiling(&mut m, false, false, false).expect("unmanaged down");
+    assert!(down.consumed && down.announce);
+    let repeat = push_workspace_tiling(&mut m, false, true, false).expect("repeat");
+    assert!(repeat.consumed);
+    let up = push_workspace_tiling(&mut m, true, true, false).expect("paired up");
+    assert!(up.consumed);
+    let mut m = SnapClassify::new(KeyboardConfig::disabled());
+    win_down(&mut m, VK_LWIN);
+    let down = push_workspace_tiling(&mut m, false, true, false).expect("logged");
+    assert!(!down.consumed && !down.announce);
+    let mut m = SnapClassify::new(takeover());
+    let mut q = SnapQueue::new();
+    let tick = std::time::Instant::now();
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_Y, false, None, false, tick, false),
+        Some(false)
+    );
+    match q.pop_front().expect("workspace-tiling intent") {
+        QueuedSnapEvent::WorkspaceTiling(intent) => assert!(!intent.consumed),
+        _ => panic!("expected workspace-tiling intent"),
+    }
+}
+
+#[test]
+fn workspace_tiling_arms_start_menu_mask() {
+    use tiler_windows::snapkey::{MaskTrigger, QueuedWorkspaceTilingIntent, SnapQueue, VK_Y};
+    // A consumed Win+Y reserves the E8 mask at Win-up with trigger evidence.
+    let mut m = SnapClassify::new(takeover());
+    let mut q = SnapQueue::new();
+    let tick = std::time::Instant::now();
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(
+            &mut m,
+            &mut q,
+            VK_Y,
+            false,
+            Some(origin_of(7, "w7")),
+            false,
+            tick,
+            true
+        ),
+        Some(true)
+    );
+    assert!(win_up_mask_reserve(&mut m, &mut q, VK_LWIN, true, tick));
+    match q.pop_front().expect("workspace-tiling intent") {
+        QueuedSnapEvent::WorkspaceTiling(QueuedWorkspaceTilingIntent { origin, .. }) => {
+            assert_eq!(origin, Some(origin_of(7, "w7")));
+        }
+        _ => panic!("expected workspace-tiling intent"),
+    }
+    match q.pop_front().expect("mask") {
+        QueuedSnapEvent::Mask(mask) => assert_eq!(mask.trigger, MaskTrigger::WorkspaceTiling),
+        _ => panic!("expected mask"),
+    }
+}
+
+#[test]
+fn workspace_tiling_held_rebind_disable_gate_repeat_but_keep_pair() {
+    // Rebound workspace-tiling (Win+U -> WorkspaceTiling/Y) dispatches;
+    // disabling the canonical mid-hold gates repeat dispatch but keeps the
+    // consumed pair. Mirrors the orientation rebind refusal shape.
+    use tiler_windows::snapkey::{ChordAction, ChordDisable, ChordRemap, VK_Y};
+    const VK_U: u32 = 0x55;
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_U,
+        from_shift: false,
+        from_ctrl: false,
+        from_alt: false,
+        action: ChordAction::WorkspaceTiling,
+        to_vk: VK_Y,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    let down = match SnapClassify::push(&mut m, VK_U, false, true, false).expect("down") {
+        Classified::WorkspaceTiling(intent) => intent,
+        other => panic!("expected workspace-tiling, got {other:?}"),
+    };
+    assert!(down.consumed && down.announce);
+    m.set_disabled(vec![ChordDisable {
+        vk: VK_Y,
+        shift: false,
+        ctrl: false,
+        alt: false,
+    }]);
+    let repeat = match SnapClassify::push(&mut m, VK_U, false, true, false).expect("repeat") {
+        Classified::WorkspaceTiling(intent) => intent,
+        other => panic!("expected workspace-tiling, got {other:?}"),
+    };
+    assert!(repeat.consumed && !repeat.announce);
+    match SnapClassify::push(&mut m, VK_U, true, true, false).expect("up") {
+        Classified::WorkspaceTiling(up) => assert!(up.consumed && !up.announce),
+        other => panic!("expected workspace-tiling, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3010,6 +3231,7 @@ fn push_send(
         | Classified::Orientation(_)
         | Classified::Sticky(_)
         | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected relative send")
         }
@@ -3462,6 +3684,7 @@ fn push_resize(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Launch(_) => {
             panic!("expected resize chord")
         }
@@ -3756,6 +3979,7 @@ fn push_launch(
         | Classified::Float(_)
         | Classified::Orientation(_)
         | Classified::Sticky(_)
+        | Classified::WorkspaceTiling(_)
         | Classified::Resize(_) => {
             panic!("expected launcher chord")
         }
