@@ -1031,7 +1031,9 @@ assert_not_contains "[kwin]" "dev bring-up fail no kwin tail"
 assert_calls_missing "tail " "dev bring-up fail no tail call"
 assert_calls_missing "journalctl " "dev bring-up fail no journal call"
 
-# dev: early INT after the owned survivor load but before dev-on success
+# Signal tests invoke dev-kde directly: dev adds a separate just dispatcher
+# whose SIGINT exit status is independent of the KDE teardown result.
+# dev-kde: early INT after the owned survivor load but before dev-on success
 # unloads the owned effect via the minimal early trap and never calls dev-off.
 # Nothing is preloaded, so the single border load is owned. dev-on is
 # blocked inside dogfood disable (before ROLLBACK_ARMED) so the window is
@@ -1041,7 +1043,7 @@ set_controller false
 printf 'false\n' > "$WORK/state/effect-border-loaded"
 touch "$WORK/state/block-dogfood-disable"
 : > "$OUTPUT"
-run_just_async dev
+run_just_async dev-kde
 JUST_PID="$JUST_ASYNC_PID"
 READY=0
 for _ in $(seq 1 50); do
@@ -1270,7 +1272,7 @@ make_tray_proc "$DEV_ID_TRAY_PID" 777041
 printf '%s\n' "$DEV_ID_TRAY_PID" > "$WORK/state/tray-owner-pid"
 export FAKE_TAIL_FOLLOW_BLOCK=1
 : > "$OUTPUT"
-run_just_async dev
+run_just_async dev-kde
 JUST_PID="$JUST_ASYNC_PID"
 READY=0
 for _ in $(seq 1 50); do
@@ -1498,7 +1500,7 @@ assert_calls_missing "unloadEffect" "dev native fail no native unload"
 assert_calls_missing "tail " "dev native fail no tail"
 assert_calls_missing "journalctl " "dev native fail no journal"
 
-# dev: Ctrl-C during streaming tears down via dev-off with exit 0.
+# dev-kde: Ctrl-C during streaming tears down via dev-off with exit 0.
 reset_state
 set_controller false
 sleep 300 &
@@ -1507,7 +1509,7 @@ make_planner_proc "$DEV_INT_PID" 777002
 printf '%s\n' "$DEV_INT_PID" > "$WORK/state/owner-pid"
 export FAKE_TAIL_FOLLOW_BLOCK=1
 : > "$OUTPUT"
-run_just_async dev
+run_just_async dev-kde
 JUST_PID="$JUST_ASYNC_PID"
 READY=0
 for _ in $(seq 1 50); do
@@ -1546,7 +1548,7 @@ unset FAKE_TAIL_FOLLOW_BLOCK
 kill "$DEV_INT_PID" 2>/dev/null || true
 wait "$DEV_INT_PID" 2>/dev/null || true
 
-# dev: Ctrl-C plus dev-off failure stays nonzero and skips re-enable.
+# dev-kde: Ctrl-C plus dev-off failure stays nonzero and skips re-enable.
 reset_state
 set_controller false
 touch "$WORK/state/stop-fails"
@@ -1556,7 +1558,7 @@ make_planner_proc "$DEV_INT_FAIL_PID" 777003
 printf '%s\n' "$DEV_INT_FAIL_PID" > "$WORK/state/owner-pid"
 export FAKE_TAIL_FOLLOW_BLOCK=1
 : > "$OUTPUT"
-run_just_async dev
+run_just_async dev-kde
 JUST_PID="$JUST_ASYNC_PID"
 READY=0
 for _ in $(seq 1 50); do
