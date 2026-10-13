@@ -133,20 +133,21 @@ sandboxed route exposes the workspace-level marker only.
   request switches to WS1 with B focused vs marks vs denies rides
   opaque host WindowServer/AppKit policy). `S(S-pan-cmds)` +
   `S(S-pan-switcher)`; queued (host).
-- Then Ours KDE: TBD (Engine `sync_focus_from_window` covers
-  ordinary activation of a known window; unsolicited
-  cross-workspace request routing, switch vs marker, untraced;
-  native journey TBD). `S(S-ours-act)`; selected default Mark urgent
-  only with post-0.1 Activation request setting and both-modes
-  fullscreen/game guard ([User 2026-10-12 D27](../../decisions.md#activation-requests));
-  first trace native KWin Wayland xdg-activation and Xwayland under default
-  focus-stealing prevention. Attention-only means verification-only; native
-  workspace/focus switching would make urgency-only override KWin/D01, so
-  stop and return to the user before code. Otherwise request/urgency handling
-  needs code per gap assessment; queued.
+- Then Ours KDE: native journey TBD; source trace at KWin `8438567a` and
+  v6.6.3 shows valid-token/FromTool/allowed-X11 requests switch + focus,
+  missing/stale-token requests demand-attention. Selected User 2026-10-13:
+  accept native host exception, converge without intercept/revert/suppress;
+  verification-only, no longer BLOCKED. No OmniTiler gaming guard, rely on
+  KWin input freshness; real-game active/idle check must pass, reopen only on
+  actual active-play switch-away. Post-0.1 setting KDE applicability reviewed
+  at design ([decision](../../decisions.md#activation-requests),
+  [trace](../../research/d27-kwin-activation-trace.md)). `S(S-ours-act)`
+  establishes observation only, not native acceptance.
 - Then Ours Windows: TBD (same Engine observation path; host
   foreground-request journey and marker policy untraced).
-  `S(S-ours-act)`; same D27 selection, queued.
+  `S(S-ours-act)`; default Mark urgent only and fullscreen/game urgency-only
+  guard unchanged; post-0.1 two-option setting, queued. KDE exception is not
+  Windows evidence.
 - Variant hook: provisional/TBD (activation-routing hook, to discuss).
 
 ### R-ACT-02: urgency marker set, then user focuses the window

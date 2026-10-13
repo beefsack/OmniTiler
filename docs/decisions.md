@@ -178,17 +178,31 @@ platform API behavior.
   visual/input checks, multi-output/mixed-DPI and gaming cost remain pending;
   a bounded trace-on idle CPU result is not gaming-cost acceptance.
 
+- User direction 2026-10-13, post-0.1 KDE interaction performance/threading:
+  Windows input/render threads drastically improved performance and UX. KDE
+  shows no significant jank, so this is not a current priority. For KDE and
+  later platforms, explore moving dynamic window resizing during drag and
+  drag/move/resize interaction work into multithreaded Rust, with C++ and
+  TypeScript as thin shims, relying on Rust thread safety. Research KWin
+  effect/script threading constraints first; the result may change how
+  OmniTiler interacts with KWin. Link with
+  [Push code down](principles.md#layering) and Live sibling reflow while dragging
+  in [backlog](backlog.md).
+
 ### Rust unsafe guardrail
 
-- Tentative, pending user review: `forbid(unsafe_code)` on `tiler-core` and
-  `tiler-protocol` crate roots and existing unsafe-free Windows modules
-  `active_border`, `group_underlay`, `input_handoff`, `model`, `settings`,
-  `tiling`, `tray`, `workspace`, `workspace_owner`; new `render_handoff` also
-  forbids unsafe. Broader Rust unsafe policy remains pending.
+- User rule 2026-10-13: Rust `unsafe` is permitted only at ABI/FFI boundaries,
+  kept as tiny as possible and isolated in one dedicated FFI module per crate.
+  Every other module and crate uses `#![forbid(unsafe_code)]`.
+- `tiler-core`, `tiler-protocol` and existing unsafe-free Windows modules
+  already forbid unsafe. Linux planner (`crates/omnitiler`) test env-var
+  mutation must become explicit config, then add crate-wide forbid. Windows
+  must consolidate FFI into dedicated modules after its current release-gate
+  work (timing tentative). KWin effect FFI remains a minimal boundary module.
 - Stage 2 cross-thread state uses safe standard primitives and owned handles;
   no unsafe Send/Sync, mutable statics, UnsafeCell or cross-thread pointer
-  dereferencing. Native Win32 unsafe remains at minimal FFI call sites; no broad
-  refactor of existing FFI. [Delivery evidence](changes/archive/windows-render-thread.md).
+  dereferencing. Existing scattered Win32 FFI call sites are an implementation
+  gap under the new rule. [Delivery evidence](changes/archive/windows-render-thread.md).
 
 ## Windows Multi-Output Foundation
 
@@ -242,9 +256,14 @@ platform API behavior.
   and permit KWin code reuse; it is not a source-license requirement imposed
   by linking. Root LICENSE covers MIT sources; GPL sources carry SPDX
   license/copyright headers. Full texts are in `LICENSES/`.
-- Metadata and first-party notice delivery are applied. Tool-based dependency
-  audit, CI license gate and full native closure per distro remain release
-  follow-ups ([research](research/licensing.md)).
+- Metadata and first-party notice delivery are applied. Dependency audit and
+  the CI gate are delivered ([evidence](changes/archive/licensing-audit-gate.md)).
+- User decision 2026-10-13: keep the CI gate with `licenses`, `bans` and
+  `sources`. Before 0.1, add tool-generated third-party notices, including
+  license texts for MIT/Apache crates compiled into binaries, to GitHub Release
+  binaries and Debian/RPM/Arch packages. This reverses the earlier tentative
+  no-notice choice. Candidate tool: `cargo-about`; adding it requires a
+  `devenv.nix` change at implementation time.
 
 ## Development Environment
 
@@ -415,13 +434,18 @@ platform API behavior.
   plus xmonad, qtile and awesome (Tier 2) retain float against COSMIC fresh
   re-tile. COSMIC's alternative has no second Tier 1/2 reference, so it does
   not qualify as a setting.
-- D16 needs code: shared core currently refuses `NotTiled` and KDE send
-  eligibility is tiled-only ([revision-bound gap assessment](backlog.md)).
-  Verify the untested native WS1 -> WS2 -> WS1 roundtrip first, then shared
-  core first (serves Windows) and KDE adapter; Windows adapter work goes to
-  handoff item 22. Selection is not native evidence. Floating-workspace
-  boundary sends remain a distinct approved journey; their current
-  intentional-float restriction is an implementation gap under D16.
+- User confirmation 2026-10-13, D16 arrival frame: same-output sends keep the
+  exact frame, with no geometry write; this is no longer tentative.
+- User decision 2026-10-13, D16 combo sends: explicit sends of
+  floating+fullscreen and floating+maximized windows carry them exactly as-is,
+  still floating and still fullscreen/maximized on arrival. Later leaving
+  fullscreen/maximize returns to the floating frame. Sticky floats keep
+  refusing. Needs shared-core/KDE code, expected on the slotless deferred path.
+- Ordinary intentional-float sends are delivered offline
+  ([record](changes/d16-floating-transfer.md)); combo eligibility remains the
+  gap. Verify the untested native WS1 -> WS2 -> WS1 roundtrip first. Shared
+  delivery serves Windows; adapter/native work goes to handoff item 22.
+  Floating-workspace boundary sends remain a distinct approved journey.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - R-CLOSE-03: closing the sole window retains the shown workspace empty, with no focused client (User 2026-10-10, 0.1 triage D08).
 - R-WS-09: workspace return restores remembered focus (User 2026-10-10, 0.1 triage D17).
@@ -449,11 +473,12 @@ platform API behavior.
     cancel stale gesture effects.
   - Sends touching a floating workspace transfer project membership without a
     two-domain Engine plan; only the tiled side reconciles. Floating-side
-    frames stay untouched. Sticky movers refuse; intentional floats on tiled
-    sources are currently ineligible, a D16 implementation gap.
+    frames stay untouched. Sticky movers refuse; ordinary intentional-float
+    sends are delivered offline, floating+fullscreen/maximized eligibility
+    remains the approved D16 follow-up gap.
   - `Meta/Win+1..9` select an existing workspace without creation; `0` reuses
     or creates the trailing empty. `Meta/Win+Shift+1..9` send the focused
-    window; floating retention is selected by D16, currently tiled-only.
+    window; D16 ordinary floating retention is delivered offline, combo follow-up pending.
     Send follows by default (R-WS-01) with a bindable unbound
     send-and-stay counterpart. Relative sends use the scoped ring (item 2).
     Exact follow is one fresh mover-absent-from-source/present-in-target
@@ -1407,10 +1432,16 @@ platform API behavior.
   2026-09-28: replace the temporary Meta-held group outline with a filled
   underlay beneath its windows, extending beyond the border outer edge by a
   configurable size defaulting to the current border width. Colour (including
-  alpha) is configurable; Selected default `#40808080` (translucent grey).
+  alpha) is configurable; the original `#40808080` default is superseded below.
   The drop-target preview colour also becomes configurable with alpha, retaining
   its `#402a82da` default. All new keys live in the existing effect group and
   hot-apply through effect reconfigure; existing keys/defaults are unchanged.
+
+- User decision 2026-10-13: group underlay default is candidate C `#662a82da`
+  (40% accent blue) on KDE and Windows, for now. Needs KDE kcfg default and
+  Windows constant changes; Windows wiring is in the handoff. Before 0.1,
+  live-check the appearance over black, white and grey wallpapers.
+  [Options](changes/archive/kde-dogfood-underlay-options.md).
 
 - User decision 2026-10-11: active border outline radius defaults to 6 on
   all platforms (looked right in Windows dogfood); revisit per platform if
@@ -1668,6 +1699,14 @@ platform API behavior.
   and is rebuilt per KWin package update. Remove the companion if a matching
   rebuild is unavailable when upgrading KWin; core tiling/Settings remain.
   RPM/Arch's existing loose KWin dependencies remain unchanged.
+- User decision 2026-10-13, option (b): keep the exact effect pin. Solver
+  acceptance shows both `apt upgrade` and `full-upgrade` hold KWin back until
+  the rebuilt effect is installed. Queue a short installation-guide note and
+  a line in the effect package description explaining that behavior.
+  [Solver evidence](changes/archive/ubuntu-apt-solver-acceptance.md).
+- Future upgrade smoothness research: whether an effect built against one
+  KWin patch release loads on the next (IID/version binding), OBS rebuild
+  latency and pin options. No pin relaxation selected.
 - [Offline delivery and pending live checks](changes/archive/kwin-6.6-support.md),
   [workspace discriminator](spec/reference-outcomes.md#kwin-66-shared-workspace-fallback),
   [installation](installation.md).
@@ -1714,8 +1753,14 @@ platform API behavior.
   automated handoff is resolved. The source-service template currently needs
   a manual source commit after release; it is not an approved replacement
   for tag-only automated delivery. No accounts or release tags were created.
-- Publishing prerequisite: complete the tool-based dependency/license audit
-  and vendored attribution inventory. First-party MIT licensing and the
+- User review 2026-10-13: OBS release handoff remains OPEN; no route selected.
+  It may come in a later version and may not block 0.1, but neither is decided.
+  Research candidates include SCM bridge/git-backed recipes plus exact checksum,
+  scoped-token triggers of OBS-side work, and Route 3, a manual scripted
+  `osc commit` per release. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
+- Publishing prerequisite: tool-based dependency/license audit and vendored
+  attribution inventory are delivered; third-party notice artifacts remain
+  required before 0.1. First-party MIT licensing and the
   GPL-2.0-or-later effect exception are applied under [Licensing](#licensing);
   package declarations and first-party notices match that boundary.
 - Nix-first current-host delivery is selected. The repository flake statically
@@ -1958,14 +2003,16 @@ platform API behavior.
 
 ## Activation Requests
 
-- User decision 2026-10-12, D27 / REQ-ACT-01 / R-ACT-01, option (a): an
+- User decision 2026-10-12, amended 2026-10-13, D27 / REQ-ACT-01 / R-ACT-01: an
   unsolicited activation request from an existing window on a hidden workspace
   defaults to `Mark urgent only`: mark urgent without switching workspace or
-  changing focus. This reverses the tentative `Switch and focus` default:
+  changing focus on platforms where OmniTiler owns the outcome (Windows).
+  This reverses the tentative `Switch and focus` default:
   Hyprland, i3 and sway (all Tier 1) agree against COSMIC under the
   [reference tier rule](#reference-tiers).
-- While a fullscreen/game window is focused, requests are urgency-only in
-  both modes. Explicit user selection (Alt+Tab/taskbar) is separate from
+- Windows: while a fullscreen/game window is focused, requests are urgency-only
+  in both modes; its guard decision is unchanged. Explicit user selection
+  (Alt+Tab/taskbar) is separate from
   unsolicited activation. INS-07 no-steal covers tiling admission into
   inactive workspaces only; it is not an existing-window activation rule.
 - Post-0.1 setting `Activation request` has two options: `Mark urgent only`
@@ -1973,14 +2020,25 @@ platform API behavior.
   COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad
   (Tier 2). Functional names/options; WM names only in tooltips. Retained in
   P2 `0.1 triage settings follow-up` alongside D09/D10.
-- KDE first step: trace native KWin behavior for Wayland xdg-activation and
-  Xwayland requests under default focus-stealing prevention. If KWin already
-  only marks attention, this is verification-only. If KWin natively switches
-  workspace or focuses, implementing urgency-only would override KWin and
-  conflict with [D01 native activation ownership](#placement-minimums-and-startup-adoption):
-  stop and return to the user before writing code. Otherwise request/urgency
-  handling needs code per the [gap assessment](backlog.md); no native outcome
-  or implementation is established by this selection.
+  Review this setting's KDE applicability when it is designed; no KDE setting
+  applicability decision is made here.
+- User decision 2026-10-13, option 1: accept KWin native activation as a KDE
+  host exception. Valid-token / FromTool / allowed-X11 requests for a
+  hidden-desktop window switch desktop and focus natively; missing/stale-token
+  requests are marked demand-attention by KWin. OmniTiler converges and never
+  intercepts, reverts or suppresses KWin activation. Alternatives are complex
+  hacks, a maintenance burden and add jank. This aligns with
+  [D01 native activation ownership](#placement-minimums-and-startup-adoption).
+- KDE D27 is verification-only, no longer BLOCKED: native valid-token switch
+  convergence and stale-token mark-only without interference. Source trace is
+  complete; native outcomes remain TBD
+  ([trace](research/d27-kwin-activation-trace.md)).
+- User decision 2026-10-13, KDE gaming guard: no OmniTiler guard; rely on KWin
+  input-freshness gating (token serial / X11 user time). Requests during active
+  play are expected to be mark-only; idle-game and pager/taskbar switches are
+  native behavior, exactly as without the tiler. Must-pass live check with a
+  real game covers active play and idle/paused play. Reopen only if real
+  switch-aways during active play are observed; expectation is not evidence.
 - [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12),
   [requirement](spec/functional-spec.md#activation),
   [reference evidence](spec/reference-outcomes/activation.md#r-act-01-hidden-window-sends-an-unsolicited-activation-request).
@@ -2007,9 +2065,23 @@ platform API behavior.
   qtile/awesome (Tier 2) also vacate allocation, awesome restores old slot.
   Hyprland/i3/sway have no counterpart or are untraced (non-voting); no
   evidenced alternative to allocation release. Native Ours outcomes remain TBD.
-- D23 needs KDE/shared-core code: stored old slot, no-focus-write restore and
-  sole-minimize null focus ([revision-bound gap assessment](backlog.md)).
-  Shared core first. Windows follows later in handoff item 22: its current
+- User decision 2026-10-13, D23 restore option (b): best-effort rejoin replaces
+  exact-tree-equality validity. Return B beside a former neighbor, preserving
+  side, group and index with a share comparable to its old one. Fresh ordinary
+  admission only when no former neighbors remain, the domain is gone or B was
+  sent elsewhere. Resizes, new windows, other-sibling closes and swaps do not
+  invalidate by themselves. Stored slots remain session-only, not persisted.
+- D23 minimize/reflow/MRU, no-focus-write restore and sole-null-focus wiring
+  are delivered offline; current exact-tree-equality restore is the gap.
+  First implementation step: verify COSMIC's minimized-tiling restore in pinned
+  cosmic-comp `3d55cba0`; return to the user before coding if it differs
+  materially. Add regressions for focus change, resize, new window, sibling
+  close, swap, other minimize/restore, gaps/resolution change and restart.
+- User decision 2026-10-13, D23 close cleanup option (b): clear a minimized
+  window's stored slot when it closes. Add a small protocol distinction between
+  close and minimize, folded into the D23 rework. Current omission-only
+  observation retains closed-window slots until restart.
+- Shared core first. Windows follows in handoff item 22: its current
   retained allocation is a divergence to change, not an approved exception.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
@@ -2415,6 +2487,11 @@ platform API behavior.
       delivered offline with item 13.
       - KDE offline-delivered: setting + KCM + adapter subsequent-only
       adoption; R-MAX-03 independence preserved; live checks pending.
+- User decision 2026-10-13: lift born-maximized policy into the shared core
+  now, following [Layering](principles.md#layering) to avoid duplicate copies
+  and drift. Rewire KDE with identical behavior and labels; `bornMaximized`
+  is the accepted KDE key name. Windows handoff replaces its adapter copy
+  with the shared policy after shared delivery.
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06

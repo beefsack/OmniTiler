@@ -16,15 +16,16 @@ Acceptance:
 - Close-all: fix + regression, or recorded assessment only.
 - Full gates: cargo test --workspace, clippy -D warnings, fmt --check, kwin npm test, typecheck, bundle; CTest only if native code touched (not touched).
 - One independent read-only review.
-- D23 archive note + backlog row updated. Push (fetch/rebase first; concurrent Windows agent).
+- D23 archive note + backlog row updated.
 
-Approach: worker 1 implements focus fix + close-all assessment; worker 2 runs full gates; worker 3 independent review; Lead integrates records + push.
+Approach: focus fix and close-all assessment, applicable full gates,
+independent review and evidence records.
 
 Units:
-1. Focus fix + close-all assessment (done, uncommitted).
+1. Focus fix + close-all assessment (done).
 2. Full gates.
 3. Independent read-only review.
-4. Records + push.
+4. Evidence records.
 
 Verification: unit 1 targeted gates (6/6 minimize_restore, crate tests, clippy, fmt); unit 2 full gates; unit 3 review.
 
@@ -37,3 +38,17 @@ independent review ACCEPT with non-blocking followups (cross-domain
 focus-none regression; carry retention bound into records). Evidence: cargo
 test --workspace, clippy -D warnings, fmt --check, kwin npm test (1413/1413),
 typecheck, bundle build; CTest skipped (native untouched).
+
+## User review 2026-10-13
+
+- Close cleanup option (b) selected: clear stored minimize slot when the
+  window closes, add a small protocol close/minimize distinction, fold into
+  D23 best-effort restore rework. The assessment-only deferral above is
+  superseded; current retention remains the implementation gap.
+- Restore option (b) replaces exact-tree equality with best-effort rejoin;
+  session-only lifetime stays. Verify COSMIC `3d55cba0` first; return before
+  coding on material difference. This does not alter accepted focus-diagnostic
+  evidence or establish rework/native delivery.
+- [Original record and revised scope](d23-minimize-restore.md#user-review-2026-10-13),
+  [queue](../../backlog.md),
+  [decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen).

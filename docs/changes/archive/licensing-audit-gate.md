@@ -16,7 +16,8 @@ Acceptance:
 - `docs/research/licensing.md` holds native per-distro table + vendored inventory.
 - Backlog Licensing entry updated; this note archived on completion.
 
-Approach: sequential workers (one active at a time): 1) deny audit + deny.toml fix; 2) CI gate; 3) native closure inventory; 4) vendored attribution + records.
+Approach: deny audit and deny.toml correction, CI gate, native closure
+inventory and vendored attribution records.
 
 Verification: `cargo deny --locked check licenses`; `yq` YAML check; `git status`/`git diff` review.
 
@@ -32,3 +33,11 @@ Evidence:
 - Inventories: Rust/npm tables in `docs/research/licensing.md` sections 2-3; per-distro closure table section 4.4; vendored inventory section 11.
 
 Outcome: complete; backlog P1 Licensing entry updated; archived on completion.
+
+User review 2026-10-13: keep all three CI checks (`licenses`, `bans`, `sources`).
+The tentative no-THIRD-PARTY/optional-`cargo-about` choice above is superseded:
+tool-generated third-party notices with compiled dependency license texts
+must ship in GitHub Release binaries and Debian/RPM/Arch packages before 0.1.
+Candidate `cargo-about` needs a `devenv.nix` addition at implementation time.
+Notice implementation is queued in [backlog](../../backlog.md);
+[current decision](../../decisions.md#licensing). Audit delivery remains complete.

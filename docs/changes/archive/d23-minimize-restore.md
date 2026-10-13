@@ -29,7 +29,7 @@ Acceptance:
 Approach: shared core first, then KDE, then Windows compile-only + handoff
 entry, then records/gates/review.
 
-Tentative decisions (pending user review, recorded here):
+Historical implementation choices (validity superseded 2026-10-13):
 - Old slot representation: session-runtime stored slot bound to window identity
   plus domain; invalid when sibling closed, tree restructured, window sent
   elsewhere, or workspace removed; fallback is fresh ordinary admission per
@@ -67,7 +67,7 @@ Evidence:
   Planner MNZ-01/MNZ-02 leg, MNZ-03 sole leg, invalidation fallback leg).
 - Full gates per unit 4 (exact commands/results recorded by the unit runner).
 
-Tentative decisions (pending user review, recorded here):
+Historical implementation choices (validity superseded 2026-10-13):
 - Old slot representation: session-runtime stored slot bound to window identity
   plus domain; invalid when sibling closed, tree restructured, window sent
   elsewhere, or workspace removed; fallback is fresh ordinary admission per
@@ -88,7 +88,7 @@ Tentative decisions (pending user review, recorded here):
   reset, fresh ids; KWin per-instance ids; Windows adapter not on minimize
   paths). No uncontentious minimal fix exists (core cannot distinguish close
   from minimize; explicit destroyed-signal needs protocol plus both-adapter
-  changes); deferred.
+   changes); deferred at that assessment, selected for rework 2026-10-13.
 
 Pending live checks (user-owned): native MNZ-01 release/frames/focus, MNZ-02
 slot/focus, MNZ-03 occupancy/focus, WS1->WS2->WS1 style native journeys.
@@ -100,3 +100,25 @@ review, no re-execution; gates evidence consistent):
 - Reconcile focus-binding ergonomics for focus-none sole restores that
   report focus-mismatch on correct state.
 - Optional corner test: unfloat arriving with a stale minimize slot.
+
+## User review 2026-10-13
+
+- Restore option (b) best-effort rejoin replaces exact-tree-equality validity:
+  beside former neighbor, same side/group/index, share comparable to old.
+  Resize, new window, other-sibling close and swap no longer invalidate alone.
+  Fresh ordinary admission only if no former neighbors remain, domain gone
+  or sent elsewhere. Session-only lifetime confirmed, no persisted slots.
+- Current implementation's `remove_leaf(stored) == current` validity is the
+  gap, not the revised target. Minimize/reflow/MRU, no-focus-write restore and
+  sole-null-focus remain selected; prior offline evidence is unchanged.
+- First rework step verifies COSMIC minimized-tiling restore in cosmic-comp
+  `3d55cba0`; return to the user before coding on a material difference.
+  Regressions cover focus change, resize, new window, sibling close, swap,
+  other minimize/restore, gaps/resolution change and restart.
+- Close cleanup option (b): clear minimized window's slot on close, with a
+  small close/minimize protocol distinction, folded into D23 rework. This
+  supersedes the assessed/deferred close-all retention outcome above.
+- Rework and Windows item 22 are in [backlog](../../backlog.md);
+  [current decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen).
+  This archive remains evidence of the original implementation, not rework
+  delivery or native acceptance.

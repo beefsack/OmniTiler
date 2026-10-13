@@ -1,6 +1,6 @@
-# D27: KWin native activation trace (BLOCKED, no code)
+# D27: KWin native activation trace (verification-only on KDE)
 
-- Status: trace complete 2026-10-12 at KWin ref `8438567a` (= 6.7.4); v6.6.3 compared. Branch (B): KWin natively switches desktop + focuses for a request class at default FSP, so default urgency-only would override KWin and conflict with D01 native activation ownership. No product code written. Decision required before any implementation.
+- Status: trace complete 2026-10-12 at KWin ref `8438567a` (= 6.7.4); v6.6.3 compared. User 2026-10-13 selected option 1, native KWin host exception; no longer BLOCKED, KDE verification-only. No product code written. Native acceptance pending.
 - Lead verification: fetched `src/activation.cpp` at the pinned ref (activateWindow desktop-switch block, mayActivate token gate, setActiveWindow attention clear corroborated); local `rg "demandAttention|demandsAttention|urgent|urgency" kwin/src` returns no files, confirming no OmniTiler urgency handling.
 
 ## KWin findings (all lines at 8438567a unless noted)
@@ -27,19 +27,43 @@
 - Urgency signal handling: ABSENT in both adapters and shared core (protocol has no demandAttention/urgency input; mismatch refuses with FocusMismatch).
 - Convergence FOLLOWS native switches: `currentDesktopChanged`/`desktopsChanged`/`screensChanged`/`windowAdded/Removed` all route to read-only `handleTopologySignal` (`kwin/src/plan-adapter-entry.ts:7363-7397`, `kwin/src/workspace-native.ts:1110-1136`) plus history record; no write-back. Shared `sync_focus_from_window` (`crates/tiler-core/src/session/world.rs:407-450`) adopts host focus only, fail-closed otherwise.
 - No OmniTiler path turns requests into switches: all `workspace.activeWindow=` sites (plan-adapter-entry.ts:5041-5043, 6203-6212, 6553-6561, 7211-7219; workspace-send-adapter-entry.ts:693-695) are explicit user follow paths with arrival proof. Desktop writes (`workspace-native.ts:554,3251,3267`) are explicit shortcut/send routes only.
-- Gaming guard: absent in code; exists only as D27 selection text.
+- Gaming guard: absent in code; User 2026-10-13 selects no OmniTiler guard on KDE.
 
-## Blocker and options
+## Historical blocker and options (resolved 2026-10-13)
 
-- BLOCKED: implementing default Mark urgent only for the valid-token class means intercepting or reverting a native KWin desktop switch + focus, contradicting D01 native activation ownership. Per the approved condition, stop before code and return to the user.
+- Historical blocker: implementing default Mark urgent only for the valid-token class would intercept/revert native KWin desktop switch + focus, contradicting D01 native ownership. Resolved by accepting the host exception below.
 - Option 1 (recommended): accept KWin native behavior on KDE as a host exception - valid-token requests switch + focus natively and OmniTiler converges (already does); urgency-only applies only where KWin itself marks (missing/stale token) plus any explicit fullscreen/game guard implemented narrowly without touching desktop switching. Consequence: REQ-ACT-01 default differs from Hyprland/i3/sway reference on KDE for the valid-token class; gaming guard needs a separate decision on whether to suppress native switches while fullscreen is focused (also an override).
 - Option 2: intercept valid-token activations and mark urgent (suppress the switch). Consequence: overrides KWin, conflicts with D01, needs to fight the compositor (revert desktop + focus), gaming-safety and complexity risk; not recommended.
 - Option 3: document user-side KWin config (raise FSP to Extreme, or set activation desktop policy to DoNothing). Consequence: host-wide behavior change outside OmniTiler, affects all apps; weakest product story.
-- Recommendation: option 1. Then D27 becomes verification-only on KDE (prove convergence follows native switch; prove stale-token mark-only is observed without interference) plus a pending decision on the fullscreen/game-focused guard scope.
+- Recommendation was option 1. User selected it 2026-10-13, with no OmniTiler gaming guard; the historical guard-scope question is resolved.
+
+## User decisions 2026-10-13
+
+- Accept native KDE host exception: valid-token / FromTool / allowed-X11
+  hidden-desktop requests switch desktop and focus natively; missing/stale-token
+  requests are marked demand-attention by KWin. OmniTiler converges, never
+  intercepts, reverts or suppresses activation. Alternatives are complex hacks,
+  a maintenance burden and add jank.
+- No OmniTiler gaming guard on KDE; rely on KWin token-serial / X11 user-time
+  input-freshness gating. Active-play requests are expected mark-only, not
+  proven; idle-game and pager/taskbar switches are exactly native without-tiler
+  behavior. Source has no fullscreen-specific guard and can permit authorized
+  switches; do not claim freshness guarantees all request classes.
+- Must-pass live real-game check covers active play and idle/paused game.
+  Reopen only if real active-play switch-aways occur. Default Mark urgent only
+  and Windows gaming guard remain unchanged where OmniTiler owns the outcome.
+- KDE D27 is verification-only: valid-token native switch convergence and
+  stale-token mark-only without interference. Post-0.1 Activation request
+  setting's KDE applicability is reviewed at design, not selected here.
+  [Current decision](../decisions.md#activation-requests).
 
 ## Pending live checks (user-owned, not run)
 
 - Tiler-off/on comparison at default Low: valid-token activation from hidden desktop (switch + focus expected both ways); stale/missing-token request (mark-only both ways); Xwayland app-source vs pager-source; FSP Extreme spot check; fullscreen-focused request outcome; attention-clear on focus.
+- Must-pass real-game active-input and idle/paused legs: compare native requests
+  and pager/taskbar switching with tiler off/on; observe actual switch-away,
+  marker, desktop, focus and game state. Reopen only on actual active-play
+  switch-away. No native/game outcome recorded yet.
 
 ## Sources
 

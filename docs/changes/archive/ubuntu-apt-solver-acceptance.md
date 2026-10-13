@@ -1,6 +1,7 @@
 # Ubuntu apt solver acceptance
 
-Status: solver validation complete, 2026-10-13. Live journeys remain user-owned.
+Status: solver validation and review complete, 2026-10-13; archived.
+Doc/packaging follow-up and live journeys remain queued separately.
 
 ## Goal
 
@@ -26,14 +27,15 @@ Non-goals: no live desktop/KWin testing; no OBS/PPA/neon work; no publishing.
 
 ## Approach
 
-Sequential disposable Docker containers (`--memory=6g`), scratch under /tmp/opencode. Network to Ubuntu archives allowed during container prep; builds reuse the offline source-archive route. One heavy job at a time.
+Disposable Docker containers with clean Ubuntu archives; builds reuse the
+offline source-archive route. Network used during container preparation.
 
 ## Units
 
 1. Build packages per target (26.04 release, 26.04 updates, 26.10, 26.04 noeffect).
 2. Solver installs per target + pin verification.
 3. 26.04 upgrade transaction + removal/core-only probes.
-4. Record evidence, small bug fixes only (tentative), commit docs and push.
+4. Record solver evidence and upgrade-policy review.
 
 ## Verification
 
@@ -42,15 +44,19 @@ Sequential disposable Docker containers (`--memory=6g`), scratch under /tmp/open
 - `apt upgrade` / `apt full-upgrade` transaction on 26.04 recorded.
 - `apt remove omnitiler-native-effect` leaves core installed.
 
-## Decisions (tentative, pending user review)
+## Decisions (user 2026-10-13)
 
-- No packaging policy change. The qualifier in the upgrade finding below is a UX/documentation question for the user, not a code change.
+- Option (b): keep the exact effect pin; queue an installation-guide note and
+  effect package-description line explaining KWin upgrades wait until the
+  rebuilt effect is installed. Small doc/packaging change, not delivered here.
+- Future upgrade smoothness research: patch-release effect loading
+  (IID/version binding), OBS rebuild latency and pin options. No pin relaxation.
 - Test-condition note: clean base images ship with no KWin preinstalled, so the release-pocket install needed no downgrade flags; the preinstalled-updates downgrade path remains untested.
 
 ## Evidence
 
 - `scripts/debian-packaging.test.sh`: PASS=30 FAIL=0.
-- Source archive (one archive, all targets): `VERSION=0.1.0`, `SOURCE_REV=5c4bb16`, SHA-256 `218c1fb744d52dc8eaa05a06e1ee5d6f0fe2f31a257f460d9efc3acdf13f9caa`. Route: `scripts/build-source-archive.sh` + disposable-container `dpkg-buildpackage -us -uc` (`-Pnoeffect` for core-only), `--memory=6g`, `cargo -j4`.
+- Source archive (one archive, all targets): `VERSION=0.1.0`, `SOURCE_REV=5c4bb16`, SHA-256 `218c1fb744d52dc8eaa05a06e1ee5d6f0fe2f31a257f460d9efc3acdf13f9caa`. Route: `scripts/build-source-archive.sh` + disposable-container `dpkg-buildpackage -us -uc` (`-Pnoeffect` for core-only).
 - Base images: `ubuntu:26.04` and `ubuntu:26.10` digests reused from kwin-6.6-support, verified still valid.
 
 ### Solver installs (`apt install -y ./*.deb`, clean container per target, all exit 0)
@@ -82,3 +88,6 @@ When KWin 6.6.6 lands in -updates before a rebuilt effect exists, both `upgrade`
 - All solver acceptance passed. No packaging code changes were needed; no tentative fixes.
 - All containers removed; shared base images kept. Scratch debs/logs remain under disposable scratch (not in repo).
 - Remaining: user-owned live journeys on 6.6/6.7+ and OBS target provisioning/source handoff (backlog).
+- Review resolved: exact pin retained, upgrade note/description queued; solver
+  note has no remaining active work. [Queue](../../backlog.md),
+  [decision](../../decisions.md#kde-support-floor).

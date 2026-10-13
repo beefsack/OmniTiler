@@ -10,6 +10,13 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- Next implementation order (user review 2026-10-13): D23 best-effort restore
+  rework plus close cleanup (first verify COSMIC `3d55cba0`; return before code
+  on a material difference), D16 floating+fullscreen/maximized sends,
+  born-maximized core lift, underlay default, unsafe planner explicit-config
+  rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
+  and effect-description upgrade note. Native verification remains queued.
+
 - P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
   [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
   reliability (sleep/wake, output plug/unplug, resolution/scaling changes,
@@ -43,12 +50,13 @@ decisions of 2026-09-24 are under
     Revert-before-removal guidance prepared 2026-10-11; distro offline
     builds passed. Core Settings ownership approved and delivered 2026-10-11
     ([evidence](changes/archive/release-0.1-core-settings.md)); effect companion
-    is effect-only. Remaining: OBS tag-to-stable source/checksum handoff, accounts/provisioning,
-    license audit/CI gate, runtime/solver validation. OBS/AUR names are
+    is effect-only. Remaining: OBS handoff decision (0.1 blocker status OPEN),
+    accounts/provisioning, third-party notice delivery and runtime validation.
+    License audit/CI gate and Ubuntu apt solver acceptance are complete. OBS/AUR names are
     `omnitiler` and `omnitiler-native-effect` (user 2026-10-11). KWin 6.6 support
     delivered offline: both Debian packages built from one archive on Ubuntu
     26.04 release/updates and 26.10; effect exactly pins its KWin distro build.
-    Ubuntu live/solver acceptance remains; neon provisioning remains blocked.
+    Ubuntu live acceptance remains; neon provisioning remains blocked.
     [Compatibility delivery](changes/archive/kwin-6.6-support.md).
     [Ubuntu research](research/distribution-package-feasibility/ubuntu-native-effect.md).
     [Evidence](changes/archive/release-0.1-offline-packaging.md).
@@ -64,8 +72,12 @@ decisions of 2026-09-24 are under
   [evidence](changes/archive/non-native-tiler-host-interaction.md)).
 - P1 | Ubuntu 26.04/26.10 acceptance | KWin 6.6 floor selected by user
   2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
-  6.7.5 two-package builds passed. Remaining: full apt install/upgrade solver
-  checks, user-owned shared-workspace/Settings/native-visual journeys on 6.6
+  6.7.5 two-package builds and full apt install/upgrade/removal solver acceptance
+  passed ([solver evidence](changes/archive/ubuntu-apt-solver-acceptance.md)).
+  User 2026-10-13 selected (b): keep exact effect pin; queue installation-guide
+  note and effect-package description line explaining KWin upgrades wait for
+  the rebuilt effect. Remaining: that doc/packaging change,
+  user-owned shared-workspace/Settings/native-visual journeys on 6.6
   and per-output regression on 6.7+, OBS target provisioning/source handoff.
   Plasma 5 and KWin <= 6.5 remain unsupported.
   [Decision](decisions.md#kde-support-floor),
@@ -73,23 +85,38 @@ decisions of 2026-09-24 are under
 - P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
   GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
   [Research and dependency inventory](research/licensing.md). Remaining:
-  reload the development environment, run the tool-based audit and add a CI
-  license gate; complete native linked-library/closure checks per distro and
-  vendored attribution inventory. Audit gate delivered 2026-10-12: deny
-  licenses/bans/sources pass, CI gate added, per-distro closure and vendored
-  inventory recorded, no THIRD-PARTY file required; [evidence](changes/archive/licensing-audit-gate.md).
-- P1 | OBS release handoff redesign | Research delivered, user decision pending:
-  recommend GitHub Actions `osc commit` with a dedicated least-privilege OBS
-  bot account, keeping pinned `download_url` + `verify_file` and the
-  post-release `tag_push` webhook as defense in depth; narrow OBS tokens
-  (`runservice`, `rebuild`, `release`, `workflow`) cannot upload new sources
-  or checksums, and pure OBS-side tag fetching leaves checksum/revision
-  delivery unsolved. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
+  tool-generated third-party notices with dependency license texts in GitHub
+  Release binaries and Debian/RPM/Arch packages before 0.1 (user 2026-10-13,
+  reversing tentative no-notice choice). Candidate `cargo-about` requires a
+  `devenv.nix` addition at implementation time. Audit gate delivered
+  2026-10-12: keep `licenses`, `bans`, `sources`; per-distro closure and vendored
+  inventory recorded; [evidence](changes/archive/licensing-audit-gate.md).
+- OPEN | OBS release handoff redesign | User 2026-10-13 left OPEN; possibly
+  later than 0.1 and possibly not a blocker, neither decided. No route
+  selected. Prior recommendation remains research only. Candidate routes:
+  SCM bridge (git recipes plus exact checksum, no OBS password in CI), scoped
+  token triggering OBS-side asset fetch (including a version-free latest asset
+  without pinned checksum), or Route 3 manual scripted `osc commit` per
+  release. Candidate feasibility remains unresearched; narrow tokens cannot
+  upload sources/checksums. [Research](research/distribution-package-feasibility/obs-release-handoff.md).
 - P2 | [Push code down](principles.md#layering) | Recurring post-0.1 passes: move logic from host-coupled
   `kwin/src` TypeScript and `kwin/native-effect` C++ (including settings and
   shortcut reconciliation) into system-specific Rust, then into the agnostic
   shared core where appropriate. First pass after 0.1, aligned with or ahead
-  of deferred K2/K3.
+  of deferred K2/K3; born-maximized is the approved immediate core lift.
+  Link with KDE interaction performance/threading and
+  [Live sibling reflow while dragging](#open-work).
+- P2 | KDE interaction performance and threading | New post-0.1 research,
+  not a current priority (user 2026-10-13; no significant KDE jank). Windows
+  input/render threading drastically improved UX. Explore dynamic resizing
+  during drag and drag/move/resize work in multithreaded Rust, C++/TypeScript
+  thin shims, relying on Rust thread safety; include later platforms. First
+  research KWin effect/script threading constraints; interaction with KWin may
+  change. Linked with Push code down and Live sibling reflow while dragging.
+- P2 | Smooth KWin upgrades | Future research (user 2026-10-13): patch-release
+  effect loading compatibility (IID/version binding), OBS rebuild latency and
+  pin options. Aim for the smoothest possible user upgrades; exact pin remains
+  selected. [Decision](decisions.md#kde-support-floor).
 - P1 | 0.1 triage decisions - batch 1 verification (KDE/shared) | User
   2026-10-10 approved the 15 units above, exactly recommendation (a) in
   [triage](research/release-0.1-triage.md#user-decisions-2026-10-10).
@@ -134,12 +161,12 @@ decisions of 2026-09-24 are under
   | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
   | D12 | verification-only | Same-axis escape inserts into the ancestor axis (`crates/tiler-core/src/directional.rs:993-1002`, `crates/tiler-core/src/session/ops/move.rs:1080-1087`). |
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
-  | D16 | delivered offline; native verification pending | Ordinary intentional floats transfer slotless deferred retaining float and size, follow/stay and numbered/relative, no source/destination tile reflow; sticky, maximized-float, floating+fullscreen and automatic-fixed floats still refuse. Shared `deferred_send_eligible` D16 arm plus KDE adapter/real-observer gates ([record](changes/d16-floating-transfer.md)). Native WS1 -> WS2 -> WS1 roundtrip pending. Windows adapter goes to item 22. [Decision](decisions.md#workspaces). |
+  | D16 | ordinary floats delivered offline; combo sends need code | Float retention and follow/stay numbered/relative slotless sends exist; same-output exact frame/no geometry write confirmed 2026-10-13. Floating+fullscreen and floating+maximized must carry exactly as-is and later return to floating frame; current refusals are gaps, expected on deferred path. Sticky keeps refusing; automatic-fixed refusal unchanged. Native roundtrip pending; Windows item 22 ([record](changes/d16-floating-transfer.md); [decision](decisions.md#workspaces)). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
-  | D23 | delivered offline; native journeys pending | Minimize releases allocation, siblings reflow, MRU focus, stored old slot; restore to stored slot with no OmniTiler focus write (host handles restore focus); sole minimize retains workspace, focus none, stored slot; no setting. Shared-core MinimizedSlot plus engine retire fix and KDE omission/null-focus wiring delivered offline; regressions pass. Follow-up: sole-restore focus-none projects without mismatch diagnostic (genuine mismatches still report); close-all slot-only retention assessed memory-only and deferred (one slot per closed id per session lifetime, one retained session per emptied-with-slots domain; no wrong restore). Native journeys pending. Windows adapter follows in item 22. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
+  | D23 | best-effort restore + close cleanup need code | Minimize/reflow/MRU, no-focus-write restore and sole null focus delivered offline. Current exact-tree-equality validity and closed-slot retention are gaps. User 2026-10-13 selects best-effort neighbor rejoin and close-slot cleanup via small protocol distinction. Verify COSMIC `3d55cba0` first, return before code on material difference. Session-only; regressions and native journeys pending, Windows item 22. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
-  | D27 | BLOCKED pending user decision (trace complete 2026-10-12, no code) | KWin at default Low SWITCHES desktop + focuses for valid-token hidden-desktop requests, mark-only only for missing/stale tokens; urgency-only default would override KWin and conflict with D01. Options/recommendation (accept native as host exception) and full trace in [research](research/d27-kwin-activation-trace.md). Otherwise needs code: active-window observation/drag-restore is not activation-request handling (`kwin/src/plan-adapter-entry.ts:2274-2296,8802`); request/urgency signal handling absent. [Decision](decisions.md#activation-requests). |
+  | D27 | KDE verification-only; no longer BLOCKED | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows Mark urgent only/guard unchanged; setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
   | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
   - D16 verification queue: shared-core float transfer eligibility/retention
@@ -148,22 +175,32 @@ decisions of 2026-09-24 are under
     retained float/size, destination tiles unchanged; no setting. Native
     R-WS-05 roundtrip (WS1 -> WS2 -> WS1) verification pending.
     Shared delivery serves Windows; Windows adapter/native acceptance follows in item 22.
-  - D16 follow-up gaps (tentative scope questions, no implementation):
-    (i) a floating window that is also fullscreen still refuses explicit send,
-    which appears to conflict with D28 (explicit fullscreen sends are honoured);
-    (ii) a maximized float still refuses send under D16. Either could
-    mechanically ride the same slotless deferred path (it carries flags
-    verbatim), but the arrival state (fullscreen, floating, maximized, or a
-    combination) needs a product decision first; stop and return to the user
-    before code.
+  - D16 approved follow-up (user 2026-10-13): explicit floating+fullscreen and
+    floating+maximized sends carry exactly as-is, still floating and overlaid
+    on arrival; leaving the overlay returns to the floating frame. Sticky
+    keeps refusing. Needs code, expected on slotless deferred path. Same-output
+    exact frame/no geometry write is confirmed. Include combo/exit regressions
+    and native follow/stay numbered/relative checks.
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
-  - D23 delivered offline, pending native: shared-core stored restore slots with minimize
-    release/reflow/MRU plus KDE observation/restore wiring including
-    sole-minimize null focus delivered offline; regressions pass. Acceptance: old-slot restore with no OmniTiler
-    focus write (host handles restore focus); sole minimize retains workspace,
-    focus none, stored slot. No setting; Windows adapter follows in item 22.
+  - D23 rework queue (user 2026-10-13): first verify COSMIC minimized-tiling
+    restore at `3d55cba0`; return to user before coding on material difference.
+    Replace exact equality with best-effort rejoin beside former neighbor,
+    same side/group/index, comparable old share. Fresh ordinary admission only
+    if no former neighbors remain, domain gone or sent elsewhere. Resizes,
+    new windows, other-sibling closes and swaps do not invalidate alone.
+    Session-only, no focus write; preserve minimize/reflow/MRU/sole-none.
+    Clear closed minimized windows' slots via small close/minimize protocol
+    distinction, folded in. Regressions: focus change, resize, new window,
+    sibling close, swap, other minimize/restore, gaps/resolution, restart and
+    close cleanup. Native journeys pending; Windows adapter in item 22.
+  - D27 KDE verification queue: native valid-token switch convergence,
+    missing/stale-token mark-only without interference; FromTool/allowed-X11
+    native behavior. Must-pass real-game active play and idle/paused check,
+    tiler-off/on comparison; rely on KWin freshness, no tiler guard. Reopen
+    only on actual active-play switch-away. Included in reference-comparison
+    check 1, counted once; native evidence TBD.
   - D25/D26 verification queue: native dogfood/live checks will assess orderly
     owner restart with apps alive and end-session restore. D25 keeps host set,
     observes membership without moves, restores only provable focus and
@@ -189,8 +226,9 @@ decisions of 2026-09-24 are under
   D09/D10 with two options each; functional names/options/WM tooltips are in
   [Move decisions](decisions.md#move-layout-and-output-commands).
   Approved D27 `Activation request`: `Mark urgent only` (default; tooltip
-  Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad), gaming
-  guard in both modes. Functional names/options; WM names only in tooltips.
+  Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad), Windows
+  gaming guard in both modes. KDE applicability is reviewed when the setting
+  is designed; no decision now. Functional names/options; WM names only in tooltips.
   Qualifies via COSMIC Tier 1 plus xmonad Tier 2 under the
   [tier rule](decisions.md#reference-tiers); [activation decision](decisions.md#activation-requests).
   Shared core policy settings serve Windows; Windows schema/UI/live wiring
@@ -309,28 +347,35 @@ decisions of 2026-09-24 are under
   Remaining: user physical single-output check, multi-output/mixed-DPI
   (after multi-output foundation) and gaming-cost legs. [Design](research/windows-port/owner-threading.md),
   [evidence](changes/archive/windows-resize-hook-latency.md).
-- P1 | Rust `unsafe` policy | User request 2026-10-12: avoid `unsafe`
-  entirely where possible, especially with multithreading. Audit at `2af85a7`:
+- P1 | Rust `unsafe` policy | User rule 2026-10-13: only tiny ABI/FFI
+  boundaries in one dedicated FFI module per crate; every other module and
+  crate uses `#![forbid(unsafe_code)]`. Audit at `2af85a7`:
   `tiler-core` and `tiler-protocol` have none; stage 1 thread handoff
   (`input_handoff.rs`) has none and uses no `unsafe impl Send/Sync`,
   `static mut`, `UnsafeCell` or cross-thread raw pointers; remaining
   `tiler-windows` and `tiler-kwin-effect-ffi` uses are Win32/C FFI calls and
   hook/window procedures, which Rust cannot express without `unsafe`.
-  Tentative guardrail (pending user review): `#![forbid(unsafe_code)]` on
-  `tiler-core`, `tiler-protocol` and unsafe-free Windows modules; new
-  threading code shares state only through safe std primitives; FFI `unsafe`
-   stays at call sites. Guardrail applied 2026-10-12 (tentative, pending
-  user review): `#![forbid(unsafe_code)]` on `tiler-core`, `tiler-protocol`
+  Guardrail applied 2026-10-12: `#![forbid(unsafe_code)]` on `tiler-core`, `tiler-protocol`
   and unsafe-free Windows modules (`25de29a`; workspace build/test, clippy
   `-D warnings` and fmt pass). `crates/omnitiler` left without the guardrail:
   it contains `unsafe` env set/remove calls in `planner_service.rs` tests.
-  Consolidating existing Windows FFI behind a small safe
-  wrapper layer (or another crate choice) is a user decision.
+  Queue Linux planner test env-var rework to explicit config, then crate-wide
+  forbid. Windows FFI consolidation into dedicated modules is required after
+  its current release-gate work (timing tentative), in the Windows queue.
+  KWin effect FFI stays a minimal boundary module.
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered
-  offline, pending live checks + review: R-MAX-06 born-maximized setting
-  (default tile), active border radius default 6, underlay research note
-  ([options](changes/kde-dogfood-underlay-options.md)); Settings UI,
-  born-maximized launch both values, radius appearance pending.
+  offline: R-MAX-06 born-maximized setting (default tile), active border
+  radius 6. User 2026-10-13: lift born-maximized policy into shared core now,
+  rewire KDE with identical behavior/labels; `bornMaximized` key accepted.
+  Windows adapter-copy replacement follows shared delivery (handoff item 23).
+  Underlay candidate C `#662a82da` selected for now on both platforms; needs
+  KDE kcfg default, Windows constant (item 24). Settings UI, both-values
+  launch, radius appearance and black/white/grey underlay live checks pending;
+  underlay visual check before 0.1 ([options](changes/archive/kde-dogfood-underlay-options.md)).
+- P1 | Windows unsafe FFI consolidation | Required under user rule 2026-10-13:
+  one tiny dedicated FFI module per crate, every other module/crate forbids
+  unsafe. Queue after current Windows release-gate work; timing tentative.
+  Preserve safe input/render handoffs. [Rule](decisions.md#rust-unsafe-guardrail).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in
@@ -814,6 +859,10 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
+  | 22 | D16 combo sends and D23 best-effort restore/close cleanup | Wire after revised shared-core delivery; Windows D27 urgent-only/guard remains unchanged, KDE native exception is not Windows evidence. |
+  | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
+  | 24 | Underlay default `#662a82da` | Change Windows constant to candidate C, 40% accent blue, for now; black/white/grey visual check. |
+  | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
 
   Q2 R-SPC-04 occupies handoff item 13 below; Q3 R-RST-01 KDE delivery is
   complete offline and updates existing item 8. Q4 R-WS-12 fills item 14.
@@ -2791,7 +2840,7 @@ decisions of 2026-09-24 are under
     ([record](changes/archive/kde-workspace-tiling-shortcut.md)); user-owned
     physical/restart/preset checks remain below.
 
-  - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-12).
+  - Item 22: 0.1 triage Windows follow-ups (updated User 2026-10-13).
     D01, D03, D09, D10, D12, D13, D16, D22, D23, D25, D26, D27, D28 are approved;
     no triage units remain tentative.
     Shared core delivery serves Windows; Windows adapter/native work follows
@@ -2802,7 +2851,7 @@ decisions of 2026-09-24 are under
     D12/D13 use existing shared defaults, with native verification pending.
     D22 survivor-share preservation is verification-only under shared removal,
     no setting; Windows native float-out reflow remains pending.
-    Approved D16 shared delivery is complete (ordinary intentional floats
+    Approved D16 ordinary shared delivery is complete (ordinary intentional floats
     transfer slotless deferred with float class and size preserved verbatim,
     destination tiles untouched, sticky still refused; [record](changes/d16-floating-transfer.md)).
     Windows adapter/native acceptance remains: admit ordinary intentional floats
@@ -2810,10 +2859,17 @@ decisions of 2026-09-24 are under
     (current `send-refused-floating` gate), keeping float+size retention with no
     destination reflow, existing follow/stay fences for numbered/relative sends,
     and restart-store memory following by window id; no setting.
-    Untested native WS1 -> WS2 -> WS1 roundtrip is verified first.
+    Same-output exact frame/no geometry write confirmed User 2026-10-13.
+    Combo sends need shared-core delivery, then Windows wiring:
+    floating+fullscreen and floating+maximized carry exactly as-is; retain
+    both floating and overlay flags on arrival, later exit returns to floating
+    frame. Sticky keeps refusing. Untested native WS1 -> WS2 -> WS1 roundtrip
+    is verified first; include combo/exit follow/stay numbered/relative legs.
     Approved D23 follows later after shared-core delivery: replace retained
     Windows minimize allocation (divergence, not an approved exception) with
-    release/reflow/MRU and stored old slot. Current retained-allocation sites:
+    release/reflow/MRU and session-only best-effort stored-slot rejoin. First
+    shared implementation step verifies COSMIC `3d55cba0`; material difference
+    returns to user before code. Current retained-allocation sites:
     `crates/tiler-windows/src/tiling_sys.rs` `observe_window` (iconic returns
     `ObserveFailure::Known(.., SkipReason::Minimized)` with no frame),
     `TileLoop::observe` (that arm pushes a frameless `RetainedRow { rect: None,
@@ -2826,17 +2882,21 @@ decisions of 2026-09-24 are under
     Engine observation on minimize so `Session::converge_observation` releases
     its leaf via `remove_leaf_from_tree`, reflows survivors, resolves focus via
     retained/MRU-or-none, and stores the `MinimizedSlot` (homing domain + leaf
-    id + pre-minimize tree); (2) on native restore, re-carry it purely tiled so
-    convergence validates the slot (domain exists, homing matches, leaf unused,
-    `remove_leaf(stored) == current`) and reinstates the old tree, else falls
-    through to fresh admission with the slot consumed; (3) never write focus on
+    id + restore context); (2) on native restore, re-carry it purely tiled for
+    best-effort rejoin beside a former neighbor, same side/group/index and
+    comparable old share. Current shared `remove_leaf(stored) == current`
+    validity is the gap to replace, not the Windows target. Resize/new-window/
+    other-sibling-close/swap do not invalidate alone. Fresh admission only if
+    no former neighbors remain, domain gone or sent elsewhere; (3) never write focus on
     restore - the core keeps pre-restore MRU focus (the converge focus arm skips
     `observed_focus` when it names a just-restored window), leaving host restore
     focus native; (4) sole-minimize keeps the workspace via
     `Engine::committed_session_is_empty` honoring `has_live_minimized_slot`,
     with focus none; (5) native reveal stays in
     `crates/tiler-windows/src/model.rs` the `show.minimized` lane
-    (nonactivating restore), unchanged. Shared contract: `MinimizedSlot` docs
+    (nonactivating restore), unchanged; (6) report minimized-window close via
+    the small close/minimize protocol distinction and clear its stored slot,
+    folded into D23 rework. Shared contract: `MinimizedSlot` docs
     plus `minimized_slot`/`minimized_count`/`has_live_minimized_slot` accessors
     (`crates/tiler-core/src/session/world.rs`), slot-aware
     `committed_session_is_empty` and the disjoint-reseed guard treating a stored
@@ -2845,11 +2905,14 @@ decisions of 2026-09-24 are under
     (`crates/tiler-core/tests/minimize_restore.rs`); `cfg(windows)` owner wiring
     (`observe`/`assemble_domain_rows`/`domain_rows` carry) needs Windows CI plus
     user-owned native minimize/restore journeys (tile, minimize, sibling reflow,
-    restore to old slot, sole-minimize empty workspace). No setting. Approved D27
+    best-effort restore, sole-minimize empty workspace, close-slot cleanup).
+    Regressions cover focus change, resize, new window, sibling close, swap,
+    other minimize/restore, gaps/resolution and restart. No setting. Approved D27
     needs supported activation-request/urgency observation, default Mark urgent
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.
-    KDE's KWin trace-first condition is host-specific, not Windows evidence.
+    KDE's native-activation exception and no-guard decision are host-specific,
+    not Windows evidence; Windows default/guard unchanged.
     Approved D25 (a) keeps host workspace set, re-observes membership without
     moves, restores focus only where provable, rebuilds layout via re-adoption
     and keeps intentional floats via existing restart store; no setting.
@@ -2866,6 +2929,15 @@ decisions of 2026-09-24 are under
     approved D09/D10/D27 two-option settings, including D27's default Mark urgent
     only / Switch and focus. See [current settings scope](decisions.md#settings-tray-and-first-run).
     No Windows behavior is claimed inspected or delivered by this docs change.
+
+  - Item 23: born-maximized shared policy (User 2026-10-13). After the shared
+    core lift, replace the Windows adapter copy with shared policy, preserving
+    both values, labels, schema-v1 `core.born_maximized`, subsequent-admission
+    adoption, fullscreen/fixed-size gates and retile independence. KDE rewiring
+    keeps identical behavior/labels and accepted `bornMaximized` key.
+  - Item 24: underlay default (User 2026-10-13). Change Windows constant to
+    `#662a82da` (40% accent blue), for now, matching KDE kcfg default. Preserve
+    explicit colors; live visual check on black, white and grey wallpapers.
 
   ### Source discrepancies to preserve and report
 
@@ -3007,10 +3079,10 @@ decisions of 2026-09-24 are under
   Tumbleweed/Fedora 44 RPM, Arch split and Ubuntu 26.04 Debian containers;
   Fedora 43 passed an earlier source-contract probe. External Nix validation
   remains separate. Settings ownership is delivered: both KCMs remain in core
-  when the effect is absent. Packaging item remains P1: resolve automated
-  OBS stable-source/checksum update before enabling token,
-  confirm first-party licensing/vendor inventory, provision accounts/targets
-  and prove real dependency-solver/live-session behavior. Neon target
+  when the effect is absent. Packaging item remains P1: resolve
+  OBS stable-source/checksum decision (0.1 blocker status OPEN) before enabling token,
+  deliver third-party notices, provision accounts/targets
+  and prove remaining solver/live-session behavior (Ubuntu apt solver passed). Neon target
   provisioning remains open.
   [Preparation](changes/archive/release-0.1-offline-packaging.md)
 - P2 | Simplify drag preview + cross-output drop code | Post-live cleanup only:
@@ -3019,7 +3091,10 @@ decisions of 2026-09-24 are under
   [change](changes/archive/cross-output-drag-preview.md)
 - P2 | Live sibling reflow while dragging | Deferred, not light (est. several
   hundred to ~1,000 lines, write-fighting risk); research done.
-  [research](research/drag-and-drop-reorganisation.md)
+  [research](research/drag-and-drop-reorganisation.md). Link with post-0.1
+  KDE interaction performance/threading and Push code down: research KWin
+  effect/script threading constraints before considering multithreaded Rust
+  interaction work with thin host shims (User 2026-10-13).
 - P2 | Robust difference reconciliation | Scope decided (user, 2026-09-28):
   (1) event/next-command detection only, no polling (revisit after testing);
   (2) learn size limits only from settled repeatable evidence; (3) replan
@@ -3142,7 +3217,9 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   Known-issue-allowed still requires a listed issue and no crash/silent tiling
   stop. Four approved new must-pass checks below give 57 total = 43/12/2;
   D28's native fullscreen-send/game journey stays a must-pass sub-leg of check 1,
-  not a separately counted check. Multi-output must-pass checks require a
+  not a separately counted check. D27's real-game active/idle activation check
+  is also a must-pass sub-leg of reference-comparison check 1 (User 2026-10-13),
+  counted once. Multi-output must-pass checks require a
   two-output setup (VM or hardware) and must pass before 0.1 can ship.
   Batch-1 extras remain outside this inventory; native/live evidence is pending.
 
@@ -3152,6 +3229,17 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   | N2 external config | must-pass | Change host configuration outside Settings, then reconfigure. | Validated reconcile without unintended writes; Fix/Revert ownership respected; no crash or silent stop. |
   | N3 sleep + gaming | must-pass | Sleep/wake with fullscreen game and tiled session. | Game unimpeded; tiling recovers; no stuck holds. |
   | N4 scaling + overlays | must-pass | Change scale with maximized/fullscreen/fixed-float windows. | Overlays retained; no fullscreen geometry writes; quiet settlement. |
+
+- D27 KDE real-game activation (must-pass, check 1 sub-leg): compare tiler-off/on
+  unsolicited hidden-desktop requests during active play and idle/paused play.
+  Native input-freshness gating is expected to mark only during active play;
+  idle/pager/taskbar behavior matches without-tiler native behavior. No
+  OmniTiler guard/interception/reversion/suppression. Verify valid-token switch
+  convergence and missing/stale-token attention without interference. Reopen
+  only on real active-play switch-away; native result TBD.
+- Underlay candidate C visual check before 0.1: after default implementation,
+  check `#662a82da` over black, white and grey wallpapers on KDE; Windows
+  matching visual check is queued with handoff item 24. No visual evidence yet.
 
 - 0.1 triage batch 1 (User 2026-10-10; native KDE checks outside the original
   Proposal B inventory). These are

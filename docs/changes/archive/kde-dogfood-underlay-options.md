@@ -1,6 +1,7 @@
 # Group underlay default colour - options (research only)
 
-Status: research note. No default changed. Decision pending by user.
+Status: options research complete, decision resolved 2026-10-13; archived.
+Default implementation and native visual acceptance remain queued separately.
 No live visual checks run.
 
 ## 1. Current state (both platforms)
@@ -51,19 +52,22 @@ D. #802a82da - 50% accent blue. Strongest: over grey-128 (85,129,173),
   on Win+Shift chord / focused move, so a stronger fill cannot appear
   uninvited.
 
-## 5. Recommendation
+## 5. Recommendation and selection
 
-Candidate C (#662a82da) if a change is ever approved: hue breaks the
+Candidate C (#662a82da): hue breaks the
 grey-on-grey degeneracy no grey can fix, 40% alpha is ~1.6x the shipped
 luminance delta on black/white plus a blue-chroma delta on grey, it reuses
 the product accent hue, and the identical hex applies to the KDE kcfg
 default and the Windows CLI/constant.
 
-## 6. Explicit non-change statement
+## 6. User decision 2026-10-13
 
-No default was changed in this unit. KDE kcfg, Windows
-`DEFAULT_COLOR_ARGB`, extension sentinel, and enabled flag are untouched.
-Any adoption of A-D is a user decision after live visual checks.
+- Candidate C `#662a82da` (40% accent blue) selected on KDE and Windows, for now.
+- Needs code: KDE kcfg default and Windows constant via handoff item 24.
+  Preserve explicit colors. Live visual check over black/white/grey wallpapers
+  before 0.1; selection is not native evidence.
+- Research decision is resolved; implementation/checks are in
+  [backlog](../../backlog.md), [decision](../../decisions.md#visuals-border-underlay-and-grouping).
 
 ## 7. Pending live visual checks (not run)
 

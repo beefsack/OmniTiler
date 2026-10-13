@@ -537,15 +537,17 @@ NOTICE or ATTRIBUTION file exists in the repo root or docs.
 | npm package code in `main.js` | None: direct devDeps are `esbuild 0.28.2` (bundler), `typescript 7.0.2` (compiler), `@types/node 26.2.0` (types only), all `dev: true` in `kwin/package-lock.json`; the artifact-smoke test asserts no `__esm`/`__commonJS` helpers and no `import`/`export`/`node:` markers in the bundle | No |
 | Fonts / icons / assets in the bundle | None bundled: the only shipped icon is first-party `assets/icons/omnitiler.svg`, installed to hicolor by all three recipes | No |
 | Build-time `vendor/` tree (cargo vendor output in the release tarball) | Created by the packaging recipes at build time, not checked in; upstream crate sources travel with their own license files, all inside the `deny.toml` allow set (section 2.3; `cargo deny check licenses` passes) | Covered by the Debian `copyright` vendor comment (line 8) plus each crate's own license files; no separate notice file |
-| Package payload notices | All three recipes install the first-party texts (`LICENSE`, `LICENSES/GPL-2.0-or-later.txt`): RPM `%license`, Arch `/usr/share/licenses`, Debian `copyright` | No third-party notice owed beyond the rows above |
+| Package payload notices | All three recipes install the first-party texts (`LICENSE`, `LICENSES/GPL-2.0-or-later.txt`): RPM `%license`, Arch `/usr/share/licenses`, Debian `copyright` | First-party delivery does not cover compiled dependency license texts; generated third-party notices required before 0.1 (user 2026-10-13) |
 
 Required attributions: first-party MIT/GPL texts via the payload row above;
 Debian `copyright` lines 4-8 record the MIT default, the GPL effect files
 and the vendor-tree comment.
 
-Tentative decision (pending user review): do NOT add a THIRD-PARTY notice
-file. No checked-in third-party code ships in any distributed artifact, so
-no vendored attribution is owed; permissive dependency sources travel with
-their own license texts in the build-time vendor tree; generated per-crate
-binary attribution (`cargo-about`) stays an optional follow-up (section 9),
-not a gate.
+User decision 2026-10-13 supersedes the tentative no-notice conclusion:
+MIT/Apache crates compiled into distributed binaries require license texts;
+sources/license files in a build-time vendor tree do not replace binary
+artifact notice delivery. Before 0.1, add tool-generated third-party notices
+to GitHub Release binaries and Debian/RPM/Arch packages. Candidate
+`cargo-about` requires a `devenv.nix` addition at implementation time.
+Keep the CI gate's `licenses`, `bans` and `sources` checks.
+[Decision](../decisions.md#licensing), [queue](../backlog.md).
