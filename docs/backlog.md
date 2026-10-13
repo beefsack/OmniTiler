@@ -15,9 +15,20 @@ decisions of 2026-09-24 are under
   D16 ordinary/combo floating sends delivered offline ([evidence](changes/archive/d16-floating-transfer.md));
   Born-maximized core policy and KDE conformance delivered offline
   ([evidence](changes/archive/born-maximized-shared-policy.md));
-  next code: underlay default, unsafe planner explicit-config
+  KDE underlay default delivered offline ([evidence](changes/archive/kde-dogfood-underlay-options.md#8-kde-default-delivery-2026-10-13));
+  next code: unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
-  and effect-description upgrade note. Native verification remains queued.
+  and effect-description upgrade note, then KWin-to-Rust migration research
+  (below). Native verification remains queued.
+- P2 | KWin-to-Rust migration research | User 2026-10-13: read-only research
+  after the current code queue, informing the post-0.1 Push code down pass; no
+  code and no 0.1 schedule change. Map logic in `kwin/src` TypeScript and
+  `kwin/native-effect` C++ that could move into Rust (system-specific or shared
+  core), the available script/effect-to-Rust routes and their limits (missing
+  or failed effect must leave tiling working; synchronous pre-dispatch
+  decisions such as born-maximized clear/keep). Produce options plus a
+  recommendation for the user. Linked with Push code down and KDE interaction
+  performance/threading.
 
 - P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
   [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
@@ -371,8 +382,10 @@ decisions of 2026-09-24 are under
   and defer rewiring to post-0.1 Push code down; behavior, labels and accepted
   `bornMaximized` key unchanged. Windows adapter-copy replacement remains
   handoff item 23; native Windows compilation of the lift remains pending.
-  Underlay candidate C `#662a82da` selected for now on both platforms; needs
-  KDE kcfg default, Windows constant (item 24). Settings UI, both-values
+  Underlay candidate C `#662a82da` selected for now on both platforms; KDE
+  kcfg/KCM default delivered offline 2026-10-13 (native build, CTest 32/32,
+  KWin static-contract tests 15/15). Windows default remains item 24.
+  Settings UI, both-values
   launch, radius appearance and black/white/grey underlay live checks pending;
   underlay visual check before 0.1 ([options](changes/archive/kde-dogfood-underlay-options.md)).
 - P1 | Windows unsafe FFI consolidation | Required under user rule 2026-10-13:
@@ -864,7 +877,7 @@ decisions of 2026-09-24 are under
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
   | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Shared D16 ordinary/combo MoveDeferred and D23 rejoin/closed_windows contracts delivered offline; Windows adapter pending. D16: open only intentional-float send gate, propagate floating mover overlay flags, membership-only deferred actuation, retain float frame/intent across destination exit. Windows D27 urgent-only/guard unchanged. [D16 evidence](changes/archive/d16-floating-transfer.md), [D23 evidence](changes/archive/d23-rework.md). |
   | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
-  | 24 | Underlay default `#662a82da` | Change Windows constant to candidate C, 40% accent blue, for now; black/white/grey visual check. |
+  | 24 | Underlay default `#662a82da` | Pending: change Windows render/settings defaults and CLI/proof mirrors to candidate C, 40% accent blue, for now; preserve saved colors; black/white/grey visual check at 100%/150%. KDE default delivered offline. |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
 
   Q2 R-SPC-04 occupies handoff item 13 below; Q3 R-RST-01 KDE delivery is
@@ -2982,9 +2995,18 @@ decisions of 2026-09-24 are under
     compile/tests. No Windows rewire is included in the core delivery. KDE
     keeps its conformance-pinned copy until post-0.1 Push code down
     ([record](changes/archive/born-maximized-shared-policy.md)).
-  - Item 24: underlay default (User 2026-10-13). Change Windows constant to
-    `#662a82da` (40% accent blue), for now, matching KDE kcfg default. Preserve
-    explicit colors; live visual check on black, white and grey wallpapers.
+  - Item 24: underlay default (User 2026-10-13), pending Windows implementation.
+    Match the delivered KDE kcfg default `#662a82da` (ARGB: alpha 0x66 = 40%,
+    RGB #2a82da), for now. Set `DEFAULT_COLOR_ARGB` in
+    `crates/tiler-windows/src/group_underlay.rs` to `(0x66, 0x2a, 0x82, 0xda)`
+    and `DEFAULT_UNDERLAY_COLOR_HEX` in `crates/tiler-windows/src/settings.rs`
+    to `#662a82da`. Align CLI help in `crates/tiler-windows/src/main.rs`,
+    default/parity and raster assertions in the underlay/settings modules and
+    `crates/tiler-windows/tests/tiling.rs`, and the default-color trace gate in
+    `scripts/windows-group-underlay.ps1`. Preserve explicit saved/CLI colors;
+    no migration or alpha/blend changes. Acceptance: native Windows build/tests,
+    missing-value/default and explicit-value round trips; user-owned live visual
+    check on black, white and grey wallpapers at 100%/150% before 0.1.
 
   ### Source discrepancies to preserve and report
 

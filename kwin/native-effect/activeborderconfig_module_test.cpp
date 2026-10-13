@@ -81,7 +81,7 @@ QColor defaultDragPreviewColor()
 
 QColor defaultGroupUnderlayColor()
 {
-    return QColor(0x80, 0x80, 0x80, 64);
+    return QColor(0x2a, 0x82, 0xda, 0x66);
 }
 
 void dbusTargetIsExact()

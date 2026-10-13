@@ -355,7 +355,7 @@ describe("native KCM static contract", () => {
     });
 
     it("exposes translucent group underlay color and extension through KConfigXT", () => {
-        assert.match(kcfg, /<entry name="GroupUnderlayColor" type="Color">[\s\S]*?<default>#40808080<\/default>/);
+        assert.match(kcfg, /<entry name="GroupUnderlayColor" type="Color">[\s\S]*?<default>#662a82da<\/default>/);
         assert.match(kcfg, /<entry name="GroupUnderlayExtension" type="Double">[\s\S]*?<default>-1<\/default>/);
         assert.match(kcfg, /<entry name="BorderColor" type="Color">/);
         assert.match(kcfg, /<entry name="DragPreviewColor" type="Color">/);

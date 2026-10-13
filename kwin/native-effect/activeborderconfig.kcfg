@@ -31,7 +31,7 @@
         </entry>
         <entry name="GroupUnderlayColor" type="Color">
             <label>Group underlay color</label>
-            <default>#40808080</default>
+            <default>#662a82da</default>
         </entry>
         <entry name="GroupUnderlayExtension" type="Double">
             <label>Group underlay extension</label>

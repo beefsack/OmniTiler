@@ -1,10 +1,11 @@
 # Group underlay default colour - options (research only)
 
 Status: options research complete, decision resolved 2026-10-13; archived.
-Default implementation and native visual acceptance remain queued separately.
+KDE default delivered offline 2026-10-13 (section 8); Windows implementation
+and native visual acceptance remain queued separately.
 No live visual checks run.
 
-## 1. Current state (both platforms)
+## 1. Research baseline (both platforms, before default delivery)
 
 - Shipped default: #40808080 (ARGB: alpha 0x40 = 64/255 = 25.1%, grey 0x80 = 128).
   - KDE: `GroupUnderlayColor` default `#40808080` in kcfg; 1x1 QImage fill onto
@@ -63,7 +64,8 @@ default and the Windows CLI/constant.
 ## 6. User decision 2026-10-13
 
 - Candidate C `#662a82da` (40% accent blue) selected on KDE and Windows, for now.
-- Needs code: KDE kcfg default and Windows constant via handoff item 24.
+- KDE kcfg default delivered offline (section 8); Windows constant remains
+  handoff item 24.
   Preserve explicit colors. Live visual check over black/white/grey wallpapers
   before 0.1; selection is not native evidence.
 - Research decision is resolved; implementation/checks are in
@@ -75,3 +77,24 @@ default and the Windows CLI/constant.
   100%/150% scale; confirm extension ring reads at -1.
 - Windows: same three backgrounds via tile-proof/loop trace; confirm
   premultiplied present matches KDE composited swatch.
+
+## 8. KDE default delivery 2026-10-13
+
+- Changed only `GroupUnderlayColor`'s default in
+  `kwin/native-effect/activeborderconfig.kcfg` to `#662a82da`, plus its native
+  QColor expectation and KWin static-contract assertion. KConfigXT supplies
+  the effect and both Settings KCMs; no separate Rust/TypeScript/Nix default
+  needs changing. Explicit saved colors remain intact; no migration.
+- Format confirmed: generated KConfigXT uses `QColor("#662a82da")`; native
+  missing-key and Defaults/readback checks expect
+  `QColor(0x2a, 0x82, 0xda, 0x66)`, confirming alpha-first ARGB and exactly
+  40% alpha.
+- Accepted offline evidence: host-matched native effect/KCM build; CTest
+  32/32 (including Rust drag-oracle 20/20 and group-highlight 19/19 tests);
+  KWin static-contract suite 15/15; TypeScript typecheck and bundle pass;
+  changed C++ file passes clang-format. No live visual evidence.
+- Dev pickup: `just build-native-effect`, fully quit and reopen Settings for
+  the new KCM default; logout/login loads the rebuilt effect binary. Saved
+  overrides still win. Appearance on black/white/grey at 100%/150% remains
+  user-owned before 0.1. Windows code is unchanged; item 24 specifies its
+  default constants, mirrors and acceptance checks.
