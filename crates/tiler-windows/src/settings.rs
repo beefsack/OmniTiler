@@ -686,6 +686,15 @@ pub enum BindingFamily {
         prev: bool,
         follow: bool,
     },
+    /// Item 5 explicit directional output send: transfer to the adjacent
+    /// output's current workspace in `direction`, selected by shared
+    /// FULL-rectangle centre/span/left-top ranking. Follow rows carry
+    /// Win+Ctrl+Alt defaults; stay rows are bindable unbound. `follow` pins
+    /// the explicit intent.
+    WorkspaceOutput {
+        direction: &'static str,
+        follow: bool,
+    },
     WorkspaceHistory {
         kind: WorkspaceHistoryKind,
     },
@@ -1017,6 +1026,13 @@ const RESIZE_ROWS: [(&str, &str, &str, &str, &[&str]); 8] = [
 pub const RESIZE_CONFLICT: &str =
     "Windows shortcut ownership unverified in repository; containment unproven live";
 
+/// Honest Windows conflict note for item 5 explicit output-send chords
+/// (Win+Ctrl+Alt, decision 5.3): Windows ownership is unknown and containment
+/// is unproven live. Both presets keep the follow defaults; no Compatible
+/// disable is selected and no stock holder is claimed.
+pub const OUTPUT_SEND_CONFLICT: &str =
+    "Windows shortcut ownership unknown; containment unproven live";
+
 /// Build the full binding catalog: directional focus/move (one row per
 /// physical chord: letters plus separate arrow rows), resize (8 logical
 /// rows, each with its letter plus arrow defaults, intercepted through the
@@ -1164,6 +1180,26 @@ pub fn binding_catalog() -> Vec<BindingDef> {
             id,
             text,
             family: BindingFamily::WorkspaceSendRelative { prev, follow },
+            defaults: chord,
+            implemented: true,
+            conflict: if chord.is_empty() {
+                None
+            } else {
+                chord_conflict(chord[0])
+            },
+        });
+    }
+    // Item 5 explicit output sends: eight follow rows (letters plus separate
+    // arrow rows, Win+Ctrl+Alt defaults kept under both presets) plus four
+    // canonical stay rows (one per direction, bindable unbound). Windows
+    // Ctrl+Alt ownership is UNKNOWN (decision 5.3): the honest
+    // ownership-unknown note, no new Compatible disables, no invented stock
+    // holder.
+    for (id, text, direction, follow, chord) in OUTPUT_SEND_ROWS {
+        rows.push(BindingDef {
+            id,
+            text,
+            family: BindingFamily::WorkspaceOutput { direction, follow },
             defaults: chord,
             implemented: true,
             conflict: if chord.is_empty() {
@@ -1388,6 +1424,101 @@ const RELATIVE_SEND_ROWS: [(&str, &str, bool, bool, &[&str]); 16] = [
         &[],
     ),
 ];
+
+/// Item 5 explicit output-send catalog rows: eight follow rows (four letters
+/// plus four separate arrow rows, Win+Ctrl+Alt defaults) and four canonical
+/// stay rows (one per direction, bindable unbound). Separate letter/arrow
+/// follow rows keep the per-binding model truthful like focus/move: disabling
+/// or rebinding one never touches the other. Stay rows carry their canonical
+/// letter slot by row identity (shared with the follow arm on the same key),
+/// so a rebind routes into the shared hold slot through the explicit stay
+/// action.
+const OUTPUT_SEND_ROWS: [(&str, &str, &str, bool, &[&str]); 12] = [
+    (
+        "send-output-left",
+        "Send window to output left",
+        "left",
+        true,
+        &["Win+Ctrl+Alt+H"],
+    ),
+    (
+        "send-output-left-arrow",
+        "Send window to output left",
+        "left",
+        true,
+        &["Win+Ctrl+Alt+Left"],
+    ),
+    (
+        "send-output-down",
+        "Send window to output down",
+        "down",
+        true,
+        &["Win+Ctrl+Alt+J"],
+    ),
+    (
+        "send-output-down-arrow",
+        "Send window to output down",
+        "down",
+        true,
+        &["Win+Ctrl+Alt+Down"],
+    ),
+    (
+        "send-output-up",
+        "Send window to output up",
+        "up",
+        true,
+        &["Win+Ctrl+Alt+K"],
+    ),
+    (
+        "send-output-up-arrow",
+        "Send window to output up",
+        "up",
+        true,
+        &["Win+Ctrl+Alt+Up"],
+    ),
+    (
+        "send-output-right",
+        "Send window to output right",
+        "right",
+        true,
+        &["Win+Ctrl+Alt+L"],
+    ),
+    (
+        "send-output-right-arrow",
+        "Send window to output right",
+        "right",
+        true,
+        &["Win+Ctrl+Alt+Right"],
+    ),
+    (
+        "send-output-left-stay",
+        "Send window to output left without following",
+        "left",
+        false,
+        &[],
+    ),
+    (
+        "send-output-down-stay",
+        "Send window to output down without following",
+        "down",
+        false,
+        &[],
+    ),
+    (
+        "send-output-up-stay",
+        "Send window to output up without following",
+        "up",
+        false,
+        &[],
+    ),
+    (
+        "send-output-right-stay",
+        "Send window to output right without following",
+        "right",
+        false,
+        &[],
+    ),
+];
 fn workspace_row(index: u8, op: SnapFamilyOp) -> BindingDef {
     // Static per-index rows (KDE `workspaceShortcutCatalog` parity: select
     // `Meta+1..0`, send `Meta+Shift+1..0`). Shifted US symbols share the
@@ -1514,6 +1645,10 @@ fn directional_conflict(id: &str) -> Option<&'static str> {
 /// Unshifted Win+Ctrl chords (item 1 history) report the recorded
 /// virtual-desktop note for Left/Right and the honest ownership-unknown note
 /// for Tab/letters/Up/Down, never a stock-holder or conflict-free claim.
+/// Win+Ctrl+Alt chords (item 5 output send) report the honest
+/// ownership-unknown note: Windows Ctrl+Alt ownership is UNKNOWN (decision
+/// 5.3), no new Compatible disables are selected, and containment
+/// is unproven live. Only containment with live trace evidence claims
 /// Shifted Win+Ctrl chords (item 2 relative sends) report the honest
 /// ownership-unknown note: Windows Ctrl+Shift arrow ownership is UNKNOWN
 /// (decision 2.1), no new Compatible disables are selected, and containment
@@ -1523,6 +1658,12 @@ fn directional_conflict(id: &str) -> Option<&'static str> {
 #[must_use]
 pub fn chord_conflict(text: &str) -> Option<&'static str> {
     let chord = parse_chord(text).ok()?;
+    if chord.alt && chord.ctrl {
+        // Item 5 explicit output-send arm (Win+Ctrl+Alt, decision 5.3):
+        // Windows ownership is unknown and containment is unproven live.
+        // Never a stock-holder or conflict-free claim; no Compatible disable.
+        return Some(OUTPUT_SEND_CONFLICT);
+    }
     if chord.alt {
         // Keyboard resize arm (Win+Alt / Win+Shift+Alt, no Ctrl): Windows
         // Alt-chord ownership is unverified in the repository; containment
@@ -1629,6 +1770,9 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
             op.wants_shift()
         }
         BindingFamily::WorkspaceStay { .. } | BindingFamily::WorkspaceSendRelative { .. } => true,
+        // Item 5 output sends ride Win+Ctrl+Alt unshifted; a stay row rebound
+        // with Shift is accepted via `binding_modifiers_ok` below.
+        BindingFamily::WorkspaceOutput { .. } => false,
         BindingFamily::WorkspaceHistory { .. } => false,
         BindingFamily::Toggle { kind } => kind.wants_shift(),
         BindingFamily::Launch { .. } => false,
@@ -1637,7 +1781,8 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
 }
 
 /// Native Ctrl polarity of one catalog binding: item 1 history arms ride
-/// Win+Ctrl; item 2 relative sends ride Win+Ctrl+Shift; every other
+/// Win+Ctrl; item 2 relative sends ride Win+Ctrl+Shift; item 5 output sends
+/// ride Win+Ctrl+Alt([+Shift] for a shifted stay rebind); every other
 /// implemented arm rides without Ctrl by default. Numbered stay additionally
 /// accepts the Win+Ctrl+Shift backlog arm via [`binding_modifiers_ok`]; this
 /// default stays Ctrl-free so plain Win+Shift stay rebinds keep working.
@@ -1647,7 +1792,9 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
 pub fn binding_wants_ctrl(def: &BindingDef) -> bool {
     matches!(
         def.family,
-        BindingFamily::WorkspaceHistory { .. } | BindingFamily::WorkspaceSendRelative { .. }
+        BindingFamily::WorkspaceHistory { .. }
+            | BindingFamily::WorkspaceSendRelative { .. }
+            | BindingFamily::WorkspaceOutput { .. }
     )
 }
 
@@ -1655,8 +1802,9 @@ pub fn binding_wants_ctrl(def: &BindingDef) -> bool {
 /// arms. Every binding rides exactly its [`binding_wants_shift`] /
 /// [`binding_wants_ctrl`] / [`binding_wants_alt`] arm, except numbered stay,
 /// which additionally accepts the Win+Ctrl+Shift backlog example arm
-/// (Shift required, Alt never). Digit follow and all other arms are
-/// untouched: Ctrl stays refused there.
+/// (Shift required, Alt never), and output stay, which additionally accepts
+/// Win+Ctrl+Alt+Shift (Shift optional, Ctrl+Alt always). Digit follow and all
+/// other arms are untouched: Ctrl stays refused there.
 #[must_use]
 pub fn binding_modifiers_ok(def: &BindingDef, shift: bool, ctrl: bool, alt: bool) -> bool {
     if shift == binding_wants_shift(def)
@@ -1665,15 +1813,30 @@ pub fn binding_modifiers_ok(def: &BindingDef, shift: bool, ctrl: bool, alt: bool
     {
         return true;
     }
-    matches!(def.family, BindingFamily::WorkspaceStay { .. }) && shift && ctrl && !alt
+    if matches!(def.family, BindingFamily::WorkspaceStay { .. }) && shift && ctrl && !alt {
+        return true;
+    }
+    matches!(
+        def.family,
+        BindingFamily::WorkspaceOutput { follow: false, .. }
+    ) && ctrl
+        && alt
+        && shift
 }
 
 /// Native modifier-arm text for rebind errors: the single arm, or both stay
-/// arms (`Win+Shift or Win+Ctrl+Shift`).
+/// arms (`Win+Shift or Win+Ctrl+Shift`; output stay `Win+Ctrl+Alt or
+/// Win+Ctrl+Alt+Shift`).
 #[must_use]
 pub fn binding_arm_text(def: &BindingDef) -> &'static str {
     if matches!(def.family, BindingFamily::WorkspaceStay { .. }) {
         return "Win+Shift or Win+Ctrl+Shift";
+    }
+    if matches!(
+        def.family,
+        BindingFamily::WorkspaceOutput { follow: false, .. }
+    ) {
+        return "Win+Ctrl+Alt or Win+Ctrl+Alt+Shift";
     }
     match (
         binding_wants_shift(def),
@@ -1686,17 +1849,21 @@ pub fn binding_arm_text(def: &BindingDef) -> &'static str {
         (false, false, false) => "Win without Shift",
         (false, false, true) => "Win+Alt",
         (true, false, true) => "Win+Shift+Alt",
-        _ => "the binding's modifier arm",
+        (false, true, true) => "Win+Ctrl+Alt",
+        (true, true, true) => "Win+Ctrl+Alt+Shift",
     }
 }
 
 /// Native Alt polarity of one catalog binding: keyboard resize arms ride
-/// Win+Alt (outwards) and Win+Shift+Alt (inwards); every other arm rides
-/// without Alt. Carried explicitly so later output-follow arms (Ctrl+Alt)
-/// slot in without rework.
+/// Win+Alt (outwards) and Win+Shift+Alt (inwards); item 5 output sends ride
+/// Win+Ctrl+Alt ([+Shift] for a shifted stay rebind); every other arm rides
+/// without Alt.
 #[must_use]
 pub const fn binding_wants_alt(def: &BindingDef) -> bool {
-    matches!(def.family, BindingFamily::Resize { .. })
+    matches!(
+        def.family,
+        BindingFamily::Resize { .. } | BindingFamily::WorkspaceOutput { .. }
+    )
 }
 
 /// Explicit classifier action for one catalog binding: VK alone cannot
@@ -1725,6 +1892,13 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
             (true, false) => ChordAction::WorkspaceSendStayPrev,
             (false, false) => ChordAction::WorkspaceSendStayNext,
         },
+        BindingFamily::WorkspaceOutput { follow, .. } => {
+            if follow {
+                ChordAction::WorkspaceOutputFollow
+            } else {
+                ChordAction::WorkspaceOutputStay
+            }
+        }
         BindingFamily::WorkspaceHistory { kind } => match kind {
             WorkspaceHistoryKind::Previous => ChordAction::WorkspacePrevious,
             WorkspaceHistoryKind::Prev => ChordAction::WorkspacePrev,
@@ -1752,7 +1926,9 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
 /// its canonical slot by row identity (numbered stay shares the digit VK
 /// with its follow send; relative stay shares the H/K/arrow/J/L key with its
 /// follow arm), so a rebind routes into the shared hold slot through its
-/// explicit action.
+/// explicit action. Item 5 output stay rows (unbound) claim their canonical
+/// letter slot the same way (H/J/K/L per direction, shared with the follow
+/// arm on that key).
 #[must_use]
 pub fn binding_canonical_vk(def: &BindingDef) -> Option<u32> {
     if let Some(first) = def
@@ -1764,6 +1940,12 @@ pub fn binding_canonical_vk(def: &BindingDef) -> Option<u32> {
     }
     match def.family {
         BindingFamily::WorkspaceStay { index } => Some(VK_0 + u32::from(index)),
+        BindingFamily::WorkspaceOutput { direction, .. } => Some(match direction {
+            "left" => 0x48,
+            "down" => 0x4A,
+            "up" => 0x4B,
+            _ => 0x4C,
+        }),
         BindingFamily::WorkspaceSendRelative { .. } => Some(match def.id {
             "send-stay-prev-h" => 0x48,
             "send-stay-prev-k" => 0x4B,
@@ -2256,10 +2438,16 @@ pub enum Preset {
     /// the seven kept history rows (Tab/letters/Up/Down with the honest
     /// ownership-unknown note) and the eight item 2 relative-send follow
     /// rows (Win+Ctrl+Shift ownership unknown, no new disables selected).
+    /// The eight item 5 output follow rows (Win+Ctrl+Alt ownership unknown,
+    /// decision 5.3, no new disables selected) are likewise kept.
     /// Both presets keep the keyboard resize defaults: Windows Alt-chord
     /// ownership is unverified in the repository, so neither preset invents
     /// an owner nor claims conflict-free; Compatible disables known
     /// conflicts only. Item 2 stay rows stay unbound under both presets.
+    /// Both presets also keep the item 5 output follow defaults with the
+    /// honest ownership-unknown note (decision 5.3, no Compatible disables,
+    /// no invented stock holder); the four output stay rows stay unbound
+    /// under both presets.
     /// Applies as a deterministic reset: all overrides are
     /// dropped first, then the conflicts disable. Manual rebinding stays
     /// available afterwards; no replacement defaults are invented. The Win+L
@@ -2306,7 +2494,9 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
 
 /// Preset decision helper: the ids the compatible preset disables (every
 /// known OS-conflicting implemented row; resize rows keep their defaults
-/// under both presets since Windows Alt-chord ownership is unverified;
+/// under both presets since Windows Alt-chord ownership is unverified, and
+/// item 5 output follow rows keep theirs since Windows Ctrl+Alt ownership is
+/// unknown;
 /// see [`Preset::Compatible`]).
 #[must_use]
 pub const fn compatible_disabled_ids() -> [&'static str; 41] {
@@ -3030,12 +3220,13 @@ mod tests {
         let catalog = binding_catalog();
         // 16 focus/move (letter plus separate arrow rows) + 8 resize + 6
         // toggles + 2 launchers + 20 workspace + 9 item 1 history + 10
-        // numbered stay + 8 relative follow + 8 relative stay (item 2) = 87.
-        assert_eq!(catalog.len(), 87);
+        // numbered stay + 8 relative follow + 8 relative stay (item 2) + 8
+        // output follow + 4 output stay (item 5) = 99.
+        assert_eq!(catalog.len(), 99);
         let mut ids: Vec<&str> = catalog.iter().map(|def| def.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 87);
+        assert_eq!(ids.len(), 99);
         // Every default parses and every row (resize included) intercepts.
         for def in &catalog {
             for default in def.defaults {
@@ -3456,7 +3647,7 @@ mod tests {
         assert!(!settings.bindings.contains_key("toggle-sticky"));
         assert!(!settings.bindings.contains_key("workspace-previous"));
         let effective = effective_bindings(&settings);
-        assert_eq!(effective.len(), 87);
+        assert_eq!(effective.len(), 99);
         for row in &effective {
             if compatible_disabled_ids().contains(&row.id) {
                 assert!(!row.active, "{}", row.id);

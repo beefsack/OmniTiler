@@ -1,5 +1,7 @@
 //! Product keyboard takeover: Win+H/J/K/L and Win+arrows for focus/move,
-//! plus Win+Alt(+Shift) chords for keyboard resize.
+//! plus Win+Alt(+Shift) chords for keyboard resize, plus Win+Ctrl+Alt chords
+//! for explicit directional output send (item 5: follow by default, stay
+//! bindable unbound).
 //!
 //! Portable classifier and bounded intent queue; the low-level hook itself
 //! lives in [`sys`] (`cfg(windows)` only) and mirrors the accepted
@@ -215,7 +217,8 @@ pub struct ChordDisable {
 /// physical chord enters. VK alone cannot identify focus vs relative select
 /// vs relative follow vs output follow arms sharing one key; the action pins
 /// it. Item 1 uses the three history actions; item 2 adds numbered stay plus
-/// relative follow/stay (prev/next each); existing arms keep their
+/// relative follow/stay (prev/next each); item 5 adds output follow/stay
+/// (direction from the canonical key); existing arms keep their
 /// meaning through the same plumbing for later items (unbound stay rows ride
 /// their canonical slot through the stay action).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,6 +230,8 @@ pub enum ChordAction {
     WorkspaceSendNext,
     WorkspaceSendStayPrev,
     WorkspaceSendStayNext,
+    WorkspaceOutputFollow,
+    WorkspaceOutputStay,
     Maximize,
     Fullscreen,
     Float,
@@ -253,6 +258,8 @@ impl ChordAction {
             Self::WorkspaceSendNext => "workspace-send-next",
             Self::WorkspaceSendStayPrev => "workspace-send-stay-prev",
             Self::WorkspaceSendStayNext => "workspace-send-stay-next",
+            Self::WorkspaceOutputFollow => "workspace-output-follow",
+            Self::WorkspaceOutputStay => "workspace-output-stay",
             Self::Maximize => "maximize",
             Self::Fullscreen => "fullscreen",
             Self::Float => "float",
@@ -461,6 +468,15 @@ fn relative_send_repeat_live(ctrl: bool, shift: bool, alt: bool, win: bool) -> b
     ctrl && shift && !alt && win
 }
 
+/// Whether a live modifier/Win combination still matches a pinned output
+/// send (item 5): Win+Ctrl+Alt held, Win still held, Shift still matching the
+/// pinned arm (direct follow pins unshifted; a stay row rebound with Shift
+/// pins Shift). Same swallow-but-don't-dispatch contract as relative sends;
+/// follow/stay rides the pinned intent, never the live modifiers.
+fn output_repeat_live(ctrl: bool, shift: bool, alt: bool, win: bool, pinned_shift: bool) -> bool {
+    ctrl && alt && win && (shift == pinned_shift)
+}
+
 /// True only for the maximize-toggle chord key (Win+M, KDE Meta+M parity).
 /// Shift/Ctrl/Alt select the directional/workspace arms instead: Win+Shift+M
 /// and any Ctrl/Alt combination pass through untracked.
@@ -652,6 +668,14 @@ fn collide_refusal(
             consumed,
             announce: false,
         }),
+        Classified::WorkspaceOutput(intent) => Classified::WorkspaceOutput(WorkspaceOutputIntent {
+            direction: intent.direction,
+            follow: intent.follow,
+            edge,
+            foreground,
+            consumed,
+            announce: false,
+        }),
         Classified::WorkspaceHistory(intent) => {
             Classified::WorkspaceHistory(WorkspaceHistoryIntent {
                 op: intent.op,
@@ -726,6 +750,10 @@ fn collide_trigger(shape: &Classified) -> Option<MaskTrigger> {
         }),
         Classified::WorkspaceSend(intent) => Some(MaskTrigger::WorkspaceSend {
             delta: intent.delta,
+            follow: intent.follow,
+        }),
+        Classified::WorkspaceOutput(intent) => Some(MaskTrigger::WorkspaceOutput {
+            direction: intent.direction,
             follow: intent.follow,
         }),
         Classified::WorkspaceHistory(intent) => {
@@ -817,6 +845,22 @@ pub struct WorkspaceIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceSendIntent {
     pub delta: i32,
+    pub follow: bool,
+    pub edge: SnapEdge,
+    pub foreground: bool,
+    pub consumed: bool,
+    pub announce: bool,
+}
+
+/// Classifier outcome for one item 5 explicit directional output-send event
+/// (Win+Ctrl+Alt+H/J/K/L plus arrow aliases follow; stay rows rebind through
+/// the stay action and stay). Only downs and repeats dispatch, ups close the
+/// pair. `direction` pins from the canonical key; `follow` pins at down time
+/// from the explicit action (direct chords follow; the unbound stay rows
+/// rebind through the stay action and stay).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceOutputIntent {
+    pub direction: Direction,
     pub follow: bool,
     pub edge: SnapEdge,
     pub foreground: bool,
@@ -974,6 +1018,7 @@ pub enum Classified {
     Resize(ResizeIntent),
     Workspace(WorkspaceIntent),
     WorkspaceSend(WorkspaceSendIntent),
+    WorkspaceOutput(WorkspaceOutputIntent),
     WorkspaceHistory(WorkspaceHistoryIntent),
     Maximize(MaximizeIntent),
     Fullscreen(FullscreenIntent),
@@ -992,6 +1037,7 @@ impl Classified {
             Self::Resize(intent) => intent.consumed,
             Self::Workspace(intent) => intent.consumed,
             Self::WorkspaceSend(intent) => intent.consumed,
+            Self::WorkspaceOutput(intent) => intent.consumed,
             Self::WorkspaceHistory(intent) => intent.consumed,
             Self::Maximize(intent) => intent.consumed,
             Self::Fullscreen(intent) => intent.consumed,
@@ -1010,6 +1056,7 @@ impl Classified {
             Self::Resize(intent) => intent.announce,
             Self::Workspace(intent) => intent.announce,
             Self::WorkspaceSend(intent) => intent.announce,
+            Self::WorkspaceOutput(intent) => intent.announce,
             Self::WorkspaceHistory(intent) => intent.announce,
             Self::Maximize(intent) => intent.announce,
             Self::Fullscreen(intent) => intent.announce,
@@ -1045,6 +1092,10 @@ pub enum MaskTrigger {
     },
     WorkspaceSend {
         delta: i32,
+        follow: bool,
+    },
+    WorkspaceOutput {
+        direction: Direction,
         follow: bool,
     },
     WorkspaceHistory {
@@ -1109,6 +1160,15 @@ pub struct SnapClassify {
     send_origin: [bool; 8],
     send_follow: [bool; 8],
     send_delta: [i32; 8],
+    output_down: [bool; 8],
+    output_origin: [bool; 8],
+    output_follow: [bool; 8],
+    /// Pinned Shift state per output hold: follow rides Win+Ctrl+Alt unshifted
+    /// while a stay row rebound with Shift pins Shift, so the repeat dispatch
+    /// follows the pinned arm (a mid-hold Shift flip swallows without
+    /// dispatching, never leaking a repeat or flipping follow into stay).
+    /// Direct follow holds always pin false via the fresh-down guard.
+    output_shift: [bool; 8],
     maximize_down: bool,
     maximize_origin: bool,
     fullscreen_down: bool,
@@ -1169,6 +1229,7 @@ pub struct SnapClassify {
     pub counts: [SnapCounts; 8],
     pub resize_counts: [SnapCounts; 8],
     pub digit_counts: [SnapCounts; 10],
+    pub output_counts: [SnapCounts; 8],
     pub max_counts: SnapCounts,
     pub fullscreen_counts: SnapCounts,
     pub float_counts: SnapCounts,
@@ -1220,6 +1281,10 @@ impl SnapClassify {
             send_origin: [false; 8],
             send_follow: [true; 8],
             send_delta: [0; 8],
+            output_down: [false; 8],
+            output_origin: [false; 8],
+            output_follow: [true; 8],
+            output_shift: [false; 8],
             maximize_down: false,
             maximize_origin: false,
             fullscreen_down: false,
@@ -1249,6 +1314,7 @@ impl SnapClassify {
             counts: [SnapCounts::default(); 8],
             resize_counts: [SnapCounts::default(); 8],
             digit_counts: [SnapCounts::default(); 10],
+            output_counts: [SnapCounts::default(); 8],
             max_counts: SnapCounts::default(),
             fullscreen_counts: SnapCounts::default(),
             float_counts: SnapCounts::default(),
@@ -1370,6 +1436,17 @@ impl SnapClassify {
             } else {
                 ChordAction::WorkspaceSendNext
             });
+        }
+        // Item 5 explicit output send: Win+Ctrl+Alt with no Shift on a catalog
+        // key. Direct chords follow; stay rides only the explicit stay action
+        // through the rebound table (unbound by default). A shifted
+        // Win+Ctrl+Alt chord refuses here: only an explicit stay rebind routes
+        // through the rebound table above.
+        if self.ctrl && self.alt && catalog_index(physical).is_some() {
+            if self.shift {
+                return None;
+            }
+            return Some(ChordAction::WorkspaceOutputFollow);
         }
         // Item 1 history: Win+Ctrl with no Shift/Alt on a history key.
         if self.ctrl
@@ -1580,6 +1657,20 @@ impl SnapClassify {
                     announce: false,
                 }))
             }
+            ChordAction::WorkspaceOutputFollow | ChordAction::WorkspaceOutputStay => {
+                let idx = catalog_index(canon)?;
+                if !self.output_down[idx] {
+                    return None;
+                }
+                Some(Classified::WorkspaceOutput(WorkspaceOutputIntent {
+                    direction: index_direction(idx),
+                    follow: self.output_follow[idx],
+                    edge: SnapEdge::Down,
+                    foreground: true,
+                    consumed: self.output_origin[idx],
+                    announce: false,
+                }))
+            }
             ChordAction::WorkspacePrevious
             | ChordAction::WorkspacePrev
             | ChordAction::WorkspaceNext => {
@@ -1706,6 +1797,9 @@ impl SnapClassify {
             | ChordAction::WorkspaceSendStayPrev
             | ChordAction::WorkspaceSendStayNext => {
                 relative_send_index(vk).is_some_and(|idx| self.send_down[idx])
+            }
+            ChordAction::WorkspaceOutputFollow | ChordAction::WorkspaceOutputStay => {
+                catalog_index(vk).is_some_and(|idx| self.output_down[idx])
             }
             ChordAction::WorkspacePrevious
             | ChordAction::WorkspacePrev
@@ -1953,6 +2047,9 @@ impl SnapClassify {
             | ChordAction::WorkspaceSendStayPrev
             | ChordAction::WorkspaceSendStayNext => {
                 return self.push_relative_send(vk, action, is_up, foreground, route_live);
+            }
+            ChordAction::WorkspaceOutputFollow | ChordAction::WorkspaceOutputStay => {
+                return self.push_output(vk, action, is_up, foreground, route_live);
             }
             ChordAction::Maximize => {
                 return self.push_maximize(is_up, foreground, route_live);
@@ -2720,6 +2817,132 @@ impl SnapClassify {
             self.mask_trigger = Some(MaskTrigger::WorkspaceSend { delta, follow });
             Some(intent(SnapEdge::Down, true, true))
         } else {
+            Some(intent(SnapEdge::Down, false, false))
+        }
+    }
+
+    /// Item 5 explicit output-send half of the unified classifier
+    /// (Win+Ctrl+Alt+H/J/K/L plus arrow aliases). Same Win/armed-hold/gate/
+    /// mask contract as relative sends, but Ctrl+Alt selects the arm: fresh
+    /// downs require Win+Ctrl+Alt. Direct chords follow unshifted; a shifted
+    /// chord refuses (only an explicit stay rebind routes through the rebound
+    /// table, pinning Shift with the stay action). `direction` pins from the
+    /// canonical key; `follow` pins at down time from the explicit action.
+    /// Repeats ride the armed hold and dispatch while the live Win+Ctrl+Alt
+    /// combination still matches the pinned Shift; ups close the pair. Fresh
+    /// downs consume iff takeover is on with the shortcut gate active; the
+    /// owner rechecks fresh scope/suspension before any send.
+    /// `route_live` gates fresh consumption and repeat dispatch: a pinned
+    /// hold whose chord no longer routes live stays swallowed without
+    /// dispatching until its matching up.
+    fn push_output(
+        &mut self,
+        vk: u32,
+        action: ChordAction,
+        is_up: bool,
+        foreground: bool,
+        route_live: bool,
+    ) -> Option<Classified> {
+        let idx = catalog_index(vk)?;
+        let direction = index_direction(idx);
+        let follow = action == ChordAction::WorkspaceOutputFollow;
+        let stay = action == ChordAction::WorkspaceOutputStay;
+        if !follow && !stay {
+            return None;
+        }
+        let intent = |edge: SnapEdge, consumed: bool, announce: bool| {
+            Classified::WorkspaceOutput(WorkspaceOutputIntent {
+                direction,
+                follow,
+                edge,
+                foreground,
+                consumed,
+                announce,
+            })
+        };
+        if is_up {
+            if !self.output_down[idx] {
+                return None;
+            }
+            self.output_down[idx] = false;
+            let origin = self.output_origin[idx];
+            self.output_origin[idx] = false;
+            self.output_follow[idx] = true;
+            self.output_shift[idx] = false;
+            self.output_counts[idx].up += 1;
+            if origin {
+                self.output_counts[idx].consumed += 1;
+                return Some(intent(SnapEdge::Up, true, false));
+            }
+            self.output_counts[idx].passed += 1;
+            return Some(intent(SnapEdge::Up, false, false));
+        }
+        if self.output_down[idx] {
+            self.output_counts[idx].repeat += 1;
+            let pinned_follow = self.output_follow[idx];
+            let pinned_shift = self.output_shift[idx];
+            if self.output_origin[idx] {
+                let live = self.enabled
+                    && self.gate_active
+                    && route_live
+                    && output_repeat_live(
+                        self.ctrl,
+                        self.shift,
+                        self.alt,
+                        self.win_l || self.win_r,
+                        pinned_shift,
+                    );
+                if self.win_l || self.win_r {
+                    self.mask_pending = true;
+                    self.mask_trigger = Some(MaskTrigger::WorkspaceOutput {
+                        direction,
+                        follow: pinned_follow,
+                    });
+                }
+                self.output_counts[idx].consumed += 1;
+                return Some(Classified::WorkspaceOutput(WorkspaceOutputIntent {
+                    direction,
+                    follow: pinned_follow,
+                    edge: SnapEdge::Repeat,
+                    foreground,
+                    consumed: true,
+                    announce: live,
+                }));
+            }
+            self.output_counts[idx].passed += 1;
+            return Some(Classified::WorkspaceOutput(WorkspaceOutputIntent {
+                direction,
+                follow: pinned_follow,
+                edge: SnapEdge::Repeat,
+                foreground,
+                consumed: false,
+                announce: false,
+            }));
+        }
+        if !self.ctrl || !self.alt || !(self.win_l || self.win_r) {
+            return None;
+        }
+        // Direct follow rides unshifted Win+Ctrl+Alt exactly; a shifted chord
+        // refuses unless the stay action claims it through an explicit rebind.
+        // Stay accepts either Shift state so a stay row rebound without Shift
+        // (e.g. Win+Ctrl+Alt+F6) still routes; the Shift state pins with the
+        // hold for repeat gating.
+        if follow && self.shift {
+            return None;
+        }
+        self.output_down[idx] = true;
+        let origin = self.enabled && self.gate_active && route_live;
+        self.output_origin[idx] = origin;
+        self.output_follow[idx] = follow;
+        self.output_shift[idx] = self.shift;
+        self.output_counts[idx].down += 1;
+        if origin {
+            self.output_counts[idx].consumed += 1;
+            self.mask_pending = true;
+            self.mask_trigger = Some(MaskTrigger::WorkspaceOutput { direction, follow });
+            Some(intent(SnapEdge::Down, true, true))
+        } else {
+            self.output_counts[idx].passed += 1;
             Some(intent(SnapEdge::Down, false, false))
         }
     }
@@ -3555,6 +3778,7 @@ mod history_tests {
         SnapClassify, SnapEdge, VK_CONTROL, VK_DOWN, VK_H, VK_J, VK_K, VK_L, VK_LEFT, VK_LWIN,
         VK_MENU, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP, WorkspaceHistoryOp,
     };
+    use tiler_core::directional::Direction;
 
     fn enabled() -> KeyboardConfig {
         KeyboardConfig {
@@ -3610,10 +3834,11 @@ mod history_tests {
             ctrl_up(&mut m);
             assert!(!m.key_is_down(vk));
         }
-        // Bare (no Win) and Alt-modified chords refuse with no pin, so their
-        // paired ups also pass. Shift+Ctrl no longer refuses: item 2 routes
-        // Win+Ctrl+Shift+H to the relative-send follow arm (history itself
-        // still demands unshifted Win+Ctrl).
+        // Bare (no Win) and non-catalog Alt-modified chords refuse with no
+        // pin, so their paired ups also pass. Shift+Ctrl no longer refuses:
+        // item 2 routes Win+Ctrl+Shift+H to the relative-send follow arm
+        // (history itself still demands unshifted Win+Ctrl), and item 5
+        // routes Win+Ctrl+Alt+H to the output follow arm.
         let mut m = SnapClassify::new(enabled());
         assert_eq!(SnapClassify::push(&mut m, VK_TAB, false, true, false), None);
         assert_eq!(SnapClassify::push(&mut m, VK_TAB, true, true, false), None);
@@ -3632,7 +3857,21 @@ mod history_tests {
         SnapClassify::push(&mut m, VK_LWIN, false, true, false);
         SnapClassify::push(&mut m, VK_MENU, false, true, false);
         ctrl_down(&mut m);
-        assert_eq!(SnapClassify::push(&mut m, VK_H, false, true, false), None);
+        match SnapClassify::push(&mut m, VK_H, false, true, false).expect("output send") {
+            Classified::WorkspaceOutput(intent) => {
+                assert_eq!(intent.direction, Direction::Left);
+                assert!(intent.follow && intent.consumed && intent.announce);
+            }
+            other => panic!("expected output send, got {other:?}"),
+        }
+        // A non-catalog key under the same modifiers still refuses with no
+        // pin, so its paired up passes too.
+        let mut m = SnapClassify::new(enabled());
+        SnapClassify::push(&mut m, VK_LWIN, false, true, false);
+        SnapClassify::push(&mut m, VK_MENU, false, true, false);
+        ctrl_down(&mut m);
+        assert_eq!(SnapClassify::push(&mut m, VK_TAB, false, true, false), None);
+        assert_eq!(SnapClassify::push(&mut m, VK_TAB, true, true, false), None);
     }
 
     #[test]
@@ -3961,6 +4200,21 @@ pub struct QueuedWorkspaceSendIntent {
     pub tick: std::time::Instant,
 }
 
+/// One approved item 5 explicit output-send chord captured by the callback.
+/// `direction` pins from the canonical key; `follow` pins the explicit intent
+/// at down time. Sends require a managed origin like numbered sends; `origin`
+/// rides for mask/queue parity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedWorkspaceOutputIntent {
+    pub direction: Direction,
+    pub follow: bool,
+    pub edge: SnapEdge,
+    pub origin: Option<SnapOrigin>,
+    pub consumed: bool,
+    pub announce: bool,
+    pub tick: std::time::Instant,
+}
+
 /// One approved workspace history chord captured by the callback (item 1).
 /// History selects need no origin: toggle/relative steps act on the chord
 /// output's current view, never a managed mover. `origin` rides only for
@@ -4085,6 +4339,7 @@ pub enum QueuedSnapEvent {
     Resize(QueuedResizeIntent),
     Workspace(QueuedWorkspaceIntent),
     WorkspaceSend(QueuedWorkspaceSendIntent),
+    WorkspaceOutput(QueuedWorkspaceOutputIntent),
     WorkspaceHistory(QueuedWorkspaceHistoryIntent),
     Maximize(QueuedMaximizeIntent),
     Fullscreen(QueuedFullscreenIntent),
@@ -4238,6 +4493,17 @@ pub fn classify_and_queue(
         Classified::WorkspaceSend(intent) => {
             QueuedSnapEvent::WorkspaceSend(QueuedWorkspaceSendIntent {
                 delta: intent.delta,
+                follow: intent.follow,
+                edge: intent.edge,
+                origin,
+                consumed: intent.consumed,
+                announce: intent.announce,
+                tick,
+            })
+        }
+        Classified::WorkspaceOutput(intent) => {
+            QueuedSnapEvent::WorkspaceOutput(QueuedWorkspaceOutputIntent {
+                direction: intent.direction,
                 follow: intent.follow,
                 edge: intent.edge,
                 origin,
@@ -5747,6 +6013,11 @@ pub mod sys {
             }),
             super::MaskTrigger::WorkspaceSend { delta, follow } => serde_json::json!({
                 "trigger_op": if delta < 0 { "send-prev" } else { "send-next" },
+                "trigger_follow": follow,
+            }),
+            super::MaskTrigger::WorkspaceOutput { direction, follow } => serde_json::json!({
+                "trigger_op": "send-output",
+                "trigger_direction": super::direction_name(direction),
                 "trigger_follow": follow,
             }),
             super::MaskTrigger::Maximize => serde_json::json!({

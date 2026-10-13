@@ -603,8 +603,9 @@ fn collect_draft(app: &mut App) -> Result<Settings, String> {
 /// Validate one rebind against the selected row and stage it in the draft.
 /// The Shift/Ctrl/Alt arm must match one of the action's native arms
 /// (history rows ride Win+Ctrl, relative sends ride Win+Ctrl+Shift,
-/// numbered stay rides Win+Shift plus Win+Ctrl+Shift, resize-out rides
-/// Win+Alt and resize-in rides Win+Shift+Alt).
+/// numbered stay rides Win+Shift plus Win+Ctrl+Shift, output follow rides
+/// Win+Ctrl+Alt and output stay rides Win+Ctrl+Alt plus Win+Ctrl+Alt+Shift,
+/// resize-out rides Win+Alt and resize-in rides Win+Shift+Alt).
 fn apply_rebind_text(app: &mut App, text: &str) -> Result<(), String> {
     let index = app
         .selected
@@ -1302,14 +1303,14 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 602, w: 200, h: 24, style: radio_first | tab },
         Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 602, w: 200, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 600, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (87 rows)".to_owned(), x: 10, y: 644, w: 904, h: 268, style: group },
+        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (99 rows)".to_owned(), x: 10, y: 644, w: 904, h: 268, style: group },
         Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 666, w: 540, h: 230, style: list_style | tab },
         Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 666, w: 324, h: 100, style: info_style },
         Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 770, w: 100, h: 26, style: push | tab },
         Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 770, w: 100, h: 26, style: push | tab },
         Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 802, w: 150, h: 24, style: edit_style | tab },
         Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 800, w: 120, h: 26, style: push | tab },
-        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 830, w: 324, h: 74, style: label },
+        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 830, w: 324, h: 74, style: label },
         Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 920, w: 540, h: 60, style: label },
         Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 920, w: 100, h: 30, style: defpush | tab },
         Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 920, w: 100, h: 30, style: push | tab },

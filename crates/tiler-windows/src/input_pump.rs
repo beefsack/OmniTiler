@@ -515,6 +515,7 @@ pub fn snap_batch_age_us(batch: &[QueuedSnapEvent], now: Instant) -> u64 {
             QueuedSnapEvent::Resize(i) => i.tick,
             QueuedSnapEvent::Workspace(i) => i.tick,
             QueuedSnapEvent::WorkspaceSend(i) => i.tick,
+            QueuedSnapEvent::WorkspaceOutput(i) => i.tick,
             QueuedSnapEvent::WorkspaceHistory(i) => i.tick,
             QueuedSnapEvent::Maximize(i) => i.tick,
             QueuedSnapEvent::Fullscreen(i) => i.tick,

@@ -52,6 +52,7 @@ fn push_snap(
         Classified::Snap(intent) => Some(intent),
         Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -77,6 +78,7 @@ fn push_workspace(
         Classified::Workspace(intent) => Some(intent),
         Classified::Snap(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -103,6 +105,7 @@ fn push_maximize(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Fullscreen(_)
         | Classified::Float(_)
@@ -127,6 +130,7 @@ fn push_fullscreen(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Float(_)
@@ -154,6 +158,7 @@ fn push_float(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
@@ -180,6 +185,7 @@ fn push_sticky(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
@@ -204,6 +210,7 @@ fn push_orientation(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -229,6 +236,7 @@ fn push_workspace_tiling(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -675,6 +683,7 @@ fn saturated_queue_swallows_and_counts_loss() {
         QueuedSnapEvent::Intent(queued) => assert_eq!(queued.origin, origin),
         QueuedSnapEvent::Workspace(_)
         | QueuedSnapEvent::WorkspaceSend(_)
+        | QueuedSnapEvent::WorkspaceOutput(_)
         | QueuedSnapEvent::WorkspaceHistory(_)
         | QueuedSnapEvent::Maximize(_)
         | QueuedSnapEvent::Fullscreen(_)
@@ -3224,6 +3233,7 @@ fn push_send(
         Classified::WorkspaceSend(intent) => Some(intent),
         Classified::Snap(_)
         | Classified::Workspace(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -3678,6 +3688,7 @@ fn push_resize(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -3789,18 +3800,28 @@ fn resize_repeat_pins_mode_modifiers_and_action() {
 
 // Unknown extra Ctrl (or any other unbound Alt shape) passes through
 // untracked unless an exact effective rebind claims it; bare and injected
-// chords never classify.
+// chords never classify. Win+Ctrl+Alt+H is the documented item 5 output
+// follow arm (not a resize): it dispatches output, never resize.
 #[test]
 fn resize_unknown_modifiers_pass_untracked() {
-    // Win+Ctrl+Alt+H is not a documented arm: passes with no pin, so the
-    // paired up passes too.
+    // Win+Ctrl+Alt+H dispatches the output follow arm, leaving resize
+    // counts untouched.
     let mut m = SnapClassify::new(takeover());
     win_down(&mut m, VK_LWIN);
     push_snap(&mut m, VK_CONTROL, false, true, false);
     alt_down(&mut m);
-    assert_eq!(SnapClassify::push(&mut m, VK_H, false, true, false), None);
-    assert_eq!(SnapClassify::push(&mut m, VK_H, true, true, false), None);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("output") {
+        Classified::WorkspaceOutput(intent) => {
+            assert_eq!(intent.direction, Direction::Left);
+            assert!(intent.follow && intent.consumed && intent.announce);
+        }
+        other => panic!("expected output send, got {other:?}"),
+    }
     assert_eq!((m.resize_counts[0].down, m.resize_counts[0].up), (0, 0));
+    assert_eq!(
+        (m.output_counts[0].down, m.output_counts[0].consumed),
+        (1, 1)
+    );
     // Bare Alt+H without Win passes; injected resize never classifies.
     let mut m = SnapClassify::new(takeover());
     push_snap(&mut m, VK_MENU, false, true, false);
@@ -3973,6 +3994,7 @@ fn push_launch(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -4174,4 +4196,284 @@ fn launch_rebind_and_disable_flow() {
     win_down(&mut m, VK_LWIN);
     assert_eq!(push_launch(&mut m, VK_B, false, true, false), None);
     assert_eq!(push_launch(&mut m, VK_B, true, true, false), None);
+}
+
+// Item 5 explicit output send: Win+Ctrl+Alt over the directional catalog
+// (letters plus arrow aliases) dispatches follow intents carrying the
+// direction; stay rides only the explicit stay action through the rebound
+// table (unbound by default). Repeats/hold/suppression/mask ride the same
+// plumbing as the item 1/2 arms.
+fn push_output(
+    m: &mut SnapClassify,
+    vk: u32,
+    is_up: bool,
+    fg: bool,
+    inj: bool,
+) -> Option<tiler_windows::snapkey::WorkspaceOutputIntent> {
+    match SnapClassify::push(m, vk, is_up, fg, inj)? {
+        Classified::WorkspaceOutput(intent) => Some(intent),
+        Classified::Snap(_)
+        | Classified::Workspace(_)
+        | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceHistory(_)
+        | Classified::Maximize(_)
+        | Classified::Fullscreen(_)
+        | Classified::Float(_)
+        | Classified::Orientation(_)
+        | Classified::Sticky(_)
+        | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
+        | Classified::Resize(_) => {
+            panic!("expected output send")
+        }
+    }
+}
+
+fn ctrl_alt_down(m: &mut SnapClassify) {
+    push_snap(m, VK_CONTROL, false, true, false);
+    alt_down(m);
+}
+
+#[test]
+fn output_follow_direct_chords_route_all_eight_keys() {
+    // All eight follow defaults (letters plus arrow aliases) dispatch with
+    // the exact direction and follow=true; ups close the pair consumed.
+    let cases: &[(u32, u32, Direction)] = &[
+        (VK_H, VK_LEFT, Direction::Left),
+        (VK_J, VK_DOWN, Direction::Down),
+        (VK_K, VK_UP, Direction::Up),
+        (VK_L, VK_RIGHT, Direction::Right),
+    ];
+    for (letter, arrow, direction) in cases {
+        for vk in [*letter, *arrow] {
+            let mut m = SnapClassify::new(takeover());
+            win_down(&mut m, VK_LWIN);
+            ctrl_alt_down(&mut m);
+            let down = push_output(&mut m, vk, false, true, false).expect("down");
+            assert_eq!(down.direction, *direction);
+            assert!(down.follow, "direct chords follow");
+            assert_eq!(down.edge, SnapEdge::Down);
+            assert!(down.consumed && down.announce);
+            let up = push_output(&mut m, vk, true, true, false).expect("up");
+            assert_eq!(
+                (up.direction, up.follow, up.edge),
+                (*direction, true, SnapEdge::Up)
+            );
+            assert!(up.consumed && !up.announce);
+        }
+    }
+}
+
+#[test]
+fn output_shifted_direct_chord_refuses_without_pin() {
+    // Win+Ctrl+Alt+Shift+H refuses with no pin (only an explicit stay rebind
+    // routes shifted chords), so the paired key-up passes through as well.
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    push_snap(&mut m, VK_SHIFT, false, true, false);
+    ctrl_alt_down(&mut m);
+    assert_eq!(SnapClassify::push(&mut m, VK_H, false, true, false), None);
+    assert_eq!(SnapClassify::push(&mut m, VK_H, true, true, false), None);
+}
+
+#[test]
+fn output_modifier_arms_do_not_cross() {
+    // Each modifier combination on one catalog key dispatches exactly its own
+    // arm: directional, history, resize, relative send and output send never
+    // leak into each other.
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("focus") {
+        Classified::Snap(intent) => assert_eq!(intent.op, SnapOp::Focus),
+        other => panic!("expected focus, got {other:?}"),
+    }
+    // Same physical is pinned to focus: the Ctrl-modified press is the
+    // owner's swallowed repeat, never a history dispatch.
+    push_snap(&mut m, VK_CONTROL, false, true, false);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("repeat") {
+        Classified::Snap(intent) => assert!(intent.consumed && !intent.announce),
+        other => panic!("expected pinned focus repeat, got {other:?}"),
+    }
+    // Fresh arms, one modifier shape each.
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    push_snap(&mut m, VK_CONTROL, false, true, false);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("history") {
+        Classified::WorkspaceHistory(_) => {}
+        other => panic!("expected history, got {other:?}"),
+    }
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    alt_down(&mut m);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("resize") {
+        Classified::Resize(_) => {}
+        other => panic!("expected resize, got {other:?}"),
+    }
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    push_snap(&mut m, VK_SHIFT, false, true, false);
+    push_snap(&mut m, VK_CONTROL, false, true, false);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("send") {
+        Classified::WorkspaceSend(intent) => assert!(intent.follow),
+        other => panic!("expected relative send, got {other:?}"),
+    }
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    ctrl_alt_down(&mut m);
+    match SnapClassify::push(&mut m, VK_H, false, true, false).expect("output") {
+        Classified::WorkspaceOutput(intent) => {
+            assert_eq!(intent.direction, Direction::Left);
+            assert!(intent.follow);
+        }
+        other => panic!("expected output send, got {other:?}"),
+    }
+}
+
+#[test]
+fn output_stay_rebind_routes_unshifted_and_shifted() {
+    // A stay row rebound without Shift (Win+Ctrl+Alt+F6) dispatches stay;
+    // a stay row rebound with Shift pins Shift for repeat gating.
+    use tiler_windows::snapkey::{ChordAction, ChordRemap};
+    const VK_F6: u32 = 0x75;
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: false,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceOutputStay,
+        to_vk: VK_L,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    ctrl_alt_down(&mut m);
+    let down = push_output(&mut m, VK_F6, false, true, false).expect("stay down");
+    assert_eq!(down.direction, Direction::Right);
+    assert!(!down.follow, "stay pins follow=false");
+    assert!(down.consumed && down.announce);
+    let up = push_output(&mut m, VK_F6, true, true, false).expect("stay up");
+    assert!(!up.follow && up.consumed);
+    // Shifted stay rebind dispatches stay and gates repeats on Shift.
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: true,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceOutputStay,
+        to_vk: VK_L,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    push_snap(&mut m, VK_SHIFT, false, true, false);
+    ctrl_alt_down(&mut m);
+    let down = push_output(&mut m, VK_F6, false, true, false).expect("shifted stay");
+    assert!(!down.follow && down.consumed && down.announce);
+    // Releasing Shift mid-hold swallows the repeat without dispatching.
+    push_snap(&mut m, VK_SHIFT, true, true, false);
+    let repeat = push_output(&mut m, VK_F6, false, true, false).expect("repeat");
+    assert!(repeat.consumed && !repeat.announce);
+    let up = push_output(&mut m, VK_F6, true, true, false).expect("up");
+    assert!(up.consumed);
+}
+
+#[test]
+fn output_repeat_rides_pinned_arm_and_suppression() {
+    // Held repeats dispatch while the live Win+Ctrl+Alt combination still
+    // matches the pinned arm; a mid-hold modifier flip or suppression
+    // swallows without dispatching while the pair still closes consumed.
+    use tiler_windows::snapkey::ChordDisable;
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    ctrl_alt_down(&mut m);
+    let down = push_output(&mut m, VK_H, false, true, false).expect("down");
+    assert!(down.consumed && down.announce);
+    let repeat = push_output(&mut m, VK_H, false, true, false).expect("repeat");
+    assert!(repeat.consumed && repeat.announce);
+    assert_eq!(repeat.direction, Direction::Left);
+    assert!(repeat.follow, "follow rides the pinned intent");
+    // Mid-hold Alt release swallows without dispatching.
+    alt_up(&mut m);
+    let repeat = push_output(&mut m, VK_H, false, true, false).expect("repeat");
+    assert!(repeat.consumed && !repeat.announce);
+    alt_down(&mut m);
+    let repeat = push_output(&mut m, VK_H, false, true, false).expect("repeat");
+    assert!(repeat.consumed && repeat.announce);
+    // Mid-hold suppression gates dispatch but keeps the pair.
+    m.set_disabled(vec![ChordDisable {
+        vk: VK_H,
+        shift: false,
+        ctrl: true,
+        alt: true,
+    }]);
+    let repeat = push_output(&mut m, VK_H, false, true, false).expect("repeat");
+    assert!(repeat.consumed && !repeat.announce);
+    let up = push_output(&mut m, VK_H, true, true, false).expect("up");
+    assert!(up.consumed);
+    // Fresh presses afterwards pass through.
+    assert_eq!(SnapClassify::push(&mut m, VK_H, false, true, false), None);
+}
+
+#[test]
+fn output_queue_carries_origin_and_mask_trigger() {
+    // Queue/mask routing: output classifies and queues with announce, and a
+    // consumed chord arms the Start-menu mask with the output trigger.
+    use tiler_windows::snapkey::{
+        MaskTrigger, QueuedWorkspaceOutputIntent, SnapQueue, win_up_mask_reserve,
+    };
+    let mut m = SnapClassify::new(takeover());
+    let mut q = SnapQueue::new();
+    let tick = std::time::Instant::now();
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_CONTROL, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_MENU, false, None, false, tick, true),
+        None
+    );
+    let origin = Some(origin_of(7, "w7"));
+    assert_eq!(
+        classify_and_queue(
+            &mut m,
+            &mut q,
+            VK_L,
+            false,
+            origin.clone(),
+            false,
+            tick,
+            true
+        ),
+        Some(true)
+    );
+    match q.pop_front().expect("output") {
+        QueuedSnapEvent::WorkspaceOutput(queued) => {
+            assert_eq!(
+                queued,
+                QueuedWorkspaceOutputIntent {
+                    direction: Direction::Right,
+                    follow: true,
+                    edge: SnapEdge::Down,
+                    origin,
+                    consumed: true,
+                    announce: true,
+                    tick: queued.tick,
+                }
+            );
+        }
+        other => panic!("expected output, got {other:?}"),
+    }
+    assert!(win_up_mask_reserve(&mut m, &mut q, VK_LWIN, true, tick));
+    match q.pop_front().expect("mask") {
+        QueuedSnapEvent::Mask(mask) => assert_eq!(
+            mask.trigger,
+            MaskTrigger::WorkspaceOutput {
+                direction: Direction::Right,
+                follow: true,
+            }
+        ),
+        other => panic!("expected mask, got {other:?}"),
+    }
 }

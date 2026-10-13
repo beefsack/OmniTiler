@@ -92,7 +92,7 @@ pub struct DisplacedRecord {
     pub dest_key: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ManagedWorkspaces {
     outputs: BTreeMap<String, OutputState>,
     displaced: BTreeMap<String, DisplacedRecord>,

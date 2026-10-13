@@ -5,7 +5,7 @@
 //! Native effects (hide/reveal/focus/monitor identity) live in
 //! `tiling_sys` (`cfg(windows)` only). This module owns no HWNDs, no window
 //! properties, and no logs: pure resolution plus `CoreEvent` construction for
-//! the retained `Engine` `SendToWorkspace` route.
+//! the retained `Engine` `SendToWorkspace`/`SendToOutput` routes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -84,6 +84,81 @@ pub fn build_send_event(
     outer_gap: i32,
     follow: bool,
 ) -> Option<CoreEvent> {
+    build_send_event_inner(
+        owner,
+        generation,
+        correlation,
+        revision,
+        fingerprint,
+        source_domain,
+        target_domain,
+        source_rows,
+        target_rows,
+        mover_token,
+        outer_gap,
+        follow,
+        false,
+    )
+}
+
+/// Build the source/target domain pair plus window rows for one Engine
+/// `SendToOutput` request (item 5 explicit output send). DISTINCT from
+/// [`build_send_event`]: the destination is the target output's current
+/// workspace resolved adapter-side (cross-output, same workspace ids valid),
+/// carried as an explicit cross-output target with ordinary admission and the
+/// explicit follow/stay flag. Same row/observation contract as the workspace
+/// route.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn build_send_output_event(
+    owner: &OwnerId,
+    generation: &GenerationId,
+    correlation: &CorrelationId,
+    revision: u64,
+    fingerprint: u64,
+    source_domain: (OutputDomain, DomainKey),
+    target_domain: (OutputDomain, DomainKey),
+    source_rows: &[OwnerRow],
+    target_rows: &[OwnerRow],
+    mover_token: &str,
+    outer_gap: i32,
+    follow: bool,
+) -> Option<CoreEvent> {
+    build_send_event_inner(
+        owner,
+        generation,
+        correlation,
+        revision,
+        fingerprint,
+        source_domain,
+        target_domain,
+        source_rows,
+        target_rows,
+        mover_token,
+        outer_gap,
+        follow,
+        true,
+    )
+}
+
+/// Shared observation assembly for both send routes; only the command
+/// differs (`output_send` selects `SendToOutput`, else `SendToWorkspace`).
+#[allow(clippy::too_many_arguments)]
+fn build_send_event_inner(
+    owner: &OwnerId,
+    generation: &GenerationId,
+    correlation: &CorrelationId,
+    revision: u64,
+    fingerprint: u64,
+    source_domain: (OutputDomain, DomainKey),
+    target_domain: (OutputDomain, DomainKey),
+    source_rows: &[OwnerRow],
+    target_rows: &[OwnerRow],
+    mover_token: &str,
+    outer_gap: i32,
+    follow: bool,
+    output_send: bool,
+) -> Option<CoreEvent> {
     if mover_token.is_empty() {
         return None;
     }
@@ -139,11 +214,20 @@ pub fn build_send_event(
         target_domain: Some((target_domain_value, target_key)),
         target_windows,
         closed_windows: Vec::new(),
-        command: CoreCommand::SendToWorkspace {
-            window: mover_token.to_owned(),
-            target_output: String::new(),
-            target_workspace: String::new(),
-            follow,
+        command: if output_send {
+            CoreCommand::SendToOutput {
+                window: mover_token.to_owned(),
+                target_output: String::new(),
+                target_workspace: String::new(),
+                follow,
+            }
+        } else {
+            CoreCommand::SendToWorkspace {
+                window: mover_token.to_owned(),
+                target_output: String::new(),
+                target_workspace: String::new(),
+                follow,
+            }
         },
     })
 }
@@ -152,6 +236,21 @@ pub fn build_send_event(
 /// [`build_send_event`] so tests assert the target binding explicitly.
 pub fn stamp_send_target(event: &mut CoreEvent, target: &DomainKey) {
     if let CoreCommand::SendToWorkspace {
+        target_output,
+        target_workspace,
+        ..
+    } = &mut event.command
+    {
+        *target_output = target.output.0.clone();
+        *target_workspace = target.workspace.0.clone();
+    }
+}
+
+/// Fill the output-send command target from the resolved domain key. Split
+/// from [`build_send_output_event`] like [`stamp_send_target`]; a workspace
+/// stamp never touches an output command and vice versa.
+pub fn stamp_send_output_target(event: &mut CoreEvent, target: &DomainKey) {
+    if let CoreCommand::SendToOutput {
         target_output,
         target_workspace,
         ..
@@ -720,8 +819,9 @@ pub struct PlannedWrite {
 
 /// Portable Engine-reply extraction used by the actual native write path.
 /// Returns `None` for non-plan replies so callers serialize null with reason
-/// instead of zeros. Both-domain `SendWorkspace` plans carry source reflow
-/// and target placement together; the domain writable set scopes each pass.
+/// instead of zeros. Both-domain `SendWorkspace`/`SendOutput` plans carry
+/// source reflow and target placement together; the domain writable set
+/// scopes each pass.
 #[must_use]
 pub fn planned_writes(reply: &tiler_core::boundary::CoreReply) -> Option<Vec<PlannedWrite>> {
     fn map(geometry: &[tiler_core::session::DesiredGeometry]) -> Vec<PlannedWrite> {
@@ -743,6 +843,7 @@ pub fn planned_writes(reply: &tiler_core::boundary::CoreReply) -> Option<Vec<Pla
         R::MoveDirectional(plan) => Some(map(&plan.geometry)),
         R::FocusDirectional(plan) => Some(map(&plan.geometry)),
         R::SendWorkspace(plan) => Some(map(&plan.geometry)),
+        R::SendOutput(plan) => Some(map(&plan.geometry)),
         _ => None,
     }
 }
@@ -1147,6 +1248,53 @@ pub fn directional_fences_hold(
     }
     if !live.source_tiled || !live.target_tiled {
         return Some("workspace-floating");
+    }
+    if snapshot.source_tiled != live.source_tiled || snapshot.target_tiled != live.target_tiled {
+        return Some("mode-changed");
+    }
+    if !live.source_is_active || !live.target_is_active {
+        return Some("view-changed");
+    }
+    if !live.topology_ok {
+        return Some("topology-changed");
+    }
+    if !live.scope_ok {
+        return Some("scope-changed");
+    }
+    if !live.lifetime_ok {
+        return Some("identity-changed");
+    }
+    if !live.membership_ok {
+        return Some("origin-vanished");
+    }
+    if live.overlay_fullscreen != snapshot.overlay_fullscreen {
+        return Some("overlay-changed");
+    }
+    if live.overlay_maximized != snapshot.overlay_maximized {
+        return Some("overlay-changed");
+    }
+    if live.overlay_fullscreen {
+        return Some("move-refused-fullscreen");
+    }
+    None
+}
+
+/// Shared explicit output-send fence evaluation: the same pinned snapshot
+/// and live readings as [`directional_fences_hold`], except a floating
+/// boundary is a membership-only route rather than a refusal. Modes must
+/// still equal the snapshot (`mode-changed` on drift); gaps, current views,
+/// topology, scope, lifetime, membership, overlay, and owner binding must all
+/// hold. Returns the refusal token, or `None` when the tails may proceed.
+#[must_use]
+pub fn output_send_fences_hold(
+    snapshot: &DirectionalFenceSnapshot,
+    live: &DirectionalFenceLive,
+) -> Option<&'static str> {
+    if !live.owner_ok {
+        return Some("owner-changed");
+    }
+    if snapshot.inner_gap != live.inner_gap || snapshot.outer_gap != live.outer_gap {
+        return Some("gap-changed");
     }
     if snapshot.source_tiled != live.source_tiled || snapshot.target_tiled != live.target_tiled {
         return Some("mode-changed");
@@ -2803,6 +2951,488 @@ mod tests {
             .expect("fresh admission places w3")
             .1;
         assert_eq!(admitted_a, admitted_b, "unfloat places like a new window");
+    }
+
+    #[test]
+    fn send_output_builder_is_distinct_from_workspace_send() {
+        use tiler_core::boundary::CoreCommand;
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        let correlation = CorrelationId::parse("output-send").expect("correlation");
+        let bounds = rect(0, 0);
+        let source = workspace_domain("mon-a", "ws-1", bounds, 8);
+        let target = workspace_domain("mon-b", "ws-1", bounds, 8);
+        let rows = |token: &str| OwnerRow {
+            token: token.to_owned(),
+            rect: bounds,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        };
+        let source_rows = vec![rows("w1")];
+        let target_rows = vec![rows("t1")];
+        let mut output = build_send_output_event(
+            &owner,
+            &generation,
+            &correlation,
+            0,
+            1,
+            source.clone(),
+            target.clone(),
+            &source_rows,
+            &target_rows,
+            "w1",
+            8,
+            true,
+        )
+        .expect("output event");
+        stamp_send_output_target(&mut output, &target.1);
+        match &output.command {
+            CoreCommand::SendToOutput {
+                window,
+                target_output,
+                target_workspace,
+                follow: true,
+            } => {
+                assert_eq!(window, "w1");
+                assert_eq!(target_output, "mon-b");
+                assert_eq!(target_workspace, "ws-1");
+            }
+            _ => panic!("expected distinct send-to-output"),
+        }
+        // Same inputs through the workspace route stay a different command.
+        let mut same = build_send_event(
+            &owner,
+            &generation,
+            &correlation,
+            0,
+            1,
+            source,
+            target.clone(),
+            &source_rows,
+            &target_rows,
+            "w1",
+            8,
+            true,
+        )
+        .expect("workspace event");
+        stamp_send_target(&mut same, &target.1);
+        assert!(
+            matches!(same.command, CoreCommand::SendToWorkspace { .. }),
+            "workspace route keeps its own command"
+        );
+        // Stamps never cross routes: each touches only its own command.
+        stamp_send_target(&mut output, &target.1);
+        assert!(
+            matches!(output.command, CoreCommand::SendToOutput { .. }),
+            "workspace stamp leaves the output command alone"
+        );
+        match &output.command {
+            CoreCommand::SendToOutput {
+                target_output,
+                target_workspace,
+                ..
+            } => {
+                assert_eq!(target_output, "mon-b");
+                assert_eq!(target_workspace, "ws-1");
+            }
+            _ => unreachable!(),
+        }
+        stamp_send_output_target(&mut same, &target.1);
+        assert!(
+            matches!(same.command, CoreCommand::SendToWorkspace { .. }),
+            "output stamp leaves the workspace command alone"
+        );
+        assert!(
+            build_send_output_event(
+                &owner,
+                &generation,
+                &correlation,
+                0,
+                1,
+                workspace_domain("mon-a", "ws-1", bounds, 8),
+                target.clone(),
+                &source_rows,
+                &target_rows,
+                "",
+                8,
+                true,
+            )
+            .is_none()
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_output_pair(
+        engine: &mut tiler_core::engine::Engine,
+        owner: &OwnerId,
+        generation: &GenerationId,
+        source: &(OutputDomain, DomainKey),
+        target: &(OutputDomain, DomainKey),
+        source_rows: &[(&str, Rect)],
+        target_rows: &[(&str, Rect)],
+        source_focus: &str,
+        target_focus: Option<&str>,
+    ) {
+        for (domain, rows, focused) in [
+            (source, source_rows, Some(source_focus)),
+            (target, target_rows, target_focus),
+        ] {
+            let Some(focused) = focused else { continue };
+            let correlation = CorrelationId::parse("seed-output").expect("correlation");
+            let event = crate::tiling::build_reconcile_event_for(
+                owner,
+                generation,
+                &correlation,
+                0,
+                rows.len() as u64,
+                &domain.0,
+                &domain.1,
+                8,
+                &rows
+                    .iter()
+                    .map(|(t, r)| {
+                        (
+                            tiler_core::directional::WindowId((*t).to_owned()),
+                            *r,
+                            tiler_core::size_hints::WindowSizeHints::none(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                Some(&tiler_core::directional::WindowId(focused.to_owned())),
+            );
+            let reply = engine.handle(&event);
+            assert!(
+                matches!(
+                    reply,
+                    tiler_core::boundary::CoreReply::Projection(_)
+                        | tiler_core::boundary::CoreReply::Tiled(_)
+                ),
+                "seed must converge, got {reply:?}"
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn output_send_reply(
+        engine: &mut tiler_core::engine::Engine,
+        owner: &OwnerId,
+        generation: &GenerationId,
+        source: &(OutputDomain, DomainKey),
+        target: &(OutputDomain, DomainKey),
+        source_rows: &[OwnerRow],
+        target_rows: &[OwnerRow],
+        mover: &str,
+        follow: bool,
+    ) -> tiler_core::boundary::CoreReply {
+        let revision = engine
+            .session(&source.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("output-send").expect("correlation");
+        let mut pairs: Vec<(String, Rect)> = source_rows
+            .iter()
+            .chain(target_rows.iter())
+            .map(|r| (r.token.clone(), r.rect))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let fingerprint = crate::tiling::fingerprint(
+            &pairs
+                .iter()
+                .map(|(t, r)| (t.clone(), *r))
+                .collect::<Vec<_>>(),
+        );
+        let mut event = build_send_output_event(
+            owner,
+            generation,
+            &correlation,
+            revision,
+            fingerprint,
+            source.clone(),
+            target.clone(),
+            source_rows,
+            target_rows,
+            mover,
+            8,
+            follow,
+        )
+        .expect("output event");
+        stamp_send_output_target(&mut event, &target.1);
+        engine.handle(&event)
+    }
+
+    #[test]
+    fn send_output_commits_across_outputs_with_follow_and_stay() {
+        use tiler_core::boundary::CoreReply;
+        // Same workspace id on different outputs is a valid explicit-send
+        // target; the empty destination admits through the root fallback.
+        for follow in [true, false] {
+            let mut engine = tiler_core::engine::Engine::new();
+            let owner = OwnerId::parse("tiler-windows").expect("owner");
+            let generation = GenerationId::parse("aa").expect("generation");
+            engine.sync_binding(&owner, &generation);
+            let bounds = rect(0, 0);
+            let source = workspace_domain("mon-a", "ws-1", bounds, 8);
+            let target = workspace_domain("mon-b", "ws-1", bounds, 8);
+            seed_output_pair(
+                &mut engine,
+                &owner,
+                &generation,
+                &source,
+                &target,
+                &[("w1", bounds), ("w2", bounds)],
+                &[],
+                "w1",
+                None,
+            );
+            let row = |token: &str| OwnerRow {
+                token: token.to_owned(),
+                rect: bounds,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+            };
+            let reply = output_send_reply(
+                &mut engine,
+                &owner,
+                &generation,
+                &source,
+                &target,
+                &[row("w1"), row("w2")],
+                &[],
+                "w1",
+                follow,
+            );
+            let CoreReply::SendOutput(plan) = &reply else {
+                panic!("explicit send commits SendOutput, got {reply:?}");
+            };
+            assert_eq!(plan.follow, follow, "command follow/stay echoes");
+            assert!(
+                matches!(
+                    plan.operation,
+                    tiler_core::contract::LifecycleOperation::MoveTiled { .. }
+                ),
+                "ordinary transfer shape, got {:?}",
+                plan.operation
+            );
+            let writes = super::planned_writes(&reply).expect("SendOutput extracts");
+            assert_eq!(writes.len(), plan.geometry.len(), "nothing dropped");
+            assert!(writes.iter().any(|w| w.window.0 == "w1"), "mover placed");
+            assert!(
+                writes.iter().any(|w| w.window.0 == "w2"),
+                "source survivor reflowed"
+            );
+            let mover = plan
+                .geometry
+                .iter()
+                .find(|g| g.window.0 == "w1")
+                .expect("mover geometry");
+            assert_eq!(mover.output.0, "mon-b", "mover lands cross-output");
+            assert_eq!(mover.workspace.0, "ws-1", "same workspace id valid");
+        }
+    }
+
+    #[test]
+    fn send_output_admits_remembered_mru_and_root_instead_of_r4() {
+        use tiler_core::boundary::{CoreCommand, CoreReply};
+        use tiler_core::directional::{Direction, WindowId};
+        let bounds = rect(0, 0);
+        let source = workspace_domain("mon-a", "ws-1", bounds, 8);
+        let target = workspace_domain("mon-b", "ws-2", bounds, 8);
+        let row = |token: &str| OwnerRow {
+            token: token.to_owned(),
+            rect: bounds,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        };
+        // Occupied destination with focus history on t1: the ordinary
+        // destination-history admission places the mover (no R4 edge rule).
+        let mut engine = tiler_core::engine::Engine::new();
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        engine.sync_binding(&owner, &generation);
+        seed_output_pair(
+            &mut engine,
+            &owner,
+            &generation,
+            &source,
+            &target,
+            &[("w1", bounds)],
+            &[("t1", bounds)],
+            "w1",
+            Some("t1"),
+        );
+        // Second target converge keeps focus history on t1 (MRU admission
+        // source); a remembered leaf pinned on t2 still wins over the MRU,
+        // landing the mover in t2's right half - while R4 answers a
+        // full-height edge strip, so the two geometries differ, not just the
+        // reply variants.
+        let correlation = CorrelationId::parse("seed-mru").expect("correlation");
+        let event = crate::tiling::build_reconcile_event_for(
+            &owner,
+            &generation,
+            &correlation,
+            engine
+                .session(&target.1)
+                .map(|s| s.accepted_revision())
+                .unwrap_or(0),
+            2,
+            &target.0,
+            &target.1,
+            8,
+            &[
+                (
+                    WindowId("t1".to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                ),
+                (
+                    WindowId("t2".to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                ),
+            ],
+            Some(&WindowId("t1".to_owned())),
+        );
+        let _ = engine.handle(&event);
+        assert!(engine.remember_domain_focus(&target.1, &WindowId("t2".to_owned())));
+        let reply = output_send_reply(
+            &mut engine,
+            &owner,
+            &generation,
+            &source,
+            &target,
+            &[row("w1")],
+            &[row("t1"), row("t2")],
+            "w1",
+            true,
+        );
+        let CoreReply::SendOutput(plan) = &reply else {
+            panic!("remembered-leaf admission commits, got {reply:?}");
+        };
+        let send_mover = plan
+            .geometry
+            .iter()
+            .find(|g| g.window.0 == "w1")
+            .expect("mover admitted into the occupied target");
+        assert!(
+            matches!(
+                plan.operation,
+                tiler_core::contract::LifecycleOperation::MoveTiled { .. }
+            ),
+            "ordinary admission, never R4 edge insertion"
+        );
+        // Same topology through the directional R4 route answers
+        // MoveDirectional with a cross view instead of SendOutput. A fresh
+        // Engine replays the pre-send topology: the send above already
+        // committed its transfer on the first Engine.
+        let mut engine = tiler_core::engine::Engine::new();
+        engine.sync_binding(&owner, &generation);
+        seed_output_pair(
+            &mut engine,
+            &owner,
+            &generation,
+            &source,
+            &target,
+            &[("w1", bounds)],
+            &[("t1", bounds), ("t2", bounds)],
+            "w1",
+            Some("t2"),
+        );
+        let ((source_domain, source_key), (target_domain, target_key)) =
+            super::directional_pair_with_adjacency(
+                (source.0.clone(), source.1.clone()),
+                (target.0.clone(), target.1.clone()),
+                Direction::Right,
+            );
+        let correlation = CorrelationId::parse("r4-contrast").expect("correlation");
+        let mut windows = Vec::new();
+        for (key, token) in [
+            (&source_key, "w1"),
+            (&target_key, "t1"),
+            (&target_key, "t2"),
+        ] {
+            windows.push(tiler_core::seed::EngineWindow {
+                window: WindowId(token.to_owned()),
+                output: key.output.clone(),
+                workspace: key.workspace.clone(),
+                rect: bounds,
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            });
+        }
+        let cross_event = tiler_core::boundary::CoreEvent {
+            owner: owner.clone(),
+            generation: generation.clone(),
+            correlation,
+            revision: 0,
+            fingerprint: 7,
+            domain: source_domain.clone(),
+            domain_key: source_key.clone(),
+            outer_gap: 8,
+            focused_window: WindowId("w1".to_owned()),
+            windows,
+            directional: Some(vec![
+                (source_domain, source_key),
+                (target_domain, target_key),
+            ]),
+            directional_target_outer_gap: Some(8),
+            target_domain: None,
+            target_windows: Vec::new(),
+            closed_windows: Vec::new(),
+            command: CoreCommand::Move {
+                window: "w1".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        };
+        match engine.handle(&cross_event) {
+            CoreReply::MoveDirectional(plan) => {
+                assert!(plan.cross.is_some(), "R4 answers a cross view");
+                let r4_mover = plan
+                    .geometry
+                    .iter()
+                    .find(|g| g.window.0 == "w1")
+                    .expect("R4 places the crossing mover");
+                for (label, rect) in [("send", send_mover.rect), ("r4", r4_mover.rect)] {
+                    assert!(
+                        rect.x >= 0
+                            && rect.y >= 0
+                            && rect.x + rect.w <= 800
+                            && rect.y + rect.h <= 600,
+                        "{label} mover lands inside the target bounds, got {rect:?}"
+                    );
+                }
+                assert!(
+                    send_mover.rect != r4_mover.rect,
+                    "ordinary remembered-leaf landing differs from R4 edge insertion: \
+                     send {send:?} vs r4 {r4:?}",
+                    send = send_mover.rect,
+                    r4 = r4_mover.rect,
+                );
+                // Observed layout (800x600 target, t1 left half, t2 right
+                // half): the remembered-leaf split lands the mover in the
+                // bottom of t2's right half, while R4 answers a full-height
+                // edge strip. Both land inside the target; only the admission
+                // rule selects which.
+                assert!(
+                    send_mover.rect.x >= 400 && send_mover.rect.y >= 300,
+                    "remembered right-leaf split lands bottom-right, got {send:?}",
+                    send = send_mover.rect,
+                );
+                assert!(
+                    r4_mover.rect.y == 0 && r4_mover.rect.h == 600,
+                    "R4 edge insertion spans the full target height, got {r4:?}",
+                    r4 = r4_mover.rect,
+                );
+            }
+            reply => panic!("directional route stays MoveDirectional, got {reply:?}"),
+        }
     }
 
     #[test]
@@ -10564,6 +11194,155 @@ mod fixed_admission_tests {
         }
 
         #[test]
+        fn all_four_directions_resolve_stacked_candidates() {
+            // Right/Left use stacked (vertical) candidates; Up/Down use
+            // side-by-side (horizontal) candidates, including negative
+            // origins. The mover centre projection picks each side.
+            let horizontal = vec![
+                full("src", 0, 0, 800, 1000),
+                full("upper", 800, 0, 800, 500),
+                full("lower", 800, 500, 800, 500),
+            ];
+            assert_eq!(
+                select_directional_target(
+                    Direction::Left,
+                    "upper",
+                    &mover(900, 100, 200, 100),
+                    &horizontal
+                )
+                .expect("readable"),
+                Some("src".to_owned())
+            );
+            let vertical = vec![
+                full("src", 0, 0, 1000, 800),
+                full("west", 0, 800, 400, 800),
+                full("east", 400, 800, 600, 800),
+            ];
+            assert_eq!(
+                select_directional_target(
+                    Direction::Down,
+                    "src",
+                    &mover(100, 100, 100, 200),
+                    &vertical
+                )
+                .expect("readable"),
+                Some("west".to_owned())
+            );
+            assert_eq!(
+                select_directional_target(
+                    Direction::Down,
+                    "src",
+                    &mover(700, 100, 100, 200),
+                    &vertical
+                )
+                .expect("readable"),
+                Some("east".to_owned())
+            );
+            assert_eq!(
+                select_directional_target(
+                    Direction::Up,
+                    "east",
+                    &mover(500, 900, 100, 200),
+                    &vertical
+                )
+                .expect("readable"),
+                Some("src".to_owned())
+            );
+            // Negative stacked origins behave alike: no wrap, centre wins.
+            let negative = vec![
+                full("src", -800, -1000, 800, 1000),
+                full("above", -800, -2000, 800, 1000),
+            ];
+            assert_eq!(
+                select_directional_target(
+                    Direction::Up,
+                    "src",
+                    &mover(-700, -1400, 200, 100),
+                    &negative
+                )
+                .expect("readable"),
+                Some("above".to_owned())
+            );
+        }
+
+        #[test]
+        fn span_overlap_fallback_then_left_top_then_identity() {
+            // Gapped candidates on the right: mover centres in the gap miss
+            // both shared edges, so the larger window-span overlap wins.
+            let outputs = vec![
+                full("src", 0, 0, 800, 1000),
+                full("upper", 800, 0, 800, 300),
+                full("lower", 800, 700, 800, 300),
+            ];
+            let favour_upper = mover(100, 100, 200, 700);
+            assert_eq!(
+                select_directional_target(Direction::Right, "src", &favour_upper, &outputs)
+                    .expect("readable"),
+                Some("upper".to_owned())
+            );
+            let favour_lower = mover(100, 300, 200, 500);
+            assert_eq!(
+                select_directional_target(Direction::Right, "src", &favour_lower, &outputs)
+                    .expect("readable"),
+                Some("lower".to_owned())
+            );
+            // Zero overlap on both clears to left/top: the topmost wins.
+            let clears_both = mover(100, 400, 200, 100);
+            assert_eq!(
+                select_directional_target(Direction::Right, "src", &clears_both, &outputs)
+                    .expect("readable"),
+                Some("upper".to_owned())
+            );
+            // Mirrored twins tie on left/top; stable identity breaks it.
+            let twins = vec![
+                full("src", 0, 0, 800, 600),
+                full("twin-b", 800, 0, 800, 600),
+                full("twin-a", 800, 0, 800, 600),
+            ];
+            assert_eq!(
+                select_directional_target(
+                    Direction::Right,
+                    "src",
+                    &mover(100, 100, 200, 200),
+                    &twins
+                )
+                .expect("readable"),
+                Some("twin-a".to_owned())
+            );
+        }
+
+        #[test]
+        fn odd_extent_centre_boundary_is_exact() {
+            // Half-open [start,end) containment in doubled coordinates: a
+            // centre of exactly 499.5 stays inside [0,500), 500.5 does not.
+            let outputs = vec![
+                full("src", 0, 0, 800, 1000),
+                full("upper", 800, 0, 800, 500),
+                full("lower", 800, 500, 800, 500),
+            ];
+            assert_eq!(
+                select_directional_target(
+                    Direction::Right,
+                    "src",
+                    &mover(100, 449, 200, 101),
+                    &outputs
+                )
+                .expect("readable"),
+                Some("upper".to_owned())
+            );
+            assert_eq!(
+                select_directional_target(
+                    Direction::Right,
+                    "src",
+                    &mover(100, 450, 200, 101),
+                    &outputs
+                )
+                .expect("readable"),
+                Some("lower".to_owned())
+            );
+        }
+
+        #[test]
         fn pair_attaches_reciprocal_adjacency_only() {
             let bounds = Rect {
                 x: 0,
@@ -10708,6 +11487,48 @@ mod fixed_admission_tests {
             assert_eq!(
                 directional_fences_hold(&snapshot, &fullscreen),
                 Some("overlay-changed")
+            );
+        }
+
+        #[test]
+        fn output_send_fences_route_floating_but_refuse_mode_drift() {
+            // Same pinned snapshot/live shapes as the directional gate, but a
+            // floating boundary is a membership-only route: matching modes
+            // hold even when floating, while drift still refuses.
+            let mut snapshot = fence_snapshot();
+            snapshot.target_tiled = false;
+            let mut live = fence_live();
+            live.target_tiled = false;
+            assert_eq!(output_send_fences_hold(&snapshot, &live), None);
+            let mut source_floating = fence_live();
+            source_floating.source_tiled = false;
+            let mut source_snapshot = fence_snapshot();
+            source_snapshot.source_tiled = false;
+            assert_eq!(
+                output_send_fences_hold(&source_snapshot, &source_floating),
+                None
+            );
+            // Mode drift on either side refuses instead of routing.
+            let mut drifted = fence_live();
+            drifted.target_tiled = true;
+            assert_eq!(
+                output_send_fences_hold(&snapshot, &drifted),
+                Some("mode-changed")
+            );
+            // Every other arm matches the directional gate.
+            let mut stale_view = fence_live();
+            stale_view.target_tiled = false;
+            stale_view.target_is_active = false;
+            assert_eq!(
+                output_send_fences_hold(&snapshot, &stale_view),
+                Some("view-changed")
+            );
+            let mut stale_scope = fence_live();
+            stale_scope.target_tiled = false;
+            stale_scope.scope_ok = false;
+            assert_eq!(
+                output_send_fences_hold(&snapshot, &stale_scope),
+                Some("scope-changed")
             );
         }
 

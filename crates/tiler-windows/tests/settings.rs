@@ -731,7 +731,7 @@ fn compatible_preset_disables_os_conflicting_rows() {
     assert!(changed.contains(&"workspace-prev-left-arrow"));
     assert!(changed.contains(&"workspace-next-right-arrow"));
     let effective = tiler_windows::settings::effective_bindings(&settings);
-    assert_eq!(effective.len(), 87);
+    assert_eq!(effective.len(), 99);
     for row in &effective {
         if tiler_windows::settings::compatible_disabled_ids().contains(&row.id) {
             assert!(!row.active, "{}", row.id);
@@ -912,7 +912,8 @@ fn retained_update_gaps_preserves_topology() {
 // Item 2 catalog/settings: 26 new rows (10 numbered stay + 8 relative follow
 // + 8 relative stay) for 83 total, plus the item 4 orientation toggle for 84,
 // plus the two launcher rows for 86, plus the item 21 workspace-tiling toggle
-// for 87; follow defaults keep pending evidenced
+// for 87, plus the 12 item 5 output rows (8 follow + 4 stay) for 99; follow
+// defaults keep pending evidenced
 // conflicts with honest unknown-ownership text (no new Compatible disables);
 // stay rows are bindable unbound with Keep meaning unbound.
 
@@ -924,7 +925,7 @@ fn catalog_exposes_item2_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 87);
+    assert_eq!(catalog.len(), 99);
     // Numbered stay: ten unbound rows on the shifted digit arm through the
     // stay action, sharing the follow digit canonical slot.
     for index in [1u8, 2, 9, 0] {
@@ -1635,7 +1636,7 @@ fn catalog_exposes_resize_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 87);
+    assert_eq!(catalog.len(), 99);
     let resize: Vec<_> = catalog
         .iter()
         .filter(|def| {
@@ -1965,7 +1966,7 @@ fn catalog_exposes_launcher_rows_with_exact_modifiers() {
     }
     // Authentic keeps both launchers live on their defaults.
     let effective = effective_bindings(&Settings::default());
-    assert_eq!(effective.len(), 87);
+    assert_eq!(effective.len(), 99);
     for (id, chord) in [("launch-browser", "Win+B"), ("launch-terminal", "Win+T")] {
         let row = effective.iter().find(|row| row.id == id).expect("row");
         assert!(row.active && row.effective, "{id}");
@@ -2223,6 +2224,261 @@ fn catalog_exposes_workspace_tiling_toggle_with_mixed_reality_conflict() {
         BindingSetting {
             state: BindingState::Rebind,
             chord: Some("Win+O".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_err());
+}
+
+// Item 5 catalog/settings: 8 follow rows (letters plus separate arrow rows,
+// Win+Ctrl+Alt defaults kept under both presets with the honest
+// ownership-unknown note) plus 4 canonical stay rows (one per direction,
+// bindable unbound). No Compatible disables and no invented stock holder.
+#[test]
+fn catalog_exposes_output_send_rows_with_exact_modifiers() {
+    use tiler_windows::settings::{
+        OUTPUT_SEND_CONFLICT, binding_action, binding_canonical_vk, binding_catalog,
+        binding_modifiers_ok, binding_wants_alt, binding_wants_ctrl, binding_wants_shift,
+        chord_conflict,
+    };
+    use tiler_windows::snapkey::ChordAction;
+    let catalog = binding_catalog();
+    assert_eq!(catalog.len(), 99);
+    // Follow: eight bound rows on the Win+Ctrl+Alt arm through the follow
+    // action, sharing the letter/arrow canonical slots.
+    for (id, chord, action) in [
+        (
+            "send-output-left",
+            "Win+Ctrl+Alt+H",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-left-arrow",
+            "Win+Ctrl+Alt+Left",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-down",
+            "Win+Ctrl+Alt+J",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-down-arrow",
+            "Win+Ctrl+Alt+Down",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-up",
+            "Win+Ctrl+Alt+K",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-up-arrow",
+            "Win+Ctrl+Alt+Up",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-right",
+            "Win+Ctrl+Alt+L",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+        (
+            "send-output-right-arrow",
+            "Win+Ctrl+Alt+Right",
+            ChordAction::WorkspaceOutputFollow,
+        ),
+    ] {
+        let def = catalog.iter().find(|def| def.id == id).expect("row");
+        assert_eq!(def.defaults, &[chord]);
+        assert!(def.implemented, "{id}");
+        assert!(!binding_wants_shift(def), "{id} rides unshifted");
+        assert!(binding_wants_ctrl(def) && binding_wants_alt(def), "{id}");
+        assert_eq!(binding_action(def), action);
+        assert_eq!(def.conflict, Some(OUTPUT_SEND_CONFLICT));
+        // A shifted rebind of a follow row refuses (stay owns the Shift arm).
+        assert!(!binding_modifiers_ok(def, true, true, true), "{id}");
+    }
+    // Stay: four unbound rows through the stay action, sharing the follow
+    // letter slot by row identity.
+    for (id, canon) in [
+        ("send-output-left-stay", 0x48u32),
+        ("send-output-down-stay", 0x4Au32),
+        ("send-output-up-stay", 0x4Bu32),
+        ("send-output-right-stay", 0x4Cu32),
+    ] {
+        let def = catalog.iter().find(|def| def.id == id).expect("row");
+        assert!(def.defaults.is_empty(), "{id} unbound by default");
+        assert!(def.implemented, "{id}");
+        assert!(def.conflict.is_none(), "{id} unbound carries no conflict");
+        assert_eq!(binding_action(def), ChordAction::WorkspaceOutputStay);
+        assert_eq!(
+            binding_canonical_vk(def),
+            Some(canon),
+            "{id} shares the letter slot"
+        );
+        // Stay accepts the unshifted arm (e.g. Win+Ctrl+Alt+F6) and the
+        // shifted arm; anything else refuses.
+        assert!(binding_modifiers_ok(def, false, true, true), "{id}");
+        assert!(binding_modifiers_ok(def, true, true, true), "{id}");
+        assert!(!binding_modifiers_ok(def, false, false, false), "{id}");
+        assert!(!binding_modifiers_ok(def, false, true, false), "{id}");
+    }
+    // Conflict text is honestly unknown-ownership, never a stock holder or
+    // conflict-free claim; the resize Alt arm is untouched.
+    let conflict = chord_conflict("Win+Ctrl+Alt+H").expect("output conflict");
+    assert!(
+        conflict.contains("ownership unknown") && conflict.contains("unproven live"),
+        "{conflict}"
+    );
+    assert!(!conflict.contains("virtual desktop"), "{conflict}");
+    let resize = chord_conflict("Win+Alt+H").expect("resize conflict");
+    assert_ne!(resize, OUTPUT_SEND_CONFLICT);
+}
+
+#[test]
+fn output_send_presets_keep_both_with_no_new_disables() {
+    use tiler_windows::settings::{
+        apply_preset, binding_catalog, compatible_disabled_ids, effective_bindings,
+    };
+    for id in [
+        "send-output-left",
+        "send-output-left-arrow",
+        "send-output-down",
+        "send-output-down-arrow",
+        "send-output-up",
+        "send-output-up-arrow",
+        "send-output-right",
+        "send-output-right-arrow",
+        "send-output-left-stay",
+        "send-output-down-stay",
+        "send-output-up-stay",
+        "send-output-right-stay",
+    ] {
+        assert!(
+            binding_catalog().iter().any(|def| def.id == id),
+            "{id} in catalog"
+        );
+        assert!(
+            !compatible_disabled_ids().contains(&id),
+            "{id} keeps under Compatible"
+        );
+    }
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        apply_preset(&mut settings, preset);
+        assert!(
+            !settings
+                .bindings
+                .keys()
+                .any(|id| id.starts_with("send-output")),
+            "no output overrides under {preset:?}"
+        );
+        let effective = effective_bindings(&settings);
+        assert_eq!(effective.len(), 99);
+        for row in effective
+            .iter()
+            .filter(|row| row.id.starts_with("send-output-"))
+        {
+            if row.id.ends_with("-stay") {
+                assert!(row.active && !row.effective, "{}", row.id);
+                assert!(row.chords.is_empty(), "{}", row.id);
+            } else {
+                assert!(row.active && row.effective, "{}", row.id);
+                assert_eq!(row.chords.len(), 1, "{}", row.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn output_send_rebind_remap_and_validation() {
+    use tiler_windows::settings::{build_disabled, build_remap, validate_settings};
+    use tiler_windows::snapkey::{ChordAction, ChordDisable, ChordRemap};
+    // Follow rebind to an unused validated chord routes with the follow
+    // action; the old default passes through.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "send-output-right".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+F6".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    assert_eq!(
+        build_remap(&settings),
+        vec![ChordRemap {
+            from_vk: 0x75,
+            from_shift: false,
+            from_ctrl: true,
+            from_alt: true,
+            action: ChordAction::WorkspaceOutputFollow,
+            to_vk: 0x4C,
+        }]
+    );
+    assert!(build_disabled(&settings).contains(&ChordDisable {
+        vk: 0x4C,
+        shift: false,
+        ctrl: true,
+        alt: true,
+    }));
+    // Stay rebind without Shift (the backlog journey chord) routes stay.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "send-output-right-stay".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+F6".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    assert_eq!(
+        build_remap(&settings),
+        vec![ChordRemap {
+            from_vk: 0x75,
+            from_shift: false,
+            from_ctrl: true,
+            from_alt: true,
+            action: ChordAction::WorkspaceOutputStay,
+            to_vk: 0x4C,
+        }]
+    );
+    // Stay rebind with Shift routes stay too.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "send-output-right-stay".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+Shift+F6".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    // Wrong-arm rebinds refuse: shifted follow, unshifted-history-style stay,
+    // lock-chord target.
+    for (id, bad) in [
+        ("send-output-right", "Win+Ctrl+Alt+Shift+F6"),
+        ("send-output-right", "Win+Ctrl+F6"),
+        ("send-output-right", "Win+Alt+F6"),
+        ("send-output-right-stay", "Win+Shift+F6"),
+        ("send-output-right-stay", "Win+Ctrl+F6"),
+        ("send-output-right", "Win+L"),
+    ] {
+        let mut settings = Settings::default();
+        settings.bindings.insert(
+            id.to_owned(),
+            BindingSetting {
+                state: BindingState::Rebind,
+                chord: Some(bad.to_owned()),
+            },
+        );
+        assert!(validate_settings(&settings).is_err(), "{id} {bad}");
+    }
+    // Duplicate active chords refuse: stay rebound onto the follow default.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "send-output-right-stay".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+L".to_owned()),
         },
     );
     assert!(validate_settings(&settings).is_err());
