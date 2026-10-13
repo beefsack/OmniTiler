@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "description": "R-MAX-06 born-maximized shared conformance: raw setting to normalized token to ordinary eligible tiled-first admission outcome (clear once vs keep overlay). Host-specific eligibility gates stay adapter-owned; only this table is shared.",
+  "ordinary_eligible": "tiled-first born maximized window with no fullscreen/floating/sticky/floating-first/fixed-hint/prior-attempt/applied evidence",
+  "tile_means": "exactly one clearMaximize call, then ordinary admission",
+  "keep_means": "no clearMaximize call, overlay slot reserved",
+  "cases": [
+    { "name": "missing-defaults-to-tile-and-clears", "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "null-falls-back-to-tile-and-clears", "raw": null, "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "tile-on-launch-clears", "raw": "tile-on-launch", "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "keep-maximized-overlay-keeps", "raw": "keep-maximized-overlay", "normalized": "keep-maximized-overlay", "should_clear": false },
+    { "name": "unknown-string-falls-back-to-tile-and-clears", "raw": "bogus", "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "empty-string-falls-back-to-tile-and-clears", "raw": "", "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "number-falls-back-to-tile-and-clears", "raw": 0, "normalized": "tile-on-launch", "should_clear": true },
+    { "name": "boolean-falls-back-to-tile-and-clears", "raw": true, "normalized": "tile-on-launch", "should_clear": true }
+  ]
+}

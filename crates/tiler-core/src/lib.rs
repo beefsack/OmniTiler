@@ -4,6 +4,7 @@
 //! outside the core; a core rectangle never encodes host-specific frame insets.
 
 pub mod active_group;
+pub mod born_maximized;
 pub mod boundary;
 pub mod bounds;
 pub mod contract;

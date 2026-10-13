@@ -13,7 +13,9 @@ decisions of 2026-09-24 are under
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
   D16 ordinary/combo floating sends delivered offline ([evidence](changes/archive/d16-floating-transfer.md));
-  next code: born-maximized core lift, underlay default, unsafe planner explicit-config
+  Born-maximized core policy and KDE conformance delivered offline
+  ([evidence](changes/archive/born-maximized-shared-policy.md));
+  next code: underlay default, unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
   and effect-description upgrade note. Native verification remains queued.
 
@@ -103,7 +105,12 @@ decisions of 2026-09-24 are under
   `kwin/src` TypeScript and `kwin/native-effect` C++ (including settings and
   shortcut reconciliation) into system-specific Rust, then into the agnostic
   shared core where appropriate. First pass after 0.1, aligned with or ahead
-  of deferred K2/K3; born-maximized is the approved immediate core lift.
+  of deferred K2/K3. Born-maximized core policy is delivered offline;
+  user 2026-10-13 option C defers KDE rewiring to this pass. KDE retains its
+  conformance-pinned TypeScript copy because clear/keep runs synchronously
+  before dispatch and the planner protocol lacks the decision. Runtime
+  protocol changes and build-time generation were declined
+  ([record](changes/archive/born-maximized-shared-policy.md)).
   Link with KDE interaction performance/threading and
   [Live sibling reflow while dragging](#open-work).
 - P2 | KDE interaction performance and threading | New post-0.1 research,
@@ -358,9 +365,12 @@ decisions of 2026-09-24 are under
   KWin effect FFI stays a minimal boundary module.
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered
   offline: R-MAX-06 born-maximized setting (default tile), active border
-  radius 6. User 2026-10-13: lift born-maximized policy into shared core now,
-  rewire KDE with identical behavior/labels; `bornMaximized` key accepted.
-  Windows adapter-copy replacement follows shared delivery (handoff item 23).
+  radius 6. Born-maximized shared-core policy delivered offline with one
+  Rust/KWin conformance table ([record](changes/archive/born-maximized-shared-policy.md)).
+  User 2026-10-13 option C amends immediate KDE rewiring: keep its pinned copy
+  and defer rewiring to post-0.1 Push code down; behavior, labels and accepted
+  `bornMaximized` key unchanged. Windows adapter-copy replacement remains
+  handoff item 23; native Windows compilation of the lift remains pending.
   Underlay candidate C `#662a82da` selected for now on both platforms; needs
   KDE kcfg default, Windows constant (item 24). Settings UI, both-values
   launch, radius appearance and black/white/grey underlay live checks pending;
@@ -2955,11 +2965,23 @@ decisions of 2026-09-24 are under
     only / Switch and focus. See [current settings scope](decisions.md#settings-tray-and-first-run).
     No Windows behavior is claimed inspected or delivered by this docs change.
 
-  - Item 23: born-maximized shared policy (User 2026-10-13). After the shared
-    core lift, replace the Windows adapter copy with shared policy, preserving
-    both values, labels, schema-v1 `core.born_maximized`, subsequent-admission
-    adoption, fullscreen/fixed-size gates and retile independence. KDE rewiring
-    keeps identical behavior/labels and accepted `bornMaximized` key.
+  - Item 23: born-maximized shared policy (User 2026-10-13, amended option C).
+    Core policy is available in `tiler_core::born_maximized::BornMaximized`.
+    Replace Windows `settings.rs`'s default/token validation and
+    `CoreSettings::born_maximized_keep_overlay`, plus
+    `tiling.rs`'s `born_maximized_keep_overlay` token comparison, with core
+    parsing/default handling and `should_clear_at_admission`'s clear/keep
+    choice. Preserve strict invalid-file refusal/last-good adoption: use
+    `parse_wire` for validation, not fallback normalization to accept invalid
+    saved values. Keep schema-v1 `core.born_maximized`, labels/tooltips,
+    lifetime-bound subsequent-admission adoption, native identity/eligibility
+    fences, fullscreen/fixed-size gates, one-shot attempts and independent
+    born/retile latches unchanged. Acceptance: consume the same
+    `test-fixtures/born-maximized.json` table in Windows adapter tests, then
+    pass existing setting/latch/clear/retile regressions and native Windows
+    compile/tests. No Windows rewire is included in the core delivery. KDE
+    keeps its conformance-pinned copy until post-0.1 Push code down
+    ([record](changes/archive/born-maximized-shared-policy.md)).
   - Item 24: underlay default (User 2026-10-13). Change Windows constant to
     `#662a82da` (40% accent blue), for now, matching KDE kcfg default. Preserve
     explicit colors; live visual check on black, white and grey wallpapers.

@@ -539,3 +539,40 @@ describe("born-maximized live reread on Options configChanged", () => {
         handle?.stop();
     });
 });
+
+interface BornFixtureCase {
+    name: string;
+    raw?: unknown;
+    normalized: string;
+    should_clear: boolean;
+}
+
+// Shared R-MAX-06 conformance table (also consumed by tiler-core
+// `born_maximized` unit tests): each row pins the raw setting, the
+// normalized token, and the clear-vs-keep outcome for an ordinary eligible
+// tiled-first born-maximized admission. The adapter half exercises the real
+// admission outcome (clearMaximize call count), not only the normalizer.
+describe("born-maximized shared conformance fixture", () => {
+    const fixture = JSON.parse(
+        readFileSync("../test-fixtures/born-maximized.json", "utf8"),
+    ) as { cases: BornFixtureCase[] };
+    assert.ok(fixture.cases.length > 0, "fixture carries a case table");
+    for (const kase of fixture.cases) {
+        it(`${kase.name}: normalizes to ${kase.normalized}`, () => {
+            const raw = "raw" in kase ? kase.raw : undefined;
+            assert.equal(normalizeBornMaximized(raw), kase.normalized);
+        });
+        it(`${kase.name}: adapter ${kase.should_clear ? "clears once" : "keeps the overlay"}`, () => {
+            const raw = "raw" in kase ? kase.raw : undefined;
+            const refs = makeRefs();
+            const mocks = mockBornEnv(refs);
+            mocks.observeImpl = () => makeObserved(refs, { maximizedB: true });
+            mocks.bornMode = raw;
+            const adapter = new PlanAdapter(mocks.env);
+            assert.equal(adapter.enable({ owner: "owner-1", generation: "gen-1" }), true);
+            fire(mocks, "added");
+            runTimers(mocks);
+            assert.equal(mocks.maximizeClears.length, kase.should_clear ? 1 : 0, kase.name);
+        });
+    }
+});

@@ -2499,6 +2499,17 @@ platform API behavior.
   and drift. Rewire KDE with identical behavior and labels; `bornMaximized`
   is the accepted KDE key name. Windows handoff replaces its adapter copy
   with the shared policy after shared delivery.
+  - Amended by user 2026-10-13, option C: core owns the two-value policy and
+    default handling now; KDE keeps its existing TypeScript copy, pinned by
+    one conformance case table consumed by Rust core and KWin tests. This
+    supersedes "rewire KDE now": defer KDE rewiring to the post-0.1 Push code
+    down pass. Its clear/keep decision is synchronous pre-dispatch and the
+    planner protocol lacks that decision; runtime protocol changes and
+    build-time generation were declined. KDE behavior, labels/tooltips,
+    `bornMaximized` key and subsequent-admissions-only adoption stay unchanged.
+    Windows replacement remains handoff item 23: Rust can call core directly,
+    with the same table as acceptance and existing host gates preserved.
+    [Core policy and conformance delivery](changes/archive/born-maximized-shared-policy.md).
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06
