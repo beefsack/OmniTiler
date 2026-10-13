@@ -49,6 +49,7 @@ Description: OmniTiler native KWin effect (active border)
  install the rebuilt companion before relying on the effect: the effect's
  factory IID carries the KWin version it was built against, and a
  mismatched KWin refuses the plugin before instantiation.
+ KWin upgrades wait for a rebuilt effect.
  .
  The settings pages (with Revert) live in the core omnitiler package, so
  removing this companion alone leaves Settings and Revert available. Core

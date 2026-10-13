@@ -17,9 +17,8 @@ decisions of 2026-09-24 are under
   ([evidence](changes/archive/born-maximized-shared-policy.md));
   KDE underlay default delivered offline ([evidence](changes/archive/kde-dogfood-underlay-options.md#8-kde-default-delivery-2026-10-13));
   next code: unsafe planner explicit-config
-  rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
-  and effect-description upgrade note, then KWin-to-Rust migration research
-  (below). Native verification remains queued.
+  rework plus crate-wide forbid, third-party notices, then KWin-to-Rust
+  migration research (below). Native verification remains queued.
 - P2 | KWin-to-Rust migration research | User 2026-10-13: read-only research
   after the current code queue, informing the post-0.1 Push code down pass; no
   code and no 0.1 schedule change. Map logic in `kwin/src` TypeScript and
@@ -87,9 +86,9 @@ decisions of 2026-09-24 are under
   2026-10-11 and delivered offline; release 6.6.4, updates 6.6.6 and 26.10
   6.7.5 two-package builds and full apt install/upgrade/removal solver acceptance
   passed ([solver evidence](changes/archive/ubuntu-apt-solver-acceptance.md)).
-  User 2026-10-13 selected (b): keep exact effect pin; queue installation-guide
-  note and effect-package description line explaining KWin upgrades wait for
-  the rebuilt effect. Remaining: that doc/packaging change,
+  User 2026-10-13 selected (b): exact effect pin retained; installation-guide
+  note and Debian effect-package description explain the rebuild wait
+  ([delivery](changes/archive/ubuntu-kwin-upgrade-note.md)). Remaining:
   user-owned shared-workspace/Settings/native-visual journeys on 6.6
   and per-output regression on 6.7+, OBS target provisioning/source handoff.
   Plasma 5 and KWin <= 6.5 remain unsupported.

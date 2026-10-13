@@ -128,11 +128,15 @@ on remove/purge).
 Core does not exactly pin KWin; Debian core requires KWin >= 6.6. Debian's
 effect companion depends on the exact `libkwin6` package version it was built
 against, including the distro revision. It must be rebuilt for every KWin
-package update. Until a matching rebuild is available, remove the companion
-to allow the KWin update; core tiling and Settings remain installed. An exact
-dependency can hold an upgrade, and does not prove the running compositor has
-restarted into the installed version. Full apt upgrade-solver acceptance is
-pending.
+package update. An exact dependency can hold an upgrade, and does not prove
+the running compositor has restarted into the installed version.
+
+On Ubuntu, the package manager may hold back a KWin update until a rebuilt
+`omnitiler-native-effect` is published. Core (`omnitiler`) tiling and Settings
+keep working without the effect. You can wait for and install the rebuilt
+effect, or remove only `omnitiler-native-effect` to take the KWin update and
+reinstall the rebuilt effect later. Both `apt upgrade` and `apt full-upgrade`
+held KWin back in [solver acceptance](changes/archive/ubuntu-apt-solver-acceptance.md).
 
 RPM and Arch retain their unversioned KWin dependencies. Their loader check
 rejects different-version effects; same-version distro ABI patches still
