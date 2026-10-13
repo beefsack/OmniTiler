@@ -2419,8 +2419,8 @@ fn reconcile_builder_carries_per_window_hints() {
 fn underlay_defaults_match_kde_parity() {
     let options = parse_tile_args(&strings(&["--user-start"])).expect("parsed");
     assert!(options.underlay.enabled);
-    assert_eq!(options.underlay.style.color, (0x80, 0x80, 0x80));
-    assert_eq!(options.underlay.style.alpha, 0x40);
+    assert_eq!(options.underlay.style.color, (0x2a, 0x82, 0xda));
+    assert_eq!(options.underlay.style.alpha, 0x66);
     assert_eq!(options.underlay.style.extension, -1.0);
     let options = parse_tile_proof_args(&strings(&["--allowlist", "a.json"])).expect("parsed");
     assert!(options.underlay.enabled);
@@ -2437,14 +2437,24 @@ fn underlay_flags_parse_and_refuse() {
     let options = parse_tile_args(&strings(&[
         "--user-start",
         "--group-underlay-color",
-        "#40808080",
+        "#662a82da",
         "--group-underlay-extension",
         "5",
     ]))
     .expect("parsed");
-    assert_eq!(options.underlay.style.color, (0x80, 0x80, 0x80));
-    assert_eq!(options.underlay.style.alpha, 0x40);
+    assert_eq!(options.underlay.style.color, (0x2a, 0x82, 0xda));
+    assert_eq!(options.underlay.style.alpha, 0x66);
     assert_eq!(options.underlay.style.extension, 5.0);
+    // Superseded default and dogfood values stay valid explicit overrides.
+    for (hex, rgb, alpha) in [
+        ("#40808080", (0x80, 0x80, 0x80), 0x40),
+        ("#50909090", (0x90, 0x90, 0x90), 0x50),
+    ] {
+        let options = parse_tile_args(&strings(&["--user-start", "--group-underlay-color", hex]))
+            .expect("explicit parses");
+        assert_eq!(options.underlay.style.color, rgb, "{hex}");
+        assert_eq!(options.underlay.style.alpha, alpha, "{hex}");
+    }
     let options =
         parse_tile_args(&strings(&["--user-start", "--no-group-underlay"])).expect("parsed");
     assert!(!options.underlay.enabled);
@@ -2505,6 +2515,43 @@ fn proof_argv_consistency_evidences_underlay_flags() {
         "#ff112233",
     ]);
     assert!(verify_proof_argv_consistency(&raw_other, &parsed_tile).is_err());
+}
+
+#[test]
+fn underlay_saved_and_cli_colors_survive_new_default() {
+    // Saved base without a CLI switch keeps its explicit color, including
+    // the superseded default and the dogfood value; an explicit CLI switch
+    // overrides the saved base and stays authoritative on re-apply.
+    for (saved, rgb, alpha) in [
+        ("#40808080", (0x80, 0x80, 0x80), 0x40),
+        ("#50909090", (0x90, 0x90, 0x90), 0x50),
+        ("#662a82da", (0x2a, 0x82, 0xda), 0x66),
+    ] {
+        let mut settings = tiler_windows::settings::Settings::default();
+        settings.core.underlay.color = saved.to_owned();
+        let base = tiler_windows::settings::tile_options_from_settings(&settings);
+        assert_eq!(base.underlay.style.color, rgb, "{saved}");
+        assert_eq!(base.underlay.style.alpha, alpha, "{saved}");
+        let parsed =
+            tiler_windows::tiling::parse_tile_args_from(&strings(&["--user-start"]), &base)
+                .expect("parsed");
+        assert_eq!(parsed.underlay.style.color, rgb, "{saved}");
+        assert_eq!(parsed.underlay.style.alpha, alpha, "{saved}");
+    }
+    let mut settings = tiler_windows::settings::Settings::default();
+    settings.core.underlay.color = "#40808080".to_owned();
+    let base = tiler_windows::settings::tile_options_from_settings(&settings);
+    let (parsed, cli) = tiler_windows::tiling::parse_tile_args_from_with_overrides(
+        &strings(&["--user-start", "--group-underlay-color", "#50909090"]),
+        &base,
+    )
+    .expect("parsed");
+    assert_eq!(parsed.underlay.style.color, (0x90, 0x90, 0x90));
+    assert_eq!(parsed.underlay.style.alpha, 0x50);
+    let mut rebased = tiler_windows::settings::tile_options_from_settings(&settings);
+    tiler_windows::tiling::apply_cli_overrides(&mut rebased, &cli);
+    assert_eq!(rebased.underlay.style.color, (0x90, 0x90, 0x90));
+    assert_eq!(rebased.underlay.style.alpha, 0x50);
 }
 
 #[test]

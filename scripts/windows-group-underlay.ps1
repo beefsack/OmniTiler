@@ -417,7 +417,7 @@ function Invoke-GuLive {
       Rec-Gu "leg2-chord-shown" @{ outer = $shown.outer; color = $shown.color; members = $shown.members; dib = "$($shown.dib_checksum)"; show_ms = $showMs }
       if ($showMs -gt 1800) { Fail-Gu "leg2 bare-chord show latency ${showMs}ms > 1800ms (chord-edge wake missing; slow poll is 2000ms)" }
       if ("$($shown.dib_checksum)" -eq "0000000000000000") { Fail-Gu "leg2 zero dib checksum" }
-      if ("$($shown.color)" -ne "#40808080") { Fail-Gu "leg2 default color $($shown.color) != #40808080" }
+      if ("$($shown.color)" -ne "#662a82da") { Fail-Gu "leg2 default color $($shown.color) != #662a82da" }
       $union = Get-UnionOfFramesGu @([long]$freshA.hwnd, [long]$hB.hwnd)
       $insp = Invoke-Native $ownerCopy @("underlay-inspect") | ConvertFrom-Json
       if ((Get-UnderlayVisibleCountGu $insp) -eq 0) { Fail-Gu "leg2 underlay-inspect not visible while shown" }

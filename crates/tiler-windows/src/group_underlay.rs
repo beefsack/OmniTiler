@@ -2,7 +2,7 @@
 //! Portable Windows group-underlay policy, settings, and fill-raster math.
 //!
 //! KDE parity source: `kwin/native-effect/activeborderconfig.kcfg`
-//! (underlay enabled, `#40808080`, extension -1 resolves to border width).
+//! (underlay enabled, `#662a82da`, extension -1 resolves to border width).
 //! Shared Engine geometry lives in `tiler-core::visual`
 //! (`group_underlay_effective_extension`, `group_underlay_outer_rect`) and
 //! `tiler-core::active_group` (immediate-parent projected union); the trigger
@@ -20,8 +20,8 @@ use tiler_core::visual::{VisualRect, group_focus_eligible};
 
 /// Underlay default: on (mirrors the KDE highlight default).
 pub const DEFAULT_ENABLED: bool = true;
-/// KDE-parity default fill `#40808080` (ARGB): alpha 0x40 over grey.
-pub const DEFAULT_COLOR_ARGB: (u8, u8, u8, u8) = (0x40, 0x80, 0x80, 0x80);
+/// KDE-parity default fill `#662a82da` (ARGB): alpha 0x66 over accent blue.
+pub const DEFAULT_COLOR_ARGB: (u8, u8, u8, u8) = (0x66, 0x2a, 0x82, 0xda);
 /// Extension sentinel: -1 follows the active-border width (KDE parity).
 pub const DEFAULT_EXTENSION: f64 = -1.0;
 /// Explicit extension range: the -1 sentinel or a 0..=32 logical width.
@@ -412,17 +412,31 @@ mod tests {
         assert!(options.enabled);
         assert_eq!(
             (options.style.color, options.style.alpha),
-            ((0x80, 0x80, 0x80), 0x40)
+            ((0x2a, 0x82, 0xda), 0x66)
         );
         assert_eq!(options.style.extension, -1.0);
         assert_eq!(
             render_color_argb((options.style.color, options.style.alpha)),
-            "#40808080"
+            "#662a82da"
+        );
+        // Explicitly saved colors still parse, including the superseded
+        // default and the dogfood report value: no migration, schema v1.
+        assert_eq!(
+            parse_color_argb("#40808080"),
+            Ok(((0x80, 0x80, 0x80), 0x40))
+        );
+        assert_eq!(
+            parse_color_argb("#50909090"),
+            Ok(((0x90, 0x90, 0x90), 0x50))
         );
     }
 
     #[test]
     fn color_requires_aarrggbb() {
+        assert_eq!(
+            parse_color_argb("#662a82da"),
+            Ok(((0x2a, 0x82, 0xda), 0x66))
+        );
         assert_eq!(
             parse_color_argb("#40808080"),
             Ok(((0x80, 0x80, 0x80), 0x40))
@@ -803,7 +817,7 @@ mod tests {
 
     #[test]
     fn fill_raster_is_premultiplied() {
-        // Default grey at 0x40 alpha: 0x80*0x40/255 rounds to 0x20.
+        // Grey at 0x40 alpha: 0x80*0x40/255 rounds to 0x20.
         let mut pixels = vec![0u8; 2 * 2 * 4];
         let checksum = paint_fill_argb(&mut pixels, 2, 2, (0x80, 0x80, 0x80), 0x40);
         assert_eq!(
@@ -820,5 +834,10 @@ mod tests {
         let different = paint_fill_argb(&mut opaque, 2, 2, (0x80, 0x80, 0x80), 0xff);
         assert_ne!(different, checksum);
         assert_eq!(&opaque[0..4], &[0x80, 0x80, 0x80, 0xff]);
+        // Candidate-C default accent blue at 0x66 alpha premultiplies to
+        // BGRA [0x57, 0x34, 0x11, 0x66].
+        let mut accent = vec![0u8; 2 * 2 * 4];
+        paint_fill_argb(&mut accent, 2, 2, (0x2a, 0x82, 0xda), 0x66);
+        assert_eq!(&accent[0..4], &[0x57, 0x34, 0x11, 0x66]);
     }
 }

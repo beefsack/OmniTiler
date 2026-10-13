@@ -57,8 +57,8 @@ pub const MAX_BORDER_WIDTH: f64 = 32.0;
 pub const MAX_BORDER_GAP: f64 = 64.0;
 pub const MAX_BORDER_RADIUS: f64 = 64.0;
 
-/// Underlay defaults: KDE parity (`#40808080`, extension -1 follows border).
-pub const DEFAULT_UNDERLAY_COLOR_HEX: &str = "#40808080";
+/// Underlay defaults: KDE parity (`#662a82da`, extension -1 follows border).
+pub const DEFAULT_UNDERLAY_COLOR_HEX: &str = "#662a82da";
 pub const DEFAULT_UNDERLAY_EXTENSION: f64 = -1.0;
 pub const MAX_UNDERLAY_EXTENSION: f64 = 32.0;
 
@@ -2533,10 +2533,10 @@ pub fn tile_options_from_settings(settings: &Settings) -> crate::tiling::TileOpt
             style: crate::group_underlay::GroupUnderlayStyle {
                 color: crate::group_underlay::parse_color_argb(&core.underlay.color)
                     .map(|(rgb, _)| rgb)
-                    .unwrap_or((0x80, 0x80, 0x80)),
+                    .unwrap_or((0x2a, 0x82, 0xda)),
                 alpha: crate::group_underlay::parse_color_argb(&core.underlay.color)
                     .map(|(_, alpha)| alpha)
-                    .unwrap_or(0x40),
+                    .unwrap_or(0x66),
                 extension: core.underlay.extension,
             },
         },
@@ -2586,7 +2586,7 @@ mod tests {
         assert_eq!(settings.core.border.color, "#2a82da");
         assert!(settings.core.border.use_theme);
         assert!(settings.core.underlay.enabled);
-        assert_eq!(settings.core.underlay.color, "#40808080");
+        assert_eq!(settings.core.underlay.color, "#662a82da");
         assert_eq!(settings.core.underlay.extension, -1.0);
         assert!(settings.core.keyboard.takeover);
         assert!(!settings.core.keyboard.allow_win_l);
@@ -2970,6 +2970,41 @@ mod tests {
         settings.core.underlay.extension = -2.0;
         assert!(validate_settings(&settings).is_err());
         settings.core.underlay.extension = -1.0;
+        assert!(validate_settings(&settings).is_ok());
+        // Explicitly saved colors survive the default change: the superseded
+        // default and the dogfood value both validate with schema still v1.
+        for explicit in ["#662a82da", "#40808080", "#50909090"] {
+            settings.core.underlay.color = explicit.to_owned();
+            assert!(validate_settings(&settings).is_ok(), "{explicit}");
+            let options = tile_options_from_settings(&settings);
+            assert_eq!(
+                crate::group_underlay::render_color_argb((
+                    options.underlay.style.color,
+                    options.underlay.style.alpha
+                )),
+                explicit
+            );
+        }
+        assert_eq!(SETTINGS_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn omitted_underlay_color_defaults_to_candidate_c() {
+        // Omitted fields deserialize to the new default; an explicit old
+        // default round-trips unchanged through serde.
+        let settings: Settings =
+            serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("minimal parses");
+        assert_eq!(settings.core.underlay.color, "#662a82da");
+        assert!(validate_settings(&settings).is_ok());
+        let settings: Settings =
+            serde_json::from_str(r##"{"v":1,"core":{"underlay":{"color":"#40808080"}}}"##)
+                .expect("explicit old parses");
+        assert_eq!(settings.core.underlay.color, "#40808080");
+        assert!(validate_settings(&settings).is_ok());
+        let settings: Settings =
+            serde_json::from_str(r##"{"v":1,"core":{"underlay":{"color":"#50909090"}}}"##)
+                .expect("explicit dogfood parses");
+        assert_eq!(settings.core.underlay.color, "#50909090");
         assert!(validate_settings(&settings).is_ok());
     }
 

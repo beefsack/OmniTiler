@@ -1459,8 +1459,10 @@ platform API behavior.
 - User decision 2026-10-13: group underlay default is candidate C `#662a82da`
   (40% accent blue, Qt `#AARRGGBB`: alpha 0x66, RGB #2a82da) on KDE and
   Windows, for now. KDE kcfg/effect/KCM default delivered offline 2026-10-13;
-  explicit saved colors are preserved, with no migration. Windows constant
-  and mirrored defaults remain handoff item 24. Before 0.1, user-owned
+  explicit saved colors are preserved, with no migration. Windows render/
+  settings defaults and CLI/proof mirrors delivered offline 2026-10-13;
+  explicit saved/CLI colors preserved, schema v1, no migration
+  ([delivery](changes/archive/windows-underlay-default.md)). Before 0.1, user-owned
   live-check of black, white and grey wallpapers at 100%/150% remains pending.
   [Options](changes/archive/kde-dogfood-underlay-options.md).
 
@@ -1515,8 +1517,8 @@ platform API behavior.
   2026-10-05, superseding its Meta-held trigger. Win+drag movement itself belongs to parity item 7, which can
   supply the same move arm later.
 - Use an enabled-by-default filled, premultiplied-alpha, layered click-through
-  nonactivating tool window on the active-border carrier. KDE default is now
-  `#662a82da`; Windows retains `#40808080` until handoff item 24. Extension -1
+  nonactivating tool window on the active-border carrier. KDE and Windows
+  defaults are `#662a82da`; explicit saved colors remain intact. Extension -1
   follows border width; explicit extension 0..32
   logical pixels matches the KDE settings range. CLI mirrors only enable,
   colour and extension: `--no-group-underlay`, `--group-underlay-color #aarrggbb`,

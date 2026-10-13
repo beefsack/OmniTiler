@@ -255,8 +255,10 @@ decisions of 2026-09-24 are under
   handoff items 10+18, 11+15 after offline-delivered 13+17. Later: (f) Win+B
   default browser and
   Win+T Windows Terminal launchers ([decision](decisions.md#shortcuts-conflicts-and-presets));
-  (g) underlay visibility: user used `#50909090`, needs a brighter default and
-  research into blend options visible on black, white and grey. Win+G/F11
+  (g) underlay visibility: user used `#50909090`; candidate C `#662a82da`
+  selected for now on both platforms, defaults delivered offline (item 24).
+  Saved colors preserved; black/white/grey at 100%/150% visual check pending
+  ([Windows record](changes/archive/windows-underlay-default.md)). Win+G/F11
   leakage observed again (known, parked under gaming coexistence).
   - (f) Offline-delivered 2026-10-12 (`b8edd14`, `8e56546`, CI green):
     Win+B opens the system-default browser via shell `open` of bare
@@ -391,7 +393,9 @@ decisions of 2026-09-24 are under
   handoff item 23; native Windows compilation of the lift remains pending.
   Underlay candidate C `#662a82da` selected for now on both platforms; KDE
   kcfg/KCM default delivered offline 2026-10-13 (native build, CTest 32/32,
-  KWin static-contract tests 15/15). Windows default remains item 24.
+  KWin static-contract tests 15/15). Windows defaults/mirrors delivered offline
+  with item 24 ([record](changes/archive/windows-underlay-default.md)); explicit
+  colors preserved, schema v1, no migration.
   Settings UI, both-values
   launch, radius appearance and black/white/grey underlay live checks pending;
   underlay visual check before 0.1 ([options](changes/archive/kde-dogfood-underlay-options.md)).
@@ -889,7 +893,7 @@ decisions of 2026-09-24 are under
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
   | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Shared D16 ordinary/combo MoveDeferred and D23 rejoin/closed_windows contracts delivered offline; Windows adapter pending. D16: open only intentional-float send gate, propagate floating mover overlay flags, membership-only deferred actuation, retain float frame/intent across destination exit. Windows D27 urgent-only/guard unchanged. [D16 evidence](changes/archive/d16-floating-transfer.md), [D23 evidence](changes/archive/d23-rework.md). |
   | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
-  | 24 | Underlay default `#662a82da` | Pending: change Windows render/settings defaults and CLI/proof mirrors to candidate C, 40% accent blue, for now; preserve saved colors; black/white/grey visual check at 100%/150%. KDE default delivered offline. |
+  | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
 
   Q2 R-SPC-04 occupies handoff item 13 below; Q3 R-RST-01 KDE delivery is
