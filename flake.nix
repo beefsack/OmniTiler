@@ -31,6 +31,8 @@
         fileset = pkgs.lib.fileset.unions [
           ./LICENSE
           ./LICENSES
+          # Generated union third-party notice (both shipping Rust roots).
+          ./THIRD-PARTY-NOTICES
           ./Cargo.toml
           ./Cargo.lock
           ./crates
@@ -52,6 +54,10 @@
           # binary links the MIT staticlib into GPL-covered plugin sources.
           ./LICENSE
           ./LICENSES
+          # Generated union third-party notice (both shipping Rust roots).
+          # Shared with the settings-only fileset below, which compiles no
+          # Rust and installs no notice.
+          ./THIRD-PARTY-NOTICES
           # Complete native-effect subtree for BUILD_TESTING (effect, KCM,
           # all test sources, validators, headers) plus the script metadata
           # referenced by discovery validation. Individual file lists drift;
@@ -150,6 +156,7 @@
             mkdir -p "$out/share/licenses/omnitiler-native-effect"
             cp "$src/LICENSE" "$out/share/licenses/omnitiler-native-effect/LICENSE"
             cp "$src/LICENSES/GPL-2.0-or-later.txt" "$out/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
+            cp "$src/THIRD-PARTY-NOTICES" "$out/share/licenses/omnitiler-native-effect/THIRD-PARTY-NOTICES"
           '';
 
           doInstallCheck = true;
@@ -158,6 +165,7 @@
             test -f "$out/lib/qt-6/plugins/kwin/effects/plugins/omnitiler-active-border.so"
             grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler-native-effect/LICENSE"
             grep -Fq "GNU GENERAL PUBLIC LICENSE" "$out/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
+            grep -Fq "THIRD-PARTY NOTICES FOR OMNITILER" "$out/share/licenses/omnitiler-native-effect/THIRD-PARTY-NOTICES"
             ${if withTests then ''
               # Test-only derivation: the full tree ships both KCMs as test
               # artifacts alongside the effect.
@@ -333,11 +341,13 @@
             # MIT notice in the installed output ($src: fileset store path).
             mkdir -p "$out/share/licenses/omnitiler"
             cp "$src/LICENSE" "$out/share/licenses/omnitiler/LICENSE"
+            cp "$src/THIRD-PARTY-NOTICES" "$out/share/licenses/omnitiler/THIRD-PARTY-NOTICES"
           '';
           doInstallCheck = true;
           installCheckPhase = ''
             runHook preInstallCheck
             grep -Fq "Permission is hereby granted" "$out/share/licenses/omnitiler/LICENSE"
+            grep -Fq "THIRD-PARTY NOTICES FOR OMNITILER" "$out/share/licenses/omnitiler/THIRD-PARTY-NOTICES"
             test -s "$out/share/icons/hicolor/scalable/apps/omnitiler.svg"
             test -s "$out/share/dbus-1/services/com.omnitiler.Planner.service"
             grep -Fx "[D-BUS Service]" "$out/share/dbus-1/services/com.omnitiler.Planner.service"

@@ -134,6 +134,7 @@ Disabling the script or unloading the effect is separate.
 grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' SOURCE_REV || exit 1
 grep -Fq "$(cat SOURCE_REV)" kwin/contents/code/main.js || exit 1
 test -d vendor || exit 1
+test -f THIRD-PARTY-NOTICES || exit 1
 
 %build
 # Offline Rust core build, exactly per scripts/build-source-archive.sh.
@@ -217,6 +218,7 @@ fi
 
 %files
 %license LICENSE
+%license THIRD-PARTY-NOTICES
 %{_bindir}/omnitiler
 %{_datadir}/kwin/scripts/omnitiler-kwin/
 %{_datadir}/dbus-1/services/com.omnitiler.Planner.service
@@ -231,6 +233,7 @@ fi
 %files native-effect
 %license LICENSES/GPL-2.0-or-later.txt
 %license LICENSE
+%license THIRD-PARTY-NOTICES
 %{kwin_plugindir}/kwin/effects/plugins/omnitiler-active-border.so
 
 %changelog

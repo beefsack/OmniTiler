@@ -1422,3 +1422,11 @@ dev-native-remove:
 
 # Build the whole solution: Rust Planner + KWin script bundle + native effects (aggregate full build for just dev).
 build: build-rust build-kwin-script build-native-effect
+
+# Regenerate the committed THIRD-PARTY-NOTICES union file (manual; CI never does this). Fetches locked sources first, so it needs the network.
+third-party-notices:
+    bash scripts/third-party-notices.sh regenerate
+
+# Freshness lint: regenerates into scratch and compares; never updates the committed file, never uses the network. Sources must already be fetched (`cargo fetch --locked`); CI fetches first, then runs this.
+check-third-party-notices:
+    bash scripts/third-party-notices.sh check

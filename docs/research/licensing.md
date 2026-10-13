@@ -494,13 +494,11 @@ no license-class restriction beyond accurate manifests.
 ## 9. License tools and policy
 
 `deny.toml` allows exactly `Apache-2.0`, `MIT`, `Unicode-3.0` (minimal set
-for section 2.3). TOML syntax and all five workspace MIT declarations have
-been validated; cargo-deny policy/schema execution remains unverified.
+for section 2.3). The cargo-deny audit and `licenses`/`bans`/`sources` CI gate
+are delivered ([evidence](../changes/archive/licensing-audit-gate.md)).
 Tools are already declared in
 [devenv.nix](../../devenv.nix) (`cargo-deny 0.20.2`, `cargo-about
-0.9.0`, `license_finder 7.2.1`, store-verified); reload the development
-environment to load them. No license-audit tool runs have been performed.
-Exact pending runs after environment reload:
+0.9.0`, `license_finder 7.2.1`, store-verified). Audit commands:
 
 - `cargo deny --locked check licenses` (workspace root; `--locked`
   asserts `Cargo.lock` unchanged,
@@ -509,13 +507,21 @@ Exact pending runs after environment reload:
   [README](https://github.com/pivotal/LicenseFinder) are text/csv/html/
   markdown - csv chosen for machine use; needs `node_modules` installed).
 
-cargo-about is declared as an optional attribution follow-up
-([devenv.nix](../../devenv.nix)); it needs a template/config first, so no
-command is prescribed here.
+cargo-about generates the committed union `THIRD-PARTY-NOTICES` using
+`about.toml`, `about.hbs` and `scripts/third-party-notices.sh`:
+
+- `just third-party-notices`: fetch locked sources and manually regenerate.
+- `cargo fetch --locked`, then `just check-third-party-notices`: offline
+  freshness lint; CI follows this sequence and never updates the tracked file.
+- Generation uses frozen local crate sources, both supported Linux targets,
+  and the shipping normal-dependency closure. MIT is preferred for OR-licensed
+  crates so actual harvested copyright texts are retained; synthesized
+  copyright-free fallback texts fail the check. Supplemental top-level
+  `COPYRIGHT*`/`NOTICE*` files from in-scope crates are appended verbatim.
 
 ## 10. Follow-ups and unknowns
 
-Run section 9 commands and add a CI license gate; map transitive native
+Map transitive native
 closures per distro/target and confirm complete library-source coverage
 beyond the sampled headers, including vendored attribution. License selection,
 texts, GPL source headers and manifest/package declarations are complete.
@@ -526,8 +532,8 @@ feasibility; Installation-Information mapping for direct downloads.
 ## 11. Vendored attribution inventory (2026-10-12)
 
 Bounded search (not proof of absence) over tracked sources for copied
-third-party code that ships in a distributed artifact. No THIRD-PARTY,
-NOTICE or ATTRIBUTION file exists in the repo root or docs.
+third-party code that ships in a distributed artifact. The original inventory
+predates the generated root `THIRD-PARTY-NOTICES` implementation below.
 
 | Item | Ships? | Attribution needed? |
 | --- | --- | --- |
@@ -537,7 +543,7 @@ NOTICE or ATTRIBUTION file exists in the repo root or docs.
 | npm package code in `main.js` | None: direct devDeps are `esbuild 0.28.2` (bundler), `typescript 7.0.2` (compiler), `@types/node 26.2.0` (types only), all `dev: true` in `kwin/package-lock.json`; the artifact-smoke test asserts no `__esm`/`__commonJS` helpers and no `import`/`export`/`node:` markers in the bundle | No |
 | Fonts / icons / assets in the bundle | None bundled: the only shipped icon is first-party `assets/icons/omnitiler.svg`, installed to hicolor by all three recipes | No |
 | Build-time `vendor/` tree (cargo vendor output in the release tarball) | Created by the packaging recipes at build time, not checked in; upstream crate sources travel with their own license files, all inside the `deny.toml` allow set (section 2.3; `cargo deny check licenses` passes) | Covered by the Debian `copyright` vendor comment (line 8) plus each crate's own license files; no separate notice file |
-| Package payload notices | All three recipes install the first-party texts (`LICENSE`, `LICENSES/GPL-2.0-or-later.txt`): RPM `%license`, Arch `/usr/share/licenses`, Debian `copyright` | First-party delivery does not cover compiled dependency license texts; generated third-party notices required before 0.1 (user 2026-10-13) |
+| Package payload notices | First-party texts plus the same generated union file in both packages: RPM `%license`, Arch `/usr/share/licenses`, Debian `/usr/share/doc`; Nix tray/effect outputs under `share/licenses` | Generated file covers compiled Rust dependency texts and supplemental copyright notices; Nix payloads verified, actual distro package extraction pending |
 
 Required attributions: first-party MIT/GPL texts via the payload row above;
 Debian `copyright` lines 4-8 record the MIT default, the GPL effect files
@@ -547,7 +553,17 @@ User decision 2026-10-13 supersedes the tentative no-notice conclusion:
 MIT/Apache crates compiled into distributed binaries require license texts;
 sources/license files in a build-time vendor tree do not replace binary
 artifact notice delivery. Before 0.1, add tool-generated third-party notices
-to GitHub Release binaries and Debian/RPM/Arch packages. Candidate
-`cargo-about` requires a `devenv.nix` addition at implementation time.
+to GitHub Release binaries and Debian/RPM/Arch packages. The accepted delivery
+uses one committed generated union file, manual `just` regeneration and a CI
+freshness linter. `cargo-about` was already declared in `devenv.nix`.
 Keep the CI gate's `licenses`, `bans` and `sources` checks.
+Generation verified 70 third-party crate/version entries, 25 harvested
+license-text groups and two supplemental COPYRIGHT files (rustix/linux-raw-sys),
+with no top-level upstream NOTICE files found in this closure. Selected texts
+are MIT and Unicode-3.0; dual-license alternatives do not require duplicating
+unselected Apache texts. Source-archive contract
+tests and both Rust-bearing Nix payload builds pass; distro package extraction
+and future GitHub binary-archive delivery remain unverified, as does hosted CI
+execution.
+[Evidence](../changes/archive/third-party-notices.md).
 [Decision](../decisions.md#licensing), [queue](../backlog.md).

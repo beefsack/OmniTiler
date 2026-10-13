@@ -14,6 +14,10 @@
 #       vendor/                      cargo vendor output for fully offline Rust builds
 #       VERSION                      <VERSION> (e.g. 0.1.0)
 #       SOURCE_REV                   full commit SHA of the tag
+#   - The tag must already carry the committed generated union notice at
+#     root THIRD-PARTY-NOTICES (both shipping Rust roots, Linux
+#     x86_64/aarch64); distro and Nix recipes install that same file, so
+#     the build fails closed when the tag lacks it.
 #   - The tarball is deterministic for a given tag (sorted entries, commit-time
 #     mtimes, numeric 0:0 ownership, gzip -n), so rebuilds hash identically.
 #   - Offline consumption (no network at distro build time):
@@ -159,6 +163,8 @@ git -C "$REPO_ROOT" archive --format=tar --prefix="$TOP_DIR/" "$TAG_REF" | tar -
   || die "git archive of tag $TAG failed"
 [[ -f "$TREE/kwin/package.json" && -f "$TREE/Cargo.lock" ]] \
   || die "tagged source is missing kwin/package.json or Cargo.lock"
+[[ -f "$TREE/THIRD-PARTY-NOTICES" && ! -L "$TREE/THIRD-PARTY-NOTICES" ]] \
+  || die "tagged source is missing root THIRD-PARTY-NOTICES (commit the generated union file before tagging)"
 
 command -v -- npm >/dev/null 2>&1 || die "required tool 'npm' not found in PATH"
 command -v -- cargo >/dev/null 2>&1 || die "required tool 'cargo' not found in PATH"

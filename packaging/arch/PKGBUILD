@@ -38,6 +38,7 @@ prepare() {
   grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$' SOURCE_REV || exit 1
   grep -Fq "$(cat SOURCE_REV)" kwin/contents/code/main.js || exit 1
   test -d vendor || exit 1
+  test -f THIRD-PARTY-NOTICES || exit 1
 }
 
 build() {
@@ -91,6 +92,9 @@ package_omnitiler() {
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/omnitiler.svg"
   # MIT notice for the core payload (script, KCMs, tray/planner).
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/omnitiler/LICENSE"
+  # Generated union third-party notice (both shipping Rust roots).
+  install -Dm644 THIRD-PARTY-NOTICES \
+    "$pkgdir/usr/share/licenses/omnitiler/THIRD-PARTY-NOTICES"
   # KWin-independent settings pages (Qt/KF6 only; JSON metadata is embedded
   # in the .so files at compile time, so no .json ships alongside).
   # Installed via the full native tree, minus the ABI-bound effect plugin
@@ -123,6 +127,10 @@ package_omnitiler-native-effect() {
   install -Dm644 LICENSES/GPL-2.0-or-later.txt \
     "$pkgdir/usr/share/licenses/omnitiler-native-effect/GPL-2.0-or-later.txt"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/omnitiler-native-effect/MIT"
+  # Generated union third-party notice (both shipping Rust roots, same
+  # file as core).
+  install -Dm644 THIRD-PARTY-NOTICES \
+    "$pkgdir/usr/share/licenses/omnitiler-native-effect/THIRD-PARTY-NOTICES"
 }
 
 # vim: ft=sh

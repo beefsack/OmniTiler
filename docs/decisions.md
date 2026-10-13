@@ -266,8 +266,23 @@ platform API behavior.
   `sources`. Before 0.1, add tool-generated third-party notices, including
   license texts for MIT/Apache crates compiled into binaries, to GitHub Release
   binaries and Debian/RPM/Arch packages. This reverses the earlier tentative
-  no-notice choice. Candidate tool: `cargo-about`; adding it requires a
-  `devenv.nix` change at implementation time.
+  no-notice choice. Tool: `cargo-about` 0.9.0, already declared in `devenv.nix`.
+- User decision 2026-10-13 (delivery): option B, one committed generated
+  `THIRD-PARTY-NOTICES` union covering the shipping `omnitiler` executable and
+  `tiler-kwin-effect-ffi` staticlib for supported Linux targets. Include full
+  selected-license texts, copyrights and applicable upstream NOTICE content.
+  Developers regenerate manually with `just third-party-notices`; CI fetches
+  locked sources, regenerates into a temporary location and fails on differences,
+  without updating or committing the tracked notice.
+- Both distro packages carry the same union file: Debian under
+  `/usr/share/doc/<pkg>/`, RPM via `%license`, Arch under
+  `/usr/share/licenses/<pkg>/`; Rust-bearing Nix outputs use
+  `$out/share/licenses/<pkg>/`. The release source archive carries the file at
+  its root. No GitHub binary-archive producer is part of this change; its future
+  notice delivery remains required before distributing those binaries.
+- User decision 2026-10-13 (text encoding): generated files are exempt from
+  non-ASCII restrictions. `THIRD-PARTY-NOTICES` preserves upstream bytes
+  verbatim; authored files remain ASCII.
 
 ## Development Environment
 

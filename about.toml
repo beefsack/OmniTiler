@@ -1,0 +1,24 @@
+# cargo-about configuration for the generated THIRD-PARTY-NOTICES file.
+# See about.hbs (render template) and scripts/third-party-notices.sh
+# (regenerate / freshness check, invoked via just recipes).
+#
+# Scope: UNION of the normal dependencies of the shipping Rust roots
+# `omnitiler` (planner/tray) and `tiler-kwin-effect-ffi` (staticlib linked
+# into the native effect), for the supported Linux targets, locked
+# Cargo.lock, default features, offline (local license files only, no
+# ClearlyDefined lookups).
+#
+# License priority is MIT first on purpose: every dual-licensed
+# MIT-or-Apache-2.0 crate in this closure ships a harvested MIT license file
+# carrying its real copyright notice, while the Apache-2.0 alternative would
+# fall back to synthesized generic SPDX text without crate copyright. The
+# generator script fails if any included third-party crate has no harvested
+# license-file text, so a crate that cannot satisfy its license from a
+# harvested file breaks generation instead of rendering generic text.
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0"]
+
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+# Shipping binaries never link crates used only to build or test them.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

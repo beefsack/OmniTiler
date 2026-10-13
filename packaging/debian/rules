@@ -47,6 +47,7 @@ override_dh_auto_build:
 	grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$$' SOURCE_REV
 	grep -Fq "$$(cat SOURCE_REV)" kwin/contents/code/main.js
 	test -d vendor
+	test -f THIRD-PARTY-NOTICES
 	# Offline Rust core build, exactly per scripts/build-source-archive.sh.
 	# (The --config directory value carries inner double quotes: cargo's
 	# CLI expression parser requires quoted strings.)
@@ -93,6 +94,10 @@ override_dh_auto_install:
 	  debian/omnitiler/usr/lib/systemd/user/omnitiler-planner.service
 	install -Dm644 assets/icons/omnitiler.svg \
 	  debian/omnitiler/usr/share/icons/hicolor/scalable/apps/omnitiler.svg
+	# Generated union third-party notice (both shipping Rust roots): core
+	# carries the same file the effect companion ships.
+	install -Dm644 THIRD-PARTY-NOTICES \
+	  debian/omnitiler/usr/share/doc/omnitiler/THIRD-PARTY-NOTICES
 	# KWin-independent settings pages (JSON metadata is embedded in the
 	# .so files at compile time, so no .json ships alongside). Runtime KF
 	# dependencies resolve via shlibdeps into ${shlibs:Depends}.
@@ -101,6 +106,8 @@ override_dh_auto_install:
 	# Settings files need pruning). Skipped under the noeffect profile.
 	if [ -z "$(filter noeffect,$(DEB_BUILD_PROFILES))" ]; then \
 	  DESTDIR=$$(pwd)/debian/omnitiler-native-effect cmake --install build-effect; \
+	  install -Dm644 THIRD-PARTY-NOTICES \
+	    debian/omnitiler-native-effect/usr/share/doc/omnitiler-native-effect/THIRD-PARTY-NOTICES; \
 	fi
 
 # The effect companion must depend on the exact libkwin6 distro build it was

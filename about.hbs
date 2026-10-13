@@ -1,0 +1,44 @@
+================================================================================
+THIRD-PARTY NOTICES FOR OMNITILER (Rust dependencies)
+================================================================================
+GENERATED FILE - DO NOT EDIT BY HAND.
+Regenerate with: just third-party-notices
+Freshness check (also run by CI): just check-third-party-notices
+
+Scope (UNION - every condition below holds for this file):
+- Crates: normal dependencies of the shipping Rust roots `omnitiler`
+  (planner/tray) and `tiler-kwin-effect-ffi` (staticlib linked into the
+  native effect), resolved from the locked Cargo.lock with default features.
+- Targets: x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu (Linux).
+- Excluded: first-party workspace crates, dev/build-only dependencies,
+  Windows-only roots and test tooling. Conservative extra coverage is
+  preferred over a missing runtime dependency; the generator script asserts
+  that every expected crate name appears below.
+- Method: cargo-about 0.9.0 reading local license files only (offline, no
+  network lookups). Only license texts harvested from crate files are
+  rendered; synthesized fallback texts are never rendered. First-party
+  workspace crates are never rendered. Local registry paths are stripped
+  from this file; per-crate authors, versions, and repository URLs are kept.
+- Appendix: after the harvested license texts, the generator script appends
+  the top-level upstream COPYRIGHT* and NOTICE* files shipped inside the
+  above crates, reproduced verbatim (labelled with crate name/version and
+  file name; local registry paths stripped), followed by the END marker.
+- Upstream license texts are reproduced verbatim as shipped, including any
+  non-ASCII characters they contain.
+
+{{#each licenses}}
+{{#if source_path}}
+--------------------------------------------------------------------------------
+LICENSE: {{{name}}} (SPDX: {{{id}}})
+USED BY:
+{{#each used_by}}
+{{#if crate.source}}
+- {{{crate.name}}} {{{crate.version}}} (declared: {{{crate.license}}})
+{{#if crate.authors}}  Authors: {{#each crate.authors}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}
+{{/if}}{{#if crate.repository}}  Repository: {{{crate.repository}}}
+{{/if}}{{/if}}
+{{/each}}
+FULL TEXT:
+{{{text}}}
+{{/if}}
+{{/each}}

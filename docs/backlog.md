@@ -97,11 +97,13 @@ decisions of 2026-09-24 are under
   [evidence and live checks](changes/archive/kwin-6.6-support.md).
 - P1 | Licensing | Decision and declarations applied 2026-10-11: MIT default,
   GPL-2.0-or-later native effect, MIT Rust staticlib and Settings KCMs.
-  [Research and dependency inventory](research/licensing.md). Remaining:
-  tool-generated third-party notices with dependency license texts in GitHub
-  Release binaries and Debian/RPM/Arch packages before 0.1 (user 2026-10-13,
-  reversing tentative no-notice choice). Candidate `cargo-about` requires a
-  `devenv.nix` addition at implementation time. Audit gate delivered
+  [Research and dependency inventory](research/licensing.md). Third-party
+  notice implementation delivered 2026-10-13: committed generated union,
+  manual `just` regeneration, CI freshness lint, source archive and
+  Debian/RPM/Arch/Nix installation. Pending: actual distro package
+  builds/extraction; hosted CI execution;
+  notice delivery in future GitHub binary archives (producer outside this
+  change). [Evidence](changes/archive/third-party-notices.md). Audit gate delivered
   2026-10-12: keep `licenses`, `bans`, `sources`; per-distro closure and vendored
   inventory recorded; [evidence](changes/archive/licensing-audit-gate.md).
 - OPEN | OBS release handoff redesign | User 2026-10-13 left OPEN; possibly

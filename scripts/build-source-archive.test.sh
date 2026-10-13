@@ -73,6 +73,11 @@ expect_failure() {
 
 # Disposable clone: scratch tags live and die here, never in the user repo.
 git clone -q --no-tags "$REPO_ROOT" "$CLONE" >/dev/null 2>&1 || { fail "could not clone repo"; exit 1; }
+# Negative fixture: the disposable tree must start notice-free even once the
+# origin HEAD tracks the generated union notice, so the missing-notice run
+# below always fails closed before any toolchain runs (no real npm/network).
+git -C "$CLONE" rm -q --ignore-unmatch -- THIRD-PARTY-NOTICES >/dev/null 2>&1 \
+  || { fail "could not drop union notice in clone"; exit 1; }
 cp -- "$ARCHIVE_SCRIPT_SRC" "$KPACKAGE_SCRIPT_SRC" "$CLONE/scripts/" \
   || { fail "could not copy scripts under test into clone"; exit 1; }
 git -C "$CLONE" -c user.email=release-test@local -c user.name=release-test \
@@ -86,16 +91,11 @@ fi
 VERSION="$(node -e "process.stdout.write(require('$CLONE/kwin/package.json').version)")" \
   || { fail "could not read clone kwin version"; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { fail "clone version is not X.Y.Z: $VERSION"; exit 1; }
-TAG="v$VERSION"
-TOP_DIR="omnitiler-$VERSION"
-git -C "$CLONE" tag "$TAG" >/dev/null 2>&1 || { fail "could not tag clone"; exit 1; }
-TAG_SHA="$(git -C "$CLONE" rev-parse "$TAG^{commit}")" || { fail "could not resolve clone tag"; exit 1; }
-ARCHIVE_SCRIPT="$CLONE/scripts/build-source-archive.sh"
-KPACKAGE_SCRIPT="$CLONE/scripts/build-kpackage.sh"
-
 # Offline toolchain stubs for the default suite: emulate npm ci, the
 # SOURCE_REV-baked bundle build, cargo vendor, and a successful offline
 # cargo build. Real network builds run only under INTEGRATION=1.
+# Installed before any archive run below, so even a regression that reaches
+# the toolchain in a negative fixture still hits stubs, never real npm.
 mkdir -p -- "$STUBS" "$OUT"
 cat > "$STUBS/npm" <<'STUBEOF'
 #!/usr/bin/env bash
@@ -140,6 +140,27 @@ if [[ "$INTEGRATION" != "1" ]]; then
   export PATH="$STUBS:$PATH"
 fi
 
+TAG="v$VERSION"
+TOP_DIR="omnitiler-$VERSION"
+ARCHIVE_SCRIPT="$CLONE/scripts/build-source-archive.sh"
+KPACKAGE_SCRIPT="$CLONE/scripts/build-kpackage.sh"
+git -C "$CLONE" tag "$TAG" >/dev/null 2>&1 || { fail "could not tag clone"; exit 1; }
+# Fail closed: a tag without the committed union notice must not archive.
+expect_failure "missing THIRD-PARTY-NOTICES" bash "$ARCHIVE_SCRIPT" --tag "$TAG" --output-dir "$OUT"
+[[ ! -e "$OUT/$TOP_DIR.tar.gz" ]] || fail "failed run left an archive behind"
+# The union notice travels as tracked source: stub it in the clone, commit,
+# and move the scratch tag onto the notice-carrying tree.
+printf 'stub union third-party notices for %s\n' "$TAG" > "$CLONE/THIRD-PARTY-NOTICES" \
+  || { fail "could not stub union notice in clone"; exit 1; }
+git -C "$CLONE" -c user.email=release-test@local -c user.name=release-test \
+  add THIRD-PARTY-NOTICES >/dev/null 2>&1 \
+  || { fail "could not stage union notice in clone"; exit 1; }
+git -C "$CLONE" -c user.email=release-test@local -c user.name=release-test \
+  commit -qm "stub union notice" >/dev/null 2>&1 \
+  || { fail "could not commit union notice in clone"; exit 1; }
+git -C "$CLONE" tag -f "$TAG" >/dev/null 2>&1 || { fail "could not retag clone"; exit 1; }
+TAG_SHA="$(git -C "$CLONE" rev-parse "$TAG^{commit}")" || { fail "could not resolve clone tag"; exit 1; }
+
 # Rejection contract: tag is required, stable-shaped, resolvable, and its
 # source versions must match. None of these runs mutates the user repo.
 expect_failure "missing --tag" bash "$ARCHIVE_SCRIPT" --output-dir "$OUT"
@@ -175,7 +196,8 @@ if [[ -f "$ENTRIES" ]]; then
   done < "$ENTRIES"
   for member in "$TOP_DIR/kwin/contents/code/main.js" "$TOP_DIR/VERSION" \
     "$TOP_DIR/SOURCE_REV" "$TOP_DIR/kwin/package.json" "$TOP_DIR/Cargo.lock" \
-    "$TOP_DIR/Cargo.toml" "$TOP_DIR/kwin/native-effect/CMakeLists.txt"; do
+    "$TOP_DIR/Cargo.toml" "$TOP_DIR/kwin/native-effect/CMakeLists.txt" \
+    "$TOP_DIR/THIRD-PARTY-NOTICES"; do
     grep -Fxq -- "$member" "$ENTRIES" || fail "archive lacks $member"
   done
   if grep -Fxq -- "$TOP_DIR/vendor/config.toml" "$ENTRIES"; then
@@ -193,6 +215,10 @@ tar -xzf "$ARCHIVE" -C "$EXTRACT" 2>/dev/null || fail "archive extraction failed
 if [[ -d "$EXTRACT/$TOP_DIR" ]]; then
   [[ "$(cat -- "$EXTRACT/$TOP_DIR/VERSION")" == "$VERSION" ]] || fail "VERSION file mismatch"
   [[ "$(cat -- "$EXTRACT/$TOP_DIR/SOURCE_REV")" == "$TAG_SHA" ]] || fail "SOURCE_REV file mismatch"
+  [[ -f "$EXTRACT/$TOP_DIR/THIRD-PARTY-NOTICES" && ! -L "$EXTRACT/$TOP_DIR/THIRD-PARTY-NOTICES" ]] \
+    || fail "extracted root union notice missing"
+  cmp -s -- "$EXTRACT/$TOP_DIR/THIRD-PARTY-NOTICES" "$CLONE/THIRD-PARTY-NOTICES" \
+    || fail "extracted root union notice differs from fixture file"
   grep -Fq -- "$TAG_SHA" "$EXTRACT/$TOP_DIR/kwin/contents/code/main.js" \
     || fail "extracted bundle lacks baked source rev"
 fi
