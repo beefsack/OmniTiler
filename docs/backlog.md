@@ -414,8 +414,12 @@ decisions of 2026-09-24 are under
   Rust/KWin conformance table ([record](changes/archive/born-maximized-shared-policy.md)).
   User 2026-10-13 option C amends immediate KDE rewiring: keep its pinned copy
   and defer rewiring to post-0.1 Push code down; behavior, labels and accepted
-  `bornMaximized` key unchanged. Windows adapter-copy replacement remains
-  handoff item 23; native Windows compilation of the lift remains pending.
+  `bornMaximized` key unchanged. Windows adapter-copy replacement delivered
+  offline with handoff item 23; shared-table settings/admission conformance
+  and native MSVC build/test pass (1,847 passed, 0 failed, 1 ignored), closing
+  the lift's native compile gap. Behavior/schema/lifetime adoption and the
+  tentative hydrated fixed-override maximize route are preserved
+  ([Windows record](changes/archive/windows-born-maximized-shared-policy.md)).
   Underlay candidate C `#662a82da` selected for now on both platforms; KDE
   kcfg/KCM default delivered offline 2026-10-13 (native build, CTest 32/32,
   KWin static-contract tests 15/15). Windows defaults/mirrors delivered offline
@@ -917,7 +921,7 @@ decisions of 2026-09-24 are under
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
   | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 urgent-only/guard policy unchanged; dedicated request/urgency observation unproven. Verification-only units remain native-pending. [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
-  | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
+  | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including tentative hydrated fixed-override maximize routing. Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
   | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
 
@@ -3041,23 +3045,24 @@ decisions of 2026-09-24 are under
     Windows adapter evidence is recorded above; verification-only native
     outcomes remain pending, with no new acceptance claimed from source review.
 
-  - Item 23: born-maximized shared policy (User 2026-10-13, amended option C).
-    Core policy is available in `tiler_core::born_maximized::BornMaximized`.
-    Replace Windows `settings.rs`'s default/token validation and
-    `CoreSettings::born_maximized_keep_overlay`, plus
-    `tiling.rs`'s `born_maximized_keep_overlay` token comparison, with core
-    parsing/default handling and `should_clear_at_admission`'s clear/keep
-    choice. Preserve strict invalid-file refusal/last-good adoption: use
-    `parse_wire` for validation, not fallback normalization to accept invalid
-    saved values. Keep schema-v1 `core.born_maximized`, labels/tooltips,
-    lifetime-bound subsequent-admission adoption, native identity/eligibility
-    fences, fullscreen/fixed-size gates, one-shot attempts and independent
-    born/retile latches unchanged. Acceptance: consume the same
-    `test-fixtures/born-maximized.json` table in Windows adapter tests, then
-    pass existing setting/latch/clear/retile regressions and native Windows
-    compile/tests. No Windows rewire is included in the core delivery. KDE
-    keeps its conformance-pinned copy until post-0.1 Push code down
-    ([record](changes/archive/born-maximized-shared-policy.md)).
+  - Item 23: born-maximized shared policy delivered offline 2026-10-13
+    (User option C). Windows `settings.rs`, `tiling.rs` and Settings radio
+    reads consume `tiler_core::born_maximized::BornMaximized` parsing/default
+    and clear/keep choice. Exact `parse_wire` validation preserves strict
+    invalid-file refusal/last-good adoption; schema-v1 `core.born_maximized`,
+    labels/tooltips, lifetime-bound subsequent-only adoption, native gates,
+    one-shot attempts and independent born/retile latches remain intact.
+    Hydrated fixed-origin overrides preserve their tentative reserved-slot
+    maximize route under both values, including hint loss. Windows consumes
+    all eight `test-fixtures/born-maximized.json` rows in settings/admission
+    tests, with strict saved-file boundary coverage. Native MSVC build/test,
+    fmt, strict clippy and diff checks pass (1,847 passed, 0 failed, 1 ignored).
+    Shared core/protocol audit since `2c05ee5` found no additional Windows
+    wiring gaps; existing D16/D23 integrations cover the other behavior deltas.
+    Existing native launch/settings/restart/game/DPI/multi-output checks
+    remain pending ([Windows record](changes/archive/windows-born-maximized-shared-policy.md)).
+    KDE keeps its conformance-pinned copy until post-0.1 Push code down
+    ([core record](changes/archive/born-maximized-shared-policy.md)).
   - Item 24: underlay default (User 2026-10-13), pending Windows implementation.
     Match the delivered KDE kcfg default `#662a82da` (ARGB: alpha 0x66 = 40%,
     RGB #2a82da), for now. Set `DEFAULT_COLOR_ARGB` in

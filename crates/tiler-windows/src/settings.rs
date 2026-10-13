@@ -160,7 +160,9 @@ pub const fn born_maximized_options() -> [(&'static str, &'static str, &'static 
 }
 
 fn default_born_maximized() -> String {
-    BORN_MAXIMIZED_TILE.to_owned()
+    tiler_core::born_maximized::BornMaximized::default()
+        .as_wire_str()
+        .to_owned()
 }
 
 /// R-MOV-03 two-choice control rows: `(wire token, functional label, WM tooltip)`.
@@ -276,6 +278,18 @@ impl CoreSettings {
         tiler_core::directional::SameAxisMove::parse_wire(&self.same_axis_move).unwrap_or_default()
     }
 
+    /// Typed R-MAX-06 mode for the next first-seen maximized admission.
+    /// Shared policy only: the exact tokens parse through
+    /// [`tiler_core::born_maximized::BornMaximized::parse_wire`]. Live
+    /// settings are always validated, so the fallback only covers hand-built
+    /// defaults; invalid files never become live (they keep last-good
+    /// instead).
+    #[must_use]
+    pub fn born_maximized_mode(&self) -> tiler_core::born_maximized::BornMaximized {
+        tiler_core::born_maximized::BornMaximized::parse_wire(&self.born_maximized)
+            .unwrap_or_default()
+    }
+
     /// Typed R-MAX-06 mode for the next first-seen maximized admission: true
     /// keeps the Q3 retained-slot overlay, false clears once then admits
     /// ordinarily. Live settings are always validated, so the fallback only
@@ -283,7 +297,7 @@ impl CoreSettings {
     /// last-good instead).
     #[must_use]
     pub fn born_maximized_keep_overlay(&self) -> bool {
-        self.born_maximized == BORN_MAXIMIZED_OVERLAY
+        !self.born_maximized_mode().should_clear_at_admission()
     }
 
     /// Typed R-SPC-04 D1 predicate for subsequent fixed-size admissions.
@@ -2022,8 +2036,8 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
             "core.same_axis_move needs group-with-neighbor|swap-with-neighbor".to_owned(),
         ));
     }
-    if settings.core.born_maximized != BORN_MAXIMIZED_TILE
-        && settings.core.born_maximized != BORN_MAXIMIZED_OVERLAY
+    if tiler_core::born_maximized::BornMaximized::parse_wire(&settings.core.born_maximized)
+        .is_none()
     {
         return Err(SettingsError::Invalid(
             "core.born_maximized needs tile-on-launch|keep-maximized-overlay".to_owned(),
@@ -2813,6 +2827,143 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn born_maximized_shared_fixture_conformance() {
+        use tiler_core::born_maximized::BornMaximized;
+        // Windows wire constants pin the shared tokens and default.
+        assert_eq!(
+            BornMaximized::TileOnLaunch.as_wire_str(),
+            BORN_MAXIMIZED_TILE
+        );
+        assert_eq!(
+            BornMaximized::KeepMaximizedOverlay.as_wire_str(),
+            BORN_MAXIMIZED_OVERLAY
+        );
+        assert_eq!(BornMaximized::default(), BornMaximized::TileOnLaunch);
+        assert_eq!(Settings::default().core.born_maximized, BORN_MAXIMIZED_TILE);
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../../test-fixtures/born-maximized.json"))
+                .expect("shared born-maximized fixture parses");
+        let cases = fixture
+            .get("cases")
+            .and_then(serde_json::Value::as_array)
+            .expect("fixture carries a case table");
+        assert!(!cases.is_empty(), "fixture case table is non-empty");
+        for case in cases {
+            let name = case
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unnamed>");
+            // A missing `raw` key pins the absent setting; any non-string
+            // JSON shape (null, number, boolean) normalizes as missing.
+            let raw = case.get("raw").and_then(serde_json::Value::as_str);
+            let mode = BornMaximized::normalize_wire(raw);
+            let normalized = case
+                .get("normalized")
+                .and_then(serde_json::Value::as_str)
+                .expect("each case pins its normalized token");
+            assert_eq!(mode.as_wire_str(), normalized, "{name}");
+            let should_clear = case
+                .get("should_clear")
+                .and_then(serde_json::Value::as_bool)
+                .expect("each case pins its clear-vs-keep outcome");
+            assert_eq!(mode.should_clear_at_admission(), should_clear, "{name}");
+            // Windows adapter boundary agrees on the normalized value.
+            let mut settings = Settings::default();
+            settings.core.born_maximized = mode.as_wire_str().to_owned();
+            assert_eq!(settings.core.born_maximized_mode(), mode, "{name}");
+            assert_eq!(
+                !settings.core.born_maximized_keep_overlay(),
+                should_clear,
+                "{name}"
+            );
+            assert_eq!(
+                crate::tiling::born_maximized_keep_overlay(mode.as_wire_str()),
+                !should_clear,
+                "{name}"
+            );
+            assert!(validate_settings(&settings).is_ok(), "{name}");
+            // Strict saved-value refusal: an invalid raw string never becomes
+            // live (last-good kept); fallback normalization is for hand-built
+            // values only, never for accepting a saved file.
+            if let Some(raw_str) = raw
+                && BornMaximized::parse_wire(raw_str).is_none()
+            {
+                let mut invalid = Settings::default();
+                invalid.core.born_maximized = raw_str.to_owned();
+                assert!(!invalid.core.born_maximized_keep_overlay(), "{name}");
+                assert!(
+                    matches!(validate_settings(&invalid), Err(SettingsError::Invalid(_))),
+                    "{name}"
+                );
+                assert!(
+                    !crate::tiling::born_maximized_keep_overlay(raw_str),
+                    "{name}"
+                );
+            }
+        }
+        // Strict saved-file serde boundary for the same fixture shapes:
+        // the absent key deserializes to the tile default and validates;
+        // invalid strings deserialize but refuse in validation (last-good
+        // kept, never normalized into live); non-string shapes (null/0/true)
+        // fail deserialization (malformed, never reach validation).
+        assert!(
+            cases.iter().any(|case| case.get("raw").is_none()),
+            "fixture pins the absent key"
+        );
+        let absent: Settings = serde_json::from_value(serde_json::json!({
+            "v": SETTINGS_SCHEMA_VERSION,
+            "revision": 1,
+            "core": {},
+            "bindings": {}
+        }))
+        .expect("absent key deserializes");
+        assert_eq!(absent.core.born_maximized, BORN_MAXIMIZED_TILE);
+        assert!(validate_settings(&absent).is_ok());
+        let mut invalid_strings = 0;
+        let mut non_string_shapes = 0;
+        for case in cases {
+            let name = case
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unnamed>");
+            let Some(raw) = case.get("raw") else {
+                continue;
+            };
+            if let Some(raw_str) = raw.as_str() {
+                if BornMaximized::parse_wire(raw_str).is_some() {
+                    continue;
+                }
+                invalid_strings += 1;
+                let parsed: Settings = serde_json::from_value(serde_json::json!({
+                    "v": SETTINGS_SCHEMA_VERSION,
+                    "revision": 1,
+                    "core": {"born_maximized": raw_str},
+                    "bindings": {}
+                }))
+                .expect("invalid string still deserializes");
+                assert!(
+                    matches!(validate_settings(&parsed), Err(SettingsError::Invalid(_))),
+                    "{name}"
+                );
+            } else {
+                non_string_shapes += 1;
+                let doc = serde_json::json!({
+                    "v": SETTINGS_SCHEMA_VERSION,
+                    "revision": 1,
+                    "core": {"born_maximized": raw},
+                    "bindings": {}
+                });
+                assert!(
+                    serde_json::from_value::<Settings>(doc).is_err(),
+                    "non-string shape refuses: {name}"
+                );
+            }
+        }
+        assert_eq!(invalid_strings, 2, "fixture pins bogus/empty strings");
+        assert_eq!(non_string_shapes, 3, "fixture pins null/0/true shapes");
     }
 
     #[test]

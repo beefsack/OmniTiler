@@ -2560,6 +2560,12 @@ platform API behavior.
     Windows replacement remains handoff item 23: Rust can call core directly,
     with the same table as acceptance and existing host gates preserved.
     [Core policy and conformance delivery](changes/archive/born-maximized-shared-policy.md).
+    Windows handoff item 23 delivered offline 2026-10-13: core-backed
+    settings/default/validation, admission predicates and radio read; shared
+    fixture conformance and native MSVC gates pass. Behavior/schema and
+    subsequent-admission semantics, including the existing tentative D7
+    hydrated fixed-override maximize route, remain intact.
+    [Windows delivery](changes/archive/windows-born-maximized-shared-policy.md).
 - B9 (user decision 2026-10-08): an explicit unfloat of an intentionally
   floating window that is natively maximized unmaximizes then fresh-admits
   (COSMIC). No retained-maximize unfloat. The user's COSMIC R-FLT-06

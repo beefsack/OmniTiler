@@ -335,7 +335,7 @@ fn same_axis_tip_texts() -> [Vec<u16>; 2] {
 /// keep-overlay radio, false the tile-on-launch default. Unknown values
 /// (possible only in hand-built drafts, never from disk) show the default.
 fn born_overlay_selected(settings: &Settings) -> bool {
-    settings.core.born_maximized == crate::settings::BORN_MAXIMIZED_OVERLAY
+    settings.core.born_maximized_keep_overlay()
 }
 
 /// R-MAX-06 draft staging from the overlay radio state: writes the exact wire

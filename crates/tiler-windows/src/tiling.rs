@@ -1057,7 +1057,8 @@ pub const fn should_clear_maximize_at_admission_with_mode(
 /// production gate, where anything invalid keeps last-good instead.
 #[must_use]
 pub fn born_maximized_keep_overlay(value: &str) -> bool {
-    value == crate::settings::BORN_MAXIMIZED_OVERLAY
+    tiler_core::born_maximized::BornMaximized::parse_wire(value)
+        .is_some_and(|mode| !mode.should_clear_at_admission())
 }
 
 /// R-MAX-06 latch decision at slotless admission: bind keep-overlay to the

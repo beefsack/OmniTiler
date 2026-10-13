@@ -378,6 +378,61 @@ fn born_maximized_overlay_keeps_first_sighting_other_gates_unchanged() {
 }
 
 #[test]
+fn born_maximized_shared_fixture_conformance() {
+    // Shared R-MAX-06 table pins raw -> normalized -> ordinary eligible
+    // tiled-first admission outcome. The Windows tiling predicate and the
+    // mode-aware clear gate must agree with core on every row.
+    use tiler_core::born_maximized::BornMaximized;
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../test-fixtures/born-maximized.json"))
+            .expect("shared born-maximized fixture parses");
+    let cases = fixture
+        .get("cases")
+        .and_then(serde_json::Value::as_array)
+        .expect("fixture carries a case table");
+    assert!(!cases.is_empty(), "fixture case table is non-empty");
+    for case in cases {
+        let name = case
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unnamed>");
+        // A missing `raw` key pins the absent setting; any non-string JSON
+        // shape (null, number, boolean) normalizes as missing.
+        let raw = case.get("raw").and_then(serde_json::Value::as_str);
+        let mode = BornMaximized::normalize_wire(raw);
+        let normalized = case
+            .get("normalized")
+            .and_then(serde_json::Value::as_str)
+            .expect("each case pins its normalized token");
+        assert_eq!(mode.as_wire_str(), normalized, "{name}");
+        let should_clear = case
+            .get("should_clear")
+            .and_then(serde_json::Value::as_bool)
+            .expect("each case pins its clear-vs-keep outcome");
+        assert_eq!(mode.should_clear_at_admission(), should_clear, "{name}");
+        let keep = !should_clear;
+        if let Some(raw_str) = raw {
+            assert_eq!(born_maximized_keep_overlay(raw_str), keep, "{name}");
+        } else {
+            // Missing/non-string raws fall back to the tile default lane.
+            assert!(should_clear, "{name}");
+            assert!(!keep, "{name}");
+            assert!(
+                !born_maximized_keep_overlay(BornMaximized::default().as_wire_str()),
+                "{name}"
+            );
+        }
+        // Ordinary eligible tiled-first admission clears exactly under
+        // tile-on-launch and keeps the overlay under keep-maximized-overlay.
+        assert_eq!(
+            should_clear_maximize_at_admission_with_mode(false, true, false, false, true, keep),
+            should_clear,
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn maximize_send_flags_must_match_before_transfer() {
     // Workspace-send membership transfer requires live overlay flags to
     // still equal the dispatch snapshot; any flag drift defers with no
