@@ -385,39 +385,46 @@ build_isolated_justfile() {
 import pathlib, os
 repo = os.environ.get("REPO_ROOT_SRC", "")
 dst = os.environ.get("ISOLATED_DST", "")
+def isolate(text):
+  text = text.replace('REPO_ROOT="{{ justfile_directory() }}"', f'REPO_ROOT="{repo}"')
+  text = text.replace('KWIN_DIR="$REPO_ROOT/kwin"', 'KWIN_DIR="${OMNITILER_KWIN_DIR:-$REPO_ROOT/kwin}"')
+  text = text.replace('SOURCE_DIR="$REPO_ROOT/kwin/native-effect"', 'SOURCE_DIR="${OMNITILER_NATIVE_SOURCE:-$REPO_ROOT/kwin/native-effect}"')
+  text = text.replace('BUILD_DIR="$REPO_ROOT/target/kwin-native-effect-build"', 'BUILD_DIR="${OMNITILER_NATIVE_BUILD:-$REPO_ROOT/target/kwin-native-effect-build}"')
+  text = text.replace('STAGE="$REPO_ROOT/target/kwin-native-effect-stage"', 'STAGE="${OMNITILER_NATIVE_STAGE:-$REPO_ROOT/target/kwin-native-effect-stage}"')
+  text = text.replace('TARGET_DIR="$REPO_ROOT/target"', 'TARGET_DIR="${OMNITILER_TARGET_DIR:-$REPO_ROOT/target}"')
+  text = text.replace('/proc/', '$PROC_ROOT/')
+  text = text.replace(
+    'BIN="$REPO_ROOT/target/debug/omnitiler"',
+    'BIN="${OMNITILER_BIN:-$REPO_ROOT/target/debug/omnitiler}"\n    PROC_ROOT="${PROC_ROOT:-/proc}"\n    START_TEST_BIN="${DEV_LOOP_START_TEST:-$REPO_ROOT/scripts/start-test.sh}"\n    DOGFOOD_BIN="${DEV_LOOP_DOGFOOD:-$REPO_ROOT/scripts/dogfood-install.sh}"',
+  )
+  text = text.replace('bash "$REPO_ROOT/scripts/start-test.sh"', 'bash "$START_TEST_BIN"')
+  text = text.replace('bash "$REPO_ROOT/scripts/dogfood-install.sh"', 'bash "$DOGFOOD_BIN"')
+  text = text.replace('/tmp/omnitiler-planner-dev.XXXXXX.log', '$RUNTIME_DIR/omnitiler-planner-dev.XXXXXX.log')
+  text = text.replace(
+    'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$RECORDED_PID" ]] || break; sleep 0.2; done',
+    'for _ in $(seq 1 50); do kill -0 "$RECORDED_PID" 2>/dev/null || break; sleep 0.2; done',
+  )
+  text = text.replace(
+    'if [[ -d "$PROC_ROOT/$RECORDED_PID" ]]; then',
+    'if kill -0 "$RECORDED_PID" 2>/dev/null; then',
+  )
+  text = text.replace(
+    'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$OLD_PID" ]] || break; sleep 0.2; done',
+    'for _ in $(seq 1 50); do kill -0 "$OLD_PID" 2>/dev/null || break; sleep 0.2; done',
+  )
+  text = text.replace(
+    'if [[ -d "$PROC_ROOT/$OLD_PID" ]]; then',
+    'if kill -0 "$OLD_PID" 2>/dev/null; then',
+  )
+  return text
 src = pathlib.Path(repo) / "justfile"
-text = src.read_text()
-text = text.replace('REPO_ROOT="{{ justfile_directory() }}"', f'REPO_ROOT="{repo}"')
-text = text.replace('KWIN_DIR="$REPO_ROOT/kwin"', 'KWIN_DIR="${OMNITILER_KWIN_DIR:-$REPO_ROOT/kwin}"')
-text = text.replace('SOURCE_DIR="$REPO_ROOT/kwin/native-effect"', 'SOURCE_DIR="${OMNITILER_NATIVE_SOURCE:-$REPO_ROOT/kwin/native-effect}"')
-text = text.replace('BUILD_DIR="$REPO_ROOT/target/kwin-native-effect-build"', 'BUILD_DIR="${OMNITILER_NATIVE_BUILD:-$REPO_ROOT/target/kwin-native-effect-build}"')
-text = text.replace('STAGE="$REPO_ROOT/target/kwin-native-effect-stage"', 'STAGE="${OMNITILER_NATIVE_STAGE:-$REPO_ROOT/target/kwin-native-effect-stage}"')
-text = text.replace('TARGET_DIR="$REPO_ROOT/target"', 'TARGET_DIR="${OMNITILER_TARGET_DIR:-$REPO_ROOT/target}"')
-text = text.replace('/proc', '$PROC_ROOT')
-text = text.replace(
-  'BIN="$REPO_ROOT/target/debug/omnitiler"',
-  'BIN="${OMNITILER_BIN:-$REPO_ROOT/target/debug/omnitiler}"\n    PROC_ROOT="${PROC_ROOT:-/proc}"\n    START_TEST_BIN="${DEV_LOOP_START_TEST:-$REPO_ROOT/scripts/start-test.sh}"\n    DOGFOOD_BIN="${DEV_LOOP_DOGFOOD:-$REPO_ROOT/scripts/dogfood-install.sh}"',
-)
-text = text.replace('bash "$REPO_ROOT/scripts/start-test.sh"', 'bash "$START_TEST_BIN"')
-text = text.replace('bash "$REPO_ROOT/scripts/dogfood-install.sh"', 'bash "$DOGFOOD_BIN"')
-text = text.replace('/tmp/omnitiler-planner-dev.XXXXXX.log', '$RUNTIME_DIR/omnitiler-planner-dev.XXXXXX.log')
-text = text.replace(
-  'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$RECORDED_PID" ]] || break; sleep 0.2; done',
-  'for _ in $(seq 1 50); do kill -0 "$RECORDED_PID" 2>/dev/null || break; sleep 0.2; done',
-)
-text = text.replace(
-  'if [[ -d "$PROC_ROOT/$RECORDED_PID" ]]; then',
-  'if kill -0 "$RECORDED_PID" 2>/dev/null; then',
-)
-text = text.replace(
-  'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$OLD_PID" ]] || break; sleep 0.2; done',
-  'for _ in $(seq 1 50); do kill -0 "$OLD_PID" 2>/dev/null || break; sleep 0.2; done',
-)
-text = text.replace(
-  'if [[ -d "$PROC_ROOT/$OLD_PID" ]]; then',
-  'if kill -0 "$OLD_PID" 2>/dev/null; then',
-)
-pathlib.Path(dst).write_text(text)
+pathlib.Path(dst).write_text(isolate(src.read_text()))
+# The root justfile only dispatches per OS; stage the Linux module next to the
+# isolated justfile so `[linux] import "just/linux.just"` resolves, with the
+# same test-path substitutions applied.
+linux_dst = pathlib.Path(dst).parent / "just" / "linux.just"
+linux_dst.parent.mkdir(parents=True, exist_ok=True)
+linux_dst.write_text(isolate((pathlib.Path(repo) / "just" / "linux.just").read_text()))
 PYEOF
 }
 
@@ -452,6 +459,7 @@ reset_state() {
   export CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo"
   export CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake"
   export XDG_RUNTIME_DIR="$WORK/runtime"
+  export XDG_CURRENT_DESKTOP=KDE
   export DEV_LOOP_START_TEST="$WORK/fake-start-test.sh"
   export DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh"
   export PATH="$FAKE_BIN/bin:$PATH"
@@ -506,7 +514,7 @@ set_controller() {
 
 run_just() {
   set +e
-  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1
+  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1
   EXIT=$?
   set -e
 }
@@ -514,7 +522,7 @@ run_just() {
 run_just_async() {
   set +e
   set -m
-  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" FAKE_TAIL_FOLLOW_BLOCK="${FAKE_TAIL_FOLLOW_BLOCK:-0}" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1 &
+  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" FAKE_TAIL_FOLLOW_BLOCK="${FAKE_TAIL_FOLLOW_BLOCK:-0}" PATH="$WORK/fake-store/hash-cargo/bin:$FAKE_BIN/bin:$PATH" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1 &
   JUST_ASYNC_PID=$!
   set +m
   set -e
@@ -567,7 +575,7 @@ run_just_without_kcmshell6() {
   else
     PASS=$((PASS + 1))
   fi
-  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" PATH="$no_kcm_path" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1
+  FAKE_STATE_DIR="$WORK/state" FAKE_CALL_LOG="$WORK/calls.log" PROC_ROOT="$WORK/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$WORK/fake-kwin" OMNITILER_NATIVE_SOURCE="$WORK/fake-native-source" OMNITILER_NATIVE_BUILD="$WORK/fake-native-build" OMNITILER_NATIVE_STAGE="$WORK/fake-native-stage" OMNITILER_TARGET_DIR="$WORK/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$WORK/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$WORK/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$WORK/fake-store" NIX_BIN="$FAKE_BIN/bin/nix" RUSTC_BIN="$WORK/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$WORK/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$WORK/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$WORK/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$WORK/fake-start-test.sh" DEV_LOOP_DOGFOOD="$WORK/fake-dogfood.sh" PATH="$no_kcm_path" just --justfile "$ISOLATED_JUSTFILE" "$@" >"$OUTPUT" 2>&1
   EXIT=$?
   set -e
 }
@@ -977,6 +985,40 @@ assert_calls_missing "cargo " "dev malformed no cargo"
 assert_calls_missing "npm " "dev malformed no npm"
 assert_calls_missing "cmake " "dev malformed no cmake"
 
+# dev dispatcher: colon-separated XDG_CURRENT_DESKTOP is matched
+# case-insensitively with KDE winning over GNOME; GNOME hits the dev-gnome
+# stub; anything else fails closed before any mutation.
+reset_state
+touch "$WORK/state/loaded-malformed"
+export XDG_CURRENT_DESKTOP="gnome:KDE"
+run_just dev
+check_exit 1 "dev dispatch kde-wins exit"
+assert_contains "dispatching to dev-kde" "dev dispatch kde-wins route"
+assert_contains "dev mode: UNKNOWN" "dev dispatch kde-wins dev-kde probe"
+assert_calls_missing "cargo " "dev dispatch kde-wins no cargo"
+assert_calls_missing "start-test start" "dev dispatch kde-wins no start"
+export XDG_CURRENT_DESKTOP=KDE
+
+reset_state
+export XDG_CURRENT_DESKTOP="ubuntu:GNOME"
+run_just dev
+check_exit 1 "dev dispatch gnome exit"
+assert_contains "dispatching to dev-gnome" "dev dispatch gnome route"
+assert_contains "GNOME is not supported yet" "dev dispatch gnome stub"
+assert_calls_missing "cargo " "dev dispatch gnome no cargo"
+assert_calls_missing "start-test start" "dev dispatch gnome no start"
+assert_calls_missing "setsid" "dev dispatch gnome no launch"
+export XDG_CURRENT_DESKTOP=KDE
+
+reset_state
+export XDG_CURRENT_DESKTOP=""
+run_just dev
+check_exit 1 "dev dispatch unknown exit"
+assert_contains "unsupported XDG_CURRENT_DESKTOP" "dev dispatch unknown msg"
+assert_calls_missing "cargo " "dev dispatch unknown no cargo"
+assert_calls_missing "start-test start" "dev dispatch unknown no start"
+export XDG_CURRENT_DESKTOP=KDE
+
 # dev: bring-up failure propagates without silent success and without tailing.
 reset_state
 set_controller false
@@ -1282,6 +1324,7 @@ assert_contains "build" "isolated list build"
 assert_contains "build-rust" "isolated list build-rust"
 assert_contains "build-kwin-script" "isolated list build-kwin-script"
 assert_contains "build-native-effect" "isolated list build-native-effect"
+assert_contains "dev-kde" "isolated list dev-kde"
 
 run_just --dry-run build
 check_exit 0 "isolated dry-run build exit"

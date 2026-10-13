@@ -783,30 +783,30 @@ part2_tests() {
   if grep -Fq 'cmp -s -- "$ENV_FILE" <(expected_env_contents)' "$HELPER"; then PASS=$((PASS + 1)); else echo "FAIL [setup raw cmp ownership]" >&2; FAIL=$((FAIL + 1)); fi
   if grep -Fq 'expected_env_contents > "$tmp"' "$HELPER"; then PASS=$((PASS + 1)); else echo "FAIL [setup canonical newline write]" >&2; FAIL=$((FAIL + 1)); fi
   # Static: just dev parses/passes strict owner and fails closed if missing/malformed.
-  if grep -Fq 'kwin_owner=' "$REPO_ROOT/justfile" && grep -Fq -- '--expect-owner "$NATIVE_KWIN_OWNER"' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [just dev owner parse/pass]" >&2; FAIL=$((FAIL + 1)); fi
-  if grep -Fq 'no valid KWin owner' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [just dev owner fail-closed]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'kwin_owner=' "$REPO_ROOT/just/linux.just" && grep -Fq -- '--expect-owner "$NATIVE_KWIN_OWNER"' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [just dev owner parse/pass]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'no valid KWin owner' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [just dev owner fail-closed]" >&2; FAIL=$((FAIL + 1)); fi
   # Static: narrow interrupt window has state-aware early trap, handed off after dev-on, never calls dev-off directly.
-  if grep -Fq 'native_early_cleanup' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [just dev early trap present]" >&2; FAIL=$((FAIL + 1)); fi
-  EARLY_BLOCK="$(awk '/native_early_cleanup\(\) \{/,/^\s*\}/' "$REPO_ROOT/justfile")"
+  if grep -Fq 'native_early_cleanup' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [just dev early trap present]" >&2; FAIL=$((FAIL + 1)); fi
+  EARLY_BLOCK="$(awk '/native_early_cleanup\(\) \{/,/^\s*\}/' "$REPO_ROOT/just/linux.just")"
   if printf '%s\n' "$EARLY_BLOCK" | grep -Fq "dev-off"; then echo "FAIL [early trap never calls dev-off]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
   if printf '%s\n' "$EARLY_BLOCK" | grep -Fq 'dev_cleanup "$rc"'; then PASS=$((PASS + 1)); else echo "FAIL [early trap delegates to full cleanup]" >&2; FAIL=$((FAIL + 1)); fi
   if printf '%s\n' "$EARLY_BLOCK" | grep -Fq 'DEV_ON_OK'; then PASS=$((PASS + 1)); else echo "FAIL [early trap state-aware]" >&2; FAIL=$((FAIL + 1)); fi
-  if grep -Fq 'DEV_ON_OK=0' "$REPO_ROOT/justfile" && grep -Fq 'DEV_ON_OK=1' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [handoff flag init/set]" >&2; FAIL=$((FAIL + 1)); fi
-  if grep -Fq 'publish the state-aware handoff' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [early trap handed off after dev-on]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'DEV_ON_OK=0' "$REPO_ROOT/just/linux.just" && grep -Fq 'DEV_ON_OK=1' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [handoff flag init/set]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'publish the state-aware handoff' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [early trap handed off after dev-on]" >&2; FAIL=$((FAIL + 1)); fi
   # Static: post-dev-on handoff installs full cleanup with sequential (not simultaneous) replacement.
-  if grep -Fq 'trap dev_cleanup EXIT' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [handoff installs full cleanup]" >&2; FAIL=$((FAIL + 1)); fi
-  HANDOFF_BLOCK="$(awk '/dev-on succeeded; publish the state-aware handoff/,/trap .exit 143. TERM/' "$REPO_ROOT/justfile")"
+  if grep -Fq 'trap dev_cleanup EXIT' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [handoff installs full cleanup]" >&2; FAIL=$((FAIL + 1)); fi
+  HANDOFF_BLOCK="$(awk '/dev-on succeeded; publish the state-aware handoff/,/trap .exit 143. TERM/' "$REPO_ROOT/just/linux.just")"
   if printf '%s\n' "$HANDOFF_BLOCK" | grep -Fxq '    trap - EXIT INT TERM'; then echo "FAIL [handoff no trap - gap]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
-  if grep -Fq 'only invoked after' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [handoff never before success]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'only invoked after' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [handoff never before success]" >&2; FAIL=$((FAIL + 1)); fi
   if printf '%s\n' "$HANDOFF_BLOCK" | grep -Fq 'atomically'; then echo "FAIL [handoff no atomic multi-signal claim]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
-  if grep -Fq 'replace the minimal native-only early trap' "$REPO_ROOT/justfile"; then echo "FAIL [handoff no stale atomic phrasing]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
-  if grep -Fq 'are sequential' "$REPO_ROOT/justfile" || grep -Fq 'sequential (one signal per trap' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [handoff sequential semantics]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'replace the minimal native-only early trap' "$REPO_ROOT/just/linux.just"; then echo "FAIL [handoff no stale atomic phrasing]" >&2; FAIL=$((FAIL + 1)); else PASS=$((PASS + 1)); fi
+  if grep -Fq 'are sequential' "$REPO_ROOT/just/linux.just" || grep -Fq 'sequential (one signal per trap' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [handoff sequential semantics]" >&2; FAIL=$((FAIL + 1)); fi
   # Ordering: DEV_ON_OK=1 is published before any post-success trap replacement.
-  DEV_OK_LINE="$(grep -n -F 'DEV_ON_OK=1' "$REPO_ROOT/justfile" | head -n 1 | cut -d: -f1)"
-  TRAP_FULL_LINE="$(grep -n -F 'trap dev_cleanup EXIT' "$REPO_ROOT/justfile" | head -n 1 | cut -d: -f1)"
+  DEV_OK_LINE="$(grep -n -F 'DEV_ON_OK=1' "$REPO_ROOT/just/linux.just" | head -n 1 | cut -d: -f1)"
+  TRAP_FULL_LINE="$(grep -n -F 'trap dev_cleanup EXIT' "$REPO_ROOT/just/linux.just" | head -n 1 | cut -d: -f1)"
   if [[ -n "$DEV_OK_LINE" && -n "$TRAP_FULL_LINE" && "$DEV_OK_LINE" -lt "$TRAP_FULL_LINE" ]]; then PASS=$((PASS + 1)); else echo "FAIL [handoff flag before trap replacement]" >&2; FAIL=$((FAIL + 1)); fi
   # Early INT routes post-success interrupts to full cleanup with Ctrl-C normalization.
-  if grep -Fq 'DEV_ON_OK:-0}" -eq 1 ]]; then INT_RECEIVED=1' "$REPO_ROOT/justfile"; then PASS=$((PASS + 1)); else echo "FAIL [early INT state-aware]" >&2; FAIL=$((FAIL + 1)); fi
+  if grep -Fq 'DEV_ON_OK:-0}" -eq 1 ]]; then INT_RECEIVED=1' "$REPO_ROOT/just/linux.just"; then PASS=$((PASS + 1)); else echo "FAIL [early INT state-aware]" >&2; FAIL=$((FAIL + 1)); fi
   # Functional: state-aware delegation preserves rc and dev-off gating.
   DELEGATE_OUT="$(bash -c 'DEV_ON_OK=1; INT_RECEIVED=0; dev_cleanup() { local rc=$?; if [[ "${1:-}" != "" ]]; then rc="$1"; fi; printf "dev_cleanup rc=%s int=%s\n" "$rc" "$INT_RECEIVED"; }; native_unload_owned_reverse() { printf "early-only\n"; }; native_early_cleanup() { local rc=$?; if [[ "${DEV_ON_OK:-0}" -eq 1 ]]; then dev_cleanup "$rc"; exit "$rc"; fi; trap - EXIT INT TERM; native_unload_owned_reverse || true; exit "$rc"; }; (exit 42); native_early_cleanup' 2>&1 || true)"
   if printf '%s\n' "$DELEGATE_OUT" | grep -Fq 'dev_cleanup rc=42'; then PASS=$((PASS + 1)); else echo "FAIL [delegation preserves rc]" >&2; printf '%s\n' "$DELEGATE_OUT" >&2; FAIL=$((FAIL + 1)); fi
@@ -824,39 +824,46 @@ part3_integration() {
 import pathlib, os
 repo = os.environ.get("REPO_ROOT_SRC", "")
 dst = os.environ.get("ISOLATED_DST", "")
+def isolate(text):
+  text = text.replace('REPO_ROOT="{{ justfile_directory() }}"', f'REPO_ROOT="{repo}"')
+  text = text.replace('KWIN_DIR="$REPO_ROOT/kwin"', 'KWIN_DIR="${OMNITILER_KWIN_DIR:-$REPO_ROOT/kwin}"')
+  text = text.replace('SOURCE_DIR="$REPO_ROOT/kwin/native-effect"', 'SOURCE_DIR="${OMNITILER_NATIVE_SOURCE:-$REPO_ROOT/kwin/native-effect}"')
+  text = text.replace('BUILD_DIR="$REPO_ROOT/target/kwin-native-effect-build"', 'BUILD_DIR="${OMNITILER_NATIVE_BUILD:-$REPO_ROOT/target/kwin-native-effect-build}"')
+  text = text.replace('STAGE="$REPO_ROOT/target/kwin-native-effect-stage"', 'STAGE="${OMNITILER_NATIVE_STAGE:-$REPO_ROOT/target/kwin-native-effect-stage}"')
+  text = text.replace('TARGET_DIR="$REPO_ROOT/target"', 'TARGET_DIR="${OMNITILER_TARGET_DIR:-$REPO_ROOT/target}"')
+  text = text.replace('/proc/', '$PROC_ROOT/')
+  text = text.replace(
+    'BIN="$REPO_ROOT/target/debug/omnitiler"',
+    'BIN="${OMNITILER_BIN:-$REPO_ROOT/target/debug/omnitiler}"\n    PROC_ROOT="${PROC_ROOT:-/proc}"\n    START_TEST_BIN="${DEV_LOOP_START_TEST:-$REPO_ROOT/scripts/start-test.sh}"\n    DOGFOOD_BIN="${DEV_LOOP_DOGFOOD:-$REPO_ROOT/scripts/dogfood-install.sh}"',
+  )
+  text = text.replace('bash "$REPO_ROOT/scripts/start-test.sh"', 'bash "$START_TEST_BIN"')
+  text = text.replace('bash "$REPO_ROOT/scripts/dogfood-install.sh"', 'bash "$DOGFOOD_BIN"')
+  text = text.replace('/tmp/omnitiler-planner-dev.XXXXXX.log', '$RUNTIME_DIR/omnitiler-planner-dev.XXXXXX.log')
+  text = text.replace(
+    'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$RECORDED_PID" ]] || break; sleep 0.2; done',
+    'for _ in $(seq 1 50); do kill -0 "$RECORDED_PID" 2>/dev/null || break; sleep 0.2; done',
+  )
+  text = text.replace(
+    'if [[ -d "$PROC_ROOT/$RECORDED_PID" ]]; then',
+    'if kill -0 "$RECORDED_PID" 2>/dev/null; then',
+  )
+  text = text.replace(
+    'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$OLD_PID" ]] || break; sleep 0.2; done',
+    'for _ in $(seq 1 50); do kill -0 "$OLD_PID" 2>/dev/null || break; sleep 0.2; done',
+  )
+  text = text.replace(
+    'if [[ -d "$PROC_ROOT/$OLD_PID" ]]; then',
+    'if kill -0 "$OLD_PID" 2>/dev/null; then',
+  )
+  return text
 src = pathlib.Path(repo) / "justfile"
-text = src.read_text()
-text = text.replace('REPO_ROOT="{{ justfile_directory() }}"', f'REPO_ROOT="{repo}"')
-text = text.replace('KWIN_DIR="$REPO_ROOT/kwin"', 'KWIN_DIR="${OMNITILER_KWIN_DIR:-$REPO_ROOT/kwin}"')
-text = text.replace('SOURCE_DIR="$REPO_ROOT/kwin/native-effect"', 'SOURCE_DIR="${OMNITILER_NATIVE_SOURCE:-$REPO_ROOT/kwin/native-effect}"')
-text = text.replace('BUILD_DIR="$REPO_ROOT/target/kwin-native-effect-build"', 'BUILD_DIR="${OMNITILER_NATIVE_BUILD:-$REPO_ROOT/target/kwin-native-effect-build}"')
-text = text.replace('STAGE="$REPO_ROOT/target/kwin-native-effect-stage"', 'STAGE="${OMNITILER_NATIVE_STAGE:-$REPO_ROOT/target/kwin-native-effect-stage}"')
-text = text.replace('TARGET_DIR="$REPO_ROOT/target"', 'TARGET_DIR="${OMNITILER_TARGET_DIR:-$REPO_ROOT/target}"')
-text = text.replace('/proc', '$PROC_ROOT')
-text = text.replace(
-  'BIN="$REPO_ROOT/target/debug/omnitiler"',
-  'BIN="${OMNITILER_BIN:-$REPO_ROOT/target/debug/omnitiler}"\n    PROC_ROOT="${PROC_ROOT:-/proc}"\n    START_TEST_BIN="${DEV_LOOP_START_TEST:-$REPO_ROOT/scripts/start-test.sh}"\n    DOGFOOD_BIN="${DEV_LOOP_DOGFOOD:-$REPO_ROOT/scripts/dogfood-install.sh}"',
-)
-text = text.replace('bash "$REPO_ROOT/scripts/start-test.sh"', 'bash "$START_TEST_BIN"')
-text = text.replace('bash "$REPO_ROOT/scripts/dogfood-install.sh"', 'bash "$DOGFOOD_BIN"')
-text = text.replace('/tmp/omnitiler-planner-dev.XXXXXX.log', '$RUNTIME_DIR/omnitiler-planner-dev.XXXXXX.log')
-text = text.replace(
-  'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$RECORDED_PID" ]] || break; sleep 0.2; done',
-  'for _ in $(seq 1 50); do kill -0 "$RECORDED_PID" 2>/dev/null || break; sleep 0.2; done',
-)
-text = text.replace(
-  'if [[ -d "$PROC_ROOT/$RECORDED_PID" ]]; then',
-  'if kill -0 "$RECORDED_PID" 2>/dev/null; then',
-)
-text = text.replace(
-  'for _ in $(seq 1 50); do [[ -d "$PROC_ROOT/$OLD_PID" ]] || break; sleep 0.2; done',
-  'for _ in $(seq 1 50); do kill -0 "$OLD_PID" 2>/dev/null || break; sleep 0.2; done',
-)
-text = text.replace(
-  'if [[ -d "$PROC_ROOT/$OLD_PID" ]]; then',
-  'if kill -0 "$OLD_PID" 2>/dev/null; then',
-)
-pathlib.Path(dst).write_text(text)
+pathlib.Path(dst).write_text(isolate(src.read_text()))
+# The root justfile only dispatches per OS; stage the Linux module next to the
+# isolated justfile so `[linux] import "just/linux.just"` resolves, with the
+# same test-path substitutions applied.
+linux_dst = pathlib.Path(dst).parent / "just" / "linux.just"
+linux_dst.parent.mkdir(parents=True, exist_ok=True)
+linux_dst.write_text(isolate((pathlib.Path(repo) / "just" / "linux.just").read_text()))
 PYEOF
   # Fake tools for just integration.
   local fbin="$jwork/fakebin"
@@ -1069,6 +1076,7 @@ EOF
     export CARGO_BIN="$jwork/fake-store/hash-cargo/bin/cargo"
     export CMAKE_BIN="$jwork/fake-store/hash-cmake/bin/cmake"
     export XDG_RUNTIME_DIR="$jwork/runtime"
+    export XDG_CURRENT_DESKTOP=KDE
     export DEV_LOOP_START_TEST="$jwork/fake-start.sh"
     export DEV_LOOP_DOGFOOD="$jwork/fake-dogfood.sh"
     export PATH="$fbin:$PATH"
@@ -1085,7 +1093,7 @@ EOF
   }
   jrun() {
     set +e
-    FAKE_STATE_DIR="$jwork/state" FAKE_CALL_LOG="$jwork/calls.log" PROC_ROOT="$jwork/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$jwork/fake-kwin" OMNITILER_NATIVE_BUILD="$jwork/fake-native-build" OMNITILER_NATIVE_STAGE="$jwork/fake-native-stage" OMNITILER_TARGET_DIR="$jwork/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$jwork/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$jwork/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$jwork/fake-store" NIX_BIN="$fbin/nix" RUSTC_BIN="$jwork/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$jwork/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$jwork/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$jwork/runtime" DEV_LOOP_START_TEST="$jwork/fake-start.sh" DEV_LOOP_DOGFOOD="$jwork/fake-dogfood.sh" PATH="$jwork/fake-store/hash-cargo/bin:$fbin:$PATH" just --justfile "$isolated" "$@" >"$OUTPUT" 2>&1
+    FAKE_STATE_DIR="$jwork/state" FAKE_CALL_LOG="$jwork/calls.log" PROC_ROOT="$jwork/proc" OMNITILER_BIN="$OMNITILER_BIN" OMNITILER_KWIN_DIR="$jwork/fake-kwin" OMNITILER_NATIVE_BUILD="$jwork/fake-native-build" OMNITILER_NATIVE_STAGE="$jwork/fake-native-stage" OMNITILER_TARGET_DIR="$jwork/fake-target" OMNITILER_KWIN_DEV_CMAKE_DIR="$jwork/fake-kwin-cmake" OMNITILER_HOST_KWIN_BIN="$jwork/fake-host/kwin_wayland" OMNITILER_STORE_ROOT="$jwork/fake-store" NIX_BIN="$fbin/nix" RUSTC_BIN="$jwork/fake-store/hash-rustc/bin/rustc" CARGO_BIN="$jwork/fake-store/hash-cargo/bin/cargo" CMAKE_BIN="$jwork/fake-store/hash-cmake/bin/cmake" FAKE_DRV="$FAKE_DRV" FAKE_STORE_PATH="$FAKE_STORE_PATH" FAKE_DEV_OUT="$FAKE_DEV_OUT" XDG_RUNTIME_DIR="$jwork/runtime" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP-KDE}" DEV_LOOP_START_TEST="$jwork/fake-start.sh" DEV_LOOP_DOGFOOD="$jwork/fake-dogfood.sh" PATH="$jwork/fake-store/hash-cargo/bin:$fbin:$PATH" just --justfile "$isolated" "$@" >"$OUTPUT" 2>&1
     EXIT=$?
     set -e
   }
