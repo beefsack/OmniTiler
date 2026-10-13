@@ -877,6 +877,10 @@ decisions of 2026-09-24 are under
      Full rectangles select adjacency only; work-area placement and R4 edge
      landing nearest the source remain. Explicit send reuses item-2 follow/
      source-MRU stay, with pinned source/target current-view arrival fences.
+     Windows explicit send/selection delivered offline `fda618f`, 2026-10-14
+     ([send](changes/archive/windows-explicit-output-send.md),
+     [selection](changes/archive/windows-position-based-output-selection.md));
+     physical two-output/mixed-DPI/suppression journeys pending.
   Bindings for other accepted additions remain to be chosen.
 - P1 | Windows handoff: reference-consensus additions | D1, user 2026-10-07:
   Windows adapter pieces are wired after their KDE-side delivery.
@@ -915,7 +919,7 @@ decisions of 2026-09-24 are under
   | 2 | Item 2 explicit follow/stay, then relative sends | Reuse item 1 ring/action routing, not MRU target selection. |
   | 3 | Item 3 live same-axis setting | Independent; replace compile constant without rebuilding trees. |
   | 4 | Item 4 orientation action | Reuse input/catalog/live settings infrastructure. |
-  | 5 | Multi-output foundation delivered offline `2c05ee5` + `f2169d6`; parity queue (9) | Local-first all-four directional transfer/follow focus, horizontal cross-focus and native/Win+drag pointer drops; commit-last fences preserve source membership on failure. Physical two-output journey and Linux/KWin gates pending ([record and steps](changes/windows-multi-output-foundation.md)). Explicit output-send bindings, non-local modes, dependent items 5, 12, 14, 16, 19, hotplug and ordinary-float transfer remain separate. |
+  | 5 | Multi-output foundation `2c05ee5` + `f2169d6`; explicit output send delivered offline `fda618f` 2026-10-14 | Local-first all-four transfer, horizontal cross-focus and pointer drops retained. Explicit Win+Ctrl+Alt+arrows/HJKL follow, four unbound stay rows, ordinary admission to target current workspace, floating-boundary tiled-side reflow and commit-last fences now wired. Native gates: 1,892 passed, 0 failed, 1 ignored ([send record](changes/archive/windows-explicit-output-send.md), [foundation and physical steps](changes/windows-multi-output-foundation.md)). Physical two-output/mixed-DPI/suppression pending; non-local modes, items 12/14/19, migration selection, hotplug and ordinary-float transfer remain separate. |
   | 6 | Keyboard resize R-RSZ-01 (parity d) | Independent; needs fresh Alt-capable trigger plus dedicated resize intent. No dependency on items 1-5 except shared modifier routing. |
   | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below). REQ-RST-01c is NORMATIVE D25 (User 2026-10-12), membership/set/focus native acceptance pending. Coordinate D7 membership with item 13. |
@@ -926,7 +930,7 @@ decisions of 2026-09-24 are under
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Core/KDE offline delivery including D8 overlay carry under user decisions 2026-10-08 (normative as delivered); depends on item 5's multi-output foundation, item 1 history invalidation and item 12 for non-local runtime modes. Windows adapter including D8 pending; no Windows behavior delivered. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
-  | 16 | Position-based output selection | Shared core/KDE delivered offline 2026-10-09; Windows handoff only. Wire with item 5's multi-output foundation and item 14 migration, preserving arrival/current-view/lifetime fences. |
+  | 16 | Position-based output selection: current Windows window paths delivered offline `fda618f` 2026-10-14 | Foundation already uses shared window ranking for moves/cross-focus; explicit send now does too, with pinned arrival/current-view/lifetime fences. Pointer drops retain pointer targeting. Native gates: 1,892 passed, 0 failed, 1 ignored ([record](changes/archive/windows-position-based-output-selection.md)). Physical two-output checks pending; largest-edge migration integration remains item 14. |
   | 17 | G-05 per-axis-zero predicate | Windows delivered offline 2026-10-11 with item 13, shared predicate reused; converted partial-zero orientations/default/either and subsequent-admission controls pass. Native hint representation pending. [Record](changes/archive/windows-per-axis-zero-predicate.md). |
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
@@ -1538,8 +1542,14 @@ decisions of 2026-09-24 are under
        owner/input/UI and physical Win+O takeover remain Windows-owned.
   - Item 5: Windows directional/focus/drag foundation delivered offline
       `2c05ee5` + `f2169d6` ([record and physical steps](changes/windows-multi-output-foundation.md)).
-      Explicit output-send bindings and the remaining dependent scope are still
-      pending; physical two-output and Linux/KWin gates remain open.
+      Explicit output follow/stay delivered offline `fda618f`, 2026-10-14:
+      catalog/settings/UI/exact modifier routing, ordinary current-workspace
+      admission and candidate-Engine/membership commit-last transfer, including
+      floating boundaries and source-MRU/null stay. Native gates: 1,892 passed,
+      0 failed, 1 ignored ([record](changes/archive/windows-explicit-output-send.md)).
+      Physical two-output/mixed-DPI/suppression and remaining dependent scope
+      remain pending. Held repeats and shifted stay rebinding are tentative,
+      pending user review; historical integration locators below are superseded.
       Historical shared delivery and remaining contract below; exact sites
       under `crates/tiler-windows/`:
 
@@ -2724,9 +2734,12 @@ decisions of 2026-09-24 are under
       REQ-FLT-06/06b and Ours cell with offline evidence; native journey TBD.
 
   - Item 16: position-based output selection (User 2026-10-09). Shared core/KDE
-    delivered offline; Windows runtime unchanged, multi-output unparked and
-    scheduled after the single-output handoff queue (user 2026-10-10).
-    Implement with items 5/14 when their multi-output foundation is resumed.
+    delivered offline; current Windows window paths verified/wired offline
+    `fda618f`, 2026-10-14 ([Windows record](changes/archive/windows-position-based-output-selection.md)).
+    Foundation directional movement/cross-focus already used the shared
+    window selector; explicit sends now reuse it with pinned transfer fences.
+    Pointer drops use pointer containment. Native gates: 1,892 passed, 0 failed,
+    1 ignored. Physical journeys pending; largest-edge migration remains item 14.
     [Record](changes/archive/position-based-output-selection.md),
     [spec](spec/functional-spec.md#move) REQ-MOV-08/08b,
     [output](spec/functional-spec.md#output) REQ-OUT-01/04,

@@ -822,8 +822,17 @@ platform API behavior.
       core/protocol four-direction moves, explicit output follow/stay
       and native catalog/presets delivered offline
       ([record](changes/archive/four-direction-output-transfer.md)). Windows
-  wiring and user-owned two-output native journey pending. Full rectangles
-  select adjacency only; placement retains per-desktop work areas.
+      explicit follow/stay wiring delivered offline `fda618f`, 2026-10-14
+      ([send](changes/archive/windows-explicit-output-send.md),
+      [selection](changes/archive/windows-position-based-output-selection.md));
+      native gates 1,892 passed, zero failed, one ignored. User-owned two-output
+      native journey pending. Full rectangles select adjacency only; placement
+      retains per-desktop work areas. Migration remains item 14.
+    - Windows tentative, pending user review: held output-send repeats dispatch
+      while the original Win/Ctrl/Alt and Shift polarity remain live. Follow
+      rejects Shift; explicitly rebound stay accepts Win+Ctrl+Alt or
+      Win+Ctrl+Alt+Shift and uses its canonical directional letter hold slot.
+      [Discriminator](spec/reference-outcomes.md#windows-output-send-held-key-discriminator).
 ## Fixed-Size Admission
 - User decisions 2026-10-08 and 2026-10-10 (fixed-size admission R-SPC-04
   D1-D8; D1 per-axis zero and D5/D6/D7 delivered offline,

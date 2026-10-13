@@ -52,12 +52,12 @@ paneru legs distinguish the native Space from virtual rows.
   commit/arrival fences retained. [Item-5 offline record](../../changes/archive/four-direction-output-transfer.md);
   native journey pending. User decision 2026-10-09 window-based selection
   delivered offline ([selection record](../../changes/archive/position-based-output-selection.md)); single-target crossing stands.
-- Then Ours Windows: local-only (corrected 2026-10-08 at `db31234`):
-  single-domain directional event with `cross_output_transfer:false`
-  (`crates/tiler-windows/src/tiling_sys.rs:6099/6105`); no cross actuation.
-  Shared core now supports four-direction R4; adapter wiring pending with
-  handoff item 5, blocked on the parked parity-queue multi-output
-  foundation. No native acceptance claimed.
+- Then Ours Windows: exhausted horizontal crossing to the target current
+  workspace delivered offline in the [foundation](../../changes/windows-multi-output-foundation.md).
+  Shared window-based selector audited/regressed `fda618f`, 2026-10-14
+  ([record](../../changes/archive/windows-position-based-output-selection.md));
+  nearest-source R4 landing and work-area placement retained. Native gates
+  1,892 passed, zero failed, one ignored; physical two-output journey pending.
 - Variant hook: V-R4-DIR.
 
 <a id="r-out-02-scrolling-assessment-perpendicular-move-at-an-output-edge"></a>
@@ -184,7 +184,9 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   sole X is that leaf; actuated via `setActive`).
   `S(S-ours-focus)` + `S(S-ours-out)`.
 - Then Ours Windows: same Engine cross to X as Ours KDE, actuated
-  via `actuate_focus`. `S(S-ours-focus)` + `S(S-ours-out)`.
+  via `actuate_focus`. Foundation delivered offline; selector audit `fda618f`,
+  2026-10-14 ([record](../../changes/archive/windows-position-based-output-selection.md));
+  physical journey pending. `S(S-ours-focus)` + `S(S-ours-out)`.
 - Variant hook: provisional/TBD (no suitable existing hook; V-R4-DIR
   covers moves, not focus).
 
@@ -250,9 +252,14 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   transfer membership only, tiled sides reflow. Shared core/protocol, KDE
   arrival/visibility fences and native catalog/presets delivered offline;
   [record](../../changes/archive/four-direction-output-transfer.md). Native journey TBD.
-- Then Ours Windows: no current adapter counterpart; shared core now exposes
-  distinct output send, Windows wiring remains pending with multi-output parked.
-  `S(S-ours-out)` + `S(S-ours-ws)` describe the pinned baseline refusal.
+- Then Ours Windows: distinct output send delivered offline `fda618f`,
+  2026-10-14 ([record](../../changes/archive/windows-explicit-output-send.md)).
+  Win+Ctrl+Alt+arrows/HJKL follows; four unbound stay rows keep source MRU/null
+  focus. Target current workspace uses ordinary remembered-leaf/history/root
+  admission. Sticky/intentional floats excluded; floating boundaries preserve
+  mover frames and reflow tiled sides. Candidate Engine/membership publish
+  after fresh final fences; failure does not replay native writes. Native gates
+  1,892 passed, zero failed, one ignored; physical two-output/DPI/suppression TBD.
 - Variant hook: V-WS-FOLLOW (follow vocabulary reused from
   R-WS-01; follow/stay outcomes remain profile-specific).
 
@@ -402,8 +409,10 @@ eligibility, sticky excluded, floating boundaries membership-only with tiled
 sides reflowing; ordinary float transfer OPEN. Shared core/KDE selection
 delivered offline 2026-10-09 with a real-Engine non-left/top send fixture
 ([record](../../changes/archive/position-based-output-selection.md)).
-Windows wiring and native journeys pending. Pinned baseline source
-keys remain historical; delivery evidence is linked separately in KDE cells.
+Windows wiring delivered offline `fda618f`, 2026-10-14
+([record](../../changes/archive/windows-explicit-output-send.md)); physical
+journeys pending. Pinned baseline source keys remain historical; dated delivery
+evidence is linked separately in the platform cells.
 
 ### R-OUT-07: explicit send before local exhaustion with remembered Y
 
@@ -505,6 +514,9 @@ keys remain historical; delivery evidence is linked separately in KDE cells.
   and production-entry/Engine geometry/arrival tested offline;
   [record](../../changes/archive/four-direction-output-transfer.md). Exact native
   child-order journey TBD; item 5.3/5.4.
-- Then Ours Windows: same selected explicit transfer/admission/follow/stay
-  target; implementation pending, multi-output parked; exact child order TBD.
+- Then Ours Windows: explicit transfer before local exhaustion delivered
+  offline `fda618f`, 2026-10-14. Real-Engine remembered-leaf geometry differs
+  from nearest-source R4 landing; follow/stay/current-view and failure fences
+  pass ([record](../../changes/archive/windows-explicit-output-send.md)).
+  Exact physical child-order, suppression and mixed-DPI journey TBD.
 - Variant hook: V-WS-FOLLOW.

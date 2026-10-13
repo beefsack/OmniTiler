@@ -12,6 +12,11 @@
 - Explicit output-send bindings, non-local workspace modes, whole-workspace
   migration and migration source-refill remain separate handoff work. Window-
   based output selection is reused where required by directional movement.
+- Explicit output follow/stay subsequently delivered offline `fda618f`,
+  2026-10-14 ([record](archive/windows-explicit-output-send.md)); position-based
+  selection audited and integrated for current window paths
+  ([record](archive/windows-position-based-output-selection.md)). Foundation
+  physical journeys below remain pending; migration stays item 14.
 - No hotplug acceptance or ordinary-floating transfer claim.
 
 ## Acceptance

@@ -384,9 +384,11 @@ ancestry claims. Ours cells cite the Engine move rules at `9241c94`
   destination `V[X,A*]` places A nearest the source. Full-rectangle adjacency,
   work-area placement and arrival/follow fences delivered offline;
   [record](../../changes/archive/four-direction-output-transfer.md). Native journey pending.
-- Then Ours Windows: local no-op in the current single-output adapter;
-  shared core now supports four-direction R4 but adapter wiring remains
-  pending, multi-output parked. `S(S-ours-move)` is the pinned baseline.
+- Then Ours Windows: four-direction R4 crossing delivered offline in the
+  [foundation](../../changes/windows-multi-output-foundation.md); shared
+  selector audit/regressions `fda618f`, 2026-10-14
+  ([record](../../changes/archive/windows-position-based-output-selection.md)).
+  Nearest-source landing/work-area placement retained; physical journey TBD.
 - Variant hook: V-R4-DIR.
 
 ## Explicit-swap fresh legs (additive reuse; no duplicated start/action row)
@@ -496,8 +498,11 @@ output rectangles, horizontal too; window-based selection (User decision
 else larger window-span overlap along the edge, final left/top tie-break;
 unreadable topology refuses, no candidate no-op, no wrap. Shared core/KDE
 selection delivered offline 2026-10-09
-([record](../../changes/archive/position-based-output-selection.md)). Windows wiring
-and native journeys remain pending. Delivery evidence below is offline, not a live
+([record](../../changes/archive/position-based-output-selection.md)). Windows
+foundation already uses this selector; audit/regressions and explicit-send
+integration delivered offline `fda618f`, 2026-10-14
+([Windows record](../../changes/archive/windows-position-based-output-selection.md)).
+Native journeys remain pending. Evidence below is offline, not a live
 observation or new reference vote.
 
 <a id="r-mov-09-flat-swap-right-with-unequal-sibling-shares"></a>
@@ -599,8 +604,10 @@ observation or new reference vote.
   Single-candidate fixture: crossing stands under the User decision 2026-10-09
   window-based selection; multi-candidate selection now delivered offline
   ([selection record](../../changes/archive/position-based-output-selection.md)).
-- Then Ours Windows: same selected crossing/eligibility target;
-  implementation pending, multi-output parked; exact native journey TBD.
+- Then Ours Windows: sole-root four-direction crossing to empty/occupied
+  current targets delivered offline in the foundation; shared selector audited
+  `fda618f`, 2026-10-14 ([record](../../changes/archive/windows-position-based-output-selection.md)).
+  Native gates 1,892 passed, zero failed, one ignored; physical journey TBD.
 - Variant hook: V-R4-DIR.
 
 ### R-MOV-12: exhausted up move with two candidate outputs above
@@ -632,8 +639,11 @@ observation or new reference vote.
   delayed arrival follows once; removal refuses and reconciles.
   [Record](../../changes/archive/position-based-output-selection.md).
   Native journey TBD.
-- Then Ours Windows: same selected window-based selection target;
-  implementation pending, multi-output parked; item 5.2.
+- Then Ours Windows: shared window-based selection wired by the foundation,
+  audited/regressed `fda618f`, 2026-10-14: centre precedence, exact half-open
+  odd-extent seam, span-overlap fallback and left/top/identity ties. Non-left/top
+  target remains pinned after arrival ([record](../../changes/archive/windows-position-based-output-selection.md)).
+  Physical multi-candidate journey TBD; item 5.2.
 - Variant hook: V-R4-DIR.
 
 #### R-MOV-12 technical selection discriminators (fresh legs)
@@ -680,6 +690,9 @@ odd extents retain exact half-pixel centres, Left/Right mirror onto y.
   Native journey TBD. Single-neighbor fixture: crossing stands under the User
   decision 2026-10-09 window-based selection; multi-candidate selection
   delivered offline ([selection record](../../changes/archive/position-based-output-selection.md)).
-- Then Ours Windows: same selected full-rectangle crossing;
-  implementation pending, multi-output parked; item 5.2.
+- Then Ours Windows: foundation selects on FULL rectangles and places in
+  work areas; audit/regressions `fda618f`, 2026-10-14 cover panel gaps,
+  negative/stacked geometry and differing physical work rectangles
+  ([record](../../changes/archive/windows-position-based-output-selection.md)).
+  Physical two-output and mixed-DPI settlement TBD; item 5.2.
 - Variant hook: V-R4-DIR.

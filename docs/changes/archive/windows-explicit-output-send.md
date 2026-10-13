@@ -1,5 +1,8 @@
 # Windows Explicit Output Send
 
+- Offline delivery: `fda618f`, 2026-10-14. Handoff item 5 explicit bindings,
+  input/settings/UI and native follow/stay integration complete offline.
+
 ## Goal And Scope
 
 - Deliver handoff item 5 explicit output follow/stay sends and item 16 selection
@@ -35,7 +38,7 @@
   horizontal cross-focus through shared `select_for_window`, using native
   frames and FULL output rectangles. Pointer drops use pointer containment;
   arrival verification is not directional ranking. No production correction
-  is needed for these paths. Explicit output send remains unwired.
+  was needed for these paths. Explicit output send was unwired at audit time.
 - Additive selector regressions cover stacked candidates, negative coordinates,
   overlap fallback, left/top/identity ties and exact odd-extent centres.
   Focused Windows selector tests: 13 passed; shared selector tests: 14 passed.
