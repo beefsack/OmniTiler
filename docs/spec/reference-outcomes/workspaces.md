@@ -310,17 +310,17 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   path), focusing B. The emptied source forces the Follow path, so
   the Stay run also switches the view and focuses B. `S(S-pan-ws)` +
   `S(S-pan-flt)`.
-- Then Ours KDE: ordinary float send delivered offline via slotless deferred transfer, float/size retained, destination/source tiles untouched; follow/stay, numbered/relative, sticky refuses, no setting. User 2026-10-13 confirms same-output exact frame/no geometry write; floating+fullscreen/maximized sends must carry exactly as-is and later return to floating frame, current combo refusals need code ([decision](../../decisions.md#workspaces)). Native roundtrip/combo exit pending, frames/focus TBD
-- Then Ours Windows: ordinary shared delivery available; same selected D16 frame/combo target, combo shared rework then Windows adapter/native acceptance in item 22; native roundtrip/combo exit pending, frames/focus TBD
+- Then Ours KDE: ordinary/combo float send delivered offline via slotless deferred transfer, float/size and live overlay retained, destination/source tiles untouched; follow/stay, real numbered/relative routing, sticky refuses, no setting. Same-output exact frame/no geometry write confirmed User 2026-10-13; destination overlay exit remains floating in real-Planner fixtures ([record](../../changes/archive/d16-floating-transfer.md), [decision](../../decisions.md#workspaces)). Native roundtrip/combo exit pending, frames/focus TBD
+- Then Ours Windows: ordinary/combo shared delivery available; same selected D16 frame/combo target, Windows adapter/native acceptance in item 22; native roundtrip/combo exit pending, frames/focus TBD
 - Variant hook: V-FLOAT-GEO.
 
 #### D16 combo and arrival-frame discriminators (2026-10-13)
 
-| Variant | Minimal action sequence | Selected Ours target / current gap | Unsupported outcomes |
+| Variant | Minimal action sequence | Selected Ours target / offline evidence | Unsupported outcomes |
 | --- | --- | --- | --- |
-| Same-output frame | Float B on WS1; record frame; send to WS2 and back on the same output; repeat numbered/relative follow/stay | Exact frame retained, no geometry write; ordinary float delivery offline | Exact native frame/focus and reference-WM qualified sequence TBD |
-| Floating plus overlay | Float B; fullscreen B; explicitly send to WS2; leave fullscreen. Repeat fresh with maximized B and numbered/relative follow/stay | Arrives still floating and fullscreen/maximized, exactly as-is; later exit returns to floating frame. Current combo refusals need code, expected slotless deferred path | Exact reference and native combo/exit outcomes TBD |
-| Sticky refusal | Make floating B sticky; explicitly send to WS2 | Still refuses; no sticky policy change | Exact qualified reference/native outcome TBD |
+| Same-output frame | Float B on WS1; record frame; send to WS2 and back on the same output; repeat numbered/relative follow/stay | Exact frame retained, no geometry write; ordinary and combo delivery offline | Exact native frame/focus and reference-WM qualified sequence TBD |
+| Floating plus overlay | Float B; fullscreen B; explicitly send to WS2; leave fullscreen. Repeat fresh with maximized B and numbered/relative follow/stay | Arrives still floating and fullscreen/maximized, exactly as-is; later exit returns to floating frame. Shared/KDE slotless delivery offline; real shortcut matrix and real-Planner destination refresh prove retention/no admission | Exact reference and native combo/exit outcomes TBD |
+| Sticky refusal | Make floating B sticky; fullscreen or maximize B; explicitly send to WS2 | Still refuses with no dispatch/setters; ordinary sticky refusal unchanged | Exact qualified reference/native outcome TBD |
 
 <a id="r-ws-06-backfill-send-to-a-floating-workspace-scrolling"></a>
 ### R-WS-06: send to a floating workspace

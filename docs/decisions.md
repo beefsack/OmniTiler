@@ -440,10 +440,10 @@ platform API behavior.
   floating+fullscreen and floating+maximized windows carry them exactly as-is,
   still floating and still fullscreen/maximized on arrival. Later leaving
   fullscreen/maximize returns to the floating frame. Sticky floats keep
-  refusing. Needs shared-core/KDE code, expected on the slotless deferred path.
-- Ordinary intentional-float sends are delivered offline
-  ([record](changes/d16-floating-transfer.md)); combo eligibility remains the
-  gap. Verify the untested native WS1 -> WS2 -> WS1 roundtrip first. Shared
+  refusing. Shared-core/KDE delivery now uses the slotless deferred path.
+- Ordinary and combo intentional-float sends are delivered offline
+  ([record](changes/archive/d16-floating-transfer.md)). Native WS1 -> WS2 -> WS1
+  roundtrip and destination overlay-exit acceptance remain pending. Shared
   delivery serves Windows; adapter/native work goes to handoff item 22.
   Floating-workspace boundary sends remain a distinct approved journey.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
@@ -474,11 +474,11 @@ platform API behavior.
   - Sends touching a floating workspace transfer project membership without a
     two-domain Engine plan; only the tiled side reconciles. Floating-side
     frames stay untouched. Sticky movers refuse; ordinary intentional-float
-    sends are delivered offline, floating+fullscreen/maximized eligibility
-    remains the approved D16 follow-up gap.
+    sends and floating+fullscreen/maximized retention are delivered offline
+    under D16; native boundary/combo acceptance remains pending.
   - `Meta/Win+1..9` select an existing workspace without creation; `0` reuses
     or creates the trailing empty. `Meta/Win+Shift+1..9` send the focused
-    window; D16 ordinary floating retention is delivered offline, combo follow-up pending.
+    window; D16 ordinary/combo floating retention is delivered offline.
     Send follows by default (R-WS-01) with a bindable unbound
     send-and-stay counterpart. Relative sends use the scoped ring (item 2).
     Exact follow is one fresh mover-absent-from-source/present-in-target

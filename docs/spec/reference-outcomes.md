@@ -15,6 +15,14 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### D16 floating-overlay carry discriminator
+
+Variant of [R-WS-05](reference-outcomes/workspaces.md#d16-combo-and-arrival-frame-discriminators-2026-10-13), selected 2026-10-13.
+
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| Floating overlay versus born-fullscreen hold | Float B on WS1; fullscreen B; explicitly send to WS2; leave fullscreen. Repeat with maximize and numbered/relative follow/stay | B retains float plus overlay on arrival with no geometry/overlay writes or tile reflow. Exit restores the floating frame without admission, unlike D28 born-fullscreen first exit. Shared/KDE real-Planner and shortcut fixtures pass ([record](../changes/archive/d16-floating-transfer.md)); sticky/automatic-fixed refusals unchanged | Exact qualified reference and native KDE/Windows carry/exit outcomes TBD; Windows adapter remains item 22 |
+
 ### D23 best-effort restore and close discriminators
 
 Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-cleanup-discriminators-2026-10-13), selected 2026-10-13.

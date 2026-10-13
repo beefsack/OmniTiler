@@ -989,15 +989,23 @@ describe("D16 send entry floating-ids observation and gate", () => {
         }
     });
 
-    it("a maximized float refuses without dispatching", () => {
+    it("an intentional maximized float now dispatches as the approved combo", () => {
+        // D16 approved floating+maximized combo (2026-10-13): an
+        // intentional float observed maximized dispatches like a plain
+        // float and rides the shared slotless deferred transfer. Full
+        // carry is pinned by workspace-send-float-combo-carry.test.ts.
         const h = entryHarness();
         try {
             h.winF.maximizeMode = 3;
             h.floatingIds.add("n-win-f");
-            assert.equal(h.requestSend("ws-2", true), false, "maximized float refused");
-            assert.equal(h.payloads.length, 0, "no planner request leaves");
-            assert.equal(h.isInFlight(), false, "no flight starts");
-            assert.deepEqual(h.winF.desktops, [h.d1], "nothing moves");
+            assert.equal(h.requestSend("ws-2", true), true, "maximized combo dispatches");
+            assert.equal(h.payloads.length, 1, "planner request leaves");
+            const body = JSON.parse(h.payloads[0] ?? "{}") as Record<string, unknown>;
+            const windows = body["windows"] as Array<Record<string, unknown>>;
+            const mover = windows.find((entry) => entry["window"] === "n-win-f") as Record<string, unknown>;
+            assert.equal(mover["floating"], true, "combo mover rides still floating");
+            assert.equal(mover["maximized"], true, "combo mover rides still maximized");
+            assert.equal(body["focused_window"], "n-win-f");
         } finally {
             h.stop();
         }

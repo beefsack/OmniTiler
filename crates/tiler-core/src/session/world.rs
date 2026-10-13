@@ -482,21 +482,16 @@ impl super::Session {
 
     /// Whether an exception member is eligible for the slotless deferred
     /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
-    /// intentional-float carry, option (a), no setting).
+    /// intentional-float carry, option (a), no setting; D16 approved
+    /// floating+fullscreen / floating+maximized combo carry, 2026-10-13).
     ///
-    /// Two retained floating-only shapes carry, both homed on `source`
-    /// with the rest of the observation binding exactly elsewhere: the
-    /// held born-fullscreen hold (the synthetic initial hold, never an
-    /// intentional float/sticky/maximized record), observed still
-    /// fullscreen with the native send-route flags (never floating
-    /// there, never maximized/sticky, no fixed-size origin signals);
-    /// and the ordinary intentional float, observed still floating
-    /// (never fullscreen/maximized/sticky there, no fixed-size origin
-    /// signals). Hints are advisory
-    /// and never gate. Anything else (tiled
-    /// members, unknown windows, automatic fixed floats, sticky,
-    /// maximized, exited movers, wrong homing) is ineligible, so
-    /// sticky keeps refusing as today.
+    /// The retained record is always the floating-only shape; three
+    /// observed shapes carry: the D28 held mover (never floating, still
+    /// fullscreen), the ordinary float (still floating, no overlays), and
+    /// the approved combos (still floating with exactly one overlay).
+    /// Sticky, both overlays at once, automatic fixed floats, and exited
+    /// movers refuse. Hints never gate; size travels in the retained
+    /// record. Overlays ride adapter-native with no geometry write.
     pub fn deferred_send_eligible(
         &self,
         window: &WindowId,
@@ -528,11 +523,18 @@ impl super::Session {
         }
         // Ordinary intentional-float arm (D16): still floating, no
         // overlays, no fixed-size origin signals (observed flags or
-        // the retained automatic marker; automatic fixed floats stay
-        // refused as pinned by the fixed-size suite).
+        // the retained automatic marker).
         // Size travels in the retained record, never in the
         // observation, so no geometry gates here.
         if entry.floating && !entry.fullscreen && !entry.maximized && !entry.sticky {
+            return !entry.fixed_auto
+                && !entry.fixed_suppress
+                && !self.automatic_fixed.contains(window);
+        }
+        // Approved combo arm (D16, 2026-10-13): still floating with
+        // exactly one overlay, never sticky, no fixed-size origin
+        // signals.
+        if entry.floating && !entry.sticky && (entry.fullscreen ^ entry.maximized) {
             return !entry.fixed_auto
                 && !entry.fixed_suppress
                 && !self.automatic_fixed.contains(window);

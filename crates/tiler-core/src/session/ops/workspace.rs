@@ -14,12 +14,13 @@ impl super::super::Session {
     /// with no window id and moves only the focused element; `move_element`
     /// unmaps the source (recursive collapse) then maps the tiled element in
     /// the target. The portable gate mirrors [`Session::propose_move`]:
-    /// unknown windows refuse as `UnknownWindow`, ineligible exception
-    /// windows (sticky, maximized, exited movers) or an unresolved
+    /// unknown windows refuse as `UnknownWindow`, exception windows outside
+    /// the deferred eligibility gate or an unresolved
     /// focused leaf as `NotTiled`, and a missing global focus or
     /// requested non-focused tile as `FocusMismatch`. The source domain must
-    /// equal the focused domain before mutation. Ordinary intentional
-    /// floats transfer slotless through the deferred path instead.
+    /// equal the focused domain before mutation. Intentional floats
+    /// (plain or approved fullscreen/maximized combos) transfer slotless
+    /// through the deferred path instead.
     ///
     /// Target placement follows `map_to_tree` (`direction=None`): the valid
     /// remembered destination last-active leaf splits when still linked
@@ -64,8 +65,8 @@ impl super::super::Session {
 
     /// Explicit output send (REQ-OUT-04, item 5.4): identical ordinary
     /// transfer to [`Session::propose_move_to_workspace`] (focused tiled
-    /// subject through the ordinary transfer, ordinary intentional
-    /// floats through the slotless deferred transfer, sticky still
+    /// subject through the ordinary transfer, intentional floats (plain
+    /// or approved combos) through the slotless deferred transfer, sticky still
     /// ineligible as `NotTiled`;
     /// remembered-leaf, destination focus-history, root admission; explicit
     /// follow/stay), except the target is the destination output's current
@@ -128,15 +129,13 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // A slotless floating exception member carries through the
-        // deferred transfer (D28 held born-fullscreen hold, D16
-        // ordinary intentional float, both option (a)): the held mover
-        // rides the native send-route flags (never floating, still
-        // fullscreen) while the retained record holds the synthetic
-        // floating shape, and the ordinary float rides still floating
-        // while the retained record holds its size, so the ordinary
-        // exact matcher below cannot bind either. Route before that
-        // matcher; the deferred path binds the rest exactly plus the
-        // mover exemption only.
+        // deferred transfer (D28 hold, D16 ordinary float, D16 approved
+        // combos): the held mover rides the native send-route flags while
+        // the retained record holds the floating shape, and plain/combo
+        // floats ride still floating with the retained size, so the
+        // ordinary exact matcher below cannot bind them. Route before
+        // that matcher; the deferred path binds the rest exactly plus
+        // the mover exemption only.
         if self.exceptions.contains_key(window) {
             return self.propose_deferred_send(
                 window,
@@ -393,12 +392,10 @@ impl super::super::Session {
     }
 
     /// Slotless deferred send transfer for a floating exception member
-    /// (D28 held born-fullscreen carry and D16 ordinary intentional-float
-    /// carry, both option (a)).
+    /// (D28 hold, D16 ordinary float, D16 approved combos, all option (a)).
     ///
-    /// Eligibility is exactly [`Session::deferred_send_eligible`]: any
-    /// other exception (sticky, maximized, exited mover, wrong homing)
-    /// refuses as `NotTiled`. The transfer adds/removes no
+    /// Eligibility is exactly [`Session::deferred_send_eligible`]; anything
+    /// else refuses as `NotTiled`. The transfer adds/removes no
     /// window identity: the rest-match binds every non-mover plus the
     /// mover exemption and rejects extras by count. Trees, tiled links, and allocations are untouched:
     /// the mover exception simply rehomes to the target while staying
@@ -467,7 +464,7 @@ impl super::super::Session {
         }
         // No tree mutation: desired trees and tiled links are exactly the
         // retained ones. Only the mover exception rehomes; its flags
-        // (floating-only hold shape) are preserved verbatim.
+        // and floating size are preserved verbatim.
         let desired_trees = self.trees.clone();
         let desired_windows = self.windows.clone();
         let mut desired_exceptions = self.exceptions.clone();

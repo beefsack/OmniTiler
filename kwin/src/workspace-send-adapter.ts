@@ -1461,9 +1461,11 @@ function snapshotsEqual(a: WorkspaceSendSnapshot, b: WorkspaceSendSnapshot): boo
 
 // Deferred-operation snapshot eligibility: the dispatch snapshot mover
 // must carry a slotless-transfer shape: the D28 held overlay (fullscreen,
-// never floating/sticky/maximized, fit-excluded) or the D16 ordinary
+// never floating/sticky/maximized, fit-excluded), the D16 ordinary
 // intentional float (floating, never fullscreen/sticky/maximized,
-// fit-excluded). Sticky, maximized, and other shapes never carry, so an
+// fit-excluded), or a D16 approved combo (floating with exactly one
+// overlay: floating+fullscreen or floating+maximized, never sticky,
+// fit-excluded). Sticky, dual-overlay, and other shapes never carry, so an
 // ordinary tiled mover still cannot sneak a leafless transfer and drop
 // its own allocation. Test shape only proves the flags; the actual held
 // topology stays shared Engine ownership, with no new state or provenance
@@ -1485,7 +1487,19 @@ function snapshotMoverHeld(snapshot: WorkspaceSendSnapshot, moverId: string): bo
             entry.sticky !== true &&
             entry.maximized !== true &&
             entry.fitExcluded === true;
-        return heldFullscreen || ordinaryFloat;
+        const floatFullscreen =
+            entry.floating === true &&
+            entry.fullscreen === true &&
+            entry.sticky !== true &&
+            entry.maximized !== true &&
+            entry.fitExcluded === true;
+        const floatMaximized =
+            entry.floating === true &&
+            entry.maximized === true &&
+            entry.sticky !== true &&
+            entry.fullscreen !== true &&
+            entry.fitExcluded === true;
+        return heldFullscreen || ordinaryFloat || floatFullscreen || floatMaximized;
     }
     return false;
 }
@@ -2088,24 +2102,19 @@ export class WorkspaceSendAdapter {
         follow: boolean,
         op: "send-to-workspace" | "send-to-output",
     ): string | null {
-        // Portable wire fields: `floating` and `fit_excluded` (the
-        // observer-carried fit opt-out, already ORed over floating, sticky,
-        // fullscreen, and maximized at observation) plus `fullscreen` for
-        // the focused mover only. The mover flag lets the shared Engine
-        // preserve a held born-fullscreen exception across the combined
-        // convergence instead of retiling it on the source (D28 slotless
-        // carry); an intentional-float mover rides `floating` from the
-        // observer (D16 slotless carry, same deferred route). Every other
-        // member keeps the exact legacy encoding, so tiled fullscreen
-        // survivors and all existing transfers are unchanged. Native
-        // maximized/sticky never ride the wire; they stay local snapshot
-        // semantics for the dispatch-frozen fence.
+        // Wire flags: `floating`/`fit_excluded` as observed, plus the
+        // focused mover's overlay (`fullscreen`, or `maximized` when
+        // floating) so the shared deferred arm binds the exact shape.
+        // Tiled maximized and sticky never ride the wire.
         const wireFlags = (entry: WorkspaceSendObservedWindow): Record<string, boolean> => ({
             ...(entry.floating === true ? { floating: true } : {}),
             ...(entry.floating === true || entry.fitExcluded === true || entry.fit_excluded === true
                 ? { fit_excluded: true }
                 : {}),
             ...(entry.id === observed.focusedId && entry.fullscreen === true ? { fullscreen: true } : {}),
+            ...(entry.id === observed.focusedId && entry.floating === true && entry.maximized === true
+                ? { maximized: true }
+                : {}),
         });
         const sourceWindows = observed.sourceWindows.map((entry) => ({
             window: entry.id,
@@ -2580,8 +2589,9 @@ export class WorkspaceSendAdapter {
     // echoed follow selection must equal the flight's requested selection.
     // Any other target/object/selection is a mismatched reply and never
     // actuates. A deferred operation additionally requires the snapshot
-    // mover to carry a slotless-transfer shape (D28 held fullscreen or D16
-    // ordinary float, never sticky/maximized): an ordinary tiled mover can
+    // mover to carry a slotless-transfer shape (D28 held fullscreen, D16
+    // ordinary float, or D16 approved floating+fullscreen /
+    // floating+maximized combo, never sticky): an ordinary tiled mover can
     // never sneak a leafless transfer and drop its own allocation. Focus
     // binding is selection-aware: tiled follow
     // names the mover in the target; deferred follow is null

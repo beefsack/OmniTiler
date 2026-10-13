@@ -12,8 +12,8 @@ decisions of 2026-09-24 are under
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
-  next code: D16 floating+fullscreen/maximized sends,
-  born-maximized core lift, underlay default, unsafe planner explicit-config
+  D16 ordinary/combo floating sends delivered offline ([evidence](changes/archive/d16-floating-transfer.md));
+  next code: born-maximized core lift, underlay default, unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
   and effect-description upgrade note. Native verification remains queued.
 
@@ -161,7 +161,7 @@ decisions of 2026-09-24 are under
   | D10 | verification-only | Orthogonal escape continues through R1 wrap (`crates/tiler-core/src/directional.rs:1003-1007`, `crates/tiler-core/src/session/ops/move.rs:1089-1140`). |
   | D12 | verification-only | Same-axis escape inserts into the ancestor axis (`crates/tiler-core/src/directional.rs:993-1002`, `crates/tiler-core/src/session/ops/move.rs:1080-1087`). |
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
-  | D16 | ordinary floats delivered offline; combo sends need code | Float retention and follow/stay numbered/relative slotless sends exist; same-output exact frame/no geometry write confirmed 2026-10-13. Floating+fullscreen and floating+maximized must carry exactly as-is and later return to floating frame; current refusals are gaps, expected on deferred path. Sticky keeps refusing; automatic-fixed refusal unchanged. Native roundtrip pending; Windows item 22 ([record](changes/d16-floating-transfer.md); [decision](decisions.md#workspaces)). |
+  | D16 | delivered offline; native verification pending | Shared-core/KDE ordinary and floating+fullscreen/maximized sends use slotless MoveDeferred; both flags retained, no geometry/overlay writes or source/destination tile reflow. Real numbered/relative follow/stay and destination exit regressions pass; exit remains floating at the remembered frame. Sticky/automatic-fixed refusals unchanged; no setting. Native roundtrip/combo exit pending; Windows adapter item 22 ([record](changes/archive/d16-floating-transfer.md); [decision](decisions.md#workspaces)). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D23 | delivered offline; native verification pending | COSMIC `3d55cba0` source gate passed. Shared-core best-effort neighbor rejoin uses stored group/index/side/share hints; additive `closed_windows` clears closed slots through KDE, including hidden domains. Minimize/reflow/MRU, no-focus-write restore and sole null focus preserved; session-only. Required regressions and full offline gates pass; Windows adapter remains item 22. [Evidence](changes/archive/d23-rework.md), [decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
@@ -169,18 +169,14 @@ decisions of 2026-09-24 are under
   | D27 | KDE verification-only; no longer BLOCKED | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows Mark urgent only/guard unchanged; setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
   | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
-  - D16 verification queue: shared-core float transfer eligibility/retention
-    and KDE send adapter delivered offline ([record](changes/d16-floating-transfer.md)).
-    Acceptance: follow/stay, numbered/relative,
-    retained float/size, destination tiles unchanged; no setting. Native
-    R-WS-05 roundtrip (WS1 -> WS2 -> WS1) verification pending.
-    Shared delivery serves Windows; Windows adapter/native acceptance follows in item 22.
-  - D16 approved follow-up (user 2026-10-13): explicit floating+fullscreen and
-    floating+maximized sends carry exactly as-is, still floating and overlaid
-    on arrival; leaving the overlay returns to the floating frame. Sticky
-    keeps refusing. Needs code, expected on slotless deferred path. Same-output
-    exact frame/no geometry write is confirmed. Include combo/exit regressions
-    and native follow/stay numbered/relative checks.
+  - D16 verification queue: ordinary and approved floating+fullscreen/maximized
+    sends delivered offline in shared core/KDE ([record](changes/archive/d16-floating-transfer.md)).
+    Native R-WS-05 roundtrip (WS1 -> WS2 -> WS1), numbered/relative follow/stay,
+    sole-window source/empty target, retained float/overlay flags and exact
+    same-output frame remain pending. Verify zero geometry/overlay writes,
+    unchanged source/destination tiles, restart float memory and later overlay
+    exit returning to floating frame. Sticky/automatic-fixed refusals unchanged;
+    no setting. Windows adapter/native acceptance follows in item 22.
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
@@ -856,7 +852,7 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 combo sends and D23 best-effort restore/close cleanup | D23 shared contract delivered offline: omit minimized carried rows, restore through rejoin, populate `CoreEvent.closed_windows` on verified close; Windows adapter pending. D16 combo shared delivery pending. Windows D27 urgent-only/guard unchanged. [D23 evidence](changes/archive/d23-rework.md). |
+  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Shared D16 ordinary/combo MoveDeferred and D23 rejoin/closed_windows contracts delivered offline; Windows adapter pending. D16: open only intentional-float send gate, propagate floating mover overlay flags, membership-only deferred actuation, retain float frame/intent across destination exit. Windows D27 urgent-only/guard unchanged. [D16 evidence](changes/archive/d16-floating-transfer.md), [D23 evidence](changes/archive/d23-rework.md). |
   | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
   | 24 | Underlay default `#662a82da` | Change Windows constant to candidate C, 40% accent blue, for now; black/white/grey visual check. |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
@@ -2848,20 +2844,42 @@ decisions of 2026-09-24 are under
     D12/D13 use existing shared defaults, with native verification pending.
     D22 survivor-share preservation is verification-only under shared removal,
     no setting; Windows native float-out reflow remains pending.
-    Approved D16 ordinary shared delivery is complete (ordinary intentional floats
-    transfer slotless deferred with float class and size preserved verbatim,
-    destination tiles untouched, sticky still refused; [record](changes/d16-floating-transfer.md)).
-    Windows adapter/native acceptance remains: admit ordinary intentional floats
-    through the Engine send route at `src/tiling_sys.rs` `workspace_do_send`
-    (current `send-refused-floating` gate), keeping float+size retention with no
-    destination reflow, existing follow/stay fences for numbered/relative sends,
-    and restart-store memory following by window id; no setting.
-    Same-output exact frame/no geometry write confirmed User 2026-10-13.
-    Combo sends need shared-core delivery, then Windows wiring:
-    floating+fullscreen and floating+maximized carry exactly as-is; retain
-    both floating and overlay flags on arrival, later exit returns to floating
-    frame. Sticky keeps refusing. Untested native WS1 -> WS2 -> WS1 roundtrip
-    is verified first; include combo/exit follow/stay numbered/relative legs.
+    Approved D16 ordinary/combo shared delivery is complete: intentional floats
+    transfer through `MoveDeferred`, retaining float class/size without either
+    tree changing; live fullscreen/maximize travels natively. KDE is delivered
+    offline; Windows adapter/native acceptance remains
+    ([record](changes/archive/d16-floating-transfer.md)). No setting. Same-output
+    exact frame/no geometry write confirmed User 2026-10-13. Windows adapter steps:
+    (1) In `src/tiling_sys.rs` `workspace_do_send`, narrow the current
+    `send-refused-floating` gate to admit ordinary intentional floats and
+    floating+fullscreen/maximized combos on tiled-to-tiled sends. Keep
+    `send-refused-sticky` and automatic-fixed refusal using existing
+    `engine_is_automatic_fixed` / fixed-origin state. The floating-source
+    `workspace_do_send_native` boundary route already carries native float frames;
+    it does not deliver the refused tiled-to-tiled deferred shapes.
+    (2) Preserve floating state from `assemble_domain_rows` / `domain_rows` /
+    `build_send_event`; bind the focused float mover's exact live overlay flags
+    from `overlay_now` through `stamp_engine_event`. Existing `build_send_event`
+    defaults `maximized` false and `stamp_fixed_admission_flags` only stamps
+    fullscreen/fixed flags: floating+maximized needs a send-specific flag path,
+    without changing tiled/survivor/admission encoding or protocol semantics.
+    (3) Explicitly handle `SendWorkspace(plan)` with `plan.operation` equal to
+    `MoveDeferred`: no fabricated leaf, no mover geometry, no source/target
+    geometry application (including `workspace_send_stay`'s source-only tail),
+    and no maximize restore/fullscreen toggles. Keep `workspaces.assign`,
+    `verify_membership_transfer`, `send_fences_hold` / `send_overlay_gate`,
+    identity/scope/lifetime/hide/reveal checks and existing follow/stay routing.
+    (4) Retain core float geometry, adapter `float_rects` / `floated` intent and
+    native overlay restoration state across membership movement. Destination
+    exit returns to the floating frame, never tiled admission; restart float
+    memory follows the window identity. Keep destination tiles and slotless
+    source untouched.
+    Acceptance: both combos x follow/stay x numbered/relative, ordinary/combo
+    WS1 -> WS2 -> WS1 roundtrip, exact arrival flags/frame, zero geometry/overlay
+    writes, destination exit still floating, sticky/automatic-fixed refusals,
+    sole-window source and empty target. Extend `workspace_owner.rs` send-event,
+    retained-overlay, writable-subset and sole-stay seams; native acceptance
+    remains pending. No Windows source behavior was changed by shared/KDE delivery.
     Approved D23 shared rework delivered offline 2026-10-13
     ([evidence](changes/archive/d23-rework.md)); Windows adapter pending: replace retained
     Windows minimize allocation (divergence, not an approved exception) with

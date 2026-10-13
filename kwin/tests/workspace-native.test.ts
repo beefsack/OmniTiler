@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { observeSendTarget, startPlanAdapterEntry } from "../src/plan-adapter-entry";
+import { INTENT_READ_METHOD } from "../src/plan-adapter";
 import { WORKSPACE_SEND_HAS_OWNER_METHOD } from "../src/workspace-send-adapter";
 import {
     ensureTrailingEmptyDesktop,
@@ -599,7 +600,7 @@ describe("workspace production entry routing and handoff", () => {
         readonly shortcuts: Array<{ action: string; sequence: string; callback: () => void }>;
     }
 
-    function startRichEntry(mode: unknown): { handle: ReturnType<typeof startPlanAdapterEntry>; world: FakeWorld; mocks: EntryMocks } {
+    function startRichEntry(mode: unknown, opts: { floatIntentMembers?: string[] } = {}): { handle: ReturnType<typeof startPlanAdapterEntry>; world: FakeWorld; mocks: EntryMocks } {
         const built = fakeWorld(mode, ["out-1"], ["ws-1", "ws-2"]);
         const world = built.world;
         const ws1 = world.desktops[0];
@@ -620,6 +621,10 @@ describe("workspace production entry routing and handoff", () => {
                 const reply = typeof callback === "function" ? callback : typeof payload === "function" ? payload : null;
                 if (method === WORKSPACE_SEND_HAS_OWNER_METHOD) {
                     reply?.(true);
+                    return;
+                }
+                if (method === INTENT_READ_METHOD && opts.floatIntentMembers !== undefined) {
+                    reply?.(intentOkReply(payload, opts.floatIntentMembers));
                     return;
                 }
                 mocks.dbusCalls.push({ service, method, payload });
@@ -645,7 +650,16 @@ describe("workspace production entry routing and handoff", () => {
             },
             readProfileFn: (): string => "cosmic",
             readWorkspaceModeFn: (): unknown => mode,
+            ...(opts.floatIntentMembers !== undefined ? { floatIntent: true as const } : {}),
         });
+        if (opts.floatIntentMembers !== undefined) {
+            // The intent read was answered synchronously above, so
+            // hydration (floatingIds) and the bootstrap gate settle inline;
+            // the routed send below proves the hydrated intent end to end.
+            // Startup timers stay pending: draining the initial resync
+            // debounce would park an unanswered plan flight and busy-refuse
+            // the send under test.
+        }
         return { handle, world, mocks };
     }
 
@@ -924,6 +938,201 @@ describe("workspace production entry routing and handoff", () => {
         handle?.stop();
     });
 
+    function intentOkReply(payload: string, members: string[]): string {
+        let correlation: unknown = "-";
+        try {
+            correlation = (JSON.parse(payload) as Record<string, unknown>)["correlation_id"] ?? "-";
+        } catch (error) {
+            void error;
+        }
+        return JSON.stringify({
+            v: 1,
+            correlation_id: correlation,
+            outcome: "ok",
+            members,
+            stored: members.length,
+            returned: members.length,
+            tile: [],
+            tile_stored: 0,
+            tile_returned: 0,
+        });
+    }
+
+    // D16 approved combos through real numbered/relative shortcut routing:
+    // win-a floats from hydrated intent (the entry's send observer input),
+    // then carries exactly one native overlay. Each drive resolves its
+    // target through the real ring/number resolution and answers a canned
+    // shared `move-deferred` reply, proving combo arrival with zero
+    // geometry/overlay setters.
+    function comboRoutedReply(correlation: string, follow: boolean, targetWorkspace = "ws-2"): string {
+        return JSON.stringify({
+            v: 1,
+            correlation_id: correlation,
+            outcome: "planned",
+            kind: "send-to-workspace",
+            base_revision: 0,
+            desired_geometry: [
+                { window: "win-b", leaf: "leaf-win-b", output: "out-1", workspace: "ws-1", rect: { x: 600, y: 0, w: 600, h: 800 } },
+                { window: "win-t", leaf: "leaf-win-t", output: "out-1", workspace: targetWorkspace, rect: { x: 0, y: 0, w: 1200, h: 800 } },
+            ],
+            desired_focus: follow
+                ? { domain_output: "out-1", domain_workspace: targetWorkspace, leaf: "leaf-win-t" }
+                : { domain_output: "out-1", domain_workspace: "ws-1", leaf: "leaf-win-b" },
+            preconditions: ["window-observed", "desired-topology-valid", "adapter-must-verify-postconditions"],
+            operation: {
+                op: "move-deferred",
+                window: "win-a",
+                source_output: "out-1",
+                source_workspace: "ws-1",
+                target_output: "out-1",
+                target_workspace: targetWorkspace,
+                follow,
+            },
+        });
+    }
+
+    function countMoverWrites(mover: FakeWindow): Record<"frameGeometry" | "fullScreen" | "maximizeMode" | "desktops", number> {
+        const counts = { frameGeometry: 0, fullScreen: 0, maximizeMode: 0, desktops: 0 };
+        let frame = { ...mover.frameGeometry };
+        let full = mover.fullScreen;
+        let max = mover.maximizeMode;
+        let desks = [...mover.desktops];
+        Object.defineProperties(mover, {
+            frameGeometry: {
+                enumerable: true,
+                configurable: true,
+                get: () => ({ ...frame }),
+                set: (value: { x: number; y: number; width: number; height: number }) => {
+                    counts.frameGeometry += 1;
+                    frame = { ...value };
+                },
+            },
+            fullScreen: {
+                enumerable: true,
+                configurable: true,
+                get: () => full,
+                set: (value: boolean) => {
+                    counts.fullScreen += 1;
+                    full = value;
+                },
+            },
+            maximizeMode: {
+                enumerable: true,
+                configurable: true,
+                get: () => max,
+                set: (value: number) => {
+                    counts.maximizeMode += 1;
+                    max = value;
+                },
+            },
+            desktops: {
+                enumerable: true,
+                configurable: true,
+                get: () => [...desks],
+                set: (value: FakeDesktop[]) => {
+                    counts.desktops += 1;
+                    desks = [...value];
+                },
+            },
+        });
+        return counts;
+    }
+
+    function driveRoutedCombo(combo: "fullscreen" | "maximized", action: string, follow: boolean): {
+        world: FakeWorld;
+        mocks: EntryMocks;
+        mover: FakeWindow;
+        writes: Record<"frameGeometry" | "fullScreen" | "maximizeMode" | "desktops", number>;
+        frameBefore: { x: number; y: number; width: number; height: number };
+        targetDesktop: FakeDesktop;
+        sourceDesktop: FakeDesktop;
+        stop: () => void;
+    } {
+        const { handle, world, mocks } = startRichEntry("per-output-local", { floatIntentMembers: ["win-a"] });
+        assert.ok(handle !== null);
+        const mover = world.wins.find((win) => win.internalId === "win-a");
+        assert.ok(mover !== undefined, "rich world holds win-a");
+        assert.equal(world.workspace["activeWindow"], mover, "combo mover stays natively focused");
+        if (combo === "fullscreen") {
+            mover.fullScreen = true;
+        } else {
+            mover.maximizeMode = 3;
+        }
+        const writes = countMoverWrites(mover);
+        const frameBefore = { ...mover.frameGeometry };
+        const targetDesktop = world.desktops[1];
+        const sourceDesktop = world.desktops[0];
+        assert.ok(targetDesktop !== undefined && sourceDesktop !== undefined);
+        const byAction = new Map(mocks.shortcuts.map((row) => [row.action, row]));
+        const sendBase = mocks.callbacks.length;
+        byAction.get(action)?.callback();
+        mocks.callbacks[sendBase]?.(":1.7");
+        const request = mocks.dbusCalls.find((call) => call.payload.includes("send-to-workspace"));
+        assert.ok(request !== undefined, `${combo} ${action} resolves a real target`);
+        const payload = JSON.parse(request.payload) as Record<string, unknown>;
+        const command = payload["command"] as Record<string, unknown>;
+        assert.equal(command["target_workspace"], "ws-2", "resolved target is ws-2");
+        assert.equal(command["follow"], follow);
+        const windows = payload["windows"] as Array<Record<string, unknown>>;
+        const wire = windows.find((entry) => entry["window"] === "win-a") as Record<string, unknown>;
+        assert.equal(wire["floating"], true, "combo mover rides still floating");
+        assert.equal(wire["fit_excluded"], true, "combo mover rides fit-excluded");
+        assert.equal(combo === "fullscreen" ? wire["fullscreen"] : wire["maximized"], true, "combo rides its overlay");
+        assert.equal(payload["focused_window"], "win-a");
+        const correlation = payload["correlation_id"] as string;
+        mocks.callbacks[mocks.callbacks.length - 1]?.(comboRoutedReply(correlation, follow));
+        assert.ok((mover.desktops as unknown[]).includes(targetDesktop), "mover lands on the target");
+        assert.equal(mover.fullScreen, combo === "fullscreen", "fullscreen retained exactly");
+        assert.equal(mover.maximizeMode, combo === "maximized" ? 3 : 0, "maximize retained exactly");
+        assert.deepEqual({ ...mover.frameGeometry }, frameBefore, "no geometry write to the mover");
+        assert.deepEqual(writes, { frameGeometry: 0, fullScreen: 0, maximizeMode: 0, desktops: 1 }, "exactly one membership write");
+        return { world, mocks, mover, writes, frameBefore, targetDesktop, sourceDesktop, stop: () => handle?.stop() };
+    }
+
+    for (const combo of ["fullscreen", "maximized"] as const) {
+        it(`carries a floating+${combo} combo on numbered follow through real resolution`, () => {
+            const flight = driveRoutedCombo(combo, "omnitiler-move-workspace-2", true);
+            try {
+                assert.equal(flight.world.currentByOutput.get(flight.world.outputs[0] as never), flight.targetDesktop);
+                assert.equal(flight.world.workspace["activeWindow"], flight.mover, "follow focuses the carried mover");
+            } finally {
+                flight.stop();
+            }
+        });
+
+        it(`carries a floating+${combo} combo on numbered stay with source focus`, () => {
+            const flight = driveRoutedCombo(combo, "omnitiler-stay-workspace-2", false);
+            try {
+                assert.equal(flight.world.currentByOutput.get(flight.world.outputs[0] as never), flight.sourceDesktop, "stay never switches");
+                const survivor = flight.world.wins.find((win) => win.internalId === "win-b");
+                assert.equal(flight.world.workspace["activeWindow"], survivor, "stay focuses the source survivor");
+            } finally {
+                flight.stop();
+            }
+        });
+
+        it(`carries a floating+${combo} combo on relative next follow through real ring resolution`, () => {
+            const flight = driveRoutedCombo(combo, "omnitiler-send-next-l", true);
+            try {
+                assert.equal(flight.world.currentByOutput.get(flight.world.outputs[0] as never), flight.targetDesktop);
+                assert.equal(flight.world.workspace["activeWindow"], flight.mover, "relative follow focuses the mover");
+            } finally {
+                flight.stop();
+            }
+        });
+
+        it(`carries a floating+${combo} combo on relative next stay with source focus`, () => {
+            const flight = driveRoutedCombo(combo, "omnitiler-send-stay-next-j", false);
+            try {
+                assert.equal(flight.world.currentByOutput.get(flight.world.outputs[0] as never), flight.sourceDesktop, "stay never switches");
+                const survivor = flight.world.wins.find((win) => win.internalId === "win-b");
+                assert.equal(flight.world.workspace["activeWindow"], survivor, "stay focuses the source survivor");
+            } finally {
+                flight.stop();
+            }
+        });
+    }
+
     it("follows the reused trailing target on Meta+Shift+0 after commit", () => {
         const { handle, world, mocks } = startRichEntry("per-output-local");
         assert.ok(handle !== null);
@@ -1106,7 +1315,7 @@ describe("workspace production entry routing and handoff", () => {
         assert.notEqual(focusedFloat.moverRef, null);
     });
 
-    it("production send gate still refuses sticky and maximized floats", () => {
+    it("production send gate still refuses sticky floats, admits the approved combos", () => {
         const { world } = startRichEntry("per-output-local");
         const cache = new Map<string, string>();
         const stickyWin = world.wins.find((win) => win.internalId === "win-b");
@@ -1118,11 +1327,18 @@ describe("workspace production entry routing and handoff", () => {
         assert.equal(stickyObserved.focusedId, "");
         assert.equal(stickyObserved.moverRef, null);
         stickyWin.onAllDesktops = false;
+        // D16 approved floating+maximized combo (2026-10-13): an
+        // intentional float observed maximized dispatches for the slotless
+        // deferred transfer, still floating with its overlay flag.
         stickyWin.maximizeMode = 3;
-        const maximizedObserved = observeSendTarget(world.workspace, cache, "ws-2", new Set<string>(["win-b"]));
-        assert.ok(maximizedObserved !== null);
-        assert.equal(maximizedObserved.focusedId, "");
-        assert.equal(maximizedObserved.moverRef, null);
+        const comboObserved = observeSendTarget(world.workspace, cache, "ws-2", new Set<string>(["win-b"]));
+        assert.ok(comboObserved !== null);
+        assert.equal(comboObserved.focusedId, "win-b");
+        assert.notEqual(comboObserved.moverRef, null);
+        const comboMover = comboObserved.sourceWindows.find((entry) => entry.id === "win-b");
+        assert.ok(comboMover !== undefined);
+        assert.equal(comboMover.floating, true);
+        assert.equal(comboMover.maximized, true);
     });
 
     it("observes live current-vs-target diagnostics while source is pinned", () => {

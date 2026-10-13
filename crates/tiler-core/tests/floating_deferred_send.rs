@@ -1,16 +1,19 @@
 //! D16 ordinary intentional-float workspace transfer (option (a), no
-//! setting): explicit numbered/relative follow/stay send of an
-//! intentional floating window.
+//! setting) plus the approved floating+fullscreen / floating+maximized
+//! combo carry (2026-10-13): explicit numbered/relative follow/stay send
+//! of an intentional floating window, plain or with exactly one overlay.
 //!
 //! Session-level contract, reusing the D28 slotless deferred route:
 //! the floating mover (slotless exception with retained size)
 //! transfers to the target homing with NO tree mutation and NO
 //! source/target reflow. The retained record keeps its flags and
-//! floating size verbatim, and the window-id-keyed restart float
+//! floating size verbatim (a combo's live overlay rides adapter-native
+//! with no geometry write), and the window-id-keyed restart float
 //! memory follows with no rehoming step. The operation carries
 //! window plus source/target identities with NO leaf (never
-//! fabricated). Sticky and maximized movers keep refusing as
-//! `NotTiled`; tiled sends still plan `MoveTiled`.
+//! fabricated). Sticky movers (plain or combo) keep refusing as
+//! `NotTiled`, as do both-overlays-at-once and automatic-fixed combos;
+//! tiled sends still plan `MoveTiled`.
 
 use std::collections::BTreeMap;
 
@@ -496,9 +499,14 @@ fn sticky_observed_float_send_refuses_not_tiled() {
 }
 
 #[test]
-fn maximized_observed_float_send_refuses_not_tiled() {
+fn maximized_combo_follow_carries_deferred() {
+    // Approved D16 combo (2026-10-13): an intentional float observed
+    // maximized rides the slotless deferred transfer exactly as-is: still
+    // floating with the live maximized overlay adapter-native, retained
+    // floating size verbatim, no tree mutation and no reflow either side.
     let mut s = float_fixture();
     let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
     let mut windows = live_observation(&s).windows;
     windows
         .iter_mut()
@@ -506,10 +514,12 @@ fn maximized_observed_float_send_refuses_not_tiled() {
         .expect("mover observed")
         .maximized = true;
     assert!(
-        !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
-        "maximized mover is not eligible"
+        s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "maximized combo mover is eligible"
     );
-    let err = s
+    let tree_before_a = s.tree_for(&source).cloned();
+    let tree_before_b = s.tree_for(&target).cloned();
+    let plan = s
         .propose(
             &SessionCommand::MoveToWorkspace {
                 window: WindowId("win-f".to_owned()),
@@ -521,8 +531,89 @@ fn maximized_observed_float_send_refuses_not_tiled() {
             &corr("corr-float-maximized"),
             &LifecycleCapabilities::full(),
         )
-        .expect_err("maximized send must refuse");
-    assert_eq!(err.kind(), "not-tiled");
+        .expect("maximized combo send plans the deferred transfer");
+    match &plan.dispatch.operation {
+        LifecycleOperation::MoveDeferred {
+            window,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => {
+            assert_eq!(window.0, "win-f");
+            assert_eq!(
+                (source_output.0.as_str(), source_workspace.0.as_str()),
+                ("out-1", "ws-a")
+            );
+            assert_eq!(
+                (target_output.0.as_str(), target_workspace.0.as_str()),
+                ("out-1", "ws-b")
+            );
+        }
+        other => panic!("combo send must plan MoveDeferred, got {other:?}"),
+    }
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-float-maximized",
+        300,
+    );
+    assert_eq!(
+        s.tree_for(&source).cloned(),
+        tree_before_a,
+        "source never reflows"
+    );
+    assert_eq!(
+        s.tree_for(&target).cloned(),
+        tree_before_b,
+        "target never reflows"
+    );
+    assert!(
+        s.is_exception(&WindowId("win-f".to_owned())),
+        "mover stays floating"
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.output.0, "out-1");
+    assert_eq!(record.workspace.0, "ws-b", "mover homed on the destination");
+    assert!(record.floating, "float retained on arrival");
+    assert!(!record.sticky, "never sticky");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "arrival size kept"
+    );
+    assert_eq!(
+        s.retained_float_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "restart float memory follows the window"
+    );
+    assert_eq!(
+        plan.desired_focus_domain,
+        Some(target),
+        "follow books the target"
+    );
+    assert_eq!(
+        plan.desired_focus_leaf,
+        Some(leaf_of(&s, "win-t")),
+        "follow falls back to the target MRU tile"
+    );
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "slotless mover takes no allocation"
+    );
+    for w in ["win-s", "win-t"] {
+        let entry = plan
+            .desired_geometry
+            .iter()
+            .find(|g| g.window.0 == w)
+            .expect("survivor geometry");
+        assert_eq!(entry.rect, bounds(), "{w} allocation never reflows");
+    }
 }
 
 #[test]
@@ -635,6 +726,522 @@ fn ordinary_float_output_send_follow() {
         &plan.dispatch.preconditions,
         &plan.dispatch.operation,
         "corr-out-float-follow",
+        300,
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.output.0, "out-2", "mover homed on the target output");
+    assert!(record.floating, "float retained across outputs");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "size kept across outputs"
+    );
+}
+
+// D16 combo suite (approved 2026-10-13): intentional floats observed
+// with exactly one overlay (fullscreen or maximized) ride the slotless
+// deferred transfer exactly as-is. The live overlay travels
+// adapter-native with no geometry write; core rehomes the mover with its
+// retained floating size verbatim, no tree mutation, no reflow.
+#[test]
+fn fullscreen_combo_follow_carries_deferred() {
+    let mut s = float_fixture();
+    let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    assert!(
+        s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "fullscreen combo mover is eligible"
+    );
+    let tree_before_a = s.tree_for(&source).cloned();
+    let tree_before_b = s.tree_for(&target).cloned();
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-fullscreen-follow"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("fullscreen combo send plans the deferred transfer");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "combo send carries the deferred transfer"
+    );
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-combo-fullscreen-follow",
+        300,
+    );
+    assert_eq!(
+        s.tree_for(&source).cloned(),
+        tree_before_a,
+        "source never reflows"
+    );
+    assert_eq!(
+        s.tree_for(&target).cloned(),
+        tree_before_b,
+        "target never reflows"
+    );
+    assert!(
+        s.is_exception(&WindowId("win-f".to_owned())),
+        "mover stays floating"
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-b", "mover homed on the destination");
+    assert!(record.floating, "float retained on arrival");
+    assert!(!record.sticky, "never sticky");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "arrival size kept"
+    );
+    assert_eq!(
+        s.retained_float_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "restart float memory follows the window"
+    );
+    assert_eq!(
+        plan.desired_focus_domain,
+        Some(target),
+        "follow books the target"
+    );
+    assert_eq!(
+        plan.desired_focus_leaf,
+        Some(leaf_of(&s, "win-t")),
+        "follow falls back to the target MRU tile"
+    );
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "slotless mover takes no allocation"
+    );
+}
+
+#[test]
+fn fullscreen_combo_stay_falls_back_to_source_mru() {
+    let mut s = float_fixture();
+    let source = key("out-1", "ws-a");
+    let survivor_leaf = leaf_of(&s, "win-s");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: false,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-fullscreen-stay"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("combo stay plans the deferred transfer");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "stay also carries the deferred transfer"
+    );
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-combo-fullscreen-stay",
+        300,
+    );
+    assert_eq!(
+        plan.desired_focus_domain,
+        Some(source),
+        "stay keeps the source"
+    );
+    assert_eq!(
+        plan.desired_focus_leaf,
+        Some(survivor_leaf),
+        "stay falls back to the source MRU survivor"
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-b", "stay still rehomes the mover");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "stay keeps the size"
+    );
+}
+
+#[test]
+fn combo_roundtrip_exit_returns_to_floating() {
+    // Leg one carries the fullscreen combo ws-a -> ws-b (follow); the
+    // overlay then exits adapter-native, observed as the plain intentional
+    // float at ws-b; leg two returns it home as an ordinary float (stay).
+    // Both legs keep the frame with no reflow either side.
+    let mut s = float_fixture();
+    let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
+    let tree_before_a = s.tree_for(&source).cloned();
+    let tree_before_b = s.tree_for(&target).cloned();
+    let mut leg_one_windows = live_observation(&s).windows;
+    leg_one_windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
+                follow: true,
+            },
+            &obs(&s, leg_one_windows),
+            &corr("corr-combo-leg-one"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("combo leg plans");
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-combo-leg-one",
+        300,
+    );
+    assert_eq!(
+        s.exception_observed()
+            .into_iter()
+            .find(|w| w.window.0 == "win-f")
+            .expect("mover exception")
+            .workspace
+            .0,
+        "ws-b",
+        "combo leg arrives on ws-b"
+    );
+    // Overlay exit: the live window is now the plain intentional float at
+    // the destination, still matching the floating-only retained record.
+    assert!(
+        s.deferred_send_eligible(
+            &WindowId("win-f".to_owned()),
+            &target,
+            &live_observation(&s).windows,
+        ),
+        "exited combo stays eligible as an ordinary float"
+    );
+    let back = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: source.output.clone(),
+                target_workspace: source.workspace.clone(),
+                follow: false,
+            },
+            &live_observation(&s),
+            &corr("corr-combo-leg-two"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("return leg plans");
+    assert!(
+        matches!(
+            &back.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "return leg also carries the deferred transfer"
+    );
+    commit(
+        &mut s,
+        &back.dispatch.preconditions,
+        &back.dispatch.operation,
+        "corr-combo-leg-two",
+        400,
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-a", "return leg arrives home");
+    assert!(record.floating, "float retained on the return leg");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "size kept across the roundtrip"
+    );
+    assert_eq!(
+        s.tree_for(&source).cloned(),
+        tree_before_a,
+        "source tiles untouched across the roundtrip"
+    );
+    assert_eq!(
+        s.tree_for(&target).cloned(),
+        tree_before_b,
+        "target tiles untouched across the roundtrip"
+    );
+}
+
+#[test]
+fn sticky_combo_send_refuses_not_tiled() {
+    // Sticky combos keep refusing (approved 2026-10-13): sticky in the
+    // observation refuses even with exactly one overlay.
+    for (name, set_overlay) in [("fullscreen", true), ("maximized", false)] {
+        let mut s = float_fixture();
+        let source = key("out-1", "ws-a");
+        let mut windows = live_observation(&s).windows;
+        let mover = windows
+            .iter_mut()
+            .find(|w| w.window.0 == "win-f")
+            .expect("mover observed");
+        mover.sticky = true;
+        if set_overlay {
+            mover.fullscreen = true;
+        } else {
+            mover.maximized = true;
+        }
+        assert!(
+            !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+            "sticky {name} combo is not eligible"
+        );
+        let err = s
+            .propose(
+                &SessionCommand::MoveToWorkspace {
+                    window: WindowId("win-f".to_owned()),
+                    target_output: OutputId("out-1".to_owned()),
+                    target_workspace: WorkspaceId("ws-b".to_owned()),
+                    follow: true,
+                },
+                &obs(&s, windows),
+                &corr(&format!("corr-combo-sticky-{name}")),
+                &LifecycleCapabilities::full(),
+            )
+            .expect_err("sticky combo send must refuse");
+        assert_eq!(
+            err.kind(),
+            "not-tiled",
+            "sticky {name} combo keeps refusing"
+        );
+    }
+}
+
+#[test]
+fn both_overlays_combo_send_refuses() {
+    // Fail closed: floating with both fullscreen and maximized never
+    // carries.
+    let mut s = float_fixture();
+    let source = key("out-1", "ws-a");
+    let mut windows = live_observation(&s).windows;
+    let mover = windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed");
+    mover.fullscreen = true;
+    mover.maximized = true;
+    assert!(
+        !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "both-overlays mover is not eligible"
+    );
+    let err = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-both"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect_err("both-overlays send must refuse");
+    assert_eq!(err.kind(), "not-tiled");
+}
+
+#[test]
+fn automatic_combo_send_refuses_not_tiled() {
+    // Automatic-fixed refusal is unchanged for combos: the observed
+    // origin signals refuse even with exactly one overlay.
+    for (name, fixed_auto, fixed_suppress) in [("auto", true, false), ("suppress", false, true)] {
+        let mut s = float_fixture();
+        let source = key("out-1", "ws-a");
+        let mut windows = live_observation(&s).windows;
+        let mover = windows
+            .iter_mut()
+            .find(|w| w.window.0 == "win-f")
+            .expect("mover observed");
+        mover.fullscreen = true;
+        mover.fixed_auto = fixed_auto;
+        mover.fixed_suppress = fixed_suppress;
+        assert!(
+            !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+            "automatic {name} combo is not eligible"
+        );
+        let err = s
+            .propose(
+                &SessionCommand::MoveToWorkspace {
+                    window: WindowId("win-f".to_owned()),
+                    target_output: OutputId("out-1".to_owned()),
+                    target_workspace: WorkspaceId("ws-b".to_owned()),
+                    follow: true,
+                },
+                &obs(&s, windows),
+                &corr(&format!("corr-combo-{name}")),
+                &LifecycleCapabilities::full(),
+            )
+            .expect_err("automatic combo send must refuse");
+        assert_eq!(err.kind(), "not-tiled");
+    }
+}
+
+#[test]
+fn combo_empty_target_carries_without_geometry() {
+    // Sole-window source to an empty destination: the combo mover carries
+    // with no allocations and null follow focus, then still holds.
+    let mut s = Session::new(
+        owner(),
+        generation(),
+        0,
+        7,
+        vec![dom("out-1", "ws-a"), dom("out-1", "ws-b")],
+    )
+    .expect("s");
+    admit(&mut s, "win-f", "out-1", "ws-a", "corr-combo-empty-admit");
+    floatify(&mut s, "win-f", "corr-combo-empty-float");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-empty-send"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("empty-target combo send plans");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "empty-target combo carries deferred"
+    );
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-combo-empty-send",
+        300,
+    );
+    assert!(
+        plan.desired_geometry.is_empty(),
+        "no tiled members either side, no allocations"
+    );
+    assert!(
+        plan.desired_focus_domain.is_none() && plan.desired_focus_leaf.is_none(),
+        "member-less target leaves follow focus null"
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-b");
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "size kept to the empty destination"
+    );
+}
+
+#[test]
+fn combo_output_send_follow() {
+    // Cross-output (relative) send of a fullscreen combo through the
+    // shared implementation with `allow_cross_output`.
+    let mut s = Session::new(
+        owner(),
+        generation(),
+        0,
+        7,
+        vec![dom("out-1", "ws-a"), dom("out-2", "ws-a")],
+    )
+    .expect("s");
+    admit(&mut s, "win-s", "out-1", "ws-a", "corr-combo-out-admit-s");
+    admit(&mut s, "win-u", "out-2", "ws-a", "corr-combo-out-admit-u");
+    admit(&mut s, "win-f", "out-1", "ws-a", "corr-combo-out-admit-f");
+    floatify(&mut s, "win-f", "corr-combo-out-float-f");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fullscreen = true;
+    let target = key("out-2", "ws-a");
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToOutput {
+                window: WindowId("win-f".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
+                follow: true,
+            },
+            &obs(&s, windows),
+            &corr("corr-combo-out-follow"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("cross-output combo send plans");
+    match &plan.dispatch.operation {
+        LifecycleOperation::MoveDeferred {
+            window,
+            source_output,
+            target_output,
+            ..
+        } => {
+            assert_eq!(window.0, "win-f");
+            assert_eq!(source_output.0, "out-1");
+            assert_eq!(target_output.0, "out-2");
+        }
+        other => panic!("cross-output combo send must plan MoveDeferred, got {other:?}"),
+    }
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-combo-out-follow",
         300,
     );
     let record = s

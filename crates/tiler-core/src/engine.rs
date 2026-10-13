@@ -2515,9 +2515,8 @@ impl Engine {
             }
         };
         if !session.sync_focus_from_window(&source_key, &event.focused_window) {
-            // D28 slotless carry (plus the D16 ordinary-float arm): an
-            // explicit focused mover that is a floating exception
-            // transfers without a tiled link. Bookkeeping focus falls
+            // D28/D16 slotless carry: an explicit focused mover that is a
+            // floating exception transfers without a tiled link. Bookkeeping focus falls
             // back to a tiled MRU (never the mover); native follow/stay
             // runs adapter-side while the exception rehomes through the
             // deferred transfer below. Anything else still refuses as

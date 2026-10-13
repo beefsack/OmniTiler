@@ -2036,21 +2036,15 @@ export function observeSendTarget(
                 const activeId = internNativeId(cache, activeNative, activeRef, owners);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover, plus the D16 ordinary-float
-                        // carry: an intentional float (floating without
-                        // sticky) dispatches like a tiled mover and rides
-                        // the shared slotless deferred transfer with native
-                        // state untouched, while sticky and maximized floats
-                        // keep "" / null and refuse downstream. Maximized
-                        // and fullscreen tiled movers carry under G-D2/D28
-                        // (REQ-MAX-09) with native state untouched. An
-                        // otherwise unexplained fit exclusion (fitExcluded
-                        // without an overlay or float intent) also refuses:
-                        // overlays are admitted only while otherwise valid.
+                        // Mover gate: tiled movers dispatch, as does a D16
+                        // intentional float (floating without sticky) plain
+                        // or with exactly one overlay. Sticky, dual-overlay,
+                        // and otherwise unexplained fit-excluded movers keep
+                        // "" / null and refuse downstream.
                         const entryIntentionalFloat = entry.floating && !entry.sticky;
                         if (
                             entry.sticky ||
-                            (entryIntentionalFloat && (entry.maximized || entry.fullscreen)) ||
+                            (entryIntentionalFloat && entry.maximized && entry.fullscreen) ||
                             (!entryIntentionalFloat &&
                                 (entry.floating ||
                                     (entry.fitExcluded && !entry.maximized && !entry.fullscreen)))
@@ -3974,22 +3968,15 @@ export function observeOutputSendTarget(
                 const activeId = internNativeId(cache, activeNative, activeRef, owners);
                 for (const entry of sourceWindows) {
                     if (entry.id === activeId) {
-                        // Tiled-only mover, plus the D16 ordinary-float
-                        // carry: an intentional float (floating without
-                        // sticky) dispatches like a tiled mover and rides
-                        // the shared slotless deferred transfer with native
-                        // state untouched, while sticky and maximized floats
-                        // keep "" / null and refuse downstream as
-                        // non-tiled-focus. Maximized and fullscreen tiled
-                        // movers carry under G-D2/D28 (REQ-MAX-09) with
-                        // native state untouched. An otherwise unexplained
-                        // fit exclusion (fitExcluded without an overlay or
-                        // float intent) also refuses: overlays are admitted
-                        // only while otherwise valid.
+                        // Mover gate: tiled movers dispatch, as does a D16
+                        // intentional float (floating without sticky) plain
+                        // or with exactly one overlay. Sticky, dual-overlay,
+                        // and otherwise unexplained fit-excluded movers keep
+                        // "" / null and refuse downstream as non-tiled-focus.
                         const entryIntentionalFloat = entry.floating && !entry.sticky;
                         if (
                             entry.sticky ||
-                            (entryIntentionalFloat && (entry.maximized || entry.fullscreen)) ||
+                            (entryIntentionalFloat && entry.maximized && entry.fullscreen) ||
                             (!entryIntentionalFloat &&
                                 (entry.floating ||
                                     (entry.fitExcluded && !entry.maximized && !entry.fullscreen)))

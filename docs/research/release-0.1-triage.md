@@ -74,11 +74,11 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   Hyprland, i3 and sway (Tier 1) plus xmonad, qtile and awesome (Tier 2) retain
   float against COSMIC fresh re-tile; COSMIC's alternative has no second
   Tier 1/2 reference. [Decision](../decisions.md#workspaces).
-- D16 needs code: shared core `NotTiled` refusal and KDE tiled-only send
-  eligibility remain gaps. Verify the untested native WS1 -> WS2 -> WS1
-  roundtrip first; implement shared core first (serves Windows), then KDE
-  adapter; Windows adapter work goes to handoff item 22. No native outcome
-  is inferred from approval.
+- D16 ordinary and approved floating+fullscreen/maximized sends are delivered
+  offline in shared core and KDE ([record](../changes/archive/d16-floating-transfer.md)).
+  Same-output exact frame/no geometry write is confirmed; destination overlay
+  exit remains floating. Native WS1 -> WS2 -> WS1 roundtrip/combo exit remain
+  pending; Windows adapter work goes to handoff item 22.
 - D22 (a) / REQ-FLT-03 / R-FLT-03 is user-decided: floating out a tile
   preserves the relative proportions of surviving siblings (e.g. 50/25/25,
   float the middle 25 -> approximately 67/33). No setting. COSMIC observed
