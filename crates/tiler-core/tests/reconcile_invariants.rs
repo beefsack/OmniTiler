@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Reconciler contract invariants.
 //!
 //! Focused invariant-style checks over the real public API

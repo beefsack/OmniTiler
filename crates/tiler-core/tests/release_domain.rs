@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Explicit domain release: drop one domain, then fresh-adopt its current
 //! geometry while an independent domain is unaffected.
 

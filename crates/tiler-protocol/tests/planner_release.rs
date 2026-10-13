@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Explicit release-domain route: one domain drops with no geometry while an
 //! independent domain keeps planning, then an ordinary fresh reconcile
 //! re-adopts the released domain's current geometry.

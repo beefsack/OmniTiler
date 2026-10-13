@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use std::collections::BTreeMap;
 
 use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply};

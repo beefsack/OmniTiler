@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Position-based FULL-rectangle candidate selection (2026-10-09).
 //!
 //! Exhausted moves/sends rank by window-centre projection, then window-span

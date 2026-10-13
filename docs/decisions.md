@@ -195,10 +195,14 @@ platform API behavior.
   kept as tiny as possible and isolated in one dedicated FFI module per crate.
   Every other module and crate uses `#![forbid(unsafe_code)]`.
 - `tiler-core`, `tiler-protocol` and existing unsafe-free Windows modules
-  already forbid unsafe. Linux planner (`crates/omnitiler`) test env-var
-  mutation must become explicit config, then add crate-wide forbid. Windows
-  must consolidate FFI into dedicated modules after its current release-gate
-  work (timing tentative). KWin effect FFI remains a minimal boundary module.
+  already forbid unsafe. Linux planner (`crates/omnitiler`) delivered
+  2026-10-13: tests use explicit trace values instead of process-env mutation;
+  all planner roots forbid unsafe. The core/protocol test and example roots
+  now also forbid unsafe; no gaps remain outside the two FFI crates.
+  [Evidence](changes/archive/linux-planner-unsafe-guardrail.md).
+  Windows must consolidate FFI into dedicated modules after its current
+  release-gate work (timing tentative). KWin effect FFI remains a minimal
+  boundary module.
 - Stage 2 cross-thread state uses safe standard primitives and owned handles;
   no unsafe Send/Sync, mutable statics, UnsafeCell or cross-thread pointer
   dereferencing. Existing scattered Win32 FFI call sites are an implementation

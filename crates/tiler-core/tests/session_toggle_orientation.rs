@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Parent split-axis toggle integration tests (R-LAY-01, portable, headless).
 //!
 //! Drives the real `session::Session` API through full

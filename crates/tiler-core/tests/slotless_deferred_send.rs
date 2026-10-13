@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D28 slotless deferred transfer (option (a)): explicit numbered/relative
 //! follow/stay send of a NEVER-TILED born-fullscreen window.
 //!

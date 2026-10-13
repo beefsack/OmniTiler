@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! AR12 size-hint integration tests (portable, headless).
 //!
 //! Drives the real `Session` admission path plus the pure reconcile

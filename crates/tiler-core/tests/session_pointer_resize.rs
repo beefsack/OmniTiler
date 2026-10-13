@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Session pointer split-share resize integration (portable, headless).
 //!
 //! Drives `Session::propose_pointer_resize` (Rust-derived boundary/shares

@@ -368,10 +368,14 @@ decisions of 2026-09-24 are under
   hook/window procedures, which Rust cannot express without `unsafe`.
   Guardrail applied 2026-10-12: `#![forbid(unsafe_code)]` on `tiler-core`, `tiler-protocol`
   and unsafe-free Windows modules (`25de29a`; workspace build/test, clippy
-  `-D warnings` and fmt pass). `crates/omnitiler` left without the guardrail:
-  it contains `unsafe` env set/remove calls in `planner_service.rs` tests.
-  Queue Linux planner test env-var rework to explicit config, then crate-wide
-  forbid. Windows FFI consolidation into dedicated modules is required after
+  `-D warnings` and fmt pass). Linux planner delivered 2026-10-13:
+  five unsafe env set/remove call sites replaced by explicit trace inputs,
+  preserving `OMNITILER_TRACE` semantics; all three planner target roots now
+  forbid unsafe. Audit also closed 29 unsafe-free core/protocol test/example
+  root gaps. Workspace tests: 1,644 passed, zero failed/ignored; all-target
+  clippy `-D warnings` and fmt pass
+  ([record](changes/archive/linux-planner-unsafe-guardrail.md)).
+  Windows FFI consolidation into dedicated modules is required after
   its current release-gate work (timing tentative), in the Windows queue.
   KWin effect FFI stays a minimal boundary module.
 - P1 | KDE follow-ups from 2026-10-11 Windows dogfood | Delivered

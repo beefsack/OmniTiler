@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D01 native activation ownership (admission over an overlay) + D28
 //! fullscreen workspace-send carry + CLOSE-05 overlay removal (portable,
 //! headless).

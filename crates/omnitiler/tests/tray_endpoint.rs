@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use omnitiler::tray_endpoint::{FRESHNESS_MS, Snapshot, StateView, TrayError, TrayState};
 use serde::Deserialize;
 

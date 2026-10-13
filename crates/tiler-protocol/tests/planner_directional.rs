@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Production DescribePlan directional cross-output integration (active route).
 //!
 //! `kwin/src/entry.ts -> startPlanAdapterEntry -> PlanAdapter.requestFocus /

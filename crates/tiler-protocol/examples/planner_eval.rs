@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Minimal offline test seam: line-delimited DescribePlan evaluation.
 //!
 //! Reads one JSON request per stdin line, evaluates each against a single

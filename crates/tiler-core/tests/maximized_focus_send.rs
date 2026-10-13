@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! G-06 maximized directional focus fence + G-D2 maximized workspace-send
 //! carry (portable, headless).
 //!

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D23 close-versus-minimize wire distinction (`closed_windows`).
 //!
 //! - Absent `closed_windows` parses as empty (legacy requests byte-identical,

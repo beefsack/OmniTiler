@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Step-3 send/R4 immediate-commit rows (test-only, authorized).
 //!
 //! Design: docs/changes/observation-convergence-step-3.md. The Engine must

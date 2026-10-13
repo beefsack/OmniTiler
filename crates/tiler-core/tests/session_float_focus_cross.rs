@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Float-origin cross-output directional focus.
 //!
 //! Offline Rust authority tests for the adapter's local float-search miss

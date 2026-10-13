@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Session directional movement + focus integration (portable, headless).
 //!
 //! Drives the real `session::Session` movement/focus APIs (`propose_move`,

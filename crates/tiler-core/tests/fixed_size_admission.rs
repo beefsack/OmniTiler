@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Q2 fixed-size float admission rows (D1-D8, authorized batch).
 //!
 //! Real `Session`/`Engine` fixtures (no flag mocks): the shared

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Cross-output directional focus/movement with distinct active workspaces.
 //!
 //! Offline Rust authority tests for the source's default Vertical layout

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 fn main() {
     let args: Vec<_> = std::env::args().collect();
     let result = match args.as_slice() {

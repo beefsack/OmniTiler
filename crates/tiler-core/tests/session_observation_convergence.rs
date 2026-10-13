@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Complete-observation convergence rows (test-first, authorized).
 //!
 //! Design: docs/changes/archive/observation-convergence.md (2026-09-25). The Engine

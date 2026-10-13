@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Session/domain lifecycle integration tests (portable, headless).
 //!
 //! Drives the real `session::Session` API through full

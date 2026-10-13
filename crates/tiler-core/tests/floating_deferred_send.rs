@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D16 ordinary intentional-float workspace transfer (option (a), no
 //! setting) plus the approved floating+fullscreen / floating+maximized
 //! combo carry (2026-10-13): explicit numbered/relative follow/stay send

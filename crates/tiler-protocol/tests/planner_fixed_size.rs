@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Q2 fixed-size admission through the real Linux planner route (D1-D8).
 //!
 //! Drives `Planner::evaluate` (retained live-tree sessions, opt-in

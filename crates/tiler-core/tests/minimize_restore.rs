@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D23 shared-core minimize/restore regressions (REQ-MNZ-01/02/03).
 //!
 //! Drives the real `Session::converge_observation` primitive, the path the

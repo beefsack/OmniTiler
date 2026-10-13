@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! R-INS-05 float-focus admission + R-CLOSE-02 fresh-reopen fixtures (0.1 triage D05/D07).
 //!
 //! Verification-only characterization of the shared Engine route in a

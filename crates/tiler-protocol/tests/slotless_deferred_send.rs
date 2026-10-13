@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! D28 slotless deferred transfer over the real Linux planner route.
 //!
 //! Production path on ONE retained `Planner` instance (no fresh-engine

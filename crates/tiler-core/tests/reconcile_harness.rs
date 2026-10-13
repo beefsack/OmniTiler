@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Test-only headless fake compositor/adapter harness for the reconciler.
 //!
 //! This is not a production runtime abstraction: it owns fake snapshots,

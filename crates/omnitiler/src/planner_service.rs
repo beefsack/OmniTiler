@@ -87,10 +87,11 @@ pub const PLANNER_TRACE_ENV_VAR: &str = "OMNITILER_TRACE";
 /// Whether structural trace logging is enabled (`1` only).
 #[must_use]
 pub fn planner_trace_enabled() -> bool {
-    matches!(
-        std::env::var(PLANNER_TRACE_ENV_VAR),
-        Ok(value) if value == "1"
-    )
+    planner_trace_enabled_for(std::env::var(PLANNER_TRACE_ENV_VAR).ok().as_deref())
+}
+
+fn planner_trace_enabled_for(value: Option<&str>) -> bool {
+    matches!(value, Some("1"))
 }
 
 /// Bounded terminal summary for an evaluation failure that produces no
@@ -1594,29 +1595,23 @@ mod tests {
     }
 
     #[test]
-    fn planner_trace_is_default_off_and_opt_in_by_single_env() {
-        // Default-off gate for the opt-in structural shape line. Single test
-        // touches the process env var to avoid parallel-test races.
-        let var = crate::planner_service::PLANNER_TRACE_ENV_VAR;
-        let previous = std::env::var(var).ok();
-        unsafe { std::env::remove_var(var) };
-        assert!(
-            !crate::planner_service::planner_trace_enabled(),
-            "unset must stay at normal summaries"
+    fn planner_trace_env_identity_is_exact() {
+        assert_eq!(
+            crate::planner_service::PLANNER_TRACE_ENV_VAR,
+            "OMNITILER_TRACE"
         );
-        for off in ["0", "", "true", "TRUE", "2"] {
-            unsafe { std::env::set_var(var, off) };
+    }
+
+    #[test]
+    fn planner_trace_is_default_off_and_opt_in_by_single_value() {
+        assert!(!super::planner_trace_enabled_for(None));
+        for off in ["", "0", "true", "TRUE", "2", "1 ", " 1", "01"] {
             assert!(
-                !crate::planner_service::planner_trace_enabled(),
+                !super::planner_trace_enabled_for(Some(off)),
                 "value {off:?} must stay at normal summaries"
             );
         }
-        unsafe { std::env::set_var(var, "1") };
-        assert!(crate::planner_service::planner_trace_enabled());
-        match previous {
-            Some(value) => unsafe { std::env::set_var(var, value) },
-            None => unsafe { std::env::remove_var(var) },
-        }
+        assert!(super::planner_trace_enabled_for(Some("1")));
     }
 
     #[test]

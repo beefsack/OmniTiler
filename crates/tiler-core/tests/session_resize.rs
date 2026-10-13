@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Session keyboard split-share resize integration (portable, headless).
 //!
 //! Drives the real `session::Session` resize API (`propose_resize`,

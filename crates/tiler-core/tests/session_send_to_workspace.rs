@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Same-output send-to-workspace lifecycle tests (portable, headless).
 
 use tiler_core::contract::{
