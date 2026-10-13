@@ -471,7 +471,9 @@ platform API behavior.
 - Ordinary and combo intentional-float sends are delivered offline
   ([record](changes/archive/d16-floating-transfer.md)). Native WS1 -> WS2 -> WS1
   roundtrip and destination overlay-exit acceptance remain pending. Shared
-  delivery serves Windows; adapter/native work goes to handoff item 22.
+  delivery serves Windows; Windows adapter delivered offline 2026-10-13
+  ([record](changes/archive/windows-d16-floating-transfer.md)); native checks
+  remain in handoff item 22.
   Floating-workspace boundary sends remain a distinct approved journey.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - R-CLOSE-03: closing the sole window retains the shown workspace empty, with no focused client (User 2026-10-10, 0.1 triage D08).

@@ -311,7 +311,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   the Stay run also switches the view and focuses B. `S(S-pan-ws)` +
   `S(S-pan-flt)`.
 - Then Ours KDE: ordinary/combo float send delivered offline via slotless deferred transfer, float/size and live overlay retained, destination/source tiles untouched; follow/stay, real numbered/relative routing, sticky refuses, no setting. Same-output exact frame/no geometry write confirmed User 2026-10-13; destination overlay exit remains floating in real-Planner fixtures ([record](../../changes/archive/d16-floating-transfer.md), [decision](../../decisions.md#workspaces)). Native roundtrip/combo exit pending, frames/focus TBD
-- Then Ours Windows: ordinary/combo shared delivery available; same selected D16 frame/combo target, Windows adapter/native acceptance in item 22; native roundtrip/combo exit pending, frames/focus TBD
+- Then Ours Windows: adapter delivered offline 2026-10-13 through slotless MoveDeferred, exact float frame/intent retained, deferred follow/stay skip both geometry applications including drifted survivors. Real entry numbered/relative routing, refusals and shared Engine combo/exit regressions pass; combo native readback defers in fake-window fixtures, not successful native carry evidence ([record](../../changes/archive/windows-d16-floating-transfer.md)). Native roundtrip/combo exit pending, frames/focus TBD
 - Variant hook: V-FLOAT-GEO.
 
 #### D16 combo and arrival-frame discriminators (2026-10-13)
