@@ -73,6 +73,7 @@ fn event(
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: vec![],
+        closed_windows: vec![],
         command,
     }
 }

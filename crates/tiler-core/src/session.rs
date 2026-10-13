@@ -656,13 +656,21 @@ pub struct Session {
     /// live client (D3). Cleared when the window leaves membership, so a
     /// removed/replaced native reference with a reused id classifies again.
     fixed_tile_override: BTreeSet<WindowId>,
-    /// D23 minimize restore slots (REQ-MNZ-01/02/03, option (a)): one stored
+    /// D23 minimize restore slots (REQ-MNZ-01/02/03, option (b)): one stored
     /// old slot per minimized tiled window, keyed by window id. Session-runtime
     /// only: seeded empty, never persisted, dropped on owner restart with the
     /// world map. A slot holds the pre-minimize domain tree plus the removed
-    /// leaf so restore can return the window to its old slot; any tree
-    /// restructure, sibling close/send, homing change, or workspace removal
-    /// invalidates it and restore falls back to fresh ordinary admission.
+    /// leaf so restore can return the window to its old neighborhood: an
+    /// exact fast path restores the whole stored tree when nothing
+    /// intervened, else a best-effort rejoin in the surviving old group at
+    /// the old index, or regrouped with a live former neighbor on the
+    /// stored axis and side, with an entrant share preserving the stored
+    /// old fraction. Resizes, admissions, sibling closes with a survivor,
+    /// swaps, other minimize/restore roundtrips, and gaps/resolution
+    /// changes therefore do not alone invalidate. Fresh ordinary admission
+    /// applies only with no live former neighbor, a gone domain, or a
+    /// window sent elsewhere; explicit close forgets the slot via
+    /// [`Session::forget_minimized_slot`].
     minimized_slots: BTreeMap<WindowId, MinimizedSlot>,
     // Only a transient canonical pair uses this. It restores target-local node
     // identities after pair-wide planning, whose snapshot requires uniqueness.
@@ -1914,6 +1922,378 @@ fn parent_of_group(tree: &Node, group: &NodeId) -> Option<NodeId> {
             None
         }
     }
+}
+
+/// Immediate parent group of a leaf: group id, axis, child index of the
+/// direct slot containing the leaf, and group shares. `None` when the leaf
+/// is the root or absent.
+fn find_parent_group(tree: &Node, leaf: &NodeId) -> Option<(NodeId, Axis, usize, Vec<u64>)> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id,
+            axis,
+            children,
+            shares,
+        } => {
+            for (index, child) in children.iter().enumerate() {
+                if subtree_contains(child, leaf) {
+                    if matches!(child, Node::Leaf { .. }) {
+                        return Some((id.clone(), *axis, index, shares.clone()));
+                    }
+                    return find_parent_group(child, leaf);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Exact integer greatest common divisor for share normalization
+/// (Euclidean; mirrors [`crate::cosmic_v1`] share hygiene).
+fn gcd_pair(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+/// Divide every share by the exact common divisor when above one (always
+/// exact by GCD construction; ratios and fractions are preserved).
+fn normalize_shares(shares: &mut [u64]) {
+    let mut divisor = 0u64;
+    for share in shares.iter() {
+        divisor = gcd_pair(divisor, *share);
+        if divisor == 1 {
+            break;
+        }
+    }
+    if divisor > 1 {
+        for share in shares.iter_mut() {
+            *share /= divisor;
+        }
+    }
+}
+
+/// Exact integer greatest common divisor over wide share products
+/// (Euclidean; the scaled restore products below can exceed `u64` before
+/// reduction, so the narrow [`gcd_pair`] cannot serve them).
+fn gcd_wide(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a
+}
+
+/// Full inserted share vector preserving the stored old fraction
+/// `old_share / old_total` against current survivor `shares`, entrant at
+/// `index`: the entrant takes `old_share * current_total` while each
+/// survivor scales by the stored remainder, GCD-reduced. The current
+/// weights rescale up to the entrant instead of rounding the entrant down
+/// to the current unit, so a skewed old fraction stays exact (for example
+/// old 1/10 against current `[1, 1]` rejoins `[2, 9, 9]`, never `[1, 1,
+/// 1]`), and survivor ratios are preserved exactly. `None` on
+/// empty/zero input, `u64` overflow of any entry, or `u64` overflow of the
+/// combined total (group totals must not overflow; callers fall back to
+/// fresh admission).
+fn comparable_inserted_shares(
+    old_share: u64,
+    old_total: u128,
+    current: &[u64],
+    index: usize,
+) -> Option<Vec<u64>> {
+    if old_share == 0
+        || old_total <= old_share as u128
+        || current.is_empty()
+        || current.contains(&0)
+    {
+        return None;
+    }
+    if index > current.len() {
+        return None;
+    }
+    let rest = old_total - old_share as u128;
+    let total: u128 = current.iter().map(|share| *share as u128).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut scaled: Vec<u128> = Vec::with_capacity(current.len() + 1);
+    scaled.push((old_share as u128) * total);
+    for share in current {
+        scaled.push((*share as u128) * rest);
+    }
+    let mut divisor: u128 = 0;
+    for value in &scaled {
+        divisor = gcd_wide(divisor, *value);
+        if divisor == 1 {
+            break;
+        }
+    }
+    if divisor == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(scaled.len());
+    for value in scaled {
+        out.push(u64::try_from(value / divisor).ok()?);
+    }
+    let entrant = out.remove(0);
+    out.insert(index, entrant);
+    // Group totals must not overflow even when every entry fits: a
+    // representable-components/nonrepresentable-total vector falls back
+    // instead of producing an invalid tree.
+    let _: u64 = out
+        .iter()
+        .try_fold(0u64, |total, share| total.checked_add(*share))?;
+    Some(out)
+}
+
+/// Insert a leaf into the named group at `index` carrying caller-computed
+/// `shares` (length must equal children plus one, all positive).
+/// Structural twin of [`insert_leaf_into_group`] for rejoins whose entrant
+/// share preserves the stored old fraction instead of the proportional
+/// average.
+fn insert_leaf_with_shares(
+    tree: Node,
+    group_id: &NodeId,
+    index: usize,
+    leaf: Node,
+    shares: Vec<u64>,
+) -> Option<Node> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id,
+            axis,
+            mut children,
+            shares: current,
+        } => {
+            if &id == group_id {
+                if index > children.len()
+                    || shares.len() != children.len() + 1
+                    || shares.contains(&0)
+                {
+                    return None;
+                }
+                children.insert(index, leaf);
+                return Some(Node::Group {
+                    id,
+                    axis,
+                    children,
+                    shares,
+                });
+            }
+            for (pos, child) in children.iter().enumerate() {
+                if child.id() == group_id || subtree_contains_id(child, group_id) {
+                    let updated = insert_leaf_with_shares(
+                        child.clone(),
+                        group_id,
+                        index,
+                        leaf.clone(),
+                        shares.clone(),
+                    )?;
+                    children[pos] = updated;
+                    return Some(Node::Group {
+                        id,
+                        axis,
+                        children,
+                        shares: current,
+                    });
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Replace a leaf with a new subtree, preserving the leaf's slot share in
+/// its parent (the parent keeps its children count and shares; the new
+/// subtree carries its own internal shares).
+fn replace_leaf(tree: Node, leaf: &NodeId, node: Node) -> Option<Node> {
+    match tree {
+        Node::Leaf { .. } => None,
+        Node::Group {
+            id,
+            axis,
+            mut children,
+            shares,
+        } => {
+            if let Some(pos) = children
+                .iter()
+                .position(|child| matches!(child, Node::Leaf { id: leaf_id } if leaf_id == leaf))
+            {
+                children[pos] = node;
+                return Some(Node::Group {
+                    id,
+                    axis,
+                    children,
+                    shares,
+                });
+            }
+            for (pos, child) in children.iter().enumerate() {
+                if subtree_contains(child, leaf) {
+                    let updated = replace_leaf(child.clone(), leaf, node.clone())?;
+                    children[pos] = updated;
+                    return Some(Node::Group {
+                        id,
+                        axis,
+                        children,
+                        shares,
+                    });
+                }
+            }
+            None
+        }
+    }
+}
+
+/// D23 best-effort minimize rejoin (REQ-MNZ-02 option (b)): return the
+/// current domain tree with the stored leaf rejoined in its old
+/// neighborhood, or `None` for fresh ordinary admission.
+///
+/// Stored context only (the pre-minimize tree plus the removed leaf; no
+/// tree-identity prerequisite): the anchor is the live surviving former
+/// leaf nearest the stored leaf in old leaf order, preferring
+/// same-old-parent siblings. A survivor is live only while its leaf id is
+/// currently linked to a tiled window homed on the slot domain, so stale
+/// or reused ids never anchor. The rejoin preserves the old side
+/// (before/after the anchor). A surviving old group (same id and axis,
+/// still holding a live survivor) takes an insert at the clamped old index
+/// with an entrant share preserving the stored old fraction against the
+/// current total; otherwise the anchor leaf regroups into a new group on
+/// the stored axis and side, splitting the stored old share against the
+/// anchor's old share (same-parent anchor) or the stored remainder.
+/// Resizes, admissions, sibling closes with a survivor, swaps, other
+/// minimize/restore roundtrips, and gaps/resolution changes therefore do
+/// not alone invalidate: only an absent live-neighbor set (or an unusable
+/// leaf id) returns `None`. Callers gate homing/domain liveness and the
+/// exact fast path before this.
+fn best_effort_rejoin(
+    slot: &MinimizedSlot,
+    current: &Option<Node>,
+    windows: &BTreeMap<WindowId, WindowLink>,
+    existing_ids: &mut BTreeSet<NodeId>,
+    window: &WindowId,
+    base_revision: u64,
+) -> Option<Node> {
+    if existing_ids.contains(&slot.leaf) {
+        return None;
+    }
+    let current = current.clone()?;
+    let old_order = collect_leaves(&slot.tree);
+    let restored_pos = old_order.iter().position(|leaf| leaf == &slot.leaf)?;
+    let (old_group, old_axis, old_index, old_shares) = find_parent_group(&slot.tree, &slot.leaf)?;
+    let old_share = *old_shares.get(old_index)?;
+    // Wide sum: share inputs are `u64` and their total can overflow it.
+    let old_total: u128 = old_shares.iter().map(|share| *share as u128).sum();
+    if old_total <= old_share as u128 {
+        return None;
+    }
+    // A live survivor is a former leaf (never the restored leaf itself)
+    // currently linked to a tiled window homed on the slot domain.
+    let live = |leaf: &NodeId| {
+        leaf != &slot.leaf
+            && windows.values().any(|link| {
+                &link.leaf == leaf && link.output == slot.output && link.workspace == slot.workspace
+            })
+    };
+    let mut survivors: Vec<(usize, NodeId)> = old_order
+        .iter()
+        .enumerate()
+        .filter(|(_, leaf)| live(leaf))
+        .map(|(pos, leaf)| (pos, leaf.clone()))
+        .collect();
+    if survivors.is_empty() {
+        return None;
+    }
+    // Surviving old group (same id and axis, still holding a live survivor;
+    // the id check alone could match a reused generated id): insert at the
+    // clamped old index with a comparable entrant share.
+    if let Some((children, shares, _, axis)) = find_group_full(&current, &old_group)
+        && axis == old_axis
+        && children
+            .iter()
+            .flat_map(|child| {
+                let mut leaves = Vec::new();
+                collect_leaves_into(child, &mut leaves);
+                leaves
+            })
+            .any(|leaf| live(&leaf))
+    {
+        let index = old_index.min(children.len());
+        let rejoined = comparable_inserted_shares(old_share, old_total, &shares, index)?;
+        let rejoined = insert_leaf_with_shares(
+            current,
+            &old_group,
+            index,
+            Node::Leaf {
+                id: slot.leaf.clone(),
+            },
+            rejoined,
+        )?;
+        existing_ids.insert(slot.leaf.clone());
+        return Some(rejoined);
+    }
+    // Same-old-parent siblings first (sibling regroup), else the nearest
+    // live surviving former leaf in old leaf order (deterministic tie-break).
+    let same_parent: Vec<(usize, NodeId)> = survivors
+        .iter()
+        .filter(|(_, leaf)| {
+            find_parent_group(&slot.tree, leaf).is_some_and(|(group, _, _, _)| group == old_group)
+        })
+        .cloned()
+        .collect();
+    if !same_parent.is_empty() {
+        survivors = same_parent;
+    }
+    survivors.sort_by_key(|(pos, _)| (pos.abs_diff(restored_pos), *pos));
+    let (anchor_pos, anchor) = survivors.into_iter().next().expect("nonempty survivors");
+    let before = restored_pos < anchor_pos;
+    // Anchor-side share: the anchor's own old share for a same-parent
+    // anchor, else the stored remainder as the faithful proxy. The
+    // remainder is wide arithmetic; an unrepresentable proxy falls back to
+    // fresh admission rather than truncating the fraction.
+    let anchor_share = find_parent_group(&slot.tree, &anchor)
+        .filter(|(group, _, _, _)| group == &old_group)
+        .and_then(|(_, _, index, shares)| shares.get(index).copied())
+        .or_else(|| u64::try_from(old_total - old_share as u128).ok())?;
+    let mut regroup = if before {
+        vec![old_share, anchor_share]
+    } else {
+        vec![anchor_share, old_share]
+    };
+    normalize_shares(&mut regroup);
+    let group_id = generate_group_id(window, base_revision, existing_ids);
+    existing_ids.insert(group_id.clone());
+    existing_ids.insert(slot.leaf.clone());
+    let children = if before {
+        vec![
+            Node::Leaf {
+                id: slot.leaf.clone(),
+            },
+            Node::Leaf { id: anchor.clone() },
+        ]
+    } else {
+        vec![
+            Node::Leaf { id: anchor.clone() },
+            Node::Leaf {
+                id: slot.leaf.clone(),
+            },
+        ]
+    };
+    let regroup = Node::Group {
+        id: group_id,
+        axis: old_axis,
+        children,
+        shares: regroup,
+    };
+    if current == (Node::Leaf { id: anchor.clone() }) {
+        return Some(regroup);
+    }
+    replace_leaf(current, &anchor, regroup)
 }
 
 fn find_subtree<'a>(tree: &'a Node, id: &NodeId) -> Option<&'a Node> {
@@ -6822,6 +7202,71 @@ mod tests {
         assert_eq!(
             pair.split_canonical_pair().expect_err("pair pending"),
             CanonicalPairError::UnusableInput
+        );
+    }
+
+    #[test]
+    fn comparable_inserted_shares_keeps_skewed_fraction_on_small_current() {
+        // Old B at 1/10 against normalized-small survivors: the current
+        // weights rescale up (entrant 2, survivors 9 and 9) instead of
+        // rounding the entrant to 0 and clamping to 1/3.
+        assert_eq!(
+            comparable_inserted_shares(1, 10, &[1, 1], 0),
+            Some(vec![2, 9, 9])
+        );
+        assert_eq!(
+            comparable_inserted_shares(1, 10, &[1, 1], 1),
+            Some(vec![9, 2, 9])
+        );
+        assert_eq!(
+            comparable_inserted_shares(1, 10, &[1, 1], 2),
+            Some(vec![9, 9, 2])
+        );
+    }
+
+    #[test]
+    fn comparable_inserted_shares_preserves_fraction_and_survivor_ratios() {
+        // Old 9/20 against resized survivors: exact fraction (2421/5380)
+        // with exact survivor ratio (1254:1705 = 228:310).
+        assert_eq!(
+            comparable_inserted_shares(9, 20, &[228, 310], 0),
+            Some(vec![2421, 1254, 1705])
+        );
+        // Even old shares rescale exactly (GCD-reduced).
+        assert_eq!(
+            comparable_inserted_shares(1, 3, &[1, 1], 1),
+            Some(vec![1, 1, 1])
+        );
+    }
+
+    #[test]
+    fn comparable_inserted_shares_fails_closed() {
+        assert_eq!(comparable_inserted_shares(0, 10, &[1, 1], 0), None);
+        assert_eq!(comparable_inserted_shares(1, 1, &[1, 1], 0), None);
+        assert_eq!(comparable_inserted_shares(2, 1, &[1, 1], 0), None);
+        assert_eq!(comparable_inserted_shares(1, 10, &[], 0), None);
+        assert_eq!(comparable_inserted_shares(1, 10, &[1, 0], 0), None);
+        assert_eq!(comparable_inserted_shares(1, 10, &[1, 1], 3), None);
+        // Unrepresentable post-reduction values fall back to fresh admission.
+        assert_eq!(comparable_inserted_shares(1, 2, &[u64::MAX, 1], 0), None);
+    }
+
+    #[test]
+    fn comparable_inserted_shares_rejects_nonrepresentable_total() {
+        // Reduced entries each fit `u64`, but their combined total does
+        // not: group totals must not overflow (`directional.rs`
+        // validation), so best effort falls back instead of producing an
+        // invalid tree. Here the reduced vector would be
+        // `[u64::MAX - 1, 1, 1]` totalling `u64::MAX + 1`.
+        assert_eq!(
+            comparable_inserted_shares((1u64 << 63) - 1, 1u128 << 63, &[1, 1], 0),
+            None
+        );
+        // One below the bound still rejoins exactly: reduced
+        // `[2^63 - 2, 1, 1]` totals exactly `2^63`.
+        assert_eq!(
+            comparable_inserted_shares((1u64 << 63) - 2, 1u128 << 63, &[1, 1], 0),
+            Some(vec![(1u64 << 63) - 2, 1, 1])
         );
     }
 }

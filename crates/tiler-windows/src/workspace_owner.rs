@@ -138,6 +138,7 @@ pub fn build_send_event(
         directional_target_outer_gap: None,
         target_domain: Some((target_domain_value, target_key)),
         target_windows,
+        closed_windows: Vec::new(),
         command: CoreCommand::SendToWorkspace {
             window: mover_token.to_owned(),
             target_output: String::new(),

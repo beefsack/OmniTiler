@@ -2034,6 +2034,11 @@ interface PendingFlight {
     readonly direction: PlanDirection | null;
     // Pinned-owner transport payload retained across activation steps.
     readonly requestPayload: string;
+    // D23 close ids carried on this flight's reconcile request (`closed_windows`).
+    // Cleared from `pendingClosed` only on planner delivery (matching
+    // `planned`); every failure terminal retains them. Empty for non-reconcile
+    // ops, which never carry closes.
+    readonly closedSent: ReadonlyArray<string>;
     // Original request revision carried at dispatch (always 0 on the request
     // phase). Cancellation echoes exactly this value, never a base revision
     // learned from a stale probe.
@@ -2251,6 +2256,30 @@ export class PlanAdapter {
     // synthesized: absence stays unknown and the next complete observation
     // retries. No transaction, no Plan block, no queue.
     private sendForcedDomains = new Set<string>();
+    // D23 close-versus-minimize distinction: verified native closes keyed by
+    // stable id with the owning domain homing read at close time. A bare
+    // absence from observation stays a minimize (stored old slot); a pending
+    // close rides the next reconcile as `closed_windows` so the planner
+    // forgets the slot instead of minting one. Entries clear only on
+    // planner delivery (a correlation-matching `planned` reply); every
+    // failure terminal (rejected/diverged/timeout/transport/never-sent)
+    // retains them for the next signal-driven resync. Never a retry ledger,
+    // never a poll: one debounced resync per close signal, retention after.
+    // Never evicted while undelivered: losing an authorized close would leak
+    // its planner slot. Stays small in practice (entries clear on delivery).
+    private pendingClosed = new Map<string, { output: string; workspace: string }>();
+    // Last dispatched domain shape per domain key (bounds, gap, outerGap),
+    // recorded at dispatch from the primitive-only snapshot. Lets a
+    // sole-minimize close (whose observation is null) still deliver its
+    // cleanup as an explicit empty-domain reconcile on the retained shape.
+    // Never membership authority: windows always ride empty here.
+    private lastDomainByKey = new Map<string, { bounds: PlanRect; gap: number; outerGap: number }>();
+    // D23 planner-accepted explicit emptiness per domain key. Set only when
+    // an empty reconcile applies; cleared when a non-empty snapshot
+    // dispatches or the domain is released. Gates null-observation close
+    // synthesis: unknown must never upgrade to empty on a merely
+    // dispatched (possibly rejected) shape.
+    private explicitEmptyByKey = new Set<string>();
     // Per-domain background reconcile accounting, keyed by domain
     // output/workspace. Foreground counters above are never touched by
     // hidden-domain flights so background drift can never block foreground.
@@ -3382,6 +3411,83 @@ export class PlanAdapter {
     // Test seam: current settled intent membership (durable set only).
     getIntentMembers(): ReadonlyArray<string> {
         return Object.freeze([...this.intentMembers]);
+    }
+
+    // D23 verified native close with owning-domain homing (entry-resolved
+    // while live, never read from the dead object). Queues the id for the
+    // next reconcile as `closed_windows` and triggers one debounced resync.
+    // Minimized-omitted closes queue exactly like tiled ones. Invalid ids
+    // refuse silently; queued ids persist until planner delivery (never
+    // evicted: losing an authorized close would leak its slot). Stale
+    // entries (the id live-observed again) drop at the next build so a
+    // contradictory live+closed row never dispatches.
+    noteClosedWindow(id: string, output: string, workspace: string): void {
+        if (!this.enabled) {
+            return;
+        }
+        if (!isOpaqueId(id) || !isOpaqueId(output) || !isOpaqueId(workspace)) {
+            return;
+        }
+        try {
+            this.pendingClosed.set(id, { output, workspace });
+        } catch (error) {
+            void error;
+            return;
+        }
+        this.logToken(`${LOG_PREFIX}:close-queued window=${id}`);
+        this.requestResync();
+    }
+
+    // Test seam: pending close ids awaiting delivery.
+    getPendingClosed(): ReadonlyArray<string> {
+        return Object.freeze([...this.pendingClosed.keys()]);
+    }
+
+    // Closes scoped to one snapshot domain, excluding ids currently observed
+    // live there (a live re-sighting proves id reuse: the close is stale and
+    // drops here so the wire never carries a contradictory live+closed row).
+    private closedForSnapshot(snapshot: PlanSnapshot): string[] {
+        const live = new Set<string>();
+        try {
+            for (const entry of snapshot.windows) {
+                live.add(entry.id);
+            }
+        } catch (error) {
+            void error;
+        }
+        const out: string[] = [];
+        try {
+            for (const [id, homing] of this.pendingClosed) {
+                if (homing.output !== snapshot.domainOutput || homing.workspace !== snapshot.domainWorkspace) {
+                    continue;
+                }
+                if (live.has(id)) {
+                    this.pendingClosed.delete(id);
+                    this.logToken(`${LOG_PREFIX}:close-stale window=${id}`);
+                    continue;
+                }
+                out.push(id);
+            }
+        } catch (error) {
+            void error;
+        }
+        out.sort();
+        return out;
+    }
+
+    // Clear delivered closes: only ids still homed where they were sent
+    // (an id reused under new homing keeps its newer record).
+    private clearClosedSent(sent: ReadonlyArray<string>, output: string, workspace: string): void {
+        try {
+            for (const id of sent) {
+                const homing = this.pendingClosed.get(id);
+                if (homing !== undefined && homing.output === output && homing.workspace === workspace) {
+                    this.pendingClosed.delete(id);
+                }
+            }
+        } catch (error) {
+            void error;
+        }
     }
 
     // Test seam: current settled tile-override membership (durable only).
@@ -7000,6 +7106,86 @@ export class PlanAdapter {
         }
     }
 
+    // D23 sole-close cleanup for a null foreground observation: synthesize
+    // one explicit empty-domain reconcile for the first pending-close domain
+    // with planner-accepted explicit emptiness. A null observation is
+    // unknown (throwing/unreadable observers keep live members): without a
+    // prior applied-empty proof the close stays retained for the next
+    // readable signal instead of fabricating empty evidence. Remaining
+    // domains stay retained for later signals.
+    private dispatchCloseCleanupForNull(): boolean {
+        let keys: string[] = [];
+        try {
+            keys = [...this.pendingClosed.keys()].sort();
+        } catch (error) {
+            void error;
+            return false;
+        }
+        for (const id of keys) {
+            let homing: { output: string; workspace: string } | undefined;
+            try {
+                homing = this.pendingClosed.get(id);
+            } catch (error) {
+                void error;
+                continue;
+            }
+            if (homing === undefined) {
+                continue;
+            }
+            const key = this.domainKey({ domainOutput: homing.output, domainWorkspace: homing.workspace });
+            // Unknown is never upgraded to empty: only a planner-applied
+            // empty reconcile proves no live members to churn.
+            if (!this.explicitEmptyByKey.has(key)) {
+                continue;
+            }
+            let retained: { bounds: PlanRect; gap: number; outerGap: number } | undefined;
+            try {
+                retained = this.lastDomainByKey.get(key);
+            } catch (error) {
+                void error;
+                continue;
+            }
+            if (retained === undefined) {
+                continue;
+            }
+            if (!this.isTiledDomain(homing.output, homing.workspace)) {
+                continue;
+            }
+            const snapshot: PlanSnapshot = {
+                domainOutput: homing.output,
+                domainWorkspace: homing.workspace,
+                domainBounds: { x: retained.bounds.x, y: retained.bounds.y, w: retained.bounds.w, h: retained.bounds.h },
+                domainGap: retained.gap,
+                domainOuterGap: retained.outerGap,
+                focusedId: "",
+                windows: Object.freeze([]),
+                fingerprint: String(planFingerprint(homing.output, homing.workspace, "", [])),
+            };
+            this.epoch += 1;
+            this.noteObservation(snapshot.fingerprint);
+            this.logRefreshClassification("foreground", "change", "close-cleanup", "dispatch");
+            this.absorbDeferredDragIntent(this.deferredAuto, false);
+            this.deferredAuto = {
+                op: "reconcile",
+                snapshot,
+                removed: null,
+                body: { op: "reconcile" },
+                admissionMaximizeClears: Object.freeze([]),
+            };
+            if (this.inFlight) {
+                this.logRefreshClassification("foreground", "change", "close-cleanup", "deferred");
+                return true;
+            }
+            const pendingReconcile = this.deferredAuto;
+            this.deferredAuto = null;
+            if (pendingReconcile !== null) {
+                this.dispatch(pendingReconcile);
+            }
+            return true;
+        }
+        return false;
+    }
+
     // Foreground automatic reconcile: one complete-observation reconcile per
     // debounced foreground signal. Membership converges in the Engine; KWin
     // never derives admit/remove, floating-skew, or gap/bounds choices here.
@@ -7015,6 +7201,14 @@ export class PlanAdapter {
         }
         let fresh = this.freshObserved();
         if (fresh === null) {
+            // D23: a sole-minimize close leaves no live observation (unknown,
+            // never empty evidence). Deliver its cleanup as one synthesized
+            // explicit empty-domain reconcile on the retained dispatched
+            // shape when a pending close names a known domain. Anything else
+            // stays unknown exactly as before.
+            if (this.dispatchCloseCleanupForNull()) {
+                return;
+            }
             return;
         }
         // Floating workspaces skip automatic foreground tiling.
@@ -7033,6 +7227,10 @@ export class PlanAdapter {
         const epochBeforeQuiet = this.epoch;
         this.epoch += 1;
         this.noteObservation(freshSnapshot.fingerprint);
+        // D23 pending closes scoped to this domain (stale live re-sightings
+        // drop inside). A non-empty set forces a reconcile below so the
+        // cleanup delivers on this turn instead of staying quiet.
+        const closeIds = this.closedForSnapshot(freshSnapshot);
         // One shared applied-vs-complete classification (strict foreground).
         const classification = this.classifyCompleteObservation(freshSnapshot, fresh, false);
         const appliedScope = classification.appliedScope;
@@ -7090,7 +7288,7 @@ export class PlanAdapter {
         const restoreMarker = this.dragRestore.get(restoreKey);
         const hasPendingMarker =
             restoreMarker !== undefined && !restoreMarker.dispatched && restoreMarker.drags.length > 0;
-        if (classification.pureDrift && classification.converged && classification.scopeEqual && !hasPendingMarker && freshSnapshot.windows.length > 0 && !classification.rawRetainedOutOfBounds && !sendForced) {
+        if (classification.pureDrift && classification.converged && classification.scopeEqual && !hasPendingMarker && freshSnapshot.windows.length > 0 && !classification.rawRetainedOutOfBounds && !sendForced && closeIds.length === 0) {
             // Quiet equality cannot invalidate an in-flight reply.
             this.epoch = epochBeforeQuiet;
             if (this.pointerEcho !== null) {
@@ -7127,7 +7325,7 @@ export class PlanAdapter {
         // one ordinary reconcile below. A send-forced domain skips the fence
         // so its forced reconcile below still dispatches.
         const echo = this.pointerEcho;
-        if (echo !== null && !sendForced) {
+        if (echo !== null && !sendForced && closeIds.length === 0) {
             this.pointerEcho = null;
             if (this.echoMatches(freshSnapshot, echo)) {
                 this.logToken(`${LOG_PREFIX}:echo-fence-consumed`);
@@ -7351,9 +7549,15 @@ export class PlanAdapter {
         const classification = this.classifyCompleteObservation(freshSnapshot, prepared.observed, true);
         const observedIds = classification.observedIds;
         const hiddenScope = classification.appliedScope;
+        // D23 pending closes scoped here (stale live re-sightings drop).
+        // A non-empty set forces a reconcile below so hidden minimized
+        // closes deliver instead of staying quiet.
+        const closeIds = this.closedForSnapshot(freshSnapshot);
         if (classification.isEmpty) {
             // Evidence scan only for explicit empty: omission stays unknown.
-            if (hiddenScope === null && !this.hasAppliedEvidenceFor(freshSnapshot)) {
+            // Pending closes still dispatch: the empty shape is real observer
+            // evidence, never synthesis.
+            if (hiddenScope === null && !this.hasAppliedEvidenceFor(freshSnapshot) && closeIds.length === 0) {
                 return { intent: null, outcome: "uncertain", reason: "no-applied-evidence", terminal: "quiet" };
             }
         }
@@ -7393,7 +7597,7 @@ export class PlanAdapter {
                 terminal: "dispatch",
             };
         }
-        if (classification.converged && classification.scopeEqual && !classification.rawRetainedOutOfBounds && !hiddenForced) {
+        if (classification.converged && classification.scopeEqual && !classification.rawRetainedOutOfBounds && !hiddenForced && closeIds.length === 0) {
             // Ordinary feasible domains reset exactly as before. A domain
             // observing a B6 minimum-placed member keeps its count (see the
             // foreground quiet branch): the converged observation may echo
@@ -7448,8 +7652,9 @@ export class PlanAdapter {
             };
         }
         // Bounded acceptance for pure geometry drift only; membership/flag
-        // changes already returned above. Send-forced always converges.
-        if (!hiddenForced && (this.backgroundAttempts.get(this.domainKey(observed)) ?? 0) >= MAX_RECONCILE_ATTEMPTS) {
+        // changes already returned above. Pending closes never accept: they
+        // need a reconcile to deliver. Send-forced always converges.
+        if (!hiddenForced && closeIds.length === 0 && (this.backgroundAttempts.get(this.domainKey(observed)) ?? 0) >= MAX_RECONCILE_ATTEMPTS) {
             this.acceptClientDrift(freshSnapshot, true);
             return { intent: null, outcome: "equal", reason: "stable-drift-accepted", terminal: "accept" };
         }
@@ -7641,6 +7846,7 @@ export class PlanAdapter {
         snapshot: PlanSnapshot,
         command: Record<string, unknown>,
         correlation: string,
+        closedIds?: ReadonlyArray<string>,
     ): { ok: true; payload: string } | { ok: false; reason: "request-invalid" | "request-over-cap" } {
         const sortedIds = snapshot.windows.map((entry) => entry.id).sort();
         const windows = snapshot.windows.map((entry) => ({
@@ -7717,6 +7923,14 @@ export class PlanAdapter {
                 ...(directionalDomains === undefined ? {} : { domains: directionalDomains }),
                 focused_window: snapshot.focusedId,
                 windows,
+                // D23 close-versus-minimize distinction, reconcile only: the
+                // convergence vehicle carries explicitly closed ids so the
+                // planner forgets their slots instead of minting minimize
+                // slots. Omitted when empty so all other requests stay
+                // byte-identical.
+                ...(op === "reconcile" && closedIds !== undefined && closedIds.length > 0
+                    ? { closed_windows: [...closedIds] }
+                    : {}),
                 command,
                 // R-SPC-04 D1 predicate. The default both-axes-fixed stays
                 // wire-omitted so historical requests are byte-identical;
@@ -7813,7 +8027,28 @@ export class PlanAdapter {
             return;
         }
         const snapshot = intent.snapshot;
-        const encoded = this.buildRequestPayload(snapshot, intent.body, correlation);
+        // D23: retain the dispatched domain shape for a later sole-close
+        // cleanup (whose observation is null) and resolve closes scoped to
+        // this snapshot now, so the flight carries exactly what it sends. A
+        // non-empty snapshot proves live members, so it clears any accepted-
+        // empty proof for the domain. Shapes persist until replaced (never
+        // evicted: domains are bounded by outputs times desktops).
+        try {
+            const key = this.domainKey(snapshot);
+            this.lastDomainByKey.set(key, {
+                bounds: { x: snapshot.domainBounds.x, y: snapshot.domainBounds.y, w: snapshot.domainBounds.w, h: snapshot.domainBounds.h },
+                gap: snapshot.domainGap,
+                outerGap: snapshot.domainOuterGap,
+            });
+            if (snapshot.windows.length > 0) {
+                this.explicitEmptyByKey.delete(key);
+            }
+        } catch (error) {
+            void error;
+        }
+        const closedIds =
+            intent.body["op"] === "reconcile" ? this.closedForSnapshot(snapshot) : Object.freeze([] as string[]);
+        const encoded = this.buildRequestPayload(snapshot, intent.body, correlation, closedIds);
         if (encoded.ok === false) {
             this.logToken(`${LOG_PREFIX}:request-refused correlation=${correlation} reason=${encoded.reason}`);
             if (typeof intent.dragSource === "string" && isDragCorrelation(intent.dragSource)) {
@@ -7852,6 +8087,7 @@ export class PlanAdapter {
                     ? intent.direction
                     : null,
             requestPayload: payload,
+            closedSent: Object.freeze([...closedIds]),
             requestRevision: 0,
             isRecovery,
             body: intent.body,
@@ -8583,6 +8819,18 @@ export class PlanAdapter {
             this.failFlight(flightState, "service-fault");
             return;
         }
+        // D23 planner delivery: the converged request forgot the carried
+        // close slots (or retired the emptied domain). Clears even ahead of
+        // a stale drop below: the planner consumed the close, so any
+        // redelivery would only repeat an idempotent no-op. Every other
+        // outcome (rejected/diverged/malformed/timeout/transport) retains.
+        if (flightState.closedSent.length > 0) {
+            this.clearClosedSent(
+                flightState.closedSent,
+                flightState.snapshot.domainOutput,
+                flightState.snapshot.domainWorkspace,
+            );
+        }
         // Fence stale replies: a newer observation arrived after dispatch.
         if (flightState.epoch !== this.epoch) {
             this.lifecycleDiag(flightState, "reply", "validate", "stale", "stale-dropped");
@@ -9066,6 +9314,35 @@ export class PlanAdapter {
               ? this.freshHiddenFor(flightState.snapshot)
               : this.freshObserved();
         if (fresh === null) {
+            // D23 close cleanup: a synthesized empty-domain flight (no live
+            // members, empty plan, carrying closes) has no native evidence
+            // to fence: the planner already converged and retired the slot,
+            // and there are no refs to resolve or writes to order. Apply the
+            // empty plan directly so the delivered close clears instead of
+            // failing stale-scope forever. Every other null observation stays
+            // fail-closed exactly as before.
+            if (
+                flightState.op === "reconcile" &&
+                flightState.background !== true &&
+                flightState.snapshot.windows.length === 0 &&
+                planned.geometry.length === 0 &&
+                flightState.closedSent.length > 0
+            ) {
+                this.lifecycleDiag(flightState, "observe", "observe", "matched", "-", this.ordinaryRevision(planned, flightState));
+                this.writeGeometries(planned, flightState, {
+                    domainOutput: flightState.snapshot.domainOutput,
+                    domainWorkspace: flightState.snapshot.domainWorkspace,
+                    domainBounds: { ...flightState.snapshot.domainBounds },
+                    domainGap: flightState.snapshot.domainGap,
+                    domainOuterGap: flightState.snapshot.domainOuterGap,
+                    focusedId: "",
+                    windows: Object.freeze([]),
+                    activeRef: {},
+                    fingerprint: flightState.snapshot.fingerprint,
+                    revalidate: () => false,
+                });
+                return;
+            }
             this.lifecycleDiag(flightState, "observe", "observe", "mismatched", "stale-scope", this.ordinaryRevision(planned, flightState));
             this.ordinaryTerminal(flightState, planned, "uncertain", "observe");
             this.failFlight(flightState, "stale-scope");
@@ -10293,6 +10570,15 @@ export class PlanAdapter {
                 const scopeKey = this.domainKey(retainedBase);
                 if (windows.length === 0) {
                     this.appliedScopeByDomain.delete(scopeKey);
+                    // D23 accepted-empty proof for close synthesis: only a
+                    // planner-applied empty reconcile proves no live members.
+                    if (flightState.op === "reconcile") {
+                        try {
+                            this.explicitEmptyByKey.add(scopeKey);
+                        } catch (error) {
+                            void error;
+                        }
+                    }
                 } else {
                     this.appliedScopeByDomain.set(scopeKey, {
                         bounds: {
@@ -10459,6 +10745,32 @@ export class PlanAdapter {
             }
         }
         this.finishFlight();
+        this.chainPendingCloses();
+    }
+
+    // D23 drain: after an applied plan, one more pass over the existing
+    // signal-driven chain while closes remain queued. Success-only (the
+    // planner is healthy and progress was made): failure terminals retain
+    // without chaining, so no signal-free loop can form. Rounds are
+    // async-separated (a dispatch awaits its reply) and stop when pending
+    // empties, when a round dispatches nothing, or when a terminal fails:
+    // every close-carrying success strictly shrinks the queue. Respects the
+    // identity-probe race guard exactly like finishFlight.
+    private chainPendingCloses(): void {
+        if (
+            !this.enabled ||
+            this.inFlight ||
+            this.deferredAuto !== null ||
+            this.activeProbe !== 0 ||
+            this.pendingClosed.size === 0
+        ) {
+            return;
+        }
+        try {
+            this.refreshNow();
+        } catch (error) {
+            void error;
+        }
     }
 
     // Lean R4 helpers: one-shot arrival signals, fresh exact mover proof,
@@ -11664,6 +11976,18 @@ export class PlanAdapter {
         }
         this.sendForcedDomains.delete(key);
         this.backgroundAttempts.delete(key);
+        // D23: a released domain drops its planner slot, so pending closes
+        // and empty proofs homed there are moot, never retained.
+        this.explicitEmptyByKey.delete(key);
+        try {
+            for (const [id, homing] of [...this.pendingClosed]) {
+                if (homing.output === output && homing.workspace === workspace) {
+                    this.pendingClosed.delete(id);
+                }
+            }
+        } catch (error) {
+            void error;
+        }
     }
 
     private handleReleaseReply(parsed: Record<string, unknown>, flightState: PendingFlight): boolean {

@@ -11,8 +11,8 @@ decisions of 2026-09-24 are under
 ## Open work
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
-  rework plus close cleanup (first verify COSMIC `3d55cba0`; return before code
-  on a material difference), D16 floating+fullscreen/maximized sends,
+  rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
+  next code: D16 floating+fullscreen/maximized sends,
   born-maximized core lift, underlay default, unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, Ubuntu installation-doc
   and effect-description upgrade note. Native verification remains queued.
@@ -163,7 +163,7 @@ decisions of 2026-09-24 are under
   | D13 | verification-only | Local move wins before output crossing (`crates/tiler-core/src/directional.rs:1046-1088`); OUT-02 local-wrap multi-output fixture remains live-pending. |
   | D16 | ordinary floats delivered offline; combo sends need code | Float retention and follow/stay numbered/relative slotless sends exist; same-output exact frame/no geometry write confirmed 2026-10-13. Floating+fullscreen and floating+maximized must carry exactly as-is and later return to floating frame; current refusals are gaps, expected on deferred path. Sticky keeps refusing; automatic-fixed refusal unchanged. Native roundtrip pending; Windows item 22 ([record](changes/d16-floating-transfer.md); [decision](decisions.md#workspaces)). |
   | D22 | approved; verification-only | Float-out preserves survivor proportions (50/25/25, float middle 25 -> approximately 67/33); no setting. Removal retains survivor share ratios (`crates/tiler-core/src/cosmic_v1.rs:175-198`, `crates/tiler-core/src/session.rs:2398-2399` at `fafcd31`, revision-bound). COSMIC observed, not source-proven, plus i3/sway Tier 1; thin i3/sway one-family basis disclosed; no evidenced alternative, Hyprland/Tier 2 untraced. Native reflow live check pending. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
-  | D23 | best-effort restore + close cleanup need code | Minimize/reflow/MRU, no-focus-write restore and sole null focus delivered offline. Current exact-tree-equality validity and closed-slot retention are gaps. User 2026-10-13 selects best-effort neighbor rejoin and close-slot cleanup via small protocol distinction. Verify COSMIC `3d55cba0` first, return before code on material difference. Session-only; regressions and native journeys pending, Windows item 22. [Decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
+  | D23 | delivered offline; native verification pending | COSMIC `3d55cba0` source gate passed. Shared-core best-effort neighbor rejoin uses stored group/index/side/share hints; additive `closed_windows` clears closed slots through KDE, including hidden domains. Minimize/reflow/MRU, no-focus-write restore and sole null focus preserved; session-only. Required regressions and full offline gates pass; Windows adapter remains item 22. [Evidence](changes/archive/d23-rework.md), [decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D27 | KDE verification-only; no longer BLOCKED | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows Mark urgent only/guard unchanged; setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
@@ -184,17 +184,14 @@ decisions of 2026-09-24 are under
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
-  - D23 rework queue (user 2026-10-13): first verify COSMIC minimized-tiling
-    restore at `3d55cba0`; return to user before coding on material difference.
-    Replace exact equality with best-effort rejoin beside former neighbor,
-    same side/group/index, comparable old share. Fresh ordinary admission only
-    if no former neighbors remain, domain gone or sent elsewhere. Resizes,
-    new windows, other-sibling closes and swaps do not invalidate alone.
-    Session-only, no focus write; preserve minimize/reflow/MRU/sole-none.
-    Clear closed minimized windows' slots via small close/minimize protocol
-    distinction, folded in. Regressions: focus change, resize, new window,
-    sibling close, swap, other minimize/restore, gaps/resolution, restart and
-    close cleanup. Native journeys pending; Windows adapter in item 22.
+  - D23 verification queue (user 2026-10-13): best-effort rejoin and explicit
+    close-slot cleanup delivered offline after matching COSMIC `3d55cba0`
+    source verification ([evidence](changes/archive/d23-rework.md)). Native
+    journeys remain pending: focus change, resize, new window, sibling close,
+    swap, other minimize/restore, gaps/resolution, restart and close cleanup;
+    verify same side/group/index where possible, comparable old share,
+    session-only lifetime and no restore focus write. Minimize/reflow/MRU and
+    sole-none are preserved. Windows adapter follows in item 22.
   - D27 KDE verification queue: native valid-token switch convergence,
     missing/stale-token mark-only without interference; FromTool/allowed-X11
     native behavior. Must-pass real-game active play and idle/paused check,
@@ -859,7 +856,7 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 combo sends and D23 best-effort restore/close cleanup | Wire after revised shared-core delivery; Windows D27 urgent-only/guard remains unchanged, KDE native exception is not Windows evidence. |
+  | 22 | D16 combo sends and D23 best-effort restore/close cleanup | D23 shared contract delivered offline: omit minimized carried rows, restore through rejoin, populate `CoreEvent.closed_windows` on verified close; Windows adapter pending. D16 combo shared delivery pending. Windows D27 urgent-only/guard unchanged. [D23 evidence](changes/archive/d23-rework.md). |
   | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
   | 24 | Underlay default `#662a82da` | Change Windows constant to candidate C, 40% accent blue, for now; black/white/grey visual check. |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
@@ -2865,11 +2862,11 @@ decisions of 2026-09-24 are under
     both floating and overlay flags on arrival, later exit returns to floating
     frame. Sticky keeps refusing. Untested native WS1 -> WS2 -> WS1 roundtrip
     is verified first; include combo/exit follow/stay numbered/relative legs.
-    Approved D23 follows later after shared-core delivery: replace retained
+    Approved D23 shared rework delivered offline 2026-10-13
+    ([evidence](changes/archive/d23-rework.md)); Windows adapter pending: replace retained
     Windows minimize allocation (divergence, not an approved exception) with
-    release/reflow/MRU and session-only best-effort stored-slot rejoin. First
-    shared implementation step verifies COSMIC `3d55cba0`; material difference
-    returns to user before code. Current retained-allocation sites:
+    release/reflow/MRU and session-only best-effort stored-slot rejoin. COSMIC
+    `3d55cba0` source gate passed. Current retained-allocation sites:
     `crates/tiler-windows/src/tiling_sys.rs` `observe_window` (iconic returns
     `ObserveFailure::Known(.., SkipReason::Minimized)` with no frame),
     `TileLoop::observe` (that arm pushes a frameless `RetainedRow { rect: None,
@@ -2884,8 +2881,8 @@ decisions of 2026-09-24 are under
     retained/MRU-or-none, and stores the `MinimizedSlot` (homing domain + leaf
     id + restore context); (2) on native restore, re-carry it purely tiled for
     best-effort rejoin beside a former neighbor, same side/group/index and
-    comparable old share. Current shared `remove_leaf(stored) == current`
-    validity is the gap to replace, not the Windows target. Resize/new-window/
+    comparable old share. Shared best-effort rejoin is delivered; exact equality
+    is only a fast path, not a validity prerequisite. Resize/new-window/
     other-sibling-close/swap do not invalidate alone. Fresh admission only if
     no former neighbors remain, domain gone or sent elsewhere; (3) never write focus on
     restore - the core keeps pre-restore MRU focus (the converge focus arm skips
@@ -2895,10 +2892,18 @@ decisions of 2026-09-24 are under
     with focus none; (5) native reveal stays in
     `crates/tiler-windows/src/model.rs` the `show.minimized` lane
     (nonactivating restore), unchanged; (6) report minimized-window close via
-    the small close/minimize protocol distinction and clear its stored slot,
-    folded into D23 rework. Shared contract: `MinimizedSlot` docs
+    additive `CoreEvent.closed_windows` on the valid domain observation, using
+    verified closed HWND lifetime ids (never minimize or transient absence).
+    Engine forgets slots after successful convergence and before retirement;
+    absent/empty ids preserve existing behavior. Retain undelivered reports
+    until planner acceptance; include hidden workspaces and multiple-domain
+    close bursts, and do not fabricate empty membership on unreadable native
+    evidence. Native cleanup routes include `workspace_close_cleanup`; keep
+    close-vs-minimize classification at observation/lifetime boundaries.
+    Shared contract: `MinimizedSlot` docs
     plus `minimized_slot`/`minimized_count`/`has_live_minimized_slot` accessors
-    (`crates/tiler-core/src/session/world.rs`), slot-aware
+    (`crates/tiler-core/src/session/world.rs`),
+    `Session::forget_minimized_slot` / `Engine::forget_minimized_slot`, slot-aware
     `committed_session_is_empty` and the disjoint-reseed guard treating a stored
     slot as known (`crates/tiler-core/src/engine.rs`). Test hooks: portable
     Engine minimize/restore convergence tests run on Linux
@@ -2906,8 +2911,10 @@ decisions of 2026-09-24 are under
     (`observe`/`assemble_domain_rows`/`domain_rows` carry) needs Windows CI plus
     user-owned native minimize/restore journeys (tile, minimize, sibling reflow,
     best-effort restore, sole-minimize empty workspace, close-slot cleanup).
-    Regressions cover focus change, resize, new window, sibling close, swap,
-    other minimize/restore, gaps/resolution and restart. No setting. Approved D27
+    Portable regressions pass for focus change, resize, new window, sibling
+    close, swap, other minimize/restore, gaps/resolution, restart, closed-slot
+    cleanup and fallback; reproduce those at the Windows adapter boundary.
+    No setting. Approved D27
     needs supported activation-request/urgency observation, default Mark urgent
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.

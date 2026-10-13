@@ -15,6 +15,15 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### D23 best-effort restore and close discriminators
+
+Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-cleanup-discriminators-2026-10-13), selected 2026-10-13.
+
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| Former group versus new focus | Tile A/B/C; minimize B; admit D nested under a surviving former group; restore B | Rejoin the surviving former group at stored index with comparable stored share; do not fresh-admit beside D. Shared and KDE entry fixtures verify rejoin/no focus write ([record](../changes/archive/d23-rework.md)) | COSMIC `3d55cba0`, `src/shell/layout/tiling/mod.rs:458-502,505-545`: surviving parent/index or sibling regroup before fresh admission. Exact per-action reference frames and native KDE/Windows outcomes TBD |
+| Minimized close versus omission | Tile B; minimize B; close B; repeat without the close | Explicit `closed_windows` clears stored slot and retires the sole slot-only session; bare omission retains it for restore. Rejected/undelivered close reports remain pending; unreadable membership does not invent an empty snapshot | Shared/protocol/KDE fixtures passed. Exact native close ordering and other reference outcomes TBD; Windows adapter remains handoff item 22 |
+
 ### Windows asynchronous preview-finish discriminator
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |

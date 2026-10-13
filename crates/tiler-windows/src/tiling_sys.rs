@@ -4792,6 +4792,7 @@ fn refresh_group_underlay(
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: Vec::new(),
+        closed_windows: Vec::new(),
         command: CoreCommand::ActiveGroup,
     };
     let found = match handle_engine_event(state, &mut event) {
@@ -36747,6 +36748,7 @@ mod preview_tests {
                 directional_target_outer_gap: None,
                 target_domain: None,
                 target_windows: Vec::new(),
+                closed_windows: Vec::new(),
                 command,
             }
         };
@@ -36950,6 +36952,7 @@ mod preview_tests {
                 directional_target_outer_gap: None,
                 target_domain: None,
                 target_windows: Vec::new(),
+                closed_windows: Vec::new(),
                 command,
             }
         };
@@ -40030,6 +40033,7 @@ mod windrag_press_focus_tests {
                 directional_target_outer_gap: None,
                 target_domain: None,
                 target_windows: Vec::new(),
+                closed_windows: Vec::new(),
                 command,
             }
         };

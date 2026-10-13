@@ -193,6 +193,12 @@ pub struct CoreEvent {
     pub outer_gap: i32,
     pub focused_window: WindowId,
     pub windows: Vec<EngineWindow>,
+    /// D23 close-versus-minimize distinction: opaque ids the adapter reports
+    /// as explicitly closed (never merely absent). Absent stays a minimize
+    /// (stored old slot); a closed id never mints a permanent slot and any
+    /// stored slot for it is forgotten. Empty by default so legacy
+    /// observations behave exactly as before.
+    pub closed_windows: Vec<WindowId>,
     pub directional: Option<Vec<(OutputDomain, DomainKey)>>,
     pub directional_target_outer_gap: Option<i32>,
     pub target_domain: Option<(OutputDomain, DomainKey)>,
@@ -1073,6 +1079,7 @@ mod tests {
             outer_gap: 0,
             focused_window: WindowId(String::new()),
             windows: Vec::new(),
+            closed_windows: Vec::new(),
             directional: None,
             directional_target_outer_gap: None,
             target_domain: None,

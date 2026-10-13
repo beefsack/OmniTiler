@@ -327,6 +327,12 @@ struct RequestDto {
     domains: Option<Vec<DirectionalDomainDto>>,
     focused_window: String,
     windows: Vec<ObservedDto>,
+    /// D23 close-versus-minimize distinction: opaque ids the adapter reports
+    /// as explicitly closed (never merely absent). Absent (default empty)
+    /// preserves the historical minimize-on-omission behavior; a closed id
+    /// never mints a permanent slot and any stored slot for it is forgotten.
+    #[serde(default)]
+    closed_windows: Vec<String>,
     command: serde_json::Value,
     /// R-SPC-04 D1 fixed-size admission predicate (`both-axes-fixed` /
     /// `either-axis-fixed`). Absent preserves the historical both-axes
@@ -1276,6 +1282,34 @@ fn validate_request(request_json: &str) -> Result<Validated, String> {
                 ));
             }
             if !seen.insert(entry.window.clone()) {
+                return Err(snapshot_invalid(
+                    request.correlation_id.clone(),
+                    MSG_OPAQUE_ID,
+                    "duplicate-window",
+                ));
+            }
+        }
+    }
+    {
+        // D23 closed-window validation, same fences as live observations:
+        // opaque ids, no duplicates, and no contradictory live+closed row
+        // (one id cannot be both observed and reported closed). Count rides
+        // the request size bound like live windows; no new vocabulary.
+        let mut seen = std::collections::HashSet::new();
+        let live: std::collections::HashSet<&str> = request
+            .windows
+            .iter()
+            .map(|entry| entry.window.as_str())
+            .collect();
+        for id in &request.closed_windows {
+            if !is_opaque_id(id) {
+                return Err(snapshot_invalid(
+                    request.correlation_id.clone(),
+                    MSG_OPAQUE_ID,
+                    "observed-window-invalid",
+                ));
+            }
+            if !seen.insert(id.clone()) || live.contains(id.as_str()) {
                 return Err(snapshot_invalid(
                     request.correlation_id.clone(),
                     MSG_OPAQUE_ID,
@@ -4360,6 +4394,12 @@ fn core_event(
             .target_windows
             .iter()
             .map(engine_window_from_dto)
+            .collect(),
+        closed_windows: ctx
+            .request
+            .closed_windows
+            .iter()
+            .map(|id| WindowId(id.clone()))
             .collect(),
         command: command.clone(),
     }

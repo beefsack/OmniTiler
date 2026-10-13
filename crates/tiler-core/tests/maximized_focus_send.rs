@@ -549,6 +549,7 @@ fn focus_event(
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: vec![],
+        closed_windows: vec![],
         command: CoreCommand::Focus {
             window: focused.to_owned(),
             direction: "left".to_owned(),

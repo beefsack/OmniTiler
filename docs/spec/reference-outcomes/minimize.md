@@ -77,7 +77,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   cross-column rescale); refocus runs nearest-center `give_away_focus`
   on the active strip, exact target TBD (F: missing frame/display
   geometry). `S(S-pan-minimize)` + `S(S-pan-stripwidth)`.
-- Then Ours KDE: delivered offline: B releases allocation, siblings reflow, MRU C focus, session-only old slot via shared-core MinimizedSlot plus KDE wiring. User 2026-10-13 selects close-slot cleanup via small close/minimize protocol distinction; current closed-slot retention is a gap ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Native release/frames/focus TBD. `S(S-ours-minkde)`.
+- Then Ours KDE: delivered offline: B releases allocation, siblings reflow, MRU C focus, session-only restore context; explicit `closed_windows` clears closed slots through core/protocol/KDE, including hidden domains ([rework](../../changes/archive/d23-rework.md)). Native release/frames/focus/close ordering TBD. `S(S-ours-minkde)`.
 - Then Ours Windows: Same selected D23 (a) target; current retains allocation with retained membership (last-known rect, hintless, no writes), observed divergence to change via handoff item 22, not an approved exception; native journey pending; exact native frames/focus TBD. `S(S-ours-minwin)`;
   queued; shared-core MinimizedSlot delivery serves the later adapter change.
 - Variant hook: provisional/TBD (minimize-slot hook, to discuss).
@@ -133,7 +133,7 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
   restore issues no focus write, so focus stays at the R-MNZ-01 target,
   exact identity TBD with it (F: same missing geometry).
   `S(S-pan-minimize)`.
-- Then Ours KDE: no-focus-write restore delivered offline, but current exact-tree-equality validity is the gap. User 2026-10-13 option (b): best-effort rejoin beside former neighbor, same side/group/index, comparable old share; fresh admission only if no former neighbors remain, domain gone or sent elsewhere. Resize/new windows/other-sibling closes/swaps do not invalidate alone; session-only. Verify COSMIC `3d55cba0` first; return before code on material difference ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)). Native slot/focus TBD. `S(S-ours-minkde)`.
+- Then Ours KDE: delivered offline under User 2026-10-13 option (b): best-effort rejoin beside former neighbor, same side/group/index where possible, comparable old share; exact equality is only a fast path. Resize/new windows/other-sibling closes/swaps do not invalidate alone; session-only, no restore focus write. COSMIC `3d55cba0` source gate passed ([rework](../../changes/archive/d23-rework.md)). Native slot/share/focus TBD. `S(S-ours-minkde)`.
 - Then Ours Windows: Same revised D23 best-effort target; current B observed eligible again over retained allocation, not selected release/rejoin; revised shared delivery then adapter via item 22. No-focus-write acceptance/native slot/focus TBD (host). `S(S-ours-minwin)`; focus queued.
 - Variant hook: provisional/TBD (restore-slot hook, to discuss).
 
@@ -190,20 +190,26 @@ claims. Ours KDE and Ours Windows cite separate adapter keys.
 
 Each restore leg starts fresh from `H[A,B*,C]` with unequal shares; minimize B,
 perform one intervening action, then restore B. These are variants of existing
-R-MNZ-01..03, not additional numbered scenarios. Existing source evidence does
-not establish COSMIC's intervening-edit restore: verify pinned `3d55cba0` first,
-return before coding on a material difference. All exact native/reference
-outcomes below remain TBD; selected targets are not test evidence.
+R-MNZ-01..03, not additional numbered scenarios. COSMIC `3d55cba0` source gate
+passed: stored parent-or-sibling/orientation/index/sizes, surviving-anchor
+rejoin, otherwise fresh admission (`src/shell/layout/tiling/mod.rs:343-349,
+458-545,1329-1346`). The exact per-action COSMIC frames and native/reference
+outcomes below remain TBD; general source behavior is not native evidence.
+Shared-core fixtures: `crates/tiler-core/tests/minimize_restore.rs`;
+production-entry fixtures: `kwin/tests/minimize-close-cleanup-entry.test.ts`;
+[offline evidence](../../changes/archive/d23-rework.md).
 
-| Intervening action | Selected Ours target | Current implementation / required regression |
+| Intervening action | Selected Ours target | Delivered offline regression |
 | --- | --- | --- |
-| Focus A instead of C | Rejoin old neighborhood; no OmniTiler restore focus write | Focus alone does not change tree validity; regression required |
-| Resize A/C shares | Best-effort rejoin, comparable old B share | Exact-tree equality can fail on changed shares; replace, regression required |
-| Open D | Rejoin beside former neighbor, preserve side/group/index best-effort | Current changed tree can force fresh admission; regression required |
-| Close C, retain A | Rejoin by surviving former neighbor A | Current equality invalidates; replace sibling-close fallback pin |
-| Swap A/C | Best-effort neighborhood rejoin, no invalidation solely from swap | Current changed tree can invalidate; regression required |
-| Minimize/restore another sibling | Best-effort rejoin when former neighbor survives | Interleaved slot validity needs regression |
-| Change gaps/resolution | Rejoin using current projection with comparable old share | Tree validity is topology-only; regression required |
-| Restart owner | Session-only slot expires; fresh ordinary admission | No persisted slot; regression required |
-| Close all former neighbors, or remove domain/send B elsewhere | Fresh ordinary admission | Approved fallback cases; regressions required |
-| Close B while minimized | Clear stored slot, distinguish close from minimize via small protocol addition | Current closed-slot retention until restart; cleanup regression required |
+| Focus A instead of C | Rejoin old neighborhood; no OmniTiler restore focus write | Shared focus-change fixture rejoins exactly; focus stays A |
+| Resize A/C shares | Best-effort rejoin, comparable old B share | Shared resize fixture retains current survivor proportions and stored regroup hints |
+| Open D | Rejoin beside former neighbor, preserve side/group/index best-effort | Shared and real-entry fixtures place B beside former neighbor rather than fresh beside D |
+| Close A, retain C | Rejoin by surviving former neighbor C | Shared close fixture places B before C on stored side |
+| Swap A/C | Best-effort neighborhood rejoin, no invalidation solely from swap | Shared swap fixture regroups B with former neighbor C |
+| Minimize/restore another sibling | Best-effort rejoin when former neighbor survives | Shared interleaved roundtrip fixture restores neighborhood with no focus write |
+| Change gaps/resolution | Rejoin using current projection with comparable old share | Shared bounds/gap fixture retains stored neighborhood and current domain geometry |
+| Restart owner | Session-only slot expires; fresh ordinary admission | Fresh generation has no stored slot |
+| Close all former neighbors, or remove domain/send B elsewhere | Fresh ordinary admission | Separate shared fixtures cover all three fallback cases |
+| Close B while minimized | Clear stored slot, distinguish close from minimize via small protocol addition | Core/protocol/real-entry cleanup fixtures; sole slot-only session retires; rejected report stays pending |
+| Resize survivors to small integer weights with a skewed old B share | Comparable old fraction, survivor ratios retained | Share fixture: old B 1/10, current survivors `[1,1]` -> inserted `[2,9,9]`, not `[1,1,1]` |
+| Admit D nested under a surviving former group, then restore B | Same former group/index where possible | Shared surviving-group fixture inserts at stored index without flattening D's group |

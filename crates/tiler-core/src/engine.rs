@@ -462,6 +462,15 @@ impl Engine {
         self.sessions.get_mut(key)
     }
 
+    /// D23 close cleanup: forget the stored minimize restore slot for a
+    /// window on one retained domain (see [`Session::forget_minimized_slot`]).
+    /// Returns false for unknown domains or absent slots.
+    pub fn forget_minimized_slot(&mut self, key: &DomainKey, window: &WindowId) -> bool {
+        self.sessions
+            .get_mut(key)
+            .is_some_and(|session| session.forget_minimized_slot(window))
+    }
+
     /// Whether a domain slot exists (including empty/stale slots owned by the
     /// normal seeding path).
     #[must_use]
@@ -719,6 +728,16 @@ impl Engine {
         match session_mut.converge_observation(&observation, focus) {
             Ok(counts) => {
                 self.converged_this_op = true;
+                // D23 close cleanup: a valid converged observation forgets
+                // explicitly closed minimize slots AFTER convergence (an
+                // ordinary closed leaf would otherwise mint a slot above)
+                // and BEFORE retirement (a slot-only session must retire).
+                // Revision-neutral bookkeeping; fenced by the converge
+                // itself (rejected/diverged observations never reach here,
+                // so the adapter must retry them with the close retained).
+                for window in &event.closed_windows {
+                    session_mut.forget_minimized_slot(window);
+                }
                 if counts.removed + counts.admitted + counts.flags_adopted > 0 {
                     self.last_convergence = Some(EngineConvergenceReport {
                         correlation: event.correlation.clone(),
@@ -807,6 +826,12 @@ impl Engine {
         match session.converge_observation(&observation, focus) {
             Ok(counts) => {
                 self.converged_this_op = true;
+                // D23 close cleanup on the assembled pair, same fencing as
+                // the single-domain path: AFTER convergence, BEFORE the
+                // canonical store below (which retires slot-only sessions).
+                for window in &event.closed_windows {
+                    session.forget_minimized_slot(window);
+                }
                 if counts.removed + counts.admitted + counts.flags_adopted > 0 {
                     self.last_convergence = Some(EngineConvergenceReport {
                         correlation: event.correlation.clone(),
@@ -5033,6 +5058,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Move {
                 window: "win-1".to_owned(),
                 direction: "left".to_owned(),
@@ -5085,6 +5111,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&reconcile) {
@@ -5269,6 +5296,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5382,6 +5410,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5472,6 +5501,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5555,6 +5585,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5600,6 +5631,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5665,6 +5697,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5720,6 +5753,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5776,6 +5810,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::UpdateGaps,
         };
         match engine.handle(&event) {
@@ -5858,6 +5893,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::Reconcile,
         };
         match engine.handle(&event) {
@@ -5957,6 +5993,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command,
         }
     }
@@ -6023,6 +6060,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command,
         };
         let same_drop = event(
@@ -6838,6 +6876,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: Some((target_domain.clone(), target_key.clone())),
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::MigrateWorkspace {
                 direction: "right".to_owned(),
             },
@@ -6956,6 +6995,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: Some((target_domain, target_key.clone())),
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::MigrateWorkspace {
                 direction: "right".to_owned(),
             },
@@ -7037,6 +7077,7 @@ mod tests {
                 directional_target_outer_gap: None,
                 target_domain: target,
                 target_windows,
+                closed_windows: vec![],
                 command: CoreCommand::MigrateWorkspace {
                     direction: "right".to_owned(),
                 },
@@ -7384,6 +7425,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: Some((target_domain.clone(), target_domain.key())),
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::MigrateWorkspace {
                 direction: "right".to_owned(),
             },
@@ -7585,6 +7627,7 @@ mod tests {
             directional_target_outer_gap: None,
             target_domain: Some((target_domain, target_key.clone())),
             target_windows: vec![],
+            closed_windows: vec![],
             command: CoreCommand::MigrateWorkspace {
                 direction: "right".to_owned(),
             },

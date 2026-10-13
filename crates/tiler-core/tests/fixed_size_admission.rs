@@ -2200,6 +2200,7 @@ fn reconcile_event(base: u64, focused: &str, windows: Vec<EngineWindow>, corr: &
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: vec![],
+        closed_windows: vec![],
         command: CoreCommand::Reconcile,
     }
 }

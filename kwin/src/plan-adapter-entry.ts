@@ -2173,6 +2173,11 @@ export function observeHiddenDomains(
     gaps: DomainGaps,
     reportEligibility?: (ref: object, reason: string | null) => void,
     owners?: Map<string, object>,
+    // D23 close homing: last-known output/workspace per stable id, recorded
+    // for every interned member (minimized windows observe normally here).
+    // Best-effort: never fails the domain. Lets a later exact-ref close of
+    // an initially-hidden client report its owning domain.
+    homing?: Map<string, { output: string; workspace: string }>,
 ): ReadonlyArray<PlanObserved> {
     try {
         if (typeof liveWorkspace !== "object" || liveWorkspace === null) {
@@ -2373,6 +2378,11 @@ export function observeHiddenDomains(
                         break;
                     }
                     seen.add(id);
+                    try {
+                        homing?.set(id, { output: screen.name, workspace: desktop.id });
+                    } catch (error) {
+                        void error;
+                    }
                     const frame = readFrameRect(candidate.ref);
                     if (typeof frame === "string") {
                         seen.delete(id);
@@ -2740,6 +2750,12 @@ function observeNative(
     gaps: DomainGaps,
     reportEligibility?: EligibilityReporter,
     owners?: Map<string, object>,
+    // D23 close homing: last-known output/workspace per stable id, recorded
+    // for observed members and minimized-omitted frames alike (best-effort:
+    // an unreadable minimized id simply records nothing and never fails the
+    // domain). Lets a later exact-ref close report its owning domain without
+    // ever reading the dead object.
+    homing?: Map<string, { output: string; workspace: string }>,
 ): PlanObserved | null {
     try {
         if (typeof liveWorkspace !== "object" || liveWorkspace === null) {
@@ -2912,6 +2928,14 @@ function observeNative(
             if (readProp(ref, "minimized") === true) {
                 minimizedEvidence = true;
                 reportEligibility?.(ref, "minimized-omitted");
+                try {
+                    const native = readNativeId(ref);
+                    if (native !== null && homing !== undefined) {
+                        homing.set(native, { output: domainOutput, workspace: domainWorkspace });
+                    }
+                } catch (error) {
+                    void error;
+                }
                 continue;
             }
             // Read and normalize the native id while the object is live;
@@ -2961,6 +2985,11 @@ function observeNative(
                 resourceClass: readResourceClass(ref),
             });
             reportEligibility?.(ref, null);
+            try {
+                homing?.set(id, { output: domainOutput, workspace: domainWorkspace });
+            } catch (error) {
+                void error;
+            }
         }
         if (entries.length === 0) {
             // D23 MNZ-03: an emptied domain with minimize evidence converges
@@ -4440,6 +4469,12 @@ function startPlanAdapterEntryOnce(
     // ownership at intern time but never infer departure.
     const nativeIds = new Map<string, string>();
     const nativeOwners = new Map<string, object>();
+    // D23 close homing: last-known output/workspace per stable id, recorded
+    // by the foreground and hidden observers for observed and
+    // minimized-omitted members. Read at exact-ref close time to report the
+    // owning domain without ever reading the dead object. Evicted with the
+    // id on verified removal.
+    const lastHoming = new Map<string, { output: string; workspace: string }>();
     const sendNativeIds = new Map<string, string>();
     const floatingIds = new Set<string>();
     // Deliberate tiler reload gap configuration: resolved at startup, then
@@ -4545,6 +4580,7 @@ function startPlanAdapterEntryOnce(
         nativeIds.delete(id);
         sendNativeIds.delete(id);
         nativeOwners.delete(id);
+        lastHoming.delete(id);
         floatingFirstIds.delete(id);
         eligibilityReasons.delete(id);
         // Verified removal also drops the in-progress float mark: a closed
@@ -4712,7 +4748,7 @@ function startPlanAdapterEntryOnce(
             }
         },
         observe: () => {
-            const seen = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const seen = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             if (seen === null) {
                 return null;
             }
@@ -4734,7 +4770,7 @@ function startPlanAdapterEntryOnce(
             return seen;
         },
         observeHidden: () => {
-            const list = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const list = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             const out: PlanObserved[] = [];
             for (const entry of list) {
                 if (isEntryDomainTiled(entry.domainOutput, entry.domainWorkspace)) {
@@ -5202,7 +5238,19 @@ function startPlanAdapterEntryOnce(
         },
         noteRemoved: (id) => {
             try {
+                const homing = lastHoming.get(id);
                 forgetNativeId(id);
+                // D23: an explicitly closed id (tiled or minimized-omitted)
+                // reports its owning domain for slot cleanup; a bare absence
+                // stays a minimize. Homing unknown means the planner never
+                // saw the id, so there is no slot to clear.
+                if (homing !== undefined) {
+                    try {
+                        adapter.noteClosedWindow(id, homing.output, homing.workspace);
+                    } catch (error) {
+                        void error;
+                    }
+                }
             } catch (error) {
                 void error;
             }
@@ -5216,6 +5264,7 @@ function startPlanAdapterEntryOnce(
             try {
                 for (const [id, owner] of nativeOwners) {
                     if (owner === ref) {
+                        const homing = lastHoming.get(id);
                         forgetNativeId(id);
                         // Verified exact-ref close: propagate the live-time
                         // id to the adapter so fixed bookkeeping and settled
@@ -5225,6 +5274,17 @@ function startPlanAdapterEntryOnce(
                             adapter.noteNativeRemovedId(id);
                         } catch (error) {
                             void error;
+                        }
+                        // D23 close-versus-minimize report, including
+                        // minimized-omitted clients whose homing was recorded
+                        // while live. Same-turn delivery rides the debounced
+                        // resync; failures retain for the next signal.
+                        if (homing !== undefined) {
+                            try {
+                                adapter.noteClosedWindow(id, homing.output, homing.workspace);
+                            } catch (error) {
+                                void error;
+                            }
                         }
                     }
                 }
@@ -5253,8 +5313,8 @@ function startPlanAdapterEntryOnce(
             void error;
         }
     }
-    const initial = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
-    const initialHidden = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+    const initial = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
+    const initialHidden = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
     // Distinguish a foreground/hidden eligible startup from an empty one for
     // diagnostics. Both retain the enabled observer for later observations.
     let hasEligibleHidden = false;
@@ -5495,7 +5555,7 @@ function startPlanAdapterEntryOnce(
             }
         };
         try {
-            const foreground = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const foreground = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             if (foreground !== null) {
                 push(snapshotOf(foreground));
             }
@@ -5503,7 +5563,7 @@ function startPlanAdapterEntryOnce(
             void error;
         }
         try {
-            const hidden = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const hidden = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             for (const entry of hidden) {
                 push(snapshotOf(entry));
             }
@@ -7696,7 +7756,7 @@ function startPlanAdapterEntryOnce(
     };
     const captureOracleStart = (ref: object): void => {
         try {
-            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             if (observed === null) {
                 clearMovePreviewFull(ref);
                 return;
@@ -8361,7 +8421,7 @@ function startPlanAdapterEntryOnce(
                 try { log(`omnitiler:route-diag:drag-context-invalid correlation=${verdict.correlation}`); } catch (error) { void error; }
                 return;
             }
-            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
             if (observed === null) {
                 takeOwnStart(ctx);
                 try { log(`omnitiler:route-diag:drag-scope-invalid correlation=${verdict.correlation}`); } catch (error) { void error; }
@@ -8819,7 +8879,7 @@ function startPlanAdapterEntryOnce(
                         observe: (): ActiveGroupObserved | null => {
                             let seen: PlanObserved | null = null;
                             try {
-                                seen = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners);
+                                seen = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
                             } catch (error) {
                                 void error;
                                 return null;

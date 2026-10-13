@@ -1810,6 +1810,7 @@ pub fn build_reconcile_event_for_floating(
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: Vec::new(),
+        closed_windows: Vec::new(),
         command: CoreCommand::Reconcile,
     }
 }
@@ -1862,6 +1863,7 @@ pub fn build_reconcile_event(input: &ReconcileInput<'_>) -> CoreEvent {
         directional_target_outer_gap: None,
         target_domain: None,
         target_windows: Vec::new(),
+        closed_windows: Vec::new(),
         command: CoreCommand::Reconcile,
     }
 }

@@ -2071,16 +2071,23 @@ platform API behavior.
   admission only when no former neighbors remain, the domain is gone or B was
   sent elsewhere. Resizes, new windows, other-sibling closes and swaps do not
   invalidate by themselves. Stored slots remain session-only, not persisted.
-- D23 minimize/reflow/MRU, no-focus-write restore and sole-null-focus wiring
-  are delivered offline; current exact-tree-equality restore is the gap.
-  First implementation step: verify COSMIC's minimized-tiling restore in pinned
-  cosmic-comp `3d55cba0`; return to the user before coding if it differs
-  materially. Add regressions for focus change, resize, new window, sibling
-  close, swap, other minimize/restore, gaps/resolution change and restart.
+- D23 rework delivered offline 2026-10-13: COSMIC `3d55cba0` matches the
+  selected best-effort approach (`src/shell/layout/tiling/mod.rs:343-349,
+  458-545,1329-1346`). It stores parent-or-sibling/orientation/index/sizes,
+  rejoins a surviving anchor and otherwise admits fresh, without tree equality.
+  Shared core preserves the old group/index when possible, otherwise regroups
+  beside a surviving former neighbor on the stored side/axis. Stored share
+  fractions drive insertion while current survivor ratios are retained.
+  Minimize/reflow/MRU, no-focus-write restore and sole-null-focus remain intact.
+  Requested intervening-change, restart and fallback regressions pass;
+  native journeys remain pending ([evidence](changes/archive/d23-rework.md)).
 - User decision 2026-10-13, D23 close cleanup option (b): clear a minimized
   window's stored slot when it closes. Add a small protocol distinction between
-  close and minimize, folded into the D23 rework. Current omission-only
-  observation retains closed-window slots until restart.
+  close and minimize, folded into the D23 rework. Delivered offline: additive
+  default-empty `closed_windows` distinguishes explicit close from omission;
+  valid convergence forgets reported slots before session retirement. KDE
+  retains undelivered close reports, including hidden-domain closes. Native
+  close/minimize ordering remains pending ([evidence](changes/archive/d23-rework.md)).
 - Shared core first. Windows follows in handoff item 22: its current
   retained allocation is a divergence to change, not an approved exception.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).

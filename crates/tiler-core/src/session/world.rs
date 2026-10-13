@@ -187,11 +187,15 @@ pub struct ExceptionRecord {
 
 /// D23 stored old slot for one minimized tiled window (REQ-MNZ-01/02/03).
 /// Session-runtime only, never persisted: the homing domain, the removed
-/// leaf id, and the full pre-minimize domain tree. Restore is valid only
-/// while the domain still exists, the homing matches the observation, the
-/// leaf id is unused, and removing the leaf from this stored tree yields
-/// exactly the current tree (any sibling close, restructure, or send
-/// invalidates it into fresh ordinary admission).
+/// leaf id, and the full pre-minimize domain tree. Restore takes an exact
+/// fast path (removing the leaf from the stored tree yields exactly the
+/// current tree) when nothing intervened, else a best-effort rejoin in the
+/// surviving old group at the old index, or regrouped with a live former
+/// neighbor on the stored axis and side, with an entrant share preserving
+/// the stored old fraction; only no live former neighbor, a gone domain, a
+/// window sent elsewhere, or an explicit close (via
+/// [`super::Session::forget_minimized_slot`]) falls back to fresh ordinary
+/// admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinimizedSlot {
     pub window: WindowId,
@@ -552,6 +556,17 @@ impl super::Session {
     #[must_use]
     pub fn minimized_slot(&self, window: &WindowId) -> Option<&MinimizedSlot> {
         self.minimized_slots.get(window)
+    }
+
+    /// D23 close cleanup: explicitly forget the stored minimize restore
+    /// slot for a window (for example when a minimized window closes; a
+    /// bare absence from observation is a minimize, never a close). Without
+    /// the report a closed minimized window's slot lingers until restart.
+    /// Returns true when a slot was forgotten. Revision-neutral bookkeeping
+    /// like focus sync: topology, membership, focus, and revision are
+    /// untouched.
+    pub fn forget_minimized_slot(&mut self, window: &WindowId) -> bool {
+        self.minimized_slots.remove(window).is_some()
     }
 
     /// Number of stored D23 minimize restore slots.
@@ -1195,14 +1210,19 @@ impl super::Session {
             super::collect_node_ids(tree, &mut existing_ids);
         }
         // D23 MNZ-02: native restore returns a minimized window to its
-        // stored old slot. The slot is valid only while the domain still
-        // exists, the observed homing matches, the leaf id is unused, the
-        // observation is purely tiled, and removing the leaf from the
-        // stored tree yields exactly the current tree. Anything else
-        // (sibling closed, tree restructured, window sent elsewhere,
-        // workspace removed) drops the slot and falls through to fresh
-        // ordinary admission below. Restore takes precedence over the
-        // fixed-size classifier: a tiled minimize always comes back tiled.
+        // stored old neighborhood. An exact fast path restores the whole
+        // stored tree when removing the leaf from it yields exactly the
+        // current tree (nothing intervened); otherwise a best-effort
+        // rejoin in the surviving old group at the old index, or regrouped
+        // with a live former neighbor on the stored axis and side, with an
+        // entrant share preserving the stored old fraction. Resizes,
+        // admissions, sibling closes with a survivor, swaps, other
+        // minimize/restore roundtrips, and gaps/resolution changes therefore
+        // do not alone invalidate. Fresh ordinary admission below applies
+        // only with no live former neighbor, a gone domain, a window sent
+        // elsewhere, or a forgotten (closed) slot. Restore takes precedence
+        // over the fixed-size classifier: a tiled minimize always comes
+        // back tiled.
         let mut restored: BTreeSet<WindowId> = BTreeSet::new();
         for (id, entry) in &observed {
             if entry.floating
@@ -1217,37 +1237,42 @@ impl super::Session {
             let Some(slot) = new_minimized.get(*id).cloned() else {
                 continue;
             };
-            let valid = entry.output == slot.output
+            let key = DomainKey {
+                output: slot.output.clone(),
+                workspace: slot.workspace.clone(),
+            };
+            // The slot is consumed either way: a rejoin uses it, anything
+            // else must not linger for a later observation.
+            new_minimized.remove(*id);
+            let homed = entry.output == slot.output
                 && entry.workspace == slot.workspace
                 && self
                     .domains
                     .iter()
                     .any(|d| d.id == slot.output && d.workspace == slot.workspace)
                 && !existing_ids.contains(&slot.leaf);
-            let valid = valid && {
-                let key = DomainKey {
-                    output: slot.output.clone(),
-                    workspace: slot.workspace.clone(),
-                };
-                let current = new_trees.get(&key).cloned().flatten();
-                let expected = super::remove_leaf_from_tree(
-                    self.policy(),
-                    Some(slot.tree.clone()),
-                    &slot.leaf,
-                );
-                current == expected
-            };
-            // The slot is consumed either way: a valid restore uses it,
-            // an invalid one must not linger for a later observation.
-            new_minimized.remove(*id);
-            if !valid {
+            if !homed {
                 continue;
             }
-            let key = DomainKey {
-                output: slot.output.clone(),
-                workspace: slot.workspace.clone(),
+            let current = new_trees.get(&key).cloned().flatten();
+            let expected =
+                super::remove_leaf_from_tree(self.policy(), Some(slot.tree.clone()), &slot.leaf);
+            let rejoined = if current == expected {
+                Some(slot.tree.clone())
+            } else {
+                super::best_effort_rejoin(
+                    &slot,
+                    &current,
+                    &new_windows,
+                    &mut existing_ids,
+                    id,
+                    base_revision,
+                )
             };
-            new_trees.insert(key.clone(), Some(slot.tree.clone()));
+            let Some(tree) = rejoined else {
+                continue;
+            };
+            new_trees.insert(key.clone(), Some(tree));
             new_windows.insert(
                 (*id).clone(),
                 WindowLink {
