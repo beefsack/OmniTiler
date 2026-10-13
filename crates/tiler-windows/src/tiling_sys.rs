@@ -965,6 +965,15 @@ thread_local! {
     static INJECTED_STOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PENDING_COUNTERS: std::cell::RefCell<PendingCounters> =
         const { std::cell::RefCell::new(PendingCounters::new()) };
+    /// Scripted geometry-apply verdicts for cross-operation tails (one
+    /// `(readback_ok, mismatched)` per stubbed apply, consumed in order):
+    /// the stubbed apply returns the next scripted verdict instead of
+    /// success so full-path refusal tests can inject failed readback/writes
+    /// without native effects. Empty keeps the success stub. A single
+    /// entry fails only the next apply; two entries script the
+    /// destination-then-source applies of the empty flow independently.
+    static INJECTED_APPLY: std::cell::RefCell<std::collections::VecDeque<(bool, usize)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
 #[cfg(test)]
@@ -986,6 +995,23 @@ impl PendingCounters {
             reconcile: 0,
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECTED_AREAS: std::cell::RefCell<Option<Vec<MonitorArea>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Inject one controlled monitor topology for cross-operation tails
+/// (test-only). `Some` lists replace the native enumeration; `None` clears
+/// the injection. Tests must clear before arranging (see
+/// [`clear_pending_seams`]).
+#[cfg(test)]
+fn inject_monitor_areas(areas: Option<Vec<MonitorArea>>) {
+    INJECTED_AREAS.with(|slot| {
+        *slot.borrow_mut() = areas;
+    });
 }
 
 #[cfg(test)]
@@ -1030,6 +1056,26 @@ fn inject_pending_stop(stopped: bool) {
 }
 
 #[cfg(test)]
+fn inject_pending_apply(outcome: Option<(bool, usize)>) {
+    INJECTED_APPLY.with(|slot| {
+        let mut queue = slot.borrow_mut();
+        queue.clear();
+        if let Some(verdict) = outcome {
+            queue.push_back(verdict);
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_pending_apply_seq(outcomes: Vec<(bool, usize)>) {
+    INJECTED_APPLY.with(|slot| {
+        let mut queue = slot.borrow_mut();
+        queue.clear();
+        queue.extend(outcomes);
+    });
+}
+
+#[cfg(test)]
 fn pending_counters() -> PendingCounters {
     PENDING_COUNTERS.with(|slot| {
         let counters = slot.borrow();
@@ -1047,6 +1093,9 @@ fn clear_pending_seams() {
     INJECTED_OBSERVE.with(|slot| {
         *slot.borrow_mut() = None;
     });
+    INJECTED_AREAS.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
     INJECTED_TAGS.with(|map| {
         map.borrow_mut().clear();
     });
@@ -1057,6 +1106,9 @@ fn clear_pending_seams() {
         *slot.borrow_mut() = None;
     });
     INJECTED_STOP.with(|slot| slot.set(false));
+    INJECTED_APPLY.with(|slot| {
+        slot.borrow_mut().clear();
+    });
     PENDING_COUNTERS.with(|slot| {
         *slot.borrow_mut() = PendingCounters::new();
     });
@@ -2530,9 +2582,26 @@ struct PendingDrop {
     output: String,
     workspace: String,
     drop_prior: Option<tiler_core::session::DragHoverPrior>,
+    /// Pointer-resolved cross-output destination plus its END-time fence
+    /// snapshot (`None` for same-output finishes, which keep the legacy
+    /// source-domain service path).
+    dest: Option<PendingCrossDest>,
+    /// PRE-gesture allocation of the mover for the source-capture row
+    /// substitution (`gesture_before` read at queue time; the map entry is
+    /// dropped with the gesture before the ack arrives).
+    source_rect: Option<Rect>,
     hide_gen: u64,
     hide_safety: u64,
     deadline: Instant,
+}
+
+/// Pointer-resolved cross-output finish: the destination output plus its
+/// current workspace at END and the fence snapshot tails re-verify before
+/// any Engine or project mutation.
+struct PendingCrossDest {
+    output: String,
+    workspace: String,
+    fence: crate::workspace_owner::DragDropFenceSnapshot,
 }
 
 /// Log extras stashed at post time for one desired frame: diagnostics
@@ -4987,6 +5056,459 @@ fn refresh_group_underlay(
     }
 }
 
+/// Cross-output drop-preview refresh for one loop wake: the pointer left the
+/// START output, so the preview resolves against the pointer output's
+/// current view. Occupied destinations run the pair `DragPreview` resolver
+/// (source removal plus destination insertion at the pointer, read-only);
+/// empty destinations run the singleton admission projection. Never focuses,
+/// never writes geometry, never touches topology: the only effect is the
+/// owned overlay surface, posted in physical coordinates so it lands on the
+/// destination monitor. Sticky group-edge priors degrade to the default
+/// depth across outputs (the carry binds the capture domain while the hover
+/// lives in the destination domain); same-output samples keep exact carry.
+#[allow(clippy::too_many_arguments)]
+fn refresh_cross_drag_preview(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    hwnd: u64,
+    x: i32,
+    y: i32,
+    dest_output: &str,
+    start: &PreviewStartBinding,
+    start_x: i32,
+    start_y: i32,
+    live_frame: &ObservedWindow,
+) {
+    use crate::active_border_sys::PREVIEW_DEFAULT_ARGB;
+    let probe = hwnd as isize as HWND;
+    let Some(dest_workspace) = state.workspaces.active_id(dest_output) else {
+        hide_preview(state, "no-view");
+        return;
+    };
+    if !state.workspaces.is_tiled(dest_output, &dest_workspace) {
+        hide_preview(state, "floating-dest");
+        return;
+    }
+    let dest_domain = workspace_domain_for(
+        dest_output,
+        &dest_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    );
+    let inside_dest = dest_domain.as_ref().is_some_and(|(domain, _)| {
+        crate::tiling::drop_point_in_domain(
+            domain.bounds.x,
+            domain.bounds.y,
+            domain.bounds.w,
+            domain.bounds.h,
+            x,
+            y,
+        )
+    });
+    // START-side invalidation exactly like the same-output path; only the
+    // `inside` scope moves to the destination bounds.
+    let live = window_identity(probe, hwnd, me);
+    let live_tag = crate::product_hide::sys::read_member_tag(hwnd);
+    let start_key = state.gesture_start_key.get(&hwnd).cloned();
+    let identity_ok = match (&start_key, &live) {
+        (Some(key), Some(identity)) => crate::workspace_owner::member_matches(
+            key,
+            hwnd,
+            identity.pid,
+            &identity.process_creation,
+        ),
+        _ => false,
+    };
+    let tag_ok = state
+        .gesture_start_tag
+        .get(&hwnd)
+        .is_none_or(|stored| stored == &live_tag);
+    let token_ok = start_key.as_ref().is_some_and(|key| {
+        state
+            .member_tokens
+            .get(key)
+            .is_some_and(|token| token.as_str() == start.token.as_str())
+    });
+    let loc = start_key
+        .as_ref()
+        .and_then(|key| state.workspaces.member_loc(key).cloned());
+    let loc_ok = loc
+        .as_ref()
+        .is_some_and(|loc| loc.output == start.output && loc.workspace == start.workspace);
+    let revision = revision_for(state, &start.output, &start.workspace);
+    let revision_ok = revision == start.revision;
+    let float_hold = start_key
+        .as_ref()
+        .is_some_and(|key| state.sticky.contains_key(key))
+        || engine_is_float(state, &start.output, &start.workspace, &start.token)
+        || !workspace_mode_tiled(state, &start.output, &start.workspace);
+    match preview_sample_gate(&PreviewFresh {
+        dead: false,
+        zero: !PreviewBound::sample_allowed(start_x, start_y, x, y, false),
+        identity_ok,
+        tag_ok,
+        token_ok,
+        loc_ok,
+        revision_ok,
+        float_hold,
+        inside: inside_dest,
+    }) {
+        PreviewGate::Proceed => {}
+        PreviewGate::Transient(reason) => {
+            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                bound.hover_prior = None;
+            }
+            hide_preview(state, reason);
+            return;
+        }
+        PreviewGate::Dead(reason) => {
+            if reason == "revision-drift" {
+                // Revision drift clears the carried prior first: nothing
+                // stale may render or ride into a later drop.
+                if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                    bound.hover_prior = None;
+                }
+            }
+            hide_preview(state, reason);
+            state.preview_bound.remove(&hwnd);
+            state.preview_dead.insert(hwnd);
+            return;
+        }
+    }
+    let member_key = state
+        .member_tokens
+        .iter()
+        .find(|(_, token)| token.as_str() == start.token.as_str())
+        .map(|(key, _)| key.clone());
+    let Some(member_key) = member_key else {
+        hide_preview(state, "unmanaged");
+        state.preview_bound.remove(&hwnd);
+        state.preview_dead.insert(hwnd);
+        return;
+    };
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut retained: Vec<RetainedRow> = Vec::new();
+    let Some(observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+        hide_preview(state, "observe-failed");
+        return;
+    };
+    let correlation = state.correlation();
+    let settle = CrossDragSettle {
+        mover_token: start.token.clone(),
+        member_key,
+        source_output: start.output.clone(),
+        source_workspace: start.workspace.clone(),
+        dest_output: dest_output.to_owned(),
+        dest_workspace: dest_workspace.clone(),
+        x,
+        y,
+        drop_prior: state
+            .preview_bound
+            .get(&hwnd)
+            .and_then(|bound| bound.hover_prior.clone()),
+        producer: state
+            .gesture_producer
+            .get(&hwnd)
+            .copied()
+            .unwrap_or("native")
+            .to_owned(),
+        start_rect: state.gesture_before.get(&hwnd).copied(),
+    };
+    state
+        .preview_bound
+        .entry(hwnd)
+        .or_insert(PreviewBound { hover_prior: None });
+    // Occupied destinations resolve through the pair route; empty ones
+    // project the singleton admission. Occupancy reads project membership
+    // (no observation assembly, no hint budget): row assembly runs exactly
+    // once inside the prepare call below. Both share the Engine drop
+    // resolver with the final drop.
+    let dest_occupied = !state
+        .workspaces
+        .workspace_members(dest_output, &dest_workspace)
+        .is_empty();
+    let mut hint_cx = HintCx::new();
+    let event = if dest_occupied {
+        prepare_cross_drag_preview(state, areas, &observed, &retained, &settle, &correlation)
+    } else {
+        prepare_cross_singleton_event(
+            state,
+            areas,
+            &observed,
+            &settle,
+            &correlation,
+            &mut hint_cx,
+            true,
+        )
+    };
+    let Some(mut event) = event else {
+        hide_preview(state, "incomplete");
+        return;
+    };
+    // Expected pair revision for the reply fence (the convergence persists
+    // drift, so a mismatch hides stale rather than rendering it). Singleton
+    // previews fence on domain plus mover only: the fresh destination has no
+    // prior revision to go stale against.
+    let expected_revision =
+        if dest_occupied {
+            Some(
+                revision_for(state, &settle.source_output, &settle.source_workspace).max(
+                    revision_for(state, &settle.dest_output, &settle.dest_workspace),
+                ),
+            )
+        } else {
+            None
+        };
+    let dest_key = event.domain_key.clone();
+    match handle_engine_event(state, &mut event) {
+        CoreReply::DragPreview(plan) => {
+            let preview = &plan.preview;
+            let revision_ok = expected_revision.is_none_or(|expected| preview.revision == expected);
+            if preview.domain != dest_key
+                || !revision_ok
+                || preview.source_window.0 != settle.mover_token
+            {
+                hide_preview(state, "stale");
+                state.preview_bound.remove(&hwnd);
+                state.preview_dead.insert(hwnd);
+                return;
+            }
+            let rect = preview.proposed_rect;
+            if rect.w <= 0 || rect.h <= 0 {
+                if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                    bound.hover_prior = None;
+                }
+                hide_preview(state, "geometry");
+                return;
+            }
+            let next_prior = preview.hover_prior();
+            let prior_desc = preview_prior_desc(&Some(next_prior.clone()));
+            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                bound.hover_prior = Some(next_prior);
+            }
+            if state.render_bridge.is_some() {
+                let lifetime = WindowLifetime {
+                    pid: live_frame.identity.pid,
+                    creation: live_frame.identity.process_creation.clone(),
+                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+                };
+                post_preview_frame(
+                    state,
+                    rect,
+                    PREVIEW_DEFAULT_ARGB,
+                    &settle.mover_token,
+                    hwnd,
+                    lifetime,
+                    foreground_lifetime(me),
+                    correlation.as_str(),
+                    &prior_desc,
+                );
+                return;
+            }
+            let outcome = state.preview_overlay.show_fill_above(
+                rect,
+                PREVIEW_DEFAULT_ARGB,
+                &settle.mover_token,
+                hwnd,
+            );
+            let checksum = state.preview_overlay.snapshot()["dib_checksum"].clone();
+            let signature = format!(
+                "shown:{}:{},{},{},{}:{checksum}",
+                settle.mover_token, rect.x, rect.y, rect.w, rect.h
+            );
+            let changed = state.preview_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.preview_last = Some(signature);
+            }
+            if changed || state.trace {
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "drag-preview",
+                        "tick": state.tick,
+                        "correlation": correlation.as_str(),
+                        "outcome": match outcome {
+                            OverlayOutcome::Shown => "shown",
+                            OverlayOutcome::Redrew => "redrew",
+                            OverlayOutcome::Moved => "moved",
+                            OverlayOutcome::Unchanged => "unchanged",
+                            OverlayOutcome::Hidden => "hidden",
+                        },
+                        "window": settle.mover_token,
+                        "rect": [rect.x, rect.y, rect.w, rect.h],
+                        "hover_prior": prior_desc,
+                        "cross_output": true,
+                    }),
+                );
+            }
+        }
+        CoreReply::Rejected { kind, .. } => {
+            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                bound.hover_prior = None;
+            }
+            hide_preview(state, preview_hide_for_refusal(kind));
+        }
+        CoreReply::Diverged(reason) => {
+            hide_preview(state, reason.as_str());
+            state.preview_bound.remove(&hwnd);
+            state.preview_dead.insert(hwnd);
+        }
+        CoreReply::SnapshotInvalid { detail, .. } => {
+            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                bound.hover_prior = None;
+            }
+            hide_preview(state, detail);
+        }
+        _ => {
+            if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
+                bound.hover_prior = None;
+            }
+            hide_preview(state, "refused");
+        }
+    }
+}
+
+/// Build the pair `DragPreview` event for an occupied destination: same
+/// shared row assembly as the final drop, read-only.
+fn prepare_cross_drag_preview(
+    state: &mut TileLoop,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+) -> Option<CoreEvent> {
+    let rows = assemble_cross_drag_rows(
+        state,
+        areas,
+        observed,
+        retained,
+        settle,
+        correlation,
+        correlation.as_str(),
+        "drag-preview",
+    )?;
+    let from = WindowId(settle.mover_token.clone());
+    let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        .dest_rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &settle.dest_output, &settle.dest_workspace),
+        rows.combined_fp,
+        &rows.dest_domain,
+        &rows.dest_key,
+        state.outer_gap,
+        &dest_windows,
+        Some(&from),
+    );
+    for row in &rows.source_rows {
+        event.windows.push(tiler_core::seed::EngineWindow {
+            window: WindowId(row.token.clone()),
+            output: rows.source_key.output.clone(),
+            workspace: rows.source_key.workspace.clone(),
+            rect: row.rect,
+            floating: row.floating,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: row.hints,
+        });
+    }
+    event.directional = Some(vec![
+        (rows.source_domain, rows.source_key.clone()),
+        (rows.dest_domain, rows.dest_key),
+    ]);
+    event.directional_target_outer_gap = Some(state.outer_gap);
+    event.command = CoreCommand::DragPreview {
+        window: from.0.clone(),
+        x: settle.x,
+        y: settle.y,
+        hover_prior: settle.drop_prior.clone(),
+        source: Some(rows.source_key),
+    };
+    Some(event)
+}
+
+/// Build the singleton event for an empty destination: the mover row alone
+/// homed on the destination, no pair. The Engine fresh-seeds and either
+/// projects the sole admission (preview) or commits it (drop); preview and
+/// drop share this exact shape. Fresh destinations carry current gaps, so no
+/// gap adoption runs (adoption would converge a session during preview, and
+/// the drop seeds fresh the same way).
+fn prepare_cross_singleton_event(
+    state: &mut TileLoop,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+    hint_cx: &mut HintCx,
+    preview: bool,
+) -> Option<CoreEvent> {
+    let current = observed.iter().find(|w| w.token == settle.mover_token)?;
+    let (hints, _) = min_hint_for(current, hint_cx);
+    let (dest_domain, dest_key) = workspace_domain_for(
+        &settle.dest_output,
+        &settle.dest_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    let source_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(settle.source_output.clone()),
+        workspace: tiler_core::directional::WorkspaceId(settle.source_workspace.clone()),
+    };
+    let mover = WindowId(settle.mover_token.clone());
+    // Same retained-capture substitution as the pair route: the singleton
+    // seed observation claims the mover at its tile slot, never at a
+    // traveled native frame. Hints stay fresh from the live frame.
+    let frame = settle.start_rect.unwrap_or(current.visible);
+    let fp = crate::tiling::fingerprint(&[(settle.mover_token.clone(), frame)]);
+    // Fresh destination: the seed carries current gaps, so no gap adoption
+    // runs here (adoption would converge a session during a read-only
+    // preview). The drop path below shares this shape.
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &settle.dest_output, &settle.dest_workspace),
+        fp,
+        &dest_domain,
+        &dest_key,
+        state.outer_gap,
+        &[(mover.clone(), frame, hints, false)],
+        Some(&mover),
+    );
+    event.command = if preview {
+        CoreCommand::DragPreview {
+            window: mover.0.clone(),
+            x: settle.x,
+            y: settle.y,
+            hover_prior: settle.drop_prior.clone(),
+            source: Some(source_key),
+        }
+    } else {
+        CoreCommand::DragDrop {
+            window: mover.0.clone(),
+            x: settle.x,
+            y: settle.y,
+            hover_prior: settle.drop_prior.clone(),
+            source: Some(source_key),
+        }
+    };
+    Some(event)
+}
+
 /// Drop-preview refresh for one loop wake while an accepted move gesture
 /// holds the loop: a separate owned click-through nonactivating filled
 /// target-slot surface ABOVE windows (KWin overlay-item analogue).
@@ -5114,7 +5636,10 @@ fn refresh_drag_preview(
     // Lane care: `gesture_before` prefers the stable visible (DWM
     // extended-frame) rect with a GetWindowRect-outer fallback, so either
     // lane matching means same-size (accepted review outcome; a true resize
-    // moves both).
+    // moves both). Modal truth wins first: a caption-started move loop
+    // carries move intent even through a system rescale (mixed-DPI
+    // WM_DPICHANGED), which frame comparison alone would misread as a
+    // resize and kill the preview mid-gesture.
     let probe = hwnd as isize as HWND;
     let live_frame = match observe_window(probe, me, fulls, &mut state.tokens) {
         Ok(window) => window,
@@ -5125,16 +5650,21 @@ fn refresh_drag_preview(
             return;
         }
     };
-    let moved_size = state.gesture_before.get(&hwnd).is_some_and(|before| {
-        preview_same_size(
-            before.w,
-            before.h,
-            live_frame.outer.w,
-            live_frame.outer.h,
-            live_frame.visible.w,
-            live_frame.visible.h,
-        )
-    });
+    let modal_move = state
+        .move_kind
+        .get(&hwnd)
+        .is_some_and(|kind| *kind == MoveSizeKind::Move);
+    let moved_size = modal_move
+        || state.gesture_before.get(&hwnd).is_some_and(|before| {
+            preview_same_size(
+                before.w,
+                before.h,
+                live_frame.outer.w,
+                live_frame.outer.h,
+                live_frame.visible.w,
+                live_frame.visible.h,
+            )
+        });
     if !moved_size {
         hide_preview(state, "resize");
         state.preview_bound.remove(&hwnd);
@@ -5161,6 +5691,28 @@ fn refresh_drag_preview(
         hide_preview(state, "allowlist-changed");
         state.preview_bound.remove(&hwnd);
         state.preview_dead.insert(hwnd);
+        return;
+    }
+    // Cross-output preview: the pointer left the START output. The pointer
+    // output's current view scopes resolution (occupied pair route or empty
+    // singleton projection); the same-output path below stays untouched.
+    if let Some(dest) = output_for_point(areas, x, y)
+        && dest != start.output
+    {
+        refresh_cross_drag_preview(
+            state,
+            me,
+            fulls,
+            areas,
+            hwnd,
+            x,
+            y,
+            &dest,
+            &start,
+            start_x,
+            start_y,
+            &live_frame,
+        );
         return;
     }
     // Fresh invalidation facts against the START binding: identity, tag,
@@ -8182,6 +8734,16 @@ fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySu
             slot.borrow_mut().apply += 1;
         });
         let _ = input;
+        if let Some((readback_ok, mismatched)) =
+            INJECTED_APPLY.with(|slot| slot.borrow_mut().pop_front())
+        {
+            return Some(ApplySummary {
+                applied: 0,
+                mismatched,
+                readback_ok,
+                veto: None,
+            });
+        }
         return Some(ApplySummary {
             applied: 0,
             mismatched: 0,
@@ -10194,6 +10756,56 @@ fn keyboard_tick(
                             "origin": origin.token,
                         }),
                     );
+                    continue;
+                }
+                // Multi-output directional target (REQ-OUT-01..03, REQ-MOV-08):
+                // window-based FULL-rectangle selection into the destination
+                // output's current view. `None` keeps the local path below
+                // (no candidate, floating target, vertical focus, or an
+                // unreadable destination which must never refuse an
+                // otherwise valid local command).
+                let is_focus = intent.op == SnapOp::Focus;
+                let mover_rect = rows.iter().find(|r| r.token == from).map(|r| r.rect);
+                let directional_target = mover_rect.and_then(|rect| {
+                    resolve_directional_target(
+                        state,
+                        areas,
+                        &loc.output,
+                        intent.direction,
+                        &rect,
+                        is_focus,
+                    )
+                });
+                if let Some((target_output, target_workspace)) = directional_target {
+                    let outcome = run_directional_cross(
+                        state,
+                        me,
+                        fulls,
+                        areas,
+                        &observed,
+                        &retained,
+                        &mut hint_cx,
+                        &loc,
+                        &home,
+                        &member_key,
+                        &from,
+                        &rows,
+                        &target_output,
+                        &target_workspace,
+                        &intent,
+                        &origin,
+                        tick,
+                        &correlation,
+                        correlation.as_str(),
+                        continued,
+                        skipped,
+                        subject_maximized,
+                        subject_fullscreen,
+                    );
+                    if outcome != "focus-ok" && outcome != "move-applied" {
+                        state.snap_advance = None;
+                    }
+                    // `run_directional_cross` logs the full action line.
                     continue;
                 }
                 let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
@@ -14024,13 +14636,14 @@ fn output_for_rect(areas: &[MonitorArea], rect: &Rect) -> String {
 }
 
 fn output_for_point(areas: &[MonitorArea], x: i32, y: i32) -> Option<String> {
-    for area in areas {
-        let r = area.full;
-        if x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h {
-            return Some(area.device.clone());
-        }
-    }
-    None
+    let outputs: Vec<crate::workspace_owner::DirectionalOutput> = areas
+        .iter()
+        .map(|area| crate::workspace_owner::DirectionalOutput {
+            id: area.device.clone(),
+            full: area.full,
+        })
+        .collect();
+    crate::workspace_owner::output_at_point(&outputs, x, y)
 }
 
 fn foreground_output(areas: &[MonitorArea]) -> Option<String> {
@@ -14094,6 +14707,2301 @@ fn workspace_domain_for(
     Some(crate::workspace_owner::workspace_domain(
         output, workspace, bounds, inner_gap,
     ))
+}
+
+/// Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08).
+///
+/// Exhausted directional tiled moves cross all four directions into the
+/// selected adjacent output's current workspace; exhausted horizontal focus
+/// crosses Left/Right only (vertical stays local). Selection reuses the
+/// shared window-based FULL-rectangle rule; domain bounds use per-output work
+/// areas with the live outer-gap inset; topology uses FULL rectangles. Core
+/// rects are consumed in DPI-aware physical coordinates with no rescaling.
+///
+/// Fences (lifetime/owner/scope/recovery/geometry/visibility/current-view)
+/// are complete: snapshot at pair build, re-verified live before any
+/// membership change or native effect. Failed half-applied operations stop
+/// narrowly with no replay and no permanent disabling; the retained Engine
+/// plan stands and the next observation converges.
+/// FULL-rectangle outputs for the shared window selector.
+fn directional_outputs_from_areas(
+    areas: &[MonitorArea],
+) -> Vec<crate::workspace_owner::DirectionalOutput> {
+    areas
+        .iter()
+        .map(|area| crate::workspace_owner::DirectionalOutput {
+            id: area.device.clone(),
+            full: area.full,
+        })
+        .collect()
+}
+
+/// Resolve the cross-output target for one directional intent.
+///
+/// Returns `None` for the local path: no candidate, floating target,
+/// vertical focus which never crosses, or unreadable/unknown destination
+/// topology. Local-first semantics require this: an unreadable destination
+/// must never refuse an otherwise valid local command; the exhausted edge
+/// then reports the honest local noop.
+fn resolve_directional_target(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    source_output: &str,
+    direction: tiler_core::directional::Direction,
+    mover_rect: &Rect,
+    is_focus: bool,
+) -> Option<(String, String)> {
+    if is_focus && !crate::workspace_owner::directional_focus_crosses(direction) {
+        return None;
+    }
+    let outputs = directional_outputs_from_areas(areas);
+    let selected = crate::workspace_owner::select_directional_target(
+        direction,
+        source_output,
+        mover_rect,
+        &outputs,
+    )
+    .ok()??;
+    if selected == source_output {
+        return None;
+    }
+    let target_workspace = state.workspaces.active_id(&selected)?;
+    // Modes beyond tiled stay out of scope: fall back to the local path so
+    // an exhausted edge reports the honest local noop instead of crossing
+    // into a floating layout.
+    if !state.workspaces.is_tiled(&selected, &target_workspace) {
+        return None;
+    }
+    Some((selected, target_workspace))
+}
+
+/// Snapshot the directional fences at pair-build time, including the live
+/// FULL rectangles, inset domain bounds, and owner binding so later tails
+/// detect topology or binding drift.
+#[allow(clippy::too_many_arguments)]
+fn directional_snapshot(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    source_output: &str,
+    source_workspace: &str,
+    target_output: &str,
+    target_workspace: &str,
+    direction: tiler_core::directional::Direction,
+    overlay_maximized: bool,
+    overlay_fullscreen: bool,
+) -> Option<crate::workspace_owner::DirectionalFenceSnapshot> {
+    let source_area = areas.iter().find(|a| a.device == source_output)?;
+    let target_area = areas.iter().find(|a| a.device == target_output)?;
+    let source_bounds = tiling_domain_bounds_with(source_area.work, state.outer_gap)?;
+    let target_bounds = tiling_domain_bounds_with(target_area.work, state.outer_gap)?;
+    Some(crate::workspace_owner::DirectionalFenceSnapshot {
+        inner_gap: state.inner_gap,
+        outer_gap: state.outer_gap,
+        source_output: source_output.to_owned(),
+        source_workspace: source_workspace.to_owned(),
+        target_output: target_output.to_owned(),
+        target_workspace: target_workspace.to_owned(),
+        source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
+        target_tiled: state.workspaces.is_tiled(target_output, target_workspace),
+        direction,
+        overlay_maximized,
+        overlay_fullscreen,
+        source_full: source_area.full,
+        target_full: target_area.full,
+        source_bounds,
+        target_bounds,
+        owner: state.owner.as_str().to_owned(),
+        generation: state.generation.as_str().to_owned(),
+    })
+}
+
+/// Read the live directional fences with fresh native state at a meaningful
+/// boundary (before Engine dispatch, before actuation). Scope, lifetime,
+/// overlay, views, gaps, modes, topology, and owner binding are all
+/// re-read here; callers pass only `membership_ok`, whose semantics differ
+/// before and after the project membership moves.
+fn directional_live(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    snapshot: &crate::workspace_owner::DirectionalFenceSnapshot,
+    mover_key: &crate::workspace::WindowKey,
+    membership_ok: bool,
+    overlay_maximized: bool,
+    overlay_fullscreen: bool,
+) -> crate::workspace_owner::DirectionalFenceLive {
+    // The direction selects the candidate only; fence evaluation is
+    // direction-free, so the drag-drop snapshot carries the shared
+    // computation (single mapping in `drag_snapshot_for_directional`).
+    fence_live_impl(
+        state,
+        areas,
+        &crate::workspace_owner::drag_snapshot_for_directional(snapshot),
+        mover_key,
+        membership_ok,
+        overlay_maximized,
+        overlay_fullscreen,
+    )
+}
+
+/// Read the live drag-drop fences: same shared computation as
+/// [`directional_live`] over the pointer-resolved (non-adjacency) snapshot.
+fn drag_drop_live(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    snapshot: &crate::workspace_owner::DragDropFenceSnapshot,
+    mover_key: &crate::workspace::WindowKey,
+    membership_ok: bool,
+    overlay_maximized: bool,
+    overlay_fullscreen: bool,
+) -> crate::workspace_owner::DirectionalFenceLive {
+    fence_live_impl(
+        state,
+        areas,
+        snapshot,
+        mover_key,
+        membership_ok,
+        overlay_maximized,
+        overlay_fullscreen,
+    )
+}
+
+/// Shared live-fence reads for directional and pointer-drop pairs.
+fn fence_live_impl(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    snapshot: &crate::workspace_owner::DragDropFenceSnapshot,
+    mover_key: &crate::workspace::WindowKey,
+    membership_ok: bool,
+    overlay_maximized: bool,
+    overlay_fullscreen: bool,
+) -> crate::workspace_owner::DirectionalFenceLive {
+    let source_active = state.workspaces.active_id(&snapshot.source_output);
+    let target_active = state.workspaces.active_id(&snapshot.target_output);
+    let lifetime_ok = state.member_tags.get(mover_key).is_some_and(|stored| {
+        crate::workspace_owner::visible_lifetime_ok(
+            stored,
+            live_member_tag(mover_key.hwnd).as_deref(),
+        )
+    });
+    let scope_ok = state.member_identity.get(mover_key).is_some_and(|stored| {
+        crate::tiling::scope_allows(&state.scope, &stored.exe_path)
+            && hosted_gate_allows(
+                &stored.exe_path,
+                mover_key.hwnd,
+                stored.pid,
+                &state.scope_hosts,
+            )
+    });
+    let topology_ok = areas
+        .iter()
+        .find(|a| a.device == snapshot.source_output)
+        .is_some_and(|area| {
+            area.full == snapshot.source_full
+                && tiling_domain_bounds_with(area.work, state.outer_gap)
+                    .is_some_and(|bounds| bounds == snapshot.source_bounds)
+        })
+        && areas
+            .iter()
+            .find(|a| a.device == snapshot.target_output)
+            .is_some_and(|area| {
+                area.full == snapshot.target_full
+                    && tiling_domain_bounds_with(area.work, state.outer_gap)
+                        .is_some_and(|bounds| bounds == snapshot.target_bounds)
+            });
+    let owner_ok = state
+        .engine
+        .owner()
+        .is_some_and(|owner| owner.as_str() == snapshot.owner.as_str())
+        && state
+            .engine
+            .generation()
+            .is_some_and(|generation| generation.as_str() == snapshot.generation.as_str());
+    crate::workspace_owner::DirectionalFenceLive {
+        inner_gap: state.inner_gap,
+        outer_gap: state.outer_gap,
+        source_tiled: state
+            .workspaces
+            .is_tiled(&snapshot.source_output, &snapshot.source_workspace),
+        target_tiled: state
+            .workspaces
+            .is_tiled(&snapshot.target_output, &snapshot.target_workspace),
+        source_is_active: source_active.as_deref() == Some(snapshot.source_workspace.as_str()),
+        target_is_active: target_active.as_deref() == Some(snapshot.target_workspace.as_str()),
+        topology_ok,
+        scope_ok,
+        lifetime_ok,
+        membership_ok,
+        overlay_maximized,
+        overlay_fullscreen,
+        owner_ok,
+    }
+}
+
+/// Verify the cross-output arrival after a combined geometry apply: the
+/// mover's desired Engine rect must read back on the destination monitor.
+/// Uses the just-published managed observation (`state.stable`, refreshed by
+/// the apply's internal readback), never the setter result. Physical
+/// coordinates throughout; no rescaling.
+fn directional_arrival_verified(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    reply: &CoreReply,
+    mover_token: &str,
+    mover_hwnd: u64,
+    target_output: &str,
+) -> bool {
+    let Some(writes) = crate::workspace_owner::planned_writes(reply) else {
+        return false;
+    };
+    let Some(desired) = writes.iter().find(|w| w.window.0 == mover_token) else {
+        return false;
+    };
+    let effective = if desired.overconstrained {
+        let hints = state
+            .hint_logged
+            .get(mover_token)
+            .copied()
+            .unwrap_or(WindowSizeHints::none());
+        crate::tiling::overconstrained_effective(desired.rect, hints)
+    } else {
+        desired.rect
+    };
+    let Some(visible) = state.stable.get(&mover_hwnd).copied() else {
+        return false;
+    };
+    if visible != effective {
+        return false;
+    }
+    output_for_rect(areas, &visible) == target_output
+}
+
+/// Run one resolved cross-output directional intent through the retained
+/// Engine pair route with complete fences and narrow recovery.
+///
+/// The caller already resolved `(target_output, target_workspace)` as the
+/// destination current view. This assembles the target current-view rows,
+/// builds the reciprocal pair event (`cross_output_transfer: true`) on a
+/// candidate Engine clone, lets core decide local-first vs cross (sole-root
+/// included), then actuates: moves commit project membership and the
+/// candidate Engine together only after the fresh topology, the combined
+/// apply, its readback, and the arrival proof verify, before following
+/// focus; horizontal focus actuates
+/// only (no geometry/membership writes, empty targets refuse via core).
+/// Failures stop narrowly with no replay and no permanent disabling; the
+/// retained Engine plan stands and the next observation converges. Returns
+/// the snap outcome token and logs the full action line.
+#[allow(clippy::too_many_arguments)]
+fn run_directional_cross(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    hint_cx: &mut HintCx,
+    loc: &crate::workspace::MemberLoc,
+    home: &crate::workspace::MemberLoc,
+    member_key: &crate::workspace::WindowKey,
+    from_token: &str,
+    source_rows: &[crate::workspace_owner::OwnerRow],
+    target_output: &str,
+    target_workspace: &str,
+    intent: &crate::snapkey::QueuedIntent,
+    origin: &crate::snapkey::SnapOrigin,
+    tick: u64,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    continued: bool,
+    skipped: Vec<(String, String)>,
+    subject_maximized: bool,
+    subject_fullscreen: bool,
+) -> &'static str {
+    let log_path = state.log_path.clone();
+    let is_focus = intent.op == crate::snapkey::SnapOp::Focus;
+    let log_snap = |outcome: &'static str, extra: serde_json::Value| {
+        let mut line = serde_json::Map::new();
+        line.insert("event".to_owned(), serde_json::json!("snap"));
+        line.insert("tick".to_owned(), serde_json::json!(tick));
+        line.insert("correlation".to_owned(), serde_json::json!(correlation_str));
+        line.insert("op".to_owned(), serde_json::json!(intent.op.as_str()));
+        line.insert(
+            "direction".to_owned(),
+            serde_json::json!(crate::snapkey::direction_name(intent.direction)),
+        );
+        line.insert("edge".to_owned(), serde_json::json!(intent.edge.as_str()));
+        line.insert("disposition".to_owned(), serde_json::json!("consumed"));
+        line.insert("outcome".to_owned(), serde_json::json!(outcome));
+        line.insert("origin".to_owned(), serde_json::json!(origin.token));
+        if let serde_json::Value::Object(map) = extra {
+            for (k, v) in map {
+                line.insert(k, v);
+            }
+        }
+        log_json_at(&log_path, serde_json::Value::Object(line));
+    };
+    // Target current-view rows (hidden snapshots included so the planned
+    // mutation reuses topology instead of remove/reseed). Incomplete defers
+    // with retained state, never a falsely complete pair.
+    let Some(target_rows) = assemble_domain_rows(
+        state,
+        target_output,
+        target_workspace,
+        observed,
+        retained,
+        "directional",
+        correlation_str,
+        hint_cx,
+    ) else {
+        log_snap("deferred", serde_json::json!({"window": from_token}));
+        return "deferred";
+    };
+    let Some((source_domain_base, source_key)) = workspace_domain_for(
+        &loc.output,
+        &loc.workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        log_snap("unknown-output", serde_json::json!({"window": from_token}));
+        return "unknown-output";
+    };
+    let Some((target_domain_base, target_key)) = workspace_domain_for(
+        target_output,
+        target_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        log_snap("unknown-output", serde_json::json!({"window": from_token}));
+        return "unknown-output";
+    };
+    // The pair re-derives live domain values so a stale view cannot ride.
+    let ((source_domain, source_key), (target_domain, target_key)) =
+        crate::workspace_owner::directional_pair_with_adjacency(
+            (source_domain_base, source_key),
+            (target_domain_base, target_key),
+            intent.direction,
+        );
+    let Some(snapshot) = directional_snapshot(
+        state,
+        areas,
+        &loc.output,
+        &loc.workspace,
+        target_output,
+        target_workspace,
+        intent.direction,
+        subject_maximized,
+        subject_fullscreen,
+    ) else {
+        log_snap("unknown-output", serde_json::json!({"window": from_token}));
+        return "unknown-output";
+    };
+    if !state.member_identity.contains_key(member_key) {
+        log_snap("unmanaged", serde_json::json!({"window": from_token}));
+        return "unmanaged";
+    }
+    // Fresh user-safety gate before any Engine or project mutation: a
+    // vetoing foreground or an elevated foreground that arrived during
+    // validation authorizes no dispatch. Managed overlays bypass like a
+    // managed maximize.
+    if suspend_read(state, me, fulls).veto.block {
+        log_snap("suspended", serde_json::json!({"window": from_token}));
+        return "suspended";
+    }
+    if foreground_elevated(me) {
+        log_snap(
+            "elevated-foreground",
+            serde_json::json!({"window": from_token}),
+        );
+        return "elevated-foreground";
+    }
+    // All fences fresh at this boundary: membership still homes on the
+    // chord-time home, overlay re-read live, scope/lifetime/topology/owner
+    // recomputed inside `directional_live`.
+    let membership_ok = state
+        .workspaces
+        .member_loc(member_key)
+        .is_some_and(|fresh| fresh.output == home.output && fresh.workspace == home.workspace);
+    let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
+    let live = directional_live(
+        state,
+        areas,
+        &snapshot,
+        member_key,
+        membership_ok,
+        live_max,
+        live_full_opt.unwrap_or(subject_fullscreen),
+    );
+    if let Some(outcome) = crate::workspace_owner::directional_fences_hold(&snapshot, &live) {
+        if outcome == "identity-changed" {
+            drop_member_state(state, member_key);
+        }
+        log_snap(outcome, serde_json::json!({"window": from_token}));
+        return outcome;
+    }
+    // Candidate Engine for the whole pair route: the focus-MRU sync, both
+    // gap adopts, and the pair dispatch below all run on the clone. The
+    // authoritative Engine publishes once, only after the verified tails
+    // commit. A refused topology/write/readback/arrival/assignment (or a
+    // refused focus fence) discards the candidate, so source membership and
+    // retained Engine placement survive with no follow-focus and no stale
+    // MRU mutation.
+    let mut candidate = state.engine.clone();
+    // Focus intents remember the live project MRU on the destination Engine
+    // session before planning: external native focus moves advance the
+    // project MRU without touching Engine remembered focus, and the plan
+    // must aim at the fresh target rather than a stale eligible one. A
+    // failed sync (unknown session/member) simply leaves the stale target
+    // for the existing eligible-verify below; pair assembly refuses
+    // honestly when the destination itself is unusable.
+    if is_focus {
+        let fresh_tokens: HashSet<String> = observed.iter().map(|w| w.token.clone()).collect();
+        let target_members = state
+            .workspaces
+            .workspace_members(target_output, target_workspace);
+        let eligible = state.workspaces.eligible_focus_set(
+            &target_members,
+            &state.member_tokens,
+            &fresh_tokens,
+        );
+        if let Some(mru) = crate::workspace_owner::directional_focus_target(
+            &state.workspaces,
+            target_output,
+            target_workspace,
+            &eligible,
+        ) && let Some(token) = state.member_tokens.get(&mru).cloned()
+        {
+            let _ = candidate.remember_domain_focus(&target_key, &WindowId(token));
+        }
+    }
+    // Live gap edits adopt on both domains first so the pair convergence
+    // never straddles gap generations.
+    {
+        let outer_gap = state.outer_gap;
+        let mover = WindowId(from_token.to_owned());
+        let source_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = source_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let source_fp = crate::tiling::fingerprint(
+            &source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_on_candidate(
+            &mut candidate,
+            state,
+            &source_domain,
+            &source_key,
+            outer_gap,
+            &source_windows,
+            Some(&mover),
+            revision_for(state, &loc.output, &loc.workspace),
+            source_fp,
+            correlation,
+        );
+        let target_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = target_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let target_fp = crate::tiling::fingerprint(
+            &target_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_on_candidate(
+            &mut candidate,
+            state,
+            &target_domain,
+            &target_key,
+            outer_gap,
+            &target_windows,
+            None,
+            revision_for(state, target_output, target_workspace),
+            target_fp,
+            correlation,
+        );
+    }
+    // Combined two-domain observation: source rows homed on the source key,
+    // target rows homed on the target key. Fingerprint covers both so stale
+    // target rects cannot ride.
+    let combined_fp = {
+        let mut pairs: Vec<(String, Rect)> = source_rows
+            .iter()
+            .chain(target_rows.iter())
+            .map(|r| (r.token.clone(), r.rect))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        crate::tiling::fingerprint(&pairs)
+    };
+    let from = WindowId(from_token.to_owned());
+    let source_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = source_rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &loc.output, &loc.workspace),
+        combined_fp,
+        &source_domain,
+        &source_key,
+        state.outer_gap,
+        &source_windows,
+        Some(&from),
+    );
+    for row in &target_rows {
+        event.windows.push(tiler_core::seed::EngineWindow {
+            window: WindowId(row.token.clone()),
+            output: target_key.output.clone(),
+            workspace: target_key.workspace.clone(),
+            rect: row.rect,
+            floating: row.floating,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: row.hints,
+        });
+    }
+    event.directional = Some(vec![
+        (source_domain.clone(), source_key.clone()),
+        (target_domain.clone(), target_key.clone()),
+    ]);
+    event.directional_target_outer_gap = Some(state.outer_gap);
+    let direction = crate::snapkey::direction_name(intent.direction).to_owned();
+    event.command = match intent.op {
+        crate::snapkey::SnapOp::Focus => CoreCommand::Focus {
+            window: from.0.clone(),
+            direction,
+            cross_output_transfer: true,
+            float_subject: false,
+        },
+        crate::snapkey::SnapOp::Move => CoreCommand::Move {
+            window: from.0.clone(),
+            direction,
+            cross_output_transfer: true,
+            same_axis_move: same_axis_move_for(state.settings_live.as_ref()),
+        },
+    };
+    let reply = {
+        stamp_engine_event(state, &mut event);
+        candidate.handle(&event)
+    };
+    if is_focus {
+        let CoreReply::FocusDirectional(plan) = &reply else {
+            let outcome = reply_outcome(&reply);
+            log_snap(
+                outcome,
+                serde_json::json!({"window": from.0, "continued": continued}),
+            );
+            return outcome;
+        };
+        if plan.cross_operation.is_none() {
+            // Local won inside the pair: retain focus state only after the
+            // local target is verified foreground, just like cross focus.
+            let to = plan.to_window.0.clone();
+            let actuation = actuate_focus(state, me, fulls, observed, retained, &to);
+            let outcome = actuation.outcome;
+            if outcome == "focus-ok" {
+                state.engine = candidate;
+                note_focus_advance(state, observed, retained, &to);
+            }
+            log_snap(
+                outcome,
+                serde_json::json!({
+                    "window": from.0,
+                    "continued": continued,
+                    "setter_accepted": actuation.setter_accepted,
+                    "prime_inserted": actuation.prime_inserted,
+                    "attach_ok": actuation.attach_ok,
+                    "eventual": actuation.eventual,
+                    "deferred": actuation.deferred,
+                }),
+            );
+            return outcome;
+        }
+        // Cross focus: no geometry or membership writes. The Engine plan
+        // carries the authoritative remembered target; the adapter verifies
+        // it names a known member that is still eligible-visible, then
+        // actuates and syncs the project MRU to the Engine choice. A project
+        // MRU that disagrees never silently vetoes the Engine target.
+        let fresh_tokens: HashSet<String> = observed.iter().map(|w| w.token.clone()).collect();
+        let target_members = state
+            .workspaces
+            .workspace_members(target_output, target_workspace);
+        let eligible = state.workspaces.eligible_focus_set(
+            &target_members,
+            &state.member_tokens,
+            &fresh_tokens,
+        );
+        let to_token = plan.to_window.0.clone();
+        let Some(target_key) = state
+            .member_tokens
+            .iter()
+            .find(|(_, token)| token.as_str() == to_token.as_str())
+            .map(|(key, _)| key.clone())
+        else {
+            log_snap("unchanged", serde_json::json!({"window": from.0}));
+            return "unchanged";
+        };
+        if !eligible.contains(&target_key) {
+            log_snap("unchanged", serde_json::json!({"window": from.0}));
+            return "unchanged";
+        }
+        // Fresh fences before the single actuation (no membership change is
+        // involved, so no Engine/project disagreement risk).
+        let membership_ok = state
+            .workspaces
+            .member_loc(member_key)
+            .is_some_and(|fresh| fresh.output == home.output && fresh.workspace == home.workspace);
+        let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
+        let live = directional_live(
+            state,
+            areas,
+            &snapshot,
+            member_key,
+            membership_ok,
+            live_max,
+            live_full_opt.unwrap_or(subject_fullscreen),
+        );
+        if let Some(outcome) = crate::workspace_owner::directional_fences_hold(&snapshot, &live) {
+            if outcome == "identity-changed" {
+                drop_member_state(state, member_key);
+            }
+            log_snap(outcome, serde_json::json!({"window": from.0}));
+            return outcome;
+        }
+        if suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
+            log_snap("focus-skipped-fence", serde_json::json!({"window": from.0}));
+            return "focus-skipped-fence";
+        }
+        let actuation = actuate_focus(state, me, fulls, observed, retained, &to_token);
+        let outcome = actuation.outcome;
+        if outcome == "focus-ok" {
+            // Commit the candidate (MRU sync plus Engine remembered focus)
+            // only with the verified actuation: a refused fence or a failed
+            // setter above already returned with the candidate discarded, so
+            // no stale MRU mutation survives.
+            state.engine = candidate;
+            note_focus_advance(state, observed, retained, &to_token);
+            state.workspaces.note_foreground(&target_key);
+        }
+        log_snap(
+            outcome,
+            serde_json::json!({
+                "window": from.0,
+                "continued": continued,
+                "setter_accepted": actuation.setter_accepted,
+                "prime_inserted": actuation.prime_inserted,
+                "attach_ok": actuation.attach_ok,
+                "eventual": actuation.eventual,
+                "deferred": actuation.deferred,
+                "cross_output": true,
+            }),
+        );
+        return outcome;
+    }
+    let CoreReply::MoveDirectional(plan) = &reply else {
+        let outcome = reply_outcome(&reply);
+        log_snap(
+            outcome,
+            serde_json::json!({"window": from.0, "continued": continued}),
+        );
+        return outcome;
+    };
+    if plan.cross.is_none() {
+        // Local won inside the pair: publish the candidate (same commit the
+        // direct dispatch made) then apply source geometry only.
+        state.engine = candidate;
+        let writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
+        let summary = apply_geometry(
+            state,
+            ApplyInput {
+                me,
+                fulls,
+                reply: &reply,
+                observed,
+                op: "move",
+                tick,
+                correlation: correlation_str,
+                skipped,
+                writable: &writable,
+                output_token: state.workspaces.output_token(&loc.output),
+                workspace_token: state
+                    .workspaces
+                    .workspace_token(&loc.output, &loc.workspace),
+                revision: revision_for(state, &loc.output, &loc.workspace),
+            },
+        );
+        let outcome = match summary {
+            Some(s) if !s.readback_ok => "move-unverified",
+            Some(s) if s.mismatched > 0 => "move-mismatch",
+            Some(s) if s.applied > 0 => "move-applied",
+            Some(_) => "move-noop",
+            None => reply_outcome(&reply),
+        };
+        log_snap(
+            outcome,
+            serde_json::json!({"window": from.0, "continued": continued}),
+        );
+        return outcome;
+    }
+    // Cross move: the pair plan sits on the discarded-on-refusal candidate,
+    // so the project membership commits only after the fresh topology, the
+    // single combined apply, its readback, and the arrival proof all verify.
+    // The authoritative Engine publishes with that same commit, exactly once.
+    // Per-window write gates (lifetime/scope/pid/veto) still run inside the
+    // single apply below; a refusal keeps source membership and retained
+    // Engine placement with no follow-focus and no replay.
+    let fresh_snapshot = crate::workspace_owner::drag_snapshot_for_directional(&snapshot);
+    let Some(fresh_areas) = fresh_cross_areas() else {
+        log_snap("move-unverified", serde_json::json!({"window": from.0}));
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "move-unverified";
+    };
+    if !cross_topology_fresh(&fresh_snapshot, &fresh_areas) {
+        log_snap("move-unverified", serde_json::json!({"window": from.0}));
+        let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "move-unverified";
+    }
+    let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+    // One union-writable combined apply: source survivors reflow and the
+    // target places the arrival together, in DPI-aware physical coordinates
+    // with no rescaling. A single pass means a single internal
+    // observe/publish, never two mid-operation publishes. The union is read
+    // pre-commit (the mover rides the source set while homed on the source);
+    // per-window freshness gates inside the apply still decide every write.
+    let mut union_writable = writable_tokens(state, &loc.output, &loc.workspace, observed);
+    union_writable.extend(writable_tokens(
+        state,
+        target_output,
+        target_workspace,
+        observed,
+    ));
+    let summary = apply_geometry(
+        state,
+        ApplyInput {
+            me,
+            fulls: &fresh_fulls,
+            reply: &reply,
+            observed,
+            op: "move",
+            tick,
+            correlation: correlation_str,
+            skipped,
+            writable: &union_writable,
+            output_token: state.workspaces.output_token(&loc.output),
+            workspace_token: state
+                .workspaces
+                .workspace_token(&loc.output, &loc.workspace),
+            revision: revision_for(state, &loc.output, &loc.workspace),
+        },
+    );
+    let Some(summary) = summary else {
+        log_snap("move-unverified", serde_json::json!({"window": from.0}));
+        return "move-unverified";
+    };
+    if !summary.readback_ok {
+        log_snap("move-unverified", serde_json::json!({"window": from.0}));
+        return "move-unverified";
+    }
+    if summary.mismatched > 0 {
+        log_snap("move-mismatch", serde_json::json!({"window": from.0}));
+        return "move-mismatch";
+    }
+    // Required arrival proof before claiming success: the mover must read
+    // back at its planned rect on the destination monitor. A failed proof
+    // reports unverified with no commit, no revert, and no replay; the next
+    // observation converges.
+    if !directional_arrival_verified(
+        state,
+        &fresh_areas,
+        &reply,
+        &from.0,
+        member_key.hwnd,
+        target_output,
+    ) {
+        log_snap("move-unverified", serde_json::json!({"window": from.0}));
+        return "move-unverified";
+    }
+    // Verified: commit both authorities once, then follow focus.
+    if !state
+        .workspaces
+        .assign(member_key.clone(), target_output, target_workspace, false)
+    {
+        log_snap("unverified", serde_json::json!({"window": from.0}));
+        return "unverified";
+    }
+    let source_now = state
+        .workspaces
+        .workspace_members(&loc.output, &loc.workspace);
+    let target_now = state
+        .workspaces
+        .workspace_members(target_output, target_workspace);
+    if !crate::workspace_owner::verify_directional_transfer(member_key, &source_now, &target_now) {
+        log_snap("unverified", serde_json::json!({"window": from.0}));
+        return "unverified";
+    }
+    state.engine = candidate;
+    // Follow focus without visibility hiding: the arrival is already in the
+    // destination current view, so only foreground the mover.
+    let actuation = actuate_focus(state, me, &fresh_fulls, observed, retained, &from.0);
+    if actuation.outcome != "focus-ok" {
+        log_snap(
+            actuation.outcome,
+            serde_json::json!({
+                "window": from.0,
+                "continued": continued,
+                "setter_accepted": actuation.setter_accepted,
+                "prime_inserted": actuation.prime_inserted,
+                "attach_ok": actuation.attach_ok,
+                "eventual": actuation.eventual,
+                "deferred": actuation.deferred,
+                "cross_output": true,
+            }),
+        );
+        return actuation.outcome;
+    }
+    note_focus_advance(state, observed, retained, &from.0);
+    state.workspaces.note_foreground(member_key);
+    // Fresh arrival: mover present on target, absent on source, and the
+    // Engine plan verified structurally inside `handle_engine_event`.
+    let source_now = state
+        .workspaces
+        .workspace_members(&loc.output, &loc.workspace);
+    let target_now = state
+        .workspaces
+        .workspace_members(target_output, target_workspace);
+    if !crate::workspace_owner::verify_directional_transfer(member_key, &source_now, &target_now) {
+        log_snap("unverified", serde_json::json!({"window": from.0}));
+        return "unverified";
+    }
+    log_snap(
+        "move-applied",
+        serde_json::json!({
+            "window": from.0,
+            "continued": continued,
+            "setter_accepted": actuation.setter_accepted,
+            "prime_inserted": actuation.prime_inserted,
+            "attach_ok": actuation.attach_ok,
+            "eventual": actuation.eventual,
+            "deferred": actuation.deferred,
+            "cross_output": true,
+        }),
+    );
+    "move-applied"
+}
+
+/// Cross-output drag-drop settle (REQ-MOU-03): native title-bar and Win-drag
+/// releases landing on another output join that output's CURRENT workspace at
+/// the pointer point through the shared Engine drop resolver, and the source
+/// membership is removed. The destination is the output under the pointer at
+/// release (FULL-rectangle containment, never the directional adjacency
+/// selector), so sideways, stacked, and negative-coordinate arrangements all
+/// behave alike. The destination view is never hidden or switched: only
+/// tiled geometry writes plus mover follow-focus run.
+///
+/// Producer split (REQ-DRAG-07): a native title-bar frame may physically move
+/// before END, so domain decisions use retained project membership and the
+/// pointer point, never the live frame monitor. A Win-drag keeps the source
+/// stationary with a moving render preview; the drop runs only after the
+/// proven preview-hide acknowledgement with fresh revalidation.
+struct CrossDragSettle {
+    mover_token: String,
+    member_key: crate::workspace::WindowKey,
+    source_output: String,
+    source_workspace: String,
+    dest_output: String,
+    dest_workspace: String,
+    x: i32,
+    y: i32,
+    drop_prior: Option<tiler_core::session::DragHoverPrior>,
+    producer: String,
+    /// PRE-gesture allocation of the mover (`gesture_before` at END time):
+    /// the authoritative source-capture rectangle for a natively moved
+    /// frame. `None` keeps the observed frame (unavailable START capture).
+    start_rect: Option<Rect>,
+}
+
+/// Drop-destination resolution for one move-drop point. `SameOutput` keeps
+/// the local route; `Cross` carries the pointer output plus its current
+/// workspace; `Refused` carries the honest outcome for unplaceable points
+/// (outside every output, unknown view, floating destination, unreadable
+/// topology, or inside the monitor but outside the inset work area).
+#[derive(Debug, PartialEq, Eq)]
+enum DropDestination {
+    SameOutput,
+    Cross { output: String, workspace: String },
+    Refused(&'static str),
+}
+
+fn resolve_drop_destination(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    source_output: &str,
+    x: i32,
+    y: i32,
+) -> DropDestination {
+    let Some(dest) = output_for_point(areas, x, y) else {
+        return DropDestination::Refused("outside-output");
+    };
+    if dest == source_output {
+        return DropDestination::SameOutput;
+    }
+    let Some(workspace) = state.workspaces.active_id(&dest) else {
+        return DropDestination::Refused("no-view");
+    };
+    if !state.workspaces.is_tiled(&dest, &workspace) {
+        return DropDestination::Refused("floating-dest");
+    }
+    let Some((domain, _)) =
+        workspace_domain_for(&dest, &workspace, areas, state.inner_gap, state.outer_gap)
+    else {
+        return DropDestination::Refused("unknown-output");
+    };
+    if !crate::tiling::drop_point_in_domain(
+        domain.bounds.x,
+        domain.bounds.y,
+        domain.bounds.w,
+        domain.bounds.h,
+        x,
+        y,
+    ) {
+        return DropDestination::Refused("outside-work-area");
+    }
+    DropDestination::Cross {
+        output: dest,
+        workspace,
+    }
+}
+
+/// Snapshot the drag-drop fences for a resolved cross settle, including the
+/// live FULL rectangles, inset domain bounds, and owner binding so later
+/// tails detect topology or binding drift. `None` on unreadable topology.
+fn snapshot_cross_drag(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    settle: &CrossDragSettle,
+    overlay_maximized: bool,
+    overlay_fullscreen: bool,
+) -> Option<crate::workspace_owner::DragDropFenceSnapshot> {
+    let source_area = areas.iter().find(|a| a.device == settle.source_output)?;
+    let target_area = areas.iter().find(|a| a.device == settle.dest_output)?;
+    let source_bounds = tiling_domain_bounds_with(source_area.work, state.outer_gap)?;
+    let target_bounds = tiling_domain_bounds_with(target_area.work, state.outer_gap)?;
+    Some(crate::workspace_owner::DragDropFenceSnapshot {
+        inner_gap: state.inner_gap,
+        outer_gap: state.outer_gap,
+        source_output: settle.source_output.clone(),
+        source_workspace: settle.source_workspace.clone(),
+        target_output: settle.dest_output.clone(),
+        target_workspace: settle.dest_workspace.clone(),
+        source_tiled: state
+            .workspaces
+            .is_tiled(&settle.source_output, &settle.source_workspace),
+        target_tiled: state
+            .workspaces
+            .is_tiled(&settle.dest_output, &settle.dest_workspace),
+        overlay_maximized,
+        overlay_fullscreen,
+        source_full: source_area.full,
+        target_full: target_area.full,
+        source_bounds,
+        target_bounds,
+        owner: state.owner.as_str().to_owned(),
+        generation: state.generation.as_str().to_owned(),
+    })
+}
+
+/// Fresh monitor topology for one cross-operation tail: re-enumerate outputs
+/// at actuation time (test seams inject the list) so an output removal or
+/// work-area change between pair-build and native writes refuses instead of
+/// writing stale geometry. Exactly one enumeration per tail, never per
+/// window; `None` on enumeration failure (fail-closed like the tick skip).
+fn fresh_cross_areas() -> Option<Vec<MonitorArea>> {
+    #[cfg(test)]
+    if let Some(areas) = INJECTED_AREAS.with(|slot| slot.borrow().clone()) {
+        return Some(areas);
+    }
+    all_monitors().ok()
+}
+
+/// Verify fresh monitor topology still covers a fenced cross pair: both
+/// snapshot outputs must resolve with identical FULL rectangles and
+/// identical inset domain bounds (recomputed with the snapshot gaps, so gap
+/// edits stay with the gap fence). Order-independent; unknown outputs,
+/// changed rectangles, or uninsettable work areas all fail closed.
+#[must_use]
+fn cross_topology_fresh(
+    snapshot: &crate::workspace_owner::DragDropFenceSnapshot,
+    fresh: &[MonitorArea],
+) -> bool {
+    for (output, full, bounds) in [
+        (
+            &snapshot.source_output,
+            snapshot.source_full,
+            snapshot.source_bounds,
+        ),
+        (
+            &snapshot.target_output,
+            snapshot.target_full,
+            snapshot.target_bounds,
+        ),
+    ] {
+        let Some(area) = fresh.iter().find(|a| &a.device == output) else {
+            return false;
+        };
+        if area.full != full {
+            return false;
+        }
+        if tiling_domain_bounds_with(area.work, snapshot.outer_gap)
+            .is_none_or(|live| live != bounds)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Shared cross-output row/domain assembly: source plus destination
+/// current-view rows, both domain values, and the combined fingerprint.
+/// Adopts live gap edits on both domains first so the pair convergence never
+/// straddles gap generations. Returns `None` on incomplete rows or unreadable
+/// topology: the caller defers with retained state instead of presenting a
+/// falsely complete observation. The mover must ride the source rows.
+struct CrossDragRows {
+    source_rows: Vec<crate::workspace_owner::OwnerRow>,
+    dest_rows: Vec<crate::workspace_owner::OwnerRow>,
+    source_domain: tiler_core::session::OutputDomain,
+    source_key: tiler_core::session::DomainKey,
+    dest_domain: tiler_core::session::OutputDomain,
+    dest_key: tiler_core::session::DomainKey,
+    combined_fp: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_cross_drag_rows(
+    state: &mut TileLoop,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    op: &str,
+) -> Option<CrossDragRows> {
+    let mut hint_cx = HintCx::new();
+    let mut source_rows = assemble_domain_rows(
+        state,
+        &settle.source_output,
+        &settle.source_workspace,
+        observed,
+        retained,
+        op,
+        correlation_str,
+        &mut hint_cx,
+    )?;
+    let dest_rows = assemble_domain_rows(
+        state,
+        &settle.dest_output,
+        &settle.dest_workspace,
+        observed,
+        retained,
+        op,
+        correlation_str,
+        &mut hint_cx,
+    )?;
+    if !source_rows
+        .iter()
+        .any(|row| row.token == settle.mover_token)
+    {
+        return None;
+    }
+    // Retained-gesture capture rectangle: a natively moved frame travels
+    // with the OS modal loop, so the live observed frame may sit outside
+    // the source bounds while project membership still homes the mover on
+    // the source. The Engine binds homing (never rects), but the source
+    // capture row must stay authoritative: substitute the PRE-gesture
+    // allocation for the mover row ONLY, under the settle's exact START
+    // fences. Destination current rows keep live values, size hints stay
+    // fresh from the live frame, and native actuation below still reads
+    // the true observed frames.
+    if let Some(start_rect) = settle.start_rect {
+        for row in source_rows.iter_mut() {
+            if row.token == settle.mover_token {
+                row.rect = start_rect;
+            }
+        }
+    }
+    let (source_domain, source_key) = workspace_domain_for(
+        &settle.source_output,
+        &settle.source_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    let (dest_domain, dest_key) = workspace_domain_for(
+        &settle.dest_output,
+        &settle.dest_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    {
+        let outer_gap = state.outer_gap;
+        let mover = WindowId(settle.mover_token.clone());
+        let source_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = source_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let source_fp = crate::tiling::fingerprint(
+            &source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_for_route(
+            state,
+            &source_domain,
+            &source_key,
+            outer_gap,
+            &source_windows,
+            Some(&mover),
+            revision_for(state, &settle.source_output, &settle.source_workspace),
+            source_fp,
+            correlation,
+        );
+        let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = dest_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let dest_fp = crate::tiling::fingerprint(
+            &dest_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_for_route(
+            state,
+            &dest_domain,
+            &dest_key,
+            outer_gap,
+            &dest_windows,
+            None,
+            revision_for(state, &settle.dest_output, &settle.dest_workspace),
+            dest_fp,
+            correlation,
+        );
+    }
+    // Combined two-domain observation: source rows homed on the source key,
+    // destination rows homed on the destination key. Fingerprint covers both
+    // so stale destination rects cannot ride.
+    let combined_fp = {
+        let mut pairs: Vec<(String, Rect)> = source_rows
+            .iter()
+            .chain(dest_rows.iter())
+            .map(|r| (r.token.clone(), r.rect))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        crate::tiling::fingerprint(&pairs)
+    };
+    Some(CrossDragRows {
+        source_rows,
+        dest_rows,
+        source_domain,
+        source_key,
+        dest_domain,
+        dest_key,
+        combined_fp,
+    })
+}
+
+/// Candidate-engine twin of [`assemble_cross_drag_rows`]: identical rows,
+/// domains, START substitution, and combined fingerprint, but live gap edits
+/// adopt on the caller's clone via [`adopt_gaps_on_candidate`] so a later
+/// refused tail discards the adopt with the plan instead of committing it
+/// early to the authoritative Engine. No authoritative Engine mutation.
+#[allow(clippy::too_many_arguments)]
+fn assemble_cross_drag_rows_on_candidate(
+    state: &mut TileLoop,
+    candidate: &mut Engine,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    op: &str,
+) -> Option<CrossDragRows> {
+    let mut hint_cx = HintCx::new();
+    let mut source_rows = assemble_domain_rows(
+        state,
+        &settle.source_output,
+        &settle.source_workspace,
+        observed,
+        retained,
+        op,
+        correlation_str,
+        &mut hint_cx,
+    )?;
+    let dest_rows = assemble_domain_rows(
+        state,
+        &settle.dest_output,
+        &settle.dest_workspace,
+        observed,
+        retained,
+        op,
+        correlation_str,
+        &mut hint_cx,
+    )?;
+    if !source_rows
+        .iter()
+        .any(|row| row.token == settle.mover_token)
+    {
+        return None;
+    }
+    if let Some(start_rect) = settle.start_rect {
+        for row in source_rows.iter_mut() {
+            if row.token == settle.mover_token {
+                row.rect = start_rect;
+            }
+        }
+    }
+    let (source_domain, source_key) = workspace_domain_for(
+        &settle.source_output,
+        &settle.source_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    let (dest_domain, dest_key) = workspace_domain_for(
+        &settle.dest_output,
+        &settle.dest_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    {
+        let outer_gap = state.outer_gap;
+        let mover = WindowId(settle.mover_token.clone());
+        let source_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = source_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let source_fp = crate::tiling::fingerprint(
+            &source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_on_candidate(
+            candidate,
+            state,
+            &source_domain,
+            &source_key,
+            outer_gap,
+            &source_windows,
+            Some(&mover),
+            revision_for(state, &settle.source_output, &settle.source_workspace),
+            source_fp,
+            correlation,
+        );
+        let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = dest_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let dest_fp = crate::tiling::fingerprint(
+            &dest_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect::<Vec<_>>(),
+        );
+        adopt_gaps_on_candidate(
+            candidate,
+            state,
+            &dest_domain,
+            &dest_key,
+            outer_gap,
+            &dest_windows,
+            None,
+            revision_for(state, &settle.dest_output, &settle.dest_workspace),
+            dest_fp,
+            correlation,
+        );
+    }
+    let combined_fp = {
+        let mut pairs: Vec<(String, Rect)> = source_rows
+            .iter()
+            .chain(dest_rows.iter())
+            .map(|r| (r.token.clone(), r.rect))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        crate::tiling::fingerprint(&pairs)
+    };
+    Some(CrossDragRows {
+        source_rows,
+        dest_rows,
+        source_domain,
+        source_key,
+        dest_domain,
+        dest_key,
+        combined_fp,
+    })
+}
+
+/// Build the cross-output pair event for one settle: source plus destination
+/// current-view rows, a combined fingerprint, the source-first pair without
+/// adjacency entries (pointer-resolved, so the send-style assembly applies),
+/// and the `DragDrop` command with the Started source binding. Returns `None`
+/// on incomplete rows: the caller defers with retained state instead of
+/// presenting a falsely complete observation.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+fn prepare_cross_drag_event(
+    state: &mut TileLoop,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    op: &str,
+) -> Option<CoreEvent> {
+    let rows = assemble_cross_drag_rows(
+        state,
+        areas,
+        observed,
+        retained,
+        settle,
+        correlation,
+        correlation_str,
+        op,
+    )?;
+    let from = WindowId(settle.mover_token.clone());
+    let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        .dest_rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &settle.dest_output, &settle.dest_workspace),
+        rows.combined_fp,
+        &rows.dest_domain,
+        &rows.dest_key,
+        state.outer_gap,
+        &dest_windows,
+        Some(&from),
+    );
+    for row in &rows.source_rows {
+        event.windows.push(tiler_core::seed::EngineWindow {
+            window: WindowId(row.token.clone()),
+            output: rows.source_key.output.clone(),
+            workspace: rows.source_key.workspace.clone(),
+            rect: row.rect,
+            floating: row.floating,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: row.hints,
+        });
+    }
+    // Source-first pair with no adjacency entries: the destination is
+    // pointer-resolved, so the send-style assembly (no adjacency fence)
+    // applies, never the directional candidate selector.
+    event.directional = Some(vec![
+        (rows.source_domain, rows.source_key.clone()),
+        (rows.dest_domain, rows.dest_key),
+    ]);
+    event.directional_target_outer_gap = Some(state.outer_gap);
+    event.command = CoreCommand::DragDrop {
+        window: from.0.clone(),
+        x: settle.x,
+        y: settle.y,
+        hover_prior: settle.drop_prior.clone(),
+        source: Some(rows.source_key),
+    };
+    Some(event)
+}
+
+/// Candidate-engine twin of [`prepare_cross_drag_event`]: identical pair
+/// shape, but row assembly adopts gaps on the caller's clone so event prep
+/// never mutates the authoritative Engine. The caller stamps and dispatches
+/// on that same clone.
+#[allow(clippy::too_many_arguments)]
+fn prepare_cross_drag_event_on_candidate(
+    state: &mut TileLoop,
+    candidate: &mut Engine,
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    op: &str,
+) -> Option<CoreEvent> {
+    let rows = assemble_cross_drag_rows_on_candidate(
+        state,
+        candidate,
+        areas,
+        observed,
+        retained,
+        settle,
+        correlation,
+        correlation_str,
+        op,
+    )?;
+    let from = WindowId(settle.mover_token.clone());
+    let dest_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        .dest_rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &settle.dest_output, &settle.dest_workspace),
+        rows.combined_fp,
+        &rows.dest_domain,
+        &rows.dest_key,
+        state.outer_gap,
+        &dest_windows,
+        Some(&from),
+    );
+    for row in &rows.source_rows {
+        event.windows.push(tiler_core::seed::EngineWindow {
+            window: WindowId(row.token.clone()),
+            output: rows.source_key.output.clone(),
+            workspace: rows.source_key.workspace.clone(),
+            rect: row.rect,
+            floating: row.floating,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: row.hints,
+        });
+    }
+    event.directional = Some(vec![
+        (rows.source_domain, rows.source_key.clone()),
+        (rows.dest_domain, rows.dest_key),
+    ]);
+    event.directional_target_outer_gap = Some(state.outer_gap);
+    event.command = CoreCommand::DragDrop {
+        window: from.0.clone(),
+        x: settle.x,
+        y: settle.y,
+        hover_prior: settle.drop_prior.clone(),
+        source: Some(rows.source_key),
+    };
+    Some(event)
+}
+
+/// Read-only arrival verification for a candidate cross-drop plan: the
+/// mover's desired Engine rect must read back on the destination monitor.
+/// No membership, focus, or Engine mutation; the caller publishes only after
+/// this plus topology/apply/readback (and source reflow for empty flows)
+/// verify.
+fn cross_arrival_verified(
+    state: &TileLoop,
+    areas: &[MonitorArea],
+    reply: &CoreReply,
+    settle: &CrossDragSettle,
+) -> bool {
+    directional_arrival_verified(
+        state,
+        areas,
+        reply,
+        &settle.mover_token,
+        settle.member_key.hwnd,
+        &settle.dest_output,
+    )
+}
+
+/// Post-commit follow for a verified cross drop: foreground the mover with no
+/// workspace switch. Runs only after the candidate Engine and the project
+/// membership published together; performs no logging itself.
+fn follow_cross_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+) -> FocusActuation {
+    let actuation = actuate_focus(state, me, fulls, observed, retained, &settle.mover_token);
+    if actuation.outcome == "focus-ok" {
+        note_focus_advance(state, observed, retained, &settle.mover_token);
+        state.workspaces.note_foreground(&settle.member_key);
+    }
+    actuation
+}
+
+/// Read-only predicted workspace-transfer check: the destination workspace
+/// must be known and the post-move sets must satisfy `verify_send_follow`
+/// without mutating project membership. The caller performs the real
+/// `assign` only after every other tail verifies.
+fn predicted_cross_transfer_ok(state: &TileLoop, settle: &CrossDragSettle) -> bool {
+    if !state
+        .workspaces
+        .workspace_ids(&settle.dest_output)
+        .iter()
+        .any(|id| id == &settle.dest_workspace)
+    {
+        return false;
+    }
+    let mut source_now = state
+        .workspaces
+        .workspace_members(&settle.source_output, &settle.source_workspace);
+    let mut target_now = state
+        .workspaces
+        .workspace_members(&settle.dest_output, &settle.dest_workspace);
+    source_now.remove(&settle.member_key);
+    target_now.insert(settle.member_key.clone());
+    crate::workspace::verify_send_follow(&settle.member_key, &source_now, &target_now)
+}
+
+/// Shared arrival-plus-focus tail for a committed cross drop (pair and empty
+/// flows): the mover's desired Engine rect must read back on the destination
+/// monitor then follow-focus foregrounds the mover with no workspace switch.
+/// Runs only after the caller published the candidate Engine and the project
+/// membership together. Returns the outcome plus the focus actuation when one
+/// ran (for caller logging); performs no logging itself.
+#[allow(clippy::too_many_arguments)]
+fn confirm_cross_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    reply: &CoreReply,
+    settle: &CrossDragSettle,
+) -> (&'static str, Option<FocusActuation>) {
+    if !cross_arrival_verified(state, areas, reply, settle) {
+        return ("move-unverified", None);
+    }
+    let actuation = follow_cross_drop(state, me, fulls, observed, retained, settle);
+    if actuation.outcome != "focus-ok" {
+        let outcome = actuation.outcome;
+        return (outcome, Some(actuation));
+    }
+    let source_now = state
+        .workspaces
+        .workspace_members(&settle.source_output, &settle.source_workspace);
+    let target_now = state
+        .workspaces
+        .workspace_members(&settle.dest_output, &settle.dest_workspace);
+    if !crate::workspace::verify_send_follow(&settle.member_key, &source_now, &target_now) {
+        return ("unverified", Some(actuation));
+    }
+    ("drag-drop-applied", Some(actuation))
+}
+
+/// Finalize an occupied-destination cross drop reply: the pair plan sits on
+/// the discarded-on-refusal candidate, so the project membership commits
+/// only after the fresh topology, the single combined apply, its readback,
+/// and the arrival proof all verify. The authoritative Engine publishes with
+/// that same commit, exactly once, before follow-focus. Returns the outcome;
+/// refusals keep source membership and the retained Engine with no
+/// follow-focus, no replay, and no success claims. Partial physical writes
+/// are not atomic: observed geometry reconciles through the existing loop.
+#[allow(clippy::too_many_arguments)]
+fn finalize_cross_drag_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    candidate: Engine,
+    reply: &CoreReply,
+    settle: &CrossDragSettle,
+    fence: &crate::workspace_owner::DragDropFenceSnapshot,
+    tick: u64,
+    correlation_str: &str,
+    skipped: Vec<(String, String)>,
+) -> &'static str {
+    let log_path = state.log_path.clone();
+    let from = settle.mover_token.clone();
+    let log_drop = |outcome: &'static str, extra: serde_json::Value| {
+        let mut line = serde_json::Map::new();
+        line.insert("event".to_owned(), serde_json::json!("gesture"));
+        line.insert("tick".to_owned(), serde_json::json!(tick));
+        line.insert("correlation".to_owned(), serde_json::json!(correlation_str));
+        line.insert("op".to_owned(), serde_json::json!("drag-drop"));
+        line.insert("outcome".to_owned(), serde_json::json!(outcome));
+        line.insert("window".to_owned(), serde_json::json!(from));
+        line.insert("producer".to_owned(), serde_json::json!(settle.producer));
+        line.insert("cross_output".to_owned(), serde_json::json!(true));
+        if let serde_json::Value::Object(map) = extra {
+            for (k, v) in map {
+                line.insert(k, v);
+            }
+        }
+        log_json_at(&log_path, serde_json::Value::Object(line));
+    };
+    let CoreReply::Tiled(_) = reply else {
+        let kind = match reply {
+            CoreReply::Rejected { kind, .. } => *kind,
+            CoreReply::Diverged(reason) => reason.as_str(),
+            CoreReply::SnapshotInvalid { detail, .. } => *detail,
+            _ => "unhandled-variant",
+        };
+        log_drop(
+            "drag-drop-refused",
+            serde_json::json!({"disposition": "refused", "kind": kind}),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "drag-drop-refused";
+    };
+    // Commit-last: the candidate holds the plan, so refusals below discard
+    // it with source membership and the authoritative Engine untouched and
+    // no follow-focus. Per-window write gates still run inside the single
+    // apply below.
+    let candidate = candidate;
+    // Fresh topology at actuation time: exactly one re-enumeration per
+    // tail. An output removal or work-area change between pair-build and
+    // native writes withholds every write (reconciling with the fresh
+    // topology instead); the physical writes below reuse the fresh lists.
+    let Some(fresh_areas) = fresh_cross_areas() else {
+        log_drop(
+            "move-unverified",
+            serde_json::json!({"kind": "topology-unknown"}),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "move-unverified";
+    };
+    if !cross_topology_fresh(fence, &fresh_areas) {
+        log_drop(
+            "move-unverified",
+            serde_json::json!({"kind": "topology-changed"}),
+        );
+        let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "move-unverified";
+    }
+    let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+    // One union-writable combined apply: source survivors reflow and the
+    // destination places the arrival together, in DPI-aware physical
+    // coordinates with no rescaling.
+    let mut union_writable = writable_tokens(
+        state,
+        &settle.source_output,
+        &settle.source_workspace,
+        observed,
+    );
+    union_writable.extend(writable_tokens(
+        state,
+        &settle.dest_output,
+        &settle.dest_workspace,
+        observed,
+    ));
+    let summary = apply_geometry(
+        state,
+        ApplyInput {
+            me,
+            fulls: &fresh_fulls,
+            reply,
+            observed,
+            op: "drag-drop",
+            tick,
+            correlation: correlation_str,
+            skipped,
+            writable: &union_writable,
+            output_token: state.workspaces.output_token(&settle.source_output),
+            workspace_token: state
+                .workspaces
+                .workspace_token(&settle.source_output, &settle.source_workspace),
+            revision: revision_for(state, &settle.source_output, &settle.source_workspace),
+        },
+    );
+    let Some(summary) = summary else {
+        log_drop("move-unverified", serde_json::json!({}));
+        return "move-unverified";
+    };
+    if !summary.readback_ok {
+        log_drop("move-unverified", serde_json::json!({}));
+        return "move-unverified";
+    }
+    if summary.mismatched > 0 {
+        log_drop("move-mismatch", serde_json::json!({}));
+        return "move-mismatch";
+    }
+    // Required arrival proof before any commit: a failed proof keeps source
+    // membership and the retained Engine with no follow-focus and no replay;
+    // the next observation converges (partial writes are never rolled back).
+    if !cross_arrival_verified(state, &fresh_areas, reply, settle) {
+        log_drop("move-unverified", serde_json::json!({}));
+        return "move-unverified";
+    }
+    // Workspace transfer pre-check on predicted sets (no mutation): a refused
+    // assignment keeps source membership with the candidate discarded.
+    if !predicted_cross_transfer_ok(state, settle) {
+        log_drop("unverified", serde_json::json!({}));
+        return "unverified";
+    }
+    // Verified: commit both authorities once, then follow focus. The mover
+    // rode the source writable set while homed on the source, so the union
+    // above already covered it.
+    if !state.workspaces.assign(
+        settle.member_key.clone(),
+        &settle.dest_output,
+        &settle.dest_workspace,
+        false,
+    ) {
+        log_drop("unverified", serde_json::json!({}));
+        return "unverified";
+    }
+    state.engine = candidate;
+    // Required arrival proof plus follow focus with no workspace switch.
+    let (outcome, actuation) = confirm_cross_drop(
+        state,
+        me,
+        &fresh_fulls,
+        &fresh_areas,
+        observed,
+        retained,
+        reply,
+        settle,
+    );
+    match actuation {
+        Some(actuation) => log_drop(
+            outcome,
+            serde_json::json!({
+                "setter_accepted": actuation.setter_accepted,
+                "prime_inserted": actuation.prime_inserted,
+                "attach_ok": actuation.attach_ok,
+                "eventual": actuation.eventual,
+                "deferred": actuation.deferred,
+            }),
+        ),
+        None => log_drop(outcome, serde_json::json!({})),
+    }
+    outcome
+}
+
+/// Reflow the source domain on the candidate after a verified destination
+/// write: a targeted source reconcile without the mover removes it
+/// candidate-side and reflows the survivors, then applies. The authoritative
+/// Engine is never used to validate the post-move source; a refused tail
+/// discards the candidate with source membership and the retained Engine
+/// untouched. Returns the apply summary; `None` on incomplete rows or a
+/// non-geometry reply (the caller reports unverified).
+#[allow(clippy::too_many_arguments)]
+fn apply_source_reflow(
+    candidate: &mut Engine,
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    tick: u64,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+) -> Option<ApplySummary> {
+    let mut hint_cx = HintCx::new();
+    let rows = assemble_domain_rows(
+        state,
+        &settle.source_output,
+        &settle.source_workspace,
+        observed,
+        retained,
+        "drag-drop",
+        correlation_str,
+        &mut hint_cx,
+    )?;
+    // Commit-last: the mover is still homed on the source project-side, so
+    // the source rows still name it. The reflow plans the post-move source
+    // without it: filter it here instead of refusing. A sole-mover source
+    // yields no rows and retires below.
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.token != settle.mover_token)
+        .collect();
+    let windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = rows
+        .iter()
+        .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+        .collect();
+    let fp = crate::tiling::fingerprint(
+        &rows
+            .iter()
+            .map(|r| (r.token.clone(), r.rect))
+            .collect::<Vec<_>>(),
+    );
+    let (domain, domain_key) = workspace_domain_for(
+        &settle.source_output,
+        &settle.source_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    )?;
+    // Focus falls to a surviving row: the mover just left, so carrying the
+    // live foreground (often the mover itself mid-flight) would mismatch
+    // the reconcile focus gate. Empty sources carry none and retire below.
+    let focused = rows.first().map(|row| WindowId(row.token.clone()));
+    {
+        let outer_gap = state.outer_gap;
+        adopt_gaps_on_candidate(
+            candidate,
+            state,
+            &domain,
+            &domain_key,
+            outer_gap,
+            &windows,
+            focused.as_ref(),
+            revision_for(state, &settle.source_output, &settle.source_workspace),
+            fp,
+            correlation,
+        );
+    }
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision_for(state, &settle.source_output, &settle.source_workspace),
+        fp,
+        &domain,
+        &domain_key,
+        state.outer_gap,
+        &windows,
+        focused.as_ref(),
+    );
+    event.command = CoreCommand::Reconcile;
+    let reply = {
+        stamp_engine_event(state, &mut event);
+        #[cfg(test)]
+        PENDING_COUNTERS.with(|slot| {
+            slot.borrow_mut().engine += 1;
+        });
+        candidate.handle(&event)
+    };
+    match &reply {
+        CoreReply::Tiled(_) | CoreReply::Projection(_) => {}
+        _ => return None,
+    }
+    let mut writable = writable_tokens(
+        state,
+        &settle.source_output,
+        &settle.source_workspace,
+        observed,
+    );
+    // The mover still homes on the source project-side but plans nowhere
+    // here: never hand it a source write.
+    writable.remove(settle.mover_token.as_str());
+    apply_geometry(
+        state,
+        ApplyInput {
+            me,
+            fulls,
+            reply: &reply,
+            observed,
+            op: "drag-drop",
+            tick,
+            correlation: correlation_str,
+            skipped: Vec::new(),
+            writable: &writable,
+            output_token: state.workspaces.output_token(&settle.source_output),
+            workspace_token: state
+                .workspaces
+                .workspace_token(&settle.source_output, &settle.source_workspace),
+            revision: revision_for(state, &settle.source_output, &settle.source_workspace),
+        },
+    )
+}
+
+/// Finalize an empty-destination cross drop reply: the singleton admission
+/// plan sits on the discarded-on-refusal candidate, so the destination
+/// applies first, then the source reconciles without the mover (removal plus
+/// survivor reflow) on that same candidate, and both authorities publish
+/// together only after the fresh topology, both applies, their readbacks,
+/// and the arrival proof verify, before follow-focus. Returns the outcome;
+/// refusals keep source membership and the retained Engine with no
+/// follow-focus, no replay, and no success claims.
+#[allow(clippy::too_many_arguments)]
+fn finalize_empty_drag_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    candidate: Engine,
+    reply: &CoreReply,
+    settle: &CrossDragSettle,
+    fence: &crate::workspace_owner::DragDropFenceSnapshot,
+    tick: u64,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+    skipped: Vec<(String, String)>,
+) -> &'static str {
+    let log_path = state.log_path.clone();
+    let from = settle.mover_token.clone();
+    let log_drop = |outcome: &'static str, extra: serde_json::Value| {
+        let mut line = serde_json::Map::new();
+        line.insert("event".to_owned(), serde_json::json!("gesture"));
+        line.insert("tick".to_owned(), serde_json::json!(tick));
+        line.insert("correlation".to_owned(), serde_json::json!(correlation_str));
+        line.insert("op".to_owned(), serde_json::json!("drag-drop"));
+        line.insert("outcome".to_owned(), serde_json::json!(outcome));
+        line.insert("window".to_owned(), serde_json::json!(from));
+        line.insert("producer".to_owned(), serde_json::json!(settle.producer));
+        line.insert("cross_output".to_owned(), serde_json::json!(true));
+        line.insert("empty_destination".to_owned(), serde_json::json!(true));
+        if let serde_json::Value::Object(map) = extra {
+            for (k, v) in map {
+                line.insert(k, v);
+            }
+        }
+        log_json_at(&log_path, serde_json::Value::Object(line));
+    };
+    let CoreReply::Tiled(_) = reply else {
+        let kind = match reply {
+            CoreReply::Rejected { kind, .. } => *kind,
+            CoreReply::Diverged(reason) => reason.as_str(),
+            CoreReply::SnapshotInvalid { detail, .. } => *detail,
+            _ => "unhandled-variant",
+        };
+        log_drop(
+            "drag-drop-refused",
+            serde_json::json!({"disposition": "refused", "kind": kind}),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "drag-drop-refused";
+    };
+    let mut candidate = candidate;
+    // Fresh topology at actuation time (see the pair finalize): withhold
+    // every write on drift and reuse the fresh lists below. No membership
+    // or Engine mutation before the verified commit below.
+    let Some(fresh_areas) = fresh_cross_areas() else {
+        log_drop(
+            "move-unverified",
+            serde_json::json!({"kind": "topology-unknown"}),
+        );
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "move-unverified";
+    };
+    if !cross_topology_fresh(fence, &fresh_areas) {
+        log_drop(
+            "move-unverified",
+            serde_json::json!({"kind": "topology-changed"}),
+        );
+        let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "move-unverified";
+    }
+    let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+    // Destination places the sole arrival first so the mover always has a
+    // committed home; the source reflow below never orphans it. The mover
+    // is still homed on the source project-side, so the empty destination
+    // writable set would filter it: include it explicitly.
+    let mut dest_writable =
+        writable_tokens(state, &settle.dest_output, &settle.dest_workspace, observed);
+    dest_writable.insert(settle.mover_token.clone());
+    let dest_summary = apply_geometry(
+        state,
+        ApplyInput {
+            me,
+            fulls: &fresh_fulls,
+            reply,
+            observed,
+            op: "drag-drop",
+            tick,
+            correlation: correlation_str,
+            skipped,
+            writable: &dest_writable,
+            output_token: state.workspaces.output_token(&settle.dest_output),
+            workspace_token: state
+                .workspaces
+                .workspace_token(&settle.dest_output, &settle.dest_workspace),
+            revision: revision_for(state, &settle.dest_output, &settle.dest_workspace),
+        },
+    );
+    match dest_summary {
+        Some(summary) if summary.readback_ok && summary.mismatched == 0 => {}
+        Some(_) => {
+            log_drop("move-unverified", serde_json::json!({}));
+            return "move-unverified";
+        }
+        None => {
+            log_drop("move-unverified", serde_json::json!({}));
+            return "move-unverified";
+        }
+    }
+    // Source survivors reflow without the mover on the same candidate. A
+    // refused reflow discards the candidate with source membership and the
+    // retained Engine untouched and no follow-focus; the next observation
+    // converges (no replay, no fake native rollback).
+    match apply_source_reflow(
+        &mut candidate,
+        state,
+        me,
+        &fresh_fulls,
+        &fresh_areas,
+        observed,
+        retained,
+        settle,
+        tick,
+        correlation,
+        correlation_str,
+    ) {
+        Some(summary) if summary.readback_ok && summary.mismatched == 0 => {}
+        _ => {
+            log_drop("move-unverified", serde_json::json!({}));
+            let fulls_owned = fulls.to_vec();
+            reconcile_tick(state, me, &fulls_owned, areas);
+            return "move-unverified";
+        }
+    }
+    // Arrival must verify before either authority publishes; a failed proof
+    // keeps source membership and the retained Engine with no follow-focus.
+    if !cross_arrival_verified(state, &fresh_areas, reply, settle) {
+        log_drop("move-unverified", serde_json::json!({}));
+        return "move-unverified";
+    }
+    if !predicted_cross_transfer_ok(state, settle) {
+        log_drop("unverified", serde_json::json!({}));
+        return "unverified";
+    }
+    if !state.workspaces.assign(
+        settle.member_key.clone(),
+        &settle.dest_output,
+        &settle.dest_workspace,
+        false,
+    ) {
+        log_drop("unverified", serde_json::json!({}));
+        return "unverified";
+    }
+    state.engine = candidate;
+    let (outcome, actuation) = confirm_cross_drop(
+        state,
+        me,
+        &fresh_fulls,
+        &fresh_areas,
+        observed,
+        retained,
+        reply,
+        settle,
+    );
+    match actuation {
+        Some(actuation) => log_drop(
+            outcome,
+            serde_json::json!({
+                "setter_accepted": actuation.setter_accepted,
+                "prime_inserted": actuation.prime_inserted,
+                "attach_ok": actuation.attach_ok,
+                "eventual": actuation.eventual,
+                "deferred": actuation.deferred,
+            }),
+        ),
+        None => log_drop(outcome, serde_json::json!({})),
+    }
+    outcome
+}
+
+/// Route one fenced cross settle to its Engine shape and finalize: occupied
+/// destinations run the pair transaction, empty ones run singleton admission
+/// plus source reflow. Shared by the inline same-thread path and the
+/// render-ack pending service (both arrive with fresh observations, proven
+/// hide, and evaluated fences). Returns the outcome; every terminal logs
+/// inside the finalize calls except silent `deferred` (incomplete rows keep
+/// retained state exactly like the local route).
+#[allow(clippy::too_many_arguments)]
+fn settle_cross_drag_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    settle: &CrossDragSettle,
+    fence: &crate::workspace_owner::DragDropFenceSnapshot,
+    tick: u64,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+) -> &'static str {
+    // Occupancy reads live project membership (no observation assembly):
+    // row assembly runs exactly once inside the prepare call below.
+    if state
+        .workspaces
+        .workspace_members(&settle.dest_output, &settle.dest_workspace)
+        .is_empty()
+    {
+        // Empty-flow contradiction fence: no project members but the Engine
+        // still names destination windows means divergent bookkeeping;
+        // refuse without a drop instead of orphaning membership.
+        let dest_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(settle.dest_output.clone()),
+            workspace: tiler_core::directional::WorkspaceId(settle.dest_workspace.clone()),
+        };
+        if state
+            .engine
+            .session(&dest_key)
+            .is_some_and(|session| !session.snapshot().windows.is_empty())
+        {
+            log_json_at(
+                &state.log_path,
+                serde_json::json!({
+                    "event": "gesture",
+                    "tick": tick,
+                    "correlation": correlation_str,
+                    "op": "drag-drop",
+                    "disposition": "refused",
+                    "outcome": "unverified",
+                    "window": settle.mover_token,
+                    "producer": settle.producer,
+                    "cross_output": true,
+                }),
+            );
+            return "unverified";
+        }
+        let mut hint_cx = HintCx::new();
+        let Some(event) = prepare_cross_singleton_event(
+            state,
+            areas,
+            observed,
+            settle,
+            correlation,
+            &mut hint_cx,
+            false,
+        ) else {
+            return "deferred";
+        };
+        let mut event = event;
+        // Candidate dispatch: the singleton admission plans on a clone, so a
+        // refused tail discards it with source membership and the
+        // authoritative Engine untouched.
+        let mut candidate = state.engine.clone();
+        let reply = {
+            stamp_engine_event(state, &mut event);
+            #[cfg(test)]
+            PENDING_COUNTERS.with(|slot| {
+                slot.borrow_mut().engine += 1;
+            });
+            candidate.handle(&event)
+        };
+        return finalize_empty_drag_drop(
+            state,
+            me,
+            fulls,
+            areas,
+            observed,
+            retained,
+            candidate,
+            &reply,
+            settle,
+            fence,
+            tick,
+            correlation,
+            correlation_str,
+            Vec::new(),
+        );
+    }
+    // Candidate pair route: gap adopts and the drop dispatch all run on the
+    // clone; the authoritative Engine publishes once inside the finalize,
+    // only after the verified tails commit.
+    let mut candidate = state.engine.clone();
+    let Some(event) = prepare_cross_drag_event_on_candidate(
+        state,
+        &mut candidate,
+        areas,
+        observed,
+        retained,
+        settle,
+        correlation,
+        correlation_str,
+        "drag-drop",
+    ) else {
+        return "deferred";
+    };
+    let mut event = event;
+    let reply = {
+        stamp_engine_event(state, &mut event);
+        #[cfg(test)]
+        PENDING_COUNTERS.with(|slot| {
+            slot.borrow_mut().engine += 1;
+        });
+        candidate.handle(&event)
+    };
+    finalize_cross_drag_drop(
+        state,
+        me,
+        fulls,
+        areas,
+        observed,
+        retained,
+        candidate,
+        &reply,
+        settle,
+        fence,
+        tick,
+        correlation_str,
+        Vec::new(),
+    )
+}
+
+/// Candidate-engine gap adopt for one pair-route domain: the same
+/// convergence as [`adopt_gaps_for_route`] but dispatching on the caller's
+/// clone, so a later refused tail discards the adopt with the plan instead
+/// of committing it early to the authoritative Engine.
+#[allow(clippy::too_many_arguments)]
+fn adopt_gaps_on_candidate(
+    candidate: &mut Engine,
+    state: &TileLoop,
+    domain: &tiler_core::session::OutputDomain,
+    domain_key: &tiler_core::session::DomainKey,
+    outer_gap: i32,
+    windows: &[(WindowId, Rect, WindowSizeHints, bool)],
+    focused: Option<&WindowId>,
+    revision: u64,
+    fingerprint: u64,
+    correlation: &CorrelationId,
+) -> bool {
+    if crate::settings::retained_gaps_match(candidate, domain_key, state.inner_gap, outer_gap) {
+        return true;
+    }
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &state.owner,
+        &state.generation,
+        correlation,
+        revision,
+        fingerprint,
+        domain,
+        domain_key,
+        outer_gap,
+        windows,
+        focused,
+    );
+    event.command = CoreCommand::UpdateGaps;
+    stamp_engine_event(state, &mut event);
+    let adopted = matches!(
+        candidate.handle(&event),
+        CoreReply::Projection(_) | CoreReply::Tiled(_)
+    );
+    adopted
+        && crate::settings::retained_gaps_match(candidate, domain_key, state.inner_gap, outer_gap)
 }
 
 /// Adopt drifted live gaps through the retained topology-preserving
@@ -20754,6 +23662,8 @@ fn queue_pending_drop(
     member_key: crate::workspace::WindowKey,
     output: &str,
     workspace: &str,
+    dest: Option<PendingCrossDest>,
+    source_rect: Option<Rect>,
 ) -> bool {
     let drop_prior = state
         .preview_bound
@@ -20783,6 +23693,8 @@ fn queue_pending_drop(
                     output: output.to_owned(),
                     workspace: workspace.to_owned(),
                     drop_prior,
+                    dest,
+                    source_rect,
                     hide_gen: pair.0,
                     hide_safety: pair.1,
                     deadline: Instant::now() + FINISH_WAIT,
@@ -20791,6 +23703,126 @@ fn queue_pending_drop(
             }
         })
         .unwrap_or(false)
+}
+
+/// Service one proven-hide cross-output pending drop: re-resolve the pointer
+/// destination, re-verify the END-time fences against fresh state, then run
+/// the shared Engine route. No pre-drop focus: the confirm tail
+/// follow-focuses on the destination after the transfer, so a cross drop
+/// never foregrounds the source first. Every refusal converges without
+/// Engine, focus, or geometry writes.
+#[allow(clippy::too_many_arguments)]
+fn service_cross_pending_drop(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    current: &ObservedWindow,
+    member_key: &crate::workspace::WindowKey,
+    loc: &crate::workspace::MemberLoc,
+    pending: &PendingDrop,
+    dest: &PendingCrossDest,
+    x: i32,
+    y: i32,
+) {
+    let log_path = state.log_path.clone();
+    let from = current.token.clone();
+    let tick = state.tick;
+    let log_cross = |outcome: &'static str| {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "gesture",
+                "tick": tick,
+                "op": "drag-drop",
+                "disposition": "refused",
+                "outcome": outcome,
+                "window": from,
+                "producer": pending.producer,
+                "cross_output": true,
+            }),
+        );
+    };
+    // The pointer output must still resolve to the queued destination:
+    // topology moved under the pending finish otherwise.
+    if output_for_point(areas, x, y).as_deref() != Some(dest.output.as_str()) {
+        log_cross("topology-changed");
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    let membership_ok = state
+        .workspaces
+        .member_loc(member_key)
+        .is_some_and(|fresh| fresh.output == loc.output && fresh.workspace == loc.workspace);
+    let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
+    let retained_full = retained
+        .iter()
+        .find(|r| r.key == *member_key)
+        .map(|r| r.fullscreen)
+        .unwrap_or(false);
+    let live = drag_drop_live(
+        state,
+        areas,
+        &dest.fence,
+        member_key,
+        membership_ok,
+        live_max,
+        live_full_opt.unwrap_or(retained_full),
+    );
+    if let Some(outcome) = crate::workspace_owner::drag_drop_fences_hold(&dest.fence, &live) {
+        if outcome == "identity-changed" {
+            drop_member_state(state, member_key);
+        }
+        log_cross(outcome);
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    // Fresh suspension fence after the proven hide, before any Engine or
+    // project mutation: a fullscreen arrival (or elevated foreground)
+    // between END and the ack refuses with no plan and no writes.
+    if state.suspended || suspend_read(state, me, fulls).veto.block || foreground_elevated(me) {
+        log_cross(if state.suspended {
+            "suspended"
+        } else {
+            "elevated-foreground"
+        });
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return;
+    }
+    state.tick += 1;
+    let tick = state.tick;
+    let correlation = state.correlation();
+    let settle = CrossDragSettle {
+        mover_token: current.token.clone(),
+        member_key: member_key.clone(),
+        source_output: loc.output.clone(),
+        source_workspace: loc.workspace.clone(),
+        dest_output: dest.output.clone(),
+        dest_workspace: dest.workspace.clone(),
+        x,
+        y,
+        drop_prior: pending.drop_prior.clone(),
+        producer: pending.producer.clone(),
+        start_rect: pending.source_rect,
+    };
+    settle_cross_drag_drop(
+        state,
+        me,
+        fulls,
+        areas,
+        observed,
+        retained,
+        &settle,
+        &dest.fence,
+        tick,
+        &correlation,
+        correlation.as_str(),
+    );
 }
 
 /// Service the bounded pending gesture drop from render-ack state at loop
@@ -21052,31 +24084,59 @@ fn service_pending_drop(
     ) else {
         return;
     };
-    if let GestureIntent::MoveDrop { x, y } = pending.intent
-        && !drop_point_in_domain(
-            domain.bounds.x,
-            domain.bounds.y,
-            domain.bounds.w,
-            domain.bounds.h,
-            x,
-            y,
-        )
-    {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "gesture",
-                "tick": state.tick,
-                "op": "drag-drop",
-                "disposition": "refused",
-                "outcome": "gesture-refused-cross-output",
-                "window": current.token,
-                "producer": pending.producer,
-            }),
-        );
-        let fulls_owned = fulls.to_vec();
-        reconcile_tick(state, me, &fulls_owned, areas);
-        return;
+    if let GestureIntent::MoveDrop { x, y } = pending.intent {
+        match &pending.dest {
+            None => {
+                if !drop_point_in_domain(
+                    domain.bounds.x,
+                    domain.bounds.y,
+                    domain.bounds.w,
+                    domain.bounds.h,
+                    x,
+                    y,
+                ) {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "gesture",
+                            "tick": state.tick,
+                            "op": "drag-drop",
+                            "disposition": "refused",
+                            "outcome": "drag-drop-refused",
+                            "kind": "outside-work-area",
+                            "window": current.token,
+                            "producer": pending.producer,
+                        }),
+                    );
+                    let fulls_owned = fulls.to_vec();
+                    reconcile_tick(state, me, &fulls_owned, areas);
+                    return;
+                }
+            }
+            Some(dest) => {
+                // Cross-output pending settle: the hide already proved, so
+                // revalidate everything fresh (destination resolution,
+                // fences, suspend/elevated) then run the shared Engine
+                // route. No pre-drop focus here: the confirm tail
+                // follow-focuses on the destination after the transfer.
+                service_cross_pending_drop(
+                    state,
+                    me,
+                    fulls,
+                    areas,
+                    &observed,
+                    &retained,
+                    current,
+                    &member_key,
+                    &loc,
+                    &pending,
+                    dest,
+                    x,
+                    y,
+                );
+                return;
+            }
+        }
     }
     if pending.producer == "windrag" {
         // Fresh suspension fence after the proven hide, before any focus
@@ -21317,6 +24377,10 @@ fn gesture_tick(
         let start_tag = state.gesture_start_tag.remove(hwnd);
         let end_cursor = state.gesture_end_cursor.remove(hwnd);
         let start_cursor = state.windrag_start_cursor.remove(hwnd);
+        // Modal move/size truth sampled once at START: read and clear here
+        // so every END path (settle, cancel, refusal) leaves no stale arm.
+        // The native branch below prefers it over rect comparison.
+        let modal_kind = state.move_kind.remove(hwnd);
         state.windrag_bound.remove(hwnd);
         state.gesture_esc_seq.remove(hwnd);
         state.gesture_end_seq.remove(hwnd);
@@ -21500,7 +24564,7 @@ fn gesture_tick(
             }
         } else {
             let cursor = end_cursor;
-            let Some(classified) = classify_gesture(&before, &current.visible, cursor) else {
+            let Some(mut classified) = classify_gesture(&before, &current.visible, cursor) else {
                 // Zero movement (or a cursor-less move): nothing to route.
                 // Reconcile once so any native nudge is reasserted to the
                 // Engine allocation; topology unchanged.
@@ -21520,6 +24584,14 @@ fn gesture_tick(
                 reconcile_tick(state, me, &fulls_owned, areas);
                 continue;
             };
+            // Modal truth over rect comparison (see
+            // `tiling::prefer_modal_move`): a caption-started move loop
+            // carries user move intent even through a system rescale.
+            classified = crate::tiling::prefer_modal_move(
+                classified,
+                cursor,
+                modal_kind.is_some_and(|kind| kind == MoveSizeKind::Move),
+            );
             classified
         };
         // The gesture window's own (output, workspace) session owns this
@@ -21586,37 +24658,125 @@ fn gesture_tick(
         ) else {
             continue;
         };
-        // Item 7 is same-output only: a release cursor outside the source
-        // domain bounds (including another output) refuses with snap-back
-        // and no transfer. Cross-output placement belongs to a later item;
-        // the Engine would refuse the point as well, but this explicit
-        // fence keeps the outcome attributable before any Engine call.
-        if let GestureIntent::MoveDrop { x, y } = intent
-            && !drop_point_in_domain(
-                domain.bounds.x,
-                domain.bounds.y,
-                domain.bounds.w,
-                domain.bounds.h,
-                x,
-                y,
-            )
-        {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "gesture",
-                    "tick": state.tick,
-                    "op": "drag-drop",
-                    "disposition": "refused",
-                    "outcome": "gesture-refused-cross-output",
-                    "window": current.token,
-                    "producer": producer,
-                }),
-            );
-            let fulls_owned = fulls.to_vec();
-            reconcile_tick(state, me, &fulls_owned, areas);
-            continue;
-        }
+        // Cross-output drops (REQ-MOU-03): the pointer output's current
+        // view scopes the drop through the pair route (occupied) or the
+        // singleton admission (empty). Same-output points keep the local
+        // route below; unplaceable points refuse with snap-back and no
+        // transfer. The release cursor is END-captured (never re-read), and
+        // domain decisions use retained membership plus this point, never
+        // the possibly-moved native frame monitor.
+        let cross_dest = if let GestureIntent::MoveDrop { x, y } = intent {
+            match resolve_drop_destination(state, areas, &loc.output, x, y) {
+                DropDestination::SameOutput => {
+                    // Same-output points still sit inside the inset work
+                    // area: panel-strip releases refuse before any Engine
+                    // call, exactly like the retired same-output fence.
+                    if !drop_point_in_domain(
+                        domain.bounds.x,
+                        domain.bounds.y,
+                        domain.bounds.w,
+                        domain.bounds.h,
+                        x,
+                        y,
+                    ) {
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "gesture",
+                                "tick": state.tick,
+                                "op": "drag-drop",
+                                "disposition": "refused",
+                                "outcome": "drag-drop-refused",
+                                "kind": "outside-work-area",
+                                "window": current.token,
+                                "producer": producer,
+                            }),
+                        );
+                        let fulls_owned = fulls.to_vec();
+                        reconcile_tick(state, me, &fulls_owned, areas);
+                        continue;
+                    }
+                    None
+                }
+                DropDestination::Cross { output, workspace } => Some((output, workspace, x, y)),
+                DropDestination::Refused(kind) => {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "gesture",
+                            "tick": state.tick,
+                            "op": "drag-drop",
+                            "disposition": "refused",
+                            "outcome": "drag-drop-refused",
+                            "kind": kind,
+                            "window": current.token,
+                            "producer": producer,
+                        }),
+                    );
+                    let fulls_owned = fulls.to_vec();
+                    reconcile_tick(state, me, &fulls_owned, areas);
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        // Cross-output finishes snapshot their fences now: the bridged path
+        // stashes the snapshot with the pending slot, the inline path below
+        // re-reads live against it immediately. Unreadable topology refuses
+        // with snap-back before any Engine call or queued slot.
+        let cross_fence = match &cross_dest {
+            Some((output, workspace, _, _)) => {
+                let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
+                let retained_full = retained
+                    .iter()
+                    .find(|r| r.key == member_key)
+                    .map(|r| r.fullscreen)
+                    .unwrap_or(false);
+                let probe = CrossDragSettle {
+                    mover_token: current.token.clone(),
+                    member_key: member_key.clone(),
+                    source_output: loc.output.clone(),
+                    source_workspace: loc.workspace.clone(),
+                    dest_output: output.clone(),
+                    dest_workspace: workspace.clone(),
+                    x: 0,
+                    y: 0,
+                    drop_prior: None,
+                    producer: producer.to_owned(),
+                    // Fence probe only: no Engine event is built from it.
+                    start_rect: None,
+                };
+                match snapshot_cross_drag(
+                    state,
+                    areas,
+                    &probe,
+                    live_max,
+                    live_full_opt.unwrap_or(retained_full),
+                ) {
+                    Some(fence) => Some(fence),
+                    None => {
+                        log_json_at(
+                            &log_path,
+                            serde_json::json!({
+                                "event": "gesture",
+                                "tick": state.tick,
+                                "op": "drag-drop",
+                                "disposition": "refused",
+                                "outcome": "drag-drop-refused",
+                                "kind": "unknown-output",
+                                "window": current.token,
+                                "producer": producer,
+                            }),
+                        );
+                        let fulls_owned = fulls.to_vec();
+                        reconcile_tick(state, me, &fulls_owned, areas);
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
         // Bridged finish: hide (the safety epoch bars any stale-show replay)
         // and stash the drop as a bounded pending owner operation serviced
         // from render acks at loop level. No blocking wait: the owner stays
@@ -21625,6 +24785,14 @@ fn gesture_tick(
         // observations and gates before every focus/Engine/foreign write
         // below. The same-thread path keeps its proven-inline ordering.
         if state.render_bridge.is_some() {
+            let pending_dest = match (&cross_dest, &cross_fence) {
+                (Some((output, workspace, _, _)), Some(fence)) => Some(PendingCrossDest {
+                    output: output.clone(),
+                    workspace: workspace.clone(),
+                    fence: fence.clone(),
+                }),
+                _ => None,
+            };
             let occupied = queue_pending_drop(
                 state,
                 hwnd,
@@ -21636,6 +24804,8 @@ fn gesture_tick(
                 member_key,
                 &loc.output,
                 &loc.workspace,
+                pending_dest,
+                state.gesture_before.get(hwnd).copied(),
             );
             state.preview_bound.remove(hwnd);
             state.preview_dead.remove(hwnd);
@@ -21665,6 +24835,140 @@ fn gesture_tick(
                     }),
                 );
             }
+            continue;
+        }
+        // Inline cross-output settle (same-thread path, no render bridge):
+        // fresh suspend/elevated gates, immediate fence re-read, proven
+        // inline hide, then the shared Engine route. The pre-drop windrag
+        // focus below stays same-output only: cross drops follow-focus on
+        // the destination after the transfer instead of foregrounding the
+        // source first.
+        if let (Some((dest_output, dest_workspace, x, y)), Some(fence)) =
+            (cross_dest.as_ref(), cross_fence.as_ref())
+        {
+            if state.suspended
+                || suspend_read(state, me, fulls).veto.block
+                || foreground_elevated(me)
+            {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": "drag-drop",
+                        "disposition": "refused",
+                        "outcome": if state.suspended {
+                            "suspended"
+                        } else {
+                            "elevated-foreground"
+                        },
+                        "window": current.token,
+                        "producer": producer,
+                    }),
+                );
+                let fulls_owned = fulls.to_vec();
+                reconcile_tick(state, me, &fulls_owned, areas);
+                continue;
+            }
+            let membership_ok = state
+                .workspaces
+                .member_loc(&member_key)
+                .is_some_and(|fresh| {
+                    fresh.output == loc.output && fresh.workspace == loc.workspace
+                });
+            let (live_max, live_full_opt) = live_overlay_flags(member_key.hwnd, fulls);
+            let retained_full = retained
+                .iter()
+                .find(|r| r.key == member_key)
+                .map(|r| r.fullscreen)
+                .unwrap_or(false);
+            let live = drag_drop_live(
+                state,
+                areas,
+                fence,
+                &member_key,
+                membership_ok,
+                live_max,
+                live_full_opt.unwrap_or(retained_full),
+            );
+            if let Some(outcome) = crate::workspace_owner::drag_drop_fences_hold(fence, &live) {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": "drag-drop",
+                        "disposition": "refused",
+                        "outcome": outcome,
+                        "window": current.token,
+                        "producer": producer,
+                    }),
+                );
+                let fulls_owned = fulls.to_vec();
+                reconcile_tick(state, me, &fulls_owned, areas);
+                continue;
+            }
+            // Proven inline hide before any Engine or project mutation: the
+            // drop never executes over a possibly visible preview.
+            if !hide_preview_finish(state, "finish") {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": "drag-drop",
+                        "disposition": "refused",
+                        "outcome": "drag-drop-refused",
+                        "kind": "preview-finish-unacked",
+                        "window": current.token,
+                        "producer": producer,
+                    }),
+                );
+                state.preview_bound.remove(hwnd);
+                state.preview_dead.remove(hwnd);
+                state.gesture_preview_start.remove(hwnd);
+                state.gesture_start_cursor.remove(hwnd);
+                let fulls_owned = fulls.to_vec();
+                reconcile_tick(state, me, &fulls_owned, areas);
+                continue;
+            }
+            let drop_prior = state
+                .preview_bound
+                .get(hwnd)
+                .and_then(|bound| bound.hover_prior.clone());
+            state.preview_bound.remove(hwnd);
+            state.preview_dead.remove(hwnd);
+            state.gesture_preview_start.remove(hwnd);
+            state.gesture_start_cursor.remove(hwnd);
+            state.tick += 1;
+            let tick = state.tick;
+            let correlation = state.correlation();
+            let settle = CrossDragSettle {
+                mover_token: current.token.clone(),
+                member_key: member_key.clone(),
+                source_output: loc.output.clone(),
+                source_workspace: loc.workspace.clone(),
+                dest_output: dest_output.clone(),
+                dest_workspace: dest_workspace.clone(),
+                x: *x,
+                y: *y,
+                drop_prior,
+                producer: producer.to_owned(),
+                start_rect: state.gesture_before.get(hwnd).copied(),
+            };
+            settle_cross_drag_drop(
+                state,
+                me,
+                fulls,
+                areas,
+                &observed,
+                &retained,
+                &settle,
+                fence,
+                tick,
+                &correlation,
+                correlation.as_str(),
+            );
             continue;
         }
         // Project-driven Win+Left focus binding (KDE mover parity): the
@@ -23285,7 +26589,13 @@ fn run_tile_loop(
                             e.insert(end_seq);
                         }
                         state.active.remove(&hwnd);
-                        state.move_kind.remove(&hwnd);
+                        // The START-sampled move/size kind travels to settle:
+                        // `gesture_tick` reads and clears it exactly once per
+                        // END, so caption-started moves survive a system
+                        // rescale (mixed-DPI WM_DPICHANGED) that rect
+                        // comparison alone would misread as a user resize.
+                        // Preview and underlay keep reading the held entry
+                        // until settle runs later this same turn.
                     }
                 }
             }
@@ -33325,6 +36635,10 @@ mod preview_tests {
             source_window: WindowId("w1".to_owned()),
             revision: 3,
             prior: None,
+            prior_domain: DomainKey {
+                output: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            },
         };
         assert_eq!(super::preview_prior_desc(&Some(cleared)), "none");
         // A sticky group-edge carry describes only its side: the group
@@ -33341,6 +36655,10 @@ mod preview_tests {
                 group: NodeId("grp-secret".to_owned()),
                 edge: tiler_core::contract::DragSide::Top,
             }),
+            prior_domain: DomainKey {
+                output: OutputId("mon-a".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            },
         };
         let desc = super::preview_prior_desc(&Some(sticky));
         assert_eq!(desc, "group-edge:top");
@@ -37796,9 +41114,10 @@ mod stage3_combined_tests {
 mod pending_drop_tests {
     use super::{
         GestureIntent, MonitorArea, ObservedWindow, RenderBridge, RenderCarrier, RetainedRow,
-        clear_pending_seams, hide_render_carrier, inject_pending_elevated, inject_pending_focus,
-        inject_pending_observe, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
-        live_member_tag, pending_counters, queue_pending_drop, service_pending_drop,
+        clear_pending_seams, hide_render_carrier, inject_monitor_areas, inject_pending_elevated,
+        inject_pending_focus, inject_pending_observe, inject_pending_stop, inject_pending_suspend,
+        inject_pending_tag, live_member_tag, pending_counters, queue_pending_drop,
+        service_pending_drop,
     };
     use std::collections::VecDeque;
     use std::sync::Arc;
@@ -38001,7 +41320,7 @@ mod pending_drop_tests {
         let intent = GestureIntent::MoveDrop { x: 960, y: 500 };
         let occupied = queue_pending_drop(
             &mut state, &hwnd, producer, intent, &token, start_key, start_tag, member_key, &output,
-            &active,
+            &active, None, None,
         );
         assert!(!occupied, "valid fixture queues into an empty slot");
         // Prove the hide: the ack pair covers the queued hide pair.
@@ -38237,6 +41556,8 @@ mod pending_drop_tests {
             first_key,
             &output,
             &active,
+            None,
+            None,
         );
         assert!(!first_occupied, "first finish owns the slot");
         let second_occupied = queue_pending_drop(
@@ -38250,6 +41571,8 @@ mod pending_drop_tests {
             second_key,
             &output,
             &active,
+            None,
+            None,
         );
         assert!(second_occupied, "overlapping END is refused busy");
         let pending = state
@@ -38265,6 +41588,2147 @@ mod pending_drop_tests {
         assert_eq!(counters.apply, 0);
         assert_eq!(counters.reconcile, 0);
         let _ = me;
+        clear_pending_seams();
+    }
+
+    /// Two-output cross-drop fixture: the mover plus a sibling tile the
+    /// primary source view, one tile lives on the negative-x destination
+    /// view, and both Engine sessions are seeded through real reconcile
+    /// events. Returns state plus addressing plus the destination drop
+    /// point on the destination's left edge.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_lines)]
+    fn cross_pending_fixture() -> (
+        super::TileLoop,
+        crate::model::ProcessIdentity,
+        Vec<MonitorArea>,
+        Vec<tiler_core::geometry::Rect>,
+        crate::workspace::WindowKey,
+        String,
+        u64,
+        String,
+        String,
+        String,
+        String,
+        i32,
+        i32,
+    ) {
+        use tiler_core::boundary::CoreReply;
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        clear_pending_seams();
+        let me = pending_me();
+        let mut state = pending_state();
+        let areas = vec![
+            MonitorArea {
+                device: "mon-a".to_owned(),
+                work: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1400,
+                },
+                full: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1440,
+                },
+            },
+            MonitorArea {
+                device: "mon-b".to_owned(),
+                work: tiler_core::geometry::Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1040,
+                },
+                full: tiler_core::geometry::Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            },
+        ];
+        let fulls: Vec<tiler_core::geometry::Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        state.workspaces.set_tiled("mon-a", &ws_a, true);
+        state.workspaces.set_tiled("mon-b", &ws_b, true);
+        let mover = member_key(0x3101, 6101, "creation-3101");
+        let sib = member_key(0x3102, 6102, "creation-3102");
+        let host = member_key(0x3103, 6103, "creation-3103");
+        for (key, token, pid, creation) in [
+            (&mover, "w-mover", 6101, "creation-3101"),
+            (&sib, "w-sib", 6102, "creation-3102"),
+            (&host, "w-dest", 6103, "creation-3103"),
+        ] {
+            state.member_tokens.insert(key.clone(), token.to_owned());
+            state
+                .member_identity
+                .insert(key.clone(), member_identity(pid, creation, &me));
+        }
+        state
+            .member_tags
+            .insert(mover.clone(), "tag-3101".to_owned());
+        state.member_tags.insert(sib.clone(), "tag-3102".to_owned());
+        state
+            .member_tags
+            .insert(host.clone(), "tag-3103".to_owned());
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-a", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(sib.clone(), "mon-a", &ws_a, false));
+        assert!(state.workspaces.assign(host.clone(), "mon-b", &ws_b, false));
+        let mover_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let sib_rect = tiler_core::geometry::Rect {
+            x: 600,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let dest_rect = tiler_core::geometry::Rect {
+            x: -1500,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        for (token, rect) in [
+            ("w-mover", mover_rect),
+            ("w-sib", sib_rect),
+            ("w-dest", dest_rect),
+        ] {
+            state.member_rects.insert(token.to_owned(), rect);
+        }
+        let observed = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, mover_rect),
+            observed_window(0x3102, "w-sib", 6102, "creation-3102", &me, sib_rect),
+            observed_window(0x3103, "w-dest", 6103, "creation-3103", &me, dest_rect),
+        ];
+        // Seed both Engine sessions through real reconcile events (before
+        // injection, so no counters move).
+        for (output, workspace, rows, focused) in [
+            (
+                "mon-a",
+                ws_a.clone(),
+                vec![("w-mover", mover_rect), ("w-sib", sib_rect)],
+                "w-mover",
+            ),
+            ("mon-b", ws_b.clone(), vec![("w-dest", dest_rect)], "w-dest"),
+        ] {
+            let (domain, domain_key) = super::workspace_domain_for(
+                output,
+                &workspace,
+                &areas,
+                state.inner_gap,
+                state.outer_gap,
+            )
+            .expect("domain");
+            let carried: Vec<(
+                WindowId,
+                tiler_core::geometry::Rect,
+                tiler_core::size_hints::WindowSizeHints,
+                bool,
+            )> = rows
+                .iter()
+                .map(|(token, rect)| {
+                    (
+                        WindowId((*token).to_owned()),
+                        *rect,
+                        tiler_core::size_hints::WindowSizeHints::none(),
+                        false,
+                    )
+                })
+                .collect();
+            let correlation = CorrelationId::parse("cross-pending-seed").expect("correlation");
+            let fp = crate::tiling::fingerprint(
+                &rows
+                    .iter()
+                    .map(|(t, r)| ((*t).to_owned(), *r))
+                    .collect::<Vec<_>>(),
+            );
+            let event = crate::tiling::build_reconcile_event_for_floating(
+                &state.owner,
+                &state.generation,
+                &correlation,
+                0,
+                fp,
+                &domain,
+                &domain_key,
+                state.outer_gap,
+                &carried,
+                Some(&WindowId(focused.to_owned())),
+            );
+            match state.engine.handle(&event) {
+                CoreReply::Projection(_) | CoreReply::Tiled(_) => {}
+                other => panic!("seed must converge, got {other:?}"),
+            }
+        }
+        inject_pending_observe(observed.clone(), Vec::new(), false);
+        inject_pending_tag(0x3101, Some("tag-3101".to_owned()));
+        inject_pending_tag(0x3102, Some("tag-3102".to_owned()));
+        inject_pending_tag(0x3103, Some("tag-3103".to_owned()));
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_focus(Some("focus-ok"));
+        inject_pending_stop(false);
+        // Operation-tail topology reads the injected fixture list (matching
+        // the tick areas here): the fresh-snapshot path is exercised without
+        // native enumeration, and drift tests overwrite this injection.
+        inject_monitor_areas(Some(areas.clone()));
+        // Destination drop point on the destination domain's left edge.
+        let (dest_domain, _) =
+            super::workspace_domain_for("mon-b", &ws_b, &areas, state.inner_gap, state.outer_gap)
+                .expect("dest domain");
+        let x = dest_domain.bounds.x + 2;
+        let y = dest_domain.bounds.y + dest_domain.bounds.h / 2;
+        (
+            state,
+            me,
+            areas,
+            fulls,
+            mover,
+            "w-mover".to_owned(),
+            0x3101,
+            "mon-a".to_owned(),
+            ws_a,
+            "mon-b".to_owned(),
+            ws_b,
+            x,
+            y,
+        )
+    }
+
+    fn cross_pending_fence(
+        state: &super::TileLoop,
+        areas: &[MonitorArea],
+        ws_a: &str,
+        ws_b: &str,
+    ) -> crate::workspace_owner::DragDropFenceSnapshot {
+        let (source_domain, _) =
+            super::workspace_domain_for("mon-a", ws_a, areas, state.inner_gap, state.outer_gap)
+                .expect("source domain");
+        let (target_domain, _) =
+            super::workspace_domain_for("mon-b", ws_b, areas, state.inner_gap, state.outer_gap)
+                .expect("dest domain");
+        let source_full = areas
+            .iter()
+            .find(|a| a.device == "mon-a")
+            .expect("source area")
+            .full;
+        let target_full = areas
+            .iter()
+            .find(|a| a.device == "mon-b")
+            .expect("dest area")
+            .full;
+        crate::workspace_owner::DragDropFenceSnapshot {
+            inner_gap: state.inner_gap,
+            outer_gap: state.outer_gap,
+            source_output: "mon-a".to_owned(),
+            source_workspace: ws_a.to_owned(),
+            target_output: "mon-b".to_owned(),
+            target_workspace: ws_b.to_owned(),
+            source_tiled: true,
+            target_tiled: true,
+            overlay_maximized: false,
+            overlay_fullscreen: false,
+            source_full,
+            target_full,
+            source_bounds: source_domain.bounds,
+            target_bounds: target_domain.bounds,
+            owner: state.owner.as_str().to_owned(),
+            generation: state.generation.as_str().to_owned(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn queue_cross_pending(
+        state: &mut super::TileLoop,
+        mover: &crate::workspace::WindowKey,
+        token: &str,
+        hwnd: u64,
+        output: &str,
+        workspace: &str,
+        dest_output: &str,
+        dest_workspace: &str,
+        fence: crate::workspace_owner::DragDropFenceSnapshot,
+        x: i32,
+        y: i32,
+        source_rect: Option<tiler_core::geometry::Rect>,
+    ) {
+        let dest = super::PendingCrossDest {
+            output: dest_output.to_owned(),
+            workspace: dest_workspace.to_owned(),
+            fence,
+        };
+        // START snapshot tag travels with the gesture exactly like the
+        // production queue site (read from the member table, never invented).
+        let start_tag = state.member_tags.get(mover).cloned();
+        let occupied = queue_pending_drop(
+            state,
+            &hwnd,
+            "windrag",
+            GestureIntent::MoveDrop { x, y },
+            token,
+            Some(mover.clone()),
+            Some(start_tag),
+            mover.clone(),
+            output,
+            workspace,
+            Some(dest),
+            source_rect,
+        );
+        assert!(!occupied, "cross fixture queues into an empty slot");
+        let (hide_gen, hide_safety) = state
+            .render_bridge
+            .as_ref()
+            .and_then(|bridge| bridge.pending.as_ref())
+            .map(|pending| (pending.hide_gen, pending.hide_safety))
+            .expect("pending queued");
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.hidden_ack[RenderCarrier::Preview.index()] = Some((hide_gen, hide_safety));
+        }
+    }
+
+    #[test]
+    fn cross_pending_proven_hide_settles_transfer_with_arrival() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            &token,
+            hwnd,
+            &src_out,
+            &ws_a,
+            &dst_out,
+            &ws_b,
+            fence,
+            x,
+            y,
+            // PRE-gesture allocation: the source capture row stays bounded
+            // here even though the observed frame below travels.
+            Some(tiler_core::geometry::Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            }),
+        );
+        // Learn the planned arrival through the production pair preview
+        // (read-only), then rig the observed mover frame to it so the
+        // arrival proof exercises the real comparison instead of failing on
+        // the frozen pre-drop frame.
+        let observed: Vec<ObservedWindow> = vec![
+            observed_window(
+                0x3101,
+                "w-mover",
+                6101,
+                "creation-3101",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        let settle = super::CrossDragSettle {
+            mover_token: token.clone(),
+            member_key: mover.clone(),
+            source_output: src_out.clone(),
+            source_workspace: ws_a.clone(),
+            dest_output: dst_out.clone(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(tiler_core::geometry::Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            }),
+        };
+        let correlation = state.correlation();
+        let preview = super::prepare_cross_drag_preview(
+            &mut state,
+            &areas,
+            &observed,
+            &[],
+            &settle,
+            &correlation,
+        )
+        .expect("preview prepares");
+        let mut preview = preview;
+        let proposed = match super::handle_engine_event(&mut state, &mut preview) {
+            tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+            other => panic!("cross preview must project, got {other:?}"),
+        };
+        // The arrival lands inside the destination work area, not the panel.
+        let dest_work = areas
+            .iter()
+            .find(|a| a.device == dst_out)
+            .expect("dest area")
+            .work;
+        assert!(proposed.x >= dest_work.x);
+        assert!(proposed.y >= dest_work.y);
+        assert!(proposed.x + proposed.w <= dest_work.x + dest_work.w);
+        assert!(proposed.y + proposed.h <= dest_work.y + dest_work.h);
+        let rigged = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, proposed),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "proven cross pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 2, "preview plus drop run Engine");
+        assert_eq!(counters.focus, 1, "arrival gates the single follow focus");
+        assert_eq!(counters.apply, 1, "one combined union apply");
+        assert_eq!(
+            counters.reconcile, 0,
+            "success converges through apply, not reconcile"
+        );
+        // Membership transferred Engine-side and project-side.
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(dst_out.as_str())
+        );
+        let dest_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(dst_out.clone()),
+            workspace: tiler_core::directional::WorkspaceId(ws_b.clone()),
+        };
+        assert!(
+            state
+                .engine
+                .session(&dest_key)
+                .expect("dest kept")
+                .snapshot()
+                .windows
+                .iter()
+                .any(|l| l.window.0 == "w-mover")
+        );
+        let src_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(src_out.clone()),
+            workspace: tiler_core::directional::WorkspaceId(ws_a.clone()),
+        };
+        assert!(
+            state
+                .engine
+                .session(&src_key)
+                .expect("source kept")
+                .snapshot()
+                .windows
+                .iter()
+                .all(|l| l.window.0 != "w-mover")
+        );
+        // No view switch and no hiding: both outputs keep their current
+        // workspaces and the destination tile stays visible.
+        assert_eq!(
+            state.workspaces.active_id(&src_out).as_deref(),
+            Some(ws_a.as_str())
+        );
+        assert_eq!(
+            state.workspaces.active_id(&dst_out).as_deref(),
+            Some(ws_b.as_str())
+        );
+        let host = member_key(0x3103, 6103, "creation-3103");
+        assert!(!state.workspaces.is_hidden(&host));
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_native_moved_frame_commits_with_bounded_source_row() {
+        // Native title-bar drags move the frame inside the OS modal loop:
+        // at END the mover's live frame sits on the destination output
+        // (same size, no DPI rescale here) while project membership still
+        // homes it on the source. The production prepare route must carry
+        // the retained START allocation on the source capture row (bounded
+        // in the source) while destination rows stay current. Commit-last:
+        // the pair plans on a candidate, and an unproven arrival keeps
+        // source membership and the retained Engine with no follow-focus
+        // (homing binds, not rects, but arrival still gates the commit).
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let moved_rect = tiler_core::geometry::Rect {
+            x: -1500,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            &token,
+            hwnd,
+            &src_out,
+            &ws_a,
+            &dst_out,
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        // Re-observe with the traveled native frame (same size: a move,
+        // not a DPI rescale).
+        let moved = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, moved_rect),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 500,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(moved.clone(), Vec::new(), false);
+        // Production prepare: the source capture row carries the START
+        // allocation (bounded in the source domain bounds) while the
+        // destination current row keeps its live frame.
+        let settle = super::CrossDragSettle {
+            mover_token: token.clone(),
+            member_key: mover.clone(),
+            source_output: src_out.clone(),
+            source_workspace: ws_a.clone(),
+            dest_output: dst_out.clone(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let event = super::prepare_cross_drag_event(
+            &mut state,
+            &areas,
+            &moved,
+            &[],
+            &settle,
+            &correlation,
+            correlation.as_str(),
+            "drag-drop",
+        )
+        .expect("cross event prepares");
+        let source_row = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "w-mover" && w.output.0 == src_out && w.workspace.0 == ws_a)
+            .expect("source-homed mover row");
+        assert_eq!(source_row.rect, start_rect);
+        let (source_domain, _) =
+            super::workspace_domain_for(&src_out, &ws_a, &areas, state.inner_gap, state.outer_gap)
+                .expect("source domain");
+        assert!(
+            source_row.rect.x >= source_domain.bounds.x
+                && source_row.rect.y >= source_domain.bounds.y
+                && source_row.rect.x + source_row.rect.w
+                    <= source_domain.bounds.x + source_domain.bounds.w
+                && source_row.rect.y + source_row.rect.h
+                    <= source_domain.bounds.y + source_domain.bounds.h,
+            "source capture row stays bounded"
+        );
+        let dest_row = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "w-dest")
+            .expect("destination current row");
+        assert_eq!(
+            dest_row.rect,
+            tiler_core::geometry::Rect {
+                x: -1500,
+                y: 500,
+                w: 400,
+                h: 300,
+            }
+        );
+        // Full pending route with the traveled frame: the pair plans on a
+        // candidate (no convergence refusal) but the unproven arrival
+        // withholds the commit, so the tail reports unverified with no
+        // focus actuation, source membership retained, and the retained
+        // Engine published nowhere — exactly like a real missed readback.
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "proven cross pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 1, "drop plans Engine once on a candidate");
+        assert_eq!(counters.focus, 0, "unproven arrival never focuses");
+        assert_eq!(counters.apply, 1, "combined apply still runs");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(src_out.as_str()),
+            "unproven arrival keeps the mover home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "unproven arrival keeps the retained Engine"
+        );
+        let dest_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(dst_out.clone()),
+            workspace: tiler_core::directional::WorkspaceId(ws_b.clone()),
+        };
+        assert!(
+            state.engine.session(&dest_key).is_none_or(|session| session
+                .snapshot()
+                .windows
+                .iter()
+                .all(|l| l.window.0 != "w-mover")),
+            "unproven arrival never publishes the mover remotely"
+        );
+        let src_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId(src_out.clone()),
+            workspace: tiler_core::directional::WorkspaceId(ws_a.clone()),
+        };
+        assert!(
+            state
+                .engine
+                .session(&src_key)
+                .expect("source kept")
+                .snapshot()
+                .windows
+                .iter()
+                .any(|l| l.window.0 == "w-mover"),
+            "unproven arrival keeps the mover in the retained source session"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_empty_native_flow_admits_then_reflows() {
+        // Empty destination with a natively moved frame: commit-last plans
+        // the singleton admission on a candidate, applies the destination,
+        // reflows the source without the mover on that same candidate, and
+        // publishes both authorities once after the arrival proof verifies,
+        // before follow-focus.
+        let state = {
+            clear_pending_seams();
+            let me = pending_me();
+            let mut state = pending_state();
+            let areas = vec![
+                MonitorArea {
+                    device: "mon-a".to_owned(),
+                    work: tiler_core::geometry::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 2560,
+                        h: 1400,
+                    },
+                    full: tiler_core::geometry::Rect {
+                        x: 0,
+                        y: 0,
+                        w: 2560,
+                        h: 1440,
+                    },
+                },
+                MonitorArea {
+                    device: "mon-b".to_owned(),
+                    work: tiler_core::geometry::Rect {
+                        x: -1920,
+                        y: 0,
+                        w: 1920,
+                        h: 1040,
+                    },
+                    full: tiler_core::geometry::Rect {
+                        x: -1920,
+                        y: 0,
+                        w: 1920,
+                        h: 1080,
+                    },
+                },
+            ];
+            let fulls: Vec<tiler_core::geometry::Rect> = areas.iter().map(|a| a.full).collect();
+            state.workspaces.ensure_output("mon-a");
+            state.workspaces.ensure_output("mon-b");
+            let ws_a = state.workspaces.active_id("mon-a").expect("active");
+            let ws_b = state.workspaces.active_id("mon-b").expect("active");
+            state.workspaces.set_tiled("mon-a", &ws_a, true);
+            state.workspaces.set_tiled("mon-b", &ws_b, true);
+            (state, me, areas, fulls, ws_a, ws_b)
+        };
+        let (mut state, me, areas, fulls, ws_a, ws_b) = state;
+        let mover = member_key(0x3201, 6201, "creation-3201");
+        let sib = member_key(0x3202, 6202, "creation-3202");
+        for (key, token, pid, creation) in [
+            (&mover, "w-mover", 6201, "creation-3201"),
+            (&sib, "w-sib", 6202, "creation-3202"),
+        ] {
+            state.member_tokens.insert(key.clone(), token.to_owned());
+            state
+                .member_identity
+                .insert(key.clone(), member_identity(pid, creation, &me));
+        }
+        state
+            .member_tags
+            .insert(mover.clone(), "tag-3201".to_owned());
+        state.member_tags.insert(sib.clone(), "tag-3202".to_owned());
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-a", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(sib.clone(), "mon-a", &ws_a, false));
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let moved_rect = tiler_core::geometry::Rect {
+            x: -1500,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        // Seed the source Engine session only; the destination stays empty.
+        {
+            use tiler_core::boundary::CoreReply;
+            use tiler_core::directional::WindowId;
+            use tiler_core::ids::CorrelationId;
+            let (domain, domain_key) = super::workspace_domain_for(
+                "mon-a",
+                &ws_a,
+                &areas,
+                state.inner_gap,
+                state.outer_gap,
+            )
+            .expect("domain");
+            let carried = vec![
+                (
+                    WindowId("w-mover".to_owned()),
+                    start_rect,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                ),
+                (
+                    WindowId("w-sib".to_owned()),
+                    tiler_core::geometry::Rect {
+                        x: 600,
+                        y: 100,
+                        w: 400,
+                        h: 300,
+                    },
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                ),
+            ];
+            let correlation = CorrelationId::parse("cross-empty-seed").expect("correlation");
+            let fp = crate::tiling::fingerprint(
+                &carried
+                    .iter()
+                    .map(|(w, r, _, _)| (w.0.clone(), *r))
+                    .collect::<Vec<_>>(),
+            );
+            let event = crate::tiling::build_reconcile_event_for_floating(
+                &state.owner,
+                &state.generation,
+                &correlation,
+                0,
+                fp,
+                &domain,
+                &domain_key,
+                state.outer_gap,
+                &carried,
+                Some(&WindowId("w-mover".to_owned())),
+            );
+            match state.engine.handle(&event) {
+                CoreReply::Projection(_) | CoreReply::Tiled(_) => {}
+                other => panic!("seed must converge, got {other:?}"),
+            }
+        }
+        let observed = vec![
+            observed_window(0x3201, "w-mover", 6201, "creation-3201", &me, moved_rect),
+            observed_window(
+                0x3202,
+                "w-sib",
+                6202,
+                "creation-3202",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(observed.clone(), Vec::new(), false);
+        inject_pending_tag(0x3201, Some("tag-3201".to_owned()));
+        inject_pending_tag(0x3202, Some("tag-3202".to_owned()));
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_focus(Some("focus-ok"));
+        inject_pending_stop(false);
+        inject_monitor_areas(Some(areas.clone()));
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        // Destination drop point on the empty destination's left edge.
+        let (dest_domain, _) =
+            super::workspace_domain_for("mon-b", &ws_b, &areas, state.inner_gap, state.outer_gap)
+                .expect("dest domain");
+        let (x, y) = (
+            dest_domain.bounds.x + 2,
+            dest_domain.bounds.y + dest_domain.bounds.h / 2,
+        );
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            "w-mover",
+            0x3201,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        // Learn the planned arrival through the production singleton preview
+        // (read-only on a clone), then rig the observed mover frame to it so
+        // the arrival proof exercises the real comparison.
+        let settle = super::CrossDragSettle {
+            mover_token: "w-mover".to_owned(),
+            member_key: mover.clone(),
+            source_output: "mon-a".to_owned(),
+            source_workspace: ws_a.clone(),
+            dest_output: "mon-b".to_owned(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let mut hint_cx = super::HintCx::new();
+        let mut preview = super::prepare_cross_singleton_event(
+            &mut state,
+            &areas,
+            &observed,
+            &settle,
+            &correlation,
+            &mut hint_cx,
+            true,
+        )
+        .expect("singleton preview prepares");
+        let proposed = {
+            let mut candidate = state.engine.clone();
+            super::stamp_engine_event(&state, &mut preview);
+            match candidate.handle(&preview) {
+                tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+                other => panic!("singleton preview must project, got {other:?}"),
+            }
+        };
+        let rigged = vec![
+            observed_window(0x3201, "w-mover", 6201, "creation-3201", &me, proposed),
+            observed_window(
+                0x3202,
+                "w-sib",
+                6202,
+                "creation-3202",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "proven empty pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(
+            counters.engine, 2,
+            "admission plus source reflow run Engine"
+        );
+        assert_eq!(
+            counters.apply, 2,
+            "destination apply plus source reflow apply"
+        );
+        assert_eq!(counters.focus, 1, "verified arrival follows focus once");
+        assert_eq!(counters.reconcile, 0, "success converges through apply");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some("mon-b")
+        );
+        let dest_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId("mon-b".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId(ws_b.clone()),
+        };
+        let dest_windows: Vec<String> = state
+            .engine
+            .session(&dest_key)
+            .expect("dest kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(dest_windows, vec!["w-mover".to_owned()]);
+        let src_key = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId("mon-a".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId(ws_a.clone()),
+        };
+        let src_windows: Vec<String> = state
+            .engine
+            .session(&src_key)
+            .expect("source kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(src_windows, vec!["w-sib".to_owned()]);
+        assert_eq!(
+            state.workspaces.active_id("mon-b").as_deref(),
+            Some(ws_b.as_str()),
+            "no destination view switch"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last occupied refusal: stage the verified arrival, then drift
+    /// the fresh topology under the tail. The candidate plan runs but the
+    /// commit withholds every write, keeping source membership and the
+    /// retained Engine with no follow-focus.
+    #[test]
+    fn cross_pending_occupied_late_topology_retains_source_and_engine() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            &token,
+            hwnd,
+            &src_out,
+            &ws_a,
+            &dst_out,
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        // Stage the verified arrival exactly like the success path so only
+        // the late topology refuses.
+        let settle = super::CrossDragSettle {
+            mover_token: token.clone(),
+            member_key: mover.clone(),
+            source_output: src_out.clone(),
+            source_workspace: ws_a.clone(),
+            dest_output: dst_out.clone(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let observed_probe: Vec<ObservedWindow> = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, start_rect),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        let preview = super::prepare_cross_drag_preview(
+            &mut state,
+            &areas,
+            &observed_probe,
+            &[],
+            &settle,
+            &correlation,
+        )
+        .expect("preview prepares");
+        let mut preview = preview;
+        let proposed = match super::handle_engine_event(&mut state, &mut preview) {
+            tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+            other => panic!("cross preview must project, got {other:?}"),
+        };
+        let rigged = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, proposed),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+        // Fresh topology drifted after pair-build: the destination FULL
+        // moved, so the tail withholds every write. The tick areas stay
+        // original so the pre-settle pointer check still passes.
+        let mut drifted = areas.clone();
+        if let Some(area) = drifted.iter_mut().find(|a| a.device == dst_out) {
+            area.full.x += 100;
+        }
+        inject_monitor_areas(Some(drifted));
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "late-drift pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert_eq!(counters.apply, 0, "late drift withholds every write");
+        assert!(
+            counters.reconcile >= 1,
+            "late drift reconciles with the fresh topology"
+        );
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(src_out.as_str()),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "late drift keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last occupied refusal on a failed readback: the scripted apply
+    /// seam fails the single combined write, so the candidate discards with
+    /// source membership and the retained Engine and no follow-focus.
+    #[test]
+    fn cross_pending_occupied_failed_readback_retains_source_and_engine() {
+        use super::{inject_pending_apply, pending_counters};
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            &token,
+            hwnd,
+            &src_out,
+            &ws_a,
+            &dst_out,
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        let settle = super::CrossDragSettle {
+            mover_token: token.clone(),
+            member_key: mover.clone(),
+            source_output: src_out.clone(),
+            source_workspace: ws_a.clone(),
+            dest_output: dst_out.clone(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let observed_probe: Vec<ObservedWindow> = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, start_rect),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        let preview = super::prepare_cross_drag_preview(
+            &mut state,
+            &areas,
+            &observed_probe,
+            &[],
+            &settle,
+            &correlation,
+        )
+        .expect("preview prepares");
+        let mut preview = preview;
+        let proposed = match super::handle_engine_event(&mut state, &mut preview) {
+            tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+            other => panic!("cross preview must project, got {other:?}"),
+        };
+        let rigged = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, proposed),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+        inject_monitor_areas(Some(areas.clone()));
+        inject_pending_apply(Some((false, 0)));
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "refused pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.apply, 1, "the combined apply ran once");
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert_eq!(counters.reconcile, 0, "no replay on a refused write");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(src_out.as_str()),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "failed readback keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last occupied refusal on a write mismatch: same retention as a
+    /// failed readback, reported as a mismatch with no follow-focus.
+    #[test]
+    fn cross_pending_occupied_mismatch_retains_source_and_engine() {
+        use super::{inject_pending_apply, pending_counters};
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            &token,
+            hwnd,
+            &src_out,
+            &ws_a,
+            &dst_out,
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        let settle = super::CrossDragSettle {
+            mover_token: token.clone(),
+            member_key: mover.clone(),
+            source_output: src_out.clone(),
+            source_workspace: ws_a.clone(),
+            dest_output: dst_out.clone(),
+            dest_workspace: ws_b.clone(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let observed_probe: Vec<ObservedWindow> = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, start_rect),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        let preview = super::prepare_cross_drag_preview(
+            &mut state,
+            &areas,
+            &observed_probe,
+            &[],
+            &settle,
+            &correlation,
+        )
+        .expect("preview prepares");
+        let mut preview = preview;
+        let proposed = match super::handle_engine_event(&mut state, &mut preview) {
+            tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+            other => panic!("cross preview must project, got {other:?}"),
+        };
+        let rigged = vec![
+            observed_window(0x3101, "w-mover", 6101, "creation-3101", &me, proposed),
+            observed_window(
+                0x3102,
+                "w-sib",
+                6102,
+                "creation-3102",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+            observed_window(
+                0x3103,
+                "w-dest",
+                6103,
+                "creation-3103",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: -1500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+        inject_monitor_areas(Some(areas.clone()));
+        inject_pending_apply(Some((true, 1)));
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "mismatched pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.apply, 1, "the combined apply ran once");
+        assert_eq!(counters.focus, 0, "mismatch skips follow-focus");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(src_out.as_str()),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "mismatch keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Empty-destination commit-last fixture: mover plus sibling tile the
+    /// `mon-a` source view, `mon-b` stays empty project-side and Engine-side
+    /// with only the source session seeded, and the tail seams script the
+    /// fixture topology. Returns state plus addressing, the destination drop
+    /// point, and the START capture rect.
+    #[allow(clippy::type_complexity)]
+    fn empty_cross_fixture() -> (
+        super::TileLoop,
+        crate::model::ProcessIdentity,
+        Vec<MonitorArea>,
+        Vec<tiler_core::geometry::Rect>,
+        crate::workspace::WindowKey,
+        crate::workspace::WindowKey,
+        String,
+        String,
+        i32,
+        i32,
+        tiler_core::geometry::Rect,
+    ) {
+        use tiler_core::boundary::CoreReply;
+        use tiler_core::directional::WindowId;
+        use tiler_core::ids::CorrelationId;
+        clear_pending_seams();
+        let me = pending_me();
+        let mut state = pending_state();
+        let areas = vec![
+            MonitorArea {
+                device: "mon-a".to_owned(),
+                work: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1400,
+                },
+                full: tiler_core::geometry::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1440,
+                },
+            },
+            MonitorArea {
+                device: "mon-b".to_owned(),
+                work: tiler_core::geometry::Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1040,
+                },
+                full: tiler_core::geometry::Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            },
+        ];
+        let fulls: Vec<tiler_core::geometry::Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        state.workspaces.set_tiled("mon-a", &ws_a, true);
+        state.workspaces.set_tiled("mon-b", &ws_b, true);
+        let mover = member_key(0x3301, 6301, "creation-3301");
+        let sib = member_key(0x3302, 6302, "creation-3302");
+        for (key, token, pid, creation) in [
+            (&mover, "w-mover", 6301, "creation-3301"),
+            (&sib, "w-sib", 6302, "creation-3302"),
+        ] {
+            state.member_tokens.insert(key.clone(), token.to_owned());
+            state
+                .member_identity
+                .insert(key.clone(), member_identity(pid, creation, &me));
+        }
+        state
+            .member_tags
+            .insert(mover.clone(), "tag-3301".to_owned());
+        state.member_tags.insert(sib.clone(), "tag-3302".to_owned());
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-a", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(sib.clone(), "mon-a", &ws_a, false));
+        let start_rect = tiler_core::geometry::Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let sib_rect = tiler_core::geometry::Rect {
+            x: 600,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        {
+            let (domain, domain_key) = super::workspace_domain_for(
+                "mon-a",
+                &ws_a,
+                &areas,
+                state.inner_gap,
+                state.outer_gap,
+            )
+            .expect("domain");
+            let carried = vec![
+                (
+                    WindowId("w-mover".to_owned()),
+                    start_rect,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                ),
+                (
+                    WindowId("w-sib".to_owned()),
+                    sib_rect,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                ),
+            ];
+            let correlation = CorrelationId::parse("empty-commitlast-seed").expect("correlation");
+            let fp = crate::tiling::fingerprint(
+                &carried
+                    .iter()
+                    .map(|(w, r, _, _)| (w.0.clone(), *r))
+                    .collect::<Vec<_>>(),
+            );
+            let event = crate::tiling::build_reconcile_event_for_floating(
+                &state.owner,
+                &state.generation,
+                &correlation,
+                0,
+                fp,
+                &domain,
+                &domain_key,
+                state.outer_gap,
+                &carried,
+                Some(&WindowId("w-mover".to_owned())),
+            );
+            match state.engine.handle(&event) {
+                CoreReply::Projection(_) | CoreReply::Tiled(_) => {}
+                other => panic!("seed must converge, got {other:?}"),
+            }
+        }
+        inject_pending_tag(0x3301, Some("tag-3301".to_owned()));
+        inject_pending_tag(0x3302, Some("tag-3302".to_owned()));
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_focus(Some("focus-ok"));
+        inject_pending_stop(false);
+        inject_monitor_areas(Some(areas.clone()));
+        let (dest_domain, _) =
+            super::workspace_domain_for("mon-b", &ws_b, &areas, state.inner_gap, state.outer_gap)
+                .expect("dest domain");
+        let x = dest_domain.bounds.x + 2;
+        let y = dest_domain.bounds.y + dest_domain.bounds.h / 2;
+        (
+            state, me, areas, fulls, mover, sib, ws_a, ws_b, x, y, start_rect,
+        )
+    }
+
+    /// Predict the singleton arrival on a clone (no counters, no mutation)
+    /// and rig the observed mover frame to it so the proof exercises the
+    /// real comparison.
+    #[allow(clippy::too_many_arguments)]
+    fn rig_empty_arrival(
+        state: &mut super::TileLoop,
+        me: &crate::model::ProcessIdentity,
+        areas: &[MonitorArea],
+        mover: &crate::workspace::WindowKey,
+        ws_a: &str,
+        ws_b: &str,
+        x: i32,
+        y: i32,
+        start_rect: tiler_core::geometry::Rect,
+    ) {
+        let moved_probe = vec![
+            observed_window(0x3301, "w-mover", 6301, "creation-3301", me, start_rect),
+            observed_window(
+                0x3302,
+                "w-sib",
+                6302,
+                "creation-3302",
+                me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        let settle = super::CrossDragSettle {
+            mover_token: "w-mover".to_owned(),
+            member_key: mover.clone(),
+            source_output: "mon-a".to_owned(),
+            source_workspace: ws_a.to_owned(),
+            dest_output: "mon-b".to_owned(),
+            dest_workspace: ws_b.to_owned(),
+            x,
+            y,
+            drop_prior: None,
+            producer: "windrag".to_owned(),
+            start_rect: Some(start_rect),
+        };
+        let correlation = state.correlation();
+        let mut hint_cx = super::HintCx::new();
+        let mut preview = super::prepare_cross_singleton_event(
+            state,
+            areas,
+            &moved_probe,
+            &settle,
+            &correlation,
+            &mut hint_cx,
+            true,
+        )
+        .expect("singleton preview prepares");
+        let proposed = {
+            let mut candidate = state.engine.clone();
+            super::stamp_engine_event(state, &mut preview);
+            match candidate.handle(&preview) {
+                tiler_core::boundary::CoreReply::DragPreview(plan) => plan.preview.proposed_rect,
+                other => panic!("singleton preview must project, got {other:?}"),
+            }
+        };
+        let rigged = vec![
+            observed_window(0x3301, "w-mover", 6301, "creation-3301", me, proposed),
+            observed_window(
+                0x3302,
+                "w-sib",
+                6302,
+                "creation-3302",
+                me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(rigged, Vec::new(), false);
+    }
+
+    /// Commit-last empty refusal on a failed destination write: the first
+    /// scripted verdict fails the destination apply, so the source reflow
+    /// never runs and the candidate discards with source membership and the
+    /// retained Engine and no follow-focus.
+    #[test]
+    fn cross_pending_empty_dest_readback_retains_source_and_engine() {
+        use super::{inject_pending_apply_seq, pending_counters};
+        let (mut state, me, areas, fulls, mover, _sib, ws_a, ws_b, x, y, start_rect) =
+            empty_cross_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            "w-mover",
+            0x3301,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        rig_empty_arrival(
+            &mut state, &me, &areas, &mover, &ws_a, &ws_b, x, y, start_rect,
+        );
+        inject_pending_apply_seq(vec![(false, 0)]);
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "refused pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 1, "only the admission plans");
+        assert_eq!(counters.apply, 1, "only the destination apply runs");
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some("mon-a"),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "failed destination write keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last empty refusal on a failed source reflow: the destination
+    /// write succeeds but the second scripted verdict fails the reflow, so
+    /// both authorities stay home with no follow-focus (no fake rollback of
+    /// the observed destination write; the next observation converges).
+    #[test]
+    fn cross_pending_empty_source_reflow_fail_retains_source_and_engine() {
+        use super::{inject_pending_apply_seq, pending_counters};
+        let (mut state, me, areas, fulls, mover, _sib, ws_a, ws_b, x, y, start_rect) =
+            empty_cross_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            "w-mover",
+            0x3301,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        rig_empty_arrival(
+            &mut state, &me, &areas, &mover, &ws_a, &ws_b, x, y, start_rect,
+        );
+        inject_pending_apply_seq(vec![(true, 0), (false, 0)]);
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "refused pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 2, "admission plus reflow plan");
+        assert_eq!(counters.apply, 2, "destination plus reflow applies run");
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some("mon-a"),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "failed source reflow keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last empty refusal on an unproven arrival: both applies succeed
+    /// but the mover never read back on the destination, so both authorities
+    /// stay home with no follow-focus.
+    #[test]
+    fn cross_pending_empty_arrival_fail_retains_source_and_engine() {
+        use super::pending_counters;
+        let (mut state, me, areas, fulls, mover, _sib, ws_a, ws_b, x, y, start_rect) =
+            empty_cross_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            "w-mover",
+            0x3301,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        // No arrival staging: the observed mover stays at the START shape on
+        // the source output, so the proof cannot pass.
+        let observed = vec![
+            observed_window(0x3301, "w-mover", 6301, "creation-3301", &me, start_rect),
+            observed_window(
+                0x3302,
+                "w-sib",
+                6302,
+                "creation-3302",
+                &me,
+                tiler_core::geometry::Rect {
+                    x: 600,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+            ),
+        ];
+        inject_pending_observe(observed, Vec::new(), false);
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "unproven pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 2, "admission plus reflow plan");
+        assert_eq!(counters.apply, 2, "destination plus reflow applies run");
+        assert_eq!(counters.focus, 0, "unproven arrival never focuses");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some("mon-a"),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "unproven arrival keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    /// Commit-last empty refusal on late topology drift: the fresh
+    /// enumeration moved under the tail, so every write withholds with
+    /// source membership and the retained Engine kept and no follow-focus.
+    #[test]
+    fn cross_pending_empty_late_topology_retains_source_and_engine() {
+        use super::pending_counters;
+        let (mut state, me, areas, fulls, mover, _sib, ws_a, ws_b, x, y, start_rect) =
+            empty_cross_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state,
+            &mover,
+            "w-mover",
+            0x3301,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            fence,
+            x,
+            y,
+            Some(start_rect),
+        );
+        rig_empty_arrival(
+            &mut state, &me, &areas, &mover, &ws_a, &ws_b, x, y, start_rect,
+        );
+        let mut drifted = areas.clone();
+        if let Some(area) = drifted.iter_mut().find(|a| a.device == "mon-b") {
+            area.full.x += 100;
+        }
+        inject_monitor_areas(Some(drifted));
+        let engine_before = format!("{:?}", state.engine);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "late-drift pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.apply, 0, "late drift withholds every write");
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert!(
+            counters.reconcile >= 1,
+            "late drift reconciles with the fresh topology"
+        );
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some("mon-a"),
+            "mover stays home"
+        );
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "late drift keeps the retained Engine"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_stale_topology_refuses_without_actuation() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state, &mover, &token, hwnd, &src_out, &ws_a, &dst_out, &ws_b, fence, x, y, None,
+        );
+        // Topology drifted under the pending finish: the destination FULL
+        // rectangle moved, so the pointer output no longer resolves there.
+        let mut drifted = areas.clone();
+        if let Some(area) = drifted.iter_mut().find(|a| a.device == dst_out) {
+            area.full.x += 100;
+        }
+        service_pending_drop(&mut state, &me, &fulls, &drifted);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "stale pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "stale topology never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 1, "stale topology converges once");
+        assert_eq!(
+            state
+                .workspaces
+                .member_loc(&mover)
+                .map(|loc| loc.output.clone())
+                .as_deref(),
+            Some(src_out.as_str()),
+            "mover stays home"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_stale_view_refuses_without_actuation() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state, &mover, &token, hwnd, &src_out, &ws_a, &dst_out, &ws_b, fence, x, y, None,
+        );
+        // The destination switched its current workspace after END: the
+        // queued view is stale, so the drop refuses instead of landing in
+        // the wrong layout.
+        let (trailing, _) = state
+            .workspaces
+            .select_trailing(&dst_out)
+            .expect("trailing");
+        assert_ne!(trailing, ws_b);
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "stale pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "stale view never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 1, "stale view converges once");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_stale_lifetime_refuses_without_actuation() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state, &mover, &token, hwnd, &src_out, &ws_a, &dst_out, &ws_b, fence, x, y, None,
+        );
+        // Same-process HWND reuse between END and the proven hide.
+        inject_pending_tag(hwnd, Some("tag-reused".to_owned()));
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "stale pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "stale lifetime never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 1, "stale lifetime converges once");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_suspend_refuses_without_actuation() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state, &mover, &token, hwnd, &src_out, &ws_a, &dst_out, &ws_b, fence, x, y, None,
+        );
+        inject_pending_suspend(Some(true));
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "suspended pending is consumed"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "suspend never reaches Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        // The ack-wait invalidation owns suspend and drops the slot without
+        // converging; the settle-time fence stays the second guard for
+        // arrivals racing the ack.
+        assert_eq!(counters.reconcile, 0, "suspend drops without converging");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_pending_timeout_refuses_without_actuation() {
+        let (mut state, me, areas, fulls, mover, token, hwnd, src_out, ws_a, dst_out, ws_b, x, y) =
+            cross_pending_fixture();
+        let fence = cross_pending_fence(&state, &areas, &ws_a, &ws_b);
+        queue_cross_pending(
+            &mut state, &mover, &token, hwnd, &src_out, &ws_a, &dst_out, &ws_b, fence, x, y, None,
+        );
+        // Withhold the renderer's verified hidden acknowledgement past the
+        // bound: the finish refuses with no Engine drop and no writes.
+        if let Some(bridge) = state.render_bridge.as_mut() {
+            bridge.hidden_ack[RenderCarrier::Preview.index()] = None;
+            if let Some(pending) = bridge.pending.as_mut() {
+                pending.deadline = Instant::now() - Duration::from_secs(1);
+            }
+        }
+        service_pending_drop(&mut state, &me, &fulls, &areas);
+        assert!(
+            state
+                .render_bridge
+                .as_ref()
+                .and_then(|b| b.pending.as_ref())
+                .is_none(),
+            "timeout drops the slot"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.engine, 0, "timeout never runs Engine");
+        assert_eq!(counters.focus, 0);
+        assert_eq!(counters.apply, 0);
+        assert_eq!(counters.reconcile, 0, "timeout never reconciles");
         clear_pending_seams();
     }
 
@@ -38509,5 +43973,3068 @@ mod pending_drop_tests {
         assert_eq!(pending.hide_gen, pending_gen);
         assert_eq!(pending.hide_safety, pending_safety);
         clear_pending_seams();
+    }
+}
+
+#[cfg(test)]
+mod directional_cross_adapter_tests {
+    // Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08)
+    // through a real `TileLoop` against the real retained Engine (no HWNDs,
+    // hooks, or live effects): synthetic two-output FULL/work topologies with
+    // negative coords and differing gaps, occupied/empty source/target,
+    // local-first and sole-root crossing, destination current-view history,
+    // and fence/arrival verification. Native setters stay user-owned live
+    // acceptance; these pin the portable pair construction, Engine planning,
+    // and project membership/focus verification.
+    use super::rmax03_adapter_tests::test_state;
+    use super::{MonitorArea, workspace_domain_for};
+    use tiler_core::boundary::{CoreCommand, CoreReply};
+    use tiler_core::directional::{CrossOutputTarget, Direction, WindowId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::ids::CorrelationId;
+
+    fn area(device: &str, work: Rect, full: Rect) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work,
+            full,
+        }
+    }
+
+    fn primary_pair() -> Vec<MonitorArea> {
+        vec![
+            area(
+                "primary",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "right",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ]
+    }
+
+    fn seed(
+        state: &mut super::TileLoop,
+        output: &str,
+        workspace: &str,
+        bounds: Rect,
+        members: &[&str],
+        focused: &str,
+    ) -> (
+        tiler_core::session::OutputDomain,
+        tiler_core::session::DomainKey,
+    ) {
+        let domain = crate::workspace_owner::workspace_domain(output, workspace, bounds, 8);
+        let carried: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = members
+            .iter()
+            .map(|token| {
+                (
+                    WindowId((*token).to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("directional-cross-seed").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &members
+                .iter()
+                .map(|t| ((*t).to_owned(), bounds))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed must converge, got {reply:?}"
+        );
+        domain
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pair_event(
+        state: &super::TileLoop,
+        source: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        target: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        source_members: &[&str],
+        target_members: &[&str],
+        mover: &str,
+        direction: Direction,
+        command: CoreCommand,
+    ) -> tiler_core::boundary::CoreEvent {
+        let mut windows = Vec::new();
+        for token in source_members {
+            windows.push(tiler_core::seed::EngineWindow {
+                window: WindowId((*token).to_owned()),
+                output: source.1.output.clone(),
+                workspace: source.1.workspace.clone(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            });
+        }
+        for token in target_members {
+            windows.push(tiler_core::seed::EngineWindow {
+                window: WindowId((*token).to_owned()),
+                output: target.1.output.clone(),
+                workspace: target.1.workspace.clone(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            });
+        }
+        let correlation = CorrelationId::parse("directional-cross").expect("correlation");
+        let ((source_domain, source_key), (target_domain, target_key)) =
+            crate::workspace_owner::directional_pair_with_adjacency(
+                (source.0.clone(), source.1.clone()),
+                (target.0.clone(), target.1.clone()),
+                direction,
+            );
+        tiler_core::boundary::CoreEvent {
+            owner: state.owner.clone(),
+            generation: state.generation.clone(),
+            correlation,
+            revision: 0,
+            fingerprint: 11,
+            domain: source_domain.clone(),
+            domain_key: source_key.clone(),
+            outer_gap: 8,
+            focused_window: WindowId(mover.to_owned()),
+            windows,
+            directional: Some(vec![
+                (source_domain, source_key),
+                (target_domain, target_key),
+            ]),
+            directional_target_outer_gap: Some(8),
+            target_domain: None,
+            target_windows: Vec::new(),
+            command,
+        }
+    }
+
+    #[test]
+    fn sole_root_crosses_right_into_occupied_target_with_follow() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        // Distinct identities even for same-index workspaces.
+        assert_ne!((&"mon-a".to_owned(), &ws_a), (&"mon-b".to_owned(), &ws_b));
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let source = seed(&mut state, "mon-a", &ws_a, bounds, &["mover"], "mover");
+        let target = seed(&mut state, "mon-b", &ws_b, bounds, &["t1", "t2"], "t1");
+        let event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &["t1", "t2"],
+            "mover",
+            Direction::Right,
+            CoreCommand::Move {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        );
+        match state.engine.handle(&event) {
+            CoreReply::MoveDirectional(plan) => {
+                let cross = plan.cross.expect("sole root must cross");
+                assert_eq!(cross.target, CrossOutputTarget::Occupied);
+                assert_eq!(cross.target_output.0, "mon-b");
+                // Follow focus names the mover on the target domain.
+                assert_eq!(plan.focus_domain.output.0, "mon-b");
+                assert!(!plan.geometry.is_empty(), "cross carries placement");
+            }
+            other => panic!("sole root must cross, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_target_supports_move_but_refuses_focus() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let source = seed(&mut state, "mon-a", &ws_a, bounds, &["mover"], "mover");
+        // Empty target: no session seeded; the pair still carries its domain.
+        let target = crate::workspace_owner::workspace_domain("mon-b", &ws_b, bounds, 8);
+        let move_event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &[],
+            "mover",
+            Direction::Right,
+            CoreCommand::Move {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        );
+        match state.engine.handle(&move_event) {
+            CoreReply::MoveDirectional(plan) => {
+                let cross = plan.cross.expect("empty target supports move");
+                assert_eq!(cross.target, CrossOutputTarget::Empty);
+            }
+            other => panic!("empty move must plan, got {other:?}"),
+        }
+        // Fresh state for the focus leg: the move above committed the mover
+        // away, so re-seed before asserting the focus refusal.
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let source = seed(&mut state, "mon-a", &ws_a, bounds, &["mover"], "mover");
+        let target = crate::workspace_owner::workspace_domain("mon-b", &ws_b, bounds, 8);
+        let focus_event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &[],
+            "mover",
+            Direction::Right,
+            CoreCommand::Focus {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                float_subject: false,
+            },
+        );
+        match state.engine.handle(&focus_event) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+            CoreReply::SnapshotInvalid { detail, .. } => {
+                panic!("empty focus must refuse unchanged, got snapshot-invalid {detail}")
+            }
+            other => panic!("empty focus must refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_restructure_wins_first_over_cross() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        // Vertical stack (selected default): the mover has a local Down
+        // neighbor, so Down restructures locally instead of crossing even
+        // with an adjacent target present.
+        let source = seed(
+            &mut state,
+            "mon-a",
+            &ws_a,
+            bounds,
+            &["mover", "peer"],
+            "mover",
+        );
+        let target = seed(&mut state, "mon-b", &ws_b, bounds, &["t1"], "t1");
+        let event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover", "peer"],
+            &["t1"],
+            "mover",
+            Direction::Down,
+            CoreCommand::Move {
+                window: "mover".to_owned(),
+                direction: "down".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        );
+        match state.engine.handle(&event) {
+            CoreReply::MoveDirectional(plan) => {
+                assert!(
+                    plan.cross.is_none(),
+                    "local restructure must win first, got {plan:?}"
+                );
+            }
+            other => panic!("local move must plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn horizontal_focus_crosses_while_vertical_stays_local() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let source = seed(&mut state, "mon-a", &ws_a, bounds, &["mover"], "mover");
+        let target = seed(&mut state, "mon-b", &ws_b, bounds, &["t1"], "t1");
+        let horizontal = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &["t1"],
+            "mover",
+            Direction::Right,
+            CoreCommand::Focus {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                float_subject: false,
+            },
+        );
+        match state.engine.handle(&horizontal) {
+            CoreReply::FocusDirectional(plan) => {
+                assert!(
+                    plan.cross_operation.is_some(),
+                    "horizontal focus must cross"
+                );
+                assert_eq!(plan.to_window.0, "t1");
+                // No geometry or membership writes for focus: the plan
+                // carries the unmodified domains' geometry only.
+                assert_eq!(plan.focus_domain.output.0, "mon-b");
+            }
+            other => panic!("horizontal focus must cross, got {other:?}"),
+        }
+        // Vertical never builds a pair in the adapter; the single-domain
+        // local path reports the exhausted edge as unchanged. Build the
+        // single-domain event with source windows only (pair windows would
+        // correctly mismatch as cross-domain).
+        let correlation = CorrelationId::parse("directional-cross").expect("correlation");
+        let local = tiler_core::boundary::CoreEvent {
+            owner: state.owner.clone(),
+            generation: state.generation.clone(),
+            correlation,
+            revision: 0,
+            fingerprint: 13,
+            domain: source.0.clone(),
+            domain_key: source.1.clone(),
+            outer_gap: 8,
+            focused_window: WindowId("mover".to_owned()),
+            windows: vec![tiler_core::seed::EngineWindow {
+                window: WindowId("mover".to_owned()),
+                output: source.1.output.clone(),
+                workspace: source.1.workspace.clone(),
+                rect: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+            }],
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: CoreCommand::Focus {
+                window: "mover".to_owned(),
+                direction: "up".to_owned(),
+                cross_output_transfer: false,
+                float_subject: false,
+            },
+        };
+        match state.engine.handle(&local) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+            other => panic!("vertical focus must stay local, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_focus_syncs_stale_engine_target_to_project_mru() {
+        // Stale Engine remembered focus (t1, from seeding) versus fresh
+        // project MRU (t2, from an external native focus move): the raw
+        // pair request plans toward the stale target, while the production
+        // keyboard route synchronizes remembered focus first and actuates
+        // the fresh MRU with no view switch and no geometry writes.
+        use super::{
+            HintCx, ObservedWindow, RetainedRow, clear_pending_seams, inject_pending_elevated,
+            inject_pending_focus, inject_pending_suspend, inject_pending_tag,
+            run_directional_cross,
+        };
+        use crate::model::ProcessIdentity;
+        use crate::snapkey::{QueuedIntent, SnapEdge, SnapOp, SnapOrigin};
+        use crate::workspace::{MemberLoc, WindowKey};
+        use std::collections::BTreeSet;
+        clear_pending_seams();
+        let mut state = test_state();
+        let areas = primary_pair();
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("primary");
+        state.workspaces.ensure_output("right");
+        let ws_a = state.workspaces.active_id("primary").expect("active");
+        let ws_b = state.workspaces.active_id("right").expect("active");
+        state.workspaces.set_tiled("primary", &ws_a, true);
+        state.workspaces.set_tiled("right", &ws_b, true);
+        // Seed bounds match the area-derived inset domains exactly so the
+        // pair assembles on retained state.
+        let src_bounds = workspace_domain_for("primary", &ws_a, &areas, 8, 8)
+            .expect("src domain")
+            .0
+            .bounds;
+        let dst_bounds = workspace_domain_for("right", &ws_b, &areas, 8, 8)
+            .expect("dst domain")
+            .0
+            .bounds;
+        fn key(hwnd: u64, pid: u32) -> WindowKey {
+            WindowKey {
+                hwnd,
+                pid,
+                creation: format!("c{hwnd:016x}"),
+            }
+        }
+        let me = ProcessIdentity {
+            pid: 5001,
+            process_creation: "creation-me".to_owned(),
+            user_sid: "S-1-focus".to_owned(),
+            session_id: 7,
+            exe_path: "C:\\test\\app.exe".to_owned(),
+        };
+        let mover = key(0x4101, 7101);
+        let t1 = key(0x4102, 7102);
+        let t2 = key(0x4103, 7103);
+        for (k, token, pid) in [
+            (&mover, "mover", 7101u32),
+            (&t1, "t1", 7102),
+            (&t2, "t2", 7103),
+        ] {
+            state.member_tokens.insert(k.clone(), token.to_owned());
+            state.member_identity.insert(
+                k.clone(),
+                ProcessIdentity {
+                    pid,
+                    process_creation: k.creation.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    exe_path: me.exe_path.clone(),
+                },
+            );
+            state
+                .member_tags
+                .insert(k.clone(), format!("tag-{:x}", k.hwnd));
+            inject_pending_tag(k.hwnd, Some(format!("tag-{:x}", k.hwnd)));
+        }
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "primary", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(t1.clone(), "right", &ws_b, false));
+        assert!(state.workspaces.assign(t2.clone(), "right", &ws_b, false));
+        // Engine remembered focus lands on t1 (seed order); the project MRU
+        // observes an external native focus move onto t2 instead.
+        let source = seed(
+            &mut state,
+            "primary",
+            &ws_a,
+            src_bounds,
+            &["mover"],
+            "mover",
+        );
+        let target = seed(&mut state, "right", &ws_b, dst_bounds, &["t1", "t2"], "t1");
+        state.workspaces.note_foreground(&t2);
+        assert_eq!(
+            state.workspaces.focus_target(
+                "right",
+                &ws_b,
+                &[mover.clone(), t1.clone(), t2.clone()]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            ),
+            Some(t2.clone()),
+            "project MRU is t2"
+        );
+        let stale = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &["t1", "t2"],
+            "mover",
+            Direction::Right,
+            CoreCommand::Focus {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                float_subject: false,
+            },
+        );
+        match state.engine.handle(&stale) {
+            CoreReply::FocusDirectional(plan) => {
+                assert_eq!(
+                    plan.to_window.0, "t1",
+                    "unsynchronized plan aims at the stale target"
+                );
+            }
+            other => panic!("stale focus must plan, got {other:?}"),
+        }
+        // The hook refuses unknown sessions and members without mutation.
+        let nowhere = tiler_core::session::DomainKey {
+            output: tiler_core::directional::OutputId("nowhere".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(
+            !state
+                .engine
+                .remember_domain_focus(&nowhere, &WindowId("t2".to_owned()))
+        );
+        assert!(
+            !state
+                .engine
+                .remember_domain_focus(&target.1, &WindowId("ghost".to_owned()))
+        );
+        // Production keyboard route: same pair request after the MRU sync
+        // actuates the fresh target with no geometry writes.
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_focus(Some("focus-ok"));
+        fn window(
+            key: &WindowKey,
+            token: &str,
+            rect: Rect,
+            me: &ProcessIdentity,
+        ) -> ObservedWindow {
+            ObservedWindow {
+                hwnd: key.hwnd,
+                token: token.to_owned(),
+                outer: rect,
+                visible: rect,
+                insets: crate::tiling::FrameInsets {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                identity: crate::tiling::ObservedTarget {
+                    hwnd: key.hwnd,
+                    pid: key.pid,
+                    process_creation: key.creation.clone(),
+                    exe_path: me.exe_path.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    tag: String::new(),
+                },
+                facts: crate::tiling::WindowFacts {
+                    visible: true,
+                    minimized: false,
+                    maximized: false,
+                    cloaked: false,
+                    elevated: false,
+                    shell: false,
+                    tool_window: false,
+                    owned: false,
+                    captionless_fullscreen: false,
+                    no_activate: false,
+                    dialog: false,
+                },
+            }
+        }
+        let observed: Vec<ObservedWindow> = vec![
+            window(
+                &mover,
+                "mover",
+                Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+            window(
+                &t1,
+                "t1",
+                Rect {
+                    x: 2000,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+            window(
+                &t2,
+                "t2",
+                Rect {
+                    x: 2500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+        ];
+        let retained: Vec<RetainedRow> = Vec::new();
+        let mut hint_cx = HintCx::new();
+        let loc = MemberLoc {
+            output: "primary".to_owned(),
+            workspace: ws_a.clone(),
+            hidden: false,
+        };
+        let source_rows = vec![crate::workspace_owner::OwnerRow {
+            token: "mover".to_owned(),
+            rect: Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        }];
+        let intent = QueuedIntent {
+            op: SnapOp::Focus,
+            direction: Direction::Right,
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: false,
+            announce: false,
+            tick: std::time::Instant::now(),
+        };
+        let origin = SnapOrigin {
+            hwnd: mover.hwnd,
+            token: "mover".to_owned(),
+            pid: mover.pid,
+            creation: mover.creation.clone(),
+        };
+        let correlation = CorrelationId::parse("corr-focus-mru").expect("correlation");
+        let outcome = run_directional_cross(
+            &mut state,
+            &me,
+            &fulls,
+            &areas,
+            &observed,
+            &retained,
+            &mut hint_cx,
+            &loc,
+            &loc,
+            &mover,
+            "mover",
+            &source_rows,
+            "right",
+            &ws_b,
+            &intent,
+            &origin,
+            7,
+            &correlation,
+            correlation.as_str(),
+            false,
+            Vec::new(),
+            false,
+            false,
+        );
+        assert_eq!(outcome, "focus-ok");
+        assert_eq!(
+            state.workspaces.focus_target(
+                "right",
+                &ws_b,
+                &[mover.clone(), t1.clone(), t2.clone()]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            ),
+            Some(t2.clone()),
+            "fresh MRU survives the cross focus"
+        );
+        assert_eq!(
+            state.workspaces.active_id("right").as_deref(),
+            Some(ws_b.as_str()),
+            "no destination view switch"
+        );
+        clear_pending_seams();
+    }
+
+    /// Empty-target move rig for commit-last refusal regressions: a sole
+    /// mover homed on `primary` with an empty `right` current view, so the
+    /// pair plan is a deterministic cross and the target rows are
+    /// vacuously complete.
+    struct EmptyTargetMoveRig {
+        state: super::TileLoop,
+        areas: Vec<MonitorArea>,
+        fulls: Vec<Rect>,
+        me: crate::model::ProcessIdentity,
+        mover: crate::workspace::WindowKey,
+        loc: crate::workspace::MemberLoc,
+        target_output: String,
+        target_ws: String,
+        observed: Vec<super::ObservedWindow>,
+        source_rows: Vec<crate::workspace_owner::OwnerRow>,
+        intent: crate::snapkey::QueuedIntent,
+        origin: crate::snapkey::SnapOrigin,
+    }
+
+    fn empty_target_move_rig() -> EmptyTargetMoveRig {
+        use super::{
+            ObservedWindow, clear_pending_seams, inject_pending_elevated, inject_pending_suspend,
+            inject_pending_tag,
+        };
+        use crate::snapkey::{QueuedIntent, SnapEdge, SnapOp, SnapOrigin};
+        use crate::workspace::{MemberLoc, WindowKey};
+        clear_pending_seams();
+        let mut state = test_state();
+        let areas = primary_pair();
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("primary");
+        state.workspaces.ensure_output("right");
+        let ws_a = state.workspaces.active_id("primary").expect("active");
+        let ws_b = state.workspaces.active_id("right").expect("active");
+        state.workspaces.set_tiled("primary", &ws_a, true);
+        state.workspaces.set_tiled("right", &ws_b, true);
+        let src_bounds = workspace_domain_for("primary", &ws_a, &areas, 8, 8)
+            .expect("src domain")
+            .0
+            .bounds;
+        let me = crate::model::ProcessIdentity {
+            pid: 5001,
+            process_creation: "creation-me".to_owned(),
+            user_sid: "S-1-move".to_owned(),
+            session_id: 7,
+            exe_path: "C:\\test\\app.exe".to_owned(),
+        };
+        let mover = WindowKey {
+            hwnd: 0x4101,
+            pid: 7101,
+            creation: format!("c{:016x}", 0x4101u64),
+        };
+        state
+            .member_tokens
+            .insert(mover.clone(), "mover".to_owned());
+        state.member_identity.insert(
+            mover.clone(),
+            crate::model::ProcessIdentity {
+                pid: 7101,
+                process_creation: mover.creation.clone(),
+                user_sid: me.user_sid.clone(),
+                session_id: me.session_id,
+                exe_path: me.exe_path.clone(),
+            },
+        );
+        state
+            .member_tags
+            .insert(mover.clone(), format!("tag-{:x}", mover.hwnd));
+        inject_pending_tag(mover.hwnd, Some(format!("tag-{:x}", mover.hwnd)));
+        let loc = MemberLoc {
+            output: "primary".to_owned(),
+            workspace: ws_a.clone(),
+            hidden: false,
+        };
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "primary", &ws_a, false)
+        );
+        seed(
+            &mut state,
+            "primary",
+            &ws_a,
+            src_bounds,
+            &["mover"],
+            "mover",
+        );
+        let frame = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let observed = vec![ObservedWindow {
+            hwnd: mover.hwnd,
+            token: "mover".to_owned(),
+            outer: frame,
+            visible: frame,
+            insets: crate::tiling::FrameInsets {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            identity: crate::tiling::ObservedTarget {
+                hwnd: mover.hwnd,
+                pid: mover.pid,
+                process_creation: mover.creation.clone(),
+                exe_path: me.exe_path.clone(),
+                user_sid: me.user_sid.clone(),
+                session_id: me.session_id,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }];
+        let source_rows = vec![crate::workspace_owner::OwnerRow {
+            token: "mover".to_owned(),
+            rect: frame,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        }];
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        EmptyTargetMoveRig {
+            state,
+            areas,
+            fulls,
+            me,
+            mover: mover.clone(),
+            loc,
+            target_output: "right".to_owned(),
+            target_ws: ws_b,
+            observed,
+            source_rows,
+            intent: QueuedIntent {
+                op: SnapOp::Move,
+                direction: Direction::Right,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: false,
+                announce: false,
+                tick: std::time::Instant::now(),
+            },
+            origin: SnapOrigin {
+                hwnd: mover.hwnd,
+                token: "mover".to_owned(),
+                pid: mover.pid,
+                creation: mover.creation.clone(),
+            },
+        }
+    }
+
+    /// Predict the mover's planned arrival rect for the empty-target rig by
+    /// replaying the production pair construction on a cloned Engine (no
+    /// mutation): the success test needs it to stage the arrival proof.
+    fn predict_empty_target_mover_rect(
+        rig: &EmptyTargetMoveRig,
+        correlation: &CorrelationId,
+    ) -> Rect {
+        use super::{revision_for, same_axis_move_for, stamp_engine_event};
+        let (source_base, source_key) =
+            workspace_domain_for(&rig.loc.output, &rig.loc.workspace, &rig.areas, 8, 8)
+                .expect("source domain");
+        let (target_base, target_key) =
+            workspace_domain_for(&rig.target_output, &rig.target_ws, &rig.areas, 8, 8)
+                .expect("target domain");
+        assert!(
+            crate::settings::retained_gaps_match(&rig.state.engine, &source_key, 8, 8)
+                && crate::settings::retained_gaps_match(&rig.state.engine, &target_key, 8, 8),
+            "rig gaps must match so no adopt perturbs the predicted plan"
+        );
+        let ((source_domain, source_key), (target_domain, target_key)) =
+            crate::workspace_owner::directional_pair_with_adjacency(
+                (source_base, source_key),
+                (target_base, target_key),
+                Direction::Right,
+            );
+        let mut pairs: Vec<(String, Rect)> = rig
+            .source_rows
+            .iter()
+            .map(|r| (r.token.clone(), r.rect))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let fp = crate::tiling::fingerprint(&pairs);
+        let from = WindowId("mover".to_owned());
+        let source_windows: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = rig
+            .source_rows
+            .iter()
+            .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+            .collect();
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &rig.state.owner,
+            &rig.state.generation,
+            correlation,
+            revision_for(&rig.state, &rig.loc.output, &rig.loc.workspace),
+            fp,
+            &source_domain,
+            &source_key,
+            rig.state.outer_gap,
+            &source_windows,
+            Some(&from),
+        );
+        event.directional = Some(vec![
+            (source_domain, source_key),
+            (target_domain, target_key),
+        ]);
+        event.directional_target_outer_gap = Some(rig.state.outer_gap);
+        event.command = CoreCommand::Move {
+            window: "mover".to_owned(),
+            direction: "right".to_owned(),
+            cross_output_transfer: true,
+            same_axis_move: same_axis_move_for(rig.state.settings_live.as_ref()),
+        };
+        stamp_engine_event(&rig.state, &mut event);
+        let mut candidate = rig.state.engine.clone();
+        let reply = candidate.handle(&event);
+        let CoreReply::MoveDirectional(plan) = &reply else {
+            panic!("empty-target move must plan, got {reply:?}");
+        };
+        assert!(plan.cross.is_some(), "sole mover must cross, got {plan:?}");
+        crate::workspace_owner::planned_writes(&reply)
+            .expect("plan writes")
+            .iter()
+            .find(|w| w.window.0 == "mover")
+            .expect("mover write")
+            .rect
+    }
+
+    fn run_empty_target_move(
+        rig: &mut EmptyTargetMoveRig,
+        correlation: &CorrelationId,
+        tick: u64,
+    ) -> &'static str {
+        use super::{HintCx, run_directional_cross};
+        let mut hint_cx = HintCx::new();
+        run_directional_cross(
+            &mut rig.state,
+            &rig.me,
+            &rig.fulls,
+            &rig.areas,
+            &rig.observed,
+            &[],
+            &mut hint_cx,
+            &rig.loc,
+            &rig.loc,
+            &rig.mover,
+            "mover",
+            &rig.source_rows,
+            &rig.target_output,
+            &rig.target_ws,
+            &rig.intent,
+            &rig.origin,
+            tick,
+            correlation,
+            correlation.as_str(),
+            false,
+            Vec::new(),
+            false,
+            false,
+        )
+    }
+
+    #[test]
+    fn cross_move_verified_tail_commits_both_once_with_follow_focus() {
+        use super::{
+            clear_pending_seams, inject_monitor_areas, inject_pending_focus,
+            inject_pending_observe, output_for_rect, pending_counters,
+        };
+        let mut rig = empty_target_move_rig();
+        let correlation = CorrelationId::parse("corr-move-commit").expect("correlation");
+        let planned = predict_empty_target_mover_rect(&rig, &correlation);
+        assert_eq!(
+            output_for_rect(&rig.areas, &planned),
+            "right",
+            "planned arrival must land on the destination monitor"
+        );
+        rig.state.stable.insert(rig.mover.hwnd, planned);
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_empty_target_move(&mut rig, &correlation, 21);
+        assert_eq!(outcome, "move-applied");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "right");
+        assert_eq!(loc.workspace, rig.target_ws);
+        assert_ne!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "verified transfer publishes the Engine once"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            1,
+            "verified transfer follows focus exactly once"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_move_late_topology_drift_retains_source_and_engine() {
+        use super::{
+            clear_pending_seams, inject_monitor_areas, inject_pending_focus,
+            inject_pending_observe, pending_counters,
+        };
+        let mut rig = empty_target_move_rig();
+        let correlation = CorrelationId::parse("corr-move-topology").expect("correlation");
+        let mut drifted = rig.areas.clone();
+        drifted[1].full.x = 2000;
+        inject_monitor_areas(Some(drifted));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_empty_target_move(&mut rig, &correlation, 22);
+        assert_eq!(outcome, "move-unverified");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "primary");
+        assert_eq!(loc.workspace, rig.loc.workspace);
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "late topology drift keeps the retained Engine"
+        );
+        let counters = pending_counters();
+        assert_eq!(counters.focus, 0, "refused transfer skips follow-focus");
+        assert!(
+            counters.reconcile >= 1,
+            "refused transfer reconciles with the fresh topology"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_move_failed_readback_retains_source_and_engine() {
+        use super::{
+            clear_pending_seams, inject_monitor_areas, inject_pending_apply, inject_pending_focus,
+            inject_pending_observe, pending_counters,
+        };
+        let mut rig = empty_target_move_rig();
+        let correlation = CorrelationId::parse("corr-move-readback").expect("correlation");
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_apply(Some((false, 0)));
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_empty_target_move(&mut rig, &correlation, 23);
+        assert_eq!(outcome, "move-unverified");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "primary");
+        assert_eq!(loc.workspace, rig.loc.workspace);
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "failed readback keeps the retained Engine"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "refused transfer skips follow-focus"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_move_arrival_mismatch_retains_source_and_engine() {
+        use super::{
+            clear_pending_seams, inject_monitor_areas, inject_pending_focus,
+            inject_pending_observe, pending_counters,
+        };
+        let mut rig = empty_target_move_rig();
+        let correlation = CorrelationId::parse("corr-move-arrival").expect("correlation");
+        // Stable still shows the source frame (never arrived on `right`).
+        let home = rig.observed[0].visible;
+        rig.state.stable.insert(rig.mover.hwnd, home);
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_empty_target_move(&mut rig, &correlation, 24);
+        assert_eq!(outcome, "move-unverified");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, "primary");
+        assert_eq!(loc.workspace, rig.loc.workspace);
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "arrival mismatch keeps the retained Engine"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "refused transfer skips follow-focus"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn cross_focus_failed_actuation_discards_candidate_mru() {
+        // Occupied target with a fresh project MRU (t2) ahead of the stale
+        // Engine remembered focus (t1): a failed follow-focus must leave
+        // both the retained Engine and the project MRU untouched.
+        use super::{
+            HintCx, ObservedWindow, clear_pending_seams, inject_pending_elevated,
+            inject_pending_focus, inject_pending_suspend, inject_pending_tag,
+            run_directional_cross,
+        };
+        use crate::snapkey::{QueuedIntent, SnapEdge, SnapOp, SnapOrigin};
+        use crate::workspace::{MemberLoc, WindowKey};
+        use std::collections::BTreeSet;
+        clear_pending_seams();
+        let mut state = test_state();
+        let areas = primary_pair();
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("primary");
+        state.workspaces.ensure_output("right");
+        let ws_a = state.workspaces.active_id("primary").expect("active");
+        let ws_b = state.workspaces.active_id("right").expect("active");
+        state.workspaces.set_tiled("primary", &ws_a, true);
+        state.workspaces.set_tiled("right", &ws_b, true);
+        let src_bounds = workspace_domain_for("primary", &ws_a, &areas, 8, 8)
+            .expect("src domain")
+            .0
+            .bounds;
+        let dst_bounds = workspace_domain_for("right", &ws_b, &areas, 8, 8)
+            .expect("dst domain")
+            .0
+            .bounds;
+        fn key(hwnd: u64, pid: u32) -> WindowKey {
+            WindowKey {
+                hwnd,
+                pid,
+                creation: format!("c{hwnd:016x}"),
+            }
+        }
+        let me = crate::model::ProcessIdentity {
+            pid: 5001,
+            process_creation: "creation-me".to_owned(),
+            user_sid: "S-1-focus".to_owned(),
+            session_id: 7,
+            exe_path: "C:\\test\\app.exe".to_owned(),
+        };
+        let mover = key(0x4101, 7101);
+        let t1 = key(0x4102, 7102);
+        let t2 = key(0x4103, 7103);
+        for (k, token, pid) in [
+            (&mover, "mover", 7101u32),
+            (&t1, "t1", 7102),
+            (&t2, "t2", 7103),
+        ] {
+            state.member_tokens.insert(k.clone(), token.to_owned());
+            state.member_identity.insert(
+                k.clone(),
+                crate::model::ProcessIdentity {
+                    pid,
+                    process_creation: k.creation.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    exe_path: me.exe_path.clone(),
+                },
+            );
+            state
+                .member_tags
+                .insert(k.clone(), format!("tag-{:x}", k.hwnd));
+            inject_pending_tag(k.hwnd, Some(format!("tag-{:x}", k.hwnd)));
+        }
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "primary", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(t1.clone(), "right", &ws_b, false));
+        assert!(state.workspaces.assign(t2.clone(), "right", &ws_b, false));
+        seed(
+            &mut state,
+            "primary",
+            &ws_a,
+            src_bounds,
+            &["mover"],
+            "mover",
+        );
+        seed(&mut state, "right", &ws_b, dst_bounds, &["t1", "t2"], "t1");
+        state.workspaces.note_foreground(&t2);
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_focus(Some("vanished"));
+        fn window(
+            key: &WindowKey,
+            token: &str,
+            rect: Rect,
+            me: &crate::model::ProcessIdentity,
+        ) -> ObservedWindow {
+            ObservedWindow {
+                hwnd: key.hwnd,
+                token: token.to_owned(),
+                outer: rect,
+                visible: rect,
+                insets: crate::tiling::FrameInsets {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                identity: crate::tiling::ObservedTarget {
+                    hwnd: key.hwnd,
+                    pid: key.pid,
+                    process_creation: key.creation.clone(),
+                    exe_path: me.exe_path.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    tag: String::new(),
+                },
+                facts: crate::tiling::WindowFacts {
+                    visible: true,
+                    minimized: false,
+                    maximized: false,
+                    cloaked: false,
+                    elevated: false,
+                    shell: false,
+                    tool_window: false,
+                    owned: false,
+                    captionless_fullscreen: false,
+                    no_activate: false,
+                    dialog: false,
+                },
+            }
+        }
+        let observed: Vec<ObservedWindow> = vec![
+            window(
+                &mover,
+                "mover",
+                Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+            window(
+                &t1,
+                "t1",
+                Rect {
+                    x: 2000,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+            window(
+                &t2,
+                "t2",
+                Rect {
+                    x: 2500,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                &me,
+            ),
+        ];
+        let mut hint_cx = HintCx::new();
+        let loc = MemberLoc {
+            output: "primary".to_owned(),
+            workspace: ws_a.clone(),
+            hidden: false,
+        };
+        let source_rows = vec![crate::workspace_owner::OwnerRow {
+            token: "mover".to_owned(),
+            rect: Rect {
+                x: 100,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        }];
+        let intent = QueuedIntent {
+            op: SnapOp::Focus,
+            direction: Direction::Right,
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: false,
+            announce: false,
+            tick: std::time::Instant::now(),
+        };
+        let origin = SnapOrigin {
+            hwnd: mover.hwnd,
+            token: "mover".to_owned(),
+            pid: mover.pid,
+            creation: mover.creation.clone(),
+        };
+        let correlation = CorrelationId::parse("corr-focus-discard").expect("correlation");
+        let engine_before = format!("{:?}", state.engine);
+        let outcome = run_directional_cross(
+            &mut state,
+            &me,
+            &fulls,
+            &areas,
+            &observed,
+            &[],
+            &mut hint_cx,
+            &loc,
+            &loc,
+            &mover,
+            "mover",
+            &source_rows,
+            "right",
+            &ws_b,
+            &intent,
+            &origin,
+            25,
+            &correlation,
+            correlation.as_str(),
+            false,
+            Vec::new(),
+            false,
+            false,
+        );
+        assert_eq!(outcome, "vanished");
+        assert_eq!(
+            format!("{:?}", state.engine),
+            engine_before,
+            "failed focus actuation discards the candidate MRU sync"
+        );
+        assert_eq!(
+            state.workspaces.focus_target(
+                "right",
+                &ws_b,
+                &[mover.clone(), t1.clone(), t2.clone()]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            ),
+            Some(t2.clone()),
+            "project MRU survives the refused focus"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn differing_work_full_gaps_and_negative_coords_resolve() {
+        // Full rectangles drive selection (panel gaps never block); work
+        // areas drive domain bounds with the outer-gap inset.
+        let areas = vec![
+            area(
+                "left",
+                Rect {
+                    x: -1920,
+                    y: -40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "primary",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ];
+        let mut state = test_state();
+        state.workspaces.ensure_output("left");
+        state.workspaces.ensure_output("primary");
+        let mover_rect = Rect {
+            x: 100,
+            y: 500,
+            w: 200,
+            h: 200,
+        };
+        // Helper indirection stays local to this test: build entries inline
+        // so the assertion pins FULL-rectangle selection, not work areas.
+        let entries: Vec<crate::workspace_owner::DirectionalOutput> = areas
+            .iter()
+            .map(|a| crate::workspace_owner::DirectionalOutput {
+                id: a.device.clone(),
+                full: a.full,
+            })
+            .collect();
+        let selected = crate::workspace_owner::select_directional_target(
+            Direction::Left,
+            "primary",
+            &mover_rect,
+            &entries,
+        )
+        .expect("readable");
+        assert_eq!(selected, Some("left".to_owned()));
+        // Domain bounds follow the work area inset by the outer gap.
+        let (domain, _) = workspace_domain_for("primary", "ws-1", &areas, 8, 8).expect("domain");
+        assert_eq!(
+            domain.bounds,
+            Rect {
+                x: 8,
+                y: 48,
+                w: 1904,
+                h: 1024
+            }
+        );
+        let pair = primary_pair();
+        assert_eq!(pair.len(), 2);
+    }
+
+    #[test]
+    fn destination_current_view_survives_cross_without_history_record() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        assert_eq!(state.workspaces.history_previous("mon-b"), None);
+        let bounds = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1040,
+        };
+        let source = seed(&mut state, "mon-a", &ws_a, bounds, &["mover"], "mover");
+        let target = seed(&mut state, "mon-b", &ws_b, bounds, &["t1"], "t1");
+        let event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &["t1"],
+            "mover",
+            Direction::Right,
+            CoreCommand::Move {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        );
+        assert!(matches!(
+            state.engine.handle(&event),
+            CoreReply::MoveDirectional(_)
+        ));
+        // Current views do not change on a cross move: both outputs stay on
+        // their workspaces, so no history records.
+        assert_eq!(state.workspaces.active_id("mon-a"), Some(ws_a));
+        assert_eq!(state.workspaces.active_id("mon-b"), Some(ws_b));
+        assert_eq!(state.workspaces.history_previous("mon-b"), None);
+    }
+
+    #[test]
+    fn project_transfer_and_focus_follow_without_hiding() {
+        use std::collections::BTreeSet;
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let mover = crate::workspace::WindowKey {
+            hwnd: 501,
+            pid: 1501,
+            creation: "c0000000000001f5".to_owned(),
+        };
+        let peer = crate::workspace::WindowKey {
+            hwnd: 502,
+            pid: 1502,
+            creation: "c0000000000001f6".to_owned(),
+        };
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-a", &ws_a, false)
+        );
+        assert!(state.workspaces.assign(peer.clone(), "mon-b", &ws_b, false));
+        // Pre-transfer: mover on source only.
+        assert!(!crate::workspace_owner::verify_directional_transfer(
+            &mover,
+            &state.workspaces.workspace_members("mon-a", &ws_a),
+            &state.workspaces.workspace_members("mon-b", &ws_b),
+        ));
+        // Engine-equivalent commit then project transfer.
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-b", &ws_b, false)
+        );
+        assert!(crate::workspace_owner::verify_directional_transfer(
+            &mover,
+            &state.workspaces.workspace_members("mon-a", &ws_a),
+            &state.workspaces.workspace_members("mon-b", &ws_b),
+        ));
+        // Follow keeps the arrival visible: no hidden flag is set by a cross
+        // move (both outputs show their current views simultaneously).
+        assert!(!state.workspaces.is_hidden(&mover));
+        // Failed arrival (mover missing on target) refuses without replay:
+        // revert narrowly to the source only.
+        let ghost = crate::workspace::WindowKey {
+            hwnd: 503,
+            pid: 1503,
+            creation: "c0000000000001f7".to_owned(),
+        };
+        let source: BTreeSet<crate::workspace::WindowKey> =
+            state.workspaces.workspace_members("mon-a", &ws_a);
+        let target: BTreeSet<crate::workspace::WindowKey> =
+            state.workspaces.workspace_members("mon-b", &ws_b);
+        assert!(!crate::workspace_owner::verify_directional_transfer(
+            &ghost, &source, &target
+        ));
+        // Stale fences refuse the tails before any native effect.
+        let snapshot = crate::workspace_owner::DirectionalFenceSnapshot {
+            inner_gap: 8,
+            outer_gap: 8,
+            source_output: "mon-a".to_owned(),
+            source_workspace: ws_a.clone(),
+            target_output: "mon-b".to_owned(),
+            target_workspace: ws_b.clone(),
+            source_tiled: true,
+            target_tiled: true,
+            direction: Direction::Right,
+            overlay_maximized: false,
+            overlay_fullscreen: false,
+            source_full: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            target_full: Rect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            source_bounds: Rect {
+                x: 8,
+                y: 8,
+                w: 1904,
+                h: 1064,
+            },
+            target_bounds: Rect {
+                x: 1928,
+                y: 8,
+                w: 1904,
+                h: 1064,
+            },
+            owner: state.owner.as_str().to_owned(),
+            generation: state.generation.as_str().to_owned(),
+        };
+        let mut live = crate::workspace_owner::DirectionalFenceLive {
+            inner_gap: 8,
+            outer_gap: 8,
+            source_tiled: true,
+            target_tiled: true,
+            source_is_active: true,
+            target_is_active: true,
+            topology_ok: true,
+            scope_ok: true,
+            lifetime_ok: true,
+            membership_ok: true,
+            overlay_maximized: false,
+            overlay_fullscreen: false,
+            owner_ok: true,
+        };
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            None
+        );
+        live.target_is_active = false;
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            Some("view-changed")
+        );
+        live.target_is_active = true;
+        live.lifetime_ok = false;
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            Some("identity-changed")
+        );
+    }
+
+    #[test]
+    fn resolve_uses_destination_current_view_and_local_fallbacks() {
+        // Dispatch-level preparation seam: production `resolve_...` over a
+        // real `TileLoop` plus synthetic FULL/work areas (negative coords,
+        // panel-inset work areas). No native effects.
+        use tiler_core::directional::Direction;
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let areas = vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: -1920,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ];
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let mover = Rect {
+            x: -200,
+            y: 500,
+            w: 200,
+            h: 200,
+        };
+        assert_eq!(
+            super::resolve_directional_target(
+                &state,
+                &areas,
+                "mon-a",
+                Direction::Right,
+                &mover,
+                false,
+            ),
+            Some(("mon-b".to_owned(), ws_b.clone()))
+        );
+        // Vertical focus never crosses: local fallback.
+        assert_eq!(
+            super::resolve_directional_target(&state, &areas, "mon-a", Direction::Up, &mover, true,),
+            None
+        );
+        // Floating destination never crosses: local fallback.
+        assert!(state.workspaces.set_tiled("mon-b", &ws_b, false));
+        assert_eq!(
+            super::resolve_directional_target(
+                &state,
+                &areas,
+                "mon-a",
+                Direction::Right,
+                &mover,
+                false,
+            ),
+            None
+        );
+        assert!(state.workspaces.set_tiled("mon-b", &ws_b, true));
+        // No candidate (far gap) is a local fallback, never a wrap or a
+        // refusal of the local command.
+        let lonely = vec![area(
+            "mon-a",
+            Rect {
+                x: 0,
+                y: 40,
+                w: 1920,
+                h: 1040,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+        )];
+        assert_eq!(
+            super::resolve_directional_target(
+                &state,
+                &lonely,
+                "mon-a",
+                Direction::Right,
+                &mover,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn live_fences_detect_gap_view_and_topology_drift() {
+        // Dispatch-level fence seam over a real `TileLoop`: snapshot holds
+        // except for the injected drift. Lifetime cannot hold without native
+        // tags, so each case asserts the earlier refusal token, which is the
+        // production ordering that matters before any mutation.
+        use tiler_core::directional::Direction;
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let areas = vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ];
+        let mover = crate::workspace::WindowKey {
+            hwnd: 601,
+            pid: 1601,
+            creation: "c000000000000259".to_owned(),
+        };
+        let snapshot = super::directional_snapshot(
+            &state,
+            &areas,
+            "mon-a",
+            &ws_a,
+            "mon-b",
+            &ws_b,
+            Direction::Right,
+            false,
+            false,
+        )
+        .expect("snapshot");
+        // Gap drift refuses before any mutation.
+        state.inner_gap = 16;
+        let live = super::directional_live(&state, &areas, &snapshot, &mover, true, false, false);
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            Some("gap-changed")
+        );
+        state.inner_gap = 8;
+        // View drift: switch the destination to its sibling workspace.
+        let sibling = state
+            .workspaces
+            .workspace_ids("mon-b")
+            .into_iter()
+            .find(|id| id != &ws_b)
+            .expect("sibling workspace");
+        assert!(state.workspaces.activate("mon-b", &sibling));
+        let live = super::directional_live(&state, &areas, &snapshot, &mover, true, false, false);
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            Some("view-changed")
+        );
+        assert!(state.workspaces.activate("mon-b", &ws_b));
+        // Topology drift: destination FULL rect moves.
+        let mut moved = areas.clone();
+        moved[1].full.x = 2000;
+        let live = super::directional_live(&state, &moved, &snapshot, &mover, true, false, false);
+        assert_eq!(
+            crate::workspace_owner::directional_fences_hold(&snapshot, &live),
+            Some("topology-changed")
+        );
+    }
+
+    #[test]
+    fn arrival_proof_requires_planned_rect_on_target_monitor() {
+        // Finalization seam: production `directional_arrival_verified` over
+        // the just-published managed observation. No native effects.
+        use tiler_core::boundary::{CoreReply, MovePlanReply};
+        use tiler_core::directional::{Capability, NodeId, OutputId, Rule, WorkspaceId};
+        let mut state = test_state();
+        let areas = vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ];
+        let planned = Rect {
+            x: 2000,
+            y: 100,
+            w: 800,
+            h: 600,
+        };
+        let reply = CoreReply::MoveDirectional(MovePlanReply {
+            base_revision: 2,
+            rule: Rule::R4,
+            capability: Capability::CrossOutputTransfer,
+            direction: Direction::Right,
+            geometry: vec![tiler_core::session::DesiredGeometry {
+                window: WindowId("mover".to_owned()),
+                leaf: NodeId("leaf-mover".to_owned()),
+                output: OutputId("mon-b".to_owned()),
+                workspace: WorkspaceId("ws-b".to_owned()),
+                rect: planned,
+                overconstrained: false,
+                client_clamped: false,
+            }],
+            focus_domain: tiler_core::session::DomainKey {
+                output: OutputId("mon-b".to_owned()),
+                workspace: WorkspaceId("ws-b".to_owned()),
+            },
+            focus_leaf: NodeId("leaf-mover".to_owned()),
+            cross: None,
+        });
+        // Stable has no observation yet: no proof.
+        assert!(!super::directional_arrival_verified(
+            &state, &areas, &reply, "mover", 701, "mon-b"
+        ));
+        state.stable.insert(701, planned);
+        assert!(super::directional_arrival_verified(
+            &state, &areas, &reply, "mover", 701, "mon-b"
+        ));
+        // Readback mismatch on the target monitor: no proof.
+        state.stable.insert(
+            701,
+            Rect {
+                x: 2001,
+                y: 100,
+                w: 800,
+                h: 600,
+            },
+        );
+        assert!(!super::directional_arrival_verified(
+            &state, &areas, &reply, "mover", 701, "mon-b"
+        ));
+        // Right shape, wrong monitor: no proof.
+        state.stable.insert(
+            701,
+            Rect {
+                x: 100,
+                y: 100,
+                w: 800,
+                h: 600,
+            },
+        );
+        assert!(!super::directional_arrival_verified(
+            &state, &areas, &reply, "mover", 701, "mon-b"
+        ));
+        // Non-plan replies never prove arrival.
+        let rejected = CoreReply::Rejected {
+            kind: "unchanged",
+            message: "no edge",
+        };
+        state.stable.insert(701, planned);
+        assert!(!super::directional_arrival_verified(
+            &state, &areas, &rejected, "mover", 701, "mon-b"
+        ));
+    }
+
+    #[test]
+    fn differing_work_areas_place_each_domain_in_its_own_bounds() {
+        // Two-domain geometry fixture over actually differing work areas
+        // (panel inset on the source, smaller target): the cross plan must
+        // keep the arrival inside the target bounds and the source survivor
+        // inside the source bounds. Physical coordinates, no rescaling.
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let areas = vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1280,
+                    h: 1024,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1280,
+                    h: 1024,
+                },
+            ),
+        ];
+        let (source_domain, source_key) =
+            workspace_domain_for("mon-a", &ws_a, &areas, 8, 8).expect("source domain");
+        let (target_domain, target_key) =
+            workspace_domain_for("mon-b", &ws_b, &areas, 8, 8).expect("target domain");
+        assert_ne!(source_domain.bounds, target_domain.bounds);
+        let source = seed(
+            &mut state,
+            "mon-a",
+            &ws_a,
+            source_domain.bounds,
+            &["mover"],
+            "mover",
+        );
+        assert_eq!(source.0.bounds, source_domain.bounds);
+        let target = seed(
+            &mut state,
+            "mon-b",
+            &ws_b,
+            target_domain.bounds,
+            &["t1", "t2"],
+            "t1",
+        );
+        assert_eq!(target.0.bounds, target_domain.bounds);
+        let event = pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover"],
+            &["t1", "t2"],
+            "mover",
+            Direction::Right,
+            CoreCommand::Move {
+                window: "mover".to_owned(),
+                direction: "right".to_owned(),
+                cross_output_transfer: true,
+                same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+            },
+        );
+        let contains = |outer: &Rect, inner: &Rect| {
+            inner.x >= outer.x
+                && inner.y >= outer.y
+                && inner.x + inner.w <= outer.x + outer.w
+                && inner.y + inner.h <= outer.y + outer.h
+        };
+        match state.engine.handle(&event) {
+            CoreReply::MoveDirectional(plan) => {
+                assert!(plan.cross.is_some(), "sole root must cross");
+                for entry in &plan.geometry {
+                    if entry.window.0 == "mover" {
+                        assert!(
+                            contains(&target_domain.bounds, &entry.rect),
+                            "arrival must sit in target bounds"
+                        );
+                    } else {
+                        let home = if ["t1", "t2"].contains(&entry.window.0.as_str()) {
+                            &target_domain.bounds
+                        } else {
+                            &source_domain.bounds
+                        };
+                        assert!(contains(home, &entry.rect), "survivor stays in bounds");
+                    }
+                }
+                // Keep the keys distinct even though both domains tile.
+                assert_ne!(source_key, target_key);
+            }
+            other => panic!("differing work areas must cross, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn four_way_occupied_cross_selects_and_contains() {
+        // Four-way topology around `mon-a`: negative-x west, smaller east,
+        // stacked north/south with panel-inset work areas and differing
+        // physical sizes. FULL rects select; per-output inset bounds contain.
+        let areas = vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-l",
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-r",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1280,
+                    h: 1024,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1280,
+                    h: 1024,
+                },
+            ),
+            area(
+                "mon-t",
+                Rect {
+                    x: 0,
+                    y: -1080,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: -1080,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: 0,
+                    y: 1120,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 1080,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ];
+        let mover_rect = Rect {
+            x: 800,
+            y: 400,
+            w: 200,
+            h: 200,
+        };
+        let entries: Vec<crate::workspace_owner::DirectionalOutput> = areas
+            .iter()
+            .map(|a| crate::workspace_owner::DirectionalOutput {
+                id: a.device.clone(),
+                full: a.full,
+            })
+            .collect();
+        for (direction, expected) in [
+            (Direction::Left, "mon-l"),
+            (Direction::Right, "mon-r"),
+            (Direction::Up, "mon-t"),
+            (Direction::Down, "mon-b"),
+        ] {
+            let selected = crate::workspace_owner::select_directional_target(
+                direction,
+                "mon-a",
+                &mover_rect,
+                &entries,
+            )
+            .expect("readable");
+            assert_eq!(selected, Some(expected.to_owned()), "{direction:?}");
+        }
+        // Real occupied-cross Engine moves for the three directions Right
+        // does not already cover; each arrival stays in its own inset bounds
+        // (physical coordinates, no rescaling).
+        let contains = |outer: &Rect, inner: &Rect| {
+            inner.x >= outer.x
+                && inner.y >= outer.y
+                && inner.x + inner.w <= outer.x + outer.w
+                && inner.y + inner.h <= outer.y + outer.h
+        };
+        for (direction, target_output, name) in [
+            (Direction::Left, "mon-l", "left"),
+            (Direction::Up, "mon-t", "up"),
+            (Direction::Down, "mon-b", "down"),
+        ] {
+            let mut state = test_state();
+            for output in ["mon-a", target_output] {
+                state.workspaces.ensure_output(output);
+            }
+            let ws_a = state.workspaces.active_id("mon-a").expect("active");
+            let ws_b = state.workspaces.active_id(target_output).expect("active");
+            let (source_domain, _) =
+                workspace_domain_for("mon-a", &ws_a, &areas, 8, 8).expect("src domain");
+            let (target_domain, _) =
+                workspace_domain_for(target_output, &ws_b, &areas, 8, 8).expect("dst domain");
+            assert_ne!(source_domain.bounds, target_domain.bounds);
+            let source = seed(
+                &mut state,
+                "mon-a",
+                &ws_a,
+                source_domain.bounds,
+                &["mover"],
+                "mover",
+            );
+            let target = seed(
+                &mut state,
+                target_output,
+                &ws_b,
+                target_domain.bounds,
+                &["t1", "t2"],
+                "t1",
+            );
+            let event = pair_event(
+                &state,
+                &source,
+                &target,
+                &["mover"],
+                &["t1", "t2"],
+                "mover",
+                direction,
+                CoreCommand::Move {
+                    window: "mover".to_owned(),
+                    direction: name.to_owned(),
+                    cross_output_transfer: true,
+                    same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+                },
+            );
+            match state.engine.handle(&event) {
+                CoreReply::MoveDirectional(plan) => {
+                    let cross = plan.cross.expect("sole root must cross");
+                    assert_eq!(cross.target, CrossOutputTarget::Occupied);
+                    assert_eq!(plan.focus_domain.output.0, target_output);
+                    assert!(!plan.geometry.is_empty(), "cross carries placement");
+                    for entry in &plan.geometry {
+                        let home = if entry.window.0 == "mover"
+                            || ["t1", "t2"].contains(&entry.window.0.as_str())
+                        {
+                            &target_domain.bounds
+                        } else {
+                            &source_domain.bounds
+                        };
+                        assert!(
+                            contains(home, &entry.rect),
+                            "{name} placement must sit in its own bounds"
+                        );
+                    }
+                }
+                other => panic!("{name} must cross, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn empty_focus_run_refuses_without_writes_and_retains_mru() {
+        // Full `run_directional_cross` focus leg into the empty `right` view:
+        // the Engine refuses unchanged with zero geometry/membership/focus
+        // writes and the retained Engine plus source homing survive.
+        use super::{
+            HintCx, clear_pending_seams, inject_pending_elevated, inject_pending_suspend,
+            pending_counters, run_directional_cross,
+        };
+        use crate::snapkey::{QueuedIntent, SnapEdge, SnapOp};
+        let mut rig = empty_target_move_rig();
+        let correlation = CorrelationId::parse("corr-focus-empty-run").expect("correlation");
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let home = rig.loc.clone();
+        let mut hint_cx = HintCx::new();
+        let intent = QueuedIntent {
+            op: SnapOp::Focus,
+            direction: Direction::Right,
+            edge: SnapEdge::Down,
+            origin: None,
+            consumed: false,
+            announce: false,
+            tick: std::time::Instant::now(),
+        };
+        let outcome = run_directional_cross(
+            &mut rig.state,
+            &rig.me,
+            &rig.fulls,
+            &rig.areas,
+            &rig.observed,
+            &[],
+            &mut hint_cx,
+            &rig.loc,
+            &rig.loc,
+            &rig.mover,
+            "mover",
+            &rig.source_rows,
+            &rig.target_output,
+            &rig.target_ws,
+            &intent,
+            &rig.origin,
+            26,
+            &correlation,
+            correlation.as_str(),
+            false,
+            Vec::new(),
+            false,
+            false,
+        );
+        assert_eq!(outcome, "unchanged");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(loc.output, home.output);
+        assert_eq!(loc.workspace, home.workspace);
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "refused empty focus keeps the retained Engine"
+        );
+        assert_eq!(pending_counters().focus, 0, "refused focus never actuates");
+        clear_pending_seams();
+    }
+}
+
+#[cfg(test)]
+mod cross_drag_adapter_tests {
+    // Windows cross-output drag-drop (REQ-MOU-03) through a real `TileLoop`
+    // against the real retained Engine (no HWNDs, hooks, or live effects):
+    // pointer-resolved destination current views over a negative-x secondary
+    // with a panel-inset work area, occupied/empty destinations, preview/drop
+    // agreement through the production pair and singleton shapes, Engine plus
+    // project transfer without hiding or view switches, stale/misrouted
+    // refusals, arrival proof (missing and clamped), drop-destination routing,
+    // and native move versus resize classification. Native setters stay
+    // user-owned live acceptance; these pin the portable pair construction,
+    // Engine planning, and the settle verification.
+    use super::rmax03_adapter_tests::test_state;
+    use super::{
+        DropDestination, MonitorArea, directional_arrival_verified, resolve_drop_destination,
+    };
+    use tiler_core::boundary::{CoreCommand, CoreReply, TiledKind};
+    use tiler_core::directional::{NodeId, OutputId, WindowId, WorkspaceId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::ids::CorrelationId;
+
+    fn area(device: &str, work: Rect, full: Rect) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work,
+            full,
+        }
+    }
+
+    /// Sideways pair with a negative-x secondary carrying a bottom panel
+    /// strip: FULL rectangles decide the pointer output while inset work
+    /// areas govern placement. Mixed-DPI hosts behave the same (physical
+    /// coordinates throughout, no rescaling); the odd sizes here prove it.
+    fn areas() -> Vec<MonitorArea> {
+        vec![
+            area(
+                "mon-a",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1400,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1440,
+                },
+            ),
+            area(
+                "mon-b",
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: -1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ]
+    }
+
+    fn seed(
+        state: &mut super::TileLoop,
+        output: &str,
+        workspace: &str,
+        bounds: Rect,
+        members: &[&str],
+        focused: &str,
+    ) -> (
+        tiler_core::session::OutputDomain,
+        tiler_core::session::DomainKey,
+    ) {
+        let domain = crate::workspace_owner::workspace_domain(output, workspace, bounds, 8);
+        let carried: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = members
+            .iter()
+            .map(|token| {
+                (
+                    WindowId((*token).to_owned()),
+                    bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("cross-drag-seed").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &members
+                .iter()
+                .map(|t| ((*t).to_owned(), bounds))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(focused.to_owned())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(reply, CoreReply::Projection(_) | CoreReply::Tiled(_)),
+            "seed must converge, got {reply:?}"
+        );
+        domain
+    }
+
+    fn engine_row(token: &str, output: &str, workspace: &str) -> tiler_core::seed::EngineWindow {
+        tiler_core::seed::EngineWindow {
+            window: WindowId(token.to_owned()),
+            output: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            rect: Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            },
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+        }
+    }
+
+    /// Pair drag event without adjacency entries (pointer-resolved): the
+    /// destination domain carries the request, the combined rows ride
+    /// `windows`, and the source-first pair scopes the transaction. Drop
+    /// coordinates ride inside `command`.
+    #[allow(clippy::too_many_arguments)]
+    fn drag_pair_event(
+        state: &super::TileLoop,
+        source: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        target: &(
+            tiler_core::session::OutputDomain,
+            tiler_core::session::DomainKey,
+        ),
+        source_members: &[&str],
+        target_members: &[&str],
+        mover: &str,
+        command: CoreCommand,
+        correlation: &str,
+    ) -> tiler_core::boundary::CoreEvent {
+        let mut windows = Vec::new();
+        for token in source_members {
+            windows.push(engine_row(token, &source.1.output.0, &source.1.workspace.0));
+        }
+        for token in target_members {
+            windows.push(engine_row(token, &target.1.output.0, &target.1.workspace.0));
+        }
+        tiler_core::boundary::CoreEvent {
+            owner: state.owner.clone(),
+            generation: state.generation.clone(),
+            correlation: CorrelationId::parse(correlation).expect("correlation"),
+            revision: 0,
+            fingerprint: 7,
+            domain: target.0.clone(),
+            domain_key: target.1.clone(),
+            outer_gap: 8,
+            focused_window: WindowId(mover.to_owned()),
+            windows,
+            directional: Some(vec![
+                (source.0.clone(), source.1.clone()),
+                (target.0.clone(), target.1.clone()),
+            ]),
+            directional_target_outer_gap: Some(8),
+            target_domain: None,
+            target_windows: Vec::new(),
+            command,
+        }
+    }
+
+    fn mover_key(hwnd: u64) -> crate::workspace::WindowKey {
+        crate::workspace::WindowKey {
+            hwnd,
+            pid: 7000 + hwnd as u32,
+            creation: format!("c{hwnd:016x}"),
+        }
+    }
+
+    #[test]
+    fn occupied_pair_preview_drop_agree_and_transfer_without_hiding() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        // SourceBrowser domain bounds span the 2560-wide primary inset by 8;
+        // the destination spans its panel-inset work area at negative x.
+        let source_bounds = Rect {
+            x: 8,
+            y: 8,
+            w: 2544,
+            h: 1384,
+        };
+        let dest_bounds = Rect {
+            x: -1912,
+            y: 8,
+            w: 1904,
+            h: 1024,
+        };
+        let source = seed(
+            &mut state,
+            "mon-a",
+            &ws_a,
+            source_bounds,
+            &["mover", "sib"],
+            "mover",
+        );
+        let target = seed(&mut state, "mon-b", &ws_b, dest_bounds, &["t1", "t2"], "t1");
+        // Left edge of the destination bounds: the mover inserts before the
+        // first destination tile.
+        let (x, y) = (dest_bounds.x + 2, dest_bounds.y + dest_bounds.h / 2);
+        let preview = drag_pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover", "sib"],
+            &["t1", "t2"],
+            "mover",
+            CoreCommand::DragPreview {
+                window: "mover".to_owned(),
+                x,
+                y,
+                hover_prior: None,
+                source: Some(source.1.clone()),
+            },
+            "corr-drag-pair-pv",
+        );
+        let previewed = match state.engine.handle(&preview) {
+            CoreReply::DragPreview(plan) => plan.preview,
+            other => panic!("pair preview must project, got {other:?}"),
+        };
+        assert_eq!(previewed.domain, target.1);
+        assert_eq!(previewed.source_window.0, "mover");
+        let drop = drag_pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover", "sib"],
+            &["t1", "t2"],
+            "mover",
+            CoreCommand::DragDrop {
+                window: "mover".to_owned(),
+                x,
+                y,
+                hover_prior: None,
+                source: Some(source.1.clone()),
+            },
+            "corr-drag-pair",
+        );
+        let mover_rect = match state.engine.handle(&drop) {
+            CoreReply::Tiled(plan) => {
+                assert_eq!(plan.kind, TiledKind::DragDrop);
+                assert_eq!(plan.focus_domain, Some(target.1.clone()));
+                plan.geometry
+                    .iter()
+                    .find(|g| g.window.0 == "mover")
+                    .expect("mover placement")
+                    .rect
+            }
+            other => panic!("pair drop must plan, got {other:?}"),
+        };
+        // Preview and drop agree exactly, inside the destination bounds.
+        assert_eq!(mover_rect, previewed.proposed_rect);
+        assert!(mover_rect.x >= dest_bounds.x);
+        assert!(mover_rect.x + mover_rect.w <= dest_bounds.x + dest_bounds.w);
+        // Project transfer without hiding or view switches: the mover leaves
+        // the source set, joins the destination set, stays visible, and both
+        // outputs keep their current workspaces.
+        let mover = mover_key(0x3101);
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-a", &ws_a, false)
+        );
+        let peer = mover_key(0x3102);
+        assert!(state.workspaces.assign(peer, "mon-a", &ws_a, false));
+        let host = mover_key(0x3103);
+        assert!(state.workspaces.assign(host, "mon-b", &ws_b, false));
+        assert!(
+            state
+                .workspaces
+                .assign(mover.clone(), "mon-b", &ws_b, false)
+        );
+        assert!(crate::workspace_owner::verify_directional_transfer(
+            &mover,
+            &state.workspaces.workspace_members("mon-a", &ws_a),
+            &state.workspaces.workspace_members("mon-b", &ws_b),
+        ));
+        assert!(!state.workspaces.is_hidden(&mover));
+        assert_eq!(
+            state.workspaces.active_id("mon-a").as_deref(),
+            Some(ws_a.as_str())
+        );
+        assert_eq!(
+            state.workspaces.active_id("mon-b").as_deref(),
+            Some(ws_b.as_str())
+        );
+    }
+
+    #[test]
+    fn empty_singleton_admits_then_source_reconciles() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let source_bounds = Rect {
+            x: 8,
+            y: 8,
+            w: 2544,
+            h: 1384,
+        };
+        let dest_bounds = Rect {
+            x: -1912,
+            y: 8,
+            w: 1904,
+            h: 1024,
+        };
+        let source = seed(
+            &mut state,
+            "mon-a",
+            &ws_a,
+            source_bounds,
+            &["mover", "sib"],
+            "mover",
+        );
+        // No destination session: the empty flow seeds fresh.
+        assert!(
+            !state.engine.contains(
+                &crate::workspace_owner::workspace_domain("mon-b", &ws_b, dest_bounds, 8).1
+            )
+        );
+        let (dest_domain, dest_key) =
+            crate::workspace_owner::workspace_domain("mon-b", &ws_b, dest_bounds, 8);
+        let mover_frame = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let correlation = CorrelationId::parse("corr-drag-empty").expect("correlation");
+        let mut event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            0,
+            crate::tiling::fingerprint(&[("mover".to_owned(), mover_frame)]),
+            &dest_domain,
+            &dest_key,
+            8,
+            &[(
+                WindowId("mover".to_owned()),
+                mover_frame,
+                tiler_core::size_hints::WindowSizeHints::none(),
+                false,
+            )],
+            Some(&WindowId("mover".to_owned())),
+        );
+        event.command = CoreCommand::DragDrop {
+            window: "mover".to_owned(),
+            x: dest_bounds.x + 10,
+            y: dest_bounds.y + 10,
+            hover_prior: None,
+            source: Some(source.1.clone()),
+        };
+        let sole = match state.engine.handle(&event) {
+            CoreReply::Tiled(plan) => plan,
+            other => panic!("empty drop must admit the singleton, got {other:?}"),
+        };
+        assert_eq!(sole.geometry.len(), 1);
+        assert_eq!(sole.geometry[0].rect, dest_bounds);
+        // Source reconcile without the mover removes it Engine-side and
+        // reflows the survivor over the full source bounds.
+        let correlation = CorrelationId::parse("corr-drag-empty-src").expect("correlation");
+        let mut reconcile = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            state
+                .engine
+                .session(&source.1)
+                .map(|s| s.accepted_revision())
+                .unwrap_or(0),
+            crate::tiling::fingerprint(&[("sib".to_owned(), source_bounds)]),
+            &source.0,
+            &source.1,
+            8,
+            &[(
+                WindowId("sib".to_owned()),
+                source_bounds,
+                tiler_core::size_hints::WindowSizeHints::none(),
+                false,
+            )],
+            Some(&WindowId("sib".to_owned())),
+        );
+        reconcile.command = CoreCommand::Reconcile;
+        match state.engine.handle(&reconcile) {
+            CoreReply::Tiled(_) | CoreReply::Projection(_) => {}
+            other => panic!("source reconcile must converge, got {other:?}"),
+        }
+        let source_windows: Vec<String> = state
+            .engine
+            .session(&source.1)
+            .expect("source kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(source_windows, vec!["sib".to_owned()]);
+    }
+
+    #[test]
+    fn stale_pair_keys_and_missing_destination_refuse() {
+        let mut state = test_state();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        let source_bounds = Rect {
+            x: 8,
+            y: 8,
+            w: 2544,
+            h: 1384,
+        };
+        let dest_bounds = Rect {
+            x: -1912,
+            y: 8,
+            w: 1904,
+            h: 1024,
+        };
+        let source = seed(
+            &mut state,
+            "mon-a",
+            &ws_a,
+            source_bounds,
+            &["mover", "sib"],
+            "mover",
+        );
+        let target = seed(&mut state, "mon-b", &ws_b, dest_bounds, &["t1"], "t1");
+        // Reversed pair order disagrees with the request addressing.
+        let mut swapped = drag_pair_event(
+            &state,
+            &source,
+            &target,
+            &["mover", "sib"],
+            &["t1"],
+            "mover",
+            CoreCommand::DragDrop {
+                window: "mover".to_owned(),
+                x: dest_bounds.x + 2,
+                y: dest_bounds.y + 10,
+                hover_prior: None,
+                source: Some(source.1.clone()),
+            },
+            "corr-drag-swapped",
+        );
+        swapped.directional = Some(vec![
+            (target.0.clone(), target.1.clone()),
+            (source.0.clone(), source.1.clone()),
+        ]);
+        match state.engine.handle(&swapped) {
+            CoreReply::SnapshotInvalid { detail, .. } => assert_eq!(detail, "domain-invalid"),
+            other => panic!("swapped pair must refuse, got {other:?}"),
+        }
+        // A destination with no retained session misrouted into the pair
+        // path refuses instead of fabricating membership.
+        let (missing_domain, missing_key) =
+            crate::workspace_owner::workspace_domain("mon-z", "ws-9", dest_bounds, 8);
+        let misrouted = drag_pair_event(
+            &state,
+            &source,
+            &(missing_domain, missing_key),
+            &["mover", "sib"],
+            &[],
+            "mover",
+            CoreCommand::DragDrop {
+                window: "mover".to_owned(),
+                x: dest_bounds.x + 2,
+                y: dest_bounds.y + 10,
+                hover_prior: None,
+                source: Some(source.1.clone()),
+            },
+            "corr-drag-missing",
+        );
+        match state.engine.handle(&misrouted) {
+            CoreReply::SnapshotInvalid { detail, .. } => {
+                assert_eq!(detail, "canonical-target-unavailable")
+            }
+            other => panic!("missing destination must refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drop_destination_routing_observes_pointer_output_current_view() {
+        let mut state = test_state();
+        let all = areas();
+        state.workspaces.ensure_output("mon-a");
+        state.workspaces.ensure_output("mon-b");
+        let ws_a = state.workspaces.active_id("mon-a").expect("active");
+        let ws_b = state.workspaces.active_id("mon-b").expect("active");
+        state.workspaces.set_tiled("mon-a", &ws_a, true);
+        state.workspaces.set_tiled("mon-b", &ws_b, true);
+        // Same-output points keep the local route.
+        assert!(matches!(
+            resolve_drop_destination(&state, &all, "mon-a", 100, 100),
+            DropDestination::SameOutput
+        ));
+        // Pointer on the secondary joins its current workspace.
+        match resolve_drop_destination(&state, &all, "mon-a", -100, 100) {
+            DropDestination::Cross { output, workspace } => {
+                assert_eq!(output, "mon-b");
+                assert_eq!(workspace, ws_b);
+            }
+            other => panic!("secondary point must cross, got {other:?}"),
+        }
+        // Panel strip: inside FULL but outside the inset work area.
+        assert!(matches!(
+            resolve_drop_destination(&state, &all, "mon-a", -100, 1070),
+            DropDestination::Refused("outside-work-area")
+        ));
+        // Outside every output refuses.
+        assert!(matches!(
+            resolve_drop_destination(&state, &all, "mon-a", 9999, 9999),
+            DropDestination::Refused("outside-output")
+        ));
+        // Floating destination refuses.
+        state.workspaces.set_tiled("mon-b", &ws_b, false);
+        assert!(matches!(
+            resolve_drop_destination(&state, &all, "mon-a", -100, 100),
+            DropDestination::Refused("floating-dest")
+        ));
+        state.workspaces.set_tiled("mon-b", &ws_b, true);
+        // Unknown pointer output (in areas, never managed) has no view.
+        let mut extended = all.clone();
+        extended.push(area(
+            "mon-ghost",
+            Rect {
+                x: 2560,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            Rect {
+                x: 2560,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        ));
+        assert!(matches!(
+            resolve_drop_destination(&state, &extended, "mon-a", 2600, 100),
+            DropDestination::Refused("no-view")
+        ));
+    }
+
+    #[test]
+    fn drag_arrival_needs_planned_rect_or_clamped_effective_on_target() {
+        use tiler_core::boundary::TiledPlan;
+        use tiler_core::contract::LIFECYCLE_POLICY_VERSION;
+        let mut state = test_state();
+        let all = areas();
+        let planned = Rect {
+            x: -1912,
+            y: 8,
+            w: 952,
+            h: 1024,
+        };
+        let reply = CoreReply::Tiled(TiledPlan {
+            base_revision: 2,
+            policy_version: LIFECYCLE_POLICY_VERSION,
+            kind: TiledKind::DragDrop,
+            geometry: vec![tiler_core::session::DesiredGeometry {
+                window: WindowId("mover".to_owned()),
+                leaf: NodeId("leaf-mover".to_owned()),
+                output: OutputId("mon-b".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                rect: planned,
+                overconstrained: false,
+                client_clamped: false,
+            }],
+            focus_domain: Some(tiler_core::session::DomainKey {
+                output: OutputId("mon-b".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+            }),
+            focus_leaf: Some(NodeId("leaf-mover".to_owned())),
+            float_window: None,
+            float_rect: None,
+        });
+        // Missing readback never proves arrival.
+        assert!(!directional_arrival_verified(
+            &state, &all, &reply, "mover", 0x3201, "mon-b"
+        ));
+        // Exact readback on the destination proves it.
+        state.stable.insert(0x3201, planned);
+        assert!(directional_arrival_verified(
+            &state, &all, &reply, "mover", 0x3201, "mon-b"
+        ));
+        // Clamped readback proves only the hint-effective rect: the raw
+        // planned rect alone is not proof when overconstrained.
+        let mut clamped = reply.clone();
+        let CoreReply::Tiled(plan) = &mut clamped else {
+            panic!("tiled reply");
+        };
+        plan.geometry[0].overconstrained = true;
+        state.hint_logged.insert(
+            "mover".to_owned(),
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(1000),
+                min_h: None,
+                max_w: None,
+                max_h: None,
+            },
+        );
+        let effective = crate::tiling::overconstrained_effective(
+            planned,
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(1000),
+                min_h: None,
+                max_w: None,
+                max_h: None,
+            },
+        );
+        assert_ne!(effective, planned);
+        state.stable.insert(0x3201, planned);
+        assert!(
+            !directional_arrival_verified(&state, &all, &clamped, "mover", 0x3201, "mon-b"),
+            "raw planned rect must not prove a clamped arrival"
+        );
+        state.stable.insert(0x3201, effective);
+        assert!(directional_arrival_verified(
+            &state, &all, &clamped, "mover", 0x3201, "mon-b"
+        ));
+        state.hint_logged.remove("mover");
+    }
+
+    #[test]
+    fn gesture_classification_keeps_native_move_apart_from_resize() {
+        use crate::tiling::{GestureIntent, classify_gesture};
+        // Native title-bar drags move the frame before END: same size far
+        // from the source origin (even onto another output) is a move drop
+        // at the release cursor, never a resize.
+        let before = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let moved = Rect {
+            x: -1800,
+            y: 50,
+            w: 400,
+            h: 300,
+        };
+        assert_eq!(
+            classify_gesture(&before, &moved, Some((-1700, 200))),
+            Some(GestureIntent::MoveDrop { x: -1700, y: 200 })
+        );
+        // Any size change is a resize even across outputs.
+        let resized = Rect {
+            x: -1800,
+            y: 50,
+            w: 500,
+            h: 300,
+        };
+        assert!(matches!(
+            classify_gesture(&before, &resized, Some((-1700, 200))),
+            Some(GestureIntent::PointerResize { .. })
+        ));
+        // Zero movement routes nothing.
+        assert_eq!(classify_gesture(&before, &before, Some((100, 100))), None);
     }
 }

@@ -449,6 +449,33 @@ impl super::Session {
         true
     }
 
+    /// Remember `window` as the last-active focus of `domain` without
+    /// touching topology, membership, revision, pending, or divergence
+    /// state. Same binding gates as [`Session::sync_focus_from_window`]
+    /// (unknown domains, malformed topology, unknown/exception/cross-domain
+    /// windows fail closed with no mutation), plus the `last_active` advance
+    /// the sync deliberately leaves to convergence: cross-output focus
+    /// planning reads the remembered leaf, so an adapter-observed native
+    /// focus move must land here before the focus request or the plan keeps
+    /// aiming at the stale remembered target. Returns `false` (no mutation)
+    /// on divergence, pending/drag residue, or any binding failure.
+    pub fn remember_focus(&mut self, domain: &DomainKey, window: &WindowId) -> bool {
+        // A staged plan owns its focus: never rebind underneath it.
+        if self.has_pending_desired() {
+            return false;
+        }
+        if !self.sync_focus_from_window(domain, window) {
+            return false;
+        }
+        self.last_active = self.updated_last_active(
+            &self.focused_domain,
+            &self.focused_leaf,
+            &self.trees,
+            &self.windows,
+        );
+        true
+    }
+
     /// Whether an exception member is eligible for the slotless deferred
     /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
     /// intentional-float carry, option (a), no setting).

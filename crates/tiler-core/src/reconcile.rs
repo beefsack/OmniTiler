@@ -1565,6 +1565,7 @@ impl Reconciler {
             || plan.intent.target_leaf != plan.operation.target_leaf
             || plan.intent.target_window != plan.operation.target_window
             || plan.intent.side != plan.operation.side
+            || plan.intent.cross_source != plan.operation.cross_source
         {
             let reason = self.diverge(DivergenceKind::PostconditionMismatch);
             return Err(ProposeError::Diverged(reason));
@@ -1769,6 +1770,18 @@ fn valid_drag_operation(operation: &DragOperation) -> bool {
     if operation.source_leaf == operation.target_leaf
         || operation.source_window == operation.target_window
     {
+        return false;
+    }
+    // Cross-output operations name a source domain distinct from the target
+    // domain; same-domain operations carry no cross source.
+    if operation.is_cross_output() {
+        let Some((ref source_output, ref source_workspace)) = operation.cross_source else {
+            return false;
+        };
+        if source_output.0.is_empty() || source_workspace.0.is_empty() {
+            return false;
+        }
+    } else if operation.cross_source.is_some() {
         return false;
     }
     let (Some(side_axis), Some(side_before)) = (operation.side.axis(), operation.side.before())
@@ -3240,6 +3253,7 @@ mod tests {
             insertion_index: 2,
             wrap: false,
             new_group: None,
+            cross_source: None,
         }
     }
 
@@ -3252,6 +3266,7 @@ mod tests {
             target_leaf: NodeId("leaf-win-2".to_owned()),
             target_window: WindowId("win-2".to_owned()),
             side: crate::contract::DragSide::Right,
+            cross_source: None,
         }
     }
 

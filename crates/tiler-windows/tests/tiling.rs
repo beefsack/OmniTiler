@@ -14,9 +14,9 @@ use tiler_windows::tiling::{
     overlay_refusal, parse_allowlist, parse_capture_args, parse_children_args,
     parse_hide_proof_args, parse_inspect_args, parse_resize_args, parse_resize_request,
     parse_scope_host_child, parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args,
-    parse_workspace_args, parse_workspace_proof_args, parse_workspace_request, readback_outcome,
-    render_resize_request, render_workspace_request, resize_direction_valid, resize_mode_valid,
-    resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
+    parse_workspace_args, parse_workspace_proof_args, parse_workspace_request, prefer_modal_move,
+    readback_outcome, render_resize_request, render_workspace_request, resize_direction_valid,
+    resize_mode_valid, resize_repeat_next, scope_allows, scope_exe_basename, send_flags_stable,
     should_clear_maximize_at_admission, should_clear_maximize_at_admission_with_mode,
     should_hold_born_fullscreen, tick_summary_signature, tiling_domain_bounds, toggle_gate_outcome,
     verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
@@ -1121,6 +1121,31 @@ fn gesture_queued_settle_from_stable_pre() {
             boundary2: None,
         })
     );
+}
+
+#[test]
+fn modal_move_survives_mixed_dpi_rescale() {
+    // Native caption drag from a 100% monitor onto a 125% one: the OS
+    // rescales the frame mid-gesture (800x600 -> 1000x750), which rect
+    // comparison alone misreads as a user resize. The START-sampled modal
+    // kind (caption = move) keeps it a move drop at the release cursor; a
+    // sizing-border start (or unknown kind) keeps the resize route, moves
+    // pass through, and cursor-less resizes keep the geometry route.
+    let before = rect(100, 100, 800, 600);
+    let rescaled = rect(-1800, 50, 1000, 750);
+    let cursor = Some((-1700, 200));
+    let resize = classify_gesture(&before, &rescaled, cursor).expect("rescale classifies by rects");
+    assert!(matches!(resize, GestureIntent::PointerResize { .. }));
+    assert_eq!(
+        prefer_modal_move(resize, cursor, true),
+        GestureIntent::MoveDrop { x: -1700, y: 200 }
+    );
+    assert_eq!(prefer_modal_move(resize, cursor, false), resize);
+    assert_eq!(prefer_modal_move(resize, None, true), resize);
+    let moved = classify_gesture(&before, &rect(-1800, 50, 800, 600), cursor)
+        .expect("same-size move classifies");
+    assert_eq!(prefer_modal_move(moved, cursor, true), moved);
+    assert_eq!(prefer_modal_move(moved, cursor, false), moved);
 }
 
 #[test]

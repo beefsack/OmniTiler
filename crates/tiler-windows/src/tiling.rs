@@ -1545,11 +1545,13 @@ pub const fn readback_outcome(
     }
 }
 
-/// Same-output fence for a settle-time drop point: the release cursor must
-/// still sit inside the source domain bounds. Outside (including another
-/// output) refuses with snap-back and no transfer; cross-output placement
-/// belongs to a later item. Relocated from the discarded Win-drag producer;
-/// the title-bar path uses the same fence.
+/// Domain-bounds fence for a settle-time drop point: the release cursor must
+/// still sit inside the given domain bounds. The cross-output router
+/// (`resolve_drop_destination` in `tiling_sys`) applies this per output:
+/// same-output points keep the local route, pointer-output points join the
+/// destination current view through the pair route (occupied) or singleton
+/// admission (empty), and outside points refuse with snap-back and no
+/// transfer.
 #[must_use]
 pub fn drop_point_in_domain(
     bounds_x: i32,
@@ -1669,6 +1671,28 @@ fn pick_edge(
         return Some(Some((far_name, after_far.try_into().ok()?)));
     }
     Some(Some((origin_name, after_origin)))
+}
+/// Prefer START-sampled modal truth over rect classification for one native
+/// gesture intent: a caption-started move loop (`HTCAPTION` at START) carries
+/// user move intent even when the system rescaled the frame mid-gesture
+/// (mixed-DPI `WM_DPICHANGED` across outputs), which rect comparison alone
+/// would misread as a user resize. A user resize always starts on a sizing
+/// border instead, so only a resize verdict is overridden, and only with a
+/// captured release cursor to place the drop. Move verdicts pass through;
+/// cursor-less resizes keep the geometry route (no point to place).
+#[must_use]
+pub fn prefer_modal_move(
+    classified: GestureIntent,
+    cursor: Option<(i32, i32)>,
+    modal_move: bool,
+) -> GestureIntent {
+    if modal_move
+        && matches!(classified, GestureIntent::PointerResize { .. })
+        && let Some((x, y)) = cursor
+    {
+        return GestureIntent::MoveDrop { x, y };
+    }
+    classified
 }
 /// Complete observation inputs for one single-domain `Reconcile` tick.
 pub struct ReconcileInput<'a> {

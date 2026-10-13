@@ -1173,11 +1173,15 @@ impl DragCapabilities {
 /// Explicit preconditions the adapter must hold/verify to realize a drag plan.
 /// `AdapterMustVerifyPostconditions` is present on every drag plan, mirroring
 /// movement/lifecycle/focus/resize plans: realization is never assumed atomic.
+/// Same-domain plans carry `DragTargetsSameDomain`; cross-output plans (the
+/// mover leaves the capture domain for the pointer output's current domain)
+/// carry `DragTargetsCrossDomain` instead, never both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DragPrecondition {
     SourceLeafOccupiedBySourceWindow,
     TargetLeafOccupied,
     DragTargetsSameDomain,
+    DragTargetsCrossDomain,
     AdapterMustVerifyPostconditions,
 }
 
@@ -1239,8 +1243,11 @@ impl DragSide {
 }
 
 /// Semantic drag intent: pointer placement of the focused source tile onto a
-/// target leaf edge in one exact logical domain. Records the originating
-/// request so a plan can be interpreted without retaining caller-side state.
+/// target leaf edge. Records the originating request so a plan can be
+/// interpreted without retaining caller-side state. `domain_*` names the
+/// TARGET domain (the pointer output's current domain); `cross_source` names
+/// the capture domain the mover leaves (`None` for same-domain drags, where
+/// target and capture coincide).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DragIntent {
     pub domain_output: OutputId,
@@ -1250,17 +1257,20 @@ pub struct DragIntent {
     pub target_leaf: NodeId,
     pub target_window: WindowId,
     pub side: DragSide,
+    pub cross_source: Option<(OutputId, WorkspaceId)>,
 }
 
 /// Structural drag operation with fully resolved portable identities.
 ///
-/// Names the exact logical domain, the source and target leaves/windows, the
+/// Names the target logical domain, the source and target leaves/windows, the
 /// drop `side` with its derived `axis`/`before` ordering, the target parent
 /// (`target_group` with the post-removal `insertion_index` for the source) and
 /// the wrap form: same-axis inserts carry `wrap == false` with `new_group ==
 /// None`, while perpendicular placements wrap only the target subtree in a new
 /// smallest 2-child split (`wrap == true` with the fresh `new_group` id; for a
-/// root target the `target_group` names the target leaf itself). No geometry or
+/// root target the `target_group` names the target leaf itself). `cross_source`
+/// names the capture domain the mover leaves (`None` for same-domain drops,
+/// where the source leaf is removed from the target tree itself). No geometry or
 /// native handles; desired topology/geometry are carried by the session layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DragOperation {
@@ -1277,6 +1287,7 @@ pub struct DragOperation {
     pub insertion_index: usize,
     pub wrap: bool,
     pub new_group: Option<NodeId>,
+    pub cross_source: Option<(OutputId, WorkspaceId)>,
 }
 
 impl DragOperation {
@@ -1288,15 +1299,33 @@ impl DragOperation {
     }
 
     /// Explicit preconditions for realization (always terminated by
-    /// [`DragPrecondition::AdapterMustVerifyPostconditions`]).
+    /// [`DragPrecondition::AdapterMustVerifyPostconditions`]). Cross-output
+    /// operations (a `cross_source` distinct from the target domain) carry
+    /// `DragTargetsCrossDomain` in place of `DragTargetsSameDomain`.
     #[must_use]
     pub fn preconditions(&self) -> Vec<DragPrecondition> {
+        let domain = if self.is_cross_output() {
+            DragPrecondition::DragTargetsCrossDomain
+        } else {
+            DragPrecondition::DragTargetsSameDomain
+        };
         vec![
             DragPrecondition::SourceLeafOccupiedBySourceWindow,
             DragPrecondition::TargetLeafOccupied,
-            DragPrecondition::DragTargetsSameDomain,
+            domain,
             DragPrecondition::AdapterMustVerifyPostconditions,
         ]
+    }
+
+    /// Whether this operation moves the mover across output domains: a
+    /// `cross_source` distinct from the target domain.
+    #[must_use]
+    pub fn is_cross_output(&self) -> bool {
+        self.cross_source
+            .as_ref()
+            .is_some_and(|(output, workspace)| {
+                output != &self.domain_output || workspace != &self.domain_workspace
+            })
     }
 }
 

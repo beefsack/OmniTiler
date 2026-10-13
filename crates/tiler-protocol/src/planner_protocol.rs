@@ -3996,6 +3996,13 @@ fn convert_hover_prior(
         source_window: WindowId(dto.source_window.clone()),
         revision: dto.revision,
         prior,
+        // Wire carries pre-pair single-domain hovers only: the resolution
+        // scope is the capture domain itself. (Cross-output pair previews
+        // never cross this boundary; their scope rides the Engine value.)
+        prior_domain: DomainKey {
+            output: OutputId(dto.domain_output.clone()),
+            workspace: WorkspaceId(dto.domain_workspace.clone()),
+        },
     })
 }
 

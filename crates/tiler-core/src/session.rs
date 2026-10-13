@@ -471,10 +471,13 @@ pub struct DragCapture {
 /// target current rectangle alone. `revision` binds the preview to the exact
 /// accepted revision of its capture; `prior` carries the stored next hover
 /// (Some only for a resolved GroupEdge) so single-shot clones can forward it.
+/// `domain` is the resolution domain (the pointer domain); `source_domain` is
+/// the capture domain the mover leaves (equal for same-domain previews).
 /// No native rendering or effects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DragPreview {
     pub domain: DomainKey,
+    pub source_domain: DomainKey,
     pub source_leaf: NodeId,
     pub source_window: WindowId,
     pub revision: u64,
@@ -494,25 +497,32 @@ pub struct DragPreview {
 
 impl DragPreview {
     /// Portable hover carry for the next preview or the final drop: the exact
-    /// source identity plus the capture revision and the stored next hover.
+    /// capture identity (source domain/leaf/window plus revision) and the
+    /// stored next hover, scoped to the resolution domain so a cross-output
+    /// hover never applies to another output's tree.
     /// [`Session::carry_drag_prior`] validates it against the live capture and
     /// ignores mismatches advisory-style (no refusal, no divergence).
     #[must_use]
     pub fn hover_prior(&self) -> DragHoverPrior {
         DragHoverPrior {
-            domain: self.domain.clone(),
+            domain: self.source_domain.clone(),
             source_leaf: self.source_leaf.clone(),
             source_window: self.source_window.clone(),
             revision: self.revision,
             prior: self.prior.clone(),
+            prior_domain: self.domain.clone(),
         }
     }
 }
 
-/// Portable sticky group-edge hover carry: the exact drag source identity plus
-/// the capture revision and the stored next hover (`None` when the last hover
-/// was not a group edge). Applied via [`Session::carry_drag_prior`] before the
-/// next preview or the final drop; mismatched carries are ignored.
+/// Portable sticky group-edge hover carry: the exact drag capture identity
+/// (capture domain/leaf/window plus revision), the stored next hover (`None`
+/// when the last hover was not a group edge), and the resolution domain the
+/// hover was classified in (`prior_domain`, equal to the capture domain for
+/// same-domain hovers). Applied via [`Session::carry_drag_prior`] before the
+/// next preview or the final drop; mismatched carries are ignored. The
+/// resolution scope keeps a cross-output 80px sticky edge from ever applying
+/// to another domain's tree (which degrades to the normal 32px edge depth).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DragHoverPrior {
     pub domain: DomainKey,
@@ -520,6 +530,7 @@ pub struct DragHoverPrior {
     pub source_window: WindowId,
     pub revision: u64,
     pub prior: Option<crate::policy::PriorGroupEdge>,
+    pub prior_domain: DomainKey,
 }
 
 /// Portable no-structure snap-back intent: the accepted source rectangle the
@@ -584,6 +595,11 @@ struct DragState {
     source_rect: Rect,
     work_area: Rect,
     prior: Option<crate::policy::PriorGroupEdge>,
+    /// Resolution domain of the stored hover (`prior`): the capture domain
+    /// for same-domain hovers, the pointer domain for cross-output hovers.
+    /// Resolution gates the stored hover against it, so a hover classified
+    /// in one domain's tree never steers another domain's tree.
+    prior_domain: DomainKey,
 }
 
 /// Trace-only send-to-workspace placement diagnostic: which anchor branch
@@ -3801,6 +3817,622 @@ mod tests {
     }
 
     #[test]
+    fn drag_cross_output_relocates_source_to_pointer_edge() {
+        // Source out-1/ws-1 H[win-1, win-2] focused win-2; destination
+        // out-2/ws-1 H[win-3]. A left-edge drop on win-3 inserts win-2
+        // before it and collapses the source to sole win-1.
+        fn admit_on(session: &mut Session, window: &str, output: &str, workspace: &str) {
+            let rev = session.accepted_revision();
+            let window_id = WindowId(window.to_owned());
+            let mut windows = obs_windows(session);
+            windows.push(ObservedWindow {
+                window: window_id.clone(),
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId(workspace.to_owned()),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            });
+            let command = SessionCommand::Admit {
+                window: window_id,
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId(workspace.to_owned()),
+                exceptions: ExceptionFlags::none(),
+                exception_behavior: None,
+                placement_bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 50,
+                },
+                suppress_fixed_float: false,
+            };
+            let observation = SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows,
+            };
+            let correlation = corr(&format!("corr-admit-{window}"));
+            let plan = session
+                .propose(
+                    &command,
+                    &observation,
+                    &correlation,
+                    &LifecycleCapabilities::full(),
+                )
+                .expect("admit propose");
+            session
+                .acknowledge(&AdapterAck::new(
+                    correlation.clone(),
+                    owner(),
+                    generation(),
+                    rev,
+                    AckOutcome::Accepted,
+                ))
+                .expect("admit ack");
+            session
+                .verify_lifecycle(&LifecyclePostObservation::new(
+                    Observation::new(owner(), generation(), rev, 200 + rev),
+                    correlation,
+                    true,
+                    plan.dispatch.preconditions.clone(),
+                    plan.dispatch.operation.clone(),
+                ))
+                .expect("admit verify");
+        }
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        let mut dest = Session::new(owner(), generation(), 0, 7, vec![domain_two()]).expect("new");
+        admit_on(&mut dest, "win-3", "out-2", "ws-1");
+        let mut pair = Session::paired_from_canonical_for_send(
+            &source,
+            Some(&dest),
+            vec![domain(), domain_two()],
+        )
+        .expect("pair");
+        let dest_key = DomainKey {
+            output: OutputId("out-2".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-2".to_owned())));
+        let observation = obs_for(&pair);
+        pair.begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        // Destination is 120x80 with sole win-3: x=5 sits in the left edge
+        // zone, so the mover inserts before the target.
+        let preview = pair
+            .preview_drag_cross_output(&dest_key, 5, 40, &observation)
+            .expect("preview");
+        assert_eq!(preview.domain, dest_key);
+        assert_eq!(preview.source_window.0, "win-2");
+        assert_eq!(preview.target_window.0, "win-3");
+        assert_eq!(preview.side, DragSide::Left);
+        assert!(preview.before);
+        let plan = match pair
+            .drop_drag_cross_output(
+                &dest_key,
+                5,
+                40,
+                &observation,
+                &corr("corr-drag-x"),
+                &DragCapabilities::full(),
+            )
+            .expect("drop")
+        {
+            DragRelease::Planned(plan) => *plan,
+            DragRelease::SnapBack(_) => panic!("expected a cross-output drag plan"),
+        };
+        // Preview and drop agree on target, edge, and proposed geometry.
+        assert_eq!(preview.target_leaf, plan.dispatch.operation.target_leaf);
+        assert_eq!(
+            preview.proposed_rect,
+            plan.desired_geometry
+                .iter()
+                .find(|g| g.window.0 == "win-2")
+                .expect("mover geometry")
+                .rect
+        );
+        // Honest cross-domain operation record: the target domain plus the
+        // capture source, with the cross precondition instead of the
+        // same-domain one.
+        let operation = &plan.dispatch.operation;
+        assert_eq!(operation.domain_output.0, "out-2");
+        assert_eq!(
+            operation.cross_source,
+            Some((OutputId("out-1".to_owned()), WorkspaceId("ws-1".to_owned())))
+        );
+        assert!(operation.is_cross_output());
+        let preconditions = operation.preconditions();
+        assert!(preconditions.contains(&crate::contract::DragPrecondition::DragTargetsCrossDomain));
+        assert!(!preconditions.contains(&crate::contract::DragPrecondition::DragTargetsSameDomain));
+        assert_eq!(plan.dispatch.preconditions, preconditions);
+        // Focus follows the mover into the destination domain.
+        assert_eq!(plan.desired_focus_domain, dest_key);
+        // Complete both-domain geometry: win-1 sole on the source, win-2
+        // left of win-3 on the destination.
+        assert_eq!(plan.desired_geometry.len(), 3);
+        let mover_rect = plan
+            .desired_geometry
+            .iter()
+            .find(|g| g.window.0 == "win-2")
+            .expect("mover geometry")
+            .rect;
+        assert_eq!(
+            mover_rect,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 60,
+                h: 80
+            }
+        );
+        let source_rect = plan
+            .desired_geometry
+            .iter()
+            .find(|g| g.window.0 == "win-1")
+            .expect("source geometry")
+            .rect;
+        assert_eq!(
+            source_rect,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80
+            }
+        );
+        commit_drag(&mut pair, &plan, "corr-drag-x");
+        let snapshot = pair.snapshot();
+        let mover_link = snapshot
+            .windows
+            .iter()
+            .find(|l| l.window.0 == "win-2")
+            .expect("mover link");
+        assert_eq!(mover_link.output.0, "out-2");
+        assert_eq!(plan.desired_focus_leaf, mover_link.leaf);
+        let source_leaves: Vec<String> = snapshot
+            .windows
+            .iter()
+            .filter(|l| l.output.0 == "out-1")
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(source_leaves, vec!["win-1".to_owned()]);
+        assert_tree_invariants(&pair);
+    }
+
+    #[test]
+    fn drag_cross_output_invalid_releases_snap_back() {
+        let mut source = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        admit(&mut source, "win-1", true);
+        admit(&mut source, "win-2", true);
+        let mut dest = Session::new(owner(), generation(), 0, 7, vec![domain_two()]).expect("new");
+        // Admit directly on out-2 via a converged observation.
+        let rev = dest.accepted_revision();
+        let observation = SessionObservation {
+            observation: Observation::new(owner(), generation(), rev, 100 + rev),
+            windows: vec![ObservedWindow {
+                window: WindowId("win-3".to_owned()),
+                output: OutputId("out-2".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            }],
+        };
+        let correlation = corr("corr-admit-win-3");
+        let command = SessionCommand::Admit {
+            window: WindowId("win-3".to_owned()),
+            output: OutputId("out-2".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            exceptions: ExceptionFlags::none(),
+            exception_behavior: None,
+            placement_bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            suppress_fixed_float: false,
+        };
+        let plan = dest
+            .propose(
+                &command,
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("admit propose");
+        dest.acknowledge(&AdapterAck::new(
+            correlation.clone(),
+            owner(),
+            generation(),
+            rev,
+            AckOutcome::Accepted,
+        ))
+        .expect("admit ack");
+        dest.verify_lifecycle(&LifecyclePostObservation::new(
+            Observation::new(owner(), generation(), rev, 200 + rev),
+            correlation,
+            true,
+            plan.dispatch.preconditions.clone(),
+            plan.dispatch.operation.clone(),
+        ))
+        .expect("admit verify");
+        let dest_key = DomainKey {
+            output: OutputId("out-2".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        // Same-domain destination is not a cross release: snaps back.
+        let mut pair = Session::paired_from_canonical_for_send(
+            &source,
+            Some(&dest),
+            vec![domain(), domain_two()],
+        )
+        .expect("pair");
+        assert!(pair.sync_focus_from_window(&domain_key(), &WindowId("win-2".to_owned())));
+        let observation = obs_for(&pair);
+        // Every invalid release below clears the transient capture, so each
+        // case begins fresh exactly like a new production gesture.
+        pair.begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        match pair
+            .drop_drag_cross_output(
+                &domain_key(),
+                5,
+                40,
+                &observation,
+                &corr("corr-drag-same"),
+                &DragCapabilities::full(),
+            )
+            .expect("same-domain cross call resolves")
+        {
+            DragRelease::SnapBack(snap) => assert_eq!(snap.source_window.0, "win-2"),
+            DragRelease::Planned(_) => panic!("same-domain cross release must snap back"),
+        }
+        // Unknown destination domain snaps back.
+        let unknown = DomainKey {
+            output: OutputId("out-9".to_owned()),
+            workspace: WorkspaceId("ws-9".to_owned()),
+        };
+        pair.begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        match pair
+            .drop_drag_cross_output(
+                &unknown,
+                5,
+                40,
+                &observation,
+                &corr("corr-drag-unknown"),
+                &DragCapabilities::full(),
+            )
+            .expect("unknown-dest cross call resolves")
+        {
+            DragRelease::SnapBack(snap) => assert_eq!(snap.source_window.0, "win-2"),
+            DragRelease::Planned(_) => panic!("unknown destination must snap back"),
+        }
+        // Center drops fail closed as unsupported with no plan.
+        pair.begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        match pair.drop_drag_cross_output(
+            &dest_key,
+            60,
+            40,
+            &observation,
+            &corr("corr-drag-center"),
+            &DragCapabilities::full(),
+        ) {
+            Err(ProposeError::Refused(RefusalKind::UnsupportedCapability)) => {}
+            other => panic!("center must refuse unsupported, got {other:?}"),
+        }
+        // Points outside the destination work area snap back.
+        pair.begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        match pair
+            .drop_drag_cross_output(
+                &dest_key,
+                500,
+                500,
+                &observation,
+                &corr("corr-drag-outside"),
+                &DragCapabilities::full(),
+            )
+            .expect("outside cross call resolves")
+        {
+            DragRelease::SnapBack(snap) => assert_eq!(snap.source_window.0, "win-2"),
+            DragRelease::Planned(_) => panic!("outside destination must snap back"),
+        }
+        assert!(!pair.has_pending());
+    }
+
+    #[test]
+    fn drag_cross_output_sticky_scope_survives_same_dest() {
+        // Same-destination carry preserves the 80px sticky edge across
+        // previews into the final drop (see `cross_sticky_world`).
+        let (mut session, observation, _, dst_a_key, _, gap) = cross_sticky_world();
+        let edge = session
+            .preview_drag_cross_output(&dst_a_key, gap.0, gap.1, &observation)
+            .expect("edge preview");
+        assert_eq!(edge.side, crate::contract::DragSide::Left);
+        assert!(edge.prior.is_some(), "gap hover must arm the sticky edge");
+        // Negative control: simulate single-shot clone loss by clearing the
+        // live stored hover; the sticky-only probe then misses the Left edge
+        // (default 32px depth cannot reach it).
+        session.drag.as_mut().expect("drag").prior = None;
+        let missed = session
+            .preview_drag_cross_output(&dst_a_key, gap.0 + 45, gap.1, &observation)
+            .expect("probe preview");
+        assert!(
+            !(missed.side == crate::contract::DragSide::Left
+                && missed.target_leaf == edge.target_leaf),
+            "uncarried sticky probe must miss"
+        );
+        let carried = edge.hover_prior();
+        assert_eq!(carried.domain.output.0, "out-1");
+        assert_eq!(carried.prior_domain, dst_a_key);
+        assert!(session.carry_drag_prior(&carried));
+        // Sticky-only probe: 45px past the arming point (beyond the default
+        // 32px edge depth, inside the 80px sticky depth). Without the carry
+        // it misses the Left edge; with it, the 80px hover steers.
+        let sticky = session
+            .preview_drag_cross_output(&dst_a_key, gap.0 + 45, gap.1, &observation)
+            .expect("sticky preview");
+        assert_eq!(sticky.side, crate::contract::DragSide::Left);
+        assert_eq!(sticky.target_leaf, edge.target_leaf);
+        assert!(sticky.prior.is_some(), "sticky edge must survive same dest");
+        let plan = match session
+            .drop_drag_cross_output(
+                &dst_a_key,
+                gap.0 + 45,
+                gap.1,
+                &observation,
+                &corr("corr-drag-sticky"),
+                &DragCapabilities::full(),
+            )
+            .expect("sticky drop")
+        {
+            DragRelease::Planned(plan) => *plan,
+            DragRelease::SnapBack(_) => panic!("sticky drop must plan"),
+        };
+        assert_eq!(sticky.target_leaf, plan.dispatch.operation.target_leaf);
+        assert_eq!(sticky.side, plan.dispatch.operation.side);
+        assert_tree_invariants(&session);
+    }
+
+    #[test]
+    fn drag_cross_output_sticky_scope_clears_on_dest_change() {
+        // A hover scoped to another destination (or an unknown one) never
+        // steers: unknown scopes refuse the carry, foreign scopes drop at
+        // the resolution gate, and the other destination resolves cleanly.
+        let (mut session, observation, _, dst_a_key, dst_b_key, _) = cross_sticky_world();
+        let live = session.drag.clone().expect("capture").source_leaf;
+        let revision = session.accepted_revision();
+        let src_key = DomainKey {
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let foreign = DragHoverPrior {
+            domain: src_key.clone(),
+            source_leaf: live.clone(),
+            source_window: WindowId("win-2".to_owned()),
+            revision,
+            prior: None,
+            prior_domain: DomainKey {
+                output: OutputId("out-9".to_owned()),
+                workspace: WorkspaceId("ws-9".to_owned()),
+            },
+        };
+        assert!(
+            !session.carry_drag_prior(&foreign),
+            "unknown resolution scope must not carry"
+        );
+        let scoped_prior = DragHoverPrior {
+            domain: src_key,
+            source_leaf: live,
+            source_window: WindowId("win-2".to_owned()),
+            revision,
+            prior: None,
+            prior_domain: dst_b_key.clone(),
+        };
+        assert!(session.carry_drag_prior(&scoped_prior));
+        let scoped = session.cross_resolution_scope(&dst_a_key).expect("scope");
+        assert!(
+            scoped.prior.is_none(),
+            "foreign-scoped hover must not steer destination A"
+        );
+        let plain = session
+            .preview_drag_cross_output(&dst_b_key, 5, 40, &observation)
+            .expect("dest B preview");
+        assert_eq!(plain.target_window.0, "win-6");
+        assert!(!session.has_pending());
+        assert_tree_invariants(&session);
+    }
+
+    /// Three-domain sticky world: source out-1 H[win-1, win-2] focused win-2,
+    /// destination A out-2 H[win-3, V[win-4, win-5]] with an 8px gap,
+    /// destination B out-3 sole win-6. Returns the begun session, its
+    /// observation, the three keys, and a group-edge point on destination
+    /// A's inner vertical group (left strip, clear of corner ambiguity).
+    fn cross_sticky_world() -> (
+        Session,
+        SessionObservation,
+        DomainKey,
+        DomainKey,
+        DomainKey,
+        (i32, i32),
+    ) {
+        use super::ops::drag::{contains_point, drag_group_layouts};
+        fn domain_on(output: &str, gap: i32) -> OutputDomain {
+            OutputDomain {
+                id: OutputId(output.to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 120,
+                    h: 80,
+                },
+                gap,
+                adjacent: BTreeMap::new(),
+            }
+        }
+        fn admit_on(session: &mut Session, window: &str, output: &str, horizontal: bool) {
+            let rev = session.accepted_revision();
+            let window_id = WindowId(window.to_owned());
+            let mut windows = obs_windows(session);
+            windows.push(ObservedWindow {
+                window: window_id.clone(),
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            });
+            let bounds = if horizontal {
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 50,
+                }
+            } else {
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 50,
+                    h: 100,
+                }
+            };
+            let command = SessionCommand::Admit {
+                window: window_id,
+                output: OutputId(output.to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                exceptions: ExceptionFlags::none(),
+                exception_behavior: None,
+                placement_bounds: bounds,
+                suppress_fixed_float: false,
+            };
+            let observation = SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows,
+            };
+            let correlation = corr(&format!("corr-admit-{window}"));
+            let plan = session
+                .propose(
+                    &command,
+                    &observation,
+                    &correlation,
+                    &LifecycleCapabilities::full(),
+                )
+                .expect("admit propose");
+            session
+                .acknowledge(&AdapterAck::new(
+                    correlation.clone(),
+                    owner(),
+                    generation(),
+                    rev,
+                    AckOutcome::Accepted,
+                ))
+                .expect("admit ack");
+            session
+                .verify_lifecycle(&LifecyclePostObservation::new(
+                    Observation::new(owner(), generation(), rev, 200 + rev),
+                    correlation,
+                    true,
+                    plan.dispatch.preconditions.clone(),
+                    plan.dispatch.operation.clone(),
+                ))
+                .expect("admit verify");
+        }
+        let src = domain_on("out-1", 0);
+        let dst_a = domain_on("out-2", 8);
+        let dst_b = domain_on("out-3", 0);
+        let mut session =
+            Session::new(owner(), generation(), 0, 7, vec![src, dst_a.clone(), dst_b])
+                .expect("new");
+        admit_on(&mut session, "win-1", "out-1", true);
+        admit_on(&mut session, "win-2", "out-1", true);
+        admit_on(&mut session, "win-3", "out-2", true);
+        admit_on(&mut session, "win-4", "out-2", true);
+        // Tall admit nests under the focused win-4: H[win-3, V[win-4, win-5]].
+        admit_on(&mut session, "win-5", "out-2", false);
+        admit_on(&mut session, "win-6", "out-3", true);
+        let src_key = DomainKey {
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let dst_a_key = DomainKey {
+            output: OutputId("out-2".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        let dst_b_key = DomainKey {
+            output: OutputId("out-3".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        };
+        assert!(session.sync_focus_from_window(&src_key, &WindowId("win-2".to_owned())));
+        let observation = obs_for(&session);
+        session
+            .begin_drag(&WindowId("win-2".to_owned()), &observation)
+            .expect("begin");
+        // Group-edge point on destination A's inner vertical group: left
+        // strip (within the default 32px edge depth) at a mid height clear
+        // of corner ambiguity, inside the group union but in no leaf rect.
+        let dst_a_tree = session
+            .snapshot()
+            .domains
+            .into_iter()
+            .find(|d| d.output.0 == "out-2")
+            .and_then(|d| d.tree)
+            .expect("dest A tree");
+        let projected =
+            crate::geometry::project(&dst_a_tree, dst_a.bounds, dst_a.gap).expect("projectable");
+        let mut leaf_map = BTreeMap::new();
+        for entry in &projected {
+            leaf_map.insert(entry.leaf.clone(), entry.rect);
+        }
+        let inner = drag_group_layouts(&dst_a_tree, &leaf_map)
+            .into_iter()
+            .find(|l| l.axis == Axis::Vertical)
+            .expect("inner V group");
+        let cx = inner.rect.x + inner.rect.w / 2;
+        let mut gy_opt = None;
+        for y in inner.rect.y..inner.rect.y + inner.rect.h {
+            if !leaf_map.values().any(|r| contains_point(r, cx, y))
+                && y - inner.rect.y >= 32
+                && inner.rect.y + inner.rect.h - y > 32
+            {
+                gy_opt = Some(y);
+                break;
+            }
+        }
+        let gy = gy_opt.expect("inner gap row");
+        let gx = inner.rect.x + 5;
+        assert!(
+            !leaf_map.values().any(|r| contains_point(r, gx, gy)),
+            "edge probe must be group-only"
+        );
+        (
+            session,
+            observation,
+            src_key,
+            dst_a_key,
+            dst_b_key,
+            (gx, gy),
+        )
+    }
+
+    #[test]
     fn drag_preview_drop_structural_and_geometry_agreement() {
         let mut session = session_three();
         let capture = begin_focused(&mut session, "win-3");
@@ -4771,6 +5403,7 @@ mod tests {
             source_window: WindowId("win-2".to_owned()),
             revision: session.accepted_revision(),
             prior: None,
+            prior_domain: domain_key(),
         };
         assert!(!session.carry_drag_prior(&dummy));
         // Wrong source leaf is ignored without mutation.

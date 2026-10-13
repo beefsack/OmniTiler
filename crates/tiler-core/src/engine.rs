@@ -30,8 +30,8 @@ use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::policy::{LayoutPolicy, default_policy};
 use crate::seed::EngineWindow;
 use crate::session::{
-    CanonicalPairError, DomainKey, ExceptionFlags, OutputDomain, ProposeError, RefusalKind,
-    Session, SessionCommand, SessionDragPlan, SessionObservation,
+    CanonicalPairError, DomainKey, DragHoverPrior, ExceptionFlags, OutputDomain, ProposeError,
+    RefusalKind, Session, SessionCommand, SessionDragPlan, SessionObservation,
 };
 
 /// Wire `kind`/`message` for the Session internal pending fence.
@@ -864,6 +864,21 @@ impl Engine {
         self.outer_gaps.remove(key);
     }
 
+    /// Remember `window` as the last-active focus of the retained canonical
+    /// session for `key`, in process, without touching topology, membership,
+    /// revision, pending, gaps, or divergence state. The adapter calls this
+    /// with its freshly observed project MRU before a cross-output focus
+    /// request so the Engine plans toward the live target instead of a stale
+    /// remembered one; the ordinary focus fences still apply inside the
+    /// request. Returns `false` (no mutation) for unknown sessions or any
+    /// [`Session::remember_focus`] binding failure.
+    pub fn remember_domain_focus(&mut self, key: &DomainKey, window: &WindowId) -> bool {
+        let Some(session) = self.sessions.get_mut(key) else {
+            return false;
+        };
+        session.remember_focus(key, window)
+    }
+
     /// Direct insert used only by pair-relocation paths that already validated
     /// on a clone and manage capacity explicitly. Normal commits must use
     /// [`Engine::store_committed`].
@@ -1147,10 +1162,23 @@ impl Engine {
                     _ => self.pointer_resize_request(event),
                 }
             }
-            CoreCommand::DragDrop { .. } => {
-                match self.converge_for_single_domain(event, "drag-drop") {
-                    ConvergeOutcome::Rejected(reply) => *reply,
-                    _ => self.drag_drop_request(event),
+            CoreCommand::DragDrop { source, .. } => {
+                // Occupied cross-output drops converge once on the assembled
+                // BOTH-domain world inside the pair request below; the legacy
+                // single-domain pre-convergence would refuse the combined
+                // observation as cross-homed before the pair assembles.
+                let cross_pair = source.as_ref().is_some_and(|key| *key != event.domain_key)
+                    && event
+                        .directional
+                        .as_ref()
+                        .is_some_and(|pair| pair.len() == 2);
+                if cross_pair {
+                    self.drag_drop_request(event)
+                } else {
+                    match self.converge_for_single_domain(event, "drag-drop") {
+                        ConvergeOutcome::Rejected(reply) => *reply,
+                        _ => self.drag_drop_request(event),
+                    }
                 }
             }
             CoreCommand::DragPreview { .. } => self.drag_preview_request(event),
@@ -4252,6 +4280,20 @@ impl Engine {
             };
         }
         let mover = WindowId(window.to_owned());
+        // Cross-output drag preview/drop through the occupied pair path: the
+        // mover leaves the `source` domain for the pointer output's current
+        // domain (`event.domain`), with the source-first pair in
+        // `directional` and combined rows in `windows`. Cross-source events
+        // without a pair keep the legacy singleton admission route below
+        // (empty destinations); same-domain events likewise stay legacy.
+        let cross_pair = source.as_ref().is_some_and(|key| *key != event.domain_key)
+            && event
+                .directional
+                .as_ref()
+                .is_some_and(|pair| pair.len() == 2);
+        if cross_pair {
+            return self.drag_cross_output(event, mover, x, y, hover_prior, source, is_preview);
+        }
         let (mut working, is_fresh) = match self.drag_working(event) {
             Ok(pair) => pair,
             Err(reply) => return *reply,
@@ -4296,6 +4338,7 @@ impl Engine {
                         base_revision: base,
                         preview: crate::session::DragPreview {
                             domain: event.domain_key.clone(),
+                            source_domain: source.clone().unwrap_or(event.domain_key.clone()),
                             source_leaf: leaf.clone(),
                             source_window: mover.clone(),
                             revision: base,
@@ -4358,6 +4401,197 @@ impl Engine {
                         self.store_committed(event.domain_key.clone(), working, event.outer_gap);
                     }
                     reply
+                }
+                Err(error) => drag_propose_reply(error),
+            }
+        }
+    }
+
+    /// Cross-output drag preview/drop through a two-domain pair transaction.
+    ///
+    /// The pointer output's current domain (`event.domain`) is the drop
+    /// target; `source` names the capture domain the mover leaves. The event
+    /// carries the source-first pair in `directional` (pointer-resolved, so
+    /// the send-style assembly without an adjacency fence applies) and the
+    /// combined both-domain window rows in `windows`. Empty destinations
+    /// never reach here: the adapter routes those through singleton
+    /// admission plus source reconcile.
+    ///
+    /// One convergence runs on the assembled BOTH-domain world (persisted
+    /// even when the drop refuses, exactly like the directional pair), the
+    /// capture binds on the source domain, resolution runs against the
+    /// destination tree, and the drop commits source removal plus
+    /// destination insertion atomically before the canonical split/store.
+    /// Preview resolves identically without committing.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    fn drag_cross_output(
+        &mut self,
+        event: &CoreEvent,
+        mover: WindowId,
+        x: i32,
+        y: i32,
+        hover_prior: &Option<DragHoverPrior>,
+        source: &Option<DomainKey>,
+        is_preview: bool,
+    ) -> CoreReply {
+        use crate::boundary::{DragPreviewPlan, TiledPlan};
+        let Some(source_key) = source else {
+            return CoreReply::SnapshotInvalid {
+                message: OBSERVATION_MESSAGE,
+                detail: "domain-invalid",
+            };
+        };
+        let Some(pair) = event.directional.as_ref().filter(|pair| pair.len() == 2) else {
+            return CoreReply::SnapshotInvalid {
+                message: OBSERVATION_MESSAGE,
+                detail: "domain-invalid",
+            };
+        };
+        let (source_domain, pair_source_key) = &pair[0];
+        let (target_domain, pair_target_key) = &pair[1];
+        if pair_source_key != source_key || pair_target_key != &event.domain_key {
+            return CoreReply::SnapshotInvalid {
+                message: OBSERVATION_MESSAGE,
+                detail: "domain-invalid",
+            };
+        }
+        let source_component = Self::canonical_component_domain(source_domain);
+        let target_component = Self::canonical_component_domain(target_domain);
+        let source_session = match self.sessions.get(source_key).filter(|session| {
+            session_usable(session)
+                && !committed_session_is_empty(session)
+                && session_domain_matches(session, &source_component)
+        }) {
+            Some(session) => session.clone(),
+            None => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: if self.contains(source_key) {
+                        "canonical-pair-unusable"
+                    } else {
+                        "canonical-source-unavailable"
+                    },
+                };
+            }
+        };
+        let target_session = match self.sessions.get(&event.domain_key) {
+            Some(session)
+                if session_usable(session)
+                    && !committed_session_is_empty(session)
+                    && session_domain_matches(session, &target_component) =>
+            {
+                session.clone()
+            }
+            Some(_) => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: "canonical-pair-unusable",
+                };
+            }
+            // No retained destination session: the adapter misrouted an
+            // empty destination into the occupied pair path.
+            None => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: "canonical-target-unavailable",
+                };
+            }
+        };
+        let mut session = match Session::paired_from_canonical_for_send(
+            &source_session,
+            Some(&target_session),
+            vec![source_domain.clone(), target_domain.clone()],
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: match error {
+                        CanonicalPairError::MismatchedIdentity => {
+                            "canonical-pair-identity-mismatch"
+                        }
+                        CanonicalPairError::UnusableInput => "canonical-pair-unusable",
+                        CanonicalPairError::DomainMismatch => "canonical-pair-domain-mismatch",
+                        CanonicalPairError::DuplicateState => "canonical-pair-duplicate-state",
+                    },
+                };
+            }
+        };
+        let op = if is_preview {
+            "drag-preview"
+        } else {
+            "drag-drop"
+        };
+        let (base, observation) = match self.converge_assembled_pair(
+            &mut session,
+            event,
+            op,
+            source_key,
+            &event.domain_key,
+        ) {
+            Ok(next) => next,
+            Err(reply) => return *reply,
+        };
+        // The capture binds on the source domain: the mover must be the
+        // focused tiled window there (begin enforces this exactly).
+        let _ = session.sync_focus_from_window(source_key, &mover);
+        if let Err(error) = session.begin_drag(&mover, &observation) {
+            return drag_propose_reply(error);
+        }
+        if let Some(carried) = hover_prior {
+            let _ = session.carry_drag_prior(carried);
+        }
+        if is_preview {
+            match session.preview_drag_cross_output(&event.domain_key, x, y, &observation) {
+                Ok(preview) => CoreReply::DragPreview(DragPreviewPlan {
+                    base_revision: base,
+                    preview,
+                }),
+                Err(error) => drag_propose_reply(error),
+            }
+        } else {
+            match session.drop_drag_cross_output(
+                &event.domain_key,
+                x,
+                y,
+                &observation,
+                &event.correlation,
+                &DragCapabilities::full(),
+            ) {
+                Ok(crate::session::DragRelease::Planned(plan)) => {
+                    let typed = CoreReply::Tiled(TiledPlan::from_drag(&plan));
+                    if Self::commit_drag(&mut session, event, &plan, base) {
+                        let Ok((source, target)) = session.split_canonical_pair() else {
+                            return CoreReply::SnapshotInvalid {
+                                message: OBSERVATION_MESSAGE,
+                                detail: "commit-rejected",
+                            };
+                        };
+                        self.store_committed(source_key.clone(), source, event.outer_gap);
+                        let target_outer_gap = event
+                            .directional_target_outer_gap
+                            .filter(|gap| is_gap(*gap))
+                            .unwrap_or(0);
+                        if let Some(target) = target {
+                            self.store_committed(
+                                event.domain_key.clone(),
+                                target,
+                                target_outer_gap,
+                            );
+                        } else {
+                            self.sessions.remove(&event.domain_key);
+                            self.outer_gaps.remove(&event.domain_key);
+                        }
+                        return typed;
+                    }
+                    CoreReply::SnapshotInvalid {
+                        message: OBSERVATION_MESSAGE,
+                        detail: "commit-rejected",
+                    }
+                }
+                Ok(crate::session::DragRelease::SnapBack(_)) => {
+                    drag_propose_reply(ProposeError::Refused(RefusalKind::Unchanged))
                 }
                 Err(error) => drag_propose_reply(error),
             }
@@ -5868,6 +6102,399 @@ mod tests {
                 .iter()
                 .any(|l| l.window.0 == "win-b")
         );
+    }
+
+    /// Two-output drag world with deliberately different arrangements: the
+    /// source is a small positive-coordinate monitor, the destination a
+    /// larger negative-x monitor (no adjacency derivation: the pointer output
+    /// decides, so sideways, stacked, and negative layouts all behave alike).
+    fn cross_drag_domain(output: &str, workspace: &str, bounds: Rect) -> OutputDomain {
+        OutputDomain {
+            id: OutputId(output.to_owned()),
+            workspace: WorkspaceId(workspace.to_owned()),
+            bounds,
+            gap: 0,
+            adjacent: BTreeMap::new(),
+        }
+    }
+
+    fn cross_drag_world(
+        source_windows: &[&str],
+        dest_windows: &[&str],
+    ) -> (Engine, OwnerId, GenerationId, OutputDomain, OutputDomain) {
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let source_domain = cross_drag_domain(
+            "out-1",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        );
+        let dest_domain = cross_drag_domain(
+            "out-2",
+            "ws-1",
+            Rect {
+                x: -1920,
+                y: -200,
+                w: 1920,
+                h: 1080,
+            },
+        );
+        let source_seed: Vec<crate::seed::EngineWindow> = source_windows
+            .iter()
+            .map(|name| engine_window(name, "out-1", "ws-1"))
+            .collect();
+        let source = crate::seed::seed_session(&owner, &gen_id, 7, &source_domain, &source_seed)
+            .expect("seeds source");
+        engine.store_committed(source_domain.key(), source, 0);
+        let dest_seed: Vec<crate::seed::EngineWindow> = dest_windows
+            .iter()
+            .map(|name| engine_window(name, "out-2", "ws-1"))
+            .collect();
+        let dest = crate::seed::seed_session(&owner, &gen_id, 7, &dest_domain, &dest_seed)
+            .expect("seeds dest");
+        engine.store_committed(dest_domain.key(), dest, 0);
+        (engine, owner, gen_id, source_domain, dest_domain)
+    }
+
+    /// Cross-output pair event: the pointer output's current domain carries
+    /// the request, the combined both-domain rows ride `windows`, and the
+    /// source-first pair (no adjacency entries: pointer-resolved, so the
+    /// send-style assembly applies) scopes the transaction.
+    #[allow(clippy::too_many_arguments)]
+    fn cross_drag_event(
+        owner: &OwnerId,
+        gen_id: &GenerationId,
+        source_domain: &OutputDomain,
+        dest_domain: &OutputDomain,
+        focused: &str,
+        windows: Vec<crate::seed::EngineWindow>,
+        command: crate::boundary::CoreCommand,
+        correlation: &str,
+    ) -> crate::boundary::CoreEvent {
+        crate::boundary::CoreEvent {
+            owner: owner.clone(),
+            generation: gen_id.clone(),
+            correlation: crate::ids::CorrelationId::parse(correlation).expect("valid"),
+            revision: 0,
+            fingerprint: 7,
+            domain: dest_domain.clone(),
+            domain_key: dest_domain.key(),
+            outer_gap: 0,
+            focused_window: WindowId(focused.to_owned()),
+            windows,
+            directional: Some(vec![
+                (source_domain.clone(), source_domain.key()),
+                (dest_domain.clone(), dest_domain.key()),
+            ]),
+            directional_target_outer_gap: Some(0),
+            target_domain: None,
+            target_windows: vec![],
+            command,
+        }
+    }
+
+    fn cross_drag_rows() -> Vec<crate::seed::EngineWindow> {
+        vec![
+            engine_window("win-a", "out-1", "ws-1"),
+            engine_window("win-b", "out-1", "ws-1"),
+            engine_window("win-c", "out-2", "ws-1"),
+        ]
+    }
+
+    #[test]
+    fn drag_cross_output_occupied_drop_relocates_source_to_pointer_edge() {
+        use crate::boundary::{CoreCommand, CoreReply};
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-a", "win-b"], &["win-c"]);
+        let source_key = source_domain.key();
+        let dest_key = dest_domain.key();
+        // Destination holds sole win-c over (-1920,-200,1920,1080): x=-1900
+        // sits in the left edge zone, so win-b inserts before win-c.
+        let preview = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragPreview {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-x-pv",
+        );
+        let previewed = match engine.handle(&preview) {
+            CoreReply::DragPreview(plan) => plan.preview,
+            other => panic!("cross-output preview must project, got {other:?}"),
+        };
+        assert_eq!(previewed.domain, dest_key);
+        assert_eq!(previewed.source_window.0, "win-b");
+        assert_eq!(previewed.target_window.0, "win-c");
+        // Preview commits nothing on either domain.
+        assert_eq!(
+            engine
+                .session(&source_key)
+                .expect("source kept")
+                .snapshot()
+                .windows
+                .len(),
+            2
+        );
+        let drop = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragDrop {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-x",
+        );
+        let mover_rect = match engine.handle(&drop) {
+            CoreReply::Tiled(plan) => {
+                assert_eq!(plan.kind, crate::boundary::TiledKind::DragDrop);
+                assert_eq!(plan.geometry.len(), 3);
+                assert_eq!(plan.focus_domain, Some(dest_key.clone()));
+                // Focus stays on the moved window in the destination domain.
+                let mover_leaf = engine
+                    .session(&dest_key)
+                    .expect("dest kept")
+                    .snapshot()
+                    .windows
+                    .iter()
+                    .find(|l| l.window.0 == "win-b")
+                    .expect("mover link")
+                    .leaf
+                    .clone();
+                assert_eq!(plan.focus_leaf, Some(mover_leaf));
+                plan.geometry
+                    .iter()
+                    .find(|g| g.window.0 == "win-b")
+                    .expect("mover geometry")
+                    .rect
+            }
+            other => panic!("cross-output drop must plan, got {other:?}"),
+        };
+        assert_eq!(mover_rect, previewed.proposed_rect);
+        // Left half of the negative-x destination, in physical coordinates.
+        assert_eq!(
+            mover_rect,
+            Rect {
+                x: -1920,
+                y: -200,
+                w: 960,
+                h: 1080
+            }
+        );
+        // Source membership removed (sole win-a reflows full source);
+        // destination holds the arrival beside win-c.
+        let source_windows: Vec<String> = engine
+            .session(&source_key)
+            .expect("source kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(source_windows, vec!["win-a".to_owned()]);
+        let mut dest_windows: Vec<String> = engine
+            .session(&dest_key)
+            .expect("dest kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        dest_windows.sort();
+        assert_eq!(dest_windows, vec!["win-b".to_owned(), "win-c".to_owned()]);
+    }
+
+    #[test]
+    fn drag_cross_output_wrap_and_sole_source() {
+        use crate::boundary::{CoreCommand, CoreReply};
+        // Sole source mover plus a sole destination tile; a top-edge drop
+        // wraps the destination root with the mover first.
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-b"], &["win-c"]);
+        let source_key = source_domain.key();
+        let dest_key = dest_domain.key();
+        let rows = vec![
+            engine_window("win-b", "out-1", "ws-1"),
+            engine_window("win-c", "out-2", "ws-1"),
+        ];
+        let drop = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            rows,
+            CoreCommand::DragDrop {
+                window: "win-b".to_owned(),
+                x: -960,
+                y: -190,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-wrap",
+        );
+        let mover_rect = match engine.handle(&drop) {
+            CoreReply::Tiled(plan) => {
+                assert_eq!(plan.geometry.len(), 2);
+                plan.geometry
+                    .iter()
+                    .find(|g| g.window.0 == "win-b")
+                    .expect("mover geometry")
+                    .rect
+            }
+            other => panic!("cross-output wrap drop must plan, got {other:?}"),
+        };
+        // Top half of the destination: the mover wrapped the root first.
+        assert_eq!(
+            mover_rect,
+            Rect {
+                x: -1920,
+                y: -200,
+                w: 1920,
+                h: 540
+            }
+        );
+        // The emptied source retires its session: no membership remains.
+        assert!(engine.session(&source_key).is_none());
+        let mut dest_windows: Vec<String> = engine
+            .session(&dest_key)
+            .expect("dest kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        dest_windows.sort();
+        assert_eq!(dest_windows, vec!["win-b".to_owned(), "win-c".to_owned()]);
+    }
+
+    #[test]
+    fn drag_cross_output_stale_and_misrouted_refusals_commit_no_drop() {
+        use crate::boundary::{CoreCommand, CoreReply};
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-a", "win-b"], &["win-c"]);
+        let source_key = source_domain.key();
+        let dest_key = dest_domain.key();
+        // Empty destination misrouted into the occupied pair path: no
+        // retained session exists for a fabricated key, so the pair cannot
+        // assemble. (The adapter routes genuine empty destinations through
+        // singleton admission plus source reconcile instead.)
+        let missing_domain = cross_drag_domain(
+            "out-9",
+            "ws-9",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+        );
+        let misrouted = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &missing_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragDrop {
+                window: "win-b".to_owned(),
+                x: 100,
+                y: 100,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-missing",
+        );
+        match engine.handle(&misrouted) {
+            CoreReply::SnapshotInvalid { detail, .. } => {
+                assert_eq!(detail, "canonical-target-unavailable")
+            }
+            other => panic!("missing destination must refuse, got {other:?}"),
+        }
+        // Swapped pair keys disagree with the request addressing: refused
+        // before any Engine mutation.
+        let mut swapped = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragDrop {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-swapped",
+        );
+        swapped.directional = Some(vec![
+            (dest_domain.clone(), dest_domain.key()),
+            (source_domain.clone(), source_domain.key()),
+        ]);
+        match engine.handle(&swapped) {
+            CoreReply::SnapshotInvalid { detail, .. } => assert_eq!(detail, "domain-invalid"),
+            other => panic!("swapped pair must refuse, got {other:?}"),
+        }
+        // Mover absent from the combined observation: the source converges
+        // the departure, then the capture binds nothing and the drop refuses
+        // without a plan.
+        let mut stale_rows = cross_drag_rows();
+        stale_rows.retain(|w| w.window.0 != "win-b");
+        let stale = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            stale_rows,
+            CoreCommand::DragDrop {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-drag-stale",
+        );
+        match engine.handle(&stale) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "unknown-window"),
+            other => panic!("mover-less drop must refuse, got {other:?}"),
+        }
+        // No drop committed anywhere above: the destination still holds only
+        // win-c and no drag plan reached either session.
+        let dest_windows: Vec<String> = engine
+            .session(&dest_key)
+            .expect("dest kept")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| l.window.0.clone())
+            .collect();
+        assert_eq!(dest_windows, vec!["win-c".to_owned()]);
+        assert!(!engine.session(&source_key).expect("source kept").has_drag());
     }
 
     #[test]

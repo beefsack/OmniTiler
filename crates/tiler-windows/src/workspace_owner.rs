@@ -964,6 +964,355 @@ pub fn workspace_domain(
     (domain, key)
 }
 
+/// Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08).
+///
+/// Portable selection/pair/fence helpers for exhausted directional tiled
+/// movement (all four directions) and horizontal directional focus. Native
+/// effects (geometry writes, focus actuation, monitor reads) stay in
+/// `tiling_sys`; this module owns no HWNDs and no unsafe code.
+///
+/// Contract:
+/// - Adjacency resolves over FULL output rectangles via the shared
+///   [`tiler_core::output_selection`] window rule (centre projection, then
+///   span overlap, then left/top). Work areas/gaps never gate selection.
+/// - Domain bounds use each output's work area inset by the live outer gap;
+///   topology uses FULL rectangles. Core rects are never rescaled here.
+/// - Source/target current views are the per-output active workspace ids.
+///   `(output, workspace)` keys stay distinct even when workspace ids repeat
+///   across outputs.
+/// - Empty targets support moves (core `CrossOutputTarget::Empty`); empty or
+///   unreadable targets refuse focus (core `Unchanged`).
+/// - Explicit output-send bindings, non-local modes, whole-workspace
+///   migration, and migration source-refill are out of scope and live
+///   elsewhere.
+///
+/// Portable opposite direction for reciprocal adjacency.
+#[must_use]
+pub const fn directional_opposite(
+    direction: tiler_core::directional::Direction,
+) -> tiler_core::directional::Direction {
+    use tiler_core::directional::Direction;
+    match direction {
+        Direction::Left => Direction::Right,
+        Direction::Right => Direction::Left,
+        Direction::Up => Direction::Down,
+        Direction::Down => Direction::Up,
+    }
+}
+
+/// One FULL-rectangle output for directional selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionalOutput {
+    pub id: String,
+    pub full: Rect,
+}
+
+/// Select the adjacent output for an exhausted directional move/focus.
+///
+/// `mover_rect` is the moving/focused window frame in FULL-coordinate space.
+/// Returns `Ok(None)` when no candidate edge-touches (caller-side local
+/// no-op, no wrap); `Err` on any unreadable topology (fail-closed, never a
+/// silent skip). Work areas/gaps never participate: callers pass FULL rects.
+pub fn select_directional_target(
+    direction: tiler_core::directional::Direction,
+    source_output: &str,
+    mover_rect: &Rect,
+    outputs: &[DirectionalOutput],
+) -> Result<Option<String>, tiler_core::output_selection::SelectionError> {
+    use tiler_core::directional::OutputId;
+    use tiler_core::output_selection::{OutputEntry, select_for_window};
+    let mut entries = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        entries.push(OutputEntry {
+            id: OutputId(output.id.clone()),
+            rect: output.full,
+        });
+    }
+    let Some(source) = outputs.iter().find(|o| o.id == source_output) else {
+        return Err(tiler_core::output_selection::SelectionError::UnreadableTopology);
+    };
+    let source_entry = OutputEntry {
+        id: OutputId(source.id.clone()),
+        rect: source.full,
+    };
+    match select_for_window(direction, &source_entry, mover_rect, &entries)? {
+        Some(candidate) => Ok(Some(candidate.id.0)),
+        None => Ok(None),
+    }
+}
+
+/// Attach reciprocal adjacency for one resolved directional pair.
+///
+/// The source names the target in `direction`; the target names the source
+/// back on the opposite side. No other adjacency is carried: core refuses
+/// non-reciprocal or ambiguous pairs fail-closed.
+pub fn directional_pair_with_adjacency(
+    mut source: (OutputDomain, DomainKey),
+    mut target: (OutputDomain, DomainKey),
+    direction: tiler_core::directional::Direction,
+) -> ((OutputDomain, DomainKey), (OutputDomain, DomainKey)) {
+    let opposite = directional_opposite(direction);
+    source.0.adjacent.insert(direction, target.0.id.clone());
+    target.0.adjacent.insert(opposite, source.0.id.clone());
+    (source, target)
+}
+
+/// Carried pre-plan directional fences: both gaps, both workspace modes, both
+/// current views, both FULL rectangles plus both inset domain bounds, owner
+/// binding, overlay flags, and the resolved direction/target. Tails re-verify
+/// live before any Engine or project mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionalFenceSnapshot {
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub source_output: String,
+    pub source_workspace: String,
+    pub target_output: String,
+    pub target_workspace: String,
+    pub source_tiled: bool,
+    pub target_tiled: bool,
+    pub direction: tiler_core::directional::Direction,
+    pub overlay_maximized: bool,
+    pub overlay_fullscreen: bool,
+    pub source_full: Rect,
+    pub target_full: Rect,
+    pub source_bounds: Rect,
+    pub target_bounds: Rect,
+    pub owner: String,
+    pub generation: String,
+}
+
+/// Live tail-time directional fence readings matched against a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectionalFenceLive {
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub source_tiled: bool,
+    pub target_tiled: bool,
+    pub source_is_active: bool,
+    pub target_is_active: bool,
+    pub topology_ok: bool,
+    pub scope_ok: bool,
+    pub lifetime_ok: bool,
+    pub membership_ok: bool,
+    pub overlay_maximized: bool,
+    pub overlay_fullscreen: bool,
+    pub owner_ok: bool,
+}
+
+/// Shared directional fence evaluation: gaps, modes, current views,
+/// topology, scope, lifetime, membership, overlay, and owner binding must all
+/// hold. Returns the refusal token, or `None` when the tails may proceed.
+/// Both move and focus share this gate; focus adds no geometry writes and
+/// move adds the Engine cross preconditions on top.
+#[must_use]
+pub fn directional_fences_hold(
+    snapshot: &DirectionalFenceSnapshot,
+    live: &DirectionalFenceLive,
+) -> Option<&'static str> {
+    if !live.owner_ok {
+        return Some("owner-changed");
+    }
+    if snapshot.inner_gap != live.inner_gap || snapshot.outer_gap != live.outer_gap {
+        return Some("gap-changed");
+    }
+    if !live.source_tiled || !live.target_tiled {
+        return Some("workspace-floating");
+    }
+    if snapshot.source_tiled != live.source_tiled || snapshot.target_tiled != live.target_tiled {
+        return Some("mode-changed");
+    }
+    if !live.source_is_active || !live.target_is_active {
+        return Some("view-changed");
+    }
+    if !live.topology_ok {
+        return Some("topology-changed");
+    }
+    if !live.scope_ok {
+        return Some("scope-changed");
+    }
+    if !live.lifetime_ok {
+        return Some("identity-changed");
+    }
+    if !live.membership_ok {
+        return Some("origin-vanished");
+    }
+    if live.overlay_fullscreen != snapshot.overlay_fullscreen {
+        return Some("overlay-changed");
+    }
+    if live.overlay_maximized != snapshot.overlay_maximized {
+        return Some("overlay-changed");
+    }
+    if live.overlay_fullscreen {
+        return Some("move-refused-fullscreen");
+    }
+    None
+}
+
+/// Verify the project-owned cross-output membership transfer after the
+/// planned Engine mutation: the mover is absent from the source set and
+/// present in the target set. Same rule as workspace send; domain keys stay
+/// distinct even when workspace ids repeat across outputs.
+#[must_use]
+pub fn verify_directional_transfer(
+    mover: &WindowKey,
+    source_members: &BTreeSet<WindowKey>,
+    target_members: &BTreeSet<WindowKey>,
+) -> bool {
+    verify_send_follow(mover, source_members, target_members)
+}
+
+/// Resolve the cross-output focus target without geometry or membership
+/// writes: the destination's valid last-focused tile.
+///
+/// Returns the target when it is still a member of the destination workspace
+/// and still visible in the fresh eligible set; otherwise `None` (caller
+/// refuses, never fabricates a target). Empty targets always resolve `None`.
+#[must_use]
+pub fn directional_focus_target(
+    spaces: &ManagedWorkspaces,
+    target_output: &str,
+    target_workspace: &str,
+    visible: &BTreeSet<WindowKey>,
+) -> Option<WindowKey> {
+    spaces.focus_target(target_output, target_workspace, visible)
+}
+
+/// Whether a directional focus may cross: horizontal only. Vertical always
+/// stays local (callers never build a pair for Up/Down).
+#[must_use]
+pub const fn directional_focus_crosses(direction: tiler_core::directional::Direction) -> bool {
+    matches!(
+        direction,
+        tiler_core::directional::Direction::Left | tiler_core::directional::Direction::Right
+    )
+}
+
+/// Resolve the output under a pointer point for pointer-driven cross-output
+/// drops (REQ-MOU-03): the first FULL rectangle containing the point, in
+/// enumeration order (primary first). FULL rectangles decide (panels never
+/// break output identity); work areas govern placement later. Physical
+/// coordinates throughout, negative origins included. `None` outside every
+/// output: the caller hides/refuses without a drop. This is pointer
+/// containment, not the directional adjacency selector and not position-based
+/// output selection: differing arrangements all behave alike.
+#[must_use]
+pub fn output_at_point(outputs: &[DirectionalOutput], x: i32, y: i32) -> Option<String> {
+    for output in outputs {
+        let r = output.full;
+        if r.w > 0
+            && r.h > 0
+            && x >= r.x
+            && x < r.x.saturating_add(r.w)
+            && y >= r.y
+            && y < r.y.saturating_add(r.h)
+        {
+            return Some(output.id.clone());
+        }
+    }
+    None
+}
+
+/// Carried pre-plan drag-drop fences: both gaps, both workspace modes, both
+/// current views, both FULL rectangles plus both inset domain bounds, and the
+/// owner binding. Same fence shape as the directional snapshot minus the
+/// direction (pointer drops are not adjacency-derived). Tails re-verify live
+/// before any Engine or project mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DragDropFenceSnapshot {
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub source_output: String,
+    pub source_workspace: String,
+    pub target_output: String,
+    pub target_workspace: String,
+    pub source_tiled: bool,
+    pub target_tiled: bool,
+    pub overlay_maximized: bool,
+    pub overlay_fullscreen: bool,
+    pub source_full: Rect,
+    pub target_full: Rect,
+    pub source_bounds: Rect,
+    pub target_bounds: Rect,
+    pub owner: String,
+    pub generation: String,
+}
+
+/// View a directional fence snapshot through the direction-free drag-drop
+/// fence shape (the direction selects the candidate only; evaluation never
+/// reads it). Shared by live-fence reads and tail-time topology checks so
+/// the mapping lives in exactly one place.
+#[must_use]
+pub fn drag_snapshot_for_directional(snapshot: &DirectionalFenceSnapshot) -> DragDropFenceSnapshot {
+    DragDropFenceSnapshot {
+        inner_gap: snapshot.inner_gap,
+        outer_gap: snapshot.outer_gap,
+        source_output: snapshot.source_output.clone(),
+        source_workspace: snapshot.source_workspace.clone(),
+        target_output: snapshot.target_output.clone(),
+        target_workspace: snapshot.target_workspace.clone(),
+        source_tiled: snapshot.source_tiled,
+        target_tiled: snapshot.target_tiled,
+        overlay_maximized: snapshot.overlay_maximized,
+        overlay_fullscreen: snapshot.overlay_fullscreen,
+        source_full: snapshot.source_full,
+        target_full: snapshot.target_full,
+        source_bounds: snapshot.source_bounds,
+        target_bounds: snapshot.target_bounds,
+        owner: snapshot.owner.clone(),
+        generation: snapshot.generation.clone(),
+    }
+}
+
+/// Shared drag-drop fence evaluation: gaps, modes, current views, topology,
+/// scope, lifetime, membership, overlay, and owner binding must all hold.
+/// Returns the refusal token, or `None` when the tails may proceed. Reuses
+/// [`DirectionalFenceLive`] (which carries no direction); only the snapshot
+/// differs from the directional gate.
+#[must_use]
+pub fn drag_drop_fences_hold(
+    snapshot: &DragDropFenceSnapshot,
+    live: &DirectionalFenceLive,
+) -> Option<&'static str> {
+    if !live.owner_ok {
+        return Some("owner-changed");
+    }
+    if snapshot.inner_gap != live.inner_gap || snapshot.outer_gap != live.outer_gap {
+        return Some("gap-changed");
+    }
+    if !live.source_tiled || !live.target_tiled {
+        return Some("workspace-floating");
+    }
+    if snapshot.source_tiled != live.source_tiled || snapshot.target_tiled != live.target_tiled {
+        return Some("mode-changed");
+    }
+    if !live.source_is_active || !live.target_is_active {
+        return Some("view-changed");
+    }
+    if !live.topology_ok {
+        return Some("topology-changed");
+    }
+    if !live.scope_ok {
+        return Some("scope-changed");
+    }
+    if !live.lifetime_ok {
+        return Some("identity-changed");
+    }
+    if !live.membership_ok {
+        return Some("origin-vanished");
+    }
+    if live.overlay_fullscreen != snapshot.overlay_fullscreen {
+        return Some("overlay-changed");
+    }
+    if live.overlay_maximized != snapshot.overlay_maximized {
+        return Some("overlay-changed");
+    }
+    if live.overlay_fullscreen {
+        return Some("move-refused-fullscreen");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2552,6 +2901,150 @@ mod tests {
         );
         assert_eq!(directional_workspace_refusal(SnapOp::Focus, true), None);
         assert_eq!(directional_workspace_refusal(SnapOp::Move, true), None);
+    }
+
+    #[test]
+    fn output_at_point_resolves_pointer_output_without_adjacency() {
+        use super::{DirectionalOutput, output_at_point};
+        // Sideways pair with a negative-x secondary: arrangement-independent
+        // containment, no adjacency derivation involved.
+        let outputs = vec![
+            DirectionalOutput {
+                id: "primary".to_owned(),
+                full: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2560,
+                    h: 1440,
+                },
+            },
+            DirectionalOutput {
+                id: "left".to_owned(),
+                full: Rect {
+                    x: -1920,
+                    y: -200,
+                    w: 1920,
+                    h: 1080,
+                },
+            },
+        ];
+        assert_eq!(
+            output_at_point(&outputs, 100, 100).as_deref(),
+            Some("primary")
+        );
+        assert_eq!(output_at_point(&outputs, -100, 0).as_deref(), Some("left"));
+        assert_eq!(
+            output_at_point(&outputs, -1920, -200).as_deref(),
+            Some("left")
+        );
+        // Exclusive far edges belong to no output.
+        assert_eq!(output_at_point(&outputs, 2560, 100), None);
+        assert_eq!(output_at_point(&outputs, 0, 1440), None);
+        // Between-monitor gap and far outside resolve nowhere.
+        assert_eq!(output_at_point(&outputs, -10, 2000), None);
+        assert_eq!(output_at_point(&outputs, 9999, 9999), None);
+        // Degenerate rectangles never claim a point.
+        let degenerate = vec![DirectionalOutput {
+            id: "flat".to_owned(),
+            full: Rect {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 600,
+            },
+        }];
+        assert_eq!(output_at_point(&degenerate, 0, 100), None);
+        assert!(output_at_point(&[], 0, 0).is_none());
+    }
+
+    #[test]
+    fn drag_drop_fences_mirror_directional_tokens_without_direction() {
+        use super::{DirectionalFenceLive, DragDropFenceSnapshot, drag_drop_fences_hold};
+        fn snapshot() -> DragDropFenceSnapshot {
+            DragDropFenceSnapshot {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_output: "mon-a".to_owned(),
+                source_workspace: "ws-1".to_owned(),
+                target_output: "mon-b".to_owned(),
+                target_workspace: "ws-1".to_owned(),
+                source_tiled: true,
+                target_tiled: true,
+                overlay_maximized: false,
+                overlay_fullscreen: false,
+                source_full: rect(0, 0),
+                target_full: rect(-1920, 0),
+                source_bounds: rect(0, 0),
+                target_bounds: rect(-1920, 0),
+                owner: "owner".to_owned(),
+                generation: "gen".to_owned(),
+            }
+        }
+        fn live() -> DirectionalFenceLive {
+            DirectionalFenceLive {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_tiled: true,
+                target_tiled: true,
+                source_is_active: true,
+                target_is_active: true,
+                topology_ok: true,
+                scope_ok: true,
+                lifetime_ok: true,
+                membership_ok: true,
+                overlay_maximized: false,
+                overlay_fullscreen: false,
+                owner_ok: true,
+            }
+        }
+        let snap = snapshot();
+        assert_eq!(drag_drop_fences_hold(&snap, &live()), None);
+        // Each fence maps to its directional token; view drift (the
+        // destination current workspace changed under the pointer) refuses
+        // instead of dropping into a stale layout.
+        let mut view = live();
+        view.target_is_active = false;
+        assert_eq!(drag_drop_fences_hold(&snap, &view), Some("view-changed"));
+        let mut topology = live();
+        topology.topology_ok = false;
+        assert_eq!(
+            drag_drop_fences_hold(&snap, &topology),
+            Some("topology-changed")
+        );
+        let mut lifetime = live();
+        lifetime.lifetime_ok = false;
+        assert_eq!(
+            drag_drop_fences_hold(&snap, &lifetime),
+            Some("identity-changed")
+        );
+        let mut membership = live();
+        membership.membership_ok = false;
+        assert_eq!(
+            drag_drop_fences_hold(&snap, &membership),
+            Some("origin-vanished")
+        );
+        let mut mode = live();
+        mode.target_tiled = false;
+        assert_eq!(
+            drag_drop_fences_hold(&snap, &mode),
+            Some("workspace-floating")
+        );
+        let mut overlay = live();
+        overlay.overlay_fullscreen = true;
+        assert_eq!(
+            drag_drop_fences_hold(&snap, &overlay),
+            Some("overlay-changed")
+        );
+        // A fullscreen that was already present at snapshot time vetoes.
+        let mut snap_full = snapshot();
+        snap_full.overlay_fullscreen = true;
+        assert_eq!(
+            drag_drop_fences_hold(&snap_full, &overlay),
+            Some("move-refused-fullscreen")
+        );
+        let mut owner = live();
+        owner.owner_ok = false;
+        assert_eq!(drag_drop_fences_hold(&snap, &owner), Some("owner-changed"));
     }
 
     #[test]
@@ -8535,5 +9028,310 @@ mod fixed_admission_tests {
             is_automatic(&engine, &domain, "warr"),
             "fixed arrival at enable floats automatic"
         );
+    }
+
+    mod directional_foundation {
+        use super::*;
+        use tiler_core::directional::Direction;
+
+        fn dkey(hwnd: u64) -> WindowKey {
+            WindowKey {
+                hwnd,
+                pid: 1000 + hwnd as u32,
+                creation: format!("c{hwnd:016x}"),
+            }
+        }
+
+        fn full(id: &str, x: i32, y: i32, w: i32, h: i32) -> DirectionalOutput {
+            DirectionalOutput {
+                id: id.to_owned(),
+                full: Rect { x, y, w, h },
+            }
+        }
+
+        fn mover(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+
+        #[test]
+        fn primary_left_right_round_trip_selects_reciprocal_pair() {
+            let outputs = vec![
+                full("primary", 0, 0, 1920, 1080),
+                full("right", 1920, 0, 1920, 1080),
+            ];
+            let window = mover(1600, 400, 200, 200);
+            assert_eq!(
+                select_directional_target(Direction::Right, "primary", &window, &outputs)
+                    .expect("readable"),
+                Some("right".to_owned())
+            );
+            let back = mover(2000, 400, 200, 200);
+            assert_eq!(
+                select_directional_target(Direction::Left, "right", &back, &outputs)
+                    .expect("readable"),
+                Some("primary".to_owned())
+            );
+        }
+
+        #[test]
+        fn other_compass_and_negative_coords_select_without_wrap() {
+            let outputs = vec![
+                full("south", 0, 0, 1920, 1080),
+                full("north", 0, -1080, 1920, 1080),
+                full("west", -1920, -1080, 1920, 1080),
+            ];
+            let window = mover(800, -200, 200, 200);
+            assert_eq!(
+                select_directional_target(Direction::Up, "south", &window, &outputs)
+                    .expect("readable"),
+                Some("north".to_owned())
+            );
+            assert_eq!(
+                select_directional_target(Direction::Left, "north", &window, &outputs)
+                    .expect("readable"),
+                Some("west".to_owned())
+            );
+            // No candidate is a local no-op, never a wrap.
+            let lonely = vec![full("solo", 0, 0, 1920, 1080)];
+            assert_eq!(
+                select_directional_target(Direction::Right, "solo", &window, &lonely)
+                    .expect("readable"),
+                None
+            );
+        }
+
+        #[test]
+        fn unreadable_topology_and_unknown_source_refuse() {
+            let outputs = vec![full("a", 0, 0, 1920, 1080), full("bad", 1920, 0, 0, 1080)];
+            let window = mover(1600, 400, 200, 200);
+            assert!(select_directional_target(Direction::Right, "a", &window, &outputs).is_err());
+            let outputs = vec![full("a", 0, 0, 1920, 1080)];
+            assert!(
+                select_directional_target(Direction::Right, "ghost", &window, &outputs).is_err()
+            );
+        }
+
+        #[test]
+        fn centre_projection_then_span_then_left_top_ranking() {
+            // Two stacked candidates on the right: the mover centre picks the
+            // containing edge; otherwise the larger span wins; then left/top.
+            let outputs = vec![
+                full("src", 0, 0, 800, 1000),
+                full("upper", 800, 0, 800, 500),
+                full("lower", 800, 500, 800, 500),
+            ];
+            let centred_upper = mover(100, 100, 200, 100);
+            assert_eq!(
+                select_directional_target(Direction::Right, "src", &centred_upper, &outputs)
+                    .expect("readable"),
+                Some("upper".to_owned())
+            );
+            let centred_lower = mover(100, 700, 200, 100);
+            assert_eq!(
+                select_directional_target(Direction::Right, "src", &centred_lower, &outputs)
+                    .expect("readable"),
+                Some("lower".to_owned())
+            );
+        }
+
+        #[test]
+        fn pair_attaches_reciprocal_adjacency_only() {
+            let bounds = Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            };
+            let source = workspace_domain("mon-a", "ws-1", bounds, 8);
+            let target = workspace_domain("mon-b", "ws-2", bounds, 8);
+            let ((source_domain, _), (target_domain, _)) =
+                directional_pair_with_adjacency(source, target, Direction::Right);
+            assert_eq!(
+                source_domain
+                    .adjacent
+                    .get(&Direction::Right)
+                    .map(|id| id.0.as_str()),
+                Some("mon-b")
+            );
+            assert_eq!(
+                target_domain
+                    .adjacent
+                    .get(&Direction::Left)
+                    .map(|id| id.0.as_str()),
+                Some("mon-a")
+            );
+            assert_eq!(source_domain.adjacent.len(), 1);
+            assert_eq!(target_domain.adjacent.len(), 1);
+        }
+
+        #[test]
+        fn per_monitor_identities_stay_distinct_for_same_workspace_index() {
+            // Same workspace id string on two outputs still yields distinct
+            // domain keys: the output scope is part of the identity.
+            let bounds = Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            };
+            let left = workspace_domain("mon-a", "ws-same", bounds, 8);
+            let right = workspace_domain("mon-b", "ws-same", bounds, 8);
+            assert_ne!(left.1, right.1);
+            assert_ne!(left.0.key(), right.0.key());
+        }
+
+        fn fence_snapshot() -> DirectionalFenceSnapshot {
+            DirectionalFenceSnapshot {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_output: "mon-a".to_owned(),
+                source_workspace: "ws-1".to_owned(),
+                target_output: "mon-b".to_owned(),
+                target_workspace: "ws-2".to_owned(),
+                source_tiled: true,
+                target_tiled: true,
+                direction: Direction::Right,
+                overlay_maximized: false,
+                overlay_fullscreen: false,
+                source_full: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                target_full: Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                source_bounds: Rect {
+                    x: 8,
+                    y: 8,
+                    w: 1904,
+                    h: 1064,
+                },
+                target_bounds: Rect {
+                    x: 1928,
+                    y: 8,
+                    w: 1904,
+                    h: 1064,
+                },
+                owner: "owner".to_owned(),
+                generation: "gen".to_owned(),
+            }
+        }
+
+        fn fence_live() -> DirectionalFenceLive {
+            DirectionalFenceLive {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_tiled: true,
+                target_tiled: true,
+                source_is_active: true,
+                target_is_active: true,
+                topology_ok: true,
+                scope_ok: true,
+                lifetime_ok: true,
+                membership_ok: true,
+                overlay_maximized: false,
+                overlay_fullscreen: false,
+                owner_ok: true,
+            }
+        }
+
+        #[test]
+        fn fences_hold_when_fresh_and_refuse_each_drift() {
+            let snapshot = fence_snapshot();
+            assert_eq!(directional_fences_hold(&snapshot, &fence_live()), None);
+            let mut stale_view = fence_live();
+            stale_view.target_is_active = false;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &stale_view),
+                Some("view-changed")
+            );
+            let mut stale_topology = fence_live();
+            stale_topology.topology_ok = false;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &stale_topology),
+                Some("topology-changed")
+            );
+            let mut stale_lifetime = fence_live();
+            stale_lifetime.lifetime_ok = false;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &stale_lifetime),
+                Some("identity-changed")
+            );
+            let mut stale_scope = fence_live();
+            stale_scope.scope_ok = false;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &stale_scope),
+                Some("scope-changed")
+            );
+            let mut floating = fence_live();
+            floating.target_tiled = false;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &floating),
+                Some("workspace-floating")
+            );
+            let mut fullscreen = fence_live();
+            fullscreen.overlay_fullscreen = true;
+            assert_eq!(
+                directional_fences_hold(&snapshot, &fullscreen),
+                Some("overlay-changed")
+            );
+        }
+
+        #[test]
+        fn transfer_requires_absence_source_and_presence_target() {
+            let mover = dkey(7);
+            let other = dkey(8);
+            let source: BTreeSet<WindowKey> = [other.clone()].into_iter().collect();
+            let target: BTreeSet<WindowKey> = [mover.clone(), other.clone()].into_iter().collect();
+            assert!(verify_directional_transfer(&mover, &source, &target));
+            let bad_source: BTreeSet<WindowKey> =
+                [mover.clone(), other.clone()].into_iter().collect();
+            assert!(!verify_directional_transfer(&mover, &bad_source, &target));
+            assert!(!verify_directional_transfer(&mover, &source, &source));
+        }
+
+        #[test]
+        fn focus_target_prefers_last_focus_then_visible_member() {
+            let mut spaces = ManagedWorkspaces::new();
+            spaces.ensure_output("mon-a");
+            spaces.ensure_output("mon-b");
+            let active_b = spaces.active_id("mon-b").expect("active");
+            let (first, second) = (dkey(21), dkey(22));
+            assert!(spaces.assign(first.clone(), "mon-b", &active_b, false));
+            assert!(spaces.assign(second.clone(), "mon-b", &active_b, false));
+            spaces.note_foreground(&second);
+            let visible: BTreeSet<WindowKey> =
+                [first.clone(), second.clone()].into_iter().collect();
+            assert_eq!(
+                directional_focus_target(&spaces, "mon-b", &active_b, &visible),
+                Some(second.clone())
+            );
+            // Hidden last-focus falls back to a visible member, never a hidden one.
+            spaces.set_hidden(&second, true);
+            let visible: BTreeSet<WindowKey> = [first.clone()].into_iter().collect();
+            assert_eq!(
+                directional_focus_target(&spaces, "mon-b", &active_b, &visible),
+                Some(first.clone())
+            );
+            // Empty target refuses.
+            let empty: BTreeSet<WindowKey> = BTreeSet::new();
+            assert_eq!(
+                directional_focus_target(&spaces, "mon-b", &active_b, &empty),
+                None
+            );
+        }
+
+        #[test]
+        fn focus_crosses_horizontally_only() {
+            assert!(directional_focus_crosses(Direction::Left));
+            assert!(directional_focus_crosses(Direction::Right));
+            assert!(!directional_focus_crosses(Direction::Up));
+            assert!(!directional_focus_crosses(Direction::Down));
+        }
     }
 }

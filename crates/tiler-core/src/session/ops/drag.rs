@@ -172,6 +172,7 @@ impl super::super::Session {
             source_rect,
             work_area: domain.bounds,
             prior: None,
+            prior_domain: key.clone(),
         });
         Ok(DragCapture {
             domain: key,
@@ -185,10 +186,14 @@ impl super::super::Session {
 
     /// Apply a carried sticky group-edge hover prior from a previous
     /// [`DragPreview::hover_prior`] before the next preview or the final drop.
-    /// Contract (source/revision binding, advisory `false` on mismatch, stale
+    /// Contract (capture/revision binding, advisory `false` on mismatch, stale
     /// carries degrade to the normal 32px edge depth) lives on
     /// [`DragHoverPrior`]; never touches topology, pending, or reconciler
-    /// state. Returns `true` when the stored prior was replaced.
+    /// state. Returns `true` when the stored prior was replaced. The capture
+    /// identity and revision bind exactly as before; the hover additionally
+    /// scopes to a session-known resolution domain (the capture domain for
+    /// same-domain hovers, the pointer domain for cross-output hovers), so a
+    /// hover classified in one domain's tree can never steer another's.
     pub fn carry_drag_prior(&mut self, carried: &DragHoverPrior) -> bool {
         let Some(drag) = self.drag.as_mut() else {
             return false;
@@ -200,7 +205,13 @@ impl super::super::Session {
         {
             return false;
         }
+        if carried.prior_domain != drag.domain
+            && !self.domains.iter().any(|d| d.key() == carried.prior_domain)
+        {
+            return false;
+        }
         drag.prior = carried.prior.clone();
+        drag.prior_domain = carried.prior_domain.clone();
         true
     }
 
@@ -228,12 +239,18 @@ impl super::super::Session {
         if !self.validate_current_topology() {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
-        let capture_snapshot = self
+        let mut capture_snapshot = self
             .drag
             .clone()
             .ok_or(ProposeError::Refused(RefusalKind::MalformedInput))?;
         if drag_capture_stale(self, &capture_snapshot) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        // Same-domain resolution only honors hovers classified in the
+        // capture domain; a foreign-scoped stored hover degrades to the
+        // normal 32px edge depth instead of steering this tree.
+        if capture_snapshot.prior_domain != capture_snapshot.domain {
+            capture_snapshot.prior = None;
         }
         let Some(current) = self.trees.get(&capture_snapshot.domain).cloned().flatten() else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
@@ -260,6 +277,7 @@ impl super::super::Session {
             Err(ProposeError::Refused(kind)) => {
                 if let Some(drag) = self.drag.as_mut() {
                     drag.prior = None;
+                    drag.prior_domain = drag.domain.clone();
                 }
                 return Err(ProposeError::Refused(kind));
             }
@@ -267,6 +285,7 @@ impl super::super::Session {
         };
         if let Some(drag) = self.drag.as_mut() {
             drag.prior = resolved.next_prior.clone();
+            drag.prior_domain = capture_snapshot.domain.clone();
         }
         let placement = resolved.placement;
         if placement.tree == current {
@@ -296,6 +315,7 @@ impl super::super::Session {
         };
         Ok(DragPreview {
             domain: capture_snapshot.domain.clone(),
+            source_domain: capture_snapshot.domain.clone(),
             source_leaf: capture_snapshot.source_leaf.clone(),
             source_window: capture_snapshot.source_window.clone(),
             revision: capture_snapshot.revision,
@@ -354,11 +374,16 @@ impl super::super::Session {
             self.drag = None;
             return Err(ProposeError::Diverged(reason));
         }
-        let Some(capture) = self.drag.clone() else {
+        let Some(mut capture) = self.drag.clone() else {
             return Err(ProposeError::Refused(RefusalKind::MalformedInput));
         };
         if self.has_pending() {
             return Err(ProposeError::PendingExists);
+        }
+        // Same-domain resolution only honors hovers classified in the
+        // capture domain (see `preview_drag`).
+        if capture.prior_domain != capture.domain {
+            capture.prior = None;
         }
         if !self.validate_current_topology() {
             return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
@@ -417,6 +442,7 @@ impl super::super::Session {
             Ok(resolved) => {
                 if let Some(drag) = self.drag.as_mut() {
                     drag.prior = resolved.next_prior.clone();
+                    drag.prior_domain = capture.domain.clone();
                 }
                 resolved
             }
@@ -480,6 +506,7 @@ impl super::super::Session {
             target_leaf: resolved.target_leaf.clone(),
             target_window: resolved.target_window.clone(),
             side: resolved.side,
+            cross_source: None,
         };
         let operation = DragOperation {
             domain_output: capture.domain.output.clone(),
@@ -495,6 +522,7 @@ impl super::super::Session {
             insertion_index: placement.insertion_index,
             wrap: placement.wrap,
             new_group: placement.new_group.clone(),
+            cross_source: None,
         };
         let plan = DragPlan::for_operation(intent, operation);
         let dispatch = match self.reconciler.propose_drag(
@@ -543,6 +571,404 @@ impl super::super::Session {
     pub fn cancel_drag(&mut self) -> Option<DragSnapBack> {
         let capture = self.drag.clone()?;
         Some(self.clear_drag_snap_back(&capture))
+    }
+
+    /// Scope an active cross-output capture to the destination domain for
+    /// pointer resolution: the destination work area bounds the pointer and
+    /// the destination domain scopes representative lookups, while the source
+    /// leaf/window identity, revision, and sticky prior ride unchanged. A
+    /// stored hover classified in another domain's tree is dropped (degrades
+    /// to the normal 32px edge depth) instead of steering this tree.
+    pub(in crate::session) fn cross_resolution_scope(&self, dest: &DomainKey) -> Option<DragState> {
+        let capture = self.drag.clone()?;
+        let domain = self.domains.iter().find(|d| d.key() == *dest)?.clone();
+        let mut scoped = DragState {
+            domain: dest.clone(),
+            source_leaf: capture.source_leaf.clone(),
+            source_window: capture.source_window.clone(),
+            revision: capture.revision,
+            generation: capture.generation.clone(),
+            trees: capture.trees.clone(),
+            windows: capture.windows.clone(),
+            exceptions: capture.exceptions.clone(),
+            focused_domain: capture.focused_domain.clone(),
+            focused_leaf: capture.focused_leaf.clone(),
+            source_rect: capture.source_rect,
+            work_area: domain.bounds,
+            prior: capture.prior.clone(),
+            prior_domain: capture.prior_domain.clone(),
+        };
+        if scoped.prior_domain != *dest {
+            scoped.prior = None;
+        }
+        Some(scoped)
+    }
+
+    /// Shared cross-output release validation: the combined both-domain
+    /// observation checks plus destination scope fences. The caller owns the
+    /// divergence/pending/capture fences exactly like [`Session::drop_drag`].
+    /// Returns the capture and destination domain/tree, or the source
+    /// snap-back for every invalid release (no plan, no reconciler use,
+    /// transient drag cleared).
+    fn cross_release_validated(
+        &mut self,
+        capture: &DragState,
+        dest: &DomainKey,
+        session_observation: &SessionObservation,
+    ) -> Result<(OutputDomain, Node), DragSnapBack> {
+        if capture.domain == *dest {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        if !self.validate_current_topology() {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        if !valid_observed_shapes(&session_observation.windows) {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        for entry in &session_observation.windows {
+            if self.domain_for(&entry.output, &entry.workspace).is_none() {
+                return Err(self.clear_drag_snap_back(capture));
+            }
+        }
+        let known: BTreeSet<&WindowId> =
+            self.windows.keys().chain(self.exceptions.keys()).collect();
+        let observed_ids: BTreeSet<&WindowId> = session_observation
+            .windows
+            .iter()
+            .map(|w| &w.window)
+            .collect();
+        if observed_ids != known {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        if !self.observed_known_match(&session_observation.windows, None) {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        if drag_capture_stale(self, capture) {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        let Some(domain) = self.domains.iter().find(|d| d.key() == *dest).cloned() else {
+            return Err(self.clear_drag_snap_back(capture));
+        };
+        // Empty destinations ride the adapter-routed singleton admission plus
+        // source reconcile, never this pair transaction.
+        let Some(tree) = self.trees.get(dest).cloned().flatten() else {
+            return Err(self.clear_drag_snap_back(capture));
+        };
+        // The mover keeps its source leaf id across domains: a destination
+        // tree already holding that id fails closed instead of aliasing.
+        if collect_leaves(&tree).contains(&capture.source_leaf) {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        // The mover must still home on the capture domain: a membership drift
+        // between begin and release snaps back instead of relocating a stranger.
+        let homed = self
+            .windows
+            .get(&capture.source_window)
+            .is_some_and(|link| {
+                link.leaf == capture.source_leaf
+                    && link.output == capture.domain.output
+                    && link.workspace == capture.domain.workspace
+            });
+        if !homed {
+            return Err(self.clear_drag_snap_back(capture));
+        }
+        Ok((domain, tree))
+    }
+
+    /// Cross-output drag preview for the active capture at logical pointer
+    /// coordinates `(x, y)` on the destination domain `dest` of this (pair)
+    /// session. Shares the portable resolver and failure taxonomy with
+    /// [`Session::drop_drag_cross_output`]: the pointer resolves against the
+    /// destination tree through the same edge/group classification, and the
+    /// desired projection covers both domains with fresh observed size hints.
+    /// Stages nothing and touches no reconciler state. Empty destinations
+    /// snap back (the adapter routes those through singleton admission).
+    pub fn preview_drag_cross_output(
+        &mut self,
+        dest: &DomainKey,
+        x: i32,
+        y: i32,
+        session_observation: &SessionObservation,
+    ) -> Result<DragPreview, ProposeError> {
+        if let Some(reason) = self.reconciler.divergence() {
+            return Err(ProposeError::Diverged(reason));
+        }
+        if !self.validate_current_topology() {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        let capture_snapshot = self
+            .drag
+            .clone()
+            .ok_or(ProposeError::Refused(RefusalKind::MalformedInput))?;
+        if drag_capture_stale(self, &capture_snapshot) {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        let (domain, tree) =
+            match self.cross_release_validated(&capture_snapshot, dest, session_observation) {
+                Ok(pair) => pair,
+                Err(_) => return Err(ProposeError::Refused(RefusalKind::MalformedTopology)),
+            };
+        let Some(scoped) = self.cross_resolution_scope(dest) else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        };
+        let resolved = match resolve_drag_shared(
+            self.policy(),
+            &tree,
+            &domain,
+            &self.windows,
+            &self.exceptions,
+            &scoped,
+            x,
+            y,
+        ) {
+            Ok(resolved) => resolved,
+            Err(ProposeError::Refused(kind)) => {
+                if let Some(drag) = self.drag.as_mut() {
+                    drag.prior = None;
+                    drag.prior_domain = drag.domain.clone();
+                }
+                return Err(ProposeError::Refused(kind));
+            }
+            Err(other) => return Err(other),
+        };
+        if let Some(drag) = self.drag.as_mut() {
+            drag.prior = resolved.next_prior.clone();
+            drag.prior_domain = dest.clone();
+        }
+        let placement = resolved.placement;
+        let desired_geometry = project_affected_geometry(
+            &self.domains,
+            &{
+                let mut trees = self.trees.clone();
+                trees.insert(dest.clone(), Some(placement.tree.clone()));
+                trees
+            },
+            &{
+                let mut windows = self.windows.clone();
+                if let Some(link) = windows.get_mut(&capture_snapshot.source_window) {
+                    link.output = dest.output.clone();
+                    link.workspace = dest.workspace.clone();
+                }
+                windows
+            },
+            std::slice::from_ref(dest),
+            &hints_from_observed(&session_observation.windows),
+        )
+        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        let Some(proposed_rect) = desired_geometry
+            .iter()
+            .find(|g| g.leaf == capture_snapshot.source_leaf)
+            .map(|g| g.rect)
+        else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        };
+        Ok(DragPreview {
+            domain: dest.clone(),
+            source_domain: capture_snapshot.domain.clone(),
+            source_leaf: capture_snapshot.source_leaf.clone(),
+            source_window: capture_snapshot.source_window.clone(),
+            revision: capture_snapshot.revision,
+            source_rect: capture_snapshot.source_rect,
+            target_leaf: resolved.target_leaf,
+            target_window: resolved.target_window,
+            target_rect: resolved.target_rect,
+            proposed_rect,
+            side: resolved.side,
+            axis: resolved.axis,
+            before: resolved.before,
+            wrap: placement.wrap,
+            target_group: placement.target_group,
+            insertion_index: placement.insertion_index,
+            prior: resolved.next_prior.clone(),
+        })
+    }
+
+    /// Release the active drag into the destination domain `dest` of this
+    /// (pair) session at logical pointer coordinates `(x, y)`.
+    ///
+    /// Resolves through the shared cross-output resolver (destination tree,
+    /// window-edge split, group-edge first/last or wrap, group-interior
+    /// insert; center fails closed as unsupported with no plan), removes the
+    /// mover from the capture-domain tree, inserts it into the destination
+    /// tree, relinks its membership, and stages a complete both-domain
+    /// structural/focus/geometry [`SessionDragPlan`] through the shared
+    /// one-pending reconciler slot. Focus is preserved on the moved window in
+    /// the destination domain. Commits only via acknowledgement plus a
+    /// matching drag post-observation through [`Session::verify_drag`].
+    /// Invalid releases clear only the transient drag state and return a
+    /// portable source snap-back with no plan and no reconciler use.
+    pub fn drop_drag_cross_output(
+        &mut self,
+        dest: &DomainKey,
+        x: i32,
+        y: i32,
+        session_observation: &SessionObservation,
+        correlation_id: &CorrelationId,
+        capabilities: &DragCapabilities,
+    ) -> Result<DragRelease, ProposeError> {
+        if let Some(reason) = self.reconciler.divergence() {
+            self.pending_desired = None;
+            self.drag = None;
+            return Err(ProposeError::Diverged(reason));
+        }
+        let Some(capture) = self.drag.clone() else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedInput));
+        };
+        if self.has_pending() {
+            return Err(ProposeError::PendingExists);
+        }
+        let (domain, tree) = match self.cross_release_validated(&capture, dest, session_observation)
+        {
+            Ok(pair) => pair,
+            Err(snap) => return Ok(DragRelease::SnapBack(snap)),
+        };
+        let Some(scoped) = self.cross_resolution_scope(dest) else {
+            return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+        };
+        let resolved = match resolve_drag_shared(
+            self.policy(),
+            &tree,
+            &domain,
+            &self.windows,
+            &self.exceptions,
+            &scoped,
+            x,
+            y,
+        ) {
+            Ok(resolved) => {
+                if let Some(drag) = self.drag.as_mut() {
+                    drag.prior = resolved.next_prior.clone();
+                    drag.prior_domain = dest.clone();
+                }
+                resolved
+            }
+            Err(ProposeError::Refused(RefusalKind::UnsupportedCapability)) => {
+                self.drag = None;
+                return Err(ProposeError::Refused(RefusalKind::UnsupportedCapability));
+            }
+            Err(ProposeError::Refused(_)) => {
+                return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+            }
+            Err(ProposeError::Diverged(reason)) => {
+                self.pending_desired = None;
+                self.drag = None;
+                return Err(ProposeError::Diverged(reason));
+            }
+            Err(other) => return Err(other),
+        };
+        if !capabilities.supports(crate::contract::DragCapability::PlaceTiled) {
+            return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+        }
+        let placement = resolved.placement;
+        // The source keeps its tree minus the mover (a sole mover empties its
+        // domain); the destination takes the resolved placement.
+        let source_tree = self.trees.get(&capture.domain).cloned().flatten();
+        let new_source = source_tree.and_then(|tree| {
+            remove_leaf_from_tree(self.policy(), Some(tree), &capture.source_leaf)
+        });
+        let mut desired_trees = self.trees.clone();
+        desired_trees.insert(capture.domain.clone(), new_source);
+        desired_trees.insert(dest.clone(), Some(placement.tree));
+        let mut desired_windows = self.windows.clone();
+        let Some(mover_link) = desired_windows.get_mut(&capture.source_window) else {
+            return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+        };
+        mover_link.output = dest.output.clone();
+        mover_link.workspace = dest.workspace.clone();
+        if !validate_topology(
+            &self.domains,
+            &desired_trees,
+            &desired_windows,
+            &self.exceptions,
+            &Some(dest.clone()),
+            &Some(capture.source_leaf.clone()),
+        ) {
+            return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+        }
+        let affected = [capture.domain.clone(), dest.clone()];
+        let desired_geometry = match project_affected_geometry(
+            &self.domains,
+            &desired_trees,
+            &desired_windows,
+            &affected,
+            &hints_from_observed(&session_observation.windows),
+        ) {
+            Ok(geometry) => geometry,
+            Err(_) => {
+                return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+            }
+        };
+        if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
+            return Ok(DragRelease::SnapBack(self.clear_drag_snap_back(&capture)));
+        }
+        let cross_source = Some((
+            capture.domain.output.clone(),
+            capture.domain.workspace.clone(),
+        ));
+        let intent = DragIntent {
+            domain_output: dest.output.clone(),
+            domain_workspace: dest.workspace.clone(),
+            source_leaf: capture.source_leaf.clone(),
+            source_window: capture.source_window.clone(),
+            target_leaf: resolved.target_leaf.clone(),
+            target_window: resolved.target_window.clone(),
+            side: resolved.side,
+            cross_source: cross_source.clone(),
+        };
+        let operation = DragOperation {
+            domain_output: dest.output.clone(),
+            domain_workspace: dest.workspace.clone(),
+            source_leaf: capture.source_leaf.clone(),
+            source_window: capture.source_window.clone(),
+            target_leaf: resolved.target_leaf.clone(),
+            target_window: resolved.target_window.clone(),
+            side: resolved.side,
+            axis: resolved.axis,
+            before: resolved.before,
+            target_group: placement.target_group.clone(),
+            insertion_index: placement.insertion_index,
+            wrap: placement.wrap,
+            new_group: placement.new_group.clone(),
+            cross_source,
+        };
+        let plan = DragPlan::for_operation(intent, operation);
+        let dispatch = match self.reconciler.propose_drag(
+            &plan,
+            &session_observation.observation,
+            correlation_id,
+            capabilities,
+        ) {
+            Ok(dispatch) => dispatch,
+            Err(crate::reconcile::ProposeError::PendingExists) => {
+                return Err(ProposeError::PendingExists);
+            }
+            Err(crate::reconcile::ProposeError::Diverged(reason)) => {
+                self.pending_desired = None;
+                self.drag = None;
+                return Err(ProposeError::Diverged(reason));
+            }
+        };
+        let desired_snapshot = self.snapshot_for(&desired_trees, &desired_windows);
+        self.pending_desired = Some(PendingDesired {
+            trees: desired_trees.clone(),
+            windows: desired_windows,
+            focused_domain: Some(dest.clone()),
+            focused_leaf: Some(capture.source_leaf.clone()),
+            last_active: self.last_active.clone(),
+            exceptions: self.exceptions.clone(),
+            retained_float_geometry: self.retained_float_geometry.clone(),
+            automatic_fixed: self.automatic_fixed.clone(),
+            fixed_tile_override: self.fixed_tile_override.clone(),
+        });
+        self.drag = None;
+        Ok(DragRelease::Planned(Box::new(SessionDragPlan {
+            dispatch,
+            drag_plan: plan,
+            desired_snapshot,
+            desired_focus_domain: dest.clone(),
+            desired_focus_leaf: capture.source_leaf,
+            desired_geometry,
+        })))
     }
 
     pub(in crate::session) fn clear_drag_snap_back(&mut self, capture: &DragState) -> DragSnapBack {
@@ -898,11 +1324,19 @@ pub(in crate::session) fn apply_drag_placement(
     let mover = Node::Leaf {
         id: source_leaf.clone(),
     };
-    // Remove the source first; collapse is recursive inside.
-    let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
-    if collect_leaves(&working).contains(source_leaf) {
-        return None;
-    }
+    // Remove the source first; collapse is recursive inside. A cross-output
+    // drop inserts a mover absent from the destination tree: skip removal
+    // and place fresh. Same-domain drops always carry the source leaf, so
+    // removal still runs there exactly as before.
+    let working = if collect_leaves(tree).contains(source_leaf) {
+        let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
+        if collect_leaves(&working).contains(source_leaf) {
+            return None;
+        }
+        working
+    } else {
+        tree.clone()
+    };
     if !collect_leaves(&working).contains(target_leaf) {
         return None;
     }
@@ -1122,10 +1556,18 @@ pub(in crate::session) fn apply_group_edge_placement(
     let mover = Node::Leaf {
         id: source_leaf.clone(),
     };
-    let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
-    if collect_leaves(&working).contains(source_leaf) {
-        return None;
-    }
+    // Cross-output drops insert a mover absent from the destination tree:
+    // skip removal and place fresh (same-domain drops always carry the
+    // source leaf, so removal still runs there exactly as before).
+    let working = if collect_leaves(tree).contains(source_leaf) {
+        let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
+        if collect_leaves(&working).contains(source_leaf) {
+            return None;
+        }
+        working
+    } else {
+        tree.clone()
+    };
     let (children, shares, gid, group_axis) = find_group_full(&working, group_id)?;
     debug_assert_eq!(&gid, group_id);
     if children.is_empty() {
@@ -1210,10 +1652,18 @@ pub(in crate::session) fn apply_group_interior_placement(
     let mover = Node::Leaf {
         id: source_leaf.clone(),
     };
-    let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
-    if collect_leaves(&working).contains(source_leaf) {
-        return None;
-    }
+    // Cross-output drops insert a mover absent from the destination tree:
+    // skip removal and place fresh (same-domain drops always carry the
+    // source leaf, so removal still runs there exactly as before).
+    let working = if collect_leaves(tree).contains(source_leaf) {
+        let working = remove_leaf_from_tree(policy, Some(tree.clone()), source_leaf)?;
+        if collect_leaves(&working).contains(source_leaf) {
+            return None;
+        }
+        working
+    } else {
+        tree.clone()
+    };
     let (children, _, _, _) = find_group_full(&working, group_id)?;
     let len = children.len();
     let insertion_index = len.min(predecessor.saturating_add(1));

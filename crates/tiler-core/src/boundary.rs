@@ -130,7 +130,12 @@ pub enum CoreCommand {
         /// Optional validated Started cross-output source binding (source
         /// domain key). `None` preserves same-output behavior; singleton
         /// success requires `Some` with a different output from the request
-        /// destination (validated opaque, cross-output only).
+        /// destination (validated opaque, cross-output only). Occupied
+        /// destinations additionally carry the source-first pair in
+        /// `CoreEvent.directional` with the combined both-domain rows in
+        /// `CoreEvent.windows`: the Engine then runs one two-domain pair
+        /// transaction (source removal plus destination insertion at the
+        /// pointer) instead of the singleton admission route.
         source: Option<DomainKey>,
     },
     DragPreview {

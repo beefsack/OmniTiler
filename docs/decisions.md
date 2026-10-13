@@ -190,6 +190,24 @@ platform API behavior.
   project and backs its `com.omnitiler.*` reverse-DNS IDs. It is the future
   project home page, not yet live; package homepage fields retain the GitHub URL.
 - Pre-release rename: no migrations or compatibility shims; old installed state
+## Windows Multi-Output Foundation
+
+- Tentative, pending user review (2026-10-13): cross-output keyboard moves and
+  native/Win-drag releases plan on a candidate Engine. Retained Engine state
+  and workspace membership publish only after fresh topology, geometry
+  readback and arrival verification; empty-destination drops also require
+  source reflow verification. Refusal retains original logical membership.
+  Native writes are not atomic: partial physical changes converge through
+  subsequent observation, without replaying the refused transfer.
+- Tentative, pending user review: a verified transfer stands if subsequent
+  foreground actuation fails; report the focus failure without claiming
+  successful follow-focus. No workspace switch or visibility hide accompanies
+  these transfers.
+- Existing shared selection and pointer-placement outcomes remain authoritative;
+  domain-scoped hover state and occupied two-domain drag support add no planner
+  wire fields. Physical multi-output acceptance remains pending in the
+  [foundation record](changes/windows-multi-output-foundation.md).
+
   stops being used.
 
 ## Licensing
