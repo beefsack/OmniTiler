@@ -10,6 +10,16 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
+- P0 | KDE Settings shortcut Apply failure | First-install Settings "apply all
+  shortcuts": Apply froze about 5 s and reported 43 conflicts held by stale
+  `kwin/plasma-auto-tiler-*` records plus `kwin/switch-to-last-desktop`, with
+  a confusing Meta+Esc exempt line; Force Apply then failed with "refusing
+  write beyond the lifetime bound". Investigate root cause, fix, live-verify.
+- P0 | KDE dual-output live testing and fixes | Comprehensive native
+  two-output pass (mixed scale, offset outputs) over the multi-output
+  must-pass checks ([coverage](research/two-output-test-environment.md),
+  [checks](#multi-output-setup)); fix defects found and record outcomes.
+
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
   D16 ordinary/combo floating sends delivered offline ([evidence](changes/archive/d16-floating-transfer.md));
