@@ -18,6 +18,10 @@ decisions of 2026-09-24 are under
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),
   [checks](#multi-output-setup)); fix defects found and record outcomes.
+  [Partial native pass](changes/kde-dual-output-live.md): callback focus and
+  explicit output sends passed sampled subcases; further live work blocked by
+  pre-existing desktop identity restoration after selected startup cleanup.
+  No full inventory gate completed.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
@@ -3805,6 +3809,14 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Multi-output setup
 
+- [Checklist and partial native results](changes/kde-dual-output-live.md):
+  two Wayland-native newcomers on the first focused output, local/cross-output
+  left/right callback focus, explicit rightward sends to empty/occupied targets
+  and destination work-area/gap geometry passed. Physical shortcut delivery,
+  second-output newcomer admission and the remaining rows below are still
+  pending. Desktop identity restoration after startup cleanup blocks further
+  live cases; output topology and shortcuts are unchanged, development stopped.
+
 - KDE Q4 R-WS-12/R-WS-21..26 (offline delivered, user decisions 2026-10-08): rebind
   the four empty-default migration actions; local/global-unique with native
   `perOutputVirtualDesktops` on migrates, off/unreadable/shared refuses before
@@ -3836,11 +3848,17 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   verify source selection/MRU focus and ordinary remembered-leaf admission.
   Check membership-only floating boundaries with only tiled-side reflow.
   [Record](changes/archive/four-direction-output-transfer.md),
-  [live guide](live-kwin-testing.md). User-owned; no item-5 live result claimed.
+  [live guide](live-kwin-testing.md). [Partial native pass](changes/kde-dual-output-live.md):
+  explicit output-right to empty/occupied targets passed via callbacks;
+  exhausted directional crossing, leftward/stay/floating and vertical cases
+  remain pending. Physical shortcut delivery remains unverified.
 - Core extraction K1 visual policy: confirmed by the user
   (2026-09-30: active border, fullscreen/maximise suppression, group
   underlay, drag preview). Remaining: border, underlay and preview remap
   correctly across outputs with differing scales/origins.
+  Destination frame/gap readback passed in the
+  [partial native pass](changes/kde-dual-output-live.md); overlay rendering
+  remains pending.
   [change](changes/archive/portable-core-k1-visual-policy.md)
 - Born-fullscreen dogfood: game fullscreen beside tiles (no gap,
   `initial-fullscreen-held`), exit (fresh tile, `initial-fullscreen-released`),
