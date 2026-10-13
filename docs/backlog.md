@@ -18,16 +18,11 @@ decisions of 2026-09-24 are under
   KDE underlay default delivered offline ([evidence](changes/archive/kde-dogfood-underlay-options.md#8-kde-default-delivery-2026-10-13));
   next code: unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, then KWin-to-Rust
-  migration research (below). Native verification remains queued.
-- P2 | KWin-to-Rust migration research | User 2026-10-13: read-only research
-  after the current code queue, informing the post-0.1 Push code down pass; no
-  code and no 0.1 schedule change. Map logic in `kwin/src` TypeScript and
-  `kwin/native-effect` C++ that could move into Rust (system-specific or shared
-  core), the available script/effect-to-Rust routes and their limits (missing
-  or failed effect must leave tiling working; synchronous pre-dispatch
-  decisions such as born-maximized clear/keep). Produce options plus a
-  recommendation for the user. Linked with Push code down and KDE interaction
-  performance/threading.
+  migration research (delivered below). Native verification remains queued.
+- P2 | KWin-to-Rust migration research | [Options and recommendation](research/kwin-rust-migration.md)
+  delivered 2026-10-13; recommendation pending user review. Informs post-0.1
+  Push code down and KDE interaction performance/threading; no implementation
+  or 0.1 schedule change.
 
 - P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
   [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
