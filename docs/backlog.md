@@ -314,6 +314,13 @@ decisions of 2026-09-24 are under
     failure/race, game/DPI/multi-output pending
     ([item 11](changes/archive/windows-maximized-floating-retile-overlay.md),
     [item 15](changes/archive/windows-maximized-intentional-unfloat.md)).
+- P1 | Unified foreground dev entry point | Delivered `8d379f1`, with shell CI
+  harness fixes `f6d3b38`/`e264e7c`: plain `just dev [verbose|trace]` dispatches
+  per platform. User dogfooded Windows `just dev` 2026-10-13 and reports it
+  feels excellent; Windows dogfood experience accepted. Tray Stop UI and
+  whole-desktop visual/physical shortcut specifics remain pending, as does
+  Linux KDE streaming/Ctrl+C teardown in devenv with just >= 1.56.
+  [Record](changes/dev-entry-point.md) stays active.
 - P0 | Windows owner threading | User direction 2026-10-12: rendering moves
   off the input hook thread so LL mouse/keyboard hook delivery never waits on
   owner work, done now while the owner is still small. Evidence: edge
@@ -521,16 +528,21 @@ decisions of 2026-09-24 are under
   preview. Move-drag press-focus is selected; current drop activation is an
   implementation gap (handoff item 7); inactive resize keeps focus. Physical feel checks
   user-owned; underlay C stays parked (needs extra machinery).
-  (9) multi-output support UNPARKED (user 2026-10-10): after single-output
-  handoff items 1-4, 6, 7, 9-11, 13, 15, 17, 18, 20, with item 18 before
-  10/11, then the multi-output foundation and dependent items 5, 12, 14, 16,
-  19. Live work needs a multi-output Windows setup;
+  (9) multi-output foundation delivered offline `2c05ee5` + D23 compile fix
+  `f2169d6`: local move first, then Win+Shift+direction transfer all four ways
+  with follow focus; horizontal Win+direction focus crosses outputs; native
+  title-bar/Win+drag drops join destination layout at the pointer. Transfer
+  commits last; failure retains source membership. Explicit output-send
+  bindings, non-local modes, dependent items 5, 12, 14, 16, 19, hotplug and
+  ordinary-float transfer remain outside this foundation. Pending: user
+  physical two-output journey ([exact steps](changes/windows-multi-output-foundation.md#remaining-physical-check))
+  and Linux/KWin gates; record stays active;
   (10) taskbar workspace indicator is combined with hidden-workspace Alt+Tab/
   taskbar semantics in Windows workspace-presentation research after
   multi-output, as a Windows release gate
   ([note](research/windows-port/alt-tab-hidden-workspaces.md));
   (11) settings core slice delivered (`df4edc5`, `1c97c52`, `999f2f3`,
-  `81986ab`; CI green; `just --justfile windows.justfile settings`;
+  `81986ab`; CI green; `just settings`;
   [evidence](changes/archive/windows-settings.md)): JSON store under
   LocalAppData, plain Win32 Apply/Revert UI, live gaps/visuals/Snap
   takeover, conflict list and presets (compatible disables 35 conflicting
@@ -859,7 +871,7 @@ decisions of 2026-09-24 are under
   | 2 | Item 2 explicit follow/stay, then relative sends | Reuse item 1 ring/action routing, not MRU target selection. |
   | 3 | Item 3 live same-axis setting | Independent; replace compile constant without rebuilding trees. |
   | 4 | Item 4 orientation action | Reuse input/catalog/live settings infrastructure. |
-  | 5 | Unparked parity-queue multi-output foundation after single-output items 1-4, 6, 7, 9-11, 13, 15, 17, 18, 20 (18 before 10/11), then handoff items 5, 12, 14, 16, 19 | Per-monitor current-view observation, membership/geometry/visibility/recovery fences first; user live checks need a multi-output Windows setup. Offline topology/Engine tests can precede that. User physical 2026-10-12 on a two-output host (primary left, secondary right): repeated Win+Shift+Right stopped at the primary's right edge and a mouse drag would not drop on the secondary; consistent with the absent foundation, trace logs held outside the repo. |
+  | 5 | Multi-output foundation delivered offline `2c05ee5` + `f2169d6`; parity queue (9) | Local-first all-four directional transfer/follow focus, horizontal cross-focus and native/Win+drag pointer drops; commit-last fences preserve source membership on failure. Physical two-output journey and Linux/KWin gates pending ([record and steps](changes/windows-multi-output-foundation.md)). Explicit output-send bindings, non-local modes, dependent items 5, 12, 14, 16, 19, hotplug and ordinary-float transfer remain separate. |
   | 6 | Keyboard resize R-RSZ-01 (parity d) | Independent; needs fresh Alt-capable trigger plus dedicated resize intent. No dependency on items 1-5 except shared modifier routing. |
   | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below). REQ-RST-01c is NORMATIVE D25 (User 2026-10-12), membership/set/focus native acceptance pending. Coordinate D7 membership with item 13. |
@@ -985,10 +997,10 @@ decisions of 2026-09-24 are under
     exact owner PID/start/session/integrity, display full/work rectangles/DPI
     and permitted windows; prove independent stop/restore first. User starts
     the authorized tiling owner
-    (`mise exec -- just --justfile windows.justfile tile --user-start --trace`;
-    `dev` runs only the lifecycle owner),
+    (`mise exec -- just dev trace`; foreground full tiling,
+    `lifecycle-smoke` is the non-tiling loop),
     applies the specified preset/settings, performs the steps, then runs
-    `mise exec -- just --justfile windows.justfile stop`. Verify hook release,
+    `mise exec -- just stop`. Verify hook release,
     hidden-window reveal and owned session-setting restoration. Forced loss
     needs separate authority and the exact-owner recovery ladder. Callback/API
     success alone does not prove physical OS suppression.
@@ -1480,10 +1492,12 @@ decisions of 2026-09-24 are under
        floating-workspace/focus and overlay fixtures. Linux workspace tests
        compile/test portable Windows modules; Windows native
        owner/input/UI and physical Win+O takeover remain Windows-owned.
-  - Item 5: shared Rust core/protocol + KDE delivered offline; zero Windows
-      compile fixes required, current Windows behavior preserved. Depends on
-      the unparked Windows multi-output foundation, after the single-output
-      queue above. Exact sites under `crates/tiler-windows/`:
+  - Item 5: Windows directional/focus/drag foundation delivered offline
+      `2c05ee5` + `f2169d6` ([record and physical steps](changes/windows-multi-output-foundation.md)).
+      Explicit output-send bindings and the remaining dependent scope are still
+      pending; physical two-output and Linux/KWin gates remain open.
+      Historical shared delivery and remaining contract below; exact sites
+      under `crates/tiler-windows/`:
 
      #### Item 5 behavior and shared contract
 

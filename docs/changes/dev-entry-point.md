@@ -80,9 +80,14 @@ runbook's stop-command spelling.
 - Current command references and proof source-hash lists use the root
   entry point. Historical evidence and archived records retain old command
   spellings. The multi-output runbook changes only its stop command spelling.
-- Scoped Windows foreground acceptance now passes as detailed below. Pending:
-  whole-desktop startup, tray Stop UI, visual/physical shortcut acceptance, and
-  Linux KDE streaming and Ctrl+C teardown. This record stays active.
+- Delivered `8d379f1`; shell CI harness fixes `f6d3b38`/`e264e7c` follow the
+  platform imports and target the KDE recipe directly in isolated signal tests.
+- Scoped Windows foreground acceptance passes as detailed below. User dogfood
+  2026-10-13: Windows `just dev` feels excellent; the Windows dogfood experience
+  is user-accepted. This does not establish tray Stop UI or specific whole-
+  desktop visual/physical shortcut outcomes. Those checks and Linux KDE
+  streaming/Ctrl+C teardown in devenv (just >= 1.56) remain pending. This record
+  stays active.
 
 ## Scoped Windows live outcome (2026-10-13)
 
