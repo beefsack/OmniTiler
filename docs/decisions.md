@@ -2055,6 +2055,11 @@ platform API behavior.
   (Alt+Tab/taskbar) is separate from
   unsolicited activation. INS-07 no-steal covers tiling admission into
   inactive workspaces only; it is not an existing-window activation rule.
+- Windows offline verification 2026-10-13: approved default/guard policy
+  unchanged; source has foreground observation but no dedicated request/urgency
+  observer or marker, so implementation/native behavior remains unproven.
+  Exact ordinary/fullscreen/game and explicit-selection checks are pending
+  ([record](changes/archive/windows-item22-verification.md)).
 - Post-0.1 setting `Activation request` has two options: `Mark urgent only`
   (default; tooltip Hyprland, i3, sway) and `Switch and focus` (tooltip
   COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad

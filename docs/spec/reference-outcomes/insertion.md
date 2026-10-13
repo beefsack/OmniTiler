@@ -4,6 +4,11 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 
 ## 1. Insertion / splits
 
+Windows D01/D03 offline disposition 2026-10-13: shared overlay and after-focused
+contracts unchanged; native approval/denial, explicit switching and chained
+pointer/focus outcomes remain TBD. No KWin stacking/focus-fence inference or new
+Windows behavior ([verification and exact journeys](../../changes/archive/windows-item22-verification.md)).
+
 <a id="scrolling-backfill-additive-existing-wide-tables-above-unchanged"></a>
 <a id="r-ins-01-backfill-ordinary-third-window-admission-scrolling-profiles"></a>
 ### R-INS-01: ordinary third-window admission

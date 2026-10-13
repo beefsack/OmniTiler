@@ -4,6 +4,12 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 
 ## 6. Startup adoption
 
+Windows D25/D26 offline disposition 2026-10-13: existing restart-intent and
+saved-settings evidence retained; no saved-layout restore or cross-login
+identity recovery added. Native workspace set/membership/provable focus and
+logout/login outcomes stay TBD
+([verification and exact journeys](../../changes/archive/windows-item22-verification.md)).
+
 Column Given bullets are separate fixtures, never H/V ancestry claims. R-START-01..03 assess the original enable-tiling action only; no restart leg is substituted. Where the exact enable toggle has no counterpart the cell is qualified with pinned model/inventory evidence and needs no live test. PaperWM extension enable and karousel script enable over unmanaged free fields count as native enable journeys and are assessed as such; mere owner restart or full session adoption is never substituted. R-CTL-01/02/05/06/07 settings journeys are owner-specific throughout: no first-run/preset/staging model exists in any scrolling inventory, so those cells are qualified owner-specific with pinned inventory evidence and outcome TBD. R-CTL-03 is owner-specific by fixture (Windows TaskbarCreated, owner GUID icon and menu Stop have no constructible counterpart on scrolling hosts). R-CTL-04 uses the established floating-workspace backfill citations: no workspace floating toggle or mode exists to hold a floating default.
 
 

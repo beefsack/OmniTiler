@@ -92,7 +92,7 @@ paneru legs distinguish the native Space from virtual rows.
 - Then paneru: stays (single-column strip has no western peer for
   `Swap(West)`; no display fall-through on West). `S(S-pan-swap)`.
 - Then Ours KDE: Local R1 wins first; selected Wrap locally, no setting (User 2026-10-12 D13, [decision](../../decisions.md#move-layout-and-output-commands)); native fixture TBD. `D(D-dec-cos)`.
-- Then Ours Windows: same selected Wrap locally, no setting; native fixture TBD ([D13 decision](../../decisions.md#move-layout-and-output-commands)). `D(D-dec-cos)`.
+- Then Ours Windows: same selected Wrap locally, no setting; shared local-before-cross verification-only evidence 2026-10-13 ([record](../../changes/archive/windows-item22-verification.md)); native fixture TBD ([D13 decision](../../decisions.md#move-layout-and-output-commands)). `D(D-dec-cos)`.
 - Variant hook: V-R4-DIR.
 
 ## New scenarios (GWT; fixtures/actions/discriminators per the approved expansion record)

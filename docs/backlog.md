@@ -916,7 +916,7 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 urgent-only/guard policy unchanged; verification-only units remain native-pending. [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md). |
+  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 urgent-only/guard policy unchanged; dedicated request/urgency observation unproven. Verification-only units remain native-pending. [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
   | 23 | Born-maximized shared policy | After core lift, replace Windows adapter copy; preserve behavior, labels, schema and subsequent-admission semantics. |
   | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
@@ -3017,7 +3017,12 @@ decisions of 2026-09-24 are under
     only (no workspace/focus change) and a fullscreen/game-focused urgency-only
     guard in both modes; explicit Alt+Tab/taskbar selection is separate.
     KDE's native-activation exception and no-guard decision are host-specific,
-    not Windows evidence; Windows default/guard unchanged.
+    not Windows evidence; Windows default/guard policy unchanged. Offline
+    verification 2026-10-13 found only foreground observation, no dedicated
+    Windows activation-request classifier or urgency observer/marker; it does
+    not prove implemented urgency-only behavior. D01/D03/D09/D10/D12/D13/D22/
+    D25/D26/D27/D28 received verification-only disposition, with exact native
+    journeys pending ([record](changes/archive/windows-item22-verification.md)).
     Approved D25 (a) keeps host workspace set, re-observes membership without
     moves, restores focus only where provable, rebuilds layout via re-adoption
     and keeps intentional floats via existing restart store; no setting.
@@ -3033,7 +3038,8 @@ decisions of 2026-09-24 are under
     Post-0.1 schema/UI/live wiring follows P2 `0.1 triage settings follow-up`:
     approved D09/D10/D27 two-option settings, including D27's default Mark urgent
     only / Switch and focus. See [current settings scope](decisions.md#settings-tray-and-first-run).
-    No Windows behavior is claimed inspected or delivered by this docs change.
+    Windows adapter evidence is recorded above; verification-only native
+    outcomes remain pending, with no new acceptance claimed from source review.
 
   - Item 23: born-maximized shared policy (User 2026-10-13, amended option C).
     Core policy is available in `tiler_core::born_maximized::BornMaximized`.

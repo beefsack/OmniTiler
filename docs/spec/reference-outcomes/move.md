@@ -162,7 +162,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: fixture-inapplicable; the strip/column model has no nested
   H ancestor. `S(S-pan-model)`.
 - Then Ours KDE: R3 ascend; selected Extract to same axis, no setting (User 2026-10-12 D12, [decision](../../decisions.md#move-layout-and-output-commands)); native fixture TBD. `D(D-dec-cos)`.
-- Then Ours Windows: same selected Extract to same axis, no setting; native fixture TBD ([D12 decision](../../decisions.md#move-layout-and-output-commands)). `D(D-dec-cos)`.
+- Then Ours Windows: same selected Extract to same axis, no setting; shared-default verification-only evidence 2026-10-13 ([record](../../changes/archive/windows-item22-verification.md)); native fixture TBD ([D12 decision](../../decisions.md#move-layout-and-output-commands)). `D(D-dec-cos)`.
 - Variant hook: V-MOVE-NARY.
 
 <a id="r-mov-05-backfill-edge-move-with-no-left-neighbor-scrolling"></a>
@@ -266,7 +266,9 @@ ancestry claims. Ours cells cite the Engine move rules at `9241c94`
   `V[B,A*,C]`, focus A. `S(S-ours-move)`. Selected Geometric middle default;
   two-option setting post-0.1 ([User 2026-10-12 D09](../../decisions.md#move-layout-and-output-commands)); native fixture TBD.
 - Then Ours Windows: same `V[B,A*,C]` insert as Ours KDE via the shared
-  Engine. `S(S-ours-move)`; same D09 selection, native fixture TBD.
+  Engine. `S(S-ours-move)`; same D09 selection, verification-only offline
+  2026-10-13 ([record](../../changes/archive/windows-item22-verification.md));
+  native fixture TBD.
 - Variant hook: V-MOVE-NARY.
 
 ### R-MOV-07: orthogonal escape across a perpendicular parent
@@ -314,7 +316,9 @@ ancestry claims. Ours cells cite the Engine move rules at `9241c94`
   focus B. `S(S-ours-move)`. Selected Wrap default; two-option setting
   post-0.1 ([User 2026-10-12 D10](../../decisions.md#move-layout-and-output-commands)); native fixture TBD.
 - Then Ours Windows: same `V[V[A,B*],C]` wrap as Ours KDE via the shared
-  Engine. `S(S-ours-move)`; same D10 selection, native fixture TBD.
+  Engine. `S(S-ours-move)`; same D10 selection, verification-only offline
+  2026-10-13 ([record](../../changes/archive/windows-item22-verification.md));
+  native fixture TBD.
 - Variant hook: V-MOVE-NARY.
 
 ### R-MOV-08: exhausted vertical move across stacked outputs

@@ -144,7 +144,11 @@ sandboxed route exposes the workspace-level marker only.
   [trace](../../research/d27-kwin-activation-trace.md)). `S(S-ours-act)`
   establishes observation only, not native acceptance.
 - Then Ours Windows: TBD (same Engine observation path; host
-  foreground-request journey and marker policy untraced).
+  foreground-request journey and marker behavior untraced). Offline
+  verification 2026-10-13 found foreground observation but no dedicated
+  Windows activation-request/urgency observer or marker
+  ([record](../../changes/archive/windows-item22-verification.md)); this is
+  policy-preservation evidence, not implemented guard/marker proof.
   `S(S-ours-act)`; default Mark urgent only and fullscreen/game urgency-only
   guard unchanged; post-0.1 two-option setting, queued. KDE exception is not
   Windows evidence.

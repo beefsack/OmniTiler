@@ -100,6 +100,23 @@ Windows wiring and item-2/3/4/5/Q4 native journeys
 pending. The macOS
 adapter gap counts once platform-wide. Coverage: 156 scenarios (R-WS-27 added User decision 2026-10-09), 24 Table A predicates.
 
+Windows verification-only evidence, 2026-10-13
+([record and exact physical journeys](../changes/archive/windows-item22-verification.md)):
+
+| Unit / requirement | Windows offline status | Native outcome |
+| --- | --- | --- |
+| D01 / INS-06 | Shared overlay contract available; host-specific foreground rules; no new adapter code | Approval/denial, explicit switching and overlay-close fixture TBD |
+| D03 / INS-01b, INS-04 | Shared after-focused/per-leg anchor unchanged | Chained pointer/focus legs 2-3 TBD |
+| D09 / MOV-06 | Shared geometric middle unchanged | Nested entry fixture TBD |
+| D10 / MOV-07 | Shared orthogonal wrap unchanged | Escape fixture TBD |
+| D12 / MOV-04 | Shared ancestor-axis extraction unchanged | Nested extraction fixture TBD |
+| D13 / OUT-02 | Shared local-before-cross unchanged | Multi-output local-wrap fixture TBD |
+| D22 / FLT-03 | Shared removal preserves survivor ratios; no setting | Float-out proportional reflow TBD |
+| D25 / RST-01c | Re-adoption/restart-intent evidence retained; no saved-layout restore | Workspace set/membership/provable focus TBD |
+| D26 / RST-02 | Saved gaps/settings/re-observation target unchanged; cross-login float loss accepted | Logout/login dogfood TBD |
+| D27 / ACT-01 | Default/guard policy unchanged; no dedicated Windows request/urgency observer or marker found | Implementation and ordinary/fullscreen/game/explicit-selection outcomes unproven |
+| D28 / MAX-09b | Existing Windows carry evidence retained; no new carry policy | Remaining physical/game/cross-output journeys TBD |
+
 <a id="insertion"></a>
 ## 1. Insertion ([R-INS](reference-outcomes/insertion.md#insertion-reference-outcomes))
 
