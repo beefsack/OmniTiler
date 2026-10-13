@@ -44185,6 +44185,7 @@ mod directional_cross_adapter_tests {
             directional_target_outer_gap: Some(8),
             target_domain: None,
             target_windows: Vec::new(),
+            closed_windows: Vec::new(),
             command,
         }
     }
@@ -44437,6 +44438,7 @@ mod directional_cross_adapter_tests {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: Vec::new(),
+            closed_windows: Vec::new(),
             command: CoreCommand::Focus {
                 window: "mover".to_owned(),
                 direction: "up".to_owned(),
@@ -46535,6 +46537,7 @@ mod cross_drag_adapter_tests {
             directional_target_outer_gap: Some(8),
             target_domain: None,
             target_windows: Vec::new(),
+            closed_windows: Vec::new(),
             command,
         }
     }

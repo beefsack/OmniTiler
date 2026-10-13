@@ -6233,6 +6233,7 @@ mod tests {
             directional_target_outer_gap: Some(0),
             target_domain: None,
             target_windows: vec![],
+            closed_windows: vec![],
             command,
         }
     }
