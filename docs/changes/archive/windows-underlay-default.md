@@ -32,3 +32,13 @@ Status: delivered offline 2026-10-13; archived. User visual check pending.
   pending: hold Win+Shift over a tiled group with extension -1 and confirm the
   fill/ring is legible on all three backgrounds. An explicit saved color still
   wins; select `#662a82da` deliberately for this comparison if overridden.
+
+## Verification follow-up (2026-10-14)
+
+- Read-only settings inspection found an explicit saved `#40808080`, with the
+  underlay enabled and extension -1. It masks the new `#662a82da` default;
+  the settings file stayed byte-identical throughout the scoped lifecycle run.
+- The trace observed the underlay hidden/idle, not a displayed group underlay.
+  No default-color appearance or screen-pixel sampling is claimed. A comparison
+  can use `--group-underlay-color '#662a82da'` without changing saved settings.
+- Black/white/grey appearance and physical 100%/150% legibility remain pending.

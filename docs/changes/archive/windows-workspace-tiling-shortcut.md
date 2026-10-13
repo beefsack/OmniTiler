@@ -29,3 +29,14 @@
 - Native offline gates passed with Rust 1.99.0, `x86_64-pc-windows-msvc`: locked build/test for `tiler-core`, `tiler-protocol`, `tiler-kwin-effect-ffi`, `tiler-windows`; 1,803 passed, 0 failed, 1 ignored (+11 from baseline). `cargo fmt --all -- --check`, strict locked four-package all-target clippy and `git diff --check` passed.
 - Independent shortcut/owner-routing review accepted the shared toggle path, conflict/preset behavior and regression scope. One comment-only count breakdown corrected; no semantic failed approach or new product ambiguity.
 - Apply/Revert and live binding adoption reuse the existing settings machinery. Native runtime and all physical checks above remain user-owned, including actual Mixed Reality behavior and tray synchronization. Held repeats are consumed without another toggle, following the existing Windows toggle convention; verify hold/release/repress physically.
+
+## Verification follow-up (2026-10-14)
+
+- The scoped lifecycle run confirmed native input/tray startup and teardown,
+  but did not exercise the current-workspace tray checkbox or Win+Y state flip.
+  This is not toggle-state or tray-synchronization acceptance.
+- Inspection confirms the current-workspace tray checkbox is session-only;
+  default-choice radios and Settings Apply persist settings. Presets stage an
+  unsaved draft and Revert reloads it. Live Apply/Revert/preset adoption was not
+  exercised; saved settings remained byte-identical.
+- Native runtime toggle and all physical checks above remain pending.

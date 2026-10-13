@@ -64,3 +64,13 @@
 - Close minimized B, sole minimized A, and hidden minimized windows on multiple
   domains; verify slot cleanup, identity reuse and eventual domain cleanup.
 - Exact native frames/focus/ordering remain TBD; no live testing performed.
+
+## Verification follow-up (2026-10-14)
+
+- Minimize/restore rejoin and close-slot cleanup were not exercised. The scoped
+  lifecycle pass verified owner exit, settings restoration and a clean ledger,
+  but did not newly demonstrate post-exit restoration of hidden ordinary-window
+  claims. Recovery preflight remains unresolved as described in the
+  [D16 follow-up](windows-d16-floating-transfer.md#verification-follow-up-2026-10-14).
+- No new native D23 outcome or product defect is claimed; physical frames,
+  comparable-share rejoin and absence of restore focus writes remain pending.

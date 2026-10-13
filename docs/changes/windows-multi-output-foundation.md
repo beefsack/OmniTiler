@@ -104,6 +104,16 @@
   four-package build/tests/fmt/strict clippy and whitespace gates pass:
   **1,790 passed, zero failed, one ignored**.
 
+## Verification follow-up (2026-10-14)
+
+- The scoped native lifecycle pass detected one output. A two-output journey
+  could not be exercised; no directional transfer/focus or cross-output drag
+  acceptance is inferred from same-output plan/readback events.
+- Native locked four-package build/test, workspace format, strict all-target
+  clippy and whitespace gates passed at `8c77d24`: **1,847 passed, zero failed,
+  one ignored**. Scoped owner stop, settings/Mouse Snap restoration and clean
+  ledger readbacks passed. Physical multi-output acceptance remains pending.
+
 ## Remaining Physical Check
 
 1. Start the updated development build with tracing. Place ordinary tiled

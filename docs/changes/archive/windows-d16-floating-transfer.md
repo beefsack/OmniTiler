@@ -48,3 +48,14 @@
   the remembered floating frame without tiled admission.
 - Verify sticky/automatic-fixed refusal and intentional-float memory after an
   owner restart. Native overlay/game and physical shortcut outcomes are TBD.
+
+## Verification follow-up (2026-10-14)
+
+- No float transfer was attempted. Current scoped lifecycle stop/restore passed,
+  but its post-exit restore had zero hidden-window claims. Earlier ordinary-app
+  evidence proves workspace reveal and graceful/watcher cleanup, not standalone
+  post-exit restore of still-hidden ordinary windows.
+- The non-hooking lifecycle `run --hide` proof requires an identity-tagged
+  `tiler-test-window.exe`; ordinary Notepad is rejected before hiding. The
+  independent hidden-window recovery precondition remains unresolved for this
+  verification pass. No new native D16 outcome or product defect is claimed.

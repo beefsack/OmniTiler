@@ -130,6 +130,35 @@ runbook's stop-command spelling.
 - Post-fix PowerShell syntax, just format and whitespace gates pass. Product
   Rust and CI files are unchanged; no Rust gate is required for this fix.
 
+## Scoped Windows verification (2026-10-14)
+
+- Agent-observed at `8c77d24` on native Windows with one output: scoped
+  `just dev trace` managed disposable Notepad, Calculator and Paint only.
+  Four executable scope entries plus the Calculator host-child restriction
+  were present in provenance; three application windows were managed.
+- Source/artifact hash and exact owner lifetime were captured in provenance.
+  Log streaming was observed to grow; the retained full log contains 256 events.
+  Native plan/readback events matched all three managed frames.
+- A second equally scoped `just dev trace` refused the existing owner and
+  returned 1. Captured readbacks retained owner identity and payload pointer.
+  Window-frame stability at refusal was observed but not separately captured.
+- `just stop` returned 0. Trace teardown reported clean input unhook, tray and
+  render teardown, and Mouse Snap restoration. Independent readbacks found
+  no owner, ledger, stop/workspace request or payload-pointer residue; all test
+  windows were visible before disposal. Saved settings were byte-identical
+  and Mouse Snap matched its preimage. Test applications were then closed;
+  unrelated applications and terminals were preserved.
+- A subsequent standalone `restore` was idempotent with zero window claims.
+  This is lifecycle cleanup evidence, not a new post-exit hidden-window
+  restoration proof. Ctrl+C and tray Stop were not repeated in this pass.
+- Native offline gates at the same revision: Rust 1.99.0, MSVC target;
+  locked four-package build/test, workspace format, strict all-target clippy
+  and whitespace checks passed: **1,847 passed, zero failed, one ignored**.
+  Baseline CI run 38400592653 completed successfully. Raw provenance, trace,
+  refusal and cleanup readbacks remain outside repository records.
+- Physical shortcut/visual acceptance and Linux KDE live acceptance remain
+  pending; this record stays active.
+
 ## Acceptance journeys
 
 ### Windows
