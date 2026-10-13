@@ -105,9 +105,10 @@ platform API behavior.
   environment for the 0.1 multi-output must-pass checks from the parked
   live-test reference-environments proposal to pre-0.1. General reference
   environments remain parked. [Route research](research/two-output-test-environment.md)
-  recommends a full Plasma VM; route selection and setup remain pending.
-  Synthetic output events do not automatically close physical reliability
-  or native gaming checks; the approved must-pass gate is unchanged.
+  recommended a full Plasma VM. User selection 2026-10-13: no VM; multi-output
+  development and must-pass testing run natively on a user-owned PC with a
+  physical second monitor, which also covers physical hotplug and sleep/wake.
+  Check 2 still needs a third output. The approved must-pass gate is unchanged.
 
 ## Windows Owner Threading
 

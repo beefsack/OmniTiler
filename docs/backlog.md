@@ -26,9 +26,10 @@ decisions of 2026-09-24 are under
 - PRE-0.1 | KDE multi-output test environment | Narrowed slice promoted
   2026-10-13: provide a user-operated two-output environment for the must-pass
   gate. [Research and coverage](research/two-output-test-environment.md)
-  delivered; full Plasma VM recommended, route selection and setup pending.
-  Check 2 additionally needs three outputs; physical hotplug, sleep/wake and
-  native gaming fidelity remain explicit gaps, not reclassified checks.
+  delivered. User 2026-10-13 declined the VM route: multi-output development
+  and testing run natively on a user-owned PC with a physical second monitor
+  ([decision](decisions.md#scope-and-platform-goals)). No VM setup or new
+  dependency. Check 2 additionally needs a third output (user to arrange).
   General live-test reference environments remain parked.
 
 - P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
