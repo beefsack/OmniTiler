@@ -67,10 +67,25 @@
 
 ## Verification follow-up (2026-10-14)
 
-- Minimize/restore rejoin and close-slot cleanup were not exercised. The scoped
-  lifecycle pass verified owner exit, settings restoration and a clean ledger,
+- Initially minimize/restore rejoin and close-slot cleanup were not exercised.
+  The scoped lifecycle pass verified owner exit, settings restoration and a clean ledger,
   but did not newly demonstrate post-exit restoration of hidden ordinary-window
-  claims. Recovery preflight remains unresolved as described in the
+  claims. Subsequent helper recovery preflight passed as described in the
   [D16 follow-up](windows-d16-floating-transfer.md#verification-follow-up-2026-10-14).
-- No new native D23 outcome or product defect is claimed; physical frames,
-  comparable-share rejoin and absence of restore focus writes remain pending.
+- Agent-observed basic unequal-share minimize/restore passed with scoped
+  helpers: native iconic state removed the allocation and reflowed a neighbor;
+  restore recovered the former neighborhood and exact prior frame/share.
+  Correlated restore trace contained geometry writes without product focus
+  writes; activation caused by native `SW_RESTORE` is distinct from a tiler
+  focus write. A basic sole-window minimize/restore retained its frame.
+- Closing a minimized tagged helper was followed by process exit, fewer managed
+  windows and eventual survivor reflow. This is partial cleanup evidence, not
+  proof that internal stored slots were removed. There is no per-close trace
+  event; absence of a `closed_windows` log line is not a failure oracle.
+- A later fresh-admission probe captured overlapping frames during admission
+  and an incompletely attributed managed count. It does not establish settled
+  slot cleanup or identity-reuse acceptance. Those checks and the full changed-
+  neighborhood, hidden-domain and restart matrix remain pending.
+- Final owners/fixtures were absent, ledger/request/pointer clean, settings
+  byte-identical and Mouse Snap restored. No new D23 product defect or physical
+  acceptance is claimed.

@@ -159,6 +159,49 @@ runbook's stop-command spelling.
 - Physical shortcut/visual acceptance and Linux KDE live acceptance remain
   pending; this record stays active.
 
+## Bounded verification continuation
+
+- Tentative, pending user review: use an agent-owned disposable test helper,
+  identity-tagged and independently checked, to establish non-hooking hide,
+  graceful owner exit and post-exit independent restore before further native
+  journeys. Dispose of the exact helper window after restoration.
+- Continue underlay rendering with a CLI-only `#662a82da` override, tray
+  workspace-state toggles, D16 floating transfers and D23 minimize/rejoin/close
+  checks with scoped disposable applications and helpers. Preserve saved
+  settings and unrelated windows; retain trace/readback evidence outside the
+  repository and verify clean owner stop after every bounded run.
+- Physical keyboard and visual acceptance remain separate from these native
+  observations. Multi-output journeys still require more than one output.
+
+### Recovery proof and tray-stop correction
+
+- The agent-owned disposable test helper recovery proof passed: the graceful
+  owner exit left one verified helper hidden with its ledger claim intact.
+  Independent post-exit restore reported one restored window; the same helper
+  lifetime and frame were visible afterward. Exact helper cleanup and a clean
+  ledger were verified. No forced-process-loss result is inferred.
+- Subsequent bounded float follow/stay roundtrips and basic minimize/rejoin
+  observations produced native evidence. Helper inspection used virtualized
+  coordinates while native readbacks used physical coordinates; comparisons
+  must stay within one coordinate convention. Workspace identity tokens are
+  creation identities, not stable numbered positions.
+- A stop blocker was reproduced: the owner's own tray popup remained open after
+  two cancellation routes. A graceful stop request timed out while that modal menu
+  remained active; the owner and its session-only Mouse Snap claim remained live.
+  Helper fixtures were closed, and saved settings remained byte-identical.
+  Posting Esc to the verified owned popup subsequently dismissed it and allowed
+  the pending stop to exit. `just stop` verified restoration and clean ledger,
+  request and owner state. The fix and fixed-build verification are tracked in
+  [tray-menu graceful stop](archive/windows-tray-menu-stop.md).
+- The corrected tray path passed native open-menu graceful stop in 411 ms and
+  86 ms without manual dismissal; reentry retained one popup. Final readbacks
+  found no owner, tray, popup, test helper, ledger/request or pointer residue,
+  with Mouse Snap restored and saved settings byte-identical.
+- Final four-package native gates pass: **1,852 passed, zero failed, one ignored**;
+  format, strict clippy and whitespace checks pass. Remaining underlay appearance,
+  tray-state toggling, combo exit and closed-slot evidence are feature-specific
+  pending checks, not additional dev-lifecycle acceptance claims.
+
 ## Acceptance journeys
 
 ### Windows

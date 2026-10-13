@@ -40,3 +40,13 @@
   unsaved draft and Revert reloads it. Live Apply/Revert/preset adoption was not
   exercised; saved settings remained byte-identical.
 - Native runtime toggle and all physical checks above remain pending.
+
+- Continuation opened the owned native menu through the production mouse-up
+  callback, but menu-handle/accessibility queries did not establish item-level
+  access. Item 1005 was not selected; checked-state changes and shared toggle
+  behavior remain unverified. No exact-owner workspace CLI toggle exists.
+- Open-menu graceful stop was independently fixed and verified in
+  [tray-menu graceful stop](windows-tray-menu-stop.md). That verifies menu
+  lifecycle, not Win+Y or checkbox synchronization. Saved settings remained
+  byte-identical; Apply/Revert/preset adoption and physical keyboard paths remain
+  pending.

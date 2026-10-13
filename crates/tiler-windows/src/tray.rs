@@ -302,6 +302,91 @@ pub fn status_line(settings_status: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Menu tracking cancellation and pick outcome.
+// ---------------------------------------------------------------------------
+
+/// Outcome of one tray-menu pick after tracking returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuPickOutcome {
+    /// Open Settings (top conflict row or Settings row).
+    SpawnSettings,
+    /// Graceful owner stop through the normal cleanup path.
+    RequestStop,
+    /// Flip the current-workspace tiling mode on the owner loop.
+    ToggleWorkspace,
+    /// Persist the new-workspace default (never a session override).
+    PersistDefault { default_tiled: bool },
+    /// Dismissal, disabled status row, unknown id, or a pick discarded by a
+    /// racing graceful stop: no spawn, no toggle, no write.
+    Noop,
+}
+
+/// Pure post-tracking decision used by the native menu path. `picked` is the
+/// tracking return (0 when cancelled or dismissed), `stop_during` whether a
+/// graceful stop was observed while the menu was open, and
+/// `toggle_available` whether the rendered scope can carry a toggle (live
+/// current scope present, the same fence the native side enforces). A stop
+/// wins over any racing pick except the Stop pick itself (already stopping):
+/// settings spawns, workspace toggles and default persists are discarded so
+/// teardown mutates nothing. Dismissal, the disabled status row and unknown
+/// ids are always noop.
+#[must_use]
+pub const fn resolve_menu_pick(
+    picked: u32,
+    stop_during: bool,
+    toggle_available: bool,
+) -> MenuPickOutcome {
+    if stop_during && picked != MENU_ID_STOP {
+        return MenuPickOutcome::Noop;
+    }
+    match picked {
+        MENU_ID_CONFLICT | MENU_ID_SETTINGS => MenuPickOutcome::SpawnSettings,
+        MENU_ID_STOP => MenuPickOutcome::RequestStop,
+        MENU_ID_STATUS => MenuPickOutcome::Noop,
+        MENU_ID_WORKSPACE_TOGGLE => {
+            if toggle_available {
+                MenuPickOutcome::ToggleWorkspace
+            } else {
+                MenuPickOutcome::Noop
+            }
+        }
+        MENU_ID_DEFAULT_TILED => MenuPickOutcome::PersistDefault {
+            default_tiled: true,
+        },
+        MENU_ID_DEFAULT_FLOATING => MenuPickOutcome::PersistDefault {
+            default_tiled: false,
+        },
+        _ => MenuPickOutcome::Noop,
+    }
+}
+
+/// Pure menu-cancel predicate used by the native stop-timer handler: cancel
+/// only when a stop is observed while a track is actually active (the handler
+/// passes the live tracking guard, cleared before teardown so a queued stale
+/// timer cannot cancel anything).
+#[must_use]
+pub const fn menu_cancel_due(stop_requested: bool, menu_open: bool) -> bool {
+    stop_requested && menu_open
+}
+
+/// Whether a fresh menu track may start: refuses while a track is already
+/// active on this owner (a second tray callback dispatched by the modal track
+/// never opens its own menu; nested submenus stay internal to the one track).
+#[must_use]
+pub const fn menu_track_enter(menu_tracking: bool) -> bool {
+    !menu_tracking
+}
+
+/// Whether menu tracking may proceed: the legacy path needs no timer, while
+/// the stop-aware path proceeds only with its timer installed. A failed
+/// install fails closed (no untracked blocking menu) so graceful stop cannot
+/// starve again.
+#[must_use]
+pub const fn menu_track_proceed(stop_timer_needed: bool, timer_installed: bool) -> bool {
+    !stop_timer_needed || timer_installed
+}
+
+// ---------------------------------------------------------------------------
 // First run.
 // ---------------------------------------------------------------------------
 
@@ -827,6 +912,96 @@ mod tests {
         assert!(!verify_toggle_scope(None, Some(("mon-1", "ws-1"))));
         assert!(!verify_toggle_scope(Some(("mon-1", "ws-1")), None));
         assert!(!verify_toggle_scope(None, None));
+    }
+
+    #[test]
+    fn menu_cancel_needs_stop_and_open_menu() {
+        assert!(menu_cancel_due(true, true));
+        assert!(!menu_cancel_due(true, false));
+        assert!(!menu_cancel_due(false, true));
+        assert!(!menu_cancel_due(false, false));
+    }
+
+    #[test]
+    fn menu_pick_routes_without_stop() {
+        use MenuPickOutcome as O;
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_CONFLICT, false, true),
+            O::SpawnSettings
+        );
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_SETTINGS, false, true),
+            O::SpawnSettings
+        );
+        assert_eq!(resolve_menu_pick(MENU_ID_STOP, false, true), O::RequestStop);
+        assert_eq!(resolve_menu_pick(MENU_ID_STATUS, false, true), O::Noop);
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_WORKSPACE_TOGGLE, false, true),
+            O::ToggleWorkspace
+        );
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_WORKSPACE_TOGGLE, false, false),
+            O::Noop
+        );
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_DEFAULT_TILED, false, true),
+            O::PersistDefault {
+                default_tiled: true
+            }
+        );
+        assert_eq!(
+            resolve_menu_pick(MENU_ID_DEFAULT_FLOATING, false, true),
+            O::PersistDefault {
+                default_tiled: false
+            }
+        );
+        // Dismissal (tracking cancel returns 0) and unknown ids noop.
+        assert_eq!(resolve_menu_pick(0, false, true), O::Noop);
+        assert_eq!(resolve_menu_pick(9999, false, true), O::Noop);
+    }
+
+    #[test]
+    fn menu_pick_stop_wins_over_every_racing_pick() {
+        use MenuPickOutcome as O;
+        // A stop observed while open discards every racing pick except Stop
+        // itself: no settings spawn, no workspace flip, no default persist.
+        for picked in [
+            MENU_ID_CONFLICT,
+            MENU_ID_SETTINGS,
+            MENU_ID_STATUS,
+            MENU_ID_WORKSPACE_TOGGLE,
+            MENU_ID_DEFAULT_TILED,
+            MENU_ID_DEFAULT_FLOATING,
+            0,
+            9999,
+        ] {
+            assert_eq!(
+                resolve_menu_pick(picked, true, true),
+                O::Noop,
+                "pick {picked} must discard under stop"
+            );
+            assert_eq!(
+                resolve_menu_pick(picked, true, false),
+                O::Noop,
+                "pick {picked} must discard under stop"
+            );
+        }
+        assert_eq!(resolve_menu_pick(MENU_ID_STOP, true, true), O::RequestStop);
+        assert_eq!(resolve_menu_pick(MENU_ID_STOP, true, false), O::RequestStop);
+    }
+
+    #[test]
+    fn menu_track_enter_refuses_while_tracking() {
+        assert!(menu_track_enter(false));
+        assert!(!menu_track_enter(true));
+    }
+
+    #[test]
+    fn menu_track_proceed_fails_closed_without_timer() {
+        assert!(menu_track_proceed(false, false));
+        assert!(menu_track_proceed(false, true));
+        assert!(menu_track_proceed(true, true));
+        assert!(!menu_track_proceed(true, false));
     }
 
     #[test]

@@ -44,11 +44,9 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::core::GUID;
 
 use crate::tray::{
-    FIRST_RUN_TITLE, MENU_ID_CONFLICT, MENU_ID_DEFAULT_FLOATING, MENU_ID_DEFAULT_TILED,
-    MENU_ID_SETTINGS, MENU_ID_STATUS, MENU_ID_STOP, MENU_ID_WORKSPACE_TOGGLE,
-    TASKBAR_CREATED_MESSAGE, TRAY_CALLBACK_MESSAGE, TRAY_ICON_SIZE, TRAY_TOOLTIP_TITLE,
-    TRAY_WINDOW_CLASS, ToggleScope, TrayIconState, WorkspaceMenu, first_run_body, menu_items,
-    status_line,
+    FIRST_RUN_TITLE, TASKBAR_CREATED_MESSAGE, TRAY_CALLBACK_MESSAGE, TRAY_ICON_SIZE,
+    TRAY_TOOLTIP_TITLE, TRAY_WINDOW_CLASS, ToggleScope, TrayIconState, WorkspaceMenu,
+    first_run_body, menu_items, status_line,
 };
 
 type DynError = Box<dyn std::error::Error>;
@@ -149,6 +147,13 @@ struct Inner {
     status: String,
     taskbar_created: u32,
     stop: Arc<AtomicBool>,
+    /// Graceful-stop poll observed by the menu-thread stop timer while modal
+    /// tracking blocks the owner pump (`None` keeps legacy tracking). Set once
+    /// at creation from the owner loop's exact-owner check.
+    stop_poll: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// True while one modal track owns this thread: reentrant opens refuse
+    /// and the stop timer only cancels then. Same-thread only.
+    menu_tracking: bool,
     log_path: Option<std::path::PathBuf>,
     /// Cached current-workspace tiled state (`None` without a readable
     /// scope: the checkbox disables). Refreshed by `sync_workspace`.
@@ -277,20 +282,33 @@ fn inner_of(hwnd: HWND) -> *mut Inner {
     unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Inner }
 }
 
+/// Stop-cancel window timer id for menu tracking (per-window: no other timer
+/// exists on the owner). Distinctive value for Spy++ readability.
+const TRAY_MENU_STOP_TIMER_ID: usize = 0x54524159;
+/// Stop-poll cadence inside menu tracking (matches the owner tick and the
+/// first-run stop poll).
+const TRAY_MENU_STOP_POLL_MS: u32 = 50;
+
 fn show_menu(hwnd: HWND) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreatePopupMenu, DestroyMenu, GetCursorPos, MF_CHECKED, MF_DISABLED, MF_GRAYED,
-        MF_SEPARATOR, MF_STRING, PostMessageW, SetForegroundWindow, TPM_RETURNCMD, TrackPopupMenu,
-        WM_NULL,
+        CreatePopupMenu, DestroyMenu, GetCursorPos, KillTimer, MF_CHECKED, MF_DISABLED, MF_GRAYED,
+        MF_SEPARATOR, MF_STRING, PostMessageW, SetForegroundWindow, SetTimer, TPM_RETURNCMD,
+        TrackPopupMenu, WM_NULL,
     };
     let raw = inner_of(hwnd);
     if raw.is_null() {
+        return;
+    }
+    // Reentrant opens refuse while one track owns this thread (a second tray
+    // callback dispatched by the modal track never starts its own menu).
+    if !crate::tray::menu_track_enter(unsafe { (&*raw).menu_tracking }) {
         return;
     }
     let cached = unsafe { &*raw };
     let cached_conflicts_empty = cached.conflict_empty;
     let cached_status = cached.status.clone();
     let cached_workspace = WorkspaceMenu::new(cached.workspace_current, cached.workspace_default);
+    let stop_poll = cached.stop_poll.clone();
     // Rebuild the visible menu from cached state: no syscalls here, so a
     // stale poll can never project a wrong conflict row or workspace check.
     let items = menu_items(
@@ -352,6 +370,28 @@ fn show_menu(hwnd: HWND) {
         return;
     }
     unsafe {
+        (&mut *raw).menu_tracking = true;
+    }
+    // The modal track below blocks the owner pump, so a window timer observes
+    // the graceful-stop poll on this same menu thread and `EndMenu` cancels
+    // the track. Without a poll (`None`) tracking behaves as before. A failed
+    // install fails closed: the owned menu is destroyed without tracking, so
+    // graceful stop cannot starve on an untracked blocking menu.
+    let timer_installed = !stop_poll.is_some()
+        || unsafe { SetTimer(hwnd, TRAY_MENU_STOP_TIMER_ID, TRAY_MENU_STOP_POLL_MS, None) } != 0;
+    if !crate::tray::menu_track_proceed(stop_poll.is_some(), timer_installed) {
+        unsafe {
+            (&mut *raw).menu_tracking = false;
+            DestroyMenu(menu);
+        }
+        unsafe {
+            (&*raw).log_line(
+                serde_json::json!({"event": "tray-menu", "outcome": "timer-unavailable"}),
+            );
+        }
+        return;
+    }
+    unsafe {
         SetForegroundWindow(hwnd);
     }
     let picked = unsafe {
@@ -366,37 +406,51 @@ fn show_menu(hwnd: HWND) {
         )
     } as u32;
     // Dismissal contract for `SetForegroundWindow` menus: the posted null
-    // lets the menu close when the user clicks away instead of lingering.
+    // lets the menu close when the user clicks away instead of lingering. The
+    // guard clears before teardown so a queued stale timer cannot cancel
+    // anything; the timer dies and the menu is destroyed exactly once.
     unsafe {
+        (&mut *raw).menu_tracking = false;
+        if stop_poll.is_some() {
+            KillTimer(hwnd, TRAY_MENU_STOP_TIMER_ID);
+        }
         PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
     }
-    if picked == MENU_ID_CONFLICT || picked == MENU_ID_SETTINGS {
-        spawn_settings_detached();
-    } else if picked == MENU_ID_STOP {
-        let inner = unsafe { &*raw };
-        inner.stop.store(true, Ordering::SeqCst);
-    } else if picked == MENU_ID_STATUS {
-        // Disabled status row: unreachable through the menu, kept for the
-        // stable automation surface.
-    } else if picked == MENU_ID_WORKSPACE_TOGGLE {
-        // Session-only toggle: carry the rendered opaque scope to the owner
-        // loop, which drains it once on its pump and flips the mode there
-        // only when the live active pair still matches (never here, so a
-        // stale menu can never project or flip a wrong check).
-        let inner = unsafe { &*raw };
-        if inner.workspace_current.is_some()
-            && let Some((output, workspace)) = inner.workspace_scope.clone()
-        {
-            *inner
-                .toggle
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner()) =
-                Some(ToggleScope::new(&output, &workspace));
+    // Stop precedence (first-run post-decision analogue): a stop observed
+    // while open discards every racing pick except Stop itself, so teardown
+    // spawns nothing, flips nothing and persists nothing.
+    let stop_during = stop_poll.as_ref().is_some_and(|poll| poll())
+        || unsafe { (&*raw).stop.load(Ordering::SeqCst) };
+    let toggle_available =
+        unsafe { (&*raw).workspace_current.is_some() && (&*raw).workspace_scope.is_some() };
+    match crate::tray::resolve_menu_pick(picked, stop_during, toggle_available) {
+        crate::tray::MenuPickOutcome::SpawnSettings => {
+            spawn_settings_detached();
         }
-    } else if picked == MENU_ID_DEFAULT_TILED || picked == MENU_ID_DEFAULT_FLOATING {
-        let inner = unsafe { &mut *raw };
-        persist_default_choice(inner, picked == MENU_ID_DEFAULT_TILED);
+        crate::tray::MenuPickOutcome::RequestStop => {
+            let inner = unsafe { &*raw };
+            inner.stop.store(true, Ordering::SeqCst);
+        }
+        crate::tray::MenuPickOutcome::ToggleWorkspace => {
+            // Session-only toggle: carry the rendered opaque scope to the owner
+            // loop, which drains it once on its pump and flips the mode there
+            // only when the live active pair still matches (never here, so a
+            // stale menu can never project or flip a wrong check).
+            let inner = unsafe { &*raw };
+            if let Some((output, workspace)) = inner.workspace_scope.clone() {
+                *inner
+                    .toggle
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) =
+                    Some(ToggleScope::new(&output, &workspace));
+            }
+        }
+        crate::tray::MenuPickOutcome::PersistDefault { default_tiled } => {
+            let inner = unsafe { &mut *raw };
+            persist_default_choice(inner, default_tiled);
+        }
+        crate::tray::MenuPickOutcome::Noop => {}
     }
 }
 
@@ -450,8 +504,8 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: windows_sys::Win32::Foundation::LPARAM,
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CREATESTRUCTW, DefWindowProcW, GWLP_USERDATA, SetWindowLongPtrW, WM_CREATE, WM_DESTROY,
-        WM_LBUTTONUP, WM_RBUTTONUP,
+        CREATESTRUCTW, DefWindowProcW, EndMenu, GWLP_USERDATA, SetWindowLongPtrW, WM_CREATE,
+        WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
     };
     if msg == WM_CREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
@@ -466,6 +520,19 @@ unsafe extern "system" fn tray_wnd_proc(
         let inner = unsafe { &mut *raw };
         if msg == inner.taskbar_created {
             inner.recover_taskbar();
+            return 0;
+        }
+        if msg == WM_TIMER && wparam == TRAY_MENU_STOP_TIMER_ID {
+            // Menu-thread stop cancel on the exact owned window, never a
+            // title search. The live tracking guard (not a literal) decides,
+            // so with no active track this is a no-op by construction.
+            let stop_now = inner.stop.load(Ordering::SeqCst)
+                || inner.stop_poll.as_ref().is_some_and(|poll| poll());
+            if crate::tray::menu_cancel_due(stop_now, inner.menu_tracking) {
+                unsafe {
+                    EndMenu();
+                }
+            }
             return 0;
         }
         if msg == TRAY_CALLBACK_MESSAGE {
@@ -500,13 +567,16 @@ impl TrayOwner {
     /// bounded `tray-default` lines for default picks. `toggle` carries the
     /// scoped workspace-toggle request to the owner loop (drained once via
     /// `take_toggle_request`); `settings_dir` persists default picks
-    /// (normal owner only).
+    /// (normal owner only). `stop_poll` is the graceful-stop predicate the
+    /// menu-thread stop timer observes while modal tracking blocks the owner
+    /// pump (`None` keeps legacy tracking).
     pub fn create(
         conflict_empty: bool,
         settings_status: &str,
         log_path: Option<std::path::PathBuf>,
         toggle: &Arc<Mutex<Option<ToggleScope>>>,
         settings_dir: Option<std::path::PathBuf>,
+        stop_poll: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<Self, DynError> {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -553,6 +623,8 @@ impl TrayOwner {
             status: settings_status.to_owned(),
             taskbar_created,
             stop: Arc::clone(&stop),
+            stop_poll,
+            menu_tracking: false,
             log_path,
             workspace_current: None,
             workspace_scope: None,
@@ -1084,6 +1156,7 @@ pub fn first_run_dialog(stop: impl Fn() -> bool) -> FirstRunOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tray::{MENU_ID_CONFLICT, MENU_ID_SETTINGS, MENU_ID_STATUS};
 
     #[test]
     fn tooltip_carries_status_and_conflict_suffix() {

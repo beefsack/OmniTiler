@@ -51,11 +51,28 @@
 
 ## Verification follow-up (2026-10-14)
 
-- No float transfer was attempted. Current scoped lifecycle stop/restore passed,
+- Initially no float transfer was attempted. Scoped lifecycle stop/restore passed,
   but its post-exit restore had zero hidden-window claims. Earlier ordinary-app
   evidence proves workspace reveal and graceful/watcher cleanup, not standalone
   post-exit restore of still-hidden ordinary windows.
 - The non-hooking lifecycle `run --hide` proof requires an identity-tagged
   `tiler-test-window.exe`; ordinary Notepad is rejected before hiding. The
-  independent hidden-window recovery precondition remains unresolved for this
-  verification pass. No new native D16 outcome or product defect is claimed.
+  recovery precondition was subsequently satisfied with an agent-owned
+  disposable test helper: independent post-exit restore revealed one retained
+  hidden claim with the same lifetime and frame.
+- Agent-observed numbered ordinary-float follow/stay roundtrips passed with
+  scoped helpers. Mover frames were retained; source/destination tile frames
+  stayed unchanged across the checked transfer legs. Correlated transfer
+  replies were slotless with no geometry application.
+- Floating+fullscreen entry and follow-transfer retained the fullscreen frame
+  without destination reflow. A genuine destination exit was not dispatched:
+  the fixture could not establish the required owned foreground. Fullscreen
+  exit, maximized combo, relative/comprehensive matrix and restart memory remain
+  pending; unchanged fullscreen frames are not evidence of an exit defect.
+- Fixture triage resolved apparent index inconsistency: numbered operations
+  share the same one-based positions (0 selects trailing); opaque workspace
+  tokens are creation identities. `float-mismatch` is successful floating
+  settlement with a frame delta. Native/readback comparisons used one coordinate
+  convention rather than mixing DPI-virtualized and physical rectangles.
+- All owners and fixtures were cleaned up with unchanged saved settings and
+  restored Mouse Snap. No new D16 product defect or physical acceptance claimed.

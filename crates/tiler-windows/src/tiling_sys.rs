@@ -26976,12 +26976,30 @@ fn run_tile_loop(
         // `take_toggle_request` and verifies it below. Default picks persist
         // through the settings file (normal owner).
         let toggle = Arc::new(Mutex::new(None::<crate::tray::ToggleScope>));
+        // Stop-aware menu tracking: the modal track blocks this loop's pump,
+        // so the menu thread observes the exact-owner stop file itself on a
+        // 50 ms window timer and cancels via `EndMenu`. Same file plus match
+        // predicate the loop polls below, so no ownership change. Read errors
+        // poll false (never cancel on I/O noise); the loop's own check still
+        // reports them.
+        let menu_stop_dir = dir.to_path_buf();
+        let menu_stop_creation = me.process_creation.clone();
+        let menu_stop_poll: Option<Arc<dyn Fn() -> bool + Send + Sync>> =
+            Some(Arc::new(move || {
+                match std::fs::read_to_string(
+                    menu_stop_dir.join(crate::lifecycle::STOP_REQUEST_FILE),
+                ) {
+                    Ok(text) => crate::lifecycle::stop_request_matches(&text, &menu_stop_creation),
+                    Err(_) => false,
+                }
+            }));
         match crate::tray_sys::TrayOwner::create(
             conflict_empty,
             &settings_status,
             Some(log_path.clone()),
             &toggle,
             state.settings_dir.clone(),
+            menu_stop_poll,
         ) {
             Ok(owner) => Some(owner),
             Err(error) => {

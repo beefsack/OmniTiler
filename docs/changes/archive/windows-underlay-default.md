@@ -42,3 +42,10 @@ Status: delivered offline 2026-10-13; archived. User visual check pending.
   No default-color appearance or screen-pixel sampling is claimed. A comparison
   can use `--group-underlay-color '#662a82da'` without changing saved settings.
 - Black/white/grey appearance and physical 100%/150% legibility remain pending.
+
+- Continuation used the supported CLI override `#662a82da` with scoped disposable
+  helpers and unchanged saved settings. Native move-trigger attempts did not
+  establish a displayed underlay: one was confounded by the run-duration bound,
+  and the corrected early gesture did not demonstrate actual movement. Trace
+  and inspect stayed hidden/idle. No screen capture or blended-pixel result is
+  claimed; rendering and black/white/grey sampling remain pending.
