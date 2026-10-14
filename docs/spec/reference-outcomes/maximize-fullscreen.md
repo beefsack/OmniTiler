@@ -566,10 +566,12 @@ rectangles where geometry is load-bearing.
   bounds without restoring first; source A reflows, target C shares the
   retained Engine allocation, and project fullscreen exit restores B to its
   target slot. Stay keeps A foreground and B hidden until target selection.
-  Fullscreen follow suppresses explicit focus actuation (`focus-suppressed`
-  observed), selecting/revealing target without forcing B foreground; this
-  gaming-first detail is tentative, pending user review. Stable managed
-  app-owned fullscreen uses the same carry gates, also tentative; native
+  User 2026-10-14: explicit numbered/relative workspace and output FOLLOW
+  sends focus B after verified arrival, like other follow sends; STAY is
+  unchanged. Delivered offline with Engine/native output-follow mover-focus
+  and fullscreen-stay no-mover-focus regressions; physical recheck pending.
+  This supersedes the earlier `focus-suppressed` policy. Stable managed
+  app-owned fullscreen uses the same carry gates, tentative; native
   app-owned carry remains TBD. Slotless born-fullscreen has no retained tile
   allocation and stays ineligible. R-MAX-05 toggle refusal is unchanged.
   Physical chords, deterministic native flag-race injection, games and
@@ -585,6 +587,13 @@ rectangles where geometry is load-bearing.
   native send outcome TBD. Fresh slotless born-fullscreen B -> send cannot
   obtain a retained tile allocation; native outcome TBD. Unsupported reference
   outcomes for these ownership/focus variants remain TBD.
+- Windows focus decision (User 2026-10-14), fresh single-output fixtures:
+
+  | Fixture / explicit action | Selected outcome | Evidence |
+  | --- | --- | --- |
+  | `WS1=H[A,B*:full]`, occupied WS2; numbered or relative FOLLOW-send B to WS2 | After verified arrival, reveal WS2 and focus still-fullscreen B | Shared workspace-follow tail enables ordinary verified focus; output Engine/native follow unit tests actuate on the mover. User physical outcome TBD |
+  | Same fresh fixture; STAY-send B to WS2 | Keep WS1 and source focus; do not focus B | Stay path unchanged; fullscreen null-source stay unit test has no focus setter. User physical recheck TBD |
+
 - Variant hook: NORMATIVE maximized carry (G-D2 User 2026-10-10) and NORMATIVE
   KDE fullscreen carry (D28 (b) User 2026-10-12); existing R-MAX-09 follow/stay
   sequence reused, game leg is the must-pass live check with outcome TBD.

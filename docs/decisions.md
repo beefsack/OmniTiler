@@ -2510,9 +2510,13 @@ platform API behavior.
   Same-output numbered follow/stay and relative follow, source reflow/MRU,
   hidden target and project exit to target allocation agent-observed; native
   gates passed. No restore before send or mover geometry writes.
-  Tentative, pending user review: fullscreen follow suppresses explicit focus
-  actuation for its reveal transition (native reveal may focus); managed
-  app-owned fullscreen with a retained tile uses the same stable-flag carry
+  User 2026-10-14: explicit numbered/relative workspace FOLLOW sends and
+  output FOLLOW sends focus the fullscreen mover after verified arrival,
+  like other follow sends; STAY is unchanged. Delivered offline with
+  mover-focus and no-mover-focus stay regressions; physical recheck pending.
+  This supersedes the Table A item 9 fullscreen-follow focus suppression;
+  explicit commands are honoured, with no unsolicited-event focus changes.
+  Managed app-owned fullscreen with a retained tile uses the same stable-flag carry
   fences, while R-MAX-05 toggle refusal remains. Unreadable fullscreen flags
   defer before effects; slotless born-fullscreen stays ineligible.
   Test-needed `workspace --fullscreen` reuses exact-owner consume-once CLI

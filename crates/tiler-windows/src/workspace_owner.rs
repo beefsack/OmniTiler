@@ -748,17 +748,6 @@ pub const fn send_retained_overlay_admits(row_maximized: bool, row_fullscreen: b
     row_maximized || row_fullscreen
 }
 
-/// Item 9 follow-focus policy for a workspace send: a stable fullscreen
-/// snapshot suppresses ALL explicit focus actuation for the follow
-/// transition (the select still reveals/reconciles the target; a fresh
-/// foreground readback reports observed focus honestly). Ordinary and
-/// maximized sends keep explicit focus. Production `workspace_send_follow`
-/// MUST route through this; it never touches windows, only decides.
-#[must_use]
-pub const fn send_focus_suppressed(snapshot_fullscreen: bool) -> bool {
-    snapshot_fullscreen
-}
-
 /// Stay-focus resolution class (item 2): `Null` is a genuine null plan (sole
 /// mover emptied the source: ok/no-focus, no setter); `Stale` is a
 /// some-but-unusable plan mapping (unmapped leaf, left source, hidden,
@@ -7495,17 +7484,6 @@ mod tests {
         assert!(send_retained_overlay_admits(false, true));
         assert!(send_retained_overlay_admits(true, true));
         assert!(!send_retained_overlay_admits(false, false));
-    }
-
-    #[test]
-    fn send_focus_suppressed_only_for_fullscreen_snapshots() {
-        // Production `workspace_send_follow` MUST route through
-        // `send_focus_suppressed`: a fullscreen snapshot suppresses ALL
-        // explicit focus actuation for the follow transition; ordinary and
-        // maximized snapshots keep explicit focus.
-        use super::send_focus_suppressed;
-        assert!(!send_focus_suppressed(false));
-        assert!(send_focus_suppressed(true));
     }
 
     #[test]

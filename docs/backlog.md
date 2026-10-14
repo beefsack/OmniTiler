@@ -298,11 +298,13 @@ decisions of 2026-09-24 are under
     tentative R-MAX-09 fullscreen-follow focus suppression. User 2026-10-14
     selected option A: a verified follow send focuses the fullscreen mover on
     arrival like other follow sends (stay unchanged); real-game check under
-    gaming coexistence. Implementation queued (Windows; replaces the
-    suppression in `decisions.md` R-MAX-09 Windows delivery note).
+    gaming coexistence. Delivered offline 2026-10-14 for numbered/relative
+    workspace and output follows, with mover-focus and unchanged stay
+    regressions; user physical recheck pending ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
   - User review of Windows tentatives 2026-10-14 (promote to `decisions.md`
     and clear the "tentative" labels with the next delivery): (1) fullscreen
-    follow focus: option A above. (2) Held repeats: keep toggles at one action
+    follow focus: option A above, delivered offline; user physical recheck
+    pending. (2) Held repeats: keep toggles at one action
     per press (Win+Y, Win+O, float/maximize/fullscreen) and keep movement/send
     repeats while modifiers stay held (Win+Ctrl+Alt output send like
     Win+Shift+arrow); approved as delivered. (3) Rebound output-send stay on
@@ -2140,8 +2142,9 @@ decisions of 2026-09-24 are under
     base `6b76589` plus delivery commit ([record](changes/archive/windows-fullscreen-workspace-carry.md));
     native gates passed; CLI numbered follow/stay, relative follow and exit
     to target allocation agent-observed. Physical/flag-race/app-owned/game/
-    cross-output pending; fullscreen follow focus suppression and exact-owner
-    fullscreen CLI are tentative, pending user review. Historical checklist:
+    cross-output pending; User 2026-10-14 fullscreen-follow mover focus
+    delivered offline, physical recheck pending. Exact-owner fullscreen CLI
+    remains tentative, pending user review. Historical checklist:
     Table A accepted 2026-10-07 carries state without restoring first. Depends on
     handoff item 2 follow/stay wiring only; same-output workspace carry,
     never the parity-queue multi-output foundation.

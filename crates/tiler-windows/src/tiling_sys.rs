@@ -17302,8 +17302,8 @@ fn resolve_output_send_target(
 /// Output-send fence evaluation with the D16 deferred carry-through: a
 /// stable fullscreen snapshot on a D16-admitted float mover lifts the
 /// fullscreen refusal (the deferred arm transfers membership-only with no
-/// geometry, matching the same-output route where `send_focus_suppressed`
-/// then skips explicit follow focus); every other drift still refuses,
+/// geometry, and follow focuses the verified mover exactly like the
+/// same-output route); every other drift still refuses,
 /// and a non-deferred plan still verifies arrival. Pure wrapper over
 /// [`crate::workspace_owner::output_send_fences_hold`]: the caller passes
 /// the pinned snapshot, the fresh live readings, and the pinned mover
@@ -17890,20 +17890,8 @@ fn run_output_send(
         return "unverified";
     }
     if follow {
-        if crate::workspace_owner::send_focus_suppressed(snap_overlay.1) {
-            // Stable-fullscreen D16 carry suppresses explicit focus
-            // actuation (same-output parity): the target current view
-            // already shows the mover, so only the project MRU advances
-            // with no setter and no success claim beyond the transfer.
-            state.workspaces.note_foreground(member_key);
-            log_send(
-                "send-applied",
-                serde_json::json!({"window": from.0, "focus": "suppressed", "cross_output": true}),
-            );
-            return "send-applied";
-        }
-        // Follow focuses the verified mover once: the arrival is already in
-        // the destination current view, so only foreground the mover.
+        // Follow focuses the verified mover once, fullscreen like ordinary;
+        // arrival is already in the destination current view.
         let actuation = actuate_focus(state, me, &fresh_fulls, observed, retained, &from.0);
         if actuation.outcome != "focus-ok" {
             log_send(
@@ -18001,8 +17989,8 @@ fn run_output_send(
 /// converges around it). Floating sides keep every frame untouched. Any
 /// drift or refused verification reports with no publish and no focus; the
 /// retained authorities stand and the next observation converges. Follow
-/// foregrounds the moved window once (suppressed for a stable-fullscreen
-/// D16 carry, like the Engine path); stay focuses the source MRU (null
+/// foregrounds the verified moved window once, fullscreen like ordinary;
+/// stay focuses the source MRU (null
 /// takes no setter) while the target current view keeps the mover visible.
 /// Partial progress never replays.
 #[allow(clippy::too_many_arguments)]
@@ -18378,18 +18366,7 @@ fn run_output_send_native(
     state.workspaces = candidate_ws;
     state.engine = candidate;
     if follow {
-        if crate::workspace_owner::send_focus_suppressed(snapshot.overlay_fullscreen) {
-            // Stable-fullscreen D16 carry suppresses explicit focus
-            // actuation (Engine-path parity): the target current view
-            // already shows the mover, so only the project MRU advances
-            // with no setter and no success claim beyond the transfer.
-            state.workspaces.note_foreground(member_key);
-            log_send(
-                "send-applied",
-                serde_json::json!({"window": from_token, "focus": "suppressed", "cross_output": true}),
-            );
-            return "send-applied";
-        }
+        // Follow focuses the verified mover, fullscreen like ordinary.
         let actuation = actuate_focus(state, me, &final_fulls, observed, retained, from_token);
         if actuation.outcome != "focus-ok" {
             log_send(
@@ -21931,10 +21908,6 @@ fn workspace_do_select(
     // fullscreen or elevated arrival is never stolen from, and identity,
     // lifetime, scope, and observation gates inside `actuate_focus` still
     // apply. Skipping focus there lets geometry veto honestly.
-    // Item 9 fullscreen-carry transitions suppress ALL explicit focus
-    // actuation here (never `SetForegroundWindow` on a fullscreen mover):
-    // the select still reveals/reconciles the target, and a fresh foreground
-    // readback reports observed focus honestly below.
     let mut focus_outcome: &'static str = "no-focus";
     let mut focus_window: Option<String> = None;
     // Focus duration covers the bounded pumped settle when it runs, so a
@@ -23414,11 +23387,7 @@ fn workspace_send_follow(
             target_workspace: target_token.to_owned(),
         };
     }
-    // Item 9 follow-focus policy: a fullscreen snapshot suppresses ALL
-    // explicit focus actuation for this transition (select still reveals the
-    // target; observed focus reports honestly, suppressed reports success).
-    let suppress_focus =
-        crate::workspace_owner::send_focus_suppressed(preflight.fences.overlay_fullscreen);
+    // Follow focuses the verified mover, fullscreen like ordinary.
     let select = workspace_do_select(
         state,
         me,
@@ -23431,7 +23400,7 @@ fn workspace_send_follow(
         target_id,
         ctx,
         Some(mover_key),
-        suppress_focus,
+        false,
         deferred,
     );
     if select.outcome != "ok" {
@@ -23453,12 +23422,9 @@ fn workspace_send_follow(
             target_workspace: select.target_workspace.clone(),
         };
     }
-    // Item 9: a suppressed fullscreen follow reports success honestly when no
-    // explicit focus was required (`focus-suppressed`); observed focus still
-    // reports `focus-ok`. Ordinary/maximized follows keep the verified-only
-    // mapping below.
-    let suppressed_ok = suppress_focus && select.focus == "focus-suppressed";
-    let outcome: &'static str = if select.focus == "focus-ok" || suppressed_ok {
+    // Verified-only mapping, fullscreen like ordinary: the select already
+    // revealed the arrival, so only `focus-ok` reports success.
+    let outcome: &'static str = if select.focus == "focus-ok" {
         "ok"
     } else {
         "focus-unverified"
@@ -58322,6 +58288,65 @@ mod output_send_adapter_tests {
     }
 
     #[test]
+    fn fullscreen_stay_takes_no_mover_setter() {
+        use super::inject_pending_overlay_seq;
+        // STAY never focuses the mover: a D16-admitted fullscreen float
+        // transfers membership-only with no geometry, and the sole mover
+        // empties the source, so the null source takes no setter at all.
+        let mut rig = rig(false, Direction::Right, &["mover"], &[], true);
+        stage_float_exception(&mut rig);
+        rig.state
+            .overlay_now
+            .insert("mover".to_owned(), (false, true));
+        {
+            let mut hint_cx = HintCx::new();
+            let corr = CorrelationId::parse("reassemble-full-stay").expect("c");
+            let rows = super::assemble_domain_rows(
+                &mut rig.state,
+                "primary",
+                &rig.home.workspace.clone(),
+                &rig.observed.clone(),
+                &[],
+                "reassemble-full-stay",
+                corr.as_str(),
+                &mut hint_cx,
+            )
+            .expect("complete source rows");
+            assert!(
+                rows.iter().any(|r| r.token == "mover" && r.floating),
+                "re-assembled mover row rides floating"
+            );
+            rig.source_rows = rows;
+        }
+        let correlation = CorrelationId::parse("corr-send-d16-full-stay").expect("correlation");
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![
+            (false, Some(true)),
+            (false, Some(true)),
+            (false, Some(true)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_send(&mut rig, &correlation, 60);
+        assert_eq!(outcome, "send-applied");
+        let loc = rig.state.workspaces.member_loc(&rig.mover).expect("homed");
+        assert_eq!(
+            loc.output, "right",
+            "deferred fullscreen stay still moves membership"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "null-source stay takes no focus setter, mover untouched"
+        );
+        assert!(
+            rig.state.snap_advance.is_none(),
+            "stay never advances focus state toward the mover"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
     fn floating_target_boundary_is_membership_only() {
         let mut rig = rig(true, Direction::Right, &["mover", "s1"], &[], false);
         let correlation = CorrelationId::parse("corr-send-float-target").expect("correlation");
@@ -58415,12 +58440,12 @@ mod output_send_adapter_tests {
     }
 
     #[test]
-    fn native_stable_fullscreen_defers_with_suppressed_focus() {
+    fn native_stable_fullscreen_carry_focuses_mover() {
         use super::inject_pending_overlay_seq;
-        // N2 parity: a D16-admitted fullscreen float on a floating boundary
-        // lifts the fullscreen refusal through the deferred carry-through
-        // and transfers membership-only; follow focus stays suppressed with
-        // no setter, exactly like the Engine path.
+        // A D16-admitted fullscreen float on a floating boundary lifts the
+        // fullscreen refusal through the deferred carry-through and transfers
+        // membership-only; follow focuses the verified mover exactly like an
+        // ordinary follow.
         let mut rig = rig(true, Direction::Right, &["mover", "s1"], &[], false);
         stage_float_exception(&mut rig);
         rig.state
@@ -58467,8 +58492,18 @@ mod output_send_adapter_tests {
         );
         assert_eq!(
             pending_counters().focus,
-            0,
-            "stable-fullscreen carry suppresses explicit follow focus"
+            1,
+            "stable-fullscreen follow focuses the verified mover once"
+        );
+        // Setter identity and order: `send-applied` is only reachable past
+        // the arrival gates, and the single actuation targeted the mover.
+        assert_eq!(
+            rig.state
+                .snap_advance
+                .as_ref()
+                .map(|origin| (origin.token.clone(), origin.hwnd)),
+            Some(("mover".to_owned(), rig.mover.hwnd)),
+            "follow focus advances the snap origin to the verified mover"
         );
         assert_eq!(
             rig.state.workspaces.focus_target(
@@ -58477,7 +58512,7 @@ mod output_send_adapter_tests {
                 &[rig.mover.clone()].into_iter().collect::<BTreeSet<_>>()
             ),
             Some(rig.mover.clone()),
-            "suppressed follow still advances the project MRU"
+            "follow advances the project MRU to the mover"
         );
         assert_ne!(
             format!("{:?}", rig.state.engine),
@@ -58798,13 +58833,13 @@ mod output_send_adapter_tests {
     }
 
     #[test]
-    fn admitted_float_fullscreen_combo_sends_deferred_with_suppressed_focus() {
+    fn admitted_float_fullscreen_combo_sends_deferred_with_mover_focus() {
         use super::inject_pending_overlay_seq;
         // D16 fullscreen-combo happy path: an observed float mover carrying
         // the exact live overlay snapshot (not maximized, fullscreen) lifts
         // the fullscreen refusal through the deferred carry-through and
-        // transfers membership-only with no geometry; follow focus stays
-        // suppressed (same-output parity) with no setter.
+        // transfers membership-only with no geometry; follow focuses the
+        // verified mover once, exactly like an ordinary follow.
         let mut rig = rig(true, Direction::Right, &["mover"], &[], true);
         stage_float_exception(&mut rig);
         rig.state
@@ -58850,8 +58885,18 @@ mod output_send_adapter_tests {
         );
         assert_eq!(
             pending_counters().focus,
-            0,
-            "stable-fullscreen carry suppresses explicit follow focus"
+            1,
+            "stable-fullscreen follow focuses the verified mover once"
+        );
+        // Setter identity and order: `send-applied` is only reachable past
+        // the arrival gates, and the single actuation targeted the mover.
+        assert_eq!(
+            rig.state
+                .snap_advance
+                .as_ref()
+                .map(|origin| (origin.token.clone(), origin.hwnd)),
+            Some(("mover".to_owned(), rig.mover.hwnd)),
+            "follow focus advances the snap origin to the verified mover"
         );
         assert_ne!(
             format!("{:?}", rig.state.engine),
