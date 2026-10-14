@@ -3348,8 +3348,9 @@ decisions of 2026-09-24 are under
   pending later user review, removes restored-fullscreen wire omission and
   keeps adapter/core parity; desired slot retention remains TBD
   ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators)).
-  Native fact readers, hint-source availability, classification TBDs and
-  hosted CI remain pending. Next:
+  Cross-platform CI is green, including Linux workspace/native-effect gates.
+  Native fact readers, hint-source availability and classification TBDs remain
+  pending. Next:
   prove original → owned target → original agreement, then Ctrl-chord
   delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
   and enabled Mission Control collisions; native Space move/switch/create
