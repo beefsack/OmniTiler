@@ -52,10 +52,15 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   all builds. The observation `TileLoop` impl remains intact in the parent.
   Required gates pass: 2,106 / 0 / 1.
 
+- Fullscreen/admission: parent 29,158 -> 27,706 lines; children 645 / 848
+  lines. Fullscreen bodies compare exactly after removing visibility/imports;
+  admission also has four necessary formatted signatures. Required gates pass:
+  2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 19-30, starting with fullscreen/admission; retain the
-whole observation `TileLoop` impl for later extraction.
+Production map orders 20-30, starting with rows/reconcile/geometry/focus-actuation;
+retain the whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
 
@@ -66,3 +71,4 @@ whole observation `TileLoop` impl for later extraction.
 | `40540a0` | Hints/seams/placement/minmax | 33,818 | 138 / 495 / 177 / 314 |
 | `9fb3247` | Trace/owner-work/preview/input | 33,138 | 93 / 250 / 139 / 248 |
 | `5f3c764` | Render/retained | 31,690 | 469 / 966 / 41 |
+| `d8bd237` | Focus/underlay/probes | 29,158 | 609 / 705 / 1,002 / 251 |
