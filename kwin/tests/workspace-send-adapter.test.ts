@@ -1036,3 +1036,31 @@ describe("cosmic send-to-workspace settlement domains", () => {
         assertRedacted(mocks);
     });
 });
+
+describe("send route labeling (workspace evidence stays send-to-workspace)", () => {
+    it("labels the workspace lifecycle dispatch/plan/release as send-to-workspace", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        const adapter = new WorkspaceSendAdapter(mocks.env);
+        assert.equal(adapter.enable({ owner: "owner-1", generation: "gen-1" }), true);
+        const correlation = dispatch(mocks, adapter);
+        mocks.callbacks[1]?.(plannedReply(correlation));
+        assert.equal(adapter.isInFlight, false);
+        const routed = mocks.logs.filter(
+            (line) => line.includes("route=") && line.includes(`correlation=${correlation}`),
+        );
+        assert.ok(routed.length > 0, mocks.logs.join("\n"));
+        for (const line of routed) {
+            assert.ok(line.includes("route=send-to-workspace"), line);
+            assert.ok(!line.includes("route=send-to-output"), line);
+        }
+        assert.ok(
+            routed.some((line) => line.includes("event=dispatch") && line.includes("route=send-to-workspace")),
+            mocks.logs.join("\n"),
+        );
+        assert.ok(
+            routed.some((line) => line.includes("stage=release") && line.includes("route=send-to-workspace")),
+            mocks.logs.join("\n"),
+        );
+    });
+});

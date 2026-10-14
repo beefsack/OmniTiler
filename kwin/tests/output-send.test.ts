@@ -1668,3 +1668,210 @@ describe("output-send entry route", () => {
         handle?.stop();
     });
 });
+
+describe("send route labeling (output vs workspace evidence)", () => {
+    it("labels the output lifecycle dispatch/plan/arrival/follow/release as send-to-output", () => {
+        const world = makeAdapterWorld();
+        const mocks = mockAdapter(world);
+        const adapter = enableAdapter(mocks);
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), true);
+        const body = sendPayload(mocks, 0);
+        assert.equal((body["command"] as Record<string, unknown>)["op"], "send-to-output");
+        const correlation = body["correlation_id"] as string;
+        mocks.callbacks[0]?.(
+            plannedOutputReply(correlation, {
+                follow: true,
+                focusLeaf: "leaf-win-2",
+                focusOutput: "out-2",
+                focusWorkspace: "ws-b",
+            }),
+        );
+        assert.equal(adapter.isInFlight, false);
+        const routed = mocks.logs.filter(
+            (line) => line.includes("component=cosmic-send") && line.includes("route=") && line.includes(`correlation=${correlation}`),
+        );
+        assert.ok(routed.length > 0, mocks.logs.join("\n"));
+        for (const line of routed) {
+            assert.ok(line.includes("route=send-to-output"), line);
+            assert.ok(!line.includes("route=send-to-workspace"), line);
+        }
+        assert.ok(
+            routed.some((line) => line.includes("event=dispatch") && line.includes("route=send-to-output")),
+            mocks.logs.join("\n"),
+        );
+        assert.ok(
+            routed.some((line) => line.includes("event=plan") && line.includes("route=send-to-output")),
+            mocks.logs.join("\n"),
+        );
+        assert.ok(
+            routed.some((line) => line.includes("event=arrival") && line.includes("route=send-to-output")),
+            mocks.logs.join("\n"),
+        );
+        assert.ok(
+            routed.some((line) => line.includes("stage=follow") && line.includes("event=follow")),
+            mocks.logs.join("\n"),
+        );
+        assert.ok(
+            routed.some((line) => line.includes("stage=release") && line.includes("route=send-to-output")),
+            mocks.logs.join("\n"),
+        );
+    });
+
+    it("labels output preflight refusal as send-to-output", () => {
+        const world = makeAdapterWorld();
+        const mocks = mockAdapter(world);
+        const adapter = enableAdapter(mocks);
+        assert.equal(adapter.requestSendToOutput("out-1", "ws-a", true), false);
+        const refusal = mocks.logs.find(
+            (line) => line.includes("event=refuse") && line.includes("outcome=same-output"),
+        );
+        assert.ok(refusal !== undefined, mocks.logs.join("\n"));
+        assert.ok(refusal.includes("route=send-to-output"), refusal);
+    });
+
+    it("retains send-to-output on the late reply after release", () => {
+        const world = makeAdapterWorld();
+        const mocks = mockAdapter(world);
+        const adapter = enableAdapter(mocks);
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), true);
+        const body = sendPayload(mocks, 0);
+        const correlation = body["correlation_id"] as string;
+        adapter.disable();
+        assert.equal(adapter.isInFlight, false);
+        const release = mocks.logs.find((line) => line.includes("stage=release"));
+        assert.ok(release !== undefined, mocks.logs.join("\n"));
+        assert.ok(release.includes("route=send-to-output"), release);
+        mocks.callbacks[0]?.(
+            plannedOutputReply(correlation, {
+                follow: true,
+                focusLeaf: "leaf-win-2",
+                focusOutput: "out-2",
+                focusWorkspace: "ws-b",
+            }),
+        );
+        const late = mocks.logs.find((line) => line.includes("event=late-reply"));
+        assert.ok(late !== undefined, mocks.logs.join("\n"));
+        assert.ok(late.includes("route=send-to-output"), late);
+        assert.ok(late.includes(`correlation=${correlation}`), late);
+    });
+
+    it("keeps the released output route on its late reply after a workspace flight dispatches", () => {
+        const world = makeAdapterWorld();
+        const mocks = mockAdapter(world);
+        const win1 = world.wins.find((win) => win.id === "win-1") as FakeWin;
+        const win2 = world.wins.find((win) => win.id === "win-2") as FakeWin;
+        const dualEnv = {
+            ...mocks.env,
+            observe: (): WorkspaceSendObserved | null => ({
+                sourceOutput: "out-1",
+                sourceWorkspace: "ws-a",
+                sourceBounds: { x: 0, y: 0, w: 800, h: 600 },
+                targetOutput: "out-1",
+                targetWorkspace: "ws-c",
+                targetBounds: { x: 0, y: 0, w: 800, h: 600 },
+                focusedId: "win-2",
+                sourceWindows: Object.freeze([toObservedWindow(win1), toObservedWindow(win2)]),
+                targetWindows: Object.freeze([]),
+                activeRef: win2.ref,
+                moverRef: win2.ref,
+                targetDesktopRef: {},
+                targetExists: true,
+                desktopCount: 3,
+                sourceFingerprint: "src-ws",
+                targetFingerprint: "tgt-ws",
+                currentWorkspace: "ws-a",
+            }),
+        };
+        const adapter = new WorkspaceSendAdapter(dualEnv);
+        assert.equal(adapter.enable({ owner: "owner-1", generation: "gen-1" }), true);
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), true);
+        const outBody = sendPayload(mocks, 0);
+        assert.equal((outBody["command"] as Record<string, unknown>)["op"], "send-to-output");
+        const outCorrelation = outBody["correlation_id"] as string;
+        const outCallback = mocks.callbacks[0] as (reply: unknown) => void;
+        outCallback(JSON.stringify({ v: 1, correlation_id: outCorrelation, outcome: "rejected", kind: "stale-revision" }));
+        assert.equal(adapter.isInFlight, false);
+        assert.equal(mocks.settled.length, 1);
+        assert.equal(adapter.requestSend("ws-c"), true);
+        const wsBody = sendPayload(mocks, 1);
+        assert.equal((wsBody["command"] as Record<string, unknown>)["op"], "send-to-workspace");
+        const wsCorrelation = wsBody["correlation_id"] as string;
+        assert.ok(
+            mocks.logs.some(
+                (line) =>
+                    line.includes("event=dispatch") &&
+                    line.includes(`correlation=${wsCorrelation}`) &&
+                    line.includes("route=send-to-workspace"),
+            ),
+            mocks.logs.join("\n"),
+        );
+        outCallback(JSON.stringify({ v: 1, correlation_id: outCorrelation, outcome: "rejected", kind: "stale-revision" }));
+        const late = mocks.logs.find(
+            (line) => line.includes("event=late-reply") && line.includes(`correlation=${outCorrelation}`),
+        );
+        assert.ok(late !== undefined, mocks.logs.join("\n"));
+        assert.ok(late.includes("route=send-to-output"), late);
+        assert.equal(adapter.isInFlight, true);
+        assert.equal(mocks.settled.length, 1);
+    });
+
+    it("keeps the released workspace route on its late reply after an output flight dispatches", () => {
+        const world = makeAdapterWorld();
+        const mocks = mockAdapter(world);
+        const win1 = world.wins.find((win) => win.id === "win-1") as FakeWin;
+        const win2 = world.wins.find((win) => win.id === "win-2") as FakeWin;
+        const dualEnv = {
+            ...mocks.env,
+            observe: (): WorkspaceSendObserved | null => ({
+                sourceOutput: "out-1",
+                sourceWorkspace: "ws-a",
+                sourceBounds: { x: 0, y: 0, w: 800, h: 600 },
+                targetOutput: "out-1",
+                targetWorkspace: "ws-c",
+                targetBounds: { x: 0, y: 0, w: 800, h: 600 },
+                focusedId: "win-2",
+                sourceWindows: Object.freeze([toObservedWindow(win1), toObservedWindow(win2)]),
+                targetWindows: Object.freeze([]),
+                activeRef: win2.ref,
+                moverRef: win2.ref,
+                targetDesktopRef: {},
+                targetExists: true,
+                desktopCount: 3,
+                sourceFingerprint: "src-ws",
+                targetFingerprint: "tgt-ws",
+                currentWorkspace: "ws-a",
+            }),
+        };
+        const adapter = new WorkspaceSendAdapter(dualEnv);
+        assert.equal(adapter.enable({ owner: "owner-1", generation: "gen-1" }), true);
+        assert.equal(adapter.requestSend("ws-c"), true);
+        const wsBody = sendPayload(mocks, 0);
+        assert.equal((wsBody["command"] as Record<string, unknown>)["op"], "send-to-workspace");
+        const wsCorrelation = wsBody["correlation_id"] as string;
+        const wsCallback = mocks.callbacks[0] as (reply: unknown) => void;
+        wsCallback(JSON.stringify({ v: 1, correlation_id: wsCorrelation, outcome: "rejected", kind: "stale-revision" }));
+        assert.equal(adapter.isInFlight, false);
+        assert.equal(mocks.settled.length, 1);
+        assert.equal(adapter.requestSendToOutput("out-2", "ws-b", true), true);
+        const outBody = sendPayload(mocks, 1);
+        assert.equal((outBody["command"] as Record<string, unknown>)["op"], "send-to-output");
+        const outCorrelation = outBody["correlation_id"] as string;
+        assert.ok(
+            mocks.logs.some(
+                (line) =>
+                    line.includes("event=dispatch") &&
+                    line.includes(`correlation=${outCorrelation}`) &&
+                    line.includes("route=send-to-output"),
+            ),
+            mocks.logs.join("\n"),
+        );
+        wsCallback(JSON.stringify({ v: 1, correlation_id: wsCorrelation, outcome: "rejected", kind: "stale-revision" }));
+        const late = mocks.logs.find(
+            (line) => line.includes("event=late-reply") && line.includes(`correlation=${wsCorrelation}`),
+        );
+        assert.ok(late !== undefined, mocks.logs.join("\n"));
+        assert.ok(late.includes("route=send-to-workspace"), late);
+        assert.equal(adapter.isInFlight, true);
+        assert.equal(mocks.settled.length, 1);
+    });
+});

@@ -1799,7 +1799,14 @@ export class WorkspaceSendAdapter {
             return false;
         }
         if (this.inFlight) {
-            this.diag("request", this.activeCorrelation, this.pending?.baseRevision ?? 0, "refuse", "in-flight");
+            this.diag(
+                "request",
+                this.activeCorrelation,
+                this.pending?.baseRevision ?? 0,
+                "refuse",
+                "in-flight",
+                "send-to-workspace",
+            );
             return false;
         }
         if (!isOpaqueId(targetWorkspace)) {
@@ -1925,39 +1932,46 @@ export class WorkspaceSendAdapter {
         requestedOrdinal?: unknown,
     ): boolean {
         if (!this.enabled) {
-            this.refuse("disabled");
+            this.refuse("disabled", "", "send-to-output");
             return false;
         }
         if (this.inFlight) {
-            this.diag("request", this.activeCorrelation, this.pending?.baseRevision ?? 0, "refuse", "in-flight");
+            this.diag(
+                "request",
+                this.activeCorrelation,
+                this.pending?.baseRevision ?? 0,
+                "refuse",
+                "in-flight",
+                "send-to-output",
+            );
             return false;
         }
         if (!isOpaqueId(targetOutput) || !isOpaqueId(targetWorkspace)) {
-            this.refuse("target-invalid");
+            this.refuse("target-invalid", "", "send-to-output");
             return false;
         }
         if (!outputTransferSupported(this.env)) {
-            this.refuse("transfer-unavailable");
+            this.refuse("transfer-unavailable", "", "send-to-output");
             return false;
         }
         if (this.seq < 0 || this.seq > WORKSPACE_SEND_MAX_SEQ) {
             const nextEpoch = this.seqEpoch + 1;
             if (!Number.isSafeInteger(nextEpoch)) {
-                this.refuse("sequence-invalid");
+                this.refuse("sequence-invalid", "", "send-to-output");
                 return false;
             }
             const candidate = `${this.generation}-w${String(nextEpoch)}r0`;
             if (!isCorrelationId(candidate)) {
-                this.refuse("sequence-invalid");
+                this.refuse("sequence-invalid", "", "send-to-output");
                 return false;
             }
             this.seqEpoch = nextEpoch;
             this.seq = 0;
-            this.diag("request", candidate, 0, "sequence-exhausted", "correlation-rotated");
+            this.diag("request", candidate, 0, "sequence-exhausted", "correlation-rotated", "send-to-output");
         }
         const observed = this.freshOutputObserved(targetOutput, targetWorkspace);
         if (observed === null) {
-            this.refuse("scope-invalid");
+            this.refuse("scope-invalid", "", "send-to-output");
             return false;
         }
         // Distinct outputs may share one current workspace/desktop (a single
@@ -1965,34 +1979,34 @@ export class WorkspaceSendAdapter {
         // the desktop cap, target existence, and the same-output refusal.
         // Same-output workspace send keeps its own last-desktop gate.
         if (!observed.targetExists) {
-            this.refuse("target-workspace-missing");
+            this.refuse("target-workspace-missing", "", "send-to-output");
             return false;
         }
         // The output-send target must live on a different output with the
         // entry-resolved current workspace; same-output targets belong to
         // workspace send and a drifted workspace is stale scope.
         if (observed.targetOutput !== (targetOutput as string)) {
-            this.refuse("target-mismatch");
+            this.refuse("target-mismatch", "", "send-to-output");
             return false;
         }
         if (observed.targetOutput === observed.sourceOutput) {
-            this.refuse("same-output");
+            this.refuse("same-output", "", "send-to-output");
             return false;
         }
         if (observed.targetWorkspace !== (targetWorkspace as string)) {
-            this.refuse("target-mismatch");
+            this.refuse("target-mismatch", "", "send-to-output");
             return false;
         }
         if (observed.activeRef === null) {
-            this.refuse("absent-focus");
+            this.refuse("absent-focus", "", "send-to-output");
             return false;
         }
         if (observed.focusedId === "" || !observed.sourceWindows.some((w) => w.id === observed.focusedId)) {
-            this.refuse("non-tiled-focus");
+            this.refuse("non-tiled-focus", "", "send-to-output");
             return false;
         }
         if (observed.desktopCount > WORKSPACE_SEND_MAX_DESKTOPS) {
-            this.refuse("desktop-cap");
+            this.refuse("desktop-cap", "", "send-to-output");
             return false;
         }
         const correlation =
@@ -2001,7 +2015,7 @@ export class WorkspaceSendAdapter {
                 : `${this.generation}-w${String(this.seqEpoch)}r${String(this.seq)}`;
         this.seq += 1;
         if (!isCorrelationId(correlation)) {
-            this.refuse("correlation-invalid");
+            this.refuse("correlation-invalid", "", "send-to-output");
             return false;
         }
         const snapshot = snapshotOf(observed);
@@ -2017,11 +2031,11 @@ export class WorkspaceSendAdapter {
             "send-to-output",
         );
         if (payload === null) {
-            this.refuse("payload-invalid", correlation);
+            this.refuse("payload-invalid", correlation, "send-to-output");
             return false;
         }
         if (payload.length > WORKSPACE_SEND_MAX_REQUEST_BYTES) {
-            this.refuse("request-over-cap", correlation);
+            this.refuse("request-over-cap", correlation, "send-to-output");
             return false;
         }
         this.startFlight(
@@ -2273,7 +2287,7 @@ export class WorkspaceSendAdapter {
             this.pending = null;
             this.activationStep = 0;
             this.requestDeadline = 0;
-            this.refuse("timeout");
+            this.refuse("timeout", "", crossOutput ? "send-to-output" : "send-to-workspace");
             return;
         }
         this.requestTimer = requestCancel;
@@ -2296,7 +2310,7 @@ export class WorkspaceSendAdapter {
             this.activationStep = 0;
             this.requestDeadline = 0;
             this.arrivalDeadline = 0;
-            this.refuse("timeout");
+            this.refuse("timeout", "", crossOutput ? "send-to-output" : "send-to-workspace");
             return;
         }
         this.arrivalTimer = arrivalCancel;
@@ -2441,6 +2455,17 @@ export class WorkspaceSendAdapter {
             this.settleTerminal(flight, correlation, "no-planner", "release");
             return;
         }
+        // Flight-bound late-reply labeling: the planner callback retains this
+        // request's route/component so a reply arriving after a newer flight
+        // of the other kind dispatched still logs the released operation.
+        const isSendRequest = pending !== null && pending.correlation === correlation;
+        const replyRoute =
+            isSendRequest
+                ? pending.crossOutput
+                    ? "send-to-output"
+                    : "send-to-workspace"
+                : "migrate-workspace";
+        const replyComponent = isSendRequest ? WORKSPACE_SEND_COMPONENT : WORKSPACE_MIGRATE_COMPONENT;
         try {
             this.env.callDbus(
                 this.pinnedOwner,
@@ -2448,7 +2473,7 @@ export class WorkspaceSendAdapter {
                 WORKSPACE_SEND_INTERFACE,
                 WORKSPACE_SEND_METHOD,
                 payload,
-                (reply) => this.onRequestReply(reply, flight, correlation),
+                (reply) => this.onRequestReply(reply, flight, correlation, replyRoute, replyComponent),
             );
         } catch (error) {
             void error;
@@ -2456,11 +2481,18 @@ export class WorkspaceSendAdapter {
         }
     }
 
-    private onRequestReply(reply: unknown, flight: number, correlation: string): void {
+    private onRequestReply(
+        reply: unknown,
+        flight: number,
+        correlation: string,
+        replyRoute: "send-to-workspace" | "send-to-output" | "migrate-workspace",
+        replyComponent: string,
+    ): void {
         // A late reply after the request deadline released the flight is
-        // ignored by token and never actuates. One bounded redacted line.
+        // ignored by token and never actuates. One bounded redacted line
+        // carrying the released flight's own route (bound at request time).
         if (!this.inFlight || flight !== this.activeToken) {
-            this.logLateReply(reply);
+            this.logLateReply(reply, replyRoute, replyComponent);
             return;
         }
         const pending = this.pending;
@@ -4120,7 +4152,8 @@ export class WorkspaceSendAdapter {
         }
         const pending = this.pending;
         const migrating = this.migrate;
-        const route = migrating !== null ? "migrate-workspace" : "send-to-workspace";
+        const sendRoute = pending?.crossOutput === true ? "send-to-output" : "send-to-workspace";
+        const route = migrating !== null ? "migrate-workspace" : sendRoute;
         const revision = migrating?.baseRevision ?? pending?.baseRevision ?? 0;
         const settledCorrelation = migrating?.correlation ?? pending?.correlation ?? correlation;
         const snapshot = migrating?.snapshot ?? pending?.snapshot ?? null;
@@ -4208,8 +4241,13 @@ export class WorkspaceSendAdapter {
 
     // Bounded redacted late-reply line: a reply arriving after the flight
     // released is ignored and never actuates. The correlation echoes only
-    // when it passes the opaque-id shape; anything else stays empty.
-    private logLateReply(reply: unknown): void {
+    // when it passes the opaque-id shape; anything else stays empty. The
+    // route/component are the released flight's own, bound at request time.
+    private logLateReply(
+        reply: unknown,
+        route: "send-to-workspace" | "send-to-output" | "migrate-workspace",
+        component: string,
+    ): void {
         try {
             let correlation = "";
             if (typeof reply === "string" && reply.length <= WORKSPACE_SEND_MAX_REPLY_BYTES) {
@@ -4223,7 +4261,7 @@ export class WorkspaceSendAdapter {
                 }
             }
             this.env.log(
-                `${LOG_PREFIX} component=${WORKSPACE_SEND_COMPONENT} route=send-to-workspace stage=request correlation=${correlation} generation=${this.generation} revision=0 diag_seq=${String(this.nextDiagSeq())} event=late-reply outcome=ignored`,
+                `${LOG_PREFIX} component=${component} route=${route} stage=request correlation=${correlation} generation=${this.generation} revision=0 diag_seq=${String(this.nextDiagSeq())} event=late-reply outcome=ignored`,
             );
         } catch (error) {
             void error;
@@ -4234,8 +4272,12 @@ export class WorkspaceSendAdapter {
     // diagnostic with an exact bounded token. Pre-flight refusals stay
     // enabled with no flight, timer, D-Bus, native, or follow so a
     // subsequent valid send can proceed.
-    private refuse(outcome: string, correlation = ""): void {
-        this.diag("request", correlation, 0, "refuse", outcome);
+    private refuse(
+        outcome: string,
+        correlation = "",
+        route: "send-to-workspace" | "send-to-output" = "send-to-workspace",
+    ): void {
+        this.diag("request", correlation, 0, "refuse", outcome, route);
     }
 
     private diag(
@@ -4244,8 +4286,16 @@ export class WorkspaceSendAdapter {
         revision: number,
         event: string,
         outcome: string,
+        route?: "send-to-workspace" | "send-to-output",
     ): void {
         try {
+            const resolvedRoute =
+                route ??
+                (this.pending !== null && this.pending.correlation === correlation
+                    ? this.pending.crossOutput
+                        ? "send-to-output"
+                        : "send-to-workspace"
+                    : "send-to-workspace");
             const followGate =
                 event === "refuse"
                     ? ` follow=not-reached gate=pre-commit phase=request reason=${outcome}`
@@ -4253,7 +4303,7 @@ export class WorkspaceSendAdapter {
                       ? " follow=not-reached gate=pre-commit phase=activation reason=no-planner"
                       : "";
             this.env.log(
-                `${LOG_PREFIX} component=${WORKSPACE_SEND_COMPONENT} route=send-to-workspace stage=${stage} correlation=${correlation} generation=${this.generation} revision=${String(revision)} diag_seq=${String(this.nextDiagSeq())} event=${event} outcome=${outcome}${followGate}`,
+                `${LOG_PREFIX} component=${WORKSPACE_SEND_COMPONENT} route=${resolvedRoute} stage=${stage} correlation=${correlation} generation=${this.generation} revision=${String(revision)} diag_seq=${String(this.nextDiagSeq())} event=${event} outcome=${outcome}${followGate}`,
             );
         } catch (error) {
             void error;
