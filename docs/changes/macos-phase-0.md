@@ -528,3 +528,12 @@ shortcut labels read-only; then follow the survey's physical temporary-Space
 setup and independent restore proof before any gated API experiment. The
 full-agreement input fixture remains a separate outstanding leg; protected
 terminal windows are never an agent restore target.
+
+CI follow-up identified a pre-existing non-macOS strict-clippy failure in the
+eight-argument helper stub (introduced with the regular-policy fixture): the
+macOS implementation had the scoped lint allowance but its stub did not.
+The stub now mirrors it without changing the signature or behavior. Prior
+Linux/Windows build and test steps passed; current cross-platform gates need
+the corrected revision. A separate native-effect packaging failure omits the
+macOS workspace member from its Nix source subset; it is not a Space-probe
+runtime result.

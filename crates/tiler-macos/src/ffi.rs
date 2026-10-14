@@ -2783,6 +2783,8 @@ mod stub {
         Err(TapSetupError::Denied("macOS-only".to_owned()))
     }
 
+    // Keep the unsupported stub signature and lint policy in parity with macOS.
+    #[allow(clippy::too_many_arguments)]
     pub fn run_owned_probe_window(
         _seconds: u64,
         _hung_ms: u64,
