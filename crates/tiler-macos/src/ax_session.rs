@@ -25,7 +25,10 @@
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
-use crate::ax::{AxError, FrameChangeReport, FrameTxFailure, FrameTxOps, RaiseReport};
+#[cfg(target_os = "macos")]
+use crate::ax::FrameTxOps;
+use crate::ax::{AxError, FrameChangeReport, FrameTxFailure, RaiseReport};
+#[cfg(target_os = "macos")]
 use crate::ownership::OwnedIdentity;
 use crate::probe_target::{
     ProbeTargetSpec, UnreadySpawn, await_handshake, mint_nonce, record_spawn, start_helper_process,
@@ -487,6 +490,7 @@ fn prove_focus_restore(helper_seconds: u64) -> Result<FocusProof, String> {
 /// Holder-mode frame ops: one AX window element used on exactly one worker
 /// thread, with holder-grade (Child + CG, title-free) revalidation at every
 /// write boundary.
+#[cfg(target_os = "macos")]
 struct HolderFrameOps<'w> {
     window: &'w crate::ffi::AxElement,
     pid: u32,
@@ -494,6 +498,7 @@ struct HolderFrameOps<'w> {
     helper_exe: String,
 }
 
+#[cfg(target_os = "macos")]
 impl FrameTxOps for HolderFrameOps<'_> {
     fn set_frame(&mut self, frame: &crate::ffi::AxFrame) -> Result<(), i32> {
         crate::ffi::ax_set_frame(self.window, frame)
@@ -676,7 +681,7 @@ fn run_frame_worker(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (wid, exe, nonce, frame);
+        let _ = (pid, wid, exe, nonce, frame);
         (
             Err(AxError::Unsupported(
                 "AX frame set is macOS-only".to_owned(),
@@ -724,7 +729,7 @@ fn run_raise_worker(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (wid, exe, nonce);
+        let _ = (pid, wid, exe, nonce);
         (
             Err(AxError::Unsupported("AX raise is macOS-only".to_owned())),
             latency_ms(start),

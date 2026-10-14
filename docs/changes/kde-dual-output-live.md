@@ -645,7 +645,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 ## Occupied-target R4 insertion correction (2026-10-14)
 
-- Delivered in `62eaa6f`.
+- Delivered in `e94723f`.
 - Reproduced the wrong target tree offline with the reported logical geometry:
   left 2048x1152, right 1920x1080 offset down 72. Rust topology uses logical
   bounds; output scales do not participate in this insertion branch.
@@ -681,6 +681,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 ## Cross-output drag lifecycle correction (2026-10-14)
 
+- Delivered in `2adc1fc`.
 - Log evidence: 3378 `drag-preview-refused reason=absent` lines, 206 settled
   preview lines, 75 busy/backoff pairs, 774 `kind=reconcile` lines and 16 stale
   replans. Reconcile line count is not an applied-plan count. The single
@@ -742,3 +743,15 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 6. Close the test windows and stop development with Ctrl+C; confirm
    `just dev-status` is DOWN. Record each subcase independently; a dispatch diagnostic
    alone does not prove a visible preview or successful placement.
+
+### Final integration verification
+
+- Integrated the macOS owned-AX capability delivery. Its new macOS-only imports
+  and holder frame implementation needed target-OS gates for non-macOS lint;
+  unsupported stubs now explicitly ignore their PID argument. Native macOS code
+  paths are unchanged; no macOS host acceptance is inferred.
+- Final Rust workspace tests pass 1870 cases, formatting and all-target Clippy
+  with warnings denied pass. KDE source is unchanged by integration; its
+  typecheck and 1547/1547-test evidence remains current. Diff whitespace passes.
+- Occupied-target shape selection and physical R4/drag acceptance remain pending;
+  the broader dual-output inventory stays active.
