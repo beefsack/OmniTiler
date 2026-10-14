@@ -5,10 +5,11 @@
 //! Compact structured stderr logs emitted asynchronously through a bounded
 //! non-blocking sink seam. The engine/input/app owners never write to a
 //! sink while holding [`Shared`](crate::runtime)-state locks and never
-//! block on the sink: emission is a single `try_send` after the lock is
-//! released. A slow or broken sink only fills the bounded queue (counted
-//! drops) and can only stall the dedicated logger thread, which lives
-//! under the same global stop deadline as every other owner.
+//! block on the sink: emission is a single non-blocking `try_send` under
+//! the same lock that allocates the correlation sequence, so sink order
+//! matches ring order. A slow or broken sink only fills the bounded queue
+//! (counted drops) and can only stall the dedicated logger thread, which
+//! lives under the same global stop deadline as every other owner.
 //!
 //! Events carry app/generation/reference/command identity plus a monotonic
 //! timestamp and the ring correlation sequence. Kinds and outcomes are

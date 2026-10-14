@@ -99,6 +99,15 @@ none establishes native acceptance.
 - Implementation `7da6d1e` passed [hosted CI](https://github.com/beefsack/OmniTiler/actions/runs/38610743082):
   all eight jobs succeeded (Linux workspace Rust, KWin/typecheck, shell,
   Windows, macOS, native effect/settings, licenses and notices).
+- A subsequent [documentation-head run](https://github.com/beefsack/OmniTiler/actions/runs/38612022741)
+  exposed an existing structured-log ordering race: sequence allocation and
+  ring insertion were locked, but enqueue after unlock could deliver a later
+  sequence first. A concurrent public-observation probe reproduced eight
+  inversions before correction and passed three times afterward. Sequence/ring
+  insertion and bounded `try_send` now share the existing lock; sink I/O remains
+  logger-only, with unchanged bounded/drop semantics. The existing monotonic
+  sink assertion is preserved; all 231 macOS tests, strict clippy and fmt pass
+  after the correction. Corrective publication CI is attached to its commit.
 - Offline implementation and cross-platform verification are complete.
   Native AX acquisition, real Spaces routing and live capability acceptance
   remain later Phase 1 work. Classification decisions remain tentative as

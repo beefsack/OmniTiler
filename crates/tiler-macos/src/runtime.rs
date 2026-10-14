@@ -174,10 +174,13 @@ pub(crate) fn lock_focus(
 }
 
 impl Shared {
-    /// Push one ring entry and build its async sink copy. Returns the event
-    /// plus the sender to use AFTER the lock is released: callers must
-    /// `try_send` outside the lock so a slow/broken sink never stalls an
-    /// owner holding shared state. See [`emit`].
+    /// Push one ring entry and forward its copy to the bounded async sink
+    /// under the SAME lock. Sequence allocation, ring order, and channel
+    /// enqueue order are therefore identical, so the sink observes the same
+    /// monotonic correlation sequence as the ring. The enqueue is a single
+    /// `try_send` does not wait for queue space or sink I/O: a full or gone
+    /// queue drops the async copy counted. Only the dedicated logger thread
+    /// calls the sink's `write`. The ring entry is always kept. See [`emit`].
     pub(crate) fn log(
         &mut self,
         pid: u32,
@@ -186,7 +189,7 @@ impl Shared {
         kind: &'static str,
         outcome: &'static str,
         count: u64,
-    ) -> (LogEvent, Option<std::sync::mpsc::SyncSender<LogEvent>>) {
+    ) {
         self.log_counter += 1;
         if self.log.len() >= LOG_CAP {
             self.log.pop_front();
@@ -214,7 +217,11 @@ impl Shared {
             outcome,
             count,
         };
-        (event, self.log_tx.clone())
+        if let Some(tx) = self.log_tx.clone()
+            && tx.try_send(event).is_err()
+        {
+            self.diagnostics.logger_dropped += 1;
+        }
     }
 
     pub(crate) fn count_reply(&mut self, token: &str) {
@@ -235,11 +242,13 @@ impl Shared {
 }
 
 /// Append one ring entry and forward its copy to the bounded async sink
-/// WITHOUT holding the shared lock during the send. The ring write happens
-/// under the lock; the `try_send` happens after it is released, so a slow
-/// or broken sink can never stall an owner holding shared state. A full or
-/// gone queue drops the async copy counted (`logger_dropped`); the ring
-/// entry is always kept.
+/// under the SAME shared lock. Sequence allocation, ring order, and channel
+/// enqueue order are therefore identical, so the sink observes the same
+/// monotonic correlation sequence as the ring. The enqueue is a single
+/// `try_send` (does not wait for queue space: a full or gone queue drops the
+/// async copy counted via `logger_dropped`); the ring entry is always kept.
+/// Only the dedicated logger thread ever blocks, in `write` — never an
+/// engine/input/app owner holding shared state.
 pub(crate) fn emit(
     shared: &Arc<Mutex<Shared>>,
     pid: u32,
@@ -249,11 +258,7 @@ pub(crate) fn emit(
     outcome: &'static str,
     count: u64,
 ) {
-    let (event, tx) = lock_shared(shared).log(pid, generation, ref_id, kind, outcome, count);
-    let Some(tx) = tx else { return };
-    if tx.try_send(event).is_err() {
-        lock_shared(shared).diagnostics.logger_dropped += 1;
-    }
+    lock_shared(shared).log(pid, generation, ref_id, kind, outcome, count);
 }
 
 /// True while the engine owner is alive (spawned and not proven exited).
@@ -646,13 +651,10 @@ fn cleanup_failed_start(
             unclean: guard.diagnostics.worker_unclean_observed as usize,
         };
         guard.terminal = Some(report.clone());
-        let (event, tx) = guard.log(0, 0, 0, "startup", outcome_token, joined as u64);
+        // Best effort under the same lock: the logger may already be gone;
+        // the ring entry is the durable copy either way.
+        guard.log(0, 0, 0, "startup", outcome_token, joined as u64);
         drop(guard);
-        if let Some(tx) = tx
-            && tx.try_send(event).is_err()
-        {
-            lock_shared(shared).diagnostics.logger_dropped += 1;
-        }
         report
     }
 }
@@ -1346,15 +1348,10 @@ impl RuntimeHandle {
                 unclean: guard.diagnostics.worker_unclean_observed as usize,
             };
             guard.terminal = Some(report.clone());
-            let (event, tx) = guard.log(0, 0, 0, "shutdown", outcome_token, joined as u64);
+            // Best effort under the same lock: the logger may already be
+            // gone; the ring entry above is the durable copy.
+            guard.log(0, 0, 0, "shutdown", outcome_token, joined as u64);
             drop(guard);
-            // Best effort: the logger may already be gone; the ring entry
-            // above is the durable copy.
-            if let Some(tx) = tx
-                && tx.try_send(event).is_err()
-            {
-                lock_shared(&self.shared).diagnostics.logger_dropped += 1;
-            }
             emit(&self.shared, 0, 0, 0, "shutdown", "reported", 0);
             report
         }
