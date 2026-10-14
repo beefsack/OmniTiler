@@ -64,8 +64,12 @@
   Follow-up review accepted both fixes; no unresolved serious findings.
 - Final native MSVC locked gates passed for `tiler-core`, `tiler-protocol`,
   `tiler-kwin-effect-ffi`, `tiler-windows`: build, tests, strict all-target clippy,
-  workspace format and diff checks. Tests: 2,072 passed / 0 failed / 1 ignored
-  across 55 result suites, including doc tests; 48 more passed than stage A.
+  workspace format and diff checks. Tests before upstream integration: 2,072
+  passed / 0 failed / 1 ignored across 55 result suites, including doc tests;
+  48 more passed than stage A. Rebased integration `bba6317` repeated every
+  gate successfully: 2,078 passed / 0 failed / 1 ignored across 55 suites.
+  Six additional tests came from upstream core/protocol drag-preview diagnostics;
+  relocation, session pinning and shared-placeholder contracts are unchanged.
   Windows library: 791 passed / 1 ignored. Linux/macOS native and physical
   multi-output checks are not established by these gates.
 
