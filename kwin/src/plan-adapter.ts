@@ -2439,6 +2439,7 @@ export class PlanAdapter {
     // `hover_prior` plus the one live reply fence (sequence, scope,
     // owner/generation, callback). Entry-driven clearing; terminals consume.
     private dragPreviewSeq = 0;
+    private lastPreviewRefuseKey: string | null = null;
     private dragPreview = new Map<
         string,
         {
@@ -2545,6 +2546,7 @@ export class PlanAdapter {
         this.clearProbeTimer();
         this.r4WriteDepth = 0;
         this.dragPreview.clear();
+        this.lastPreviewRefuseKey = null;
         this.clearRepeat();
         // Fresh intent session: the entry re-runs the single bootstrap read
         // after every enable. Late intent callbacks from a previous life are
@@ -2602,6 +2604,7 @@ export class PlanAdapter {
         this.clearProbeTimer();
         this.r4WriteDepth = 0;
         this.dragPreview.clear();
+        this.lastPreviewRefuseKey = null;
         this.clearRepeat();
         this.clearTimer();
         this.clearR4ArrivalTimer();
@@ -5968,13 +5971,43 @@ export class PlanAdapter {
               projected: boolean;
           }
         | { ok: false; reason: "observe" | "absent" | "outside"; output?: string; workspace?: string } {
-        const observed = this.freshObserved();
-        if (observed === null) {
+        const fresh = this.freshObserved();
+        if (fresh === null) {
             return { ok: false, reason: "observe" };
         }
-        const mover = observed.windows.find((entry) => entry.id === windowId);
+        let sourceObserved: PlanObserved = fresh;
+        let mover: PlanObservedWindow | undefined = fresh.windows.find((entry) => entry.id === windowId);
+        // Native output tracks the dragged frame mid-drag, so the mover may
+        // already live on the destination while the foreground still shows
+        // the source while another window remains active.
+        // Restore that source identity from exactly one hidden domain holding
+        // the mover; zero or several stays fail-closed absent.
+        let hiddenCache: ReadonlyArray<PlanObserved> | null = null;
         if (mover === undefined) {
-            return { ok: false, reason: "absent", output: observed.domainOutput, workspace: observed.domainWorkspace };
+            try {
+                hiddenCache = this.env.observeHidden?.() ?? null;
+            } catch (error) {
+                void error;
+                hiddenCache = null;
+            }
+            if (!Array.isArray(hiddenCache)) {
+                return { ok: false, reason: "absent", output: fresh.domainOutput, workspace: fresh.domainWorkspace };
+            }
+            const holders = hiddenCache.filter(
+                (candidate) =>
+                    typeof candidate === "object" &&
+                    candidate !== null &&
+                    Array.isArray((candidate as PlanObserved).windows) &&
+                    (candidate as PlanObserved).windows.some((entry) => entry.id === windowId),
+            );
+            if (holders.length !== 1) {
+                return { ok: false, reason: "absent", output: fresh.domainOutput, workspace: fresh.domainWorkspace };
+            }
+            sourceObserved = holders[0] as PlanObserved;
+            mover = sourceObserved.windows.find((entry) => entry.id === windowId);
+            if (mover === undefined) {
+                return { ok: false, reason: "absent", output: fresh.domainOutput, workspace: fresh.domainWorkspace };
+            }
         }
         // Started binding is closed-vocabulary; parsing never throws.
         const srcRecord = isRecord(sourceDomain) ? sourceDomain : null;
@@ -5982,18 +6015,21 @@ export class PlanAdapter {
         const srcWorkspace = srcRecord !== null ? srcRecord["workspace"] : undefined;
         const explicitSource =
             isOpaqueId(srcOutput) && isOpaqueId(srcWorkspace) ? { output: srcOutput, workspace: srcWorkspace } : null;
-        const outside = { ok: false as const, reason: "outside" as const, output: observed.domainOutput, workspace: observed.domainWorkspace };
+        const outside = { ok: false as const, reason: "outside" as const, output: sourceObserved.domainOutput, workspace: sourceObserved.domainWorkspace };
         const inBounds = (bounds: PlanRect): boolean =>
             px >= bounds.x && py >= bounds.y && px < bounds.x + bounds.w && py < bounds.y + bounds.h;
-        if (inBounds(observed.domainBounds)) {
-            return { ok: true, sourceObserved: observed, effectiveObserved: observed, mover, explicitSource, pointerInSource: true, projected: false };
+        if (isTargetRect(sourceObserved.domainBounds) && inBounds(sourceObserved.domainBounds)) {
+            return { ok: true, sourceObserved, effectiveObserved: sourceObserved, mover, explicitSource, pointerInSource: true, projected: false };
         }
-        // One hidden read: throw/non-array is unreadable (fail closed).
-        let hidden: ReadonlyArray<PlanObserved> | null = null;
-        try {
-            hidden = this.env.observeHidden?.() ?? null;
-        } catch (error) {
-            void error;
+        // One hidden read (reused when the mover was restored from hidden):
+        // throw/non-array is unreadable (fail closed).
+        let hidden: ReadonlyArray<PlanObserved> | null = hiddenCache;
+        if (hidden === null) {
+            try {
+                hidden = this.env.observeHidden?.() ?? null;
+            } catch (error) {
+                void error;
+            }
         }
         if (!Array.isArray(hidden)) {
             return outside;
@@ -6005,15 +6041,23 @@ export class PlanAdapter {
                 isTargetRect(candidate.domainBounds) &&
                 inBounds(candidate.domainBounds),
         );
-        if (matches.length > 1) {
+        // The foreground is a valid pointer destination when the mover was
+        // restored from hidden (source lives on hidden, pointer back over
+        // the foreground domain).
+        let foregroundMatch = false;
+        if (sourceObserved !== fresh && isTargetRect(fresh.domainBounds) && inBounds(fresh.domainBounds)) {
+            foregroundMatch = true;
+        }
+        const totalMatches = matches.length + (foregroundMatch ? 1 : 0);
+        if (totalMatches > 1) {
             return outside;
         }
-        if (matches.length === 0) {
-            return { ok: true, sourceObserved: observed, effectiveObserved: observed, mover, explicitSource, pointerInSource: false, projected: false };
+        if (totalMatches === 0) {
+            return { ok: true, sourceObserved, effectiveObserved: sourceObserved, mover, explicitSource, pointerInSource: false, projected: false };
         }
-        const dest = matches[0] as PlanObserved;
+        const dest = (foregroundMatch ? fresh : matches[0]) as PlanObserved;
         if (dest.windows.some((entry) => entry.id === windowId)) {
-            return { ok: true, sourceObserved: observed, effectiveObserved: dest, mover, explicitSource, pointerInSource: false, projected: false };
+            return { ok: true, sourceObserved, effectiveObserved: dest, mover, explicitSource, pointerInSource: false, projected: false };
         }
         // Project the source-native mover for planning only (exact mover ref
         // keeps size hints; no native assignment).
@@ -6037,7 +6081,7 @@ export class PlanAdapter {
             fingerprint: fp,
             revalidate: () => false,
         };
-        return { ok: true, sourceObserved: observed, effectiveObserved: effective, mover, explicitSource, pointerInSource: false, projected: true };
+        return { ok: true, sourceObserved, effectiveObserved: effective, mover, explicitSource, pointerInSource: false, projected: true };
     }
 
     // Oracle route: one drag-drop intent from the finish-captured script
@@ -6245,11 +6289,15 @@ export class PlanAdapter {
         const callback = typeof onPreview === "function" ? onPreview : null;
         const drag = isDragCorrelation(dragCorrelation) ? (dragCorrelation as string) : null;
         const refuse = (reason: string): false => {
-            this.logToken(
-                drag !== null
-                    ? `${LOG_PREFIX}:drag-preview-refused correlation=${drag} reason=${sanitizeKind(reason)}`
-                    : `${LOG_PREFIX}:drag-preview-refused reason=${sanitizeKind(reason)}`,
-            );
+            const key = `${drag ?? "-"}:${sanitizeKind(reason)}`;
+            if (this.lastPreviewRefuseKey !== key) {
+                this.lastPreviewRefuseKey = key;
+                this.logToken(
+                    drag !== null
+                        ? `${LOG_PREFIX}:drag-preview-refused correlation=${drag} reason=${sanitizeKind(reason)}`
+                        : `${LOG_PREFIX}:drag-preview-refused reason=${sanitizeKind(reason)}`,
+                );
+            }
             if (drag !== null) {
                 this.dragPreview.delete(drag);
             }
@@ -6270,9 +6318,14 @@ export class PlanAdapter {
             return refuse("coords");
         }
         // Single-flight busy: back off immediately, never queue anything the drop must wait for.
+        // Rate-limited: one backed-off log per drag until a preview dispatches.
         if (this.r4Flight !== null || this.inFlight) {
-            this.logToken(`${LOG_PREFIX}:busy-refused kind=drag-preview`);
-            this.logToken(`${LOG_PREFIX}:drag-preview-backed-off correlation=${drag} reason=busy`);
+            const busyKey = `${drag ?? "-"}:busy`;
+            if (this.lastPreviewRefuseKey !== busyKey) {
+                this.lastPreviewRefuseKey = busyKey;
+                this.logToken(`${LOG_PREFIX}:busy-refused kind=drag-preview`);
+                this.logToken(`${LOG_PREFIX}:drag-preview-backed-off correlation=${drag} reason=busy`);
+            }
             return false;
         }
         const pointer = this.buildPointerDomainObservation(windowId as string, x as number, y as number, sourceDomain);
@@ -6330,6 +6383,7 @@ export class PlanAdapter {
             callback: callback ?? ((): void => {}),
         };
         this.dragPreview.set(drag, entry);
+        this.lastPreviewRefuseKey = null;
         const target = isUniqueOwner(this.pinnedOwner) ? (this.pinnedOwner as string) : PLAN_SERVICE;
         try {
             this.env.callDbus(target, PLAN_OBJECT, PLAN_INTERFACE, PLAN_METHOD, payload, (reply) =>
@@ -6381,23 +6435,29 @@ export class PlanAdapter {
         }
     }
 
-    // Destination scope fence: the destination domain must still be observed
-    // with the dragged window. Cross-output previews dispatch from a hidden
-    // destination while the mover is still native on the source: accept when
-    // that destination is still observed and the mover is still on source.
+    // Destination scope fence: the destination domain must still be observed.
+    // Cross-output previews dispatch from a hidden destination while the
+    // mover is still native on the source, and native output follows the
+    // dragged frame mid-drag: accept when that destination is still observed
+    // and the mover is still on source OR already native on the destination
+    // scope itself. Any other mover absence stays stale.
     private isPreviewScopeLive(scope: string, windowId: string): boolean {
         try {
             const fresh = this.freshObserved();
-            const moverStillSource = fresh !== null && fresh.windows.some((entry) => entry.id === windowId);
+            const moverInFresh = fresh !== null && fresh.windows.some((entry) => entry.id === windowId);
             if (fresh !== null && this.domainKey(snapshotOf(fresh)) === scope) {
-                return moverStillSource;
+                return moverInFresh;
             }
             let destStillObserved = false;
+            let moverInScope = false;
             try {
                 for (const candidate of this.env.observeHidden?.() ?? []) {
                     try {
                         if (this.domainKey(snapshotOf(candidate)) === scope) {
                             destStillObserved = true;
+                            if (candidate.windows.some((entry) => entry.id === windowId)) {
+                                moverInScope = true;
+                            }
                             break;
                         }
                     } catch (error) {
@@ -6407,7 +6467,10 @@ export class PlanAdapter {
             } catch (error) {
                 void error;
             }
-            return destStillObserved && moverStillSource;
+            if (!destStillObserved) {
+                return false;
+            }
+            return moverInFresh || moverInScope;
         } catch (error) {
             void error;
             return false;
@@ -7257,11 +7320,12 @@ export class PlanAdapter {
         }
     }
 
+    // Active-drag cancellation covers foreground and hidden reconcile
+    // alike (single shared slot); work-area reprojection stays exempt.
     private discardInteractiveReconcile(): void {
         const flight = this.pending;
         if (
             flight === null ||
-            flight.background === true ||
             flight.op !== "reconcile" ||
             flight.workAreaReprojection
         ) {
@@ -7782,6 +7846,12 @@ export class PlanAdapter {
 
     private refreshHiddenNow(): void {
         if (!this.enabled || this.inFlight || this.deferredAuto !== null) {
+            return;
+        }
+        // Active tiled drag holds hidden domains too: destination members
+        // must not reflow mid-drag. Work is not queued; the post-drag
+        // chain re-observes.
+        if (this.interactiveResizeActive()) {
             return;
         }
         let hidden: ReadonlyArray<PlanObserved> = [];
@@ -8366,9 +8436,12 @@ export class PlanAdapter {
         // callback must not make a later recovery decision for an older flight.
         this.activeProbe = 0;
         this.clearProbeTimer();
+        // Active tiled drag defers reconcile actuation on both affected
+        // outputs (foreground and hidden): a moving member must never reflow
+        // mid-drag. Work-area reprojection stays exempt. Already-dispatched
+        // drag-drop intents are not reconcile and still dispatch.
         if (
             intent.op === "reconcile" &&
-            intent.background !== true &&
             intent.workAreaReprojection !== true &&
             this.interactiveResizeActive()
         ) {
@@ -9661,9 +9734,12 @@ export class PlanAdapter {
                 return;
             }
         }
+        // An already-in-flight reconcile reply landing mid-drag never
+        // actuates, on either output. Foreground and hidden share this fence;
+        // work-area reprojection stays exempt. Cancellation re-arms restore
+        // markers before releasing the shared flight slot.
         if (
             flightState.op === "reconcile" &&
-            flightState.background !== true &&
             flightState.workAreaReprojection !== true &&
             this.interactiveResizeActive()
         ) {
@@ -12201,7 +12277,6 @@ export class PlanAdapter {
         if (next !== null && !this.inFlight) {
             if (
                 next.op === "reconcile" &&
-                next.background !== true &&
                 next.workAreaReprojection !== true &&
                 this.interactiveResizeActive()
             ) {

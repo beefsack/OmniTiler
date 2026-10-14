@@ -154,7 +154,11 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   move/resize signals. `S(S-kar-ptr)` + `S(S-kwin-moveresize)`.
 - Then paneru: pointer drag is the host macOS journey (no engine
   drag model). `S(S-pan-mouse)`; queued.
-- Then Ours KDE: same resolver selected `D(D-dec-drag)`
+- Then Ours KDE: same resolver selected `D(D-dec-drag)`; foreground and
+  hidden-output reconcile dispatch/replies are held during an active drag,
+  with fresh recovery after release, proven offline
+  ([record](../../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14));
+  physical producer parity remains TBD.
 - Then Ours Windows: both producers delivered with three-window synthetic preview/drop agreement and mid-hold sibling stability; exact row TBD `D(D-win-drag)`
 - Variant hook: V-DRAG-ZONE.
 
@@ -334,7 +338,12 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   pause fixture. `S(S-kar-ptr)`; queued.
 - Then paneru: pointer drag is the host macOS journey. `S(S-pan-mouse)`;
   queued.
-- Then Ours KDE: native frame moves and target-slot preview is selected `D(D-dec-drag)`
+- Then Ours KDE: native frame moves and target-slot preview is selected
+  `D(D-dec-drag)`; offline previews survive native output reassignment in both
+  directions, while hidden and foreground reconcile replies write no geometry
+  during the hold. Preview lookup/refusal regression evidence:
+  [record](../../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
+  Physical preview rendering and no-jump pause remain TBD.
 - Then Ours Windows: stationary source with visible target-slot preview;
   fresh three-Notepad synthetic hold/preview/drop agreement agent-observed
   2026-10-11, base `9d12c7f` plus [press-focus delivery](../../changes/archive/windows-drag-press-focus.md).
@@ -606,8 +615,14 @@ paths; selected intent and doc assertions are never evidence.
 - Then paneru: pointer drag is the host macOS journey (no engine
   drag model; MouseDragged forwards to Lua only); display verbs are
   keyboard-only. `S(S-pan-mouse)`; queued.
-- Then Ours KDE: drag-drop verb exists in the adapter inventory but
-  proves no outcome; host journey TBD. `S(S-ours-mou)`; queued.
+- Then Ours KDE: destination preview and drop routing with native mover
+  reassignment are proven offline, retaining the Started source binding;
+  source/destination reconcile actuation is held until release, with post-hold
+  recovery. Ambiguous/absent mover evidence refuses, repeated identical preview
+  refusal/backoff logs are state-change-only
+  ([record](../../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14)).
+  Physical occupied/empty insertion, preview/drop agreement and hidden workspace
+  target remain TBD. `S(S-ours-mou)` inventory alone is not outcome evidence.
 - Then Ours Windows: same inventory-only verb, host journey TBD.
   `S(S-ours-mou)`; queued.
 - Variant hook: provisional/TBD (cross-output-drop hook, to discuss).

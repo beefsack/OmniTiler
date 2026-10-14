@@ -33,13 +33,16 @@ decisions of 2026-09-24 are under
   - DEFECT narrowed | R4 far-side remembered-leaf insertion fixed offline,
     RED/GREEN both ways: `L=H[W1,W2]` now gains W3 at its near root edge as
     `H[H[W1,W2],W3]`, never `H[H[W1,W3],W2]`.
-    [Record](changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14).
+    `62eaa6f`; [record](changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14).
     Corrected native tree repeat pending. Product-intent question remains:
     COSMIC always root-wraps; retained near-side remembered-leaf nesting differs
     ([discriminator](spec/reference-outcomes.md#kde-occupied-r4-target-shape-discriminator)).
-  - DEFECT | Cross-output drag: dragging a window from the left to the right
-    output showed no drop targets and other windows jumped before drop; the
-    log was flooded with `drag-preview-refused reason=absent`.
+  - DEFECT narrowed | Cross-output drag preview lookup, hidden-output reconcile
+    hold/reply fences and repeated refusal/backoff logging fixed offline;
+    12 regression cases and full 1547-test KWin suite pass.
+    [Record and physical repeat](changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
+    Physical preview/drop agreement, no-jump hold, inverse, empty-target and
+    cancellation checks remain pending.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and

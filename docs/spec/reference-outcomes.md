@@ -40,6 +40,14 @@ Variants of [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window
 | Shown secondary current outside its managed ring | Enable with distinct populated current views; send-next from primary, then focus B on secondary's pre-existing current and send-next | Twice refused `current-out-of-ring` / `target-unresolved` before commit; membership and views unchanged. Unassigned pre-existing desktops are mapped to primary, independently of native current views | Whether to seed a visible secondary current, resolve cross-scope, or retain refusal until a secondary ring is built TBD. No new scope policy selected; populated inverse ring-end/follow/stay matrix TBD |
 | Explicit move during output absence | Disable A's output; on survivor send A to another workspace; re-enable original output; record A and donor contents separately | A keeps its explicitly selected workspace, which returns to the re-enabled output; donor contents remain on the survivor ([record](../changes/kde-dual-output-live.md#further-native-outcomes-2026-10-14)) | Exact changed-donor return affinity and new-content variant TBD; retained A membership alone does not prove either |
 
+### KDE cross-output drag native-scope discriminator
+
+Variant of [R-MOU-03](reference-outcomes/mouse.md#r-mou-03-drag-across-outputs-and-onto-a-workspace-target).
+
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| Native mover leaves foreground before Finish | Begin dragging A from L to R; keep foreground on L while native output becomes R; hold over a valid edge, deliver an outstanding R reconcile reply, then release; repeat reversed | Before repair preview refuses `absent` and hidden reconcile can actuate during hold. Corrected unique hidden-holder lookup routes preview/drop to R with Started source L; neither foreground nor hidden reconcile actuates mid-hold; release reobserves and converges. Zero/multiple hidden holders still refuse; repeated identical refusal/backoff logs once until state changes ([record](../changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14)) | Physical mixed-scale occupied/empty preview/drop and pause rendering TBD. A projected destination becoming foreground before native mover arrival retains its existing stale-sample refusal; exact native/reference timing TBD |
+
 ### D16 floating-overlay carry discriminator
 
 Variant of [R-WS-05](reference-outcomes/workspaces.md#d16-combo-and-arrival-frame-discriminators-2026-10-13), selected 2026-10-13.

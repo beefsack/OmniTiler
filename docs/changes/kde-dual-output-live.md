@@ -645,6 +645,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 ## Occupied-target R4 insertion correction (2026-10-14)
 
+- Delivered in `62eaa6f`.
 - Reproduced the wrong target tree offline with the reported logical geometry:
   left 2048x1152, right 1920x1080 offset down 72. Rust topology uses logical
   bounds; output scales do not participate in this insertion branch.
@@ -677,3 +678,67 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   workspace 1858 passed, formatting and all-target Clippy with warnings denied;
   diff whitespace check passes. Independent review accepted the mirrored
   nearest-source correction without selecting the broader target-shape policy.
+
+## Cross-output drag lifecycle correction (2026-10-14)
+
+- Log evidence: 3378 `drag-preview-refused reason=absent` lines, 206 settled
+  preview lines, 75 busy/backoff pairs, 774 `kind=reconcile` lines and 16 stale
+  replans. Reconcile line count is not an applied-plan count. The single
+  unknown-window route diagnostic does not establish the cause of every refusal.
+- Root causes in `kwin/src/plan-adapter.ts`: pointer-domain construction searched
+  only the foreground observation for the mover; native output reassignment can
+  put it in a hidden observation before Finish. Preview reply scope required
+  the mover to remain on the foreground source. Hidden reconcile dispatch,
+  deferred work and reply actuation bypassed the existing interactive hold.
+  Refusal and busy/backoff diagnostics were emitted on every sampled tick.
+- Pointer-domain construction now finds the mover in exactly one hidden holder
+  when absent from foreground, then resolves the pointer destination. Preview
+  replies accept a mover now native on that destination. Drop preserves its
+  Started source binding; projection remains read-only. Missing/ambiguous mover,
+  unreadable/ambiguous destination and existing owner/generation/sequence guards
+  remain refusals. Same-output preview uses the same existing path.
+- Foreground and hidden reconcile dispatch, queued work and in-flight reply
+  actuation now share the interactive hold. Hidden refresh does not dispatch
+  during it. Release converges from fresh observations; work-area reprojection
+  retains its existing exemption. Final drag-drop intents still use their
+  ordinary route rather than becoming reconcile work.
+- Identical refusal/backoff diagnostics log once per drag and reason until a
+  changed reason or a dispatched preview resets the state. Callback refusal
+  still runs for each sample; diagnostic suppression does not change behavior.
+- New `kwin/tests/drag-cross-output-regression.test.ts`: 12 cases cover both
+  native-output crossings, same-output control, reply-time native arrival,
+  absent/multiple hidden holders, refusal and busy deduplication, foreground
+  hold/reply suppression, actual hidden drift, hidden in-flight reply suppression
+  plus release/reapply, and drop routing with original source binding.
+  Before repair nine cases fail and three pass; repaired suite passes 12/12.
+  Independent review identified the initial missing hidden-flight/recovery proof;
+  those causal cases are now explicit rather than inferred from foreground tests.
+- Full KWin typecheck and 1547/1547 tests pass; Rust workspace 1858 passed,
+  formatting and all-target Clippy with warnings denied pass; whitespace check
+  passes. No native-effect or protocol change was needed.
+- Physical drag remains unverified. Preview dispatch/callback tests do not prove
+  rendering. A projected destination becoming foreground before native mover
+  arrival retains its existing stale-sample refusal; a later sample/drop
+  re-resolves. This timing subcase is not promoted to physical acceptance.
+- Development readback remains DOWN. No new live input, test clients, output
+  mutation or lifecycle startup was performed for these corrections.
+
+### Physical repeat
+
+1. Start `just dev` and retain its printed combined log location. Put two
+   ordinary tiled test windows on L and one on R; focus the intended mover.
+2. Use the usual titlebar or Meta+left-button drag from L to an edge of R's
+   existing tile, outside its center/stack zone. Keep the button held for three
+   seconds after crossing, move between two valid edges, then release.
+3. During the hold, require a target-slot preview and stable non-dragged frames
+   on both outputs. At release, require preview clearance and destination
+   insertion matching the preview, without snap-back or source restore fights.
+4. Repeat R to L, then a same-output control. Repeat onto an empty shown target
+   workspace. Finally cross onto an occupied target and cancel with Esc; require
+   preview clearance and the selected cancellation behavior without stuck holds.
+5. Inspect the combined log for the gesture correlations: no repeated identical
+   `drag-preview-refused reason=absent` or busy/backoff flood, and no reconcile
+   geometry actuation while held. A real refusal should remain identifiable.
+6. Close the test windows and stop development with Ctrl+C; confirm
+   `just dev-status` is DOWN. Record each subcase independently; a dispatch diagnostic
+   alone does not prove a visible preview or successful placement.
