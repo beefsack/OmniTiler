@@ -233,10 +233,14 @@ impl super::super::Session {
         y: i32,
         observed: &[ObservedWindow],
     ) -> Result<DragPreview, ProposeError> {
+        // Reset before every exit (including divergence): a stale stage
+        // must never outlive its call across direct Session uses.
+        self.preview_stage = None;
         if let Some(reason) = self.reconciler.divergence() {
             return Err(ProposeError::Diverged(reason));
         }
         if !self.validate_current_topology() {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_TOPOLOGY);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         let mut capture_snapshot = self
@@ -244,6 +248,7 @@ impl super::super::Session {
             .clone()
             .ok_or(ProposeError::Refused(RefusalKind::MalformedInput))?;
         if drag_capture_stale(self, &capture_snapshot) {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_STALE_CAPTURE);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         // Same-domain resolution only honors hovers classified in the
@@ -253,6 +258,7 @@ impl super::super::Session {
             capture_snapshot.prior = None;
         }
         let Some(current) = self.trees.get(&capture_snapshot.domain).cloned().flatten() else {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_TOPOLOGY);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
         let Some(domain) = self
@@ -275,6 +281,11 @@ impl super::super::Session {
         ) {
             Ok(resolved) => resolved,
             Err(ProposeError::Refused(kind)) => {
+                self.preview_stage = match kind {
+                    RefusalKind::CrossDomainMismatch => Some(DRAG_PREVIEW_STAGE_RESOLVE_OUTSIDE),
+                    RefusalKind::MalformedTopology => Some(DRAG_PREVIEW_STAGE_RESOLVE_TOPOLOGY),
+                    _ => None,
+                };
                 if let Some(drag) = self.drag.as_mut() {
                     drag.prior = None;
                     drag.prior_domain = drag.domain.clone();
@@ -305,12 +316,16 @@ impl super::super::Session {
             // desired projection; empty observes project exactly as before.
             &hints_from_observed(observed),
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .map_err(|_| {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
+            ProposeError::Refused(RefusalKind::MalformedTopology)
+        })?;
         let Some(proposed_rect) = desired_geometry
             .iter()
             .find(|g| g.leaf == capture_snapshot.source_leaf)
             .map(|g| g.rect)
         else {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
         Ok(DragPreview {
@@ -690,10 +705,14 @@ impl super::super::Session {
         y: i32,
         session_observation: &SessionObservation,
     ) -> Result<DragPreview, ProposeError> {
+        // Reset before every exit (including divergence): a stale stage
+        // must never outlive its call across direct Session uses.
+        self.preview_stage = None;
         if let Some(reason) = self.reconciler.divergence() {
             return Err(ProposeError::Diverged(reason));
         }
         if !self.validate_current_topology() {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_TOPOLOGY);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         let capture_snapshot = self
@@ -701,14 +720,19 @@ impl super::super::Session {
             .clone()
             .ok_or(ProposeError::Refused(RefusalKind::MalformedInput))?;
         if drag_capture_stale(self, &capture_snapshot) {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_STALE_CAPTURE);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         let (domain, tree) =
             match self.cross_release_validated(&capture_snapshot, dest, session_observation) {
                 Ok(pair) => pair,
-                Err(_) => return Err(ProposeError::Refused(RefusalKind::MalformedTopology)),
+                Err(_) => {
+                    self.preview_stage = Some(DRAG_PREVIEW_STAGE_SCOPE);
+                    return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+                }
             };
         let Some(scoped) = self.cross_resolution_scope(dest) else {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_SCOPE);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
         let resolved = match resolve_drag_shared(
@@ -723,6 +747,11 @@ impl super::super::Session {
         ) {
             Ok(resolved) => resolved,
             Err(ProposeError::Refused(kind)) => {
+                self.preview_stage = match kind {
+                    RefusalKind::CrossDomainMismatch => Some(DRAG_PREVIEW_STAGE_RESOLVE_OUTSIDE),
+                    RefusalKind::MalformedTopology => Some(DRAG_PREVIEW_STAGE_RESOLVE_TOPOLOGY),
+                    _ => None,
+                };
                 if let Some(drag) = self.drag.as_mut() {
                     drag.prior = None;
                     drag.prior_domain = drag.domain.clone();
@@ -754,12 +783,16 @@ impl super::super::Session {
             std::slice::from_ref(dest),
             &hints_from_observed(&session_observation.windows),
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .map_err(|_| {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
+            ProposeError::Refused(RefusalKind::MalformedTopology)
+        })?;
         let Some(proposed_rect) = desired_geometry
             .iter()
             .find(|g| g.leaf == capture_snapshot.source_leaf)
             .map(|g| g.rect)
         else {
+            self.preview_stage = Some(DRAG_PREVIEW_STAGE_PROJECTION);
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         };
         Ok(DragPreview {

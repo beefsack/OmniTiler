@@ -124,6 +124,14 @@ pub struct Engine {
     /// [`Engine::handle`]. Bounded counts plus correlation/direction only,
     /// never native identifiers.
     last_migration: Option<EngineMigrationReport>,
+    /// Last read-only drag-preview diagnostic stage for protocol logging.
+    ///
+    /// Set only when a `drag-preview` request refuses with an otherwise
+    /// ambiguous kind (`cross-domain-mismatch` or `malformed-topology`);
+    /// cleared at the start of every [`Engine::handle`]. Closed stage
+    /// vocabulary plus correlation only, never native identifiers; the
+    /// [`CoreReply`] is unchanged (core has no logging sink).
+    last_drag_preview_stage: Option<EngineDragPreviewStage>,
 }
 
 /// Bounded correlated observation-convergence report for the protocol logging
@@ -176,6 +184,20 @@ pub struct EngineMigrationReport {
     pub floats: usize,
     /// True only for the empty-domain path (no retained session moved).
     pub empty: bool,
+}
+
+/// Bounded correlated read-only drag-preview stage report for the protocol
+/// logging boundary. Closed stage vocabulary plus correlation only, never
+/// native identifiers, geometry, domains, owner, or payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineDragPreviewStage {
+    /// Validated correlation for this op (cross-service lookup key).
+    pub correlation: CorrelationId,
+    /// Failing stage token (`converge`, `begin`, `topology`,
+    /// `stale-capture`, `scope`, `resolve-outside`, `resolve-topology`,
+    /// `projection`, each optionally `pair-`-prefixed on the occupied
+    /// cross-output pair path).
+    pub stage: &'static str,
 }
 
 /// Bounded correlated fresh adoption-fit report for the protocol logging
@@ -387,6 +409,7 @@ impl Default for Engine {
             maximized_focus_fence: false,
             last_fixed_admission: None,
             last_migration: None,
+            last_drag_preview_stage: None,
         }
     }
 }
@@ -608,6 +631,29 @@ impl Engine {
     #[must_use]
     pub fn last_migration(&self) -> Option<&EngineMigrationReport> {
         self.last_migration.as_ref()
+    }
+
+    /// Last read-only drag-preview diagnostic stage for protocol logging,
+    /// if the current [`Engine::handle`] refused a preview with an
+    /// ambiguous kind. `None` otherwise so successes and distinctly-kinded
+    /// refusals stay silent.
+    #[must_use]
+    pub fn last_drag_preview_stage(&self) -> Option<&EngineDragPreviewStage> {
+        self.last_drag_preview_stage.as_ref()
+    }
+
+    /// Record the read-only drag-preview diagnostic stage for the current
+    /// op. Log-only: never touches sessions, replies, or commits.
+    fn note_drag_preview_stage(
+        &mut self,
+        correlation: &CorrelationId,
+        base: &'static str,
+        paired: bool,
+    ) {
+        self.last_drag_preview_stage = Some(EngineDragPreviewStage {
+            correlation: correlation.clone(),
+            stage: drag_preview_stage_token(base, paired),
+        });
     }
 
     /// Carry the Engine opt-in into a session without touching owner,
@@ -1102,6 +1148,7 @@ impl Engine {
         self.last_send_placement = None;
         self.last_fixed_admission = None;
         self.last_migration = None;
+        self.last_drag_preview_stage = None;
         self.converged_this_op = false;
         match &event.command {
             CoreCommand::Reconcile => {
@@ -4325,6 +4372,13 @@ impl Engine {
         if is_preview && !is_fresh {
             let observation = drag_observation_for(event, working.accepted_revision());
             if let Err(error) = working.converge_observation(&observation, drag_focus_for(event)) {
+                if drag_preview_stage_ambiguous(&error) {
+                    self.note_drag_preview_stage(
+                        &event.correlation,
+                        crate::session::DRAG_PREVIEW_STAGE_CONVERGE,
+                        false,
+                    );
+                }
                 return drag_propose_reply(error);
             }
         } else if !is_preview && is_fresh {
@@ -4341,6 +4395,13 @@ impl Engine {
             let _ = working.sync_focus_from_window(&event.domain_key, &event.focused_window);
         }
         if let Err(error) = working.begin_drag(&mover, &observation) {
+            if is_preview && drag_preview_stage_ambiguous(&error) {
+                self.note_drag_preview_stage(
+                    &event.correlation,
+                    crate::session::DRAG_PREVIEW_STAGE_BEGIN,
+                    false,
+                );
+            }
             return drag_propose_reply(error);
         }
         if let Some(carried) = hover_prior {
@@ -4381,7 +4442,12 @@ impl Engine {
                         },
                     })
                 }
-                Err(error) => drag_propose_reply(error),
+                Err(error) => {
+                    if let Some(stage) = working.preview_stage() {
+                        self.note_drag_preview_stage(&event.correlation, stage, false);
+                    }
+                    drag_propose_reply(error)
+                }
             }
         } else {
             match working.drop_drag(
@@ -4555,12 +4621,33 @@ impl Engine {
             &event.domain_key,
         ) {
             Ok(next) => next,
-            Err(reply) => return *reply,
+            Err(reply) => {
+                if is_preview && let CoreReply::Rejected { kind, .. } = reply.as_ref() {
+                    let kind: &str = kind;
+                    if kind == RefusalKind::CrossDomainMismatch.as_str()
+                        || kind == RefusalKind::MalformedTopology.as_str()
+                    {
+                        self.note_drag_preview_stage(
+                            &event.correlation,
+                            crate::session::DRAG_PREVIEW_STAGE_CONVERGE,
+                            true,
+                        );
+                    }
+                }
+                return *reply;
+            }
         };
         // The capture binds on the source domain: the mover must be the
         // focused tiled window there (begin enforces this exactly).
         let _ = session.sync_focus_from_window(source_key, &mover);
         if let Err(error) = session.begin_drag(&mover, &observation) {
+            if is_preview && drag_preview_stage_ambiguous(&error) {
+                self.note_drag_preview_stage(
+                    &event.correlation,
+                    crate::session::DRAG_PREVIEW_STAGE_BEGIN,
+                    true,
+                );
+            }
             return drag_propose_reply(error);
         }
         if let Some(carried) = hover_prior {
@@ -4572,7 +4659,12 @@ impl Engine {
                     base_revision: base,
                     preview,
                 }),
-                Err(error) => drag_propose_reply(error),
+                Err(error) => {
+                    if let Some(stage) = session.preview_stage() {
+                        self.note_drag_preview_stage(&event.correlation, stage, true);
+                    }
+                    drag_propose_reply(error)
+                }
             }
         } else {
             match session.drop_drag_cross_output(
@@ -4746,6 +4838,48 @@ fn drag_propose_reply(error: ProposeError) -> CoreReply {
             message: error.message(),
         },
     }
+}
+
+/// Whether a drag [`ProposeError`] carries an ambiguous preview kind.
+fn drag_preview_stage_ambiguous(error: &ProposeError) -> bool {
+    matches!(
+        error,
+        ProposeError::Refused(RefusalKind::CrossDomainMismatch | RefusalKind::MalformedTopology)
+    )
+}
+
+/// Closed single/pair stage token: the cross-output pair path prefixes
+/// `pair-`, the single-domain path keeps the session token verbatim.
+fn drag_preview_stage_token(base: &'static str, paired: bool) -> &'static str {
+    const PAIRED: [(&str, &str); 8] = [
+        (crate::session::DRAG_PREVIEW_STAGE_CONVERGE, "pair-converge"),
+        (crate::session::DRAG_PREVIEW_STAGE_BEGIN, "pair-begin"),
+        (crate::session::DRAG_PREVIEW_STAGE_TOPOLOGY, "pair-topology"),
+        (
+            crate::session::DRAG_PREVIEW_STAGE_STALE_CAPTURE,
+            "pair-stale-capture",
+        ),
+        (crate::session::DRAG_PREVIEW_STAGE_SCOPE, "pair-scope"),
+        (
+            crate::session::DRAG_PREVIEW_STAGE_RESOLVE_OUTSIDE,
+            "pair-resolve-outside",
+        ),
+        (
+            crate::session::DRAG_PREVIEW_STAGE_RESOLVE_TOPOLOGY,
+            "pair-resolve-topology",
+        ),
+        (
+            crate::session::DRAG_PREVIEW_STAGE_PROJECTION,
+            "pair-projection",
+        ),
+    ];
+    if !paired {
+        return base;
+    }
+    PAIRED
+        .iter()
+        .find_map(|(single, pair)| (*single == base).then_some(*pair))
+        .unwrap_or(base)
 }
 
 /// Retained rebuild gate mirroring the protocol `needs_rebuild`: diverged or
@@ -6695,6 +6829,177 @@ mod tests {
                 .iter()
                 .any(|l| l.window.0 == "win-m")
         );
+    }
+
+    /// Single-domain preview stages: unambiguous replies record nothing;
+    /// an out-of-area pointer and an off-homed row refuse with ambiguous
+    /// kinds and distinct stages.
+    #[test]
+    fn drag_preview_stage_discriminates_single_domain() {
+        use crate::boundary::{CoreCommand, CoreReply};
+        fn stage_of(engine: &Engine) -> Option<&'static str> {
+            engine.last_drag_preview_stage().map(|report| report.stage)
+        }
+        let mut engine = Engine::new();
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        engine.sync_binding(&owner, &gen_id);
+        let source_domain = domain("out-1", "ws-1");
+        let source_key = source_domain.key();
+        let source = crate::seed::seed_session(
+            &owner,
+            &gen_id,
+            7,
+            &source_domain,
+            &[
+                engine_window("win-a", "out-1", "ws-1"),
+                engine_window("win-b", "out-1", "ws-1"),
+            ],
+        )
+        .expect("seeds source");
+        engine.store_committed(source_key, source, 0);
+        let preview = |engine: &mut Engine,
+                       windows: Vec<crate::seed::EngineWindow>,
+                       x: i32,
+                       y: i32,
+                       correlation: &str| {
+            let event = drag_event(
+                &owner,
+                &gen_id,
+                &source_domain,
+                "win-b",
+                windows,
+                CoreCommand::DragPreview {
+                    window: "win-b".to_owned(),
+                    x,
+                    y,
+                    hover_prior: None,
+                    source: Some(cross_source("out-1", "ws-1")),
+                },
+                correlation,
+            );
+            engine.handle(&event)
+        };
+        let rows = || {
+            vec![
+                engine_window("win-a", "out-1", "ws-1"),
+                engine_window("win-b", "out-1", "ws-1"),
+            ]
+        };
+        match preview(&mut engine, rows(), 790, 300, "corr-sd-1") {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
+            other => panic!("no-op point must refuse unchanged, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), None);
+        match preview(&mut engine, rows(), 7999, 300, "corr-sd-2") {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            other => panic!("outside pointer must refuse, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), Some("resolve-outside"));
+        match preview(&mut engine, rows(), 10, 300, "corr-sd-3") {
+            CoreReply::DragPreview(_) => {}
+            other => panic!("live point must preview, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), None);
+        let off_homed = vec![
+            engine_window("win-a", "out-1", "ws-1"),
+            engine_window("win-b", "out-9", "ws-9"),
+        ];
+        match preview(&mut engine, off_homed, 10, 300, "corr-sd-4") {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            other => panic!("off-homed row must refuse, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), Some("converge"));
+    }
+
+    /// Occupied pair preview stages: green previews stay silent, while a
+    /// flip-homed mover row and an out-of-area pointer refuse with distinct
+    /// pair stages.
+    #[test]
+    fn drag_preview_pair_stages_cover_homing_and_resolution() {
+        use crate::boundary::{CoreCommand, CoreReply};
+        fn stage_of(engine: &Engine) -> Option<&'static str> {
+            engine.last_drag_preview_stage().map(|report| report.stage)
+        }
+        // All rows homed on their retained domains: green preview, silent.
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-a", "win-b"], &["win-c"]);
+        let green = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragPreview {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-pair-green",
+        );
+        match engine.handle(&green) {
+            CoreReply::DragPreview(_) => {}
+            other => panic!("all-homed pair preview stays green, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), None);
+        // Native flip observed on the destination while the mover is still
+        // retained on the source: single-domain convergence refuses the
+        // cross-homed row before any capture binds.
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-a", "win-b"], &["win-c"]);
+        let flipped = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            vec![
+                engine_window("win-a", "out-1", "ws-1"),
+                engine_window("win-b", "out-2", "ws-1"),
+                engine_window("win-c", "out-2", "ws-1"),
+            ],
+            CoreCommand::DragPreview {
+                window: "win-b".to_owned(),
+                x: -1900,
+                y: 400,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-pair-flip",
+        );
+        match engine.handle(&flipped) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            other => panic!("flip-homed pair preview must refuse, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), Some("pair-converge"));
+        // Pointer outside the retained destination work area refuses at
+        // destination resolution with its own stage.
+        let (mut engine, owner, gen_id, source_domain, dest_domain) =
+            cross_drag_world(&["win-a", "win-b"], &["win-c"]);
+        let outside = cross_drag_event(
+            &owner,
+            &gen_id,
+            &source_domain,
+            &dest_domain,
+            "win-b",
+            cross_drag_rows(),
+            CoreCommand::DragPreview {
+                window: "win-b".to_owned(),
+                x: 5000,
+                y: 5000,
+                hover_prior: None,
+                source: Some(cross_source("out-1", "ws-1")),
+            },
+            "corr-pair-outside",
+        );
+        match engine.handle(&outside) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "cross-domain-mismatch"),
+            other => panic!("out-of-area pair preview must refuse, got {other:?}"),
+        }
+        assert_eq!(stage_of(&engine), Some("pair-resolve-outside"));
     }
 
     #[test]

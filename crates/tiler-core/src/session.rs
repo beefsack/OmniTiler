@@ -109,6 +109,17 @@ pub use world::{
     SessionSnapshot,
 };
 
+/// Closed stage vocabulary for the read-only drag-preview diagnostic.
+/// Shape tokens only: no payload, id, rect, or domain labels.
+pub(crate) const DRAG_PREVIEW_STAGE_CONVERGE: &str = "converge";
+pub(crate) const DRAG_PREVIEW_STAGE_BEGIN: &str = "begin";
+pub(crate) const DRAG_PREVIEW_STAGE_TOPOLOGY: &str = "topology";
+pub(crate) const DRAG_PREVIEW_STAGE_STALE_CAPTURE: &str = "stale-capture";
+pub(crate) const DRAG_PREVIEW_STAGE_SCOPE: &str = "scope";
+pub(crate) const DRAG_PREVIEW_STAGE_RESOLVE_OUTSIDE: &str = "resolve-outside";
+pub(crate) const DRAG_PREVIEW_STAGE_RESOLVE_TOPOLOGY: &str = "resolve-topology";
+pub(crate) const DRAG_PREVIEW_STAGE_PROJECTION: &str = "projection";
+
 /// Lifecycle command against the accepted session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCommand {
@@ -679,6 +690,10 @@ pub struct Session {
     pending_desired: Option<PendingDesired>,
     drag: Option<DragState>,
     last_send_placement: Option<SendPlacementTrace>,
+    /// Read-only drag-preview diagnostic stage for the current call.
+    /// Set only by the preview fns on ambiguous refusal; cleared at each
+    /// preview entry. Never touches topology, pending, or reconciler state.
+    preview_stage: Option<&'static str>,
 }
 
 impl Session {
@@ -768,6 +783,7 @@ impl Session {
             pending_desired: None,
             drag: None,
             last_send_placement: None,
+            preview_stage: None,
         })
     }
 
@@ -782,6 +798,13 @@ impl Session {
     #[must_use]
     pub fn last_send_placement(&self) -> Option<&SendPlacementTrace> {
         self.last_send_placement.as_ref()
+    }
+
+    /// Read-only drag-preview diagnostic stage recorded by the last preview
+    /// call on this session, if it refused with an ambiguous kind.
+    #[must_use]
+    pub fn preview_stage(&self) -> Option<&'static str> {
+        self.preview_stage
     }
 
     /// Accepted fingerprint from the last commit (or initial seed).

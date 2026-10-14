@@ -766,6 +766,102 @@ fn emit_engine_migration(engine: &Engine) {
     }
 }
 
+/// Read-only drag-preview stage diagnostic (log-only, no wire change):
+/// one line per stage transition plus a counted flush of any suppressed
+/// run. Closed stage token plus the suppressed span's first/last validated
+/// correlations; never identifiers, geometry, domains, owner, or payloads.
+#[must_use]
+pub fn summarize_drag_preview_stage(
+    correlation: &str,
+    stage: &str,
+    suppressed: u64,
+    span_first: &str,
+    span_last: &str,
+) -> String {
+    format!(
+        "{PLAN_SUMMARY_PREFIX} direction=drag-stage op=drag-preview correlation={} stage={} suppressed={suppressed} span_first={} span_last={}",
+        summary_correlation(Some(correlation)),
+        adoption_token(Some(stage)),
+        summary_correlation(Some(span_first)),
+        summary_correlation(Some(span_last)),
+    )
+}
+
+/// Transition-gated stage runs: consecutive identical stages coalesce;
+/// a stage change, reset, or the periodic bound flushes the run with its
+/// stored correlation span.
+#[derive(Debug, Default)]
+struct PreviewStageDedup {
+    last: Option<&'static str>,
+    suppressed: u64,
+    span_first: Option<String>,
+    span_last: Option<String>,
+}
+
+impl PreviewStageDedup {
+    /// Maximum silent repeats before a periodic count flush keeps an
+    /// unterminated burst observable.
+    const FLUSH_BOUND: u64 = 64;
+
+    /// Classify one refused-preview stage into the exact stderr lines to
+    /// emit, in order. Pure over closed tokens; never echoes payloads.
+    fn observe(&mut self, correlation: &str, stage: &'static str) -> Vec<String> {
+        if self.last == Some(stage) {
+            self.suppressed += 1;
+            let validated = summary_correlation(Some(correlation));
+            if self.span_first.is_none() {
+                self.span_first = Some(validated.clone());
+            }
+            self.span_last = Some(validated);
+            if self.suppressed >= Self::FLUSH_BOUND {
+                return self.take_run(correlation);
+            }
+            return Vec::new();
+        }
+        let mut lines = self.take_run(correlation);
+        self.last = Some(stage);
+        self.suppressed = 0;
+        self.span_first = None;
+        self.span_last = None;
+        lines.push(summarize_drag_preview_stage(
+            correlation,
+            stage,
+            0,
+            "-",
+            "-",
+        ));
+        lines
+    }
+
+    /// Flush any pending run at a success/non-preview boundary. Pure.
+    fn reset(&mut self, correlation: &str) -> Vec<String> {
+        self.take_run(correlation)
+    }
+
+    /// Take the pending run as counted lines, if any. Clears the run. The
+    /// flush keeps the run's stored span; `correlation` only names the
+    /// boundary for pipeline continuity.
+    fn take_run(&mut self, correlation: &str) -> Vec<String> {
+        let Some(last) = self.last.take() else {
+            return Vec::new();
+        };
+        let suppressed = self.suppressed;
+        self.suppressed = 0;
+        let first = self.span_first.take().unwrap_or_else(|| "-".to_owned());
+        let last_span = self.span_last.take().unwrap_or_else(|| "-".to_owned());
+        if suppressed == 0 {
+            return Vec::new();
+        }
+        vec![summarize_drag_preview_stage(
+            correlation,
+            last,
+            suppressed,
+            &first,
+            &last_span,
+        )]
+    }
+}
+
 /// Emit the bounded correlated adoption-fit summary for the just-completed
 /// [`Engine::handle`] call, if it attempted a fresh adoption. Retained
 /// reconciliations record nothing so they stay silent. Log-only.
@@ -2480,6 +2576,7 @@ fn diverged_reply(correlation_id: &str, reason: tiler_core::contract::Divergence
 #[derive(Debug, Default)]
 pub struct Planner {
     engine: Engine,
+    preview_stage_gate: PreviewStageDedup,
 }
 
 impl Planner {
@@ -2541,7 +2638,25 @@ impl Planner {
     pub fn evaluate(&mut self, request_json: &str) -> String {
         let ctx = match validate_request(request_json) {
             Ok(ctx) => ctx,
-            Err(reply) => return reply,
+            Err(reply) => {
+                // Validation failures are cold-path: parse the correlation
+                // inline and flush any pending stage run so counts never
+                // strand across the boundary.
+                let correlation = serde_json::from_str::<serde_json::Value>(request_json)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("correlation_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                for line in self.preview_stage_gate.reset(&correlation) {
+                    use std::io::Write;
+                    let _ = writeln!(std::io::stderr(), "{line}");
+                }
+                return reply;
+            }
         };
         // R-SPC-04 D1 predicate: validated above, so this parse is total.
         // Applied to the retained engine for subsequent admissions only;
@@ -2632,6 +2747,21 @@ impl Planner {
         emit_engine_adoption_fit(&self.engine);
         emit_engine_fixed_admission(&self.engine);
         emit_engine_migration(&self.engine);
+        // Transition-gated preview stages: identical per-sample repeats
+        // stay silent with a counter; a stage change or a success flushes
+        // the run. Same stderr policy as the other emit fns (no locks).
+        let staged: Option<(String, &'static str)> = self
+            .engine
+            .last_drag_preview_stage()
+            .map(|report| (report.correlation.as_str().to_owned(), report.stage));
+        let lines = match staged {
+            Some((correlation, stage)) => self.preview_stage_gate.observe(&correlation, stage),
+            None => self.preview_stage_gate.reset(&ctx.request.correlation_id),
+        };
+        for line in lines {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "{line}");
+        }
         emit_engine_placement_trace(&self.engine);
         serialize_core_reply(ctx, &reply)
     }
@@ -8509,6 +8639,120 @@ mod tests {
         assert_eq!(invalid["outcome"], "rejected", "{invalid}");
         assert_eq!(invalid["kind"], "snapshot-invalid", "{invalid}");
         assert_eq!(invalid["detail"], "window-rect-invalid", "{invalid}");
+    }
+    #[test]
+    fn drag_preview_stage_summary_shape_is_bounded() {
+        // Log-only diagnostic shape: correlated closed stage token, the
+        // suppressed count, and the suppressed span; no identifiers,
+        // geometry, domains, owner, or payload bytes.
+        assert_eq!(
+            summarize_drag_preview_stage("corr-stage-1", "resolve-outside", 0, "-", "-"),
+            "omnitiler:plan-summary direction=drag-stage op=drag-preview correlation=corr-stage-1 stage=resolve-outside suppressed=0 span_first=- span_last=-",
+        );
+        assert_eq!(
+            summarize_drag_preview_stage(
+                "corr-stage-2",
+                "pair-converge",
+                7,
+                "corr-stage-0",
+                "corr-stage-1"
+            ),
+            "omnitiler:plan-summary direction=drag-stage op=drag-preview correlation=corr-stage-2 stage=pair-converge suppressed=7 span_first=corr-stage-0 span_last=corr-stage-1",
+        );
+        // Unparseable sides degrade to bounded placeholders like the other
+        // summaries.
+        assert_eq!(
+            summarize_drag_preview_stage("!!!", "entry-homing", 0, "!!!", "???"),
+            "omnitiler:plan-summary direction=drag-stage op=drag-preview correlation=- stage=entry-homing suppressed=0 span_first=- span_last=-",
+        );
+        assert_eq!(
+            summarize_drag_preview_stage("corr-stage-3", "Bogus Stage!", 0, "-", "-"),
+            "omnitiler:plan-summary direction=drag-stage op=drag-preview correlation=corr-stage-3 stage=unknown suppressed=0 span_first=- span_last=-",
+        );
+    }
+    #[test]
+    fn preview_stage_dedup_coalesces_identical_stages() {
+        let mut gate = super::PreviewStageDedup::default();
+        let first = gate.observe("corr-s-1", "resolve-outside");
+        assert_eq!(first.len(), 1, "first stage of a run emits, {first:?}");
+        assert!(first[0].contains("stage=resolve-outside"), "{first:?}");
+        assert!(first[0].contains("suppressed=0"), "{first:?}");
+        for seq in 2..6 {
+            let lines = gate.observe(&format!("corr-s-{seq}"), "resolve-outside");
+            assert!(
+                lines.is_empty(),
+                "identical stage repeats stay silent, {lines:?}"
+            );
+        }
+        let lines = gate.observe("corr-s-6", "converge");
+        assert_eq!(
+            lines.len(),
+            2,
+            "transition flushes the run count, {lines:?}"
+        );
+        assert!(
+            lines[0].contains("stage=resolve-outside")
+                && lines[0].contains("suppressed=4")
+                && lines[0].contains("span_first=corr-s-2")
+                && lines[0].contains("span_last=corr-s-5"),
+            "flush keeps the suppressed span, {lines:?}"
+        );
+        assert!(
+            lines[1].contains("stage=converge") && lines[1].contains("suppressed=0"),
+            "{lines:?}"
+        );
+    }
+    #[test]
+    fn preview_stage_dedup_flushes_on_reset() {
+        let mut gate = super::PreviewStageDedup::default();
+        assert!(gate.reset("corr-r-0").is_empty(), "idle reset stays silent");
+        assert_eq!(gate.observe("corr-r-1", "begin").len(), 1);
+        assert!(gate.observe("corr-r-2", "begin").is_empty());
+        assert!(gate.observe("corr-r-3", "begin").is_empty());
+        let lines = gate.reset("corr-r-4");
+        assert_eq!(lines.len(), 1, "reset flushes the pending count, {lines:?}");
+        assert!(
+            lines[0].contains("stage=begin")
+                && lines[0].contains("suppressed=2")
+                && lines[0].contains("span_first=corr-r-2")
+                && lines[0].contains("span_last=corr-r-3"),
+            "{lines:?}"
+        );
+        assert!(
+            gate.reset("corr-r-5").is_empty(),
+            "second reset stays silent"
+        );
+    }
+    #[test]
+    fn drag_preview_entry_homing_keeps_wire_bytes() {
+        // A carried row homed outside the request domain refuses at entry
+        // validation with byte-identical wire behavior (rejected,
+        // cross-domain-mismatch, no detail field, egress detail `-`); the
+        // new stage diagnostic is log-only.
+        let one = vec![("win-1", 0, 0, 100, 80)];
+        let mut request: serde_json::Value = serde_json::from_str(&retained_request(
+            "drag-entry-homing-1",
+            "owner-1",
+            "gen-1",
+            "win-1",
+            &one,
+            serde_json::json!({"op": "drag-preview", "window": "win-1", "x": 900, "y": 5}),
+        ))
+        .expect("request JSON");
+        request["windows"][0]["output"] = serde_json::json!("out-9");
+        let request_text = request.to_string();
+        let reply_text = Planner::new().evaluate(&request_text);
+        let reply = parse_reply(&reply_text);
+        assert_eq!(reply["outcome"], "rejected", "{reply}");
+        assert_eq!(reply["kind"], "cross-domain-mismatch", "{reply}");
+        assert!(
+            reply.get("detail").is_none(),
+            "entry refusal carries no detail field, got {reply}"
+        );
+        assert_eq!(
+            summarize_plan_egress(&request_text, &reply_text),
+            "omnitiler:plan-summary direction=egress op=drag-preview correlation=drag-entry-homing-1 outcome=rejected kind=cross-domain-mismatch base_revision=- detail=-",
+        );
     }
     #[test]
     fn untracked_floating_toggle_float_rect_precedence_and_fresh_unfloat() {
