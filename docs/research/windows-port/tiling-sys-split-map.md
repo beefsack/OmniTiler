@@ -99,7 +99,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Row 19 extracts fullscreen/admission; parent becomes **27,706 lines**.
   Exact bodies preserved after necessary visibility/import changes and four
   formatted admission signatures. Required gates pass with 2,106 / 0 / 1.
-- Row 20 extracts rows/reconcile/geometry/focus-actuation; parent now
+- Row 20 extracts rows/reconcile/geometry/focus-actuation; parent becomes
   **25,630 lines**. Bodies preserve exact text except necessary visibility/imports
   and one formatted signature. Required gates pass with 2,106 / 0 / 1.
 - Next: production orders 21-30, starting keyboard/chords/dispatch. The whole

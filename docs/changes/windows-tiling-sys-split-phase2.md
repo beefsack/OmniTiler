@@ -63,9 +63,15 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   helpers stay private. Crate-visible `owner_snap_dropped` path is preserved.
   Required gates pass: 2,106 / 0 / 1.
 
+- Keyboard/chords/dispatch: parent 25,630 -> 20,511 lines; children 2,138 /
+  296 / 213 / 1,132 / 1,377 lines. Moved bodies compare exactly after removing
+  necessary visibility/import changes. Public launch API paths are preserved.
+  `keyboard_1` is a deliberate soft-cap exception: the single `keyboard_tick`
+  function stays intact. Required gates pass: 2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 21-30, starting with keyboard/chords/dispatch;
+Production map orders 22-30, starting with directional/output-send/cross-drag;
 retain the whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
@@ -79,3 +85,4 @@ retain the whole observation `TileLoop` impl for later extraction.
 | `5f3c764` | Render/retained | 31,690 | 469 / 966 / 41 |
 | `d8bd237` | Focus/underlay/probes | 29,158 | 609 / 705 / 1,002 / 251 |
 | `9654902` | Fullscreen/admission | 27,706 | 645 / 848 |
+| `2be88c0` | Rows/reconcile/geometry/focus-actuation | 25,630 | 906 / 289 / 529 / 391 |

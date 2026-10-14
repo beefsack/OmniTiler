@@ -542,9 +542,10 @@ decisions of 2026-09-24 are under
    names preserved. Original
   test counts preserved; upstream shared policy adds 11 tests, yielding
   2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
-   Production map rows 14-20 extracted: parent now 25,630 lines; all twenty-four
-   children below 1,500 lines. Required gates preserve 2,106 / 0 / 1.
-   Next: keyboard/chords/dispatch, then the
+   Production map rows 14-21 extracted: parent now 20,511 lines; 28 of 29 new
+   production children below 1,500 lines. The 2,138-line keyboard child keeps
+   one oversized function intact. Required gates preserve 2,106 / 0 / 1.
+   Next: directional/output-send/cross-drag, then the
    remaining production responsibilities in map order
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
