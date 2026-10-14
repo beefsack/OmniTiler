@@ -74,9 +74,13 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   removing necessary visibility/imports; no signature reflows. Required gates
   pass: 2,106 / 0 / 1.
 
+- Restart/assignments: parent 16,917 -> 15,782 lines; children 658 / 492
+  lines. Bodies compare exactly after removing necessary visibility/imports,
+  with no formatter deviations. Required gates pass: 2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 23-30, starting with restart/assignments;
+Production map orders 24-30, starting with selection/sends;
 retain the whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
@@ -92,3 +96,4 @@ retain the whole observation `TileLoop` impl for later extraction.
 | `9654902` | Fullscreen/admission | 27,706 | 645 / 848 |
 | `2be88c0` | Rows/reconcile/geometry/focus-actuation | 25,630 | 906 / 289 / 529 / 391 |
 | `f13aeba` | Keyboard/chords/dispatch | 20,511 | 2,138 / 296 / 213 / 1,132 / 1,377 |
+| `4c0e069` | Directional/output-send/cross-drag | 16,917 | 368 / 626 / 1,175 / 1,455 |

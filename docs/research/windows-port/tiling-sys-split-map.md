@@ -52,7 +52,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Extracted; 906 / 289 / 529 / 391 lines |
 | 21 | `keyboard_1`, `_2`, `chords_1`, `_2`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | `keyboard_tick` stays intact: 2,138-line child exceeds soft cap | Extracted; 2,138 / 296 / 213 / 1,132 / 1,377 lines |
 | 22 | `directional_1`, `_2`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Extracted; 368 / 626 / 1,175 / 1,455 lines |
-| 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Pending |
+| 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Extracted; 658 / 492 lines |
 | 24 | `selection`, `sends` | Workspace select/send, trailing-spare/follow behavior | 2,300 total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
 | 25 | `cli_poll_1`, `_2`, `workspace_tick_1`, `_2`, `migration` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Pending |
 | 26 | `history`, `action_context`, `output_sync` | Maximized remapping, history/effects, monitor/output sync, maintenance | 1,200 total | Mode-aware scope children and retained output identity | Pending |
@@ -106,10 +106,13 @@ Numbered production stems denote further whole-item subdivisions as needed.
   Bodies compare exactly after removing visibility/import changes. `keyboard_1`
   exceeds the soft cap solely to preserve `keyboard_tick` intact. Public launch
   API paths are preserved; required gates pass with 2,106 / 0 / 1.
-- Row 22 extracts directional/output-send/cross-drag; parent now **16,917 lines**.
+- Row 22 extracts directional/output-send/cross-drag; parent becomes **16,917 lines**.
   Bodies compare exactly after removing visibility/import changes. All four
   children meet the soft cap; required gates pass with 2,106 / 0 / 1.
-- Next: production orders 23-30, starting restart/assignments. The whole
+- Row 23 extracts restart/assignments; parent now **15,782 lines**. Bodies
+  compare exactly after removing visibility/import changes, with no formatter
+  deviations. Required gates pass with 2,106 / 0 / 1.
+- Next: production orders 24-30, starting selection/sends. The whole
   observation `TileLoop` impl remains in the parent for later extraction.
   Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
