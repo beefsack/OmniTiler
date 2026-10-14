@@ -508,6 +508,14 @@ platform API behavior.
     existing recovery lease. Explorer may initially put the icon in overflow.
   - User 2026-10-14 approved as delivered: tray menu Stop uses a 50 ms
     menu-thread check and `EndMenu` (`f4b9f41`).
+  - User 2026-10-14 taskbar pager target: one Plasma-style numbered pager
+    inside each output's taskbar, showing only that output's workspaces and
+    miniature window rectangles/icons. Visualization plus click-to-switch;
+    the existing tray icon stays for settings/toggles. AppBar rejected because
+    reservation interacts with maximized windows; injection rejected.
+    Taskbar-child embedding remains an unselected feasibility candidate:
+    [live spike](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14)
+    found successful parenting/hit-testing but no visible child composition.
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,

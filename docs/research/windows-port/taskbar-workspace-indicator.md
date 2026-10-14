@@ -1,7 +1,8 @@
 # Windows taskbar workspace indicator: options
 
-Research only. No product selection, no code or host settings changed.
-Checked 2026-10-14. No live desktop probe performed.
+Initial research checked 2026-10-14; no production code or host settings changed.
+Later product decisions and [live evidence](#live-spike-2026-10-14) supersede
+the initial tray+popup/AppBar recommendations below.
 
 ## Local baseline
 
@@ -143,7 +144,7 @@ acquisition/classification, which is the existing gap, not costed here).
 User target: on EVERY taskbar, monitor-only numbered cells; empty =
 darker rectangle; windows = lighter rectangles at scaled positions with
 light 1px border and centered icon; active workspace = active color.
-Research only, unvalidated on live desktop. Checked 2026-10-14.
+Source research checked 2026-10-14; bounded live findings follow below.
 
 ### Definitive answer
 
@@ -276,7 +277,7 @@ Hide-vs-reserve tradeoff is an open research constraint, not finalized
 behavior: hiding must not resize the game or flap the work area, and
 whether to ABM_REMOVE vs hide-keep-reservation is validation TBD.
 
-### Recommendation (staged; product choice stays user-pending)
+### Initial recommendation (historical; superseded by live spike)
 
 - Stage 1: tray icon + popup pager (option 1). Smallest unsafe delta,
   reuses TaskbarCreated/change-gated sync, no reservation, no
@@ -290,7 +291,7 @@ whether to ABM_REMOVE vs hide-keep-reservation is validation TBD.
 - Options 3 and 4 are recommended against for product use on the above
   evidence; final selection stays with the user.
 
-### Questions for user (recommended answers)
+### Initial questions (historical; answered by later user decisions)
 
 - Accept an adjacent strip instead of literal in-taskbar embedding?
   Recommended: yes; it preserves pager visuals through supported APIs.
@@ -311,6 +312,58 @@ whether to ABM_REMOVE vs hide-keep-reservation is validation TBD.
 - Icon chain timing/failure rates (hung windows, UWP AUMID path) with
   cache-hit logging; no icon failure may block tiling.
 - LOC figures are rough engineering estimates, no precision promised.
+
+## Live spike 2026-10-14
+
+### Product decisions
+
+- Pager inside every output's taskbar, showing only that output's workspaces:
+  numbered cells, darker empty cells, lighter miniature window rectangles with
+  light 1px borders and centered app icons, active workspace in an active color.
+- Visualization plus click-to-switch; the existing tray icon stays for
+  settings/toggles (user 2026-10-14).
+- AppBar rejected: work-area reservation interacts with maximized windows.
+  Injection rejected. An owned `SetParent` child was the feasibility candidate.
+
+### Conditions and evidence
+
+- Physical Windows 11 build 26300.9457, one scaled-DPI primary output, ordinary
+  integrity; no secondary taskbar present. No taskbar settings changed.
+- Throwaway Cargo/GDI prototype, baseline revision `977e039`; native PMv2
+  rectangles, taskbar UIA inspection, taskbar-filtered WinEvents, bounded
+  disposable Notepad/Paint/Calculator/helper churn, and foreground borderless
+  fullscreen helper. Desktop pixel samples were clipped to the pager rectangle.
+- Evidence: baseline/final native+UIA snapshots, 30-second event/poll record,
+  child placement/hit-test/paint record, and corrected fullscreen record with
+  embedded/floating pixel samples. App lifecycle summaries were reconstructed
+  from recorded command outputs; temporary raw records are outside the repo.
+
+| Question | Observed result / limit |
+| --- | --- |
+| Structure | `Shell_TrayWnd` hosts a full-width `Windows.UI.Composition.DesktopWindowContentBridge`, `TrayNotifyWnd`, and legacy `ReBarWindow32`/`MSTaskSwWClass`/`MSTaskListWClass`. UIA exposes `TaskbarFrame`, six `NotifyItemIcon` elements and four `SystemTrayIcon` elements, including Clock. Clock bounds are available through that UIA leaf, not a separate clock HWND here. Legacy `Start` is invisible; current Start/Widgets/app-button UIA bounds were not isolated. An InputSite provider rectangle disagreed with the physical root rectangle. No secondary evidence. |
+| Movement / events | Native tray left edge: 0px movement; legacy app-list right edge: 55px range during app churn. Tray-adjacent moved less for these measured bounds; actual XAML app-icon content movement remains unverified. Six `EVENT_OBJECT_LOCATIONCHANGE` callbacks, all at one originating tick, came from ReBar/MSTaskSw/MSTaskList HWNDs; delivery delay rounded to 0ms. 578 polls at roughly 50ms cadence observed anchor geometry, costing about 70us average / 296us maximum per poll. This establishes a working bounded signal, not reliable coverage or end-to-end latency for every layout change. UIA property events and notification-icon churn were not established. |
+| Embedded child | A 216px-wide child immediately left of `TrayNotifyWnd` had verified parent and physical rectangle, matching parent/child DPI, and 3/3 `WindowFromPoint` hits. Posted messages changed local demo selection from cell 0 to 1; no physical click or product workspace switch was tested. GDI paint ran, but the composed crop showed taskbar background without the expected cells/borders/text. Visible hosting failed; app-icon rendering was not proven. Native sibling order does not explain the compositor result; XAML coverage is only a candidate explanation. |
+| Fullscreen | The helper became foreground and covered its output. Taskbar and child retained `WS_VISIBLE` and their rectangles, but the helper won all three hit tests and the crop showed only helper pixels. Thus they were occluded, not API-hidden. The same-sized floating topmost comparator visibly painted over fullscreen. Because the child was already invisible at rest, this does not prove that a visibly working child would follow taskbar hiding. |
+| Stability / cleanup | No Explorer identity change or taskbar geometry/style drift observed. Prototype windows were destroyed, disposable apps/helpers exited, and the final nine-child taskbar set and UIA bounds matched baseline, apart from clock text. The app-list edge returned to baseline. Calculator needed exact-owned-process forced cleanup; its preexisting frame host was preserved. No post-cleanup pixel-equivalence sample or physical flicker/input acceptance was obtained. |
+
+### Recommendation and residual risks
+
+- **Do not adopt the tested embedded-child approach yet.** Tray-adjacent is
+  the better measured anchor, but successful parenting, painting and hit-testing
+  did not produce a visible pager. This is the feasibility blocker; no product
+  hosting mechanism was selected. AppBar and injection remain rejected.
+- A floating topmost fallback fails the fullscreen requirement as tested.
+  No automatic fallback over fullscreen/game windows is justified.
+- Remaining gaps: unsupported shell/build coupling; XAML composition and
+  invisible hit-test targets; actual app-content bounds and crowded-taskbar
+  collision handling; secondary taskbars; DPI changes/mixed DPI; Explorer/display
+  lifecycle; event coverage; left/center alignment; auto-hide; exclusive and
+  borderless games. Physical taskbar appearance/input remains user verification.
+- Harness corrections preceded accepted results: parent-return/coordinate
+  handling was fixed, and an unpainted comparator capture was superseded by a
+  message-pumped capture. Separate-process helper recovery restored a bounded
+  nudge while the main controller was alive; post-controller-exit recovery was
+  not proven. These are bounded observations, not production recovery acceptance.
 
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4

@@ -760,16 +760,19 @@ decisions of 2026-09-24 are under
   [evidence](changes/archive/non-native-tiler-host-interaction.md).
   - Taskbar indicator slice pulled forward as a high-priority Windows dogfooding
     blocker (user 2026-10-14). [Indicator options and recommendation](research/windows-port/taskbar-workspace-indicator.md):
-    single numbered tray icon plus per-output popup recommended.
-    User 2026-10-14 target (aspirational): a KDE Plasma pager-style
+    User 2026-10-14 target: a KDE Plasma pager-style
     indicator in the taskbar of every output, showing only that output's
     workspaces: numbered workspace cells, empty cells a slightly darker
     shaded rectangle, each window a lighter rectangle with a light 1 px
     border and its app icon centred, the active workspace in an active
-    colour. User asked whether Windows 11 taskbar widget-style surfaces
-    (like search) can host it; [pager-style follow-up](research/windows-port/taskbar-workspace-indicator.md#pager-style-taskbar-follow-up)
-    finds no supported Win11 in-taskbar host API, recommends tray+popup for
-    dogfooding then an owned adjacent per-output AppBar; recommendation pending user choice.
+    colour. Pager is visualization plus click-to-switch; existing tray icon
+    stays for settings/toggles. AppBar rejected (maximized-window interaction);
+    injection rejected. [Live spike 2026-10-14](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
+    tray-adjacent anchor moved less than the measured legacy app-list edge, but
+    the parented/hit-testable child did not visibly compose. Floating topmost
+    comparison painted over fullscreen. Embedded hosting remains BLOCKED on
+    visible composition; no product host selected. Secondary taskbar, real
+    app-content bounds, auto-hide/alignment, DPI changes and game safety unproven.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product
