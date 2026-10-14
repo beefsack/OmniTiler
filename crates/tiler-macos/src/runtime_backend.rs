@@ -415,6 +415,11 @@ fn snapshot_windows(pid: u32) -> Result<Vec<ObservedWindow>, String> {
                 w: frame.w as i32,
                 h: frame.h as i32,
                 floating: false,
+                // Native fact normalization (role/fullscreen/hints) is
+                // later Phase 1 work; the offline classifier fills these
+                // from typed facts instead.
+                fullscreen: false,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
             }),
             Err(code) => {
                 failed += 1;

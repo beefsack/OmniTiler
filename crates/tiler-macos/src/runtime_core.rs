@@ -12,8 +12,9 @@ use tiler_core::{
     geometry::Rect,
     ids::{CorrelationId, GenerationId, OwnerId},
     seed::EngineWindow,
-    session::{DomainKey, OutputDomain},
-    size_hints::WindowSizeHints,
+    session::{DomainKey, OutputDomain, Session},
+    size_hints::{FixedSizePredicate, WindowSizeHints, is_fixed_size_with},
+    window_policy::should_hold_born_fullscreen,
 };
 
 use crate::runtime_types::{
@@ -22,6 +23,90 @@ use crate::runtime_types::{
 };
 
 // -- Engine retained state -----------------------------------------------------
+
+/// Core-session lifetime for one observed window, read from the existing
+/// core session (no adapter lifetime maps). Unknown means first-seen: the
+/// wire hold and the first-sight fixed assert both key off it. A stored
+/// minimize slot counts as known lifetime (previously tiled) without being
+/// a reserved tile slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct KnownState {
+    pub member: bool,
+    pub exception: bool,
+    pub automatic: bool,
+    pub slot: bool,
+}
+
+impl KnownState {
+    fn of(session: Option<&Session>, id: &WindowId) -> Self {
+        let Some(session) = session else {
+            return Self::default();
+        };
+        Self {
+            member: session
+                .snapshot()
+                .windows
+                .iter()
+                .any(|link| link.window == *id),
+            exception: session.is_exception(id),
+            automatic: session.is_automatic_fixed_float(id),
+            slot: session.minimized_slot(id).is_some(),
+        }
+    }
+
+    fn reserved_slot(&self) -> bool {
+        self.member
+    }
+
+    fn known_lifetime(&self) -> bool {
+        self.member || self.exception || self.slot
+    }
+}
+
+/// Wire flags for one observed window: normalized `(floating, fixed_auto)`
+/// over the truthful classifier facts plus core-session lifetime (KDE
+/// `withInitialFullscreenHold` / `withFixedSizeFloats` parity, macos side
+/// without adapter maps). Fullscreen and hints always ride truthfully and
+/// are NOT decided here — see [`build_event`].
+///
+/// - Born fullscreen (shared [`should_hold_born_fullscreen`] over an
+///   accurate mapping: `known_slot` is a reserved tile slot (member),
+///   `seen_nonfullscreen` is any core lifetime — member, exception, or
+///   stored slot. A slot-known returnee is previously tiled, never born,
+///   so it never synthetic-holds; it reports truthfully on the wire.
+/// - Retained fullscreen passes through truthfully (slot kept in plan
+///   truth; the engine withholds geometry writes). A still-held arrival
+///   keeps synthetic floating while fullscreen.
+/// - First-sight fixed hints assert adapter automatic origin
+///   (floating + fixed_auto, membership only, no writes). Ordinary pins
+///   stay plain; retained automatics re-assert across hint loss (D2);
+///   classified floats never gain provenance (intentional/transient).
+#[must_use]
+pub(crate) fn normalize_wire_flags(
+    floating_cls: bool,
+    fullscreen: bool,
+    hints: WindowSizeHints,
+    known: &KnownState,
+    predicate: FixedSizePredicate,
+) -> (bool, bool) {
+    if should_hold_born_fullscreen(fullscreen, known.reserved_slot(), known.known_lifetime()) {
+        return (true, false);
+    }
+    if known.exception && !known.automatic && fullscreen && !floating_cls {
+        return (true, false);
+    }
+    if known.exception && known.automatic && !fullscreen {
+        return (true, true);
+    }
+    if !known.known_lifetime()
+        && !fullscreen
+        && !floating_cls
+        && is_fixed_size_with(hints, predicate)
+    {
+        return (true, true);
+    }
+    (floating_cls, known.exception && known.automatic)
+}
 
 pub(crate) struct RetainedApp {
     pub(crate) generation: u64,
@@ -99,12 +184,15 @@ pub(crate) fn build_event(
     focused_override: Option<WindowId>,
     closed: Vec<WindowId>,
     command: CoreCommand,
+    session: Option<&Session>,
+    predicate: FixedSizePredicate,
 ) -> CoreEvent {
     let mut rows: Vec<(String, Rect)> = Vec::new();
     let mut windows: Vec<EngineWindow> = Vec::new();
     for (pid, app) in &retained.apps {
         for w in &app.windows {
             let id = window_id(*pid, w.wid);
+            let known = KnownState::of(session, &WindowId(id.clone()));
             let rect = Rect {
                 x: w.x,
                 y: w.y,
@@ -112,19 +200,27 @@ pub(crate) fn build_event(
                 h: w.h,
             };
             rows.push((id.clone(), rect));
+            // Wire normalization over core-session lifetime: fullscreen and
+            // hints ride truthfully; floating/fixed_auto carry the hold and
+            // first-sight asserts. Retained overlays keep their reserved
+            // slot/allocation in plan truth (no writes via the emission
+            // filter); born arrivals hold slotless. The macOS skeleton
+            // performs no maximized inference.
+            let (floating, fixed_auto) =
+                normalize_wire_flags(w.floating, w.fullscreen, w.hints, &known, predicate);
             windows.push(EngineWindow {
                 window: WindowId(id),
                 output: OutputId(PHASE1_OUTPUT.to_owned()),
                 workspace: WorkspaceId(PHASE1_WORKSPACE.to_owned()),
                 rect,
-                floating: w.floating,
+                floating,
                 fit_excluded: false,
-                fullscreen: false,
+                fullscreen: w.fullscreen,
                 maximized: false,
                 sticky: false,
-                fixed_auto: false,
+                fixed_auto,
                 fixed_suppress: false,
-                hints: WindowSizeHints::none(),
+                hints: w.hints,
             });
         }
     }
@@ -157,6 +253,147 @@ pub(crate) fn build_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tiler_core::size_hints::WindowSizeHints;
+
+    fn fixed() -> WindowSizeHints {
+        WindowSizeHints {
+            min_w: Some(640),
+            min_h: Some(480),
+            max_w: Some(640),
+            max_h: Some(480),
+        }
+    }
+
+    fn known(member: bool, exception: bool, automatic: bool) -> KnownState {
+        KnownState {
+            member,
+            exception,
+            automatic,
+            slot: false,
+        }
+    }
+
+    fn slotted() -> KnownState {
+        KnownState {
+            slot: true,
+            ..KnownState::default()
+        }
+    }
+
+    #[test]
+    fn wire_flags_hold_born_and_assert_first_sight() {
+        let plain = WindowSizeHints::none();
+        let unknown = KnownState::default();
+        // Born fullscreen: synthetic floating, never automatic, overlay
+        // decided outside (fullscreen rides truthfully).
+        assert_eq!(
+            normalize_wire_flags(false, true, plain, &unknown, FixedSizePredicate::BothAxes),
+            (true, false)
+        );
+        // Born dialog+fullscreen keeps its float origin under the hold.
+        assert_eq!(
+            normalize_wire_flags(true, true, plain, &unknown, FixedSizePredicate::BothAxes),
+            (true, false)
+        );
+        // First-sight fixed asserts automatic origin (membership only).
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                fixed(),
+                &unknown,
+                FixedSizePredicate::BothAxes
+            ),
+            (true, true)
+        );
+        // Ordinary first sight passes through plain.
+        assert_eq!(
+            normalize_wire_flags(false, false, plain, &unknown, FixedSizePredicate::BothAxes),
+            (false, false)
+        );
+        // Classified floats never gain provenance.
+        assert_eq!(
+            normalize_wire_flags(true, false, fixed(), &unknown, FixedSizePredicate::BothAxes),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn wire_flags_keep_retained_shapes_truthful() {
+        let plain = WindowSizeHints::none();
+        // Retained tile going fullscreen: truthful, slot kept core-side.
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                true,
+                plain,
+                &known(true, false, false),
+                FixedSizePredicate::BothAxes
+            ),
+            (false, false)
+        );
+        // Pinned tile reporting fixed hints: stays plain (D2/D3).
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                fixed(),
+                &known(true, false, false),
+                FixedSizePredicate::BothAxes
+            ),
+            (false, false)
+        );
+        // Retained automatic re-asserts across hint loss (D2).
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                plain,
+                &known(false, true, true),
+                FixedSizePredicate::BothAxes
+            ),
+            (true, true)
+        );
+        // Still-held arrival keeps synthetic floating while fullscreen.
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                true,
+                plain,
+                &known(false, true, false),
+                FixedSizePredicate::BothAxes
+            ),
+            (true, false)
+        );
+        // Retained dialog+fullscreen stays a truthful overlay exception.
+        assert_eq!(
+            normalize_wire_flags(
+                true,
+                true,
+                plain,
+                &known(false, true, false),
+                FixedSizePredicate::BothAxes
+            ),
+            (true, false)
+        );
+        // Stored-slot returnees never synthetic-hold and never claim
+        // first-sight origin: the gate sees prior life and the truthful
+        // fullscreen shape converges core-side.
+        assert_eq!(
+            normalize_wire_flags(false, true, plain, &slotted(), FixedSizePredicate::BothAxes),
+            (false, false)
+        );
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                fixed(),
+                &slotted(),
+                FixedSizePredicate::BothAxes
+            ),
+            (false, false)
+        );
+    }
 
     #[test]
     fn fingerprint_is_order_independent() {

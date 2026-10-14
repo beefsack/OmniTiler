@@ -453,6 +453,8 @@ fn win(wid: u32, x: i32, y: i32, w: i32, h: i32) -> ObservedWindow {
         w,
         h,
         floating: false,
+        fullscreen: false,
+        hints: tiler_macos::runtime::WindowSizeHints::none(),
     }
 }
 
@@ -2782,6 +2784,8 @@ fn redundant_frame_writes_skipped_once_observed() {
                 w,
                 h,
                 floating: false,
+                fullscreen: false,
+                hints: tiler_macos::runtime::WindowSizeHints::none(),
             }
         })
         .collect();

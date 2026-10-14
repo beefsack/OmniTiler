@@ -919,6 +919,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tiler-core",
+ "tiler-windows",
 ]
 
 [[package]]

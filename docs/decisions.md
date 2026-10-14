@@ -124,6 +124,25 @@ platform API behavior.
     cross-thread run-loop handle. Input's inactive source parks until explicitly
     woken; the engine waits for inbox work. Native latency/idle cost remains
     unmeasured. [Offline evidence](changes/macos-phase-1-skeleton.md).
+  - **Tentative, pending user review (Phase 1 classification):** normalize
+    AXStandardWindow as the ordinary candidate; AXDialog, AXSystemDialog,
+    AXFloatingWindow, AXSheet and modal windows as untouched float exceptions,
+    including recognized nonzero-layer panels. Fullscreen is an independent
+    fact; minimize/hidden-app observations leave layout without inventing close.
+    CG offscreen alone does not imply exclusion or destruction. Own-bundle
+    windows are excluded; Ghostty remains ordinary. Fixed admission uses shared
+    usable min/max hints, never synthetic bounds inferred from AXSize
+    settability. Native hint acquisition remains unresolved.
+    [Offline implementation](changes/macos-window-classification.md).
+    Activation-policy/layer/application exceptions, sheet identity and the
+    restored-fullscreen slot question remain
+    [TBD discriminators](spec/reference-outcomes.md#macos-classification-discriminators).
+  - **Tentative A, pending later user review (restored fullscreen):** remove
+    the macOS `omit_from_wire` workaround and report a minimized window's
+    fullscreen return truthfully, preserving current adapter/core behavior.
+    Existing convergence forgets its saved D23 slot and fresh-admits on exit.
+    Desired slot retention remains TBD; a shared-core fix is a tentative P2
+    candidate for a later separate change, not part of this extraction.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring

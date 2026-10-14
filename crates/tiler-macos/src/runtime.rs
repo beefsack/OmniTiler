@@ -59,6 +59,9 @@ pub use crate::runtime_types::{
     PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics, StartupError, SubmitOutcome,
     TerminateOutcome, WorkerReadiness, parse_window_id, window_id,
 };
+/// Shared fixed-size admission predicate plus hint vector, re-exported so
+/// offline tests drive both D1 predicate modes without a core dependency.
+pub use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 /// Cap for the structured lifecycle log; oldest entries rotate out.
 const LOG_CAP: usize = 512;
@@ -128,7 +131,7 @@ pub(crate) struct AppRecord {
 }
 
 pub(crate) struct Shared {
-    config: RuntimeConfig,
+    pub(crate) config: RuntimeConfig,
     generation_counter: u64,
     log_counter: u64,
     start: Instant,

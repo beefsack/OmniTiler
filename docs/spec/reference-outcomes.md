@@ -15,6 +15,22 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### macOS classification discriminators
+
+Variants of R-SPC-01/04 and R-MNZ-01; typed-fact offline evidence only.
+[Implementation and pinned reference comparison](../changes/macos-window-classification.md).
+These rows select no new native behavior.
+
+| Variant | Minimal action sequence | Offline candidate / source evidence | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| AX size-settable only | Open a standard window with `AXSize` not settable and no usable min/max bounds; open an ordinary resizable sibling | Both reach shared hint-based admission; settability is carried without inventing fixed bounds. glide floats non-resizable; yabai additionally requires a small current frame | macOS capability-only fixed admission versus ordinary tile TBD. Existing shared both/either-axis hint rule remains selected; native hint-source availability TBD |
+| Restored directly fullscreen | Tile A/B/C; minimize middle B; restore B directly fullscreen; leave fullscreen; record B's side/index/share and A/C allocations | Tentative A, pending later user review: report fullscreen truthfully, matching existing adapter/core behavior; remove the macOS wire-omission workaround. Existing core forgets B's D23 slot and fresh-admits on exit; asymmetric three-window offline regression distinguishes this from saved-middle restore and proves no fullscreen writes | Desired shared slot retention and exact reference/native outcomes remain TBD. A shared-core fix is a tentative P2 candidate for a separate change; no existing core behavior changes here |
+| Accessory app with a document window | Open a standard document window in a menu-bar/accessory app, then open its utility panel | Candidate excludes accessory/prohibited owners; rift filters non-Regular owners while AeroSpace has narrower per-window heuristics | Whether an actionable accessory document/panel should participate, and unreadable activation-policy handling, TBD; no bundle-specific exception selected |
+| Standard elevated-level window | Tile ordinary A; open standard B at a nonzero CG level, then open an AXFloatingWindow panel at that level | Candidate excludes B but keeps the recognized panel as untouched float; rift rejects non-normal levels except an app-specific dialog carve-out, yabai can float non-normal levels | Standard elevated-level exclusion versus float TBD; recognized panel float is the tentative mapping of the selected transient rule. Exact native level/role combination TBD |
+| Nonstandard application document | Open a large application document reporting AXDialog (e.g. undecorated qutebrowser or IBKR), then open its ordinary dialog | Candidate floats both; AeroSpace and rift have different application-specific manage exceptions | Application-specific tiling exception versus generic dialog float TBD; do not infer manageability from current size |
+| Sheet identity | Open parent A; open an attached sheet; close the sheet | Candidate floats a separately supplied sheet identity without writes; Silica resolves sheets to the parent | Whether native AX/CG discovery supplies a distinct managed identity, parent alias or neither TBD; parent modal focus and settled geometry remain TBD |
+| Transient fullscreen | Open a dialog/sheet; enter native fullscreen if supported; exit | Candidate preserves independent transient-float and fullscreen facts, with no geometry writes | Native feasibility, exact origin/hold outcome and focus TBD; no app-specific fullscreen behavior selected |
+
 ### KDE directional transfer settlement discriminator
 
 | Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / next discriminator |

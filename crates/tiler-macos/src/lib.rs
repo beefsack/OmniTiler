@@ -28,6 +28,7 @@
 pub mod ax;
 pub mod ax_session;
 pub mod cg;
+pub mod classifier;
 pub mod cli;
 pub mod config;
 pub mod engine;

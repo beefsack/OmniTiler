@@ -21,6 +21,7 @@ use tiler_core::{
     directional::{SameAxisMove, WindowId},
     engine::Engine,
     geometry::Rect,
+    window_policy::geometry_write_allowed,
 };
 
 use crate::input::cg_flag_bits;
@@ -285,7 +286,34 @@ impl FrameSlot {
     }
 }
 
-pub(crate) use crate::runtime_core::{RetainedApp, RetainedCore, build_event, clear_focus_into};
+pub(crate) use crate::runtime_core::{
+    RetainedApp, RetainedCore, build_event, clear_focus_into, skeleton_key,
+};
+
+// -- Engine event wire ---------------------------------------------------------
+
+/// Build one core event with wire normalization over core-session lifetime:
+/// the session query and the fixed predicate travel with the retained state
+/// so [`build_event`] can hold born arrivals and assert first-sight fixed
+/// origins without adapter lifetime maps.
+fn wire_event(
+    engine: &Engine,
+    retained: &mut RetainedCore,
+    focused_override: Option<WindowId>,
+    closed: Vec<WindowId>,
+    command: CoreCommand,
+) -> tiler_core::boundary::CoreEvent {
+    let session = engine.session(&skeleton_key());
+    let predicate = engine.fixed_size_predicate();
+    build_event(
+        retained,
+        focused_override,
+        closed,
+        command,
+        session,
+        predicate,
+    )
+}
 
 // -- Thread bodies -------------------------------------------------------------
 
@@ -302,6 +330,16 @@ pub(crate) fn engine_main(
 ) -> EngineExit {
     let mut engine = Engine::new();
     let mut retained = RetainedCore::default();
+    // The macOS skeleton opts into the shared fixed-size admission policy
+    // (D1-D8): hintless traffic is unaffected, while fixed-hint arrivals
+    // classify admission-side through the configured predicate. Lifetimes
+    // (born hold, first exit, restore) stay core-owned; this only selects
+    // the shared policy the normalization feeds.
+    {
+        let guard = lock_shared(&shared);
+        engine.set_fixed_size_admission(true);
+        engine.set_fixed_size_predicate(guard.config.fixed_size_predicate);
+    }
     let _ = ready_tx.send(());
     loop {
         let Some(job) = inbox.recv(&stop) else {
@@ -405,7 +443,7 @@ fn process_job(
             // Reconcile the survivors so unaffected apps stay operational;
             // the closed windows ride as explicit closes (never minimize
             // slots for a dead app).
-            let event = build_event(retained, None, closed, CoreCommand::Reconcile);
+            let event = wire_event(engine, retained, None, closed, CoreCommand::Reconcile);
             let reply = engine.handle(&event);
             apply_reply(
                 reply,
@@ -520,7 +558,7 @@ fn process_job(
                 "applied",
                 window_count,
             );
-            let event = build_event(retained, None, Vec::new(), CoreCommand::Reconcile);
+            let event = wire_event(engine, retained, None, Vec::new(), CoreCommand::Reconcile);
             let reply = engine.handle(&event);
             apply_reply(
                 reply,
@@ -564,7 +602,7 @@ fn process_job(
             };
             lock_shared(shared).diagnostics.input_forwarded += 1;
             emit(shared, 0, 0, 0, "input", op, 0);
-            let event = build_event(retained, Some(window), Vec::new(), command);
+            let event = wire_event(engine, retained, Some(window), Vec::new(), command);
             let reply = engine.handle(&event);
             apply_reply(
                 reply,
@@ -661,6 +699,22 @@ fn reply_kind(reply: &CoreReply) -> &'static str {
     }
 }
 
+/// Whether frame emission for `window` is withheld: the retained observation
+/// still carries a native overlay flag for it. The reserved slot/allocation
+/// stays plan truth; only actuation is filtered, through the shared
+/// [`geometry_write_allowed`] gate. The skeleton performs no maximized
+/// inference, so only fullscreen can hold here.
+fn overlay_holds_frame(retained: &RetainedCore, window: &str) -> bool {
+    let Some((pid, wid)) = parse_window_id(window) else {
+        return false;
+    };
+    retained
+        .apps
+        .get(&pid)
+        .and_then(|app| app.windows.iter().find(|w| w.wid == wid))
+        .is_some_and(|w| !geometry_write_allowed(w.fullscreen, false))
+}
+
 /// Translate one core reply into frame commands and focus requests.
 /// Frame emission overwrites per-app latest-wins slots without waiting;
 /// focus emission is a bounded outbox `try_send` with a counted drop.
@@ -738,11 +792,9 @@ fn apply_reply(
     if let Some(base) = revision {
         retained.last_revision = base;
     }
-    // Planned focus never becomes observed truth here: `focus_to` travels
-    // only into the focus request below, and the input subject stays on
-    // `observed_focus` until an observation confirms arrival. A dropped
-    // request therefore never advances focus.
-    // Snapshot desired geometry for tests and diagnostics.
+    // Snapshot desired geometry for tests and diagnostics. Built from the
+    // FULL plan geometry: overlaid members stay plan truth even while
+    // emission below withholds their writes.
     let desired: Vec<DesiredFrame> = geometry
         .iter()
         .map(|(window, rect)| DesiredFrame {
@@ -753,6 +805,26 @@ fn apply_reply(
             h: rect.h,
         })
         .collect();
+    // Overlay emission filter: retained fullscreen members keep their
+    // reserved slot/allocation in plan truth but take no geometry write
+    // while overlaid. Withheld frames are counted, never dropped silently;
+    // only actuation is filtered here, never plan truth above.
+    let mut overlay_skipped = 0u64;
+    let geometry: Vec<(String, Rect)> = geometry
+        .into_iter()
+        .filter(|(window, _)| {
+            if overlay_holds_frame(retained, window) {
+                overlay_skipped += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    // Planned focus never becomes observed truth here: `focus_to` travels
+    // only into the focus request below, and the input subject stays on
+    // `observed_focus` until an observation confirms arrival. A dropped
+    // request therefore never advances focus.
     // Collect live per-app slots without holding the lock during emission.
     let slots: Vec<(u32, u64, Arc<FrameSlot>)> = {
         let guard = lock_shared(shared);
@@ -867,6 +939,7 @@ fn apply_reply(
         guard.count_reply(&format!("{op}-{token}"));
         guard.diagnostics.frames_emitted += emitted;
         guard.diagnostics.frames_coalesced += coalesced;
+        guard.diagnostics.frames_overlay_skipped += overlay_skipped;
         guard.diagnostics.terminated_invalidated += dead;
         guard.diagnostics.focus_dispatched += focus_dispatched;
         guard.diagnostics.focus_dropped_full += focus_dropped;
@@ -877,6 +950,11 @@ fn apply_reply(
             guard.last_desired = desired;
         }
     }
+    // Retire note: when the core retires the skeleton domain (empty plan
+    // with the session removed), the next fresh seed adopts the carried
+    // revision (verified against the core: fresh sessions start clean
+    // regardless of the cursor), so no cursor reset is needed here. Held
+    // and minimize-slot sessions persist with their cursor untouched.
     emit(shared, pid, generation, seq, "core-reply", token, emitted);
     if emitted > 0 {
         emit(shared, pid, generation, seq, "frame", "emitted", emitted);

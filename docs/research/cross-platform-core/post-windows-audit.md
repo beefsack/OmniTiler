@@ -58,6 +58,18 @@ Command: `git log --since=2026-09-30 -- crates/tiler-core crates/tiler-protocol`
 
 ## C. Core extraction candidates
 
+2026-10-15 consumer status: the normalized window-policy row's initial pure
+slice has an additive Rust implementation and actual Windows-copy conformance
+in [macOS classification](../../changes/macos-window-classification.md).
+Tentative A, pending later user review, removes restored-fullscreen wire
+omission and keeps current adapter/core reporting; desired D23 slot retention
+remains TBD as a separate P2 candidate. KDE/Windows copies remain unchanged;
+this is not a completed adapter migration. Mac consumes
+the hold/write gates and existing fixed-size enum/predicate; remaining pure
+gates are conformance-pinned for later adoption. K2 defaults/catalog rows have
+no new descriptor consumer in this skeleton, so no additional subset moved.
+K3 and native observation/actuation lifetimes remain target-specific.
+
 - **K2 trigger has occurred, but it was reimplemented:** Windows `settings.rs` owns defaults/validation, binding families/catalog, conflicts and presets; KDE keeps TS catalogs/parsing plus native KCM conflict/preset code. Existing core bounds/commands already serve both. The need to revisit K2 is real; it does not eliminate the [recorded boundary cost](../../changes/archive/portable-core-k2-settings-actions.md#scope-options).
 - **K3 did not become the same shared contract:** KDE compares applied evidence before event-driven refresh; Windows compares desired/observed writes and applies clamp/refusal suppression around its pump. Membership/float convergence is already Engine-owned. Similar comparisons are not evidence for transplanting either complete state machine.
 - **AR6/AR7 trigger has also occurred, partially:** Windows owns project-managed workspace state, membership, focus and tiled flags. Small pure policy is already in `tiler-core::workspace`; the full logical map and per-workspace mode remain in each target. Native/global-unique/shared mapping is not implemented on Windows.

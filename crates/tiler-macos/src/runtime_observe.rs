@@ -136,6 +136,8 @@ mod tests {
             w: 10,
             h: 10,
             floating: false,
+            fullscreen: false,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
         }
     }
 

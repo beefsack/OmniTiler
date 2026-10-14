@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use tiler_core::geometry::Rect;
+use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use crate::config::ProbeModifier;
 
@@ -53,8 +54,19 @@ pub enum LifecycleEvent {
     Terminate { pid: u32 },
 }
 
-/// One observed window: opaque IDs plus integer frame only. No titles,
-/// no content, no PII.
+/// One observed window: opaque IDs plus integer frame plus the normalized
+/// classifier facts the core needs. No titles, no content, no PII.
+///
+/// `floating` carries normalized float exceptions (dialogs, sheets, modals);
+/// `fullscreen` carries the native overlay flag truthfully on every shape;
+/// `hints` carries the current size-hint vector for the core's
+/// admission-only fixed classifier (D1/D2/D5 freshness). The wire layer
+/// holds born fullscreen arrivals slotless (synthetic floating, never
+/// automatic) and asserts first-sight fixed origins; retained overlays keep
+/// their reserved slot/allocation in plan truth with no geometry writes.
+/// Minimized, hidden-app, policy/own-bundle, and layer exclusions never
+/// reach this shape: the classifier omits them from the submission instead
+/// (the core folds absence into minimize/restore, never into close).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedWindow {
     pub wid: u32,
@@ -63,6 +75,8 @@ pub struct ObservedWindow {
     pub w: i32,
     pub h: i32,
     pub floating: bool,
+    pub fullscreen: bool,
+    pub hints: WindowSizeHints,
 }
 
 /// Typed AX observation for one app. `generation` is the originating app
@@ -200,6 +214,10 @@ pub struct RuntimeConfig {
     pub move_key: u32,
     /// Direction carried by focus/move steps.
     pub step_direction: InputDirection,
+    /// Shared fixed-size admission predicate for the skeleton engine (D1).
+    /// Both-axes default (current delivered behavior); changing it affects
+    /// subsequent admissions only, never existing classifications.
+    pub fixed_size_predicate: FixedSizePredicate,
 }
 
 impl Default for RuntimeConfig {
@@ -214,6 +232,7 @@ impl Default for RuntimeConfig {
             focus_key: crate::input::PROBE_KEY_CODE,
             move_key: 0x05,
             step_direction: InputDirection::Right,
+            fixed_size_predicate: FixedSizePredicate::BothAxes,
         }
     }
 }
@@ -259,6 +278,11 @@ pub struct RuntimeDiagnostics {
     /// matches the last observed geometry (redundant once observers report
     /// back; a native clamp converges instead of rewriting endlessly).
     pub frames_redundant_skipped: u64,
+    /// Desired frame writes withheld because the target window is a native
+    /// overlay ([`tiler_core::window_policy::geometry_write_allowed`]
+    /// refuses): retained fullscreen members keep their slot with no target
+    /// geometry. Plan truth is untouched (only emission is filtered).
+    pub frames_overlay_skipped: u64,
     pub focus_dispatched: u64,
     pub focus_dropped_full: u64,
     pub stale_dropped: u64,

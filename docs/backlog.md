@@ -3342,7 +3342,14 @@ decisions of 2026-09-24 are under
   boundary, per-app AX observer/actuation owners, typed handoffs, bounded
   stop/reap, structured logs and failure-isolation fixtures. Native tap install,
   live tiling and durable stranded-window recovery are not enabled by this
-  skeleton. Next:
+  skeleton. [Window-policy/classification slice](changes/macos-window-classification.md)
+  implemented offline: additive core predicates and actual Windows-copy
+  conformance, typed AX/CG classifier and fake Engine fixtures. Tentative A,
+  pending later user review, removes restored-fullscreen wire omission and
+  keeps adapter/core parity; desired slot retention remains TBD
+  ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators)).
+  Native fact readers, hint-source availability, classification TBDs and
+  hosted CI remain pending. Next:
   prove original → owned target → original agreement, then Ctrl-chord
   delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
   and enabled Mission Control collisions; native Space move/switch/create
@@ -3361,7 +3368,7 @@ decisions of 2026-09-24 are under
   development identity, configurable Meta with Ctrl default, all Rust,
   per-app AX/input/engine threading and native Spaces first. Core extraction
   (K2/K3) and the shared restart store remain consumer-driven reviews; the
-  window-policy slice is a separate follow-up. Carry the non-native capability-first
+  window-policy slice is implemented offline above. Carry the non-native capability-first
   spikes and one registration plus one interception hotkey path into Phase 0,
   then Phase 1 lifecycle/recovery and hotkey probes on a Mac.
   [API layer/events](research/non-native-tiler-host-interaction.md#d1-api-layer-authority-events-and-reconcile),
@@ -3371,6 +3378,14 @@ decisions of 2026-09-24 are under
   [setup](macos-dev-environment.md)
   [survey](research/macos-port/prior-art.md)
   [plan](research/macos-port/plan.md)
+- P2 | Shared minimize/fullscreen slot retention (tentative candidate) |
+  Tentative A, pending later user review: keep truthful adapter reporting for
+  tile A/B/C -> minimize B -> restore B fullscreen -> exit; existing core
+  forgets the saved D23 slot and fresh-admits. A shared-core slot-retention
+  fix is a candidate for a later separate change; desired behavior and exact
+  reference/native outcomes remain TBD
+  ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators),
+  [record](changes/macos-window-classification.md)).
 - P1 | Rust toolchain tracking (recurring) | User (2026-09-30): track latest
   stable Rust pre-1.0 and fix breakage. Windows uses rustup `stable`; Linux
   and CI get Rust from the nixpkgs pins in `devenv.yaml` and `flake.lock`, which must be bumped

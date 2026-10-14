@@ -19,6 +19,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiler-core = { path = "../tiler-core" }
 
+# Test-only pin of the actual Windows portable policy: comparing real
+# `tiler_windows::tiling` predicates against `tiler-core::window_policy`
+# without a core dependency cycle and without rewiring either adapter.
+[dev-dependencies]
+tiler-windows = { path = "../tiler-windows" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
