@@ -771,11 +771,18 @@ decisions of 2026-09-24 are under
     tray-adjacent moved less than the measured legacy app-list edge. [Live spike 2](research/windows-port/taskbar-workspace-indicator.md#live-spike-2)
     demonstrated manifested layered-GDI child pixels, injected cell clicks,
     one real app icon and borderless-helper occlusion; later parenting/pixel
-    checks did not reproduce the result. BLOCKED on repeatability; no product
-    host selected. Two-icon, Start/app-button clicks and exact recovery remain
-    open, alongside secondary taskbars, real app-content bounds, auto-hide,
-    alignment, DPI changes and game safety. New native module estimate 800-1,400
-    Windows-specific LOC (tests/shared core separate), not `tiling_sys.rs`.
+    checks did not reproduce the result. [Live spike 3](research/windows-port/taskbar-workspace-indicator.md#live-spike-3):
+    0/10 fresh-process host passes (raw `SetParent` error 87, direct child creation
+    error 5); corrected layered pixel control passed, but matched PMv2 contexts
+    and child-style-before-parent still failed. Root cause unknown; BLOCKED on
+    repeatability, no product host selected. Exact prototype cleanup verified;
+    two-icon/Calculator, Start/app-button clicks, sustained churn/redraw,
+    fullscreen/cost revalidation and product recovery remain open, alongside
+    secondary taskbars, real app-content bounds, auto-hide, alignment, DPI changes
+    and game safety. Product needs an embedded Win8+ compatibility/PMv2 manifest
+    and owner snapshot (per-output list/active id, saved rects/HWND identities,
+    urgency). New `pager.rs`/`pager_sys.rs` estimate 800-1,400 Windows-specific
+    LOC once hosting works (tests/shared core separate), not `tiling_sys.rs`.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product

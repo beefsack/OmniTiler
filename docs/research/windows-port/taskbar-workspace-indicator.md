@@ -447,6 +447,123 @@ one scaled-DPI primary output, ordinary integrity, no secondary taskbar.
   by the successful run. Secondary taskbars, crowded layouts, display/Explorer
   lifecycle, alignment/auto-hide, changing DPI and real-game safety remain open.
 
+### Live spike 3
+
+**No-go for product implementation: 0/10 fresh-process taskbar-host passes;
+the native failure is attributed, but its root cause remains unknown.** Checked
+2026-10-15 on physical Windows 11, ordinary medium integrity, at the existing
+DPI. Only the primary taskbar was tested; no shell settings changed.
+
+#### Native diagnosis and repeatability
+
+- A new raw `windows-sys` prototype embedded Win8/8.1/Win10 `supportedOS`,
+  `asInvoker` and PerMonitorV2 through `/MANIFEST:EMBED` + `/MANIFESTINPUT`.
+  It used the opaque layered-GDI technique described in spike 2; no injection
+  or shell modification was used.
+- Ten consecutive fresh processes each cleared last-error immediately before
+  raw `SetParent` and read it immediately afterward. All returned NULL with
+  **87 (`ERROR_INVALID_PARAMETER`)**, and `GetParent` did not equal the taskbar.
+  This is not the successful NULL-previous-parent case, which requires zero
+  last-error. The earlier projected `E_INVALIDARG` is consistent with this
+  native error; the projection alone did not cause these ten failures.
+- Direct `CreateWindowExW(WS_CHILD, hWndParent = Shell_TrayWnd)` failed with
+  **5 (`ERROR_ACCESS_DENIED`)** in every process. Taskbar HWND, owning process
+  lifetime, rectangle, styles and DPI remained stable. No stale taskbar handle
+  was observed.
+- The initial floating control, positioned over the taskbar, also failed all
+  ten pixel checks and hit-tested to the taskbar. It was not layered, so those
+  runs are **ten raw-parenting negatives, not ten render-qualified cycles**.
+  Later placement/pixel negatives after failed parenting were discarded: the
+  harness had incorrectly applied client coordinates to an unparented window.
+- One corrected fresh-process diagnostic used a layered, alpha-255 control
+  within the desktop work area. `SRCCOPY | CAPTUREBLT` found **4,060 red,
+  4,060 green and 4,060 blue pixels**, plus 780 border pixels, and the control
+  won its hit test. Layered painting and capture therefore work independently
+  of taskbar hosting. This does not establish why the over-taskbar control failed.
+- That corrected diagnostic compared the actual taskbar and owned-window DPI
+  contexts, not just the caller's thread: both were PMv2. Explicitly setting
+  the thread to the taskbar's context and restoring it afterward succeeded.
+  Setting `WS_CHILD` **before** raw `SetParent` still returned 87; the earlier
+  **after** order had already failed ten times. Direct child creation under
+  the matched context still returned 5. These tested style orders and a DPI
+  context mismatch do not explain the failure.
+- Token readbacks showed medium integrity for both processes and equal session
+  ids. The caller's station/desktop was the interactive default. These checks
+  do not establish the access-control mechanism behind error 5 or rule out all
+  UIPI/desktop restrictions. No privilege escalation or shell repair was attempted.
+- Child enumeration remained inconsistent: recursive enumeration returned three
+  descendants while a direct sibling walk returned none. Independent read-only
+  checks verified all nine previously recorded descendant handles individually,
+  with their original classes, parents, owner and geometry. Enumeration counts
+  were not accepted as ownership or cleanup proof.
+
+**Result:** 0/10 initial taskbar-host passes; one additional corrected,
+render-qualified diagnostic also failed parenting. No working host existed on
+which to run ten successful create/render/verify/destroy cycles. Error 87/5 is
+now native evidence; **the underlying cause remains unknown**. No shell-hardening
+or servicing-change cause is established.
+
+#### Content, interaction, robustness and cost
+
+| Check | Spike 3 result / limit |
+| --- | --- |
+| Three cells / real window rectangles | Diagnostic color cells rendered in the work-area control. Real-window-scaled miniature rectangles were not tested because taskbar hosting failed. |
+| Two distinct icons / Calculator | Not tested. Two-icon rendering and Calculator CoreWindow/AUMID/package-icon resolution remain open; no generic glyph was demonstrated as a Calculator fallback. Spike 2's single Character Map icon is earlier evidence only. |
+| Cell clicks | Not run on the failed host. Spike 2's injected selection result is not a current artifact result or a product workspace-switch proof. |
+| Start and owned app button | Not run; identity-bound Start open/close and app-button activation remain unverified. |
+| 60-second churn / 100ms sampling / shell redraw | Not run; failed parenting prevents a meaningful child visibility/position or redraw-survival test. Ten short negative factory runs are not sustained robustness evidence. |
+| Fullscreen occlusion and return | Not rerun. Earlier borderless-helper evidence remains valid only for spike 2's working artifact; games/exclusive fullscreen remain open. |
+| Theme | Existing settings preserved; theme contrast and theme-change rendering were not tested. |
+| 30-second idle CPU / per-paint timing | Not measured for a working pager. Earlier prototype costs are not spike 3 cost evidence. |
+
+#### Cleanup, manifest and implementation recommendation
+
+- All diagnostic processes exited. The corrected control and style-order window
+  each returned successful `DestroyWindow`, immediately followed by false
+  `IsWindow`; direct child creation produced no HWND. Final independent checks
+  found no prototype top-level windows or processes, and the nine known taskbar
+  descendants remained unchanged. Taskbar root identity/geometry/styles/DPI
+  matched baseline. Process exit and per-handle checks, rather than the
+  undercounting enumeration, support cleanup. No physical appearance/input
+  acceptance is inferred.
+- `crates/tiler-windows` still has no application `.manifest`, `build.rs` or
+  manifest-embedding dependency. Its `ensure_pm_v2` in `tiling_sys.rs` sets or
+  verifies runtime PMv2; that does **not** declare Windows 8+ `supportedOS`.
+  Product adoption needs an embedded compatibility manifest with PMv2, verified
+  in the built executable, in addition to a proven host factory.
+- **Do not begin product hosting implementation.** The exact previously working
+  candidate remains: manifested `WS_EX_LAYERED | WS_EX_TOOLWINDOW |
+  WS_EX_NOACTIVATE`, `WS_CHILD | WS_VISIBLE` under the taskbar, tray-left anchor
+  mapped into parent client coordinates, `HWND_TOP` without a floating fallback,
+  GDI change-driven paint and `SetLayeredWindowAttributes(LWA_ALPHA, 255)`.
+  It is a historical working technique, not a repeatable spike 3 result.
+- If hosting is re-established, propose new `pager.rs` and `pager_sys.rs` modules
+  in `crates/tiler-windows`: portable snapshot/layout/hit-testing and contained
+  native hosting/painting/icon ownership respectively. Keep settings in the
+  existing tray path; do not add pager effects to `tiling_sys.rs`. Cache icons
+  with bounded asynchronous lookup and identity invalidation; release owned
+  copies, never borrowed `WM_GETICON`/class handles. Coalesce snapshot changes,
+  stop work while hidden and revalidate/recreate hosts after shell/topology changes.
+- Required owner data: **per-output ordered workspace list and stable tokens,
+  active workspace id, output/work-area rectangle, saved window rectangles and
+  HWND + process-lifetime identities per workspace, and workspace/window urgency**.
+  Include snapshot generation for stale click rejection; route clicks through
+  existing workspace requests rather than making the UI an authority. Hidden
+  workspaces need stored geometry. Urgency acquisition remains a separate gap.
+- Retain the provisional **800-1,400 Windows-specific handwritten LOC** estimate
+  for a proven host/render/icon/input/lifecycle path, excluding tests, shared-core
+  snapshot additions and urgency acquisition. Unknown hosting diagnosis and
+  unsupported shell compatibility have no bounded estimate. Remaining risks:
+  crowded-taskbar collisions, actual app-content bounds, secondary taskbars,
+  changing/mixed DPI, alignment/auto-hide, shell/display lifecycle, accessibility,
+  physical clicks and real-game safety.
+- Evidence baseline `b912400`; initial ten-cycle executable SHA-256
+  `b22a5ab2e69de58a32fc4e6ebc219e06aaa2151c3cb2d1724f4ab1b3afd96f12`;
+  corrected diagnostic SHA-256
+  `4b62e63178f552f5b2add68ed6151bbb5c3b27915921d7e6e1edc93b12f058d7`.
+  Raw source, per-cycle JSON, composed captures and independent cleanup checks
+  remain in temporary evidence outside the repository. No product code changed.
+
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4
 [ideskband2]: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl/nn-shobjidl-ideskband2
