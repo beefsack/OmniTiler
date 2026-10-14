@@ -10679,9 +10679,12 @@ fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySu
     // Routine zero-change ticks stay quiet; anything else logs one summary.
     // The dedupe signature carries no tick (stable-noop): an identical
     // observation must stay quiet no matter how many ticks pass. Bounded: the
-    // sorted skip list is the full signal, no arbitrary caps.
+    // sorted skip list is the full signal, no arbitrary caps. The emitted
+    // line carries only the deduped skip count, never the repeated per-window
+    // list (reread observation re-lists the same identities).
     let mut summary_skipped = skipped.clone();
     summary_skipped.sort();
+    summary_skipped.dedup();
     let signature = tick_summary_signature(
         observed.len(),
         applied,
@@ -10694,10 +10697,7 @@ fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySu
     let changed = state.last_summary.as_ref() != Some(&signature);
     if changed || state.trace {
         state.last_summary = Some(signature);
-        let skipped_json: Vec<serde_json::Value> = summary_skipped
-            .into_iter()
-            .map(|(window, reason)| serde_json::json!({"window": window, "reason": reason}))
-            .collect();
+        let skipped_count = summary_skipped.len();
         log_json_at(
             &log_path,
             serde_json::json!({
@@ -10710,7 +10710,7 @@ fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySu
                 "windows": observed.len(),
                 "applied": applied,
                 "mismatched": mismatched,
-                "skipped": skipped_json,
+                "skipped": skipped_count,
             }),
         );
     }

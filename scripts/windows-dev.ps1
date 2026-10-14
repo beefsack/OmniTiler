@@ -208,7 +208,7 @@ function Get-DevExitCode([bool]$Completed, [bool]$WasInterrupt, [hashtable]$Clea
   if ($WasInterrupt -and $Cleanup.ok -and $Cleanup.verified) { return 0 }
   return 1
 }
-function Complete-DevSession([bool]$Completed, [object]$BodyRec, [string]$BodyErr, [string]$Payload, [object]$LaunchedOwner) {
+function Complete-DevSession([bool]$Completed, [object]$BodyRec, [string]$BodyErr, [string]$Payload, [object]$LaunchedOwner, [string]$LogPath = "") {
   $cleanup = Invoke-DevCleanup $Payload $LaunchedOwner
   $wasInterrupt = Test-Interrupted $BodyRec
   if ((-not $wasInterrupt) -and (-not $Completed) -and ($null -eq $BodyRec) -and ($BodyErr -eq "")) {
@@ -228,6 +228,7 @@ function Complete-DevSession([bool]$Completed, [object]$BodyRec, [string]$BodyEr
     if (-not $cleanup.ok) { $lines += "dev cleanup failed: $($cleanup.error)" }
     elseif (-not $cleanup.verified) { $lines += "dev note: owner exit unconfirmed; session pointer kept, recover with: just stop" }
   }
+  if ($LogPath -ne "") { $lines += "log_path=$LogPath" }
   return @{ code = $code; lines = $lines }
 }
 function Assert-NoExistingOwner([string]$ProbeExe, [string]$Tag) {
@@ -379,6 +380,7 @@ if ($Action -eq "lifecycle-smoke" -or $Action -eq "dev" -or $Action -eq "stop" -
       $payload | Set-Content -LiteralPath $PointerFile -Encoding utf8NoBOM
       $launched = $false
       $launchedOwner = $null
+      $logPath = ""
       $completed = $false
       $bodyErr = ""
       $bodyRec = $null
@@ -387,6 +389,7 @@ if ($Action -eq "lifecycle-smoke" -or $Action -eq "dev" -or $Action -eq "stop" -
         Start-ExplorerGui $payload $runArgs $DevSessionDir
         $ready = Assert-OwnerReady $payload $tag
         $launchedOwner = $ready.owner
+        $logPath = "$($ready.log_path)"
         $provenance = @{
           commit        = $provCommit
           dirty         = $provDirty
@@ -415,7 +418,7 @@ if ($Action -eq "lifecycle-smoke" -or $Action -eq "dev" -or $Action -eq "stop" -
         throw
       } finally {
         if ($launched) {
-          $done = Complete-DevSession $completed $bodyRec $bodyErr $payload $launchedOwner
+          $done = Complete-DevSession $completed $bodyRec $bodyErr $payload $launchedOwner $logPath
           # Ctrl+C stops PowerShell's output pipeline; report directly to the
           # console and exit with the computed cleanup status.
           foreach ($ln in $done.lines) { [Console]::WriteLine($ln) }

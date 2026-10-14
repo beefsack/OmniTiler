@@ -622,10 +622,10 @@ decisions of 2026-09-24 are under
   safety/proof transitions and failure/decision/actuation evidence remain
   immediate ([trace-volume record](changes/archive/windows-trace-volume.md)).
   User dogfood 2026-10-14 after that change: console readable, mouse movement
-  no longer floods. Small follow-ups (keep minimal): reconcile `tick` records
-  list every skipped window twice and repeat the full skipped list each tick;
-  `just dev` should print the run-log path again in its final cleanup report
-  (the start-of-session lines scroll out of the console buffer).
+  no longer floods. Small follow-ups delivered: reconcile `tick` records emit
+  only a deduplicated skipped count, removing the repeated per-window list;
+  Windows `just dev` reprints the run-log path in its final cleanup report
+  after the start-of-session lines scroll out of the console buffer.
   Trace-off and release smoothness/release-settle comparison pending
   ([raster record](changes/archive/windows-edge-resize-latency.md),
   [input-thread evidence and commands](changes/archive/windows-resize-hook-latency.md)).
