@@ -397,6 +397,10 @@ $env:INCLUDE
   loop: `just dev`, `just dev trace`, `just stop`; bounded owned-window
   journey: `just proof`. `just lifecycle-smoke [trace]` covers the previous
   non-tiling loop; `just tile` still requires explicit `--user-start`.
+  `just dev [trace|verbose] [tile args]` forwards extra tile arguments (for
+  example `--scope-exe`, `--group-underlay-color`). After Ctrl+C, `just`
+  reports the recipe failed with exit code 1 even when the printed cleanup
+  report says the stop, restore and ledger check succeeded; trust the report.
 - The dev loop copies binaries before launch so builds do not overwrite running
   images. Explorer's desktop `Document.Application` broker keeps dev/test actors
   outside the protected Terminal tree; plain Shell.Application is caller-context.

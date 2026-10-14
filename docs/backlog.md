@@ -288,6 +288,94 @@ decisions of 2026-09-24 are under
   Saved colors preserved; black/white/grey at 100%/150% visual check pending
   ([Windows record](changes/archive/windows-underlay-default.md)). Win+G/F11
   leakage observed again (known, parked under gaming coexistence).
+  - User physical 2026-10-14 (scoped Notepad/Paint/Calculator, single output,
+    `--group-underlay-color '#662a82da'`): underlay 40% blue with correct size
+    (item 24; black/white/grey and 150% not reported); Win+Y toggles both ways,
+    no held repeats (item 21); D16 float and float+maximized sends keep state
+    and focus, unmaximize/remaximize on target and return work; D23 minimize
+    reflows, restore rejoins, minimized close keeps tiling sound. One issue:
+    fullscreen send arrives without focus (trace `focus-suppressed`), the
+    tentative R-MAX-09 fullscreen-follow focus suppression. User 2026-10-14
+    selected option A: a verified follow send focuses the fullscreen mover on
+    arrival like other follow sends (stay unchanged); real-game check under
+    gaming coexistence. Implementation queued (Windows; replaces the
+    suppression in `decisions.md` R-MAX-09 Windows delivery note).
+  - User review of Windows tentatives 2026-10-14 (promote to `decisions.md`
+    and clear the "tentative" labels with the next delivery): (1) fullscreen
+    follow focus: option A above. (2) Held repeats: keep toggles at one action
+    per press (Win+Y, Win+O, float/maximize/fullscreen) and keep movement/send
+    repeats while modifiers stay held (Win+Ctrl+Alt output send like
+    Win+Shift+arrow); approved as delivered. (3) Rebound output-send stay on
+    letters accepts Win+Ctrl+Alt with or without Shift; approved for now,
+    exact Shift distinction only if a need appears. (4) Tray menu stop via
+    50 ms menu-thread check and `EndMenu` (`f4b9f41`): approved as delivered.
+    (5a) D27 hidden-window urgency: mark the workspace urgent in the planned
+    workspace indicator, cleared on visit; designed within Windows workspace
+    presentation research; until then native Windows behavior only.
+    (5b) OS-permitted activations (Windows foreground lock passed) are
+    legitimate: switch to the window's workspace and focus, analogous to the
+    KDE valid-token exception; no app-vs-user classifier.
+    (6) D23 source slot after a minimized window is rehomed elsewhere: user
+    leans option B (forget the source slot once placed elsewhere; a later
+    return uses ordinary send admission). Before deciding, check Tier 1
+    reference behavior (expected: position lost after moving workspace);
+    shared-core change affecting KDE; low priority.
+    (7) Saved underlay colors always win; no migration to `#662a82da`.
+    (8) Windows `just dev` user-accepted 2026-10-14 (including tray Stop and
+    whole-desktop use); further issues become new backlog items. Archive
+    `docs/changes/dev-entry-point.md` once the Linux KDE `just dev` check passes
+    (or split that check into its own backlog line).
+    (9) `CoreSettings::born_maximized_mode()` accessor: accepted.
+    (10) Agent-owned identity-tagged `tiler-test-window.exe` is the standard
+    disposable helper for agent live tests (each live test still needs a
+    user desktop hand-over): accepted.
+    (11) Trace outlier thresholds 50 ms queue/transport/work, 10 ms dispatch,
+    otherwise one summary per second while active: accepted.
+    (12) Items 14/19 migration: nonactivating move-only fullscreen/float
+    remaps; maximized/minimized keep restore rectangle and show state across
+    outputs: accepted.
+    (13) Accepted as delivered: Win+O held repeat one toggle per press;
+    render 500 ms hide-proof timeout refuses that drop with no writes; Win+B
+    shell `open` of bare `https://`, Win+T missing `wt.exe` logs only;
+    unverified cross-output transfer keeps original membership and partial
+    writes converge by observation, verified transfer stands if follow-focus
+    fails; dev entry-point `just/` layout, macOS stub, KDE wins mixed desktop
+    lists, retained per-run Windows payload dirs with current pointer;
+    `OmniTiler.*.v1` marker names and exact-owner `workspace --float`/
+    `--sticky`/`--fullscreen` test controls.
+    (13f) Fixed-size window with a durable tile override launching maximized
+    keeps a maximized overlay over a reserved slot under both
+    `core.born_maximized` values: kept for now. User wants consistency with
+    Tier 1 reference WMs and treats this as a cross-platform (shared) policy,
+    not Windows-only: research Tier 1 behavior, then decide for all targets.
+    (13g) Rust `unsafe` policy refined by user 2026-10-14, in preference
+    order: (i) use a popular, maintained, high-quality, battle-hardened
+    dependency that contains the unsafe and exposes safe Rust APIs (unsafe
+    inside the dependency is fine); (ii) avoid unsafe entirely; (iii) worst
+    case, a minimal FFI module with all else forbidden. Invert the default:
+    workspace `[workspace.lints.rust] unsafe_code = "forbid"`, FFI crates
+    override to `deny` with `#![allow(unsafe_code)]` only on the approved
+    module, plus a CI check that no other `allow(unsafe_code)` exists.
+    The `windows` crate keeps most Win32 functions `unsafe fn`, so it does not
+    satisfy (i) alone. Next: research safe Win32 wrapper crates (e.g.
+    `winsafe`) against our API surface (LL/WinEvent hooks, window procs,
+    DWM/cloak, layered windows/GDI, tray, SPI, ToolHelp, tokens, WTS,
+    accessibility); options plus recommendation to the user. Supersedes the
+    open "wrap FFI vs another crate" question. User follow-up: `winsafe`
+    likely fails the popularity/battle-hardened bar; `windows` and
+    `windows-sys` likely pass. If both expose Win32 calls as `unsafe fn`
+    (verify), (i) is unmet and (iii) applies: one minimal FFI module built on
+    either crate. Remaining choice: `windows` conveniences versus
+    `windows-sys` simplicity/compile cost/migration churn; check runtime
+    overhead (expected negligible) in the research unit.
+    (13h) Float-vs-maximized directional focus tie order: keep current
+    observed-before-retained order for now; close the P2 research item and
+    revisit only if dogfooding shows a wrong pick.
+  - User 2026-10-14: the Windows taskbar workspace indicator is now high
+    priority and blocks Windows dogfooding (tiling otherwise close to dogfood
+    ready, apart from the parked Win+G/Win+F11 Xbox prompts). Pull the
+    indicator part of Windows workspace presentation research forward.
+    Record in the item 21/24/D16/D23 change records with the next delivery.
   - (f) Offline-delivered 2026-10-12 (`b8edd14`, `8e56546`, CI green):
     Win+B opens the system-default browser via shell `open` of bare
     `https://`, Win+T launches `wt.exe` (missing Terminal logs and
@@ -507,6 +595,15 @@ decisions of 2026-09-24 are under
   optimization passes native offline gates; user dev/trace-on reports much
   better but still laggy. LL hooks share the rendering/owner thread; unchanged
   hide traces suppressed and owner busy-span diagnostics delivered offline.
+  Input/owner latency and routine render/drag-preview traces now use bounded
+  per-second summaries and throttled timing outliers at the run-log source;
+  safety/proof transitions and failure/decision/actuation evidence remain
+  immediate ([trace-volume record](changes/archive/windows-trace-volume.md)).
+  User dogfood 2026-10-14 after that change: console readable, mouse movement
+  no longer floods. Small follow-ups (keep minimal): reconcile `tick` records
+  list every skipped window twice and repeat the full skipped list each tick;
+  `just dev` should print the run-log path again in its final cleanup report
+  (the start-of-session lines scroll out of the console buffer).
   Trace-off and release smoothness/release-settle comparison pending
   ([raster record](changes/archive/windows-edge-resize-latency.md),
   [input-thread evidence and commands](changes/archive/windows-resize-hook-latency.md)).
@@ -804,7 +901,9 @@ decisions of 2026-09-24 are under
   carry (D8 delivered offline 2026-10-09). Native acceptance pending;
   [record](changes/archive/kde-whole-workspace-output-migration.md),
   [D8](changes/archive/migration-overlay-carry.md).
-  Windows changes are compile-only `maximized: false`; item 14 wires behavior.
+  Windows item 14 now supplies real migration overlay observations and native
+  carry, delivered offline 2026-10-14
+  ([record](changes/archive/windows-workspace-output-migration.md)).
   Shared Rust core + KDE adapter are delivered KDE-side; separate Windows
   adapter wiring follows. Correctness over non-breakage: Windows build/behavior
   may break provided the handoff below lists the specific changes needed.
@@ -928,12 +1027,12 @@ decisions of 2026-09-24 are under
   | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
   | 12 | Non-local workspace modes parity (d) | Depends on handoff items 1/2 (ring + follow/stay) and the parity-queue multi-output foundation; last. |
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
-  | 14 | Q4 whole-workspace migration R-WS-12 | Core/KDE offline delivery including D8 overlay carry under user decisions 2026-10-08 (normative as delivered); depends on item 5's multi-output foundation, item 1 history invalidation and item 12 for non-local runtime modes. Windows adapter including D8 pending; no Windows behavior delivered. |
+  | 14 | Q4 whole-workspace migration R-WS-12 | Windows local adapter including D8 carry and item-16 largest-edge selection delivered offline 2026-10-14; 1,950 native MSVC tests pass, one ignored ([record](changes/archive/windows-workspace-output-migration.md)). Core/KDE already delivered offline. Physical two-output journeys pending; item 12 remains the non-local-mode dependency. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
-  | 16 | Position-based output selection: current Windows window paths delivered offline `fda618f` 2026-10-14 | Foundation already uses shared window ranking for moves/cross-focus; explicit send now does too, with pinned arrival/current-view/lifetime fences. Pointer drops retain pointer targeting. Native gates: 1,892 passed, 0 failed, 1 ignored ([record](changes/archive/windows-position-based-output-selection.md)). Physical two-output checks pending; largest-edge migration integration remains item 14. |
+  | 16 | Position-based output selection: Windows window paths and migration delivered offline 2026-10-14 | Window paths delivered `fda618f`; largest-edge migration dependency closed with item 14. Both reuse shared FULL-rectangle ranking with pinned transfer fences; pointer drops retain pointer targeting ([record](changes/archive/windows-position-based-output-selection.md)). Latest native gates: 1,950 passed, 0 failed, 1 ignored. Physical two-output checks pending. |
   | 17 | G-05 per-axis-zero predicate | Windows delivered offline 2026-10-11 with item 13, shared predicate reused; converted partial-zero orientations/default/either and subsequent-admission controls pass. Native hint representation pending. [Record](changes/archive/windows-per-axis-zero-predicate.md). |
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
-  | 19 | G-37 migration source-refill setting | Shared core/KDE delivered offline 2026-10-10; Windows config/UI/runtime pending with items 1/14 and the multi-output foundation. |
+  | 19 | G-37 migration source-refill setting | Windows additive schema-v1 config, UI Apply/Revert and live runtime/scoped MRU delivered offline 2026-10-14 with item 14 ([record](changes/archive/windows-workspace-output-migration.md)); native journeys pending. Shared core/KDE delivered offline 2026-10-10. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
   | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. Urgent-only/guard unchanged; clean permitted/helper-originated requests, visible mark/clear, game and physical selection TBD; presentation/classification decision open. [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
   | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including tentative hydrated fixed-override maximize routing. Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
@@ -2581,8 +2680,11 @@ decisions of 2026-09-24 are under
   - Item 14: Q4 whole-active-workspace output migration R-WS-12. The addition
     was accepted 2026-10-07; D1-D9 detail is user decisions 2026-10-08
     (normative as delivered). Core/Linux planner/KDE delivered offline;
-    Windows behavior remains unchanged. D8 carry delivered offline in core/KDE
-    2026-10-09; Windows wiring pending. Depends on the multi-output
+    Windows local adapter, D8 carry and largest-edge selection delivered offline
+    2026-10-14 ([Windows record](changes/archive/windows-workspace-output-migration.md));
+    locked native MSVC build/test/fmt/strict clippy/whitespace gates pass:
+    1,950 passed, zero failed, one ignored. D8 core/KDE delivered offline
+    2026-10-09. Depends on the multi-output
     foundation (item 5), scoped history (item 1), and item 12 for non-local
     modes. [Record](changes/archive/kde-whole-workspace-output-migration.md),
     [spec](spec/functional-spec.md#workspaces) REQ-WS-12/12a..i,
@@ -2593,7 +2695,7 @@ decisions of 2026-09-24 are under
     - Four directional active-only, follow-only actions, all UNBOUND by default.
       Resolve FULL-output-rectangle reciprocal adjacency, no wrap; choose
       largest shared edge, then left/top (User decision 2026-10-09; selection
-      delivered offline in core/KDE, Windows item 16 pending the item 5 foundation).
+      delivered offline in core/KDE and Windows; item 16 dependency closed).
       Hidden R-WS-12 baseline has no counterpart; explicitly select its active
       leg. KDE local/global-unique requires strict native per-output desktops;
       shared/false/unreadable refuses. Windows has no KWin option: establish
@@ -2682,7 +2784,7 @@ decisions of 2026-09-24 are under
       Port `kwin/tests/workspace-migrate.test.ts` and
       `workspace-migrate-engine-fixture.test.ts` invariants, not duplicated
       adapter architecture; no core extraction is selected.
-    - [ ] Portable: retained unequal-share/nested tree, floats/origins, sticky
+    - [x] Portable/offline 2026-10-14: retained unequal-share/nested tree, floats/origins, sticky
       active and minimized/null focus, empty lifecycle, insert-after-current,
       scoped modes/history/return siblings, all-direction adjacency,
       fullscreen+maximized carry with no extra overlay writes, stale
@@ -2695,11 +2797,11 @@ decisions of 2026-09-24 are under
     - User journey/DoD: select WS2 `H[A,V[B*,C]]` on L, R shows occupied WS3;
       bind migration right, verify same WS2/tree/shares, WS3 hidden, L last
       remaining, B focus only after arrival. Repeat empty, intentional/automatic
-      float plus sticky, fullscreen+maximized carry (Windows D8 pending) and
+      float plus sticky, fullscreen+maximized carry (Windows D8 offline) and
       displaced-origin reconnect.
       Update Ours Windows/spec with dated offline evidence; native outcomes TBD
       until user-tested. User decisions 2026-10-08 approved; D8 carry
-      core/KDE delivered offline, Windows adapter pending.
+      core/KDE and Windows delivered offline; physical two-output journeys pending.
 
   - Item 15: B9 / M09=A maximized intentional unfloat R-FLT-06 (User
     2026-10-08). Shared-core/KDE delivered offline; Windows delivered offline
@@ -2739,7 +2841,9 @@ decisions of 2026-09-24 are under
     Foundation directional movement/cross-focus already used the shared
     window selector; explicit sends now reuse it with pinned transfer fences.
     Pointer drops use pointer containment. Native gates: 1,892 passed, 0 failed,
-    1 ignored. Physical journeys pending; largest-edge migration remains item 14.
+    1 ignored. Largest-edge migration subsequently delivered with item 14
+    ([record](changes/archive/windows-workspace-output-migration.md)); latest
+    gates 1,950 passed, zero failed, one ignored. Physical journeys pending.
     [Record](changes/archive/position-based-output-selection.md),
     [spec](spec/functional-spec.md#move) REQ-MOV-08/08b,
     [output](spec/functional-spec.md#output) REQ-OUT-01/04,
@@ -2860,8 +2964,8 @@ decisions of 2026-09-24 are under
     a still-scoped live source current view in both modes. Keep scoped
     invalidation, destination insertion and empty migration unchanged.
     Shared-core/KDE setting and MRU delivered offline 2026-10-10; Windows config,
-    settings UI and runtime wiring pending with the multi-output
-    foundation. Exact seams:
+    settings UI and runtime wiring delivered offline 2026-10-14 with item 14
+    ([record](changes/archive/windows-workspace-output-migration.md)). Exact seams:
     - `core/output_selection.rs` `MigrationSourceRefill::{LastRemaining,
       MostRecentlyUsed}`, `parse_wire` / `as_wire_str` and pure
       `select_migration_source_refill(mode, previous, remaining_scope)`;
@@ -2874,10 +2978,9 @@ decisions of 2026-09-24 are under
       WM tooltips, defaults and typed reconfigure, application unconfirmed.
     - Windows `src/settings.rs` `CoreSettings` / `Default` /
       `validate_settings`: ADD the version-1 string field and exact-token
-      validation (not delivered here); `src/settings_ui.rs` needs control
-      and Apply/Revert. Adopt through `apply_live_settings` into item 14's
-      future migration route using item 1's per-output observed history.
-      No Windows source/schema changes in this delivery.
+      validation are delivered; `src/settings_ui.rs` owns the control and
+      Apply/Revert. The migration route reads current `settings_live` after
+      `apply_live_settings` adoption, using item 1's per-output observed history.
     - Port core selector cases, `migration-source-refill.test.ts` and
       production-entry real-Engine `g06-g37-entry-discrimination.test.ts`.
     Acceptance: MRU differs from last-remaining, no eligible
@@ -3448,7 +3551,7 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
     and MRU survivor B receives focus. Shared exception-drop already sourced.
 
 - Reference comparison decisions 2026-10-10 (shared/core KDE delivered offline,
-  Windows G-05 and G-06 delivered offline; G-37 wiring pending; user-owned checks):
+     Windows G-05, G-06 and G-37 delivered offline; user-owned checks):
   [Delivery](changes/archive/reference-comparison-implementation.md).
   - G-05: freshly admit (640,0) and (0,480) equal partial-zero hints under
     both predicates: tile for both-axes, untouched automatic float for

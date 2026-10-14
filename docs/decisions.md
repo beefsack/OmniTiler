@@ -181,6 +181,14 @@ platform API behavior.
   unclean completion keeps the process reservation. Render stop signals its
   own work event. Native wait-return diagnostics stay bounded and trace-only,
   with no diagnostic-induced wake or new timer.
+- Input/owner timing and routine render-frame diagnostics aggregate observed
+  counts and maxima on existing owner turns, at most once per second per
+  stream/carrier. First input/owner latency outliers log immediately; repeats
+  are throttled independently of summary resets. Safety/proof/visibility
+  transitions, decisions, window actuation and failures retain immediate
+  evidence. Applied render samples distinguish measured acknowledgement
+  timings from unmeasured same-thread fallback timings. See the
+  [trace-volume record](changes/archive/windows-trace-volume.md).
 - Combined offline and scoped automated desktop acceptance is recorded in
   [Stage 3 evidence](changes/archive/windows-owner-threading-acceptance.md). Physical
   visual/input checks, multi-output/mixed-DPI and gaming cost remain pending;
@@ -202,6 +210,14 @@ platform API behavior.
 - User rule 2026-10-13: Rust `unsafe` is permitted only at ABI/FFI boundaries,
   kept as tiny as possible and isolated in one dedicated FFI module per crate.
   Every other module and crate uses `#![forbid(unsafe_code)]`.
+- Refined by user 2026-10-14 as a [principle](principles.md#unsafe-code):
+  prefer a battle-hardened dependency exposing safe APIs, then no unsafe,
+  then a minimal module. Selected enforcement: workspace
+  `[workspace.lints.rust] unsafe_code = "forbid"`; FFI crates override to
+  `deny` and opt in with `#![allow(unsafe_code)]` only on the approved module;
+  CI rejects any other `allow(unsafe_code)`. `windows`/`windows-sys` choice
+  and verification that they keep Win32 calls `unsafe fn` are pending research
+  ([backlog](backlog.md)).
 - `tiler-core`, `tiler-protocol` and existing unsafe-free Windows modules
   already forbid unsafe. Linux planner (`crates/omnitiler`) delivered
   2026-10-13: tests use explicit trace values instead of process-env mutation;
@@ -686,7 +702,9 @@ platform API behavior.
     its backing ID; native lifecycle timing remains for user testing.
     Status: shared selector + KDE setting/KCM/live reread and MRU delivered
     offline ([record](changes/archive/reference-comparison-implementation.md));
-    Windows schema/UI/runtime remain handoff item 19; native checks pending.
+    Windows schema-v1/UI/runtime and scoped MRU delivered offline 2026-10-14
+    ([Windows record](changes/archive/windows-workspace-output-migration.md));
+    native checks pending.
   - D6 focus: retain the moved active client only after all member
     arrivals and both view changes are verified, as delivered.
     Empty/sticky-active migration uses native output switching with
@@ -704,7 +722,12 @@ platform API behavior.
     with no extra size/position/focus writes while fullscreen. An
     explicit user move is not unwanted interference (for example a
     game on the wrong output). Live check pending.
-    Delivery 2026-10-09: shared core/KDE carry implemented offline; Windows handoff only ([record](changes/archive/migration-overlay-carry.md)).
+    Delivery 2026-10-09: shared core/KDE carry implemented offline
+    ([record](changes/archive/migration-overlay-carry.md)). Windows native adapter
+    delivered offline 2026-10-14 with real max/fullscreen observations,
+    overlay-preserving remaps and fresh arrival/focus fences
+    ([Windows record](changes/archive/windows-workspace-output-migration.md));
+    physical carry/re-fit/focus remains pending.
   - D9 history/return: out-of-source-scope previous IDs clear,
     disconnected-output history is discarded, reconnect selection
     never consults or restores it. Remove only the explicitly moved
@@ -715,8 +738,10 @@ platform API behavior.
     [spec](spec/functional-spec.md#workspaces) REQ-WS-12a..i); D3 largest-shared-edge
     then left/top selection (User decision 2026-10-09) delivered offline
     ([selection record](changes/archive/position-based-output-selection.md)).
-    Windows changes initialize the new `maximized` field to false
-    only, preserving behavior; native acceptance remains pending.
+    Windows local adapter, largest-edge selection and G-37 delivered offline
+    2026-10-14 ([Windows record](changes/archive/windows-workspace-output-migration.md));
+    locked native MSVC gates pass, 1,950 passed/zero failed/one ignored.
+    Non-local modes remain item 12; native two-output acceptance remains pending.
 
 ## Move, Layout and Output Commands
 
@@ -827,7 +852,9 @@ platform API behavior.
       [selection](changes/archive/windows-position-based-output-selection.md));
       native gates 1,892 passed, zero failed, one ignored. User-owned two-output
       native journey pending. Full rectangles select adjacency only; placement
-      retains per-desktop work areas. Migration remains item 14.
+      retains per-desktop work areas. Largest-edge migration subsequently
+      delivered offline with item 14
+      ([record](changes/archive/windows-workspace-output-migration.md)).
     - Windows tentative, pending user review: held output-send repeats dispatch
       while the original Win/Ctrl/Alt and Shift polarity remain live. Follow
       rejects Shift; explicitly rebound stay accepts Win+Ctrl+Alt or
@@ -951,7 +978,9 @@ platform API behavior.
     Windows fixed-origin tile overrides delivered offline with item 13
     ([record](changes/archive/windows-fixed-size-admission.md)). Physical/app checks remain pending.
 - User decisions 2026-10-08 (workspace migration R-WS-12 D1-D9, outcomes
-  decided): see Workspaces above.
+  decided): see Workspaces above; Windows local adapter and largest-edge
+  selection delivered offline 2026-10-14
+  ([record](changes/archive/windows-workspace-output-migration.md)).
 - Windows restart intent persistence (user 2026-10-10, handoff item 8,
   option A): on-window `SetProp` markers with the distinctive project prefix,
   same pattern as `OmniTilerSticky`, for intentional-float and

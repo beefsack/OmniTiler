@@ -95,6 +95,32 @@ do not broaden cleanup or repeatedly restart the experiment.
   and disable/reversal evidence remain required. Sandbox redirected input or injected events do
   not prove the physical desktop's shortcut behavior.
 
+## Agent Live-Test Practice
+
+- Scope the tiler to the permitted test apps so it never manages terminals or
+  other windows, for example:
+  `mise exec -- just dev trace --scope-exe notepad.exe --scope-exe CalculatorApp.exe --scope-exe ApplicationFrameHost.exe --scope-exe mspaint.exe --scope-host-child ApplicationFrameHost.exe=CalculatorApp.exe`.
+  Recovery and final cleanup: `mise exec -- just stop`, then confirm no owner,
+  restored Mouse Snap/session settings, revealed hidden windows and a clean
+  ledger.
+- The normal owner ignores injected keyboard input. Agent journeys use the
+  exact-owner test CLI controls (`workspace --float`/`--sticky`/
+  `--fullscreen`, select/send), tray callbacks or injected mouse input;
+  keyboard shortcut journeys remain physical and user-owned. Never bypass the
+  injected-keyboard filter in product code.
+- The agent-owned, identity-tagged `tiler-test-window.exe` is the standard
+  disposable helper (accepted 2026-10-14). The non-hooking lifecycle
+  `run --hide` proof accepts only this helper, not ordinary applications.
+- Trace runs write run logs and provenance sidecars to
+  `%LOCALAPPDATA%\omnitiler\session-1\`. Input queue age, owner work and
+  render/drag-preview activity are summarized at most once per second, with
+  immediate throttled outlier lines.
+- Fixture conventions: numbered workspace operations are one-based and `0`
+  selects the trailing empty workspace; opaque workspace tokens are creation
+  identities, not ordinals; `float-mismatch` reports successful floating
+  settlement with a frame delta. Compare native rectangles in one coordinate
+  convention (do not mix DPI-virtualized and physical values).
+
 ## Sandbox Registry And Policy Experiments (deferred to Phase 4)
 
 - Registry/policy mutations are allowed only inside Windows Sandbox and only

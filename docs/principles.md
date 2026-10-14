@@ -56,6 +56,18 @@ Project principles, approved by the user.
 - When a behavior choice trades consistency or reference-WM parity against
   game safety, game safety wins.
 
+## Unsafe Code
+
+- Rust `unsafe` is avoided in our own code, in this order of preference:
+  1. Use a popular, maintained, high-quality and battle-hardened dependency
+     that contains the unsafe code and exposes safe Rust APIs. Unsafe code
+     inside such a dependency is acceptable.
+  2. Avoid unsafe code entirely.
+  3. Otherwise, contain it in an absolutely minimal module that other Rust
+     modules use through safe APIs.
+- Unsafe code is forbidden by default across the project; each minimal
+  module is an explicit, reviewed opt-in exception.
+
 ## Observability
 
 - Observability is a core requirement across every component: normal logs must
