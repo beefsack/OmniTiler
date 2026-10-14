@@ -728,10 +728,10 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 ### Follow-up drag failures and correction (2026-10-15)
 
-- Delivered corrections: `af1054c` (native drag sessions, reply recovery and
-  stable-preview reuse), `4dd2f67` (counted Planner summary coalescing),
-  `334e133` (bounded ambiguous-refusal stages), `f3ccb34` (portable lint
-  integration).
+- Delivered corrections: `ad4dae9` (native drag sessions, reply recovery and
+  stable-preview reuse), `a2d7824` (counted Planner summary coalescing),
+  `b350e2e` (bounded ambiguous-refusal stages). Portable lint integration uses
+  the concurrent `7655bb6` correction.
 - A later two-output run still produced 6204 preview-settled records and 12659
   Planner summaries. Its first preview session reached Finish; subsequent
   verdicts reported `drag-unknown-window`, with ordinary stale reconciles
@@ -797,7 +797,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   queued samples, idle abandonment diagnostics, reuse/invalidation, refusal
   retry, summary preservation and stage/count logging. Same-gesture re-cross is
   a passing coordinate control, not a RED reproduction of visual misalignment.
-- Integrated gates pass: Rust workspace build and 1895 tests, formatting,
+- Integrated gates pass: Rust workspace build and 1932 tests, formatting,
   all-target Clippy with warnings denied; KWin typecheck and 1565 tests;
   settings-only warnings-denied build and CTest 26/26; whitespace checks.
   Integration needed the non-macOS probe stub to mirror its native function's
