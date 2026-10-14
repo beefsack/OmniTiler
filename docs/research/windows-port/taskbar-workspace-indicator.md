@@ -138,9 +138,209 @@ acquisition/classification, which is the existing gap, not costed here).
   strip required? Also choose: which output the icon reflects, and click
   behavior (popup vs direct cycle). Defaults: focused output; click opens popup.
 
-## Later user-validation needs
+## Pager-style taskbar follow-up
+
+User target: on EVERY taskbar, monitor-only numbered cells; empty =
+darker rectangle; windows = lighter rectangles at scaled positions with
+light 1px border and centered icon; active workspace = active color.
+Research only, unvalidated on live desktop. Checked 2026-10-14.
+
+### Definitive answer
+
+On Win11 there is no supported API for arbitrary third-party pager UI
+hosted inside the taskbar. Microsoft's [Windows 11 specifications][win11-specs]
+explicitly say "Apps can no longer customize areas of the Taskbar."
+Taskbar Extensions covers jump lists, max-7
+thumbnail toolbar buttons in the hover flyout, overlay/progress and tray
+([Taskbar Extensions][taskbar-ext]); no pager slot exists. On Win10,
+legacy DeskBands technically host custom taskbar UI, but IDeskBand/
+IDeskBand2 directs new development to thumbnail toolbars instead, "not
+supported as of Windows 7" ([IDeskBand2][ideskband2]); a Win10-only
+deskband is therefore technically possible but unsuitable for a supported
+Win10/11 implementation. Widgets providers deliver Adaptive Cards to
+the Widgets Board flyout only ([Widget providers][widget-prov]);
+rotating announcements and notification badges on the Widgets button are shell-controlled
+([Widgets help][widgets-help]), not a reusable per-output host.
+Search and original Copilot-style shell buttons are first-party features,
+not reusable third-party extension points; a pinned Copilot app has an ordinary app button.
+TaskbarManager pin-to-taskbar (updated July 2026) is a user-approved launch pin only;
+the KB5074105 LAF relaxation adds no UI hosting
+([Pin to taskbar][pin-taskbar]). Secondary-monitor note: 24H2/25H2
+KB5065789 adds Notification Center clock/calendar click on the secondary
+monitor, NOT application icon hosting ([KB5065789][kb5065789]); the
+notification-icon API (hWnd/uID or guidItem) has no monitor-routing
+field. Default Win11 secondary taskbars lack the application notification
+area: [TrafficMonitor's secondary-taskbar branch][tm-win11dlg] explicitly
+handles its absence, using a clock-width fallback. This is source-based
+corroboration, not a live observation; Notification Center is a different surface.
+Multiple tray icons cannot supply one monitor-scoped pager on every taskbar.
+The recommendation is tray+popup first, native
+own adjacent per-monitor AppBar as aspiration. "Adjacent" means a
+separate reserved strip next to the taskbar, never literally embedded.
+
+### Options
+
+| # | Option | Target fidelity | Support / per-monitor | Game behavior | Cost (rough LOC, excl. tests + shared snapshot/urgency) | Key risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Tray icon + popup pager | Low at rest (digits), full grid on click | Supported both OS; tray is global, NOT per-monitor routed; N icons possible but overflow/order user-controlled | Closed popup shows no window; hide any open popup on a fullscreened monitor, never auto-open or steal focus | Full pager popup w/ icon rendering ~600-1000 (vs ~200-400 prior digit-only glyph + menu) | Discoverability; pinning is user-only, no force-pin |
+| 2 | Own adjacent per-monitor AppBar pager (aspiration) | Full visuals, adjacent rather than inside | SHAppBarMessage ABM_NEW/QUERYPOS/SETPOS/REMOVE ([AppBars][appbars]); one HWND per monitor, rc seeded from its bounds ([SETAUTOHIDEBAREX][autohidebarex] shows monitor-from-rc); re-query on ABN_POSCHANGED | Hide on exclusive/borderless fullscreen there; no game resize or work-area flapping on hide/show; coexistence validation TBD | Full pager window + icon pipeline ~1500-3000 (vs ~1200-2500 prior strip) | Reservation fights; z-order/focus bugs; largest code |
+| 3 | Separate overlay near/over taskbar (no reserve) | Full pixels, zero layout rights | Own HWND via public windowing APIs is supported; what is UNSUPPORTED is any inside-taskbar positioning contract (no QUERYPOS/SETPOS); taskbar may cover it ([YASB #301][yasb-301]) | Own fullscreen hide required; always_on_top alone interferes | ~800-1500 + same icon pipeline | Covered-by-taskbar; topmost over games if hide fails |
+| 4 | SetParent/embed/inject into taskbar windows | Inside, if space can be found | Unsupported version-coupled path; primary and secondary HWNDs can be targeted | Child may follow shell hiding, but independent game safety is unproven | Initial prototype not meaningful; maintenance unbounded | Breaks on servicing updates |
+| 5 | External bar via OmniTiler IPC (Zebar/YASB style) | Full, owned by other renderer | Separate top-level window, not a taskbar slot; YASB flags windows_app_bar / always_on_top / hide_on_fullscreen ([YASB config][yasb-config]), hide gated on always_on_top ([bar.py][yasb-barpy]); komorebi-bar inspected source: no fullscreen auto-hide | Depends on external bar config; unowned | ~200-500 IPC publisher + widget/provider extra | Install/support burden; version drift |
+
+### Prior art (observed docs/source; gaps noted, not universal claims)
+
+| Project | Observed | Gaps / caveats |
+| --- | --- | --- |
+| TrafficMonitor ([TaskBarDlg][tm-basedlg], [Win11 dlg][tm-win11dlg], [main dialog][tm-maindlg]) | SetParent into Shell_TrayWnd/SecondaryTrayWnd on Win11; [Win10 path][tm-classic] reparents into ReBarWindow32 and shrinks MSTaskSwWClass. Start/TrayNotifyWnd geometry, 88px secondary-clock fallback, 22621 touch-height workaround. Main timer rechecks DPI/position, samples taskbar background, and reopens after secondary-count changes; TaskbarCreated closes/recreates child and re-adds tray icon | No dedicated child fullscreen hide verified; foreground fullscreen polling hides its floating main window, not proof for child/fallback/tooltips. Child relies on shell auto-hide; independent coverage unverified. Fallback requests topmost when taskbar foreground |
+| ExplorerPatcher ([taskbar wiki][ep-wiki]) | Reimplements Win10 taskbar for 25921+/24H2 instead of relying on the old built-in implementation; separate build-specific DLLs include 25H2. Maintainer explicitly says updates can break it and crashes can occur | Tightly Explorer-coupled; replacement implementation, not a supported host API |
+| Windhawk ([taskbar styler][wh-styler]) | XAML/resource hooking into Explorer; [issue #876][wh-876] reports mods stopped after Mar-2026 KB5079473+KB5081277 with reinstall fixing it (cause undiagnosed, report only); [discussion #2374][wh-2374] notes debug symbols needed to locate hooks | Hook mechanism / breakage cause not proven here |
+| RoundedTB ([README][roundedtb]) | Geometry modification, not hosting; admits auto-hide flicker, dynamic size mismatch, and Win10 split mode only on primary taskbar | Illustrates layout fragility; no pager or game-safety contract |
+| YASB / Zebar / komorebi-bar | Separate-window bars, not taskbar slots; see option 5 | Fullscreen behavior per-bar config; komorebi-bar none found |
+
+Owned UI still needs lifecycle handling: an overlay has to rediscover taskbar
+rectangles/visibility and avoid overlapping shell controls, with no reserved slot.
+An AppBar has the public positioning contract: taskbar stays outermost on a shared
+edge, ABN_POSCHANGED triggers query/set, ABN_STATECHANGE reports auto-hide changes;
+only one auto-hide AppBar per monitor edge can register, potentially conflicting
+with the taskbar ([AppBars][appbars], [SETAUTOHIDEBAREX][autohidebarex]).
+Both need [WM_DPICHANGED][dpi-change], theme/high-contrast invalidation and display
+topology recovery. After Explorer restart, rediscover overlay anchors or
+re-register/re-query the AppBar on [TaskbarCreated][taskbar-doc]; stale HWNDs must
+not be reused. These are implementation obligations, not validated recovery claims.
+
+### Full-pager rendering (options 1 popup / 2 AppBar cells)
+
+- Geometry mapping: scale each output's virtual workspace work area into
+  its numbered cell; draw window rects clipped to the cell; 1px light
+  border + centered icon per rect; active workspace gets the active
+  color plus the shared legend (number + outline/check + text, never
+  color-only). Unresolved: tiny-icon omission vs collision when many
+  small windows share a cell. Hidden workspaces use stored rects, not
+  live minimized/offscreen rects.
+- Candidate icon chain per window HWND (research-only; fallback is caller-owned):
+  1. WM_GETICON (ICON_SMALL, then ICON_BIG) via SendMessageTimeout with
+     SMTO_ABORTIFHUNG and short timeout; plain SendMessage can block on
+     hung windows ([WM_GETICON][wm-geticon],
+     [SendMessageTimeout][sendtimeout]).
+  2. GetClassLongPtr GCLP_HICON / GCLP_HICONSM. Message-returned and
+     class handles are BORROWED: never DestroyIcon them; destroy only
+     owned handles (CreateIconIndirect / CopyIcon /
+     CreateIconFromResourceEx without LR_SHARED)
+     ([DestroyIcon][destroyicon], [About Icons][about-icons]).
+  3. SHGetFileInfo SHGFI_ICON|SHGFI_SMALLICON on the owning exe path
+     ([SHGetFileInfo][shgetfileinfo]); returned HICON is owned and must
+     be DestroyIcon-ed; call from a background thread with COM
+     initialized, it can block UI.
+  4. ApplicationFrameHost caveat: the top-level HWND may belong to the
+     host, so exe lookup can yield the host. Window AUMID via
+     SHGetPropertyStoreForWindow + PKEY_AppUserModel_ID is a CANDIDATE
+     identity (property may be absent; frame-vs-child ambiguity)
+     ([SHGetPropertyStoreForWindow][propstore],
+     [AppUserModelIDs][appids]); prefer resolving the icon through
+     IShellItemImageFactory on the AppsFolder item
+     ([GetImage][getimage], [FOLDERID_AppsFolder][knownfolder]) before
+     any manifest-logo scraping heuristic.
+- Paint choice:
+
+| Path | Cost / machinery | Fit for pager cells |
+| --- | --- | --- |
+| GDI double-buffer (compat DC + DIB, one blit on WM_PAINT) | Smallest; per-monitor DPI + theme invalidation still required | Sufficient for flat rects/icons/borders; recommended start |
+| Direct2D | Device/context lifetime + device-lost handling | No established need at this fidelity; adds machinery |
+| Composition (DirectComposition/DWM) | Swap-chain/visual lifetime handling | No established need; live thumbnails explicitly out of scope |
+
+- Refresh costs (no game-zero-cost guarantee): event/diff-gated repaint
+  on snapshot, urgency, DPI/theme and icon arrival; coalesce bursts;
+  cache icons/bitmaps keyed by HWND identity with lifetime
+  invalidation; release replaced handles; no per-frame timers, no
+  animation while hidden. Prefer the existing fullscreen observer; any
+  additional detection/refresh cost must be measured, not presumed free.
+- Rust API per [principles](../../principles.md) Unsafe Code: evaluate
+  maintained safe UI wrappers first (winit/egui optional if a window is
+  needed); `windows` is the expected projection where native calls are
+  needed, and many of its calls are themselves unsafe, so keep them in a
+  minimal reviewed module. Do not migrate the existing windows-sys tray
+  path gratuitously; extend it.
+- Layering ([principles](../../principles.md)): layout, state and
+  clear-on-visit in shared core; Windows layer owns HWND/icon
+  ingestion, geometry, paint.
+
+### Gaming constraints (research-only, unvalidated)
+
+Per [principles](../../principles.md) Gaming Compatibility: hide OWN UI
+on an output with exclusive/borderless fullscreen on THAT output only;
+never topmost over the game; no focus/input touches; stop painting,
+animation and icon lookup while hidden; resume on close. ABN_FULLSCREENAPP
+lowering ([AppBars][appbars]) is one signal, not borderless proof.
+Hide-vs-reserve tradeoff is an open research constraint, not finalized
+behavior: hiding must not resize the game or flap the work area, and
+whether to ABM_REMOVE vs hide-keep-reservation is validation TBD.
+
+### Recommendation (staged; product choice stays user-pending)
+
+- Stage 1: tray icon + popup pager (option 1). Smallest unsafe delta,
+  reuses TaskbarCreated/change-gated sync, no reservation, no
+  unsolicited UI by design intent; per Simplicity principle.
+- Stage 2: if always-visible cells are required, pilot ONE owned
+  adjacent AppBar pager (option 2) on the primary output; bottom edge
+  matches the requested target, other edges stay possible; generalize
+  per-monitor only after per-output game-hide validation.
+- Stage 3: external-bar IPC (option 5) only if the user opts into a
+  third-party bar dependency, not the default.
+- Options 3 and 4 are recommended against for product use on the above
+  evidence; final selection stays with the user.
+
+### Questions for user (recommended answers)
+
+- Accept an adjacent strip instead of literal in-taskbar embedding?
+  Recommended: yes; it preserves pager visuals through supported APIs.
+- Accept tray+popup for initial dogfooding? Recommended: yes.
+- If AppBar pilot: bottom edge adjacent to taskbar, primary output
+  first? Recommended: yes, matches the requested target.
+
+### Later validation needs
 
 - Confirm icon stays out of overflow only via user pinning (no force-pin API).
 - Confirm popup open/focus behavior beside fullscreen games on each OS build.
 - Confirm C click activation side effects and D fullscreen yield before use.
 - Confirm E bar choice and who owns its install/config.
+- Fullscreen hide proof per output on Win10 + Win11 builds (exclusive
+  AND borderless); popup never auto-opens over games; no work-area flap.
+- Per-monitor AppBar reserve/z-order beside taskbar auto-hide,
+  secondary taskbars, DPI change, Explorer restart.
+- Icon chain timing/failure rates (hung windows, UWP AUMID path) with
+  cache-hit logging; no icon failure may block tiling.
+- LOC figures are rough engineering estimates, no precision promised.
+
+[taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
+[win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4
+[ideskband2]: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl/nn-shobjidl-ideskband2
+[widget-prov]: https://learn.microsoft.com/en-us/windows/apps/develop/widgets/widget-providers
+[widgets-help]: https://support.microsoft.com/en-us/windows/stay-up-to-date-with-widgets-in-windows-7ba79aaa-dac6-4687-b460-ad16a06be6e4
+[pin-taskbar]: https://learn.microsoft.com/en-us/windows/apps/develop/windows-integration/pin-to-taskbar
+[kb5065789]: https://support.microsoft.com/en-us/servicing/os/windows-11/2025/09/september-29-2025-kb5065789-os-builds-26200-6725-and-26100-6725-preview
+[appbars]: https://learn.microsoft.com/en-us/windows/win32/shell/application-desktop-toolbars
+[autohidebarex]: https://learn.microsoft.com/en-us/windows/win32/shell/abm-setautohidebarex
+[wm-geticon]: https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-geticon
+[sendtimeout]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw
+[destroyicon]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-destroyicon
+[about-icons]: https://learn.microsoft.com/en-us/windows/win32/menurc/about-icons
+[shgetfileinfo]: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetfileinfoa
+[propstore]: https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shgetpropertystoreforwindow
+[appids]: https://learn.microsoft.com/en-us/windows/win32/shell/appids
+[getimage]: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-ishellitemimagefactory-getimage
+[knownfolder]: https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid
+[yasb-config]: https://docs.yasb.dev/preview/configuration
+[yasb-barpy]: https://github.com/amnweb/yasb/blob/28e4ba5b/src/core/bar.py
+[yasb-301]: https://github.com/amnweb/yasb/discussions/301
+[tm-basedlg]: https://raw.githubusercontent.com/zhongyang219/TrafficMonitor/master/TrafficMonitor/TaskBarDlg.cpp
+[tm-win11dlg]: https://github.com/zhongyang219/TrafficMonitor/blob/master/TrafficMonitor/Win11TaskbarDlg.cpp
+[tm-maindlg]: https://github.com/zhongyang219/TrafficMonitor/blob/master/TrafficMonitor/TrafficMonitorDlg.cpp
+[tm-classic]: https://github.com/zhongyang219/TrafficMonitor/blob/master/TrafficMonitor/ClassicalTaskbarDlg.cpp
+[dpi-change]: https://learn.microsoft.com/en-us/windows/win32/hidpi/wm-dpichanged
+[taskbar-doc]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar
+[ep-wiki]: https://github.com/valinet/ExplorerPatcher/wiki/ExplorerPatcher%27s-taskbar-implementation
+[wh-styler]: https://windhawk.net/mods/windows-11-taskbar-styler
+[wh-876]: https://github.com/ramensoftware/windhawk/issues/876
+[wh-2374]: https://github.com/ramensoftware/windhawk-mods/discussions/2374
+[roundedtb]: https://github.com/RoundedTB/RoundedTB

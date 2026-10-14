@@ -766,7 +766,9 @@ decisions of 2026-09-24 are under
     shaded rectangle, each window a lighter rectangle with a light 1 px
     border and its app icon centred, the active workspace in an active
     colour. User asked whether Windows 11 taskbar widget-style surfaces
-    (like search) can host it; follow-up research pending.
+    (like search) can host it; [pager-style follow-up](research/windows-port/taskbar-workspace-indicator.md#pager-style-taskbar-follow-up)
+    finds no supported Win11 in-taskbar host API, recommends tray+popup for
+    dogfooding then an owned adjacent per-output AppBar; recommendation pending user choice.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product
