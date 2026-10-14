@@ -840,8 +840,8 @@ public:
     ShortcutApplyResult applySelected(const QSet<QString> &disabledIds);
     ShortcutApplyResult applySelected(const QSet<QString> &disabledIds, bool authenticStaged);
     // Revert restores defaults for every non-project ID in the durable
-    // cleared list (project-owned kwin/omnitiler-* IDs, including
-    // legacy ones, stay cleared) and empties the list only after all of
+    // cleared list (project-owned kwin/omnitiler-* IDs stay cleared) and
+    // empties the list only after all of
     // them are restored. Each persisted ID is resolved to its fresh
     // current tuple from readAll to supply the current friendly labels
     // (empty allowed) for the 4-field actionId; absent or duplicate IDs
@@ -887,15 +887,10 @@ public:
     static bool isProjectAction(const QString &component, const QString &action);
     // Any own-prefix action: kwin/omnitiler-*, covering the current
     // project rows and legacy IDs (e.g. omnitiler-float-toggle,
-    // omnitiler-toggle), plus the previous OmniTiler identity
-    // kwin/plasma-auto-tiler-* (pre-rename catalog). Revert-only skip:
-    // Revert leaves them cleared. Force still lists them as conflicts
-    // via isProjectAction/isHolderExempt (never silently exempt).
+    // omnitiler-toggle). Revert-only skip: Revert leaves them cleared.
+    // Force still lists them as conflicts via isProjectAction/isHolderExempt
+    // (never silently exempt).
     static bool isProjectOwned(const QString &component, const QString &action);
-    // Previous OmniTiler identity: kwin/plasma-auto-tiler-* (the entire
-    // pre-rename catalog). Reporting-only distinction; Revert skips it
-    // via isProjectOwned, Force still clears it on confirmation.
-    static bool isHistoricalProjectOwned(const QString &component, const QString &action);
     static bool isLockAction(const QString &component, const QString &action);
     // Required-chord subset of a live active list (the keys Force removes),
     // order-preserving. Empty means the holder claims no required chord.

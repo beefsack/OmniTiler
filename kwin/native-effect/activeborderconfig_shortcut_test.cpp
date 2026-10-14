@@ -2553,8 +2553,8 @@ void dialogLockRelocationDescribed()
 
 void dialogLockExemptWording()
 {
-    // Exempt lock wording is exact: an already-relocated lock reports
-    // unchanged (never "will move to"), extra chords are named as preserved
+    // Exempt lock wording is exact: an already-relocated lock emits no
+    // exempt line (never "will move to"), extra chords are named as preserved
     // alternates, and the authorized System Monitor holder is described as
     // retained but displaced without claiming physical key delivery.
     {
@@ -2566,9 +2566,10 @@ void dialogLockExemptWording()
         preview.lock.actual = QList<int>{META_ESC};
         preview.lock.post = QList<int>{META_ESC};
         const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
-        CHECK(text.contains(QStringLiteral("already")));
-        CHECK(text.contains(QStringLiteral("unchanged")));
+        CHECK(!text.contains(QStringLiteral("Exempt:")));
+        CHECK(!text.contains(QStringLiteral("Lock Session")));
         CHECK(!text.contains(QStringLiteral("will move to")));
+        CHECK(!text.contains(QStringLiteral("unchanged")));
     }
     {
         ShortcutForcePreview preview;
@@ -2634,89 +2635,6 @@ void dialogKeyedHolderFriendlyLabels()
     CHECK(force.text.contains(QStringLiteral("org.example/keyed-app")));
     CHECK(force.text.contains(QStringLiteral("Example Component")));
     CHECK(force.text.contains(QStringLiteral("Keyed App")));
-}
-
-void dialogHistoricalIdentityLabel()
-{
-    // Previous OmniTiler identity (kwin/plasma-auto-tiler-*) is labeled
-    // concisely in conflict rows; the exact ID and friendly info stay
-    // readable and no stale-callback claim is made from the ID alone.
-    {
-        ShortcutForcePreview preview;
-        preview.forceable = true;
-        ShortcutForceMismatch mismatch;
-        mismatch.component = QStringLiteral("kwin");
-        mismatch.action = QStringLiteral("plasma-auto-tiler-toggle-float");
-        mismatch.componentFriendly = QStringLiteral("KWin");
-        mismatch.friendly = QStringLiteral("Toggle Float");
-        mismatch.expectedPre = QList<int>{META_G};
-        mismatch.actual = QList<int>{META_G, 9000};
-        mismatch.post = QList<int>{9000};
-        preview.mismatches.append(mismatch);
-        const QString text = ActiveBorderConfigModule::buildConflictDialogText(preview, true);
-        CHECK(text.contains(QStringLiteral("kwin/plasma-auto-tiler-toggle-float")));
-        CHECK(text.contains(QStringLiteral("Toggle Float")));
-        CHECK(text.contains(QStringLiteral("[previous OmniTiler identity]")));
-        // The persisted ID alone implies no stale-callback status: the
-        // historical row carries identity only (the header's generic
-        // revalidation "stale state" line is not attached to the row).
-        for (const QString &line : text.split(QStringLiteral("\n"))) {
-            if (line.contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
-                CHECK(line.contains(QStringLiteral("[previous OmniTiler identity]")));
-                CHECK(!line.contains(QStringLiteral("stale")));
-                CHECK(!line.contains(QStringLiteral("callback")));
-            }
-        }
-    }
-    // Per-binding holder reporting reuses the same label through the row
-    // list: a live historical holder of a required chord appears with the
-    // previous-identity note and its exact ID.
-    {
-        FakeShortcutStore store;
-        seedReady(store);
-        ShortcutKeyHolder holder;
-        holder.component = QStringLiteral("kwin");
-        holder.action = QStringLiteral("plasma-auto-tiler-toggle-float");
-        holder.active = QList<int>{META_G, 9000};
-        holder.componentFriendly = QStringLiteral("KWin");
-        holder.friendly = QStringLiteral("Toggle Float");
-        store.extraByKey[META_G].append(holder);
-        FakeClearedStore cleared;
-        ActiveBorderConfigModule module(nullptr, KPluginMetaData());
-        module.setShortcutConfirmHandler([](const QString &, const QString &) { return false; });
-        ForceCapture force;
-        force.allow = false;
-        wireForceCapture(module, force);
-        module.setShortcutStores(&store, &cleared);
-        module.load();
-        QPushButton *authentic = presetButtonByModule(module, "shortcutAuthenticButton");
-        if (authentic != nullptr) {
-            authentic->click();
-        }
-        module.requestShortcutApply();
-        CHECK(force.calls == 1);
-        CHECK(force.text.contains(QStringLiteral("kwin/plasma-auto-tiler-toggle-float")));
-        CHECK(force.text.contains(QStringLiteral("[previous OmniTiler identity]")));
-        for (const QString &line : force.text.split(QStringLiteral("\n"))) {
-            if (line.contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
-                CHECK(!line.contains(QStringLiteral("stale")));
-                CHECK(!line.contains(QStringLiteral("callback")));
-            }
-        }
-        QListWidget *list = conflictListByModule(module);
-        CHECK(list != nullptr);
-        bool sawHistorical = false;
-        if (list != nullptr) {
-            for (int i = 0; i < list->count(); ++i) {
-                QListWidgetItem *item = list->item(i);
-                if (item != nullptr && item->text().contains(QStringLiteral("plasma-auto-tiler-toggle-float"))) {
-                    sawHistorical = true;
-                    CHECK(item->text().contains(QStringLiteral("[previous OmniTiler identity]")));
-                }
-            }
-        }
-        CHECK(sawHistorical);
-    }
 }
 
 void dialogPartialApplyFailureReportsOriginal()
@@ -3127,7 +3045,6 @@ int main(int argc, char **argv)
         dialogLockRelocationDescribed();
         dialogLockExemptWording();
         dialogKeyedHolderFriendlyLabels();
-        dialogHistoricalIdentityLabel();
         dialogErrorBriefSingleLineCapped();
     } else {
         std::fprintf(stderr, "unknown scenario: %s\n", argv[1]);

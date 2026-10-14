@@ -3415,90 +3415,6 @@ void forceUnknownAndLegacyPreviewAndClear()
     }
 }
 
-void historicalIdentityRevertSkipsForceClears()
-{
-    // Pre-rename catalog was kwin/plasma-auto-tiler-*: the previous
-    // OmniTiler identity. Revert skips it (stays cleared, no setter
-    // even with nonempty defaults); Force still lists it as a conflict
-    // and clears only the exact required chord, preserving unrelated.
-    CHECK(ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("kwin"),
-                                                       QStringLiteral("plasma-auto-tiler-toggle-float")));
-    CHECK(ShortcutReconciler::isProjectOwned(QStringLiteral("kwin"),
-                                             QStringLiteral("plasma-auto-tiler-toggle-float")));
-    CHECK(!ShortcutReconciler::isProjectAction(QStringLiteral("kwin"),
-                                               QStringLiteral("plasma-auto-tiler-toggle-float")));
-    CHECK(!ShortcutReconciler::isHolderExempt(QStringLiteral("kwin"),
-                                              QStringLiteral("plasma-auto-tiler-toggle-float"), META_G));
-    CHECK(!ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("kwin"),
-                                                        QStringLiteral("omnitiler-toggle-float")));
-    CHECK(!ShortcutReconciler::isHistoricalProjectOwned(QStringLiteral("org.example"),
-                                                        QStringLiteral("plasma-auto-tiler-toggle-float")));
-    // Direct Revert: persisted historical ID with nonempty defaults stays
-    // cleared with no setter call.
-    {
-        FakeShortcutStore store;
-        seedQuietState(store, QList<int>{META_L}, QList<int>{META_ESC});
-        store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float"),
-                                      QList<int>{}));
-        store.defaultKeysById[QStringLiteral("kwin/plasma-auto-tiler-toggle-float")] = QList<int>{META_G};
-        FakeClearedActions cleared;
-        cleared.stored = {
-            {QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float")},
-        };
-        const ShortcutRevertResult result = ShortcutReconciler(&store, &cleared).revert();
-        CHECK(result.ok);
-        CHECK(result.writes == 0);
-        CHECK(store.foreignWriteLog.isEmpty());
-        CHECK(store.defaultCallLog.isEmpty());
-        CHECK(cleared.stored.isEmpty());
-        for (const ShortcutTuple &tuple : store.tuples) {
-            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
-                CHECK(tuple.active.isEmpty());
-            }
-        }
-    }
-    // Force: historical holder of a required chord is a listed conflict;
-    // confirmed Force clears exactly that chord and keeps unrelated keys.
-    {
-        FakeShortcutStore store;
-        seedQuietState(store, QList<int>{1}, QList<int>{META_L});
-        store.tuples.append(makeTuple(QStringLiteral("kwin"), QStringLiteral("plasma-auto-tiler-toggle-float"),
-                                      QList<int>{META_G, 999}));
-        store.defaultKeysById[QStringLiteral("kwin/plasma-auto-tiler-toggle-float")] = QList<int>{META_G};
-        FakeClearedActions cleared;
-        const ShortcutForcePreview preview = ShortcutReconciler(&store, &cleared).previewForceApply();
-        CHECK(preview.forceable);
-        CHECK(preview.mismatches.size() == 1);
-        CHECK(preview.mismatches.at(0).component == QStringLiteral("kwin"));
-        CHECK(preview.mismatches.at(0).action == QStringLiteral("plasma-auto-tiler-toggle-float"));
-        CHECK(preview.mismatches.at(0).expectedPre == (QList<int>{META_G}));
-        CHECK(preview.mismatches.at(0).post == (QList<int>{999}));
-        const ShortcutForceApplyResult forced = ShortcutReconciler(&store, &cleared).applyForced(preview);
-        CHECK(forced.ok);
-        CHECK(store.foreignWriteLog.size() == 1);
-        CHECK(store.foreignWriteLog.at(0).keys == (QList<int>{999}));
-        for (const ShortcutTuple &tuple : store.tuples) {
-            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
-                CHECK(tuple.active == (QList<int>{999}));
-            }
-        }
-        // Persisted historical ID stays cleared through Revert despite
-        // nonempty defaults: no setter, list emptied.
-        store.foreignWriteLog.clear();
-        store.defaultCallLog.clear();
-        const ShortcutRevertResult reverted = ShortcutReconciler(&store, &cleared).revert();
-        CHECK(reverted.ok);
-        CHECK(cleared.stored.isEmpty());
-        CHECK(store.foreignWriteLog.isEmpty());
-        CHECK(store.defaultCallLog.isEmpty());
-        for (const ShortcutTuple &tuple : store.tuples) {
-            if (tuple.action == QStringLiteral("plasma-auto-tiler-toggle-float")) {
-                CHECK(tuple.active == (QList<int>{999}));
-            }
-        }
-    }
-}
-
 void forceMultiKeyPreservesUnrelated()
 {
     FakeShortcutStore store;
@@ -6558,7 +6474,6 @@ int main(int argc, char **argv)
     }
     if (scenario == QStringLiteral("all") || scenario == QStringLiteral("force")) {
         forceUnknownAndLegacyPreviewAndClear();
-        historicalIdentityRevertSkipsForceClears();
         forceMultiKeyPreservesUnrelated();
         forceFullCatalogBeyondOldLifetime();
         forceStaleConfirmationZeroWrites();

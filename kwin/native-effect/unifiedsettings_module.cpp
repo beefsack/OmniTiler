@@ -852,7 +852,6 @@ static QString holderDisplayLabel(const QString &component, const QString &actio
                                    const QString &componentFriendly, const QString &friendly)
 {
     const QString id = QStringLiteral("%1/%2").arg(component, action);
-    const bool historical = ShortcutReconciler::isHistoricalProjectOwned(component, action);
     const bool hasFriendly = !componentFriendly.isEmpty() || !friendly.isEmpty();
     QString base;
     if (!hasFriendly) {
@@ -863,9 +862,7 @@ static QString holderDisplayLabel(const QString &component, const QString &actio
             friendly.isEmpty() ? action : friendly);
         base = (display == id) ? id : QStringLiteral("%1 (%2)").arg(id, display);
     }
-    // Previous-identity note only; the persisted ID says nothing about
-    // live callback status.
-    return historical ? QStringLiteral("%1 [previous OmniTiler identity]").arg(base) : base;
+    return base;
 }
 
 QString UnifiedSettingsModule::buildConflictDialogText(const ShortcutForcePreview &preview, bool authenticStaged)
@@ -904,18 +901,15 @@ QString UnifiedSettingsModule::buildConflictDialogText(const ShortcutForcePrevie
                               ShortcutReconciler::keysDisplayNames(mismatch.post)));
     }
     // Exemptions exactly as the preview carries them: the in-scope lock
-    // relocation with its actual target image, or an honest out-of-scope
-    // line. Nothing is inferred here.
+    // relocation only when the binding actually moves, or an honest
+    // out-of-scope line. An already-relocated lock emits no exempt line.
+    // Nothing is inferred here.
     if (preview.lock.inScope) {
-        const QString actualNames = ShortcutReconciler::keysDisplayNames(preview.lock.actual);
-        const QString postNames = ShortcutReconciler::keysDisplayNames(preview.lock.post);
-        QString lockLine;
-        if (preview.lock.actual == preview.lock.post) {
-            lockLine = QStringLiteral("Exempt: %1/%2 already %3; unchanged.")
-                           .arg(preview.lock.component, preview.lock.action, postNames);
-        } else {
-            lockLine = QStringLiteral("Exempt: %1/%2 found %3 will move to %4.")
-                           .arg(preview.lock.component, preview.lock.action, actualNames, postNames);
+        if (preview.lock.actual != preview.lock.post) {
+            const QString actualNames = ShortcutReconciler::keysDisplayNames(preview.lock.actual);
+            const QString postNames = ShortcutReconciler::keysDisplayNames(preview.lock.post);
+            QString lockLine = QStringLiteral("Exempt: %1/%2 found %3 will move to %4.")
+                                   .arg(preview.lock.component, preview.lock.action, actualNames, postNames);
             // Preserved alternates: keys the relocation keeps (extra chords
             // beyond the replaced preimage) are named distinctly instead of
             // being folded into the move.
@@ -929,20 +923,20 @@ QString UnifiedSettingsModule::buildConflictDialogText(const ShortcutForcePrevie
                 lockLine += QStringLiteral(" Preserves %1.")
                                 .arg(ShortcutReconciler::keysDisplayNames(kept));
             }
+            if (preview.lock.authorizedHolderPresent) {
+                // Approved System Monitor Meta+Esc exception: retained but
+                // displaced, preserved and never cleared. No claim about
+                // physical key delivery is made here.
+                lockLine += QStringLiteral(" Authorized %1 retains its binding %2; retained but displaced, "
+                                           "preserved and not cleared.")
+                                .arg(holderDisplayLabel(preview.lock.authorizedComponent,
+                                                        preview.lock.authorizedAction,
+                                                        preview.lock.authorizedComponentFriendly,
+                                                        preview.lock.authorizedFriendly),
+                                     ShortcutReconciler::keysDisplayNames(preview.lock.authorizedActive));
+            }
+            lines.append(lockLine);
         }
-        if (preview.lock.authorizedHolderPresent) {
-            // Approved System Monitor Meta+Esc exception: retained but
-            // displaced, preserved and never cleared. No claim about
-            // physical key delivery is made here.
-            lockLine += QStringLiteral(" Authorized %1 retains its binding %2; retained but displaced, "
-                                       "preserved and not cleared.")
-                            .arg(holderDisplayLabel(preview.lock.authorizedComponent,
-                                                    preview.lock.authorizedAction,
-                                                    preview.lock.authorizedComponentFriendly,
-                                                    preview.lock.authorizedFriendly),
-                                 ShortcutReconciler::keysDisplayNames(preview.lock.authorizedActive));
-        }
-        lines.append(lockLine);
     } else {
         lines.append(QStringLiteral("Exempt: Lock Session untouched (focus-right is not taking canonical)."));
     }
