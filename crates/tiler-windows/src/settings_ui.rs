@@ -84,6 +84,8 @@ pub const ID_BORN_MAX_TILE: u32 = 135;
 pub const ID_BORN_MAX_OVERLAY: u32 = 136;
 pub const ID_FIXED_SIZE_BOTH: u32 = 137;
 pub const ID_FIXED_SIZE_EITHER: u32 = 138;
+pub const ID_MIGRATION_REFILL_LAST: u32 = 139;
+pub const ID_MIGRATION_REFILL_MRU: u32 = 140;
 
 const ESCAPE_VK: usize = 0x1B;
 
@@ -157,12 +159,13 @@ struct App {
     invalid: Option<String>,
     /// R-MOV-03 native tooltip text buffers (wide, NUL-terminated), one per
     /// radio, built from the shared options table, followed by the two
-    /// R-MAX-06 born-maximized buffers and the two R-SPC-04 D1 fixed-size
-    /// buffers in the same order. Owned by the boxed
+    /// R-MAX-06 born-maximized buffers, the two R-SPC-04 D1 fixed-size
+    /// buffers and the two R-WS-12e G-37 migration-refill buffers in the
+    /// same order. Owned by the boxed
     /// `App` so the pointers handed to the tooltip control stay valid for the
     /// whole window lifetime: the tooltip is a child window, destroyed with
     /// its parent before `WM_DESTROY` reclaims this box.
-    tip_text: [Vec<u16>; 6],
+    tip_text: [Vec<u16>; 8],
 }
 
 impl App {
@@ -384,22 +387,51 @@ fn fixed_size_tip_texts() -> [Vec<u16>; 2] {
     [wide(options[0].2), wide(options[1].2)]
 }
 
-/// All six two-choice radio tooltip buffers in control order: the two
-/// R-MOV-03 buffers, the two R-MAX-06 buffers, then the two R-SPC-04 D1
-/// fixed-size buffers.
-fn choice_tip_texts() -> [Vec<u16>; 6] {
+/// R-WS-12e G-37 radio selection from saved/draft settings: true selects the
+/// most-recently-used radio, false the last-remaining default. Unknown values
+/// (possible only in hand-built drafts, never from disk) show the default.
+fn migration_refill_mru_selected(settings: &Settings) -> bool {
+    settings.core.migration_source_refill == crate::settings::MIGRATION_REFILL_MRU
+}
+
+/// R-WS-12e G-37 draft staging from the most-recently-used radio state:
+/// writes the exact wire token for the selected choice, so Apply persists a
+/// validated value.
+fn apply_migration_refill_selection(draft: &mut Settings, mru: bool) {
+    draft.core.migration_source_refill = if mru {
+        crate::settings::MIGRATION_REFILL_MRU.to_owned()
+    } else {
+        crate::settings::MIGRATION_REFILL_LAST_REMAINING.to_owned()
+    };
+}
+
+/// R-WS-12e G-37 native tooltip text buffers from the shared options table:
+/// the WM reference per choice (`COSMIC` / `bspwm, i3, awesome`),
+/// wide-encoded for the tooltip control. Radio labels stay functional-only
+/// per the naming rule.
+fn migration_refill_tip_texts() -> [Vec<u16>; 2] {
+    let options = crate::settings::migration_source_refill_options();
+    [wide(options[0].2), wide(options[1].2)]
+}
+
+/// All eight two-choice radio tooltip buffers in control order: the two
+/// R-MOV-03 buffers, the two R-MAX-06 buffers, the two R-SPC-04 D1
+/// fixed-size buffers, then the two R-WS-12e G-37 migration-refill buffers.
+fn choice_tip_texts() -> [Vec<u16>; 8] {
     let axis = same_axis_tip_texts();
     let born = born_maximized_tip_texts();
     let fixed = fixed_size_tip_texts();
+    let refill = migration_refill_tip_texts();
     let [a0, a1] = axis;
     let [b0, b1] = born;
     let [c0, c1] = fixed;
-    [a0, a1, b0, b1, c0, c1]
+    let [d0, d1] = refill;
+    [a0, a1, b0, b1, c0, c1, d0, d1]
 }
 
 /// Attach native tooltips naming the reference WM to the two R-MOV-03
-/// radios, the two R-MAX-06 born-maximized radios and the two R-SPC-04 D1
-/// fixed-size radios. One
+/// radios, the two R-MAX-06 born-maximized radios, the two R-SPC-04 D1
+/// fixed-size radios and the two R-WS-12e G-37 migration-refill radios. One
 /// `tooltips_class32` child (`TTS_ALWAYSTIP`) with `TTF_SUBCLASS` tools, so
 /// hover tracking needs no manual relay. Text pointers ride the `App`-owned
 /// `tip_text` buffers (see the field docs for the lifetime). Best-effort: a
@@ -444,6 +476,8 @@ fn attach_choice_tips(app: &App, hwnd: HWND, hinst: windows_sys::Win32::Foundati
         (ID_BORN_MAX_OVERLAY, &app.tip_text[3]),
         (ID_FIXED_SIZE_BOTH, &app.tip_text[4]),
         (ID_FIXED_SIZE_EITHER, &app.tip_text[5]),
+        (ID_MIGRATION_REFILL_LAST, &app.tip_text[6]),
+        (ID_MIGRATION_REFILL_MRU, &app.tip_text[7]),
     ] {
         let control = app.ctl(id);
         if control.is_null() {
@@ -506,6 +540,11 @@ fn refresh_all(app: &App) {
     let either = fixed_size_either_selected(&app.work);
     set_checked(app.ctl(ID_FIXED_SIZE_BOTH), !either);
     set_checked(app.ctl(ID_FIXED_SIZE_EITHER), either);
+    // R-WS-12e G-37 two-choice control: same functional-labels-only rule;
+    // its own WS_GROUP pair below keeps it independent from the pairs above.
+    let mru = migration_refill_mru_selected(&app.work);
+    set_checked(app.ctl(ID_MIGRATION_REFILL_LAST), !mru);
+    set_checked(app.ctl(ID_MIGRATION_REFILL_MRU), mru);
     refresh_list(app);
     enable(app.ctl(ID_APPLY), app.invalid.is_none());
 }
@@ -595,6 +634,10 @@ fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // otherwise the exact both-axes token; only these two values can reach
     // validation.
     apply_fixed_size_selection(&mut draft, checked(app.ctl(ID_FIXED_SIZE_EITHER)));
+    // R-WS-12e G-37: the most-recently-used radio stages the exact MRU token,
+    // otherwise the exact last-remaining token; only these two values can
+    // reach validation.
+    apply_migration_refill_selection(&mut draft, checked(app.ctl(ID_MIGRATION_REFILL_MRU)));
     draft.revision = app.base.revision;
     validate_settings(&draft).map_err(|e| e.to_string())?;
     Ok(draft)
@@ -605,6 +648,7 @@ fn collect_draft(app: &mut App) -> Result<Settings, String> {
 /// (history rows ride Win+Ctrl, relative sends ride Win+Ctrl+Shift,
 /// numbered stay rides Win+Shift plus Win+Ctrl+Shift, output follow rides
 /// Win+Ctrl+Alt and output stay rides Win+Ctrl+Alt plus Win+Ctrl+Alt+Shift,
+/// workspace migration rides Win+Ctrl+Alt+Shift,
 /// resize-out rides Win+Alt and resize-in rides Win+Shift+Alt).
 fn apply_rebind_text(app: &mut App, text: &str) -> Result<(), String> {
     let index = app
@@ -1179,7 +1223,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
 
     let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let client_w = px(924, dpi);
-    let client_h = px(980, dpi);
+    let client_h = px(1044, dpi);
     let mut rect = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
@@ -1286,7 +1330,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: 0, class: "BUTTON", text: "Presets".to_owned(), x: 622, y: 140, w: 292, h: 240, style: group },
         Ctl { id: ID_PRESET_AUTHENTIC, class: "BUTTON", text: "Authentic".to_owned(), x: 632, y: 162, w: 132, h: 28, style: push | tab },
         Ctl { id: ID_PRESET_COMPATIBLE, class: "BUTTON", text: "Compatible".to_owned(), x: 772, y: 162, w: 132, h: 28, style: push | tab },
-        Ctl { id: ID_PRESET_EXPLAIN, class: "STATIC", text: "Authentic restores KDE defaults for every binding (Win+L opt-in preserved). Compatible disables known OS-conflicting chords only (including Win+Ctrl+Left/Right); every other chord is kept, including ones with unknown Windows ownership (letter moves, sticky, Win+Ctrl+Tab/letters/Up/Down, relative-send follows, keyboard resize Alt chords). Kept does not mean conflict-free. Stay rows stay unbound under both presets. No replacement defaults are invented; manual rebind stays available.".to_owned(), x: 632, y: 196, w: 272, h: 174, style: label },
+        Ctl { id: ID_PRESET_EXPLAIN, class: "STATIC", text: "Authentic restores KDE defaults for every binding (Win+L opt-in preserved). Compatible disables known OS-conflicting chords only (including Win+Ctrl+Left/Right); every other chord is kept, including ones with unknown Windows ownership (letter moves, sticky, Win+Ctrl+Tab/letters/Up/Down, relative-send follows, keyboard resize Alt chords). Kept does not mean conflict-free. Stay rows and workspace-migration rows stay unbound under both presets. No replacement defaults are invented; manual rebind stays available.".to_owned(), x: 632, y: 196, w: 272, h: 174, style: label },
         Ctl { id: 0, class: "BUTTON", text: "New workspaces".to_owned(), x: 10, y: 388, w: 904, h: 56, style: group },
         Ctl { id: ID_DEFAULT_TILED, class: "BUTTON", text: "Tiled".to_owned(), x: 20, y: 410, w: 140, h: 24, style: radio_first | tab },
         Ctl { id: ID_DEFAULT_FLOATING, class: "BUTTON", text: "Floating".to_owned(), x: 170, y: 410, w: 140, h: 24, style: radio | tab },
@@ -1303,18 +1347,22 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 602, w: 200, h: 24, style: radio_first | tab },
         Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 602, w: 200, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 600, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (99 rows)".to_owned(), x: 10, y: 644, w: 904, h: 268, style: group },
-        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 666, w: 540, h: 230, style: list_style | tab },
-        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 666, w: 324, h: 100, style: info_style },
-        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 770, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 770, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 802, w: 150, h: 24, style: edit_style | tab },
-        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 800, w: 120, h: 26, style: push | tab },
-        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 830, w: 324, h: 74, style: label },
-        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 920, w: 540, h: 60, style: label },
-        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 920, w: 100, h: 30, style: defpush | tab },
-        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 920, w: 100, h: 30, style: push | tab },
-        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 920, w: 100, h: 30, style: push | tab },
+        Ctl { id: 0, class: "BUTTON", text: "Source workspace after migration".to_owned(), x: 10, y: 644, w: 904, h: 56, style: group },
+        Ctl { id: ID_MIGRATION_REFILL_LAST, class: "BUTTON", text: "Last remaining workspace".to_owned(), x: 20, y: 666, w: 210, h: 24, style: radio_first | tab },
+        Ctl { id: ID_MIGRATION_REFILL_MRU, class: "BUTTON", text: "Most recently used workspace".to_owned(), x: 240, y: 666, w: 220, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Source refill applies to subsequent migrations only; migrated workspaces keep their state.".to_owned(), x: 470, y: 664, w: 434, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (103 rows)".to_owned(), x: 10, y: 708, w: 904, h: 268, style: group },
+        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 730, w: 540, h: 230, style: list_style | tab },
+        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 730, w: 324, h: 100, style: info_style },
+        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 834, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 834, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 866, w: 150, h: 24, style: edit_style | tab },
+        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 864, w: 120, h: 26, style: push | tab },
+        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, workspace migration Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 894, w: 324, h: 74, style: label },
+        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 984, w: 540, h: 60, style: label },
+        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 984, w: 100, h: 30, style: defpush | tab },
+        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 984, w: 100, h: 30, style: push | tab },
+        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 984, w: 100, h: 30, style: push | tab },
     ];
     // Group/label/statics carry id 0 and skip automation lookup. Groupboxes
     // are pinned behind every sibling (see below); their handles ride here.
@@ -1437,12 +1485,14 @@ pub fn cmd_settings() -> Result<String, DynError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_born_maximized_selection, apply_fixed_size_selection, apply_same_axis_selection,
-        born_overlay_selected, fixed_size_either_selected, same_axis_swap_selected,
+        apply_born_maximized_selection, apply_fixed_size_selection,
+        apply_migration_refill_selection, apply_same_axis_selection, born_overlay_selected,
+        fixed_size_either_selected, migration_refill_mru_selected, same_axis_swap_selected,
     };
     use crate::settings::{
         BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, FIXED_SIZE_BOTH_AXES, FIXED_SIZE_EITHER_AXIS,
-        SAME_AXIS_MOVE_GROUP, SAME_AXIS_MOVE_SWAP, Settings,
+        MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU, SAME_AXIS_MOVE_GROUP,
+        SAME_AXIS_MOVE_SWAP, Settings,
     };
 
     #[test]
@@ -1529,11 +1579,11 @@ mod tests {
 
     #[test]
     fn choice_tip_buffers_cover_all_radio_pairs() {
-        // Six buffers in control order: same-axis pair, born-maximized pair,
-        // then fixed-size pair, so each tooltip tool reads its own choice
-        // text.
+        // Eight buffers in control order: same-axis pair, born-maximized
+        // pair, fixed-size pair, then migration-refill pair, so each tooltip
+        // tool reads its own choice text.
         let tips = super::choice_tip_texts();
-        assert_eq!(tips.len(), 6);
+        assert_eq!(tips.len(), 8);
         assert_eq!(tips[0], super::wide("COSMIC"));
         assert_eq!(tips[1], super::wide("i3, sway"));
         assert_eq!(tips[0], super::same_axis_tip_texts()[0]);
@@ -1544,6 +1594,10 @@ mod tests {
         assert_eq!(tips[5], super::fixed_size_tip_texts()[1]);
         assert_eq!(tips[4], super::wide("COSMIC"));
         assert_eq!(tips[5], super::wide("Hyprland (Wayland), sway"));
+        assert_eq!(tips[6], super::migration_refill_tip_texts()[0]);
+        assert_eq!(tips[7], super::migration_refill_tip_texts()[1]);
+        assert_eq!(tips[6], super::wide("COSMIC"));
+        assert_eq!(tips[7], super::wide("bspwm, i3, awesome"));
     }
 
     #[test]
@@ -1588,13 +1642,76 @@ mod tests {
     }
 
     #[test]
+    fn migration_refill_radio_round_trips_both_tokens() {
+        let mut draft = Settings::default();
+        assert!(!migration_refill_mru_selected(&draft));
+        apply_migration_refill_selection(&mut draft, true);
+        assert_eq!(draft.core.migration_source_refill, MIGRATION_REFILL_MRU);
+        assert!(migration_refill_mru_selected(&draft));
+        apply_migration_refill_selection(&mut draft, false);
+        assert_eq!(
+            draft.core.migration_source_refill,
+            MIGRATION_REFILL_LAST_REMAINING
+        );
+        assert!(!migration_refill_mru_selected(&draft));
+    }
+
+    #[test]
+    fn migration_refill_radio_shows_last_remaining_for_unknown_hand_built_value() {
+        let mut draft = Settings::default();
+        draft.core.migration_source_refill = "retired-alias".to_owned();
+        assert!(!migration_refill_mru_selected(&draft));
+    }
+
+    #[test]
+    fn migration_refill_selection_validates_after_apply() {
+        for mru in [false, true] {
+            let mut draft = Settings::default();
+            apply_migration_refill_selection(&mut draft, mru);
+            crate::settings::validate_settings(&draft).expect("radio stages a valid token");
+        }
+    }
+
+    #[test]
+    fn migration_refill_tip_texts_come_from_shared_options() {
+        let options = crate::settings::migration_source_refill_options();
+        let tips = super::migration_refill_tip_texts();
+        assert_eq!(tips.len(), 2);
+        for (buffer, option) in tips.iter().zip(options.iter()) {
+            assert_eq!(*buffer, super::wide(option.2));
+        }
+        // Exact WM references, functional labels kept out of the tips.
+        assert_eq!(tips[0], super::wide("COSMIC"));
+        assert_eq!(tips[1], super::wide("bspwm, i3, awesome"));
+    }
+
+    #[test]
+    fn migration_refill_options_carry_functional_labels() {
+        assert_eq!(
+            crate::settings::migration_source_refill_options(),
+            [
+                (
+                    MIGRATION_REFILL_LAST_REMAINING,
+                    "Last remaining workspace",
+                    "COSMIC"
+                ),
+                (
+                    MIGRATION_REFILL_MRU,
+                    "Most recently used workspace",
+                    "bspwm, i3, awesome"
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn dialog_fits_1380_work_area_at_dpi120() {
-        // Lowest control edge is the status line (y920 h60); it must sit
-        // inside the 980-high client area, which itself must fit a
-        // 1380-high work area at DPI 120 (px(980, 120) == 1225, leaving room
+        // Lowest control edge is the status line (y984 h60); it must sit
+        // inside the 1044-high client area, which itself must fit a
+        // 1380-high work area at DPI 120 (px(1044, 120) == 1305, leaving room
         // for the non-client frame on top).
-        assert_eq!(super::px(980, 120), 1225);
-        assert!(super::px(920 + 60, 120) <= super::px(980, 120));
-        assert!(super::px(980, 120) <= 1380);
+        assert_eq!(super::px(1044, 120), 1305);
+        assert!(super::px(984 + 60, 120) <= super::px(1044, 120));
+        assert!(super::px(1044, 120) <= 1380);
     }
 }

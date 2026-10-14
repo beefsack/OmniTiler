@@ -165,6 +165,22 @@ fn default_born_maximized() -> String {
         .to_owned()
 }
 
+/// R-WS-12e G-37 migration source-refill wire values (user 2026-10-10,
+/// functional IDs delivered offline in shared core/KDE). Exact tokens only:
+/// no aliases, no migration; unknown or mistyped values refuse through the
+/// existing invalid-file/last-good path.
+pub const MIGRATION_REFILL_LAST_REMAINING: &str = "last-remaining-workspace";
+/// R-WS-12e G-37 most-recently-used alternative wire value.
+pub const MIGRATION_REFILL_MRU: &str = "most-recently-used-workspace";
+/// Functional label for the default (KCM parity).
+pub const MIGRATION_REFILL_LAST_REMAINING_LABEL: &str = "Last remaining workspace";
+/// Reference WM named by the default's tooltip (KCM parity: never a setting id).
+pub const MIGRATION_REFILL_LAST_REMAINING_TIP: &str = "COSMIC";
+/// Functional label for the most-recently-used alternative (KCM parity).
+pub const MIGRATION_REFILL_MRU_LABEL: &str = "Most recently used workspace";
+/// Reference WMs named by the alternative's tooltip (KCM parity).
+pub const MIGRATION_REFILL_MRU_TIP: &str = "bspwm, i3, awesome";
+
 /// R-MOV-03 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
 pub const fn same_axis_move_options() -> [(&'static str, &'static str, &'static str); 2] {
@@ -207,6 +223,27 @@ fn default_fixed_size_predicate() -> String {
     FIXED_SIZE_BOTH_AXES.to_owned()
 }
 
+/// R-WS-12e G-37 two-choice control rows: `(wire token, functional label, WM tooltip)`.
+#[must_use]
+pub const fn migration_source_refill_options() -> [(&'static str, &'static str, &'static str); 2] {
+    [
+        (
+            MIGRATION_REFILL_LAST_REMAINING,
+            MIGRATION_REFILL_LAST_REMAINING_LABEL,
+            MIGRATION_REFILL_LAST_REMAINING_TIP,
+        ),
+        (
+            MIGRATION_REFILL_MRU,
+            MIGRATION_REFILL_MRU_LABEL,
+            MIGRATION_REFILL_MRU_TIP,
+        ),
+    ]
+}
+
+fn default_migration_source_refill() -> String {
+    MIGRATION_REFILL_LAST_REMAINING.to_owned()
+}
+
 /// Core tiling/visual/takeover settings. All values are validated on load
 /// and on save; out-of-range values refuse instead of clamping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,6 +269,13 @@ pub struct CoreSettings {
     /// classifications (D2).
     #[serde(default = "default_fixed_size_predicate")]
     pub fixed_size_predicate: String,
+    /// R-WS-12e G-37 source workspace after migration. Additive schema-v1
+    /// field: a missing value defaults to
+    /// [`MIGRATION_REFILL_LAST_REMAINING`]; any other value besides the two
+    /// exact tokens refuses in [`validate_settings`]. Changes apply to
+    /// subsequent migrations only, never to an already-migrated workspace.
+    #[serde(default = "default_migration_source_refill")]
+    pub migration_source_refill: String,
     #[serde(default)]
     pub border: BorderSettings,
     #[serde(default)]
@@ -260,6 +304,7 @@ impl Default for CoreSettings {
             same_axis_move: default_same_axis_move(),
             born_maximized: default_born_maximized(),
             fixed_size_predicate: default_fixed_size_predicate(),
+            migration_source_refill: default_migration_source_refill(),
             border: BorderSettings::default(),
             underlay: UnderlaySettings::default(),
             keyboard: KeyboardSettings::default(),
@@ -310,6 +355,24 @@ impl CoreSettings {
     pub fn fixed_size_predicate_mode(&self) -> tiler_core::size_hints::FixedSizePredicate {
         tiler_core::size_hints::FixedSizePredicate::parse_wire(&self.fixed_size_predicate)
             .unwrap_or_default()
+    }
+
+    /// Typed R-WS-12e G-37 source-refill mode for subsequent whole-workspace
+    /// migrations. Shared policy only: the exact tokens parse through
+    /// [`tiler_core::output_selection::MigrationSourceRefill::parse_wire`],
+    /// so MRU eligibility (pre-mutation item-1.2 previous id, surviving
+    /// empties valid, migrated/removed/out-of-scope fallback) is never copied
+    /// here. Live settings are always validated, so the fallback only covers
+    /// hand-built defaults; invalid files never become live (they keep
+    /// last-good instead).
+    #[must_use]
+    pub fn migration_source_refill_mode(
+        &self,
+    ) -> tiler_core::output_selection::MigrationSourceRefill {
+        tiler_core::output_selection::MigrationSourceRefill::parse_wire(
+            &self.migration_source_refill,
+        )
+        .unwrap_or_default()
     }
 }
 
@@ -694,6 +757,15 @@ pub enum BindingFamily {
     WorkspaceOutput {
         direction: &'static str,
         follow: bool,
+    },
+    /// Item 14 whole-active-workspace output migration: move the active
+    /// workspace to the adjacent output in `direction`, selected by the
+    /// shared largest-shared-edge rule. All four rows are bindable unbound
+    /// (Keep means unbound, never Disabled/effective interception) and
+    /// follow-only: a rebound rides Win+Ctrl+Alt+Shift through the migrate
+    /// action, pinning `direction` from the canonical letter key.
+    WorkspaceMigrate {
+        direction: &'static str,
     },
     WorkspaceHistory {
         kind: WorkspaceHistoryKind,
@@ -1209,6 +1281,21 @@ pub fn binding_catalog() -> Vec<BindingDef> {
             },
         });
     }
+    // Item 14 whole-workspace migration: four follow-only rows (one per
+    // direction), all bindable unbound. A rebound rides Win+Ctrl+Alt+Shift
+    // through the explicit migrate action; the canonical letter slot is
+    // shared per direction like the output-send stay rows. Both presets keep
+    // these rows unbound; no new Compatible disables and no invented holder.
+    for (id, text, direction) in MIGRATION_ROWS {
+        rows.push(BindingDef {
+            id,
+            text,
+            family: BindingFamily::WorkspaceMigrate { direction },
+            defaults: &[],
+            implemented: true,
+            conflict: None,
+        });
+    }
     // Item 1 history rows: one Win+Ctrl+Tab previous-view toggle plus eight
     // Win+Ctrl relative steps (H/K/Left/Up previous, J/L/Down/Right next).
     // Authentic keeps all nine; Compatible disables only Left/Right (native
@@ -1519,6 +1606,35 @@ const OUTPUT_SEND_ROWS: [(&str, &str, &str, bool, &[&str]); 12] = [
         &[],
     ),
 ];
+
+/// Item 14 whole-workspace migration catalog rows: one follow-only row per
+/// direction, all bindable unbound. Separate direction rows keep the
+/// per-binding model truthful like the output sends: rebinding one never
+/// touches another. The canonical slot rides the letter key per direction
+/// (H/J/K/L); an arrow-chord rebind routes into that slot through the
+/// explicit migrate action.
+const MIGRATION_ROWS: [(&str, &str, &str); 4] = [
+    (
+        "migrate-workspace-left",
+        "Migrate workspace to output left",
+        "left",
+    ),
+    (
+        "migrate-workspace-right",
+        "Migrate workspace to output right",
+        "right",
+    ),
+    (
+        "migrate-workspace-up",
+        "Migrate workspace to output up",
+        "up",
+    ),
+    (
+        "migrate-workspace-down",
+        "Migrate workspace to output down",
+        "down",
+    ),
+];
 fn workspace_row(index: u8, op: SnapFamilyOp) -> BindingDef {
     // Static per-index rows (KDE `workspaceShortcutCatalog` parity: select
     // `Meta+1..0`, send `Meta+Shift+1..0`). Shifted US symbols share the
@@ -1770,6 +1886,9 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
             op.wants_shift()
         }
         BindingFamily::WorkspaceStay { .. } | BindingFamily::WorkspaceSendRelative { .. } => true,
+        // Item 14 migration rides Win+Ctrl+Alt+Shift unshifted-never: the
+        // full-modifier chord is the single native arm.
+        BindingFamily::WorkspaceMigrate { .. } => true,
         // Item 5 output sends ride Win+Ctrl+Alt unshifted; a stay row rebound
         // with Shift is accepted via `binding_modifiers_ok` below.
         BindingFamily::WorkspaceOutput { .. } => false,
@@ -1782,7 +1901,8 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
 
 /// Native Ctrl polarity of one catalog binding: item 1 history arms ride
 /// Win+Ctrl; item 2 relative sends ride Win+Ctrl+Shift; item 5 output sends
-/// ride Win+Ctrl+Alt([+Shift] for a shifted stay rebind); every other
+/// ride Win+Ctrl+Alt([+Shift] for a shifted stay rebind); item 14 migration
+/// rows ride Win+Ctrl+Alt+Shift; every other
 /// implemented arm rides without Ctrl by default. Numbered stay additionally
 /// accepts the Win+Ctrl+Shift backlog arm via [`binding_modifiers_ok`]; this
 /// default stays Ctrl-free so plain Win+Shift stay rebinds keep working.
@@ -1795,6 +1915,7 @@ pub fn binding_wants_ctrl(def: &BindingDef) -> bool {
         BindingFamily::WorkspaceHistory { .. }
             | BindingFamily::WorkspaceSendRelative { .. }
             | BindingFamily::WorkspaceOutput { .. }
+            | BindingFamily::WorkspaceMigrate { .. }
     )
 }
 
@@ -1803,7 +1924,8 @@ pub fn binding_wants_ctrl(def: &BindingDef) -> bool {
 /// [`binding_wants_ctrl`] / [`binding_wants_alt`] arm, except numbered stay,
 /// which additionally accepts the Win+Ctrl+Shift backlog example arm
 /// (Shift required, Alt never), and output stay, which additionally accepts
-/// Win+Ctrl+Alt+Shift (Shift optional, Ctrl+Alt always). Digit follow and all
+/// Win+Ctrl+Alt+Shift (Shift optional, Ctrl+Alt always). Item 14 migration
+/// rows accept only their exact Win+Ctrl+Alt+Shift arm. Digit follow and all
 /// other arms are untouched: Ctrl stays refused there.
 #[must_use]
 pub fn binding_modifiers_ok(def: &BindingDef, shift: bool, ctrl: bool, alt: bool) -> bool {
@@ -1856,13 +1978,16 @@ pub fn binding_arm_text(def: &BindingDef) -> &'static str {
 
 /// Native Alt polarity of one catalog binding: keyboard resize arms ride
 /// Win+Alt (outwards) and Win+Shift+Alt (inwards); item 5 output sends ride
-/// Win+Ctrl+Alt ([+Shift] for a shifted stay rebind); every other arm rides
+/// Win+Ctrl+Alt ([+Shift] for a shifted stay rebind); item 14 migration rows
+/// ride Win+Ctrl+Alt+Shift; every other arm rides
 /// without Alt.
 #[must_use]
 pub const fn binding_wants_alt(def: &BindingDef) -> bool {
     matches!(
         def.family,
-        BindingFamily::Resize { .. } | BindingFamily::WorkspaceOutput { .. }
+        BindingFamily::Resize { .. }
+            | BindingFamily::WorkspaceOutput { .. }
+            | BindingFamily::WorkspaceMigrate { .. }
     )
 }
 
@@ -1899,6 +2024,7 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
                 ChordAction::WorkspaceOutputStay
             }
         }
+        BindingFamily::WorkspaceMigrate { .. } => ChordAction::WorkspaceMigrate,
         BindingFamily::WorkspaceHistory { kind } => match kind {
             WorkspaceHistoryKind::Previous => ChordAction::WorkspacePrevious,
             WorkspaceHistoryKind::Prev => ChordAction::WorkspacePrev,
@@ -1928,7 +2054,8 @@ pub fn binding_action(def: &BindingDef) -> crate::snapkey::ChordAction {
 /// follow arm), so a rebind routes into the shared hold slot through its
 /// explicit action. Item 5 output stay rows (unbound) claim their canonical
 /// letter slot the same way (H/J/K/L per direction, shared with the follow
-/// arm on that key).
+/// arm on that key). Item 14 migration rows (unbound, follow-only) claim
+/// their canonical letter slot per direction the same way.
 #[must_use]
 pub fn binding_canonical_vk(def: &BindingDef) -> Option<u32> {
     if let Some(first) = def
@@ -1940,6 +2067,12 @@ pub fn binding_canonical_vk(def: &BindingDef) -> Option<u32> {
     }
     match def.family {
         BindingFamily::WorkspaceStay { index } => Some(VK_0 + u32::from(index)),
+        BindingFamily::WorkspaceMigrate { direction } => Some(match direction {
+            "left" => 0x48,
+            "down" => 0x4A,
+            "up" => 0x4B,
+            _ => 0x4C,
+        }),
         BindingFamily::WorkspaceOutput { direction, .. } => Some(match direction {
             "left" => 0x48,
             "down" => 0x4A,
@@ -1995,7 +2128,8 @@ pub fn effective_bindings(settings: &Settings) -> Vec<EffectiveBinding> {
             }) => {
                 let chords: Vec<String> = def.defaults.iter().map(|s| (*s).to_owned()).collect();
                 if def.defaults.is_empty() {
-                    // Unbound bindable row (item 2 stay): Keep means unbound,
+                    // Unbound bindable row (item 2 stay, item 5 output stay,
+                    // item 14 migration): Keep means unbound,
                     // never Disabled/effective interception. The chord stays
                     // pass-through until rebound; the UI shows it unbound,
                     // distinctly from disabled.
@@ -2069,8 +2203,10 @@ use crate::snapkey::{ChordDisable, ChordRemap};
 /// arm, resize included). The rebound chord alone routes; the binding's old
 /// default chords pass through via [`build_disabled`]. Unbound stay rows
 /// route into their canonical slot (shared with the follow arm on the same
-/// key) through the explicit stay action; rebound resize rows route into
-/// their letter canonical slot through the mode-carrying resize action.
+/// key) through the explicit stay action; item 14 migration rows route into
+/// their canonical letter slot through the explicit migrate action; rebound
+/// resize rows route into their letter canonical slot through the
+/// mode-carrying resize action.
 #[must_use]
 pub fn build_remap(settings: &Settings) -> Vec<ChordRemap> {
     let mut defs = BTreeMap::new();
@@ -2230,6 +2366,16 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
     {
         return Err(SettingsError::Invalid(
             "core.fixed_size_predicate needs both-axes-fixed|either-axis-fixed".to_owned(),
+        ));
+    }
+    if tiler_core::output_selection::MigrationSourceRefill::parse_wire(
+        &settings.core.migration_source_refill,
+    )
+    .is_none()
+    {
+        return Err(SettingsError::Invalid(
+            "core.migration_source_refill needs last-remaining-workspace|most-recently-used-workspace"
+                .to_owned(),
         ));
     }
     validate_border(&settings.core.border)?;
@@ -2563,6 +2709,9 @@ fn load_validated(bytes: &[u8]) -> Result<Settings, SettingsError> {
 /// Load outcome for one directory read. Invalid files report their reason
 /// and leave the bytes untouched (no blind reset, no rewrite).
 #[derive(Debug, Clone, PartialEq)]
+// Whole-document `Settings` travels by value through load/poll by design;
+// boxing it would ripple through every owner call site for no behavior gain.
+#[allow(clippy::large_enum_variant)]
 pub enum LoadOutcome {
     Loaded(Settings),
     Missing,
@@ -2690,6 +2839,8 @@ impl LiveSettings {
 /// Poll outcome for one owner-pump check. `InvalidKept` keeps the last-good
 /// values live with a degraded status; the file is never rewritten.
 #[derive(Debug, Clone, PartialEq)]
+// Same by-value document rationale as `LoadOutcome` above.
+#[allow(clippy::large_enum_variant)]
 pub enum PollOutcome {
     Unchanged,
     Changed(Settings),
@@ -2826,6 +2977,14 @@ mod tests {
         assert_eq!(
             settings.core.fixed_size_predicate_mode(),
             tiler_core::size_hints::FixedSizePredicate::BothAxes
+        );
+        assert_eq!(
+            settings.core.migration_source_refill,
+            MIGRATION_REFILL_LAST_REMAINING
+        );
+        assert_eq!(
+            settings.core.migration_source_refill_mode(),
+            tiler_core::output_selection::MigrationSourceRefill::LastRemaining
         );
         assert!(validate_settings(&settings).is_ok());
     }
@@ -2969,6 +3128,88 @@ mod tests {
             settings.core.fixed_size_predicate = FIXED_SIZE_EITHER_AXIS.to_owned();
             apply_preset(&mut settings, preset);
             assert_eq!(settings.core.fixed_size_predicate, FIXED_SIZE_EITHER_AXIS);
+            assert!(validate_settings(&settings).is_ok());
+        }
+    }
+
+    #[test]
+    fn migration_source_refill_tokens_map_exactly_with_last_remaining_default() {
+        use tiler_core::output_selection::MigrationSourceRefill::{
+            LastRemaining, MostRecentlyUsed,
+        };
+        assert_eq!(
+            tiler_core::output_selection::MigrationSourceRefill::parse_wire(
+                MIGRATION_REFILL_LAST_REMAINING
+            ),
+            Some(LastRemaining)
+        );
+        assert_eq!(
+            tiler_core::output_selection::MigrationSourceRefill::parse_wire(MIGRATION_REFILL_MRU),
+            Some(MostRecentlyUsed)
+        );
+        assert_eq!(LastRemaining.as_wire_str(), MIGRATION_REFILL_LAST_REMAINING);
+        assert_eq!(MostRecentlyUsed.as_wire_str(), MIGRATION_REFILL_MRU);
+        assert_eq!(
+            tiler_core::output_selection::MigrationSourceRefill::default(),
+            LastRemaining
+        );
+        // No aliases, no case folding, no empty token, no retired IDs.
+        for bad in [
+            "",
+            "mru",
+            "last-remaining",
+            "most-recently-used",
+            "LAST-REMAINING-WORKSPACE",
+            "last_remaining_workspace",
+        ] {
+            assert!(
+                tiler_core::output_selection::MigrationSourceRefill::parse_wire(bad).is_none(),
+                "{bad}"
+            );
+        }
+        let mut settings = Settings::default();
+        settings.core.migration_source_refill = MIGRATION_REFILL_MRU.to_owned();
+        assert_eq!(
+            settings.core.migration_source_refill_mode(),
+            MostRecentlyUsed
+        );
+        assert!(validate_settings(&settings).is_ok());
+        // Hand-built unknown values fail closed to the default mode but
+        // refuse through validation (last-good on disk, never live).
+        settings.core.migration_source_refill = "mru".to_owned();
+        assert_eq!(settings.core.migration_source_refill_mode(), LastRemaining);
+        assert!(matches!(
+            validate_settings(&settings),
+            Err(SettingsError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn migration_source_refill_options_carry_functional_labels_and_wm_tips() {
+        assert_eq!(
+            migration_source_refill_options(),
+            [
+                (
+                    MIGRATION_REFILL_LAST_REMAINING,
+                    "Last remaining workspace",
+                    "COSMIC"
+                ),
+                (
+                    MIGRATION_REFILL_MRU,
+                    "Most recently used workspace",
+                    "bspwm, i3, awesome"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_source_refill_presets_leave_core_field_unchanged() {
+        for preset in [Preset::Authentic, Preset::Compatible] {
+            let mut settings = Settings::default();
+            settings.core.migration_source_refill = MIGRATION_REFILL_MRU.to_owned();
+            apply_preset(&mut settings, preset);
+            assert_eq!(settings.core.migration_source_refill, MIGRATION_REFILL_MRU);
             assert!(validate_settings(&settings).is_ok());
         }
     }
@@ -3221,12 +3462,13 @@ mod tests {
         // 16 focus/move (letter plus separate arrow rows) + 8 resize + 6
         // toggles + 2 launchers + 20 workspace + 9 item 1 history + 10
         // numbered stay + 8 relative follow + 8 relative stay (item 2) + 8
-        // output follow + 4 output stay (item 5) = 99.
-        assert_eq!(catalog.len(), 99);
+        // output follow + 4 output stay (item 5) + 4 migration (item 14) =
+        // 103.
+        assert_eq!(catalog.len(), 103);
         let mut ids: Vec<&str> = catalog.iter().map(|def| def.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 99);
+        assert_eq!(ids.len(), 103);
         // Every default parses and every row (resize included) intercepts.
         for def in &catalog {
             for default in def.defaults {
@@ -3647,7 +3889,7 @@ mod tests {
         assert!(!settings.bindings.contains_key("toggle-sticky"));
         assert!(!settings.bindings.contains_key("workspace-previous"));
         let effective = effective_bindings(&settings);
-        assert_eq!(effective.len(), 99);
+        assert_eq!(effective.len(), 103);
         for row in &effective {
             if compatible_disabled_ids().contains(&row.id) {
                 assert!(!row.active, "{}", row.id);

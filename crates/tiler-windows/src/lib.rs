@@ -3,6 +3,7 @@ pub mod active_border;
 pub mod active_border_sys;
 pub mod group_underlay;
 pub mod input_handoff;
+pub mod input_health;
 pub mod input_pump;
 pub mod lifecycle;
 pub mod model;

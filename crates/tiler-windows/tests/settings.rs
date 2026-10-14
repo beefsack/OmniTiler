@@ -731,7 +731,7 @@ fn compatible_preset_disables_os_conflicting_rows() {
     assert!(changed.contains(&"workspace-prev-left-arrow"));
     assert!(changed.contains(&"workspace-next-right-arrow"));
     let effective = tiler_windows::settings::effective_bindings(&settings);
-    assert_eq!(effective.len(), 99);
+    assert_eq!(effective.len(), 103);
     for row in &effective {
         if tiler_windows::settings::compatible_disabled_ids().contains(&row.id) {
             assert!(!row.active, "{}", row.id);
@@ -912,10 +912,11 @@ fn retained_update_gaps_preserves_topology() {
 // Item 2 catalog/settings: 26 new rows (10 numbered stay + 8 relative follow
 // + 8 relative stay) for 83 total, plus the item 4 orientation toggle for 84,
 // plus the two launcher rows for 86, plus the item 21 workspace-tiling toggle
-// for 87, plus the 12 item 5 output rows (8 follow + 4 stay) for 99; follow
+// for 87, plus the 12 item 5 output rows (8 follow + 4 stay) for 99, plus the
+// 4 item 14 migration rows for 103; follow
 // defaults keep pending evidenced
 // conflicts with honest unknown-ownership text (no new Compatible disables);
-// stay rows are bindable unbound with Keep meaning unbound.
+// stay and migration rows are bindable unbound with Keep meaning unbound.
 
 #[test]
 fn catalog_exposes_item2_rows_with_exact_modifiers() {
@@ -925,7 +926,7 @@ fn catalog_exposes_item2_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 99);
+    assert_eq!(catalog.len(), 103);
     // Numbered stay: ten unbound rows on the shifted digit arm through the
     // stay action, sharing the follow digit canonical slot.
     for index in [1u8, 2, 9, 0] {
@@ -1530,6 +1531,221 @@ fn same_axis_move_presets_leave_core_field_unchanged() {
 }
 
 #[test]
+fn migration_refill_schema_v1_missing_field_defaults_to_last_remaining() {
+    use tiler_windows::settings::{MIGRATION_REFILL_LAST_REMAINING, validate_settings};
+    // Pre-item-19 schema-v1 file without the additive field: serde
+    // missing-default supplies last-remaining-workspace, schema stays v1.
+    let temp = Temp::new("migration-refill-missing");
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"inner_gap":8,"outer_gap":8},"bindings":{}}"#,
+    )
+    .expect("write");
+    let LoadOutcome::Loaded(settings) = load_from_dir(&temp.path) else {
+        panic!("old file loads");
+    };
+    assert_eq!(settings.v, 1);
+    assert_eq!(
+        settings.core.migration_source_refill,
+        MIGRATION_REFILL_LAST_REMAINING
+    );
+    assert_eq!(
+        settings.core.migration_source_refill_mode(),
+        tiler_core::output_selection::MigrationSourceRefill::LastRemaining
+    );
+    assert!(validate_settings(&settings).is_ok());
+}
+
+#[test]
+fn migration_refill_both_tokens_round_trip() {
+    use tiler_windows::settings::{MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU};
+    let temp = Temp::new("migration-refill-roundtrip");
+    for token in [MIGRATION_REFILL_LAST_REMAINING, MIGRATION_REFILL_MRU] {
+        let mut settings = Settings::default();
+        settings.core.migration_source_refill = token.to_owned();
+        save_to_dir(&temp.path, &mut settings).expect("save");
+        let LoadOutcome::Loaded(back) = load_from_dir(&temp.path) else {
+            panic!("reloads {token}");
+        };
+        assert_eq!(back.core.migration_source_refill, token);
+    }
+    // Atomic save leaves only the final name behind.
+    let entries: Vec<String> = std::fs::read_dir(&temp.path)
+        .expect("read dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["settings.json".to_owned()]);
+}
+
+#[test]
+fn migration_refill_invalid_value_and_type_refuse() {
+    use tiler_windows::settings::SettingsError;
+    let temp = Temp::new("migration-refill-invalid");
+    // Unknown value (including near-miss aliases): invalid, bytes untouched.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"migration_source_refill":"mru"},"bindings":{}}"#,
+    )
+    .expect("write");
+    assert!(matches!(
+        load_from_dir(&temp.path),
+        LoadOutcome::Invalid(SettingsError::Invalid(_))
+    ));
+    // Wrong JSON type: malformed, bytes untouched.
+    std::fs::write(
+        temp.file(),
+        br#"{"v":1,"revision":1,"core":{"migration_source_refill":7},"bindings":{}}"#,
+    )
+    .expect("write");
+    assert!(matches!(
+        load_from_dir(&temp.path),
+        LoadOutcome::Invalid(SettingsError::Malformed)
+    ));
+    // Live poll keeps last-good with a degraded status; the file is never
+    // rewritten, so a later valid save still applies.
+    let mut live_settings = Settings::default();
+    live_settings.core.migration_source_refill =
+        tiler_windows::settings::MIGRATION_REFILL_MRU.to_owned();
+    let live = tiler_windows::settings::LiveSettings::fresh(live_settings, None);
+    let outcome = poll_for_change(&temp.path, &live);
+    assert!(
+        matches!(outcome, PollOutcome::InvalidKept(_)),
+        "keeps last-good, got {outcome:?}"
+    );
+    assert_eq!(
+        live.settings.core.migration_source_refill,
+        "most-recently-used-workspace"
+    );
+    let mut valid = Settings::default();
+    valid.core.migration_source_refill = tiler_windows::settings::MIGRATION_REFILL_MRU.to_owned();
+    save_to_dir(&temp.path, &mut valid).expect_err("invalid on-disk file blocks save");
+}
+
+#[test]
+fn migration_refill_presets_leave_core_field_unchanged() {
+    use tiler_windows::settings::{MIGRATION_REFILL_MRU, validate_settings};
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        settings.core.migration_source_refill = MIGRATION_REFILL_MRU.to_owned();
+        tiler_windows::settings::apply_preset(&mut settings, preset);
+        assert_eq!(settings.core.migration_source_refill, MIGRATION_REFILL_MRU);
+        assert!(validate_settings(&settings).is_ok());
+    }
+}
+
+// Item 14 catalog/settings: four follow-only migration rows (one per
+// direction), all bindable unbound with Keep meaning unbound under both
+// presets; a rebound rides the exact Win+Ctrl+Alt+Shift arm into the
+// canonical letter slot through the migrate action.
+
+#[test]
+fn catalog_exposes_migration_rows_unbound_with_exact_modifiers() {
+    use tiler_windows::settings::{
+        binding_action, binding_canonical_vk, binding_catalog, binding_wants_alt,
+        binding_wants_ctrl, binding_wants_shift,
+    };
+    use tiler_windows::snapkey::ChordAction;
+    let catalog = binding_catalog();
+    assert_eq!(catalog.len(), 103);
+    for (id, canon) in [
+        ("migrate-workspace-left", 0x48u32),
+        ("migrate-workspace-right", 0x4Cu32),
+        ("migrate-workspace-up", 0x4Bu32),
+        ("migrate-workspace-down", 0x4Au32),
+    ] {
+        let def = catalog.iter().find(|def| def.id == id).expect("row");
+        assert!(def.defaults.is_empty(), "{id} unbound by default");
+        assert!(def.implemented, "{id}");
+        assert!(def.conflict.is_none(), "{id} carries no invented holder");
+        assert!(binding_wants_shift(def), "{id}");
+        assert!(binding_wants_ctrl(def), "{id}");
+        assert!(binding_wants_alt(def), "{id}");
+        assert_eq!(binding_action(def), ChordAction::WorkspaceMigrate);
+        assert_eq!(binding_canonical_vk(def), Some(canon), "{id} letter slot");
+        assert_eq!(
+            tiler_windows::settings::binding_arm_text(def),
+            "Win+Ctrl+Alt+Shift",
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn migration_rows_stay_unbound_under_both_presets() {
+    use tiler_windows::settings::{apply_preset, effective_bindings};
+    for preset in [Preset::Authentic, Preset::Compatible] {
+        let mut settings = Settings::default();
+        let changed = apply_preset(&mut settings, preset);
+        for id in [
+            "migrate-workspace-left",
+            "migrate-workspace-right",
+            "migrate-workspace-up",
+            "migrate-workspace-down",
+        ] {
+            assert!(!changed.contains(&id), "{id} keeps unbound {preset:?}");
+            assert!(!settings.bindings.contains_key(id), "{id} {preset:?}");
+        }
+        for row in effective_bindings(&settings) {
+            if row.id.starts_with("migrate-workspace-") {
+                assert!(row.active, "{}", row.id);
+                assert!(row.chords.is_empty(), "{}", row.id);
+                assert!(!row.effective, "{}", row.id);
+                assert_eq!(row.reason, "unbound: bindable", "{}", row.id);
+            }
+        }
+        assert!(tiler_windows::settings::validate_settings(&settings).is_ok());
+    }
+}
+
+#[test]
+fn migration_rebind_routes_into_canonical_slot_with_full_modifiers() {
+    use tiler_windows::settings::{
+        BindingSetting, BindingState, binding_modifiers_ok, build_disabled, build_remap,
+        validate_settings,
+    };
+    use tiler_windows::snapkey::ChordAction;
+    let catalog = tiler_windows::settings::binding_catalog();
+    let def = catalog
+        .iter()
+        .find(|def| def.id == "migrate-workspace-left")
+        .expect("row");
+    // Exact full-modifier arm only: shifted Ctrl+Alt without Win-Ctrl-Alt-Shift
+    // shape refuses (missing Alt here), other arms refuse too.
+    assert!(binding_modifiers_ok(def, true, true, true));
+    assert!(!binding_modifiers_ok(def, false, true, true));
+    assert!(!binding_modifiers_ok(def, true, false, true));
+    assert!(!binding_modifiers_ok(def, true, true, false));
+    assert!(!binding_modifiers_ok(def, false, false, false));
+    // A rebound onto an arrow chord routes into the canonical letter slot
+    // through the migrate action; the old (empty) default suppresses nothing.
+    let mut settings = Settings::default();
+    settings.bindings.insert(
+        "migrate-workspace-left".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+Shift+Left".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_ok());
+    let remap = build_remap(&settings);
+    assert_eq!(remap.len(), 1);
+    assert_eq!(remap[0].from_vk, tiler_windows::snapkey::VK_LEFT);
+    assert!(remap[0].from_shift && remap[0].from_ctrl && remap[0].from_alt);
+    assert_eq!(remap[0].action, ChordAction::WorkspaceMigrate);
+    assert_eq!(remap[0].to_vk, 0x48);
+    assert!(build_disabled(&settings).is_empty());
+    // A duplicate physical chord on another row still refuses.
+    settings.bindings.insert(
+        "migrate-workspace-right".to_owned(),
+        BindingSetting {
+            state: BindingState::Rebind,
+            chord: Some("Win+Ctrl+Alt+Shift+Left".to_owned()),
+        },
+    );
+    assert!(validate_settings(&settings).is_err());
+}
+
+#[test]
 fn born_maximized_schema_v1_missing_field_defaults_to_tile() {
     use tiler_windows::settings::{BORN_MAXIMIZED_TILE, validate_settings};
     // Pre-R-MAX-06 schema-v1 file without the additive field: serde
@@ -1636,7 +1852,7 @@ fn catalog_exposes_resize_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 99);
+    assert_eq!(catalog.len(), 103);
     let resize: Vec<_> = catalog
         .iter()
         .filter(|def| {
@@ -1966,7 +2182,7 @@ fn catalog_exposes_launcher_rows_with_exact_modifiers() {
     }
     // Authentic keeps both launchers live on their defaults.
     let effective = effective_bindings(&Settings::default());
-    assert_eq!(effective.len(), 99);
+    assert_eq!(effective.len(), 103);
     for (id, chord) in [("launch-browser", "Win+B"), ("launch-terminal", "Win+T")] {
         let row = effective.iter().find(|row| row.id == id).expect("row");
         assert!(row.active && row.effective, "{id}");
@@ -2242,7 +2458,7 @@ fn catalog_exposes_output_send_rows_with_exact_modifiers() {
     };
     use tiler_windows::snapkey::ChordAction;
     let catalog = binding_catalog();
-    assert_eq!(catalog.len(), 99);
+    assert_eq!(catalog.len(), 103);
     // Follow: eight bound rows on the Win+Ctrl+Alt arm through the follow
     // action, sharing the letter/arrow canonical slots.
     for (id, chord, action) in [
@@ -2373,7 +2589,7 @@ fn output_send_presets_keep_both_with_no_new_disables() {
             "no output overrides under {preset:?}"
         );
         let effective = effective_bindings(&settings);
-        assert_eq!(effective.len(), 99);
+        assert_eq!(effective.len(), 103);
         for row in effective
             .iter()
             .filter(|row| row.id.starts_with("send-output-"))

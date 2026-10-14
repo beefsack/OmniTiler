@@ -53,6 +53,7 @@ fn push_snap(
         Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -79,6 +80,7 @@ fn push_workspace(
         Classified::Snap(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -106,6 +108,7 @@ fn push_maximize(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Fullscreen(_)
         | Classified::Float(_)
@@ -131,6 +134,7 @@ fn push_fullscreen(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Float(_)
@@ -159,6 +163,7 @@ fn push_float(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
@@ -186,6 +191,7 @@ fn push_sticky(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Orientation(_)
@@ -211,6 +217,7 @@ fn push_orientation(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -237,6 +244,7 @@ fn push_workspace_tiling(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -684,6 +692,7 @@ fn saturated_queue_swallows_and_counts_loss() {
         QueuedSnapEvent::Workspace(_)
         | QueuedSnapEvent::WorkspaceSend(_)
         | QueuedSnapEvent::WorkspaceOutput(_)
+        | QueuedSnapEvent::WorkspaceMigrate(_)
         | QueuedSnapEvent::WorkspaceHistory(_)
         | QueuedSnapEvent::Maximize(_)
         | QueuedSnapEvent::Fullscreen(_)
@@ -3234,6 +3243,7 @@ fn push_send(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -3689,6 +3699,7 @@ fn push_resize(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -3995,6 +4006,7 @@ fn push_launch(
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
         | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -4215,6 +4227,7 @@ fn push_output(
         Classified::Snap(_)
         | Classified::Workspace(_)
         | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceMigrate(_)
         | Classified::WorkspaceHistory(_)
         | Classified::Maximize(_)
         | Classified::Fullscreen(_)
@@ -4472,6 +4485,254 @@ fn output_queue_carries_origin_and_mask_trigger() {
             MaskTrigger::WorkspaceOutput {
                 direction: Direction::Right,
                 follow: true,
+            }
+        ),
+        other => panic!("expected mask, got {other:?}"),
+    }
+}
+
+// Item 14 whole-workspace migration: no direct chord (unbound follow-only by
+// default); a rebound Win+Ctrl+Alt+Shift chord routes into the canonical
+// letter slot through the migrate action. Held repeats stay swallowed (a
+// held migration never re-fires); ups close the pair consumed.
+fn push_migrate(
+    m: &mut SnapClassify,
+    vk: u32,
+    is_up: bool,
+    fg: bool,
+    inj: bool,
+) -> Option<tiler_windows::snapkey::WorkspaceMigrateIntent> {
+    match SnapClassify::push(m, vk, is_up, fg, inj)? {
+        Classified::WorkspaceMigrate(intent) => Some(intent),
+        Classified::Snap(_)
+        | Classified::Workspace(_)
+        | Classified::WorkspaceSend(_)
+        | Classified::WorkspaceOutput(_)
+        | Classified::WorkspaceHistory(_)
+        | Classified::Maximize(_)
+        | Classified::Fullscreen(_)
+        | Classified::Float(_)
+        | Classified::Orientation(_)
+        | Classified::Sticky(_)
+        | Classified::Launch(_)
+        | Classified::WorkspaceTiling(_)
+        | Classified::Resize(_) => {
+            panic!("expected workspace migration")
+        }
+    }
+}
+
+fn shift_ctrl_alt_down(m: &mut SnapClassify) {
+    push_snap(m, VK_SHIFT, false, true, false);
+    push_snap(m, VK_CONTROL, false, true, false);
+    alt_down(m);
+}
+
+#[test]
+fn migrate_direct_full_modifier_chord_refuses_without_rebind() {
+    // Win+Ctrl+Alt+Shift+H passes through untracked with no pin (migration
+    // is rebind-only), so the paired key-up passes through as well.
+    let mut m = SnapClassify::new(takeover());
+    win_down(&mut m, VK_LWIN);
+    shift_ctrl_alt_down(&mut m);
+    assert_eq!(SnapClassify::push(&mut m, VK_H, false, true, false), None);
+    assert_eq!(SnapClassify::push(&mut m, VK_H, true, true, false), None);
+    assert_eq!(m.migrate_counts[0].down, 0);
+}
+
+#[test]
+fn migrate_rebind_routes_all_four_directions() {
+    // Four rebound chords (one per direction, distinct physical keys) route
+    // into their canonical letter slots with the exact direction; partial
+    // modifiers never route.
+    use tiler_windows::snapkey::{ChordAction, ChordRemap};
+    const VK_F6: u32 = 0x75;
+    const VK_F7: u32 = 0x76;
+    const VK_F8: u32 = 0x77;
+    const VK_F9: u32 = 0x78;
+    let cases: &[(u32, u32, Direction)] = &[
+        (VK_F6, VK_H, Direction::Left),
+        (VK_F7, VK_L, Direction::Right),
+        (VK_F8, VK_K, Direction::Up),
+        (VK_F9, VK_J, Direction::Down),
+    ];
+    for (physical, canon, direction) in cases {
+        let mut m = SnapClassify::new(takeover());
+        m.set_remap(vec![ChordRemap {
+            from_vk: *physical,
+            from_shift: true,
+            from_ctrl: true,
+            from_alt: true,
+            action: ChordAction::WorkspaceMigrate,
+            to_vk: *canon,
+        }]);
+        win_down(&mut m, VK_LWIN);
+        shift_ctrl_alt_down(&mut m);
+        let down = push_migrate(&mut m, *physical, false, true, false).expect("down");
+        assert_eq!(down.direction, *direction);
+        assert_eq!(down.edge, SnapEdge::Down);
+        assert!(down.consumed && down.announce);
+        // Held repeats stay swallowed, never re-dispatched.
+        let repeat = push_migrate(&mut m, *physical, false, true, false).expect("repeat");
+        assert_eq!(repeat.direction, *direction);
+        assert!(repeat.consumed && !repeat.announce);
+        let up = push_migrate(&mut m, *physical, true, true, false).expect("up");
+        assert_eq!((up.direction, up.edge), (*direction, SnapEdge::Up));
+        assert!(up.consumed && !up.announce);
+        // Fresh presses afterwards route again (pair closed, slot free).
+        let down = push_migrate(&mut m, *physical, false, true, false).expect("down");
+        assert!(down.consumed && down.announce);
+    }
+}
+
+#[test]
+fn migrate_partial_modifiers_never_route_even_rebound() {
+    // A rebound expecting the full Win+Ctrl+Alt+Shift arm never fires on a
+    // partial chord: the physical routes as itself and passes untracked.
+    use tiler_windows::snapkey::{ChordAction, ChordRemap};
+    const VK_F6: u32 = 0x75;
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: true,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceMigrate,
+        to_vk: VK_H,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    // Missing Shift: F6 is no catalog key, so nothing classifies.
+    push_snap(&mut m, VK_CONTROL, false, true, false);
+    alt_down(&mut m);
+    assert_eq!(SnapClassify::push(&mut m, VK_F6, false, true, false), None);
+    // Missing Win entirely: passes untracked too.
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: true,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceMigrate,
+        to_vk: VK_H,
+    }]);
+    push_snap(&mut m, VK_SHIFT, false, true, false);
+    push_snap(&mut m, VK_CONTROL, false, true, false);
+    alt_down(&mut m);
+    assert_eq!(SnapClassify::push(&mut m, VK_F6, false, true, false), None);
+}
+
+#[test]
+fn migrate_repeat_swallowed_and_suppression_keeps_pair() {
+    // Mid-hold suppression gates dispatch (already swallowed) but keeps the
+    // consumed pair; fresh presses afterwards pass through.
+    use tiler_windows::snapkey::{ChordAction, ChordDisable, ChordRemap};
+    const VK_F6: u32 = 0x75;
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: true,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceMigrate,
+        to_vk: VK_H,
+    }]);
+    win_down(&mut m, VK_LWIN);
+    shift_ctrl_alt_down(&mut m);
+    let down = push_migrate(&mut m, VK_F6, false, true, false).expect("down");
+    assert!(down.consumed && down.announce);
+    m.set_disabled(vec![ChordDisable {
+        vk: VK_F6,
+        shift: true,
+        ctrl: true,
+        alt: true,
+    }]);
+    let repeat = push_migrate(&mut m, VK_F6, false, true, false).expect("repeat");
+    assert!(repeat.consumed && !repeat.announce);
+    let up = push_migrate(&mut m, VK_F6, true, true, false).expect("up");
+    assert!(up.consumed);
+    // The rebound table wins over suppression for fresh downs, so the next
+    // press still routes; removing the rebind lets the suppression pass the
+    // physical through.
+    let down = push_migrate(&mut m, VK_F6, false, true, false).expect("down");
+    assert!(down.consumed && down.announce);
+    let up = push_migrate(&mut m, VK_F6, true, true, false).expect("up");
+    assert!(up.consumed);
+    m.set_remap(Vec::new());
+    assert_eq!(SnapClassify::push(&mut m, VK_F6, false, true, false), None);
+}
+
+#[test]
+fn migrate_queue_carries_direction_and_mask_trigger() {
+    // Queue/mask routing: migration classifies and queues with announce, and
+    // a consumed chord arms the Start-menu mask with the migrate trigger.
+    use tiler_windows::snapkey::{
+        ChordAction, ChordRemap, MaskTrigger, QueuedWorkspaceMigrateIntent, SnapQueue,
+        win_up_mask_reserve,
+    };
+    const VK_F6: u32 = 0x75;
+    let mut m = SnapClassify::new(takeover());
+    m.set_remap(vec![ChordRemap {
+        from_vk: VK_F6,
+        from_shift: true,
+        from_ctrl: true,
+        from_alt: true,
+        action: ChordAction::WorkspaceMigrate,
+        to_vk: VK_H,
+    }]);
+    let mut q = SnapQueue::new();
+    let tick = std::time::Instant::now();
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_LWIN, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_SHIFT, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_CONTROL, false, None, false, tick, true),
+        None
+    );
+    assert_eq!(
+        classify_and_queue(&mut m, &mut q, VK_MENU, false, None, false, tick, true),
+        None
+    );
+    let origin = Some(origin_of(7, "w7"));
+    assert_eq!(
+        classify_and_queue(
+            &mut m,
+            &mut q,
+            VK_F6,
+            false,
+            origin.clone(),
+            false,
+            tick,
+            true
+        ),
+        Some(true)
+    );
+    match q.pop_front().expect("migrate") {
+        QueuedSnapEvent::WorkspaceMigrate(queued) => {
+            assert_eq!(
+                queued,
+                QueuedWorkspaceMigrateIntent {
+                    direction: Direction::Left,
+                    edge: SnapEdge::Down,
+                    origin,
+                    consumed: true,
+                    announce: true,
+                    tick: queued.tick,
+                }
+            );
+        }
+        other => panic!("expected migrate, got {other:?}"),
+    }
+    assert!(win_up_mask_reserve(&mut m, &mut q, VK_LWIN, true, tick));
+    match q.pop_front().expect("mask") {
+        QueuedSnapEvent::Mask(mask) => assert_eq!(
+            mask.trigger,
+            MaskTrigger::WorkspaceMigrate {
+                direction: Direction::Left,
             }
         ),
         other => panic!("expected mask, got {other:?}"),

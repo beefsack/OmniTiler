@@ -129,6 +129,22 @@ impl Default for ManagedWorkspaces {
     }
 }
 
+/// Outcome of one whole-active-workspace reassignment: the moved stable id
+/// plus the source refill the configured selector chose. The caller observes
+/// the completed native transfer separately (item 1 observation rule);
+/// this primitive only rekeys portable state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationOutcome {
+    pub moved_id: String,
+    pub source_output: String,
+    pub target_output: String,
+    /// Source refill workspace id selected after scoped invalidation, or
+    /// `None` when the source keeps no workspace (ordinary trailing-empty
+    /// lifecycle converges later on topology signals; nothing is recreated
+    /// here).
+    pub source_refill: Option<String>,
+}
+
 impl ManagedWorkspaces {
     #[must_use]
     pub fn new() -> Self {
@@ -641,6 +657,21 @@ impl ManagedWorkspaces {
         }
     }
 
+    /// Remembered focus for one workspace: the last focused member still
+    /// holding membership, or `None` when nothing is remembered. Unlike
+    /// [`ManagedWorkspaces::focus_target`] this never substitutes another
+    /// member: migration follow uses exactly the remembered client (or no
+    /// focus when it stayed sticky, left, or never existed).
+    #[must_use]
+    pub fn remembered_focus(&self, output: &str, workspace: &str) -> Option<WindowKey> {
+        let state = self.outputs.get(output)?;
+        let entry = state.order.iter().find(|e| e.id == workspace)?;
+        entry
+            .last_focus
+            .clone()
+            .filter(|last| entry.members.contains(last))
+    }
+
     #[must_use]
     pub fn focus_target(
         &self,
@@ -925,6 +956,190 @@ impl ManagedWorkspaces {
         self.validate_history(&record.dest_key);
         self.validate_history(origin);
         true
+    }
+
+    /// Move the source output's whole active workspace onto the target output
+    /// (item 14 portable reassignment; the native runtime verifies arrival
+    /// separately before publication). The entry keeps its stable id, token, members,
+    /// remembered focus and session tiling state; it is inserted immediately
+    /// after the target's current workspace and shown (target active points
+    /// at it; the previous target workspace stays listed and hidden).
+    ///
+    /// The source refills from the configured G-37 mode using the
+    /// pre-mutation item-1.2 per-output previous id: the shared
+    /// [`tiler_core::output_selection::select_migration_source_refill`]
+    /// selector runs over the remaining source scope with the migrated id
+    /// excluded (surviving empties qualify; missing, removed, migrated or
+    /// out-of-scope entries fall back to last remaining). A still-scoped
+    /// live source current view is preserved: when the selector returns an
+    /// id, the source activates it; when nothing remains the source keeps an
+    /// empty order for ordinary lifecycle to converge.
+    ///
+    /// Scoped history invalidation (items 1.3/1.5) applies to both outputs;
+    /// hotplug-return associations drop only the explicitly moved id, so the
+    /// migrated workspace loses auto return while sibling associations
+    /// survive. Never simulates the move as N per-window sends and never
+    /// moves the destination workspace back to the source. Returns `None`
+    /// (changing nothing) when the outputs are the same or unknown, or the
+    /// source holds no active workspace.
+    pub fn migrate_workspace(
+        &mut self,
+        source_output: &str,
+        target_output: &str,
+        refill: tiler_core::output_selection::MigrationSourceRefill,
+    ) -> Option<MigrationOutcome> {
+        self.migrate_workspace_excluding(source_output, target_output, refill, &BTreeSet::new())
+    }
+
+    /// Filtered whole-workspace reassignment for the native migration runtime:
+    /// sticky all-desktops members stay homed on the source output and never
+    /// ride the moved entry. Sticky keys are removed from the moved entry's
+    /// member set before the insert and re-homed to the selected source
+    /// refill (when one exists); their `MemberLoc.hidden` state is preserved
+    /// and their remembered-focus entries travel only with non-sticky focus.
+    /// When the source keeps no workspace (`refill` is `None`) sticky members
+    /// keep their existing locations untouched so no dangling re-home is
+    /// invented; the caller converges ordinary lifecycle before verification.
+    /// The unfiltered [`ManagedWorkspaces::migrate_workspace`] wrapper passes
+    /// an empty sticky set and preserves its exact contract for existing
+    /// callers.
+    pub fn migrate_workspace_excluding(
+        &mut self,
+        source_output: &str,
+        target_output: &str,
+        refill: tiler_core::output_selection::MigrationSourceRefill,
+        sticky: &BTreeSet<WindowKey>,
+    ) -> Option<MigrationOutcome> {
+        if source_output == target_output {
+            return None;
+        }
+        if !self.outputs.contains_key(source_output) || !self.outputs.contains_key(target_output) {
+            return None;
+        }
+        // Snapshot the pre-mutation per-output previous id before any map
+        // mutation (G-37 MRU eligibility input).
+        let previous = self.previous.get(source_output).cloned();
+        let moved = {
+            let source = self.outputs.get_mut(source_output)?;
+            if source.order.is_empty() || source.active >= source.order.len() {
+                return None;
+            }
+            source.order.remove(source.active)
+        };
+        let moved_id = moved.id.clone();
+        // Source active clamps onto the remaining scope; the refill selection
+        // below activates the chosen entry explicitly. An emptied source keeps
+        // active at zero with an empty order: `active_id` reads `None`, and
+        // the native runtime converges ordinary trailing lifecycle before
+        // verification so no unverifiable no-current is ever published.
+        if let Some(source) = self.outputs.get_mut(source_output) {
+            source.active = source.active.min(source.order.len().saturating_sub(1));
+        }
+        // Membership follows the entry wholesale for migrating (non-sticky)
+        // members only: every non-sticky member's output rekeys to the target,
+        // preserving workspace membership and hidden state. Sticky
+        // all-desktops members stay homed on the source output and never ride
+        // the moved entry. No per-window send, no admission.
+        for (key, loc) in self.membership.iter_mut() {
+            if loc.output == source_output && loc.workspace == moved_id && !sticky.contains(key) {
+                loc.output = target_output.to_owned();
+            }
+        }
+        // Shared G-37 selector over the remaining source scope with the
+        // migrated id excluded (it is already removed above).
+        let remaining: Vec<String> = self
+            .outputs
+            .get(source_output)
+            .map(|s| s.order.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default();
+        let remaining_wire: Vec<tiler_core::directional::WorkspaceId> = remaining
+            .iter()
+            .map(|id| tiler_core::directional::WorkspaceId(id.clone()))
+            .collect();
+        let previous_wire = previous.map(tiler_core::directional::WorkspaceId);
+        let refill_id = tiler_core::output_selection::select_migration_source_refill(
+            refill,
+            previous_wire.as_ref(),
+            &remaining_wire,
+        )
+        .map(|id| id.0.clone());
+        // D4 destination: insert immediately after the target's current
+        // workspace and show the moved entry.
+        let insert_at = {
+            let target = self.outputs.get(target_output)?;
+            if target.order.is_empty() {
+                0
+            } else {
+                (target.active + 1).min(target.order.len())
+            }
+        };
+        if let Some(target) = self.outputs.get_mut(target_output) {
+            // Sticky members never ride the moved entry: strip them before the
+            // insert so the target set holds exactly the migrating members.
+            // Their remembered-focus entry leaves with them (source refill
+            // focus resolves from its own entry below).
+            let mut moved = moved;
+            for key in sticky.iter() {
+                moved.members.remove(key);
+                if moved.last_focus.as_ref() == Some(key) {
+                    moved.last_focus = None;
+                }
+            }
+            target.order.insert(insert_at, moved);
+            target.active = insert_at;
+        }
+        // Preserve a still-scoped live source current view in both modes:
+        // activate the selected refill when one exists.
+        if let Some(refill) = refill_id.clone()
+            && let Some(source) = self.outputs.get_mut(source_output)
+            && let Some(pos) = source.order.iter().position(|e| e.id == refill)
+        {
+            source.active = pos;
+        }
+        // Sticky re-home: sticky members that lived on the moved id stay on
+        // the source output under the selected refill, preserving hidden
+        // state. With no remaining source workspace there is no refill to
+        // home them to, so their locations stay untouched for lifecycle to
+        // converge (never a dangling re-home, never a target claim).
+        if let Some(refill) = refill_id.clone() {
+            for key in sticky.iter() {
+                if let Some(loc) = self.membership.get_mut(key)
+                    && loc.output == source_output
+                    && loc.workspace == moved_id
+                {
+                    loc.workspace = refill.clone();
+                }
+            }
+            if let Some(source) = self.outputs.get_mut(source_output)
+                && let Some(entry) = source.order.iter_mut().find(|e| e.id == refill)
+            {
+                for key in sticky.iter() {
+                    if self
+                        .membership
+                        .get(key)
+                        .is_some_and(|loc| loc.output == source_output && loc.workspace == refill)
+                    {
+                        entry.members.insert(key.clone());
+                    }
+                }
+            }
+        }
+        // D9 history/return: out-of-source-scope previous ids clear through
+        // scoped validation; hotplug-return associations drop only the
+        // explicitly moved id (migrated ids lose auto return, siblings keep
+        // theirs).
+        for record in self.displaced.values_mut() {
+            record.workspace_ids.retain(|id| *id != moved_id);
+        }
+        self.displaced.retain(|_, r| !r.workspace_ids.is_empty());
+        self.validate_history(source_output);
+        self.validate_history(target_output);
+        Some(MigrationOutcome {
+            moved_id,
+            source_output: source_output.to_owned(),
+            target_output: target_output.to_owned(),
+            source_refill: refill_id,
+        })
     }
 
     #[must_use]
@@ -1992,5 +2207,289 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), survivor.len());
+    }
+
+    fn migration_fixture() -> (ManagedWorkspaces, Vec<String>, Vec<String>) {
+        // Two outputs, three workspaces on the source: ws1 occupied, ws2
+        // active with two members and remembered focus, ws3 trailing empty.
+        let mut m = ManagedWorkspaces::new();
+        m.ensure_output("mon-1");
+        m.ensure_output("mon-2");
+        let seed = history_ids(&m, "mon-1");
+        let dst = history_ids(&m, "mon-2");
+        assert!(m.assign(key(21), "mon-1", &seed[0], false));
+        let mover_a = key(22);
+        let mover_b = key(23);
+        assert!(m.assign(mover_a.clone(), "mon-1", &seed[1], false));
+        assert!(m.assign(mover_b.clone(), "mon-1", &seed[1], true));
+        m.note_foreground(&mover_a);
+        // Occupy the trailing empty so the next spare appends a third
+        // workspace; the move then migrates the middle entry.
+        let (third, created) = m.select_trailing("mon-1").expect("third");
+        assert!(created);
+        assert!(m.activate("mon-1", &seed[1]));
+        let src = history_ids(&m, "mon-1");
+        assert_eq!(src.len(), 3);
+        assert_eq!(src[2], third);
+        (m, src, dst)
+    }
+
+    #[test]
+    fn migrate_preserves_state_and_inserts_after_target_current() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, dst) = migration_fixture();
+        let (ws1, ws2) = (src[0].clone(), src[1].clone());
+        // Distinct tiling state per workspace survives the move.
+        assert!(m.set_tiled("mon-1", &ws2, false));
+        assert!(m.set_tiled("mon-2", &dst[0], false));
+        // Target current is its second workspace; the moved entry lands
+        // immediately after it and shows.
+        assert!(m.activate("mon-2", &dst[1]));
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::LastRemaining)
+            .expect("migrate");
+        assert_eq!(outcome.moved_id, ws2);
+        assert_eq!(outcome.source_output, "mon-1");
+        assert_eq!(outcome.target_output, "mon-2");
+        // Destination order: [dst0, dst1, ws2-after-current]; moved shows.
+        assert_eq!(
+            m.workspace_ids("mon-2"),
+            vec![dst[0].clone(), dst[1].clone(), ws2.clone()]
+        );
+        assert_eq!(m.active_id("mon-2").as_deref(), Some(ws2.as_str()));
+        // The previous target workspace stays listed (hidden, not removed).
+        assert!(m.workspace_ids("mon-2").contains(&dst[1]));
+        // Stable identity: members, remembered focus and tiling state travel
+        // with the id; nothing is re-admitted.
+        assert_eq!(
+            m.workspace_members("mon-2", &ws2),
+            [key(22), key(23)].into_iter().collect()
+        );
+        let moved_entry = m
+            .outputs
+            .get("mon-2")
+            .expect("target")
+            .order
+            .iter()
+            .find(|e| e.id == ws2)
+            .expect("moved entry");
+        assert_eq!(moved_entry.last_focus, Some(key(22)));
+        assert_eq!(m.member_loc(&key(22)).expect("loc").output, "mon-2");
+        assert!(m.member_loc(&key(23)).expect("loc").hidden);
+        assert!(!m.is_tiled("mon-2", &ws2));
+        assert!(!m.is_tiled("mon-2", &dst[0]));
+        // Source keeps its remaining workspaces with no recreation.
+        assert_eq!(m.workspace_ids("mon-1"), vec![ws1.clone(), src[2].clone()]);
+        let _ = ws1;
+    }
+
+    #[test]
+    fn migrate_default_refill_selects_last_remaining() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        // No recorded history: the default refills the last remaining scoped
+        // entry (the trailing empty here).
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::LastRemaining)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(src[2].as_str()));
+        assert_eq!(m.active_id("mon-1").as_deref(), Some(src[2].as_str()));
+    }
+
+    #[test]
+    fn migrate_mru_prefers_eligible_previous_over_trailing() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        let (ws1, ws2) = (src[0].clone(), src[1].clone());
+        // The fixture shows ws2 without an observation yet: observing it
+        // records ws1 as the previous view (baseline was the initial ws1).
+        assert!(m.observe_workspace_change("mon-1", &ws2));
+        assert_eq!(m.history_previous("mon-1").as_deref(), Some(ws1.as_str()));
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::MostRecentlyUsed)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(ws1.as_str()));
+        assert_eq!(m.active_id("mon-1").as_deref(), Some(ws1.as_str()));
+    }
+
+    #[test]
+    fn migrate_mru_falls_back_without_eligible_previous() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        // Case 1: no history at all falls back to last remaining.
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::MostRecentlyUsed)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(src[2].as_str()));
+        // Case 2: a previous entry that left scope falls
+        // back instead of recreating.
+        let (mut m, src, _) = migration_fixture();
+        m.previous.insert("mon-1".to_owned(), "ws-gone".to_owned());
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::MostRecentlyUsed)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(src[2].as_str()));
+        assert_eq!(m.workspace_ids("mon-1").len(), 2);
+    }
+
+    #[test]
+    fn migrate_mru_accepts_surviving_empty_previous() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        // Visit the trailing empty, then return to ws2: the remembered empty
+        // survives in scope and refills under MRU.
+        let empty = src[2].clone();
+        let ws2 = src[1].clone();
+        assert!(m.activate("mon-1", &empty));
+        assert!(m.observe_workspace_change("mon-1", &empty));
+        assert!(m.activate("mon-1", &ws2));
+        assert!(m.observe_workspace_change("mon-1", &ws2));
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::MostRecentlyUsed)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(empty.as_str()));
+        assert_eq!(m.active_id("mon-1").as_deref(), Some(empty.as_str()));
+    }
+
+    #[test]
+    fn migrate_uses_output_local_history_only() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, dst) = migration_fixture();
+        // mon-2 records its own previous; the mon-1 migration must not
+        // consult it (per-output scope, never global).
+        assert!(m.activate("mon-2", &dst[1]));
+        assert!(m.observe_workspace_change("mon-2", &dst[1]));
+        assert_eq!(
+            m.history_previous("mon-2").as_deref(),
+            Some(dst[0].as_str())
+        );
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::MostRecentlyUsed)
+            .expect("migrate");
+        assert_eq!(outcome.source_refill.as_deref(), Some(src[2].as_str()));
+        assert!(m.history_previous("mon-2").is_some());
+    }
+
+    #[test]
+    fn migrate_empty_source_reports_no_refill_without_recreation() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let mut m = ManagedWorkspaces::new();
+        m.ensure_output("mon-1");
+        m.ensure_output("mon-2");
+        let ids = history_ids(&m, "mon-1");
+        // Trim the source to a single active workspace through the struct's
+        // own order (test-only): migrating it leaves no remaining scope, so
+        // both modes report no refill and the source keeps an empty order
+        // for ordinary lifecycle to converge (nothing recreated here).
+        {
+            let state = m.outputs.get_mut("mon-1").expect("source");
+            state.order.truncate(1);
+            state.active = 0;
+        }
+        for refill in [Refill::LastRemaining, Refill::MostRecentlyUsed] {
+            let mut m = m.clone();
+            let outcome = m
+                .migrate_workspace("mon-1", "mon-2", refill)
+                .expect("migrate");
+            assert_eq!(outcome.moved_id, ids[0]);
+            assert_eq!(outcome.source_refill, None);
+            assert!(m.workspace_ids("mon-1").is_empty());
+            assert!(m.workspace_ids("mon-2").contains(&ids[0]));
+        }
+    }
+
+    #[test]
+    fn migrate_invalidates_moved_history_and_keeps_sibling_return() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        let (ws1, ws2) = (src[0].clone(), src[1].clone());
+        // Previous points at the workspace about to move: after migration it
+        // clears like removal (out of source scope).
+        m.previous.insert("mon-1".to_owned(), ws2.clone());
+        // Sibling hotplug-return association on another origin survives; the
+        // moved id loses auto return.
+        m.displaced.insert(
+            "mon-gone".to_owned(),
+            DisplacedRecord {
+                workspace_ids: vec![ws1.clone(), "ws-other".to_owned()],
+                dest_key: "mon-1".to_owned(),
+            },
+        );
+        m.displaced.insert(
+            "mon-old".to_owned(),
+            DisplacedRecord {
+                workspace_ids: vec![ws2.clone()],
+                dest_key: "mon-2".to_owned(),
+            },
+        );
+        let outcome = m
+            .migrate_workspace("mon-1", "mon-2", Refill::LastRemaining)
+            .expect("migrate");
+        assert_eq!(outcome.moved_id, ws2);
+        assert_eq!(m.history_previous("mon-1"), None);
+        let gone = m.displaced.get("mon-gone").expect("sibling record");
+        assert_eq!(gone.workspace_ids, vec![ws1.clone(), "ws-other".to_owned()]);
+        assert!(!m.displaced.contains_key("mon-old"));
+        let _ = ws1;
+    }
+
+    #[test]
+    fn migrate_refuses_same_unknown_or_empty_source() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, _, _) = migration_fixture();
+        let before = m.displaced_snapshot();
+        assert!(
+            m.migrate_workspace("mon-1", "mon-1", Refill::LastRemaining)
+                .is_none()
+        );
+        assert!(
+            m.migrate_workspace("mon-1", "mon-gone", Refill::LastRemaining)
+                .is_none()
+        );
+        assert!(
+            m.migrate_workspace("mon-gone", "mon-2", Refill::LastRemaining)
+                .is_none()
+        );
+        // Refusals change nothing, including return associations.
+        assert_eq!(m.displaced_snapshot(), before);
+        assert_eq!(m.workspace_ids("mon-1").len(), 3);
+    }
+
+    #[test]
+    fn migrate_excluding_keeps_sticky_on_source_refill() {
+        use tiler_core::output_selection::MigrationSourceRefill as Refill;
+        let (mut m, src, _) = migration_fixture();
+        let ws2 = src[1].clone();
+        // The hidden member of the moved workspace is sticky: the filtered
+        // primitive strips it from the moved entry and re-homes it to the
+        // selected source refill with hidden state preserved.
+        let sticky = key(23);
+        let sticky_set: BTreeSet<WindowKey> = [sticky.clone()].into_iter().collect();
+        let outcome = m
+            .migrate_workspace_excluding("mon-1", "mon-2", Refill::LastRemaining, &sticky_set)
+            .expect("migrate");
+        assert_eq!(outcome.moved_id, ws2);
+        let target_members = m.workspace_members("mon-2", &ws2);
+        assert!(
+            !target_members.contains(&sticky),
+            "sticky never rides the moved entry"
+        );
+        assert!(
+            target_members.contains(&key(22)),
+            "migrating member travels"
+        );
+        let refill = outcome.source_refill.expect("refill");
+        let loc = m.member_loc(&sticky).expect("sticky homed");
+        assert_eq!(loc.output, "mon-1");
+        assert_eq!(loc.workspace, refill);
+        assert!(m.is_hidden(&sticky), "sticky hidden state preserved");
+        assert!(m.workspace_members("mon-1", &refill).contains(&sticky));
+        // The unfiltered wrapper keeps prior behavior (sticky travels with
+        // the entry) so existing callers are unaffected.
+        let (mut m, src, _) = migration_fixture();
+        let ws2 = src[1].clone();
+        m.migrate_workspace("mon-1", "mon-2", Refill::LastRemaining)
+            .expect("migrate");
+        assert!(m.workspace_members("mon-2", &ws2).contains(&key(23)));
     }
 }

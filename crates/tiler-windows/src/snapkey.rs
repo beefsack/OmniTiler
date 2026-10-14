@@ -232,6 +232,7 @@ pub enum ChordAction {
     WorkspaceSendStayNext,
     WorkspaceOutputFollow,
     WorkspaceOutputStay,
+    WorkspaceMigrate,
     Maximize,
     Fullscreen,
     Float,
@@ -260,6 +261,7 @@ impl ChordAction {
             Self::WorkspaceSendStayNext => "workspace-send-stay-next",
             Self::WorkspaceOutputFollow => "workspace-output-follow",
             Self::WorkspaceOutputStay => "workspace-output-stay",
+            Self::WorkspaceMigrate => "workspace-migrate",
             Self::Maximize => "maximize",
             Self::Fullscreen => "fullscreen",
             Self::Float => "float",
@@ -466,6 +468,33 @@ pub const fn relative_send_delta(vk: u32) -> Option<i32> {
 /// the pinned intent, never the live modifiers.
 fn relative_send_repeat_live(ctrl: bool, shift: bool, alt: bool, win: bool) -> bool {
     ctrl && shift && !alt && win
+}
+
+/// Item 14 migration slot index for a canonical letter key: 0 H (left),
+/// 1 L (right), 2 K (up), 3 J (down). Arrow aliases route into their
+/// direction's letter slot through the rebound table, so they share the
+/// letter's hold; a bare arrow canonical never arrives here (direct
+/// Win+Ctrl+Alt+Shift chords refuse) and refuses.
+#[must_use]
+pub const fn migrate_index(vk: u32) -> Option<usize> {
+    match vk {
+        VK_H => Some(0),
+        VK_L => Some(1),
+        VK_K => Some(2),
+        VK_J => Some(3),
+        _ => None,
+    }
+}
+
+/// Direction for a migration slot index. Letters are the canonical keys, so
+/// no arrow aliasing applies here.
+fn migrate_direction(idx: usize) -> Direction {
+    match idx {
+        0 => Direction::Left,
+        1 => Direction::Right,
+        2 => Direction::Up,
+        _ => Direction::Down,
+    }
 }
 
 /// Whether a live modifier/Win combination still matches a pinned output
@@ -676,6 +705,15 @@ fn collide_refusal(
             consumed,
             announce: false,
         }),
+        Classified::WorkspaceMigrate(intent) => {
+            Classified::WorkspaceMigrate(WorkspaceMigrateIntent {
+                direction: intent.direction,
+                edge,
+                foreground,
+                consumed,
+                announce: false,
+            })
+        }
         Classified::WorkspaceHistory(intent) => {
             Classified::WorkspaceHistory(WorkspaceHistoryIntent {
                 op: intent.op,
@@ -755,6 +793,9 @@ fn collide_trigger(shape: &Classified) -> Option<MaskTrigger> {
         Classified::WorkspaceOutput(intent) => Some(MaskTrigger::WorkspaceOutput {
             direction: intent.direction,
             follow: intent.follow,
+        }),
+        Classified::WorkspaceMigrate(intent) => Some(MaskTrigger::WorkspaceMigrate {
+            direction: intent.direction,
         }),
         Classified::WorkspaceHistory(intent) => {
             Some(MaskTrigger::WorkspaceHistory { op: intent.op })
@@ -862,6 +903,20 @@ pub struct WorkspaceSendIntent {
 pub struct WorkspaceOutputIntent {
     pub direction: Direction,
     pub follow: bool,
+    pub edge: SnapEdge,
+    pub foreground: bool,
+    pub consumed: bool,
+    pub announce: bool,
+}
+
+/// Classifier outcome for one item 14 whole-workspace migration event
+/// (rebound Win+Ctrl+Alt+Shift+H/J/K/L or arrow alias, follow-only).
+/// Only downs dispatch, ups close the pair; held repeats stay swallowed like
+/// maximize (a held migration never re-fires). `direction` pins
+/// from the canonical letter key; there is no stay variant (D1 follow-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceMigrateIntent {
+    pub direction: Direction,
     pub edge: SnapEdge,
     pub foreground: bool,
     pub consumed: bool,
@@ -1019,6 +1074,7 @@ pub enum Classified {
     Workspace(WorkspaceIntent),
     WorkspaceSend(WorkspaceSendIntent),
     WorkspaceOutput(WorkspaceOutputIntent),
+    WorkspaceMigrate(WorkspaceMigrateIntent),
     WorkspaceHistory(WorkspaceHistoryIntent),
     Maximize(MaximizeIntent),
     Fullscreen(FullscreenIntent),
@@ -1038,6 +1094,7 @@ impl Classified {
             Self::Workspace(intent) => intent.consumed,
             Self::WorkspaceSend(intent) => intent.consumed,
             Self::WorkspaceOutput(intent) => intent.consumed,
+            Self::WorkspaceMigrate(intent) => intent.consumed,
             Self::WorkspaceHistory(intent) => intent.consumed,
             Self::Maximize(intent) => intent.consumed,
             Self::Fullscreen(intent) => intent.consumed,
@@ -1057,6 +1114,7 @@ impl Classified {
             Self::Workspace(intent) => intent.announce,
             Self::WorkspaceSend(intent) => intent.announce,
             Self::WorkspaceOutput(intent) => intent.announce,
+            Self::WorkspaceMigrate(intent) => intent.announce,
             Self::WorkspaceHistory(intent) => intent.announce,
             Self::Maximize(intent) => intent.announce,
             Self::Fullscreen(intent) => intent.announce,
@@ -1097,6 +1155,9 @@ pub enum MaskTrigger {
     WorkspaceOutput {
         direction: Direction,
         follow: bool,
+    },
+    WorkspaceMigrate {
+        direction: Direction,
     },
     WorkspaceHistory {
         op: WorkspaceHistoryOp,
@@ -1169,6 +1230,11 @@ pub struct SnapClassify {
     /// dispatching, never leaking a repeat or flipping follow into stay).
     /// Direct follow holds always pin false via the fresh-down guard.
     output_shift: [bool; 8],
+    /// Item 14 migration holds per direction slot (letter canonicals H/L/K/J):
+    /// follow-only, so no intent pin is needed beyond the slot itself. Held
+    /// repeats stay swallowed, never re-dispatched.
+    migrate_down: [bool; 4],
+    migrate_origin: [bool; 4],
     maximize_down: bool,
     maximize_origin: bool,
     fullscreen_down: bool,
@@ -1242,6 +1308,7 @@ pub struct SnapClassify {
     hist_origin: [bool; 9],
     hist_op: [Option<WorkspaceHistoryOp>; 9],
     pub hist_counts: [SnapCounts; 9],
+    pub migrate_counts: [SnapCounts; 4],
     mask_pending: bool,
     mask_trigger: Option<MaskTrigger>,
     hold_masked: bool,
@@ -1285,6 +1352,8 @@ impl SnapClassify {
             output_origin: [false; 8],
             output_follow: [true; 8],
             output_shift: [false; 8],
+            migrate_down: [false; 4],
+            migrate_origin: [false; 4],
             maximize_down: false,
             maximize_origin: false,
             fullscreen_down: false,
@@ -1327,6 +1396,7 @@ impl SnapClassify {
             hist_origin: [false; 9],
             hist_op: [None; 9],
             hist_counts: [SnapCounts::default(); 9],
+            migrate_counts: [SnapCounts::default(); 4],
             mask_pending: false,
             mask_trigger: None,
             hold_masked: false,
@@ -1671,6 +1741,19 @@ impl SnapClassify {
                     announce: false,
                 }))
             }
+            ChordAction::WorkspaceMigrate => {
+                let idx = migrate_index(canon)?;
+                if !self.migrate_down[idx] {
+                    return None;
+                }
+                Some(Classified::WorkspaceMigrate(WorkspaceMigrateIntent {
+                    direction: migrate_direction(idx),
+                    edge: SnapEdge::Down,
+                    foreground: true,
+                    consumed: self.migrate_origin[idx],
+                    announce: false,
+                }))
+            }
             ChordAction::WorkspacePrevious
             | ChordAction::WorkspacePrev
             | ChordAction::WorkspaceNext => {
@@ -1800,6 +1883,9 @@ impl SnapClassify {
             }
             ChordAction::WorkspaceOutputFollow | ChordAction::WorkspaceOutputStay => {
                 catalog_index(vk).is_some_and(|idx| self.output_down[idx])
+            }
+            ChordAction::WorkspaceMigrate => {
+                migrate_index(vk).is_some_and(|idx| self.migrate_down[idx])
             }
             ChordAction::WorkspacePrevious
             | ChordAction::WorkspacePrev
@@ -2050,6 +2136,9 @@ impl SnapClassify {
             }
             ChordAction::WorkspaceOutputFollow | ChordAction::WorkspaceOutputStay => {
                 return self.push_output(vk, action, is_up, foreground, route_live);
+            }
+            ChordAction::WorkspaceMigrate => {
+                return self.push_migrate(vk, is_up, foreground, route_live);
             }
             ChordAction::Maximize => {
                 return self.push_maximize(is_up, foreground, route_live);
@@ -2943,6 +3032,88 @@ impl SnapClassify {
             Some(intent(SnapEdge::Down, true, true))
         } else {
             self.output_counts[idx].passed += 1;
+            Some(intent(SnapEdge::Down, false, false))
+        }
+    }
+
+    /// Item 14 whole-workspace migration half of the unified classifier
+    /// (rebound Win+Ctrl+Alt+Shift + letter, arrow aliases route into the
+    /// letter slot through the rebound table). Same Win/armed-hold/gate/mask
+    /// contract as output sends, but the full-modifier chord selects the arm:
+    /// fresh downs require Win+Ctrl+Alt+Shift. There is no direct chord
+    /// (unshifted Win+Ctrl+Alt stays output follow; any other combination
+    /// refuses), so only the explicit migrate action routes here. `direction`
+    /// pins from the canonical letter key. Only the down dispatches: a held
+    /// migration never re-fires, so repeats stay swallowed while keeping the
+    /// mask armed. Fresh downs consume iff takeover is on with the shortcut
+    /// gate active; the owner rechecks fresh scope/suspension before any
+    /// migration. `route_live` gates fresh consumption: a pinned hold whose
+    /// chord no longer routes live stays swallowed without dispatching until
+    /// its matching up.
+    fn push_migrate(
+        &mut self,
+        vk: u32,
+        is_up: bool,
+        foreground: bool,
+        route_live: bool,
+    ) -> Option<Classified> {
+        let idx = migrate_index(vk)?;
+        let direction = migrate_direction(idx);
+        let intent = |edge: SnapEdge, consumed: bool, announce: bool| {
+            Classified::WorkspaceMigrate(WorkspaceMigrateIntent {
+                direction,
+                edge,
+                foreground,
+                consumed,
+                announce,
+            })
+        };
+        if is_up {
+            if !self.migrate_down[idx] {
+                return None;
+            }
+            self.migrate_down[idx] = false;
+            let origin = self.migrate_origin[idx];
+            self.migrate_origin[idx] = false;
+            self.migrate_counts[idx].up += 1;
+            if origin {
+                self.migrate_counts[idx].consumed += 1;
+                return Some(intent(SnapEdge::Up, true, false));
+            }
+            self.migrate_counts[idx].passed += 1;
+            return Some(intent(SnapEdge::Up, false, false));
+        }
+        if self.migrate_down[idx] {
+            self.migrate_counts[idx].repeat += 1;
+            if self.migrate_origin[idx] {
+                // Held repeat: swallowed, never re-dispatched. A Win-held
+                // hold continues to disguise Win, so the mask stays armed; a
+                // bare repeat after Win-up must not create a new mask
+                // obligation.
+                if self.win_l || self.win_r {
+                    self.mask_pending = true;
+                    self.mask_trigger = Some(MaskTrigger::WorkspaceMigrate { direction });
+                }
+                self.migrate_counts[idx].consumed += 1;
+                return Some(intent(SnapEdge::Repeat, true, false));
+            }
+            self.migrate_counts[idx].passed += 1;
+            return Some(intent(SnapEdge::Repeat, false, false));
+        }
+        if !self.ctrl || !self.shift || !self.alt || !(self.win_l || self.win_r) {
+            return None;
+        }
+        self.migrate_down[idx] = true;
+        let origin = self.enabled && self.gate_active && route_live;
+        self.migrate_origin[idx] = origin;
+        self.migrate_counts[idx].down += 1;
+        if origin {
+            self.migrate_counts[idx].consumed += 1;
+            self.mask_pending = true;
+            self.mask_trigger = Some(MaskTrigger::WorkspaceMigrate { direction });
+            Some(intent(SnapEdge::Down, true, true))
+        } else {
+            self.migrate_counts[idx].passed += 1;
             Some(intent(SnapEdge::Down, false, false))
         }
     }
@@ -4229,6 +4400,21 @@ pub struct QueuedWorkspaceHistoryIntent {
     pub tick: std::time::Instant,
 }
 
+/// One approved item 14 whole-workspace migration chord captured by the
+/// callback. `direction` pins from the canonical letter key at down time.
+/// Migration acts on the chord output's active workspace, never a managed
+/// mover: `origin` rides only for mask/queue parity and is ignored at
+/// dispatch, like history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedWorkspaceMigrateIntent {
+    pub direction: Direction,
+    pub edge: SnapEdge,
+    pub origin: Option<SnapOrigin>,
+    pub consumed: bool,
+    pub announce: bool,
+    pub tick: std::time::Instant,
+}
+
 /// One approved maximize chord captured by the callback. `origin` is the
 /// managed identity bound at chord time (`None` means background/inactive or
 /// unmanaged foreground at chord time); without an origin the toggle never
@@ -4340,6 +4526,7 @@ pub enum QueuedSnapEvent {
     Workspace(QueuedWorkspaceIntent),
     WorkspaceSend(QueuedWorkspaceSendIntent),
     WorkspaceOutput(QueuedWorkspaceOutputIntent),
+    WorkspaceMigrate(QueuedWorkspaceMigrateIntent),
     WorkspaceHistory(QueuedWorkspaceHistoryIntent),
     Maximize(QueuedMaximizeIntent),
     Fullscreen(QueuedFullscreenIntent),
@@ -4505,6 +4692,16 @@ pub fn classify_and_queue(
             QueuedSnapEvent::WorkspaceOutput(QueuedWorkspaceOutputIntent {
                 direction: intent.direction,
                 follow: intent.follow,
+                edge: intent.edge,
+                origin,
+                consumed: intent.consumed,
+                announce: intent.announce,
+                tick,
+            })
+        }
+        Classified::WorkspaceMigrate(intent) => {
+            QueuedSnapEvent::WorkspaceMigrate(QueuedWorkspaceMigrateIntent {
+                direction: intent.direction,
                 edge: intent.edge,
                 origin,
                 consumed: intent.consumed,
@@ -6019,6 +6216,10 @@ pub mod sys {
                 "trigger_op": "send-output",
                 "trigger_direction": super::direction_name(direction),
                 "trigger_follow": follow,
+            }),
+            super::MaskTrigger::WorkspaceMigrate { direction } => serde_json::json!({
+                "trigger_op": "migrate-workspace",
+                "trigger_direction": super::direction_name(direction),
             }),
             super::MaskTrigger::Maximize => serde_json::json!({
                 "trigger_op": "maximize",

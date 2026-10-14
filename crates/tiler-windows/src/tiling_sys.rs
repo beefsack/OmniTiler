@@ -37,6 +37,8 @@ use windows_sys::Win32::UI::HiDpi::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
 };
+#[cfg(not(test))]
+use windows_sys::Win32::UI::WindowsAndMessaging::GetParent;
 use windows_sys::Win32::UI::WindowsAndMessaging::MsgWaitForMultipleObjectsEx;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
@@ -71,6 +73,7 @@ use crate::input_handoff::fence_base_generation;
 use crate::input_handoff::note_policy_published;
 use crate::input_handoff::snapshot_content_eq;
 use crate::input_handoff::snapshot_policy_eq;
+use crate::input_health::{Health, InputSample, OwnerSample};
 use crate::input_pump::READY_WAIT;
 use crate::input_pump::{FailEvent, InboxSender, InputHandle};
 use crate::lifecycle::{
@@ -89,9 +92,9 @@ use crate::settings::LiveSettings;
 use crate::snapkey::{
     KeyboardConfig, LaunchKind, MAX_DISPATCH_PER_TICK, OriginVerdict, QueuedFloatIntent,
     QueuedLaunchIntent, QueuedSnapEvent, QueuedStickyIntent, QueuedWorkspaceHistoryIntent,
-    QueuedWorkspaceOutputIntent, QueuedWorkspaceSendIntent, SnapEdge, SnapOp, SnapOrigin,
-    VK_LSHIFT, VK_LWIN, VK_MASK, VK_RSHIFT, VK_RWIN, VK_SHIFT, WorkspaceHistoryOp, WorkspaceOp,
-    direction_name, resolve_origin,
+    QueuedWorkspaceMigrateIntent, QueuedWorkspaceOutputIntent, QueuedWorkspaceSendIntent, SnapEdge,
+    SnapOp, SnapOrigin, VK_LSHIFT, VK_LWIN, VK_MASK, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    WorkspaceHistoryOp, WorkspaceOp, direction_name, resolve_origin,
 };
 use crate::storage::LedgerStore;
 use crate::tiling::{
@@ -1019,6 +1022,45 @@ thread_local! {
         >,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
     static INJECTED_RECOVERY_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fresh native arrival readback per HWND (test-only): the post-setter
+    /// physical frame distinctly from the pre-move `stable` cache. Visible
+    /// members (tiled plain, float, overlay) stage their post-move visible
+    /// (DWM extended-frame) rect here, never the outer `GetWindowRect`;
+    /// concealed members (minimized/hidden) stage their post-move
+    /// `WINDOWPLACEMENT` normal rect in screen coordinates here (the
+    /// production readback converts workspace to screen before proving).
+    /// Unscripted HWNDs read as `None` (arrival unverified, never the stale
+    /// cache, never translation math). Cleared by [`clear_pending_seams`].
+    static INJECTED_ARRIVAL: std::cell::RefCell<std::collections::HashMap<u64, Rect>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_ARRIVAL_PLACEMENT: std::cell::RefCell<std::collections::HashMap<u64, Rect>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Live `WINDOWPLACEMENT` normal rect plus workspace-coordinate basis per
+    /// HWND (test-only): the pre-setter restore frame for the maximized
+    /// overlay remap and the placement-screen conversion. The rect rides the
+    /// raw `rcNormalPosition` basis (workspace for non-tool top-level,
+    /// screen for tool windows); the flag records which. Unscripted HWNDs
+    /// read as `None` (fail-closed, never a retained fallback).
+    static INJECTED_PLACEMENT_NORMALS: std::cell::RefCell<
+        std::collections::HashMap<u64, (Rect, bool)>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+    static INJECTED_FLOAT_MOVES: std::cell::RefCell<Vec<(u64, Rect)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static INJECTED_FLOAT_MOVE_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Recorded ALL-member native output transfers `(hwnd, moved rect, kind)`
+    /// in call order (test-only): the exact production helper boundary
+    /// arguments for every float/overlay/minimized/hidden remap. `kind` is
+    /// `float`, `overlay`, `minimized` or `hidden`. Recorded by the real
+    /// helpers (test arm) so regressions prove which members attempted a
+    /// native move, not just the tiled apply. Cleared by
+    /// [`clear_pending_seams`].
+    static INJECTED_NATIVE_TRANSFERS: std::cell::RefCell<Vec<(u64, Rect, &'static str)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Setter verdict for overlay/minimized/hidden placement and overlay
+    /// moves (test-only): `false` simulates a refused native setter without
+    /// touching native state. Float moves keep their own
+    /// `INJECTED_FLOAT_MOVE_OK` cell; this cell gates the other kinds.
+    static INJECTED_NATIVE_MOVE_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 #[cfg(test)]
@@ -1189,6 +1231,59 @@ fn pending_apply_writables() -> Vec<std::collections::BTreeSet<String>> {
     APPLY_WRITABLES.with(|slot| slot.borrow().clone())
 }
 
+/// Recorded ALL-member native transfers `(hwnd, moved rect, kind)` in call
+/// order (test-only): the exact production helper boundary arguments.
+#[cfg(test)]
+fn pending_native_transfers() -> Vec<(u64, Rect, &'static str)> {
+    INJECTED_NATIVE_TRANSFERS.with(|slot| slot.borrow().clone())
+}
+
+/// Script the overlay/concealed native setter verdict (test-only).
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+fn inject_pending_native_move_ok(ok: bool) {
+    INJECTED_NATIVE_MOVE_OK.with(|slot| slot.set(ok))
+}
+
+/// Script the float native setter verdict (test-only).
+#[cfg(test)]
+fn inject_pending_float_move_ok(ok: bool) {
+    INJECTED_FLOAT_MOVE_OK.with(|slot| slot.set(ok))
+}
+
+/// Stage one fresh visible arrival frame for the post-setter physical
+/// readback (test-only): the actual native window read distinctly from the
+/// pre-move `stable` cache. Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+fn inject_pending_arrival(hwnd: u64, rect: Rect) {
+    INJECTED_ARRIVAL.with(|map| {
+        map.borrow_mut().insert(hwnd, rect);
+    });
+}
+
+/// Stage one fresh concealed placement readback for the post-setter
+/// `WINDOWPLACEMENT` normal rect (test-only): minimized/hidden arrival
+/// proves the physical placement in screen coordinates, never translation
+/// math. Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+fn inject_pending_arrival_placement(hwnd: u64, rect: Rect) {
+    INJECTED_ARRIVAL_PLACEMENT.with(|map| {
+        map.borrow_mut().insert(hwnd, rect);
+    });
+}
+
+/// Stage one live placement normal rect plus its coordinate basis
+/// (test-only): the pre-setter `rcNormalPosition` for the maximized overlay
+/// remap. `workspace_coords` is true for non-tool top-level windows
+/// (workspace coordinates) and false for tool windows (screen coordinates).
+/// Cleared by [`clear_pending_seams`].
+#[cfg(test)]
+fn inject_pending_placement_normal(hwnd: u64, rect: Rect, workspace_coords: bool) {
+    INJECTED_PLACEMENT_NORMALS.with(|map| {
+        map.borrow_mut().insert(hwnd, (rect, workspace_coords));
+    });
+}
+
 #[cfg(test)]
 fn clear_pending_seams() {
     INJECTED_OBSERVE.with(|slot| {
@@ -1227,6 +1322,23 @@ fn clear_pending_seams() {
         map.borrow_mut().clear();
     });
     INJECTED_RECOVERY_ACTIVE.with(|active| active.set(false));
+    INJECTED_FLOAT_MOVES.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_FLOAT_MOVE_OK.with(|slot| slot.set(true));
+    INJECTED_NATIVE_TRANSFERS.with(|slot| {
+        slot.borrow_mut().clear();
+    });
+    INJECTED_NATIVE_MOVE_OK.with(|slot| slot.set(true));
+    INJECTED_ARRIVAL.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_ARRIVAL_PLACEMENT.with(|map| {
+        map.borrow_mut().clear();
+    });
+    INJECTED_PLACEMENT_NORMALS.with(|map| {
+        map.borrow_mut().clear();
+    });
     PENDING_COUNTERS.with(|slot| {
         *slot.borrow_mut() = PendingCounters::new();
     });
@@ -1284,6 +1396,212 @@ fn live_query_recovery(
         }
     }
     crate::product_hide::sys::query_recovery(hwnd, me).map_err(|e| e.to_string())
+}
+
+/// Fresh post-setter visible arrival read (causal, never the pre-move
+/// `stable` cache): the live visible (DWM extended-frame) rect after the
+/// actual setter, the same basis as [`observe_window`] and the Engine plan
+/// rows. Under test reads the injected arrival boundary distinctly from
+/// pre-state (`None` when unscripted, so missing readback refuses instead of
+/// proving stale math). In production reads the live DWM extended frame
+/// bounds (fail-closed `None`, never the outer `GetWindowRect`, so bordered
+/// windows verify on their visible frame).
+fn fresh_arrival_rect(hwnd: u64) -> Option<Rect> {
+    #[cfg(test)]
+    {
+        INJECTED_ARRIVAL.with(|map| map.borrow().get(&hwnd).copied())
+    }
+    #[cfg(not(test))]
+    {
+        live_visible_rect(hwnd)
+    }
+}
+
+/// Live visible frame for one window: the DWM extended-frame bounds read
+/// with the same shape as [`observe_window`]. Fail-closed `None` on any
+/// failure (never the outer rect, never a fabricated value).
+#[cfg(not(test))]
+fn live_visible_rect(hwnd_u64: u64) -> Option<Rect> {
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return None;
+    }
+    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
+    if unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&mut visible_raw as *mut RECT).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    } != 0
+    {
+        return None;
+    }
+    rect_from_win(visible_raw)
+}
+
+/// Whether a window's `WINDOWPLACEMENT` coordinates ride workspace
+/// coordinates: a top-level window without `WS_EX_TOOLWINDOW` per the
+/// `WINDOWPLACEMENT` contract. Everything else rides screen coordinates.
+/// Workspace coordinates are screen coordinates minus the per-monitor taskbar
+/// inset delta (`WORK.left - FULL.left`, `WORK.top - FULL.top`), so callers
+/// convert with the owning monitor's `WORK` plus `FULL` rects; screen
+/// coordinates pass through untouched.
+#[cfg(not(test))]
+fn placement_is_workspace_coords(exstyle: u32, top_level: bool) -> bool {
+    top_level && exstyle & WS_EX_TOOLWINDOW == 0
+}
+
+/// Convert a screen frame to the raw `rcNormalPosition` basis: subtract the
+/// taskbar inset delta (`WORK - FULL`) for workspace coordinates, identity
+/// for screen (tool windows). The virtual-desktop monitor origin is retained,
+/// so a non-primary raw rect keeps its `FULL.left/top` bias. Preserves size;
+/// saturating so extreme coordinates never wrap.
+fn screen_to_placement_raw(screen: Rect, work: Rect, full: Rect, workspace_coords: bool) -> Rect {
+    if workspace_coords {
+        let dx = work.x.saturating_sub(full.x);
+        let dy = work.y.saturating_sub(full.y);
+        Rect {
+            x: screen.x.saturating_sub(dx),
+            y: screen.y.saturating_sub(dy),
+            w: screen.w,
+            h: screen.h,
+        }
+    } else {
+        screen
+    }
+}
+
+/// Convert a raw `rcNormalPosition` rect back to screen coordinates: add the
+/// taskbar inset delta (`WORK - FULL`) for workspace coordinates, identity
+/// for screen (tool windows). Preserves size.
+fn placement_raw_to_screen(raw: Rect, work: Rect, full: Rect, workspace_coords: bool) -> Rect {
+    if workspace_coords {
+        let dx = work.x.saturating_sub(full.x);
+        let dy = work.y.saturating_sub(full.y);
+        Rect {
+            x: raw.x.saturating_add(dx),
+            y: raw.y.saturating_add(dy),
+            w: raw.w,
+            h: raw.h,
+        }
+    } else {
+        raw
+    }
+}
+
+/// Translate a source raw normal rect to the target raw normal rect: raw to
+/// source screen via the source inset delta, FULL-origin delta to the target
+/// screen, screen to target raw via the target inset delta. Preserves the
+/// source restore size; the caller preserves `showCmd`.
+fn translate_placement_normal_to_target(
+    source_raw: Rect,
+    source_work: Rect,
+    target_work: Rect,
+    source_full: Rect,
+    target_full: Rect,
+    workspace_coords: bool,
+) -> Rect {
+    let source_screen =
+        placement_raw_to_screen(source_raw, source_work, source_full, workspace_coords);
+    let target_screen = Rect {
+        x: source_screen
+            .x
+            .saturating_sub(source_full.x)
+            .saturating_add(target_full.x),
+        y: source_screen
+            .y
+            .saturating_sub(source_full.y)
+            .saturating_add(target_full.y),
+        w: source_screen.w,
+        h: source_screen.h,
+    };
+    screen_to_placement_raw(target_screen, target_work, target_full, workspace_coords)
+}
+
+/// Live placement normal rect plus its coordinate basis (test seam only):
+/// the injected normal boundary distinctly from pre-state. Production uses
+/// the single-snapshot remap below, so this helper is test-only.
+#[cfg(test)]
+fn live_placement_normal(hwnd_u64: u64) -> Option<(Rect, bool)> {
+    INJECTED_PLACEMENT_NORMALS.with(|map| map.borrow().get(&hwnd_u64).copied())
+}
+
+/// Live placement coordinate basis for one window (no geometry read): whether
+/// its `rcNormalPosition` rides workspace coordinates. Production reads the
+/// live extended style plus parent; test reads the injected normal flag when
+/// scripted and defaults to workspace (the common non-tool top-level case)
+/// so existing arrival-only fixtures keep proving without new scripting.
+fn live_placement_workspace_coords(hwnd_u64: u64) -> bool {
+    #[cfg(test)]
+    {
+        INJECTED_PLACEMENT_NORMALS
+            .with(|map| map.borrow().get(&hwnd_u64).map(|(_, basis)| *basis))
+            .unwrap_or(true)
+    }
+    #[cfg(not(test))]
+    {
+        let hwnd = hwnd_u64 as isize as HWND;
+        if unsafe { IsWindow(hwnd) } == 0 {
+            return true;
+        }
+        let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+        let top_level = unsafe { GetParent(hwnd) }.is_null();
+        placement_is_workspace_coords(exstyle, top_level)
+    }
+}
+
+/// Fresh post-setter concealed placement readback (causal, never translation
+/// math): the live `WINDOWPLACEMENT` normal rect after the actual setter,
+/// converted back to screen coordinates for the physical output proof.
+/// `work` is the target monitor's `WORK` rect and `workspace_coords` is the
+/// live placement basis (non-tool top-level rides workspace coordinates per
+/// the `WINDOWPLACEMENT` contract, tool windows ride screen). Under test
+/// reads the injected screen placement boundary distinctly from pre-state
+/// (`None` when unscripted). In production reads `GetWindowPlacement`
+/// without touching show-state and converts workspace to screen.
+fn fresh_arrival_placement(
+    hwnd: u64,
+    work: Rect,
+    full: Rect,
+    workspace_coords: bool,
+) -> Option<Rect> {
+    #[cfg(test)]
+    {
+        let _ = (work, full, workspace_coords);
+        INJECTED_ARRIVAL_PLACEMENT.with(|map| map.borrow().get(&hwnd).copied())
+    }
+    #[cfg(not(test))]
+    {
+        let hwnd_native = hwnd as isize as HWND;
+        if unsafe { IsWindow(hwnd_native) } == 0 {
+            return None;
+        }
+        let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        if unsafe { GetWindowPlacement(hwnd_native, &mut placement) } == 0 {
+            return None;
+        }
+        let w = placement
+            .rcNormalPosition
+            .right
+            .saturating_sub(placement.rcNormalPosition.left);
+        let h = placement
+            .rcNormalPosition
+            .bottom
+            .saturating_sub(placement.rcNormalPosition.top);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let raw = Rect {
+            x: placement.rcNormalPosition.left,
+            y: placement.rcNormalPosition.top,
+            w,
+            h,
+        };
+        Some(placement_raw_to_screen(raw, work, full, workspace_coords))
+    }
 }
 
 /// One system-metrics read at the window's current DPI. `GetSystemMetricsForDpi`
@@ -1627,21 +1945,29 @@ fn log_json_at(path: &Path, value: serde_json::Value) {
     }
 }
 
-/// Trace-only non-wait owner-work timing sample for one pump iteration.
-/// Created immediately after `pump_wait` returns (so `busy_us` excludes the
-/// wait plus any hook callbacks delivered inside the pump) and scoped to the
-/// iteration: every `continue`/error path drops through here. `Drop` emits at
-/// most one `owner-work` line via the existing infallible `log_json_at` and
-/// never logs from a callback. Fields are closed aggregates only (sequence,
-/// tick, microsecond offsets, batch counts, held flag): no HWNDs, PIDs, input
-/// content, or absolute clocks. Quiet short-poll iterations stay disabled and
-/// drop silently; the caller arms only active wakes.
-struct OwnerWorkGuard {
+/// Trace-only non-wait owner-work timing sample for one pump iteration,
+/// aggregated into the bounded [`Health`] window instead of per-wake file
+/// writes. Created immediately after `pump_wait` returns (so `busy_us`
+/// excludes the wait plus any hook callbacks delivered inside the pump)
+/// and scoped to the iteration: every `continue`/error path drops through
+/// [`OwnerWorkGuard::commit_owner`] in `Drop`. `Drop` emits at most one
+/// throttled outlier line via the existing infallible `log_json_at` and
+/// never logs from a callback; periodic summaries flush on existing owner
+/// turns through [`OwnerWorkGuard::finish_turn`]. Fields are closed
+/// aggregates only (sequence, tick, microsecond offsets, batch counts,
+/// held flag): no HWNDs, PIDs, input content, or absolute clocks. Quiet
+/// short-poll iterations stay disabled and drop silently; the caller arms
+/// only active wakes.
+///
+/// The guard holds the iteration's only `&mut Health` borrow as a plain
+/// field (never `RefCell`, never shared ownership): input and windrag
+/// observations route through the guard mid-turn while `state` stays
+/// freely mutable, so no borrow is held across the rest of the loop.
+struct OwnerWorkGuard<'h> {
     enabled: bool,
     log_path: Option<std::path::PathBuf>,
     seq: u64,
     tick_at_start: u64,
-    start_us: u64,
     start: Option<Instant>,
     border_refresh_us: u64,
     batch_events: u64,
@@ -1649,22 +1975,29 @@ struct OwnerWorkGuard {
     starts: u64,
     ends: u64,
     gesture_held: bool,
+    health: Option<&'h mut Health>,
 }
 
-impl OwnerWorkGuard {
+impl<'h> OwnerWorkGuard<'h> {
     /// Starts the non-wait clock. Timer creation, path clone, and sequence
     /// accounting happen only when `trace` holds, so default runs create
     /// no timers or log records (callers gate border
     /// timing on [`OwnerWorkGuard::timing_active`]). The guard starts
-    /// disabled; the caller arms it after the wake gate.
-    fn begin(trace: bool, log_path: &Path, epoch: Option<Instant>, seq: u64, tick: u64) -> Self {
+    /// disabled; the caller arms it after the wake gate. `health` is
+    /// `Some` only when tracing: `None` keeps the guard fully inert.
+    fn begin(
+        trace: bool,
+        log_path: &Path,
+        seq: u64,
+        tick: u64,
+        health: Option<&'h mut Health>,
+    ) -> Self {
         if !trace {
             return Self {
                 enabled: false,
                 log_path: None,
                 seq: 0,
                 tick_at_start: tick,
-                start_us: 0,
                 start: None,
                 border_refresh_us: 0,
                 batch_events: 0,
@@ -1672,37 +2005,29 @@ impl OwnerWorkGuard {
                 starts: 0,
                 ends: 0,
                 gesture_held: false,
+                health: None,
             };
         }
-        let start = Instant::now();
-        let start_us = match epoch {
-            Some(epoch) => start
-                .duration_since(epoch)
-                .as_micros()
-                .try_into()
-                .unwrap_or(u64::MAX),
-            None => 0,
-        };
         Self {
             enabled: false,
             log_path: Some(log_path.to_path_buf()),
             seq,
             tick_at_start: tick,
-            start_us,
-            start: Some(start),
+            start: Some(Instant::now()),
             border_refresh_us: 0,
             batch_events: 0,
             wakes: 0,
             starts: 0,
             ends: 0,
             gesture_held: false,
+            health,
         }
     }
 
     /// Arms the one sample for an active wake. No-op unless tracing: quiet
     /// iterations never enable, so their `continue` drops silently.
     fn arm(&mut self, batch_events: u64, wakes: u64, starts: u64, ends: u64, gesture_held: bool) {
-        if self.log_path.is_none() {
+        if self.health.is_none() {
             return;
         }
         self.batch_events = batch_events;
@@ -1727,41 +2052,136 @@ impl OwnerWorkGuard {
             .border_refresh_us
             .saturating_add(elapsed.as_micros().try_into().unwrap_or(u64::MAX));
     }
-}
 
-impl Drop for OwnerWorkGuard {
-    fn drop(&mut self) {
+    /// Records one input observation into the window; emits the immediate
+    /// outlier line when the health window reports one. `snap_age_us` is
+    /// `Some` only when a batch was taken this turn (owner-measured
+    /// take-time age); `pump_age_us` is `Some` only when the pump
+    /// published a fresh offer since the last observation (offer-time
+    /// queue age, never transport). Stale ages stay `None` and can never
+    /// false-alert. Dispatch/delivery-gap are last published turn
+    /// samples; heartbeat/pending are last-observed values. No-op when
+    /// tracing is off.
+    fn observe_input(
+        &mut self,
+        diag: &crate::input_handoff::InputDiag,
+        snap_age_us: Option<u64>,
+        pump_age_us: Option<u64>,
+    ) {
+        let (Some(health), Some(log_path)) = (self.health.as_mut(), self.log_path.as_ref()) else {
+            return;
+        };
+        let sample = InputSample {
+            snap_age_us,
+            pump_age_us,
+            dispatch_us: diag.dispatch_us,
+            delivery_gap_ms: diag.delivery_gap_ms,
+            heartbeat_us: diag.heartbeat_us,
+            pending: diag.pending_snap,
+            pump_turns: diag.turns,
+        };
+        if let Some(line) = health.observe_input(Instant::now(), sample) {
+            log_json_at(log_path, line);
+        }
+    }
+
+    /// Records one windrag transport sample (`offered` is the pump offer
+    /// time); emits the immediate outlier line when it breaches. No-op
+    /// when tracing is off.
+    fn observe_windrag(&mut self, offered: Instant) {
+        let (Some(health), Some(log_path)) = (self.health.as_mut(), self.log_path.as_ref()) else {
+            return;
+        };
+        let transport_us = Instant::now()
+            .duration_since(offered)
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
+        if let Some(line) = health.observe_windrag(Instant::now(), transport_us) {
+            log_json_at(log_path, line);
+        }
+    }
+
+    /// Commits the armed owner sample into the window (measuring the
+    /// pre-log exclusive span first) and disarms. Covers the suspend
+    /// `continue` and any error path when reached explicitly; `Drop`
+    /// covers the rest.
+    fn commit_owner(&mut self) {
         if !self.enabled {
             return;
         }
-        let Some(log_path) = self.log_path.as_ref() else {
+        self.enabled = false;
+        let (Some(health), Some(log_path), Some(start)) =
+            (self.health.as_mut(), self.log_path.as_ref(), self.start)
+        else {
             return;
         };
-        let Some(start) = self.start else {
+        // `busy_us` covers owner work after the pump only. The write cost
+        // of any sample itself is not included (elapsed is captured before
+        // the append). Delivered callback time inside `pump_wait` is not
+        // covered either; neither is the quiet stop probe (quiet
+        // iterations emit no sample at all).
+        let now = Instant::now();
+        let busy_us: u64 = now
+            .duration_since(start)
+            .as_micros()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let sample = OwnerSample {
+            busy_us,
+            border_refresh_us: self.border_refresh_us,
+            batch_events: self.batch_events,
+            wakes: self.wakes,
+            starts: self.starts,
+            ends: self.ends,
+            gesture_held: self.gesture_held,
+            seq: self.seq,
+            tick_at_start: self.tick_at_start,
+        };
+        if let Some(line) = health.observe_owner(now, sample) {
+            log_json_at(log_path, line);
+        }
+    }
+
+    /// Flushes due window summaries (activity plus a full window) via the
+    /// existing infallible writer. Quiet windows emit nothing.
+    fn poll_due(&mut self, now: Instant) {
+        let (Some(health), Some(log_path)) = (self.health.as_mut(), self.log_path.as_ref()) else {
             return;
         };
-        // `busy_us` covers owner work after the pump only. The write cost of
-        // this sample itself is not included (elapsed is captured before the
-        // append). Delivered callback time inside `pump_wait` is not covered
-        // either; neither is the quiet stop probe (quiet iterations emit no
-        // sample at all).
-        let busy_us: u64 = start.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
-        log_json_at(
-            log_path,
-            serde_json::json!({
-                "event": "owner-work",
-                "seq": self.seq,
-                "tick_at_start": self.tick_at_start,
-                "start_us": self.start_us,
-                "busy_us": busy_us,
-                "border_refresh_us": self.border_refresh_us,
-                "batch_events": self.batch_events,
-                "wakes": self.wakes,
-                "starts": self.starts,
-                "ends": self.ends,
-                "gesture_held": self.gesture_held,
-            }),
-        );
+        for line in health.take_due(now) {
+            log_json_at(log_path, line);
+        }
+    }
+
+    /// Trailing flush for idle maintenance turns (marked lines,
+    /// throttled): pending activity below the window age still emits so
+    /// evidence never strands behind idle. Suppressed windows keep
+    /// their data for the next due or end-of-run flush.
+    fn poll_trailing(&mut self, now: Instant) {
+        let (Some(health), Some(log_path)) = (self.health.as_mut(), self.log_path.as_ref()) else {
+            return;
+        };
+        for line in health.take_trailing(now) {
+            log_json_at(log_path, line);
+        }
+    }
+
+    /// End-of-turn commit: records the armed owner sample, then flushes
+    /// due summaries; on maintenance-quiet turns also flushes trailing
+    /// activity. After this the guard drops silently.
+    fn finish_turn(&mut self, maintenance_quiet: bool) {
+        self.commit_owner();
+        let now = Instant::now();
+        self.poll_due(now);
+        if maintenance_quiet {
+            self.poll_trailing(now);
+        }
+    }
+}
+
+impl Drop for OwnerWorkGuard<'_> {
+    fn drop(&mut self) {
+        self.commit_owner();
     }
 }
 
@@ -1772,7 +2192,7 @@ fn refresh_border_timed(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     fulls: &[Rect],
-    guard: &mut OwnerWorkGuard,
+    guard: &mut OwnerWorkGuard<'_>,
 ) {
     if guard.timing_active() {
         let started = Instant::now();
@@ -2053,9 +2473,6 @@ struct TileLoop {
     cli_overrides: crate::tiling::CliOverrides,
     /// Last published snap-queue loss count, for explicit drop evidence.
     snap_dropped: u32,
-    /// Last owner-measured snap batch age at take time, microseconds
-    /// (trace-only `input-queue-age` evidence).
-    input_trace_snap_age: u64,
     /// Last published callback-summary loss counts, for explicit drop/filter
     /// evidence on the trace-only `snap-callback` drain.
     cb_diag_dropped: u32,
@@ -2390,6 +2807,11 @@ struct TileLoop {
     /// bookkeeping; all owner overlay calls route through it so nothing
     /// touches renderer windows from this thread.
     render_bridge: Option<RenderBridge>,
+    /// Bounded per-carrier routine-frame aggregator for render diagnostics:
+    /// routine successful repaints aggregate into ~1s per-carrier windows
+    /// while transitions and failures log immediately. Runs in both trace and
+    /// production modes so geometry churn never floods per frame.
+    render_frames: RenderFrameHealth,
 }
 
 /// Owner-side dedicated-input bridge (product path only). The pump owns both
@@ -2435,10 +2857,6 @@ struct InputBridge {
     pending_ack: Option<u64>,
     /// Last acknowledged config-apply log (dedupes the ack event).
     last_ack_logged: u64,
-    /// Last traced pump turn count (change-only `input-queue-age` logs).
-    last_trace_turns: u64,
-    /// Last traced windrag offer count (change-only transport logs).
-    last_windrag_offers: u64,
 }
 
 /// Log sender fault/dedupe transitions with pending counts (once per
@@ -3164,13 +3582,22 @@ fn render_hide_reason(
 /// that generation, never desired state as rendered. Change-only signatures
 /// ride the existing `border_last`/`underlay_last`/`preview_last` so the
 /// bridged vocabulary matches the same-thread vocabulary line for line.
-fn poll_render_acks(state: &mut TileLoop) {
+/// Routine successful acks (Shown/Redrew/Unchanged with applied content, plus
+/// trace-only Moved) under an unchanged transition key aggregate into the
+/// per-carrier ~1s window; due summaries flush on this existing turn below.
+/// Failures and visibility/target/safety/proof/reason transitions retain
+/// their immediate paths.
+fn poll_render_acks(state: &mut TileLoop, now: Instant) {
     for carrier in RenderCarrier::all() {
-        poll_render_carrier(state, carrier);
+        poll_render_carrier(state, carrier, now);
+    }
+    let log_path = state.log_path.clone();
+    for line in state.render_frames.take_due(now) {
+        log_json_at(&log_path, line);
     }
 }
 
-fn poll_render_carrier(state: &mut TileLoop, carrier: RenderCarrier) {
+fn poll_render_carrier(state: &mut TileLoop, carrier: RenderCarrier, now: Instant) {
     let ack = state
         .render_bridge
         .as_ref()
@@ -3181,12 +3608,60 @@ fn poll_render_carrier(state: &mut TileLoop, carrier: RenderCarrier) {
     // Applied mirror first, independently of log pairing: visibility and the
     // stop snapshot stay truthful even when the posted note aged out.
     render_record_applied(state, carrier, &ack);
-    // Trace-only compact proof for every ack (including coalesced
-    // Shown->Unchanged): carrier, generation, safety, outcome, proof flags,
-    // applied colour/rect/checksum, transport age, present span, and bounded
-    // failure. Non-trace logs stay change-gated in the existing vocabulary
-    // below. No renderer/input logging, no raw input/app content, no window
-    // identifiers.
+    // Bounded routine-frame gate: one decision shared by the trace
+    // `render-applied` proof and the companion status line, so an aggregated
+    // frame emits neither (no duplicates). Failures never aggregate (including
+    // repeats); a changed transition key logs immediately; only a routine
+    // successful repaint (Shown/Redrew/Unchanged with applied content, or
+    // Moved when tracing) under the same key aggregates. Alternating routine
+    // outcome names under one key still aggregate: the key carries no outcome.
+    if !render_ack_is_failure(&ack)
+        && let Some(applied) = ack.applied.as_ref()
+    {
+        let routine = match &ack.outcome {
+            RenderOutcome::Shown | RenderOutcome::Redrew | RenderOutcome::Unchanged => true,
+            RenderOutcome::Moved if state.trace => true,
+            _ => false,
+        };
+        if routine {
+            let key = render_ack_transition_key(state, carrier, &ack);
+            if state.render_frames.transition_key(carrier) == Some(key.as_str()) {
+                let checksum_hex = format!("{:016x}", ack.checksum);
+                state.render_frames.observe_routine(
+                    carrier,
+                    now,
+                    Some(ack.queue_age_us),
+                    Some(ack.span_us),
+                    RenderFrameSample {
+                        outcome: ack.outcome.name(),
+                        target: applied.target.clone(),
+                        outer: applied.outer,
+                        color_hex: applied.color_hex.clone(),
+                        checksum_hex,
+                        generation: Some(ack.generation),
+                        safety: Some(ack.safety),
+                        hidden_proven: ack.hidden_proven,
+                        identity_proven: ack.identity_proven,
+                        source: "ack",
+                    },
+                );
+                render_prune_notes(state, carrier, ack.generation);
+                return;
+            }
+            state.render_frames.note_transition(carrier, key);
+        } else {
+            let key = render_ack_transition_key(state, carrier, &ack);
+            state.render_frames.note_transition(carrier, key);
+        }
+    } else {
+        let key = render_ack_transition_key(state, carrier, &ack);
+        state.render_frames.note_transition(carrier, key);
+    }
+    // Trace-only compact proof for immediate transitions and failures only:
+    // routine successful repaints aggregate into the per-carrier window above
+    // instead of logging per ack. Non-trace logs stay change-gated in the
+    // existing vocabulary below. No renderer/input logging, no raw input/app
+    // content, no window identifiers.
     if state.trace {
         let (outcome_name, reason) = match &ack.outcome {
             RenderOutcome::Refused(reason) => ("refused", Some(*reason)),
@@ -3246,6 +3721,343 @@ fn render_prune_notes(state: &mut TileLoop, carrier: RenderCarrier, generation: 
     if let Some(bridge) = state.render_bridge.as_mut() {
         let history = &mut bridge.posted[carrier.index()];
         history.retain(|(posted_gen, _)| *posted_gen > generation);
+    }
+}
+
+/// Summary window for routine render-frame diagnostics: at most one summary
+/// per second per carrier, emitted on existing owner turns only (no new wakes,
+/// timers, or scheduling). All clocks are caller-supplied (`Instant`
+/// parameters) so tests stay deterministic with injected time.
+const RENDER_SUMMARY_WINDOW: Duration = Duration::from_secs(1);
+
+/// Honest scope strings for the routine-frame summaries.
+const RENDER_FRAME_SCOPE: &str = "routine-successful-repaints-only";
+const RENDER_FRAME_EXCLUDES: &str = "transitions-failures-unknown-refused";
+
+/// Latest-applied sample carried in a routine-frame summary. Content truth
+/// (generation/safety/proof/outcome/geometry/colour/target/checksum) rides the
+/// ack applied payload, never desired state; the summary labels it a sample
+/// and maxima come from actual acks only. Same-thread repaints carry no ack
+/// transport (`source` is `"same-thread"`, generation/safety/queue/span are
+/// null there); acked repaints carry `source: "ack"` with real values.
+#[derive(Debug, Clone, Default)]
+struct RenderFrameSample {
+    outcome: &'static str,
+    target: String,
+    outer: [i32; 4],
+    color_hex: String,
+    checksum_hex: String,
+    generation: Option<u64>,
+    safety: Option<u64>,
+    hidden_proven: bool,
+    identity_proven: bool,
+    source: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct RenderCarrierWin {
+    observed: u64,
+    /// Maxima over actual ack transport only; `None` when the window holds
+    /// same-thread samples alone (never zero-filled: zero is a measurement).
+    queue_max_us: Option<u64>,
+    span_max_us: Option<u64>,
+    sample: RenderFrameSample,
+    window_start: Option<Instant>,
+    last_emit: Option<Instant>,
+    /// Last immediate transition key (`shown:{target}:s{safety}:h{proven}:i{proven}`,
+    /// `hidden:{reason}:...`, `refused:{reason}`, `unknown:{reason}`,
+    /// `failure:{detail}`). Routine repaints with the same key aggregate; a
+    /// changed key logs immediately.
+    transition_key: Option<String>,
+}
+
+/// Bounded per-carrier routine-frame aggregator. Plain struct, no interior
+/// mutability. Windows with no activity emit nothing. Aggregates reset on
+/// emission. Failures and transitions never enter here: callers log those
+/// immediately and only route routine successful repaints (Shown/Redrew/
+/// Unchanged/Moved with no failure) through [`Self::observe_routine`].
+#[derive(Debug, Default)]
+struct RenderFrameHealth {
+    wins: [RenderCarrierWin; 3],
+}
+
+impl RenderFrameHealth {
+    fn window_due(win: &RenderCarrierWin, now: Instant) -> bool {
+        win.window_start
+            .map(|start| now.saturating_duration_since(start) >= RENDER_SUMMARY_WINDOW)
+            .unwrap_or(false)
+    }
+
+    fn repeat_due(last: Option<Instant>, now: Instant) -> bool {
+        last.map(|prev| now.saturating_duration_since(prev) >= RENDER_SUMMARY_WINDOW)
+            .unwrap_or(true)
+    }
+
+    /// Last immediate transition key for one carrier.
+    fn transition_key(&self, carrier: RenderCarrier) -> Option<&str> {
+        self.wins[carrier.index()].transition_key.as_deref()
+    }
+
+    /// Record one immediate transition (visibility/target/outcome/reason
+    /// change or failure). Only updates the key so the next same-key routine
+    /// repaint aggregates; emits nothing itself.
+    fn note_transition(&mut self, carrier: RenderCarrier, key: String) {
+        self.wins[carrier.index()].transition_key = Some(key);
+    }
+
+    /// Record one routine successful repaint into the window aggregates.
+    /// `queue_us`/`span_us` are `Some` only for acked repaints; same-thread
+    /// samples pass `None` so maxima cover actual ack transport only and are
+    /// never zero-filled (zero is a measurement).
+    fn observe_routine(
+        &mut self,
+        carrier: RenderCarrier,
+        now: Instant,
+        queue_us: Option<u64>,
+        span_us: Option<u64>,
+        sample: RenderFrameSample,
+    ) {
+        let win = &mut self.wins[carrier.index()];
+        if win.window_start.is_none() {
+            win.window_start = Some(now);
+        }
+        win.observed = win.observed.saturating_add(1);
+        if let Some(queue_us) = queue_us {
+            win.queue_max_us = Some(win.queue_max_us.unwrap_or(0).max(queue_us));
+        }
+        if let Some(span_us) = span_us {
+            win.span_max_us = Some(win.span_max_us.unwrap_or(0).max(span_us));
+        }
+        win.sample = sample;
+    }
+
+    fn emit_for(
+        win: &mut RenderCarrierWin,
+        carrier: RenderCarrier,
+        now: Instant,
+        flushed: Option<&str>,
+    ) -> Option<serde_json::Value> {
+        if win.observed == 0 {
+            return None;
+        }
+        let window_us = win
+            .window_start
+            .map(|start| {
+                now.saturating_duration_since(start)
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64
+            })
+            .unwrap_or(0);
+        let mut line = serde_json::json!({
+            "event": "render-frame-summary",
+            "carrier": carrier.name(),
+            "window_us": window_us,
+            "observed": win.observed,
+            "queue_max_us": win.queue_max_us,
+            "span_max_us": win.span_max_us,
+            "sample": {
+                "outcome": win.sample.outcome,
+                "target": win.sample.target,
+                "rect": win.sample.outer,
+                "color": win.sample.color_hex,
+                "dib_checksum": win.sample.checksum_hex,
+                "generation": win.sample.generation,
+                "safety": win.sample.safety,
+                "hidden_proven": win.sample.hidden_proven,
+                "id_proven": win.sample.identity_proven,
+                "source": win.sample.source,
+            },
+            "scope": RENDER_FRAME_SCOPE,
+            "excludes": RENDER_FRAME_EXCLUDES,
+        });
+        if let Some(flushed) = flushed {
+            line["flushed"] = flushed.into();
+        }
+        win.observed = 0;
+        win.queue_max_us = None;
+        win.span_max_us = None;
+        win.sample = RenderFrameSample::default();
+        win.window_start = None;
+        win.last_emit = Some(now);
+        Some(line)
+    }
+
+    /// Periodic summaries, due only: activity plus a full window elapsed per
+    /// carrier. Quiet carriers emit nothing. Per-carrier independence: one
+    /// carrier's flood never suppresses another's summary.
+    fn take_due(&mut self, now: Instant) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for carrier in RenderCarrier::all() {
+            let due = Self::window_due(&self.wins[carrier.index()], now);
+            if due
+                && let Some(line) =
+                    Self::emit_for(&mut self.wins[carrier.index()], carrier, now, None)
+            {
+                out.push(line);
+            }
+        }
+        out
+    }
+
+    /// Trailing flush for idle maintenance turns: pending activity below the
+    /// window age still emits (marked), throttled to one per second per
+    /// carrier from that carrier's last emission. Suppressed carriers keep
+    /// their data for the next due or end-of-run flush.
+    fn take_trailing(&mut self, now: Instant) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for carrier in RenderCarrier::all() {
+            let due = Self::repeat_due(self.wins[carrier.index()].last_emit, now);
+            if due
+                && let Some(line) = Self::emit_for(
+                    &mut self.wins[carrier.index()],
+                    carrier,
+                    now,
+                    Some("maintenance-trailing"),
+                )
+            {
+                out.push(line);
+            }
+        }
+        out
+    }
+
+    /// Pending end-of-run summary: emits any retained activity regardless of
+    /// the throttle (at most one call per run).
+    fn take_end_of_run(&mut self, now: Instant) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for carrier in RenderCarrier::all() {
+            if let Some(line) = Self::emit_for(
+                &mut self.wins[carrier.index()],
+                carrier,
+                now,
+                Some("end-of-run"),
+            ) {
+                out.push(line);
+            }
+        }
+        out
+    }
+}
+
+/// Transition key for one bridged ack: visibility/outcome/target/reason plus
+/// the safety epoch and proof flags, without geometry. Geometry-only churn
+/// keeps the same key and aggregates, while a target/visibility/reason change
+/// or a safety-epoch/proof-flag change logs immediately. A steady
+/// `identity_proven: false` keeps its key (not a per-frame failure), but any
+/// proof-flag transition is immediate. Failures map to a `failure:{detail}`
+/// key but always log immediately regardless (failures never aggregate,
+/// including repeats).
+fn render_ack_transition_key(
+    state: &TileLoop,
+    carrier: RenderCarrier,
+    ack: &crate::render_handoff::CarrierAck,
+) -> String {
+    if let Some(error) = ack.last_error.as_ref() {
+        return format!("failure:{error}");
+    }
+    match &ack.outcome {
+        RenderOutcome::Hidden => {
+            format!(
+                "hidden:{}:s{}:h{}",
+                render_hide_reason(state, carrier, ack),
+                ack.safety,
+                ack.hidden_proven
+            )
+        }
+        RenderOutcome::Refused(reason) => format!("refused:{reason}"),
+        RenderOutcome::Unknown(reason) => format!("unknown:{reason}"),
+        _ => {
+            let target = ack
+                .applied
+                .as_ref()
+                .map(|applied| applied.target.clone())
+                .unwrap_or_default();
+            format!(
+                "shown:{target}:s{}:h{}:i{}",
+                ack.safety, ack.hidden_proven, ack.identity_proven
+            )
+        }
+    }
+}
+
+/// Whether one bridged ack is a failure that must log immediately (failures
+/// never aggregate, including repeated identical failures).
+fn render_ack_is_failure(ack: &crate::render_handoff::CarrierAck) -> bool {
+    if ack.last_error.is_some() {
+        return true;
+    }
+    match &ack.outcome {
+        RenderOutcome::Refused(_) | RenderOutcome::Unknown(_) => true,
+        RenderOutcome::Hidden if !ack.hidden_proven => true,
+        _ => false,
+    }
+}
+
+/// Same-thread routine gate for the overlay show paths (no ack transport, so
+/// the sample carries `source: "same-thread"` with null generation/safety/
+/// queue/span and unproven flags): returns true when the caller must suppress
+/// its immediate status line because the frame aggregated into the per-carrier
+/// ~1s window. A changed `shown:{target}` key records the transition and
+/// returns false (the caller logs immediately per its existing gates); an
+/// unchanged key with `would_log` true aggregates and returns true; an
+/// unchanged key with `would_log` false stays silent with no aggregation
+/// (preserving steady-state silence). Failures and hides never reach here:
+/// callers keep their existing immediate failure/hide branches untouched, and
+/// those branches record their own `hidden:`/`failure:` transition keys (see
+/// `note_render_hidden`) so a later show under the same target still logs its
+/// lifecycle instead of aggregating against a stale show key.
+fn render_same_thread_gate(
+    state: &mut TileLoop,
+    carrier: RenderCarrier,
+    target: &str,
+    now: Instant,
+    would_log: bool,
+    sample: RenderFrameSample,
+) -> bool {
+    let key = format!("shown:{target}");
+    if state.render_frames.transition_key(carrier) != Some(key.as_str()) {
+        state.render_frames.note_transition(carrier, key);
+        return false;
+    }
+    if !would_log {
+        return false;
+    }
+    state
+        .render_frames
+        .observe_routine(carrier, now, None, None, sample);
+    true
+}
+
+/// Record a same-thread hide or present-failure transition in the diagnostic
+/// key state before its log line. Product behaviour is untouched (the overlay
+/// hide and signature update already happened in the caller); this only keeps
+/// the routine gate honest so a later show under the same target logs its
+/// lifecycle instead of aggregating against a stale show key.
+fn note_render_hidden(state: &mut TileLoop, carrier: RenderCarrier, key: String) {
+    state.render_frames.note_transition(carrier, key);
+}
+
+/// Same-thread routine sample: no ack transport exists on the inline overlay
+/// path, so generation/safety/queue/span stay null and proof flags stay
+/// unproven in the summary sample (`source: "same-thread"`).
+fn same_thread_sample(
+    outcome: &'static str,
+    target: String,
+    outer: [i32; 4],
+    color_hex: String,
+    checksum_hex: String,
+) -> RenderFrameSample {
+    RenderFrameSample {
+        outcome,
+        target,
+        outer,
+        color_hex,
+        checksum_hex,
+        generation: None,
+        safety: None,
+        hidden_proven: false,
+        identity_proven: false,
+        source: "same-thread",
     }
 }
 
@@ -4360,6 +5172,9 @@ fn hide_border(state: &mut TileLoop, reason: &str) {
         return;
     }
     state.border_last = Some(signature);
+    // Diagnostic key first (no product effect): a later show under the same
+    // target must log its lifecycle, never aggregate against a stale show key.
+    note_render_hidden(state, RenderCarrier::Border, format!("hidden:{reason}"));
     log_json_at(
         &state.log_path,
         serde_json::json!({
@@ -4568,6 +5383,17 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
             if changed_failure {
                 state.border_last = Some(failure);
             }
+            // Diagnostic key (no product effect): a later show under the same
+            // target must log its lifecycle, never aggregate against a stale
+            // show key.
+            note_render_hidden(
+                state,
+                RenderCarrier::Border,
+                format!(
+                    "failure:{}",
+                    state.border_overlay.last_error().unwrap_or("unknown")
+                ),
+            );
             if changed_failure || state.trace {
                 log_json_at(
                     &state.log_path,
@@ -4619,7 +5445,26 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
         }
         OverlayOutcome::Moved if state.trace => {
             // Position-only follows are trace-only; production stays quiet
-            // off the lifecycle transitions below.
+            // off the lifecycle transitions below. Routine follows under the
+            // same target aggregate into the per-carrier ~1s window instead
+            // of logging per move.
+            let sample = same_thread_sample(
+                "moved",
+                window.token.clone(),
+                [outer.x, outer.y, outer.w, outer.h],
+                String::new(),
+                String::new(),
+            );
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Border,
+                window.token.as_str(),
+                Instant::now(),
+                true,
+                sample,
+            ) {
+                return;
+            }
             log_json_at(
                 &state.log_path,
                 serde_json::json!({
@@ -4654,6 +5499,33 @@ fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, fulls: &[Re
             let changed = state.border_last.as_deref() != Some(signature.as_str());
             if changed {
                 state.border_last = Some(signature);
+            }
+            // Routine same-target repaints aggregate into the per-carrier ~1s
+            // window (shared decision: no duplicate line); transitions log
+            // immediately below.
+            let checksum_hex = state.border_overlay.snapshot()["dib_checksum"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Border,
+                window.token.as_str(),
+                Instant::now(),
+                changed || state.trace,
+                same_thread_sample(
+                    match outcome {
+                        OverlayOutcome::Shown => "shown",
+                        OverlayOutcome::Redrew => "redrew",
+                        _ => "shown",
+                    },
+                    window.token.clone(),
+                    [outer.x, outer.y, outer.w, outer.h],
+                    color_hex.clone(),
+                    checksum_hex,
+                ),
+            ) {
+                return;
             }
             if !(changed || state.trace) {
                 return;
@@ -4693,6 +5565,8 @@ fn hide_underlay(state: &mut TileLoop, reason: &str) {
         return;
     }
     state.underlay_last = Some(signature);
+    // Diagnostic key first (no product effect): see `hide_border`.
+    note_render_hidden(state, RenderCarrier::Underlay, format!("hidden:{reason}"));
     log_json_at(
         &state.log_path,
         serde_json::json!({
@@ -4722,6 +5596,8 @@ fn hide_preview(state: &mut TileLoop, reason: &str) {
         return;
     }
     state.preview_last = Some(signature);
+    // Diagnostic key first (no product effect): see `hide_border`.
+    note_render_hidden(state, RenderCarrier::Preview, format!("hidden:{reason}"));
     log_json_at(
         &state.log_path,
         serde_json::json!({
@@ -5224,6 +6100,15 @@ fn refresh_group_underlay(
             if changed_failure {
                 state.underlay_last = Some(failure);
             }
+            // Diagnostic key (no product effect): see the border branch above.
+            note_render_hidden(
+                state,
+                RenderCarrier::Underlay,
+                format!(
+                    "failure:{}",
+                    state.underlay_overlay.last_error().unwrap_or("unknown")
+                ),
+            );
             if changed_failure || state.trace {
                 log_json_at(
                     &state.log_path,
@@ -5266,6 +6151,25 @@ fn refresh_group_underlay(
             }
         }
         OverlayOutcome::Moved if state.trace => {
+            // Routine follows under the same target aggregate into the
+            // per-carrier ~1s window instead of logging per move.
+            let sample = same_thread_sample(
+                "moved",
+                window.token.clone(),
+                [outer.x, outer.y, outer.w, outer.h],
+                color_hex.clone(),
+                String::new(),
+            );
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Underlay,
+                window.token.as_str(),
+                Instant::now(),
+                true,
+                sample,
+            ) {
+                return;
+            }
             let mut event = serde_json::json!({
                     "event": "group-underlay",
                     "tick": state.tick,
@@ -5296,6 +6200,33 @@ fn refresh_group_underlay(
             let changed = state.underlay_last.as_deref() != Some(signature.as_str());
             if changed {
                 state.underlay_last = Some(signature);
+            }
+            // Routine same-target repaints aggregate into the per-carrier ~1s
+            // window (shared decision: no duplicate line); transitions log
+            // immediately below.
+            let checksum_hex = state.underlay_overlay.snapshot()["dib_checksum"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Underlay,
+                window.token.as_str(),
+                Instant::now(),
+                changed || state.trace,
+                same_thread_sample(
+                    match outcome {
+                        OverlayOutcome::Shown => "shown",
+                        OverlayOutcome::Redrew => "redrew",
+                        _ => "shown",
+                    },
+                    window.token.clone(),
+                    [outer.x, outer.y, outer.w, outer.h],
+                    color_hex.clone(),
+                    checksum_hex,
+                ),
+            ) {
+                return;
             }
             if !(changed || state.trace) {
                 return;
@@ -5590,6 +6521,31 @@ fn refresh_cross_drag_preview(
             let changed = state.preview_last.as_deref() != Some(signature.as_str());
             if changed {
                 state.preview_last = Some(signature);
+            }
+            // Routine same-mover repaints (per mouse move) aggregate into the
+            // per-carrier ~1s window; mover transitions log immediately below.
+            let outcome_name = match outcome {
+                OverlayOutcome::Shown => "shown",
+                OverlayOutcome::Redrew => "redrew",
+                OverlayOutcome::Moved => "moved",
+                OverlayOutcome::Unchanged => "unchanged",
+                OverlayOutcome::Hidden => "hidden",
+            };
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Preview,
+                settle.mover_token.as_str(),
+                Instant::now(),
+                changed || state.trace,
+                same_thread_sample(
+                    outcome_name,
+                    settle.mover_token.clone(),
+                    [rect.x, rect.y, rect.w, rect.h],
+                    String::new(),
+                    checksum.as_str().unwrap_or_default().to_owned(),
+                ),
+            ) {
+                return;
             }
             if changed || state.trace {
                 log_json_at(
@@ -6226,6 +7182,31 @@ fn refresh_drag_preview(
             let changed = state.preview_last.as_deref() != Some(signature.as_str());
             if changed {
                 state.preview_last = Some(signature);
+            }
+            // Routine same-mover repaints (per mouse move) aggregate into the
+            // per-carrier ~1s window; mover transitions log immediately below.
+            let outcome_name = match outcome {
+                OverlayOutcome::Shown => "shown",
+                OverlayOutcome::Redrew => "redrew",
+                OverlayOutcome::Moved => "moved",
+                OverlayOutcome::Unchanged => "unchanged",
+                OverlayOutcome::Hidden => "hidden",
+            };
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Preview,
+                start.token.as_str(),
+                Instant::now(),
+                changed || state.trace,
+                same_thread_sample(
+                    outcome_name,
+                    start.token.clone(),
+                    [rect.x, rect.y, rect.w, rect.h],
+                    String::new(),
+                    checksum.as_str().unwrap_or_default().to_owned(),
+                ),
+            ) {
+                return;
             }
             if changed || state.trace {
                 log_json_at(
@@ -10183,6 +11164,7 @@ fn keyboard_tick(
                 QueuedSnapEvent::Workspace(_) => stale += 1,
                 QueuedSnapEvent::WorkspaceSend(_) => stale += 1,
                 QueuedSnapEvent::WorkspaceOutput(_) => stale += 1,
+                QueuedSnapEvent::WorkspaceMigrate(_) => stale += 1,
                 QueuedSnapEvent::WorkspaceHistory(_) => stale += 1,
                 QueuedSnapEvent::Maximize(_) => stale += 1,
                 QueuedSnapEvent::Orientation(_) => stale += 1,
@@ -12215,6 +13197,23 @@ fn keyboard_tick(
                             "edge": intent.edge.as_str(),
                             "disposition": "rerouted",
                             "outcome": "workspace-output-tick",
+                        }),
+                    );
+                }
+            }
+            QueuedSnapEvent::WorkspaceMigrate(intent) => {
+                // Routed to workspace_migrate_tick by the caller;
+                // defensive drop here stays trace-only like digits.
+                if state.trace {
+                    log_json_at(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "workspace-migrate",
+                            "tick": state.tick,
+                            "direction": direction_name(intent.direction),
+                            "edge": intent.edge.as_str(),
+                            "disposition": "rerouted",
+                            "outcome": "workspace-migrate-tick",
                         }),
                     );
                 }
@@ -24718,6 +25717,2012 @@ fn workspace_output_send_one(
     }
 }
 
+/// Drain one bounded batch of item 14 whole-active-workspace migration intents
+/// (R-WS-12 D1-D9/G37). Each intent migrates the ACTIVE workspace of the chord
+/// output only (follow-only, unbound by default): resolve the adjacent output
+/// once through the shared largest-shared-edge FULL-rectangle selector (no
+/// candidate is a no-op, unreadable topology refuses, outputs never wrap),
+/// then transfer through the commit-last [`run_workspace_migrate`] route with
+/// the live G-37 source-refill mode. D4 retains per-output tiling modes:
+/// untiled source and untiled target prior are allowed (independent
+/// project-owned views, never a both-tiled gate); mode drift fences below.
+/// `--no-keyboard-snap-takeover` off, fullscreen/elevated gates,
+/// observation failure and unknown-output refusals mirror the output-send
+/// tick.
+#[allow(clippy::too_many_arguments)]
+fn workspace_migrate_tick(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    events: Vec<QueuedWorkspaceMigrateIntent>,
+    blocked: Option<&'static str>,
+) {
+    let log_path = state.log_path.clone();
+    if let Some(cause) = blocked {
+        let stale = events.len() as u32;
+        if stale > 0 {
+            log_json_at(
+                &log_path,
+                serde_json::json!({"event":"workspace-migrate-stale","cause": cause, "dropped": stale}),
+            );
+        }
+        return;
+    }
+    if !state.keyboard.takeover {
+        if !events.is_empty() {
+            log_json_at(
+                &log_path,
+                serde_json::json!({"event":"workspace-migrate-stale","cause":"takeover-off","dropped": events.len()}),
+            );
+        }
+        return;
+    }
+    for intent in events {
+        if !intent.consumed || !intent.announce {
+            if state.trace {
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "workspace-migrate",
+                        "tick": state.tick,
+                        "direction": direction_name(intent.direction),
+                        "edge": intent.edge.as_str(),
+                        "disposition": if intent.consumed { "consumed" } else { "passed" },
+                        "outcome": "key-up",
+                    }),
+                );
+            }
+            continue;
+        }
+        let direction = direction_name(intent.direction);
+        let edge = intent.edge.as_str();
+        if suspend_read(state, me, fulls).veto.block {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-migrate",
+                    "direction": direction,
+                    "edge": edge,
+                    "disposition": "consumed",
+                    "outcome": "suspended",
+                }),
+            );
+            continue;
+        }
+        if foreground_elevated(me) {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-migrate",
+                    "direction": direction,
+                    "edge": edge,
+                    "disposition": "consumed",
+                    "outcome": "elevated-foreground",
+                }),
+            );
+            continue;
+        }
+        let Some(output) = chord_output(state, areas) else {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-migrate",
+                    "direction": direction,
+                    "edge": edge,
+                    "disposition": "consumed",
+                    "outcome": "unknown-output",
+                }),
+            );
+            continue;
+        };
+        state.workspaces.ensure_output(&output);
+        state.tick += 1;
+        let tick = state.tick;
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut retained: Vec<RetainedRow> = Vec::new();
+        let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "workspace-migrate",
+                    "tick": tick,
+                    "direction": direction_name(intent.direction),
+                    "edge": intent.edge.as_str(),
+                    "disposition": "consumed",
+                    "outcome": "observation-failed",
+                }),
+            );
+            continue;
+        };
+        publish_managed(state, me, &observed, &retained);
+        ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
+        clear_maximize_at_admission(state, me, &retained);
+        workspace_close_cleanup(state);
+        // `run_workspace_migrate` logs the full action line; narrow
+        // pre-dispatch refusals log here.
+        let _ = workspace_migrate_one(
+            state,
+            me,
+            store,
+            dir,
+            fulls,
+            areas,
+            &mut observed,
+            &retained,
+            &output,
+            &intent,
+            tick,
+        );
+    }
+}
+
+/// Dispatch one observed migration intent on its active output: pin the source
+/// active workspace, resolve the adjacent target once through the shared
+/// largest-edge selector, then run the commit-last transfer. The pinned
+/// source/target pair never re-resolves below.
+#[allow(clippy::too_many_arguments)]
+fn workspace_migrate_one(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &mut [ObservedWindow],
+    retained: &[RetainedRow],
+    output: &str,
+    intent: &QueuedWorkspaceMigrateIntent,
+    tick: u64,
+) -> &'static str {
+    let log_path = state.log_path.clone();
+    let log_refuse = |outcome: &'static str| {
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "workspace-migrate",
+                "tick": tick,
+                "direction": direction_name(intent.direction),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": outcome,
+            }),
+        );
+    };
+    let Some(source_workspace) = state.workspaces.active_id(output) else {
+        log_refuse("unknown-output");
+        return "unknown-output";
+    };
+    let outputs = directional_outputs_from_areas(areas);
+    let selected =
+        match crate::workspace_owner::select_migration_target(intent.direction, output, &outputs) {
+            Ok(selected) => selected,
+            Err(_) => {
+                log_refuse("unreadable-topology");
+                return "unreadable-topology";
+            }
+        };
+    let Some(target_output) = selected else {
+        log_refuse("no-op");
+        return "no-op";
+    };
+    if target_output == output {
+        log_refuse("no-op");
+        return "no-op";
+    }
+    state.workspaces.ensure_output(&target_output);
+    // The destination's DIFFERENT current workspace stays adapter-owned: it
+    // is the pinned prior for insertion (D4: the moved id inserts
+    // immediately after it) and for fences, never a carried domain. The
+    // target migration domain carries the SAME workspace id on the target
+    // output with empty target windows (the Engine refuses carried target
+    // residue).
+    let Some(target_prior) = state.workspaces.active_id(&target_output) else {
+        log_refuse("unknown-output");
+        return "unknown-output";
+    };
+    // D4 mode retention: independent project-owned output views carry
+    // their own tiling modes, so untiled source and untiled target prior are
+    // both allowed (no both-tiled gate). Mode drift still fences below via
+    // the snapshot/live tiled pair; an untiled source takes move-only native
+    // transfer with no tiled geometry and no Engine dispatch.
+    let correlation = state.correlation();
+    let mut hint_cx = HintCx::new();
+    let Some(source_rows) = assemble_domain_rows(
+        state,
+        output,
+        &source_workspace,
+        observed,
+        retained,
+        "workspace-migrate",
+        correlation.as_str(),
+        &mut hint_cx,
+    ) else {
+        log_refuse("deferred");
+        return "deferred";
+    };
+    let Some(migrate_rows) = migrate_rows_for(
+        state,
+        output,
+        &source_workspace,
+        &source_rows,
+        observed,
+        retained,
+        fulls,
+    ) else {
+        log_refuse("deferred");
+        return "deferred";
+    };
+    run_workspace_migrate(
+        state,
+        me,
+        store,
+        dir,
+        fulls,
+        areas,
+        observed,
+        retained,
+        &mut hint_cx,
+        output,
+        &source_workspace,
+        &source_rows,
+        &migrate_rows,
+        &target_output,
+        &target_prior,
+        intent,
+        tick,
+        &correlation,
+        correlation.as_str(),
+    )
+}
+
+/// Build one [`crate::workspace_owner::MigrateRow`] per source member with
+/// live observations, never fabricated placeholders: `floating` rides the
+/// assembled Engine row (minimized/hidden omitted rows fall back to the
+/// runtime float intent plus the retained Engine exception, so a carried
+/// minimized float is never downgraded to tiled), `sticky` rides the runtime
+/// sticky set, `maximized` re-reads live via `IsZoomed`
+/// ([`live_overlay_flags`]) for visible members and falls back to the
+/// retained row for hidden/retained members, `fullscreen` re-reads live with
+/// the same fallback, `fixed_auto` rides the automatic-fixed latch, and
+/// `fit_excluded` rides the float exception (the only unexplained-fit
+/// exclusion the Engine accepts is carried by a
+/// floating/sticky/fullscreen/maximized origin). Minimized/iconic-hidden
+/// members omitted from the assembled rows carry their retained normal frame
+/// (`retained.rect`, else `member_rects`, else `float_rects`) with no hint so
+/// the Engine keeps their slot and the native placement tail can remap them.
+/// Returns `None` when any member lacks a token/rect snapshot: the caller
+/// defers with retained state.
+fn migrate_rows_for(
+    state: &TileLoop,
+    output: &str,
+    workspace: &str,
+    source_rows: &[crate::workspace_owner::OwnerRow],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    fulls: &[Rect],
+) -> Option<Vec<crate::workspace_owner::MigrateRow>> {
+    let members = state.workspaces.workspace_members(output, workspace);
+    let by_token: HashMap<&str, &crate::workspace_owner::OwnerRow> = source_rows
+        .iter()
+        .map(|row| (row.token.as_str(), row))
+        .collect();
+    let by_hwnd: HashMap<u64, &ObservedWindow> = observed
+        .iter()
+        .map(|window| (window.hwnd, window))
+        .collect();
+    let domain_key = tiler_core::session::DomainKey {
+        output: tiler_core::directional::OutputId(output.to_owned()),
+        workspace: tiler_core::directional::WorkspaceId(workspace.to_owned()),
+    };
+    let mut rows = Vec::with_capacity(members.len());
+    for key in &members {
+        let token = state.member_tokens.get(key).cloned()?;
+        let sticky = state.sticky.contains_key(key);
+        let hidden = state.workspaces.is_hidden(key);
+        let omitted = state.minimized_omitted.contains(key);
+        let (maximized, fullscreen) = if hidden || omitted {
+            // Hidden/minimized members keep no live frame: carry the retained
+            // overlay flags so a carried overlay is never downgraded to a
+            // plain row (which would drop its slot) nor invented.
+            let retained_row = retained.iter().find(|r| r.key == *key);
+            match retained_row {
+                Some(r) => (r.maximized, r.fullscreen),
+                None => {
+                    let overlay = state.overlay_now.get(&token);
+                    (
+                        overlay.is_some_and(|(max, _)| *max),
+                        overlay.is_some_and(|(_, full)| *full),
+                    )
+                }
+            }
+        } else if by_hwnd.contains_key(&key.hwnd) {
+            let (live_max, live_full_opt) = live_overlay_flags(key.hwnd, fulls);
+            let fallback_full = retained
+                .iter()
+                .find(|r| r.key == *key)
+                .map(|r| r.fullscreen)
+                .or_else(|| state.overlay_now.get(&token).map(|(_, full)| *full))
+                .unwrap_or(false);
+            (live_max, live_full_opt.unwrap_or(fallback_full))
+        } else {
+            let r = retained.iter().find(|r| r.key == *key)?;
+            let (live_max, live_full_opt) = live_overlay_flags(key.hwnd, fulls);
+            (live_max, live_full_opt.unwrap_or(r.fullscreen))
+        };
+        if let Some(row) = by_token.get(token.as_str()) {
+            rows.push(crate::workspace_owner::MigrateRow {
+                token: token.clone(),
+                rect: row.rect,
+                hints: row.hints,
+                floating: row.floating,
+                fullscreen,
+                maximized,
+                sticky,
+                fixed_auto: state.fixed_auto_seen.contains(key),
+                fixed_suppress: false,
+                fit_excluded: row.floating,
+            });
+            continue;
+        }
+        // Minimized/iconic-hidden omission: the assembled rows skip the
+        // frameless non-overlay row so convergence can store the
+        // `MinimizedSlot`, but migration must still carry the member (else
+        // the Engine refuses `PartialObservation` and the native placement
+        // tail could never commit). Carry the retained normal frame with no
+        // hint; overlay flags above already preserve max/fullscreen.
+        let rect = retained
+            .iter()
+            .find(|r| r.key == *key)
+            .and_then(|r| r.rect)
+            .or_else(|| state.member_rects.get(&token).copied())
+            .or_else(|| state.float_rects.get(&token).copied())?;
+        let floating = state.floated.contains(key)
+            || state
+                .engine
+                .session(&domain_key)
+                .is_some_and(|session| session.is_exception(&WindowId(token.clone())));
+        rows.push(crate::workspace_owner::MigrateRow {
+            token: token.clone(),
+            rect,
+            hints: WindowSizeHints::none(),
+            floating,
+            fullscreen,
+            maximized,
+            sticky,
+            fixed_auto: state.fixed_auto_seen.contains(key),
+            fixed_suppress: false,
+            fit_excluded: floating,
+        });
+    }
+    Some(rows)
+}
+
+/// Stage the native view publication for one migration (D4/G37): hide the
+/// occupied target prior (ledger-authorized, stays listed and hidden) and
+/// reveal the source refill plus migrated product-hidden members as the
+/// active views permit (preserving minimized/hidden intent, never
+/// unminimizing). `candidate_ws` already holds the project reassignment
+/// (moved shown on target, refill shown on source); this applies the native
+/// hide/show effects fenced per effect and mirrors the hidden flags onto the
+/// candidate so publication carries both physical views. Under test the
+/// ledger setters are stubbed to project flag moves (native-free); production
+/// routes through [`workspace_hide_one`] and `reveal_product_claim_to` with
+/// the recovery ledger (never bypassed). Any effect failure reconciles
+/// without replay; the caller publishes only after both views verify.
+/// Returns `None` when all effects hold, else the refusal outcome.
+#[allow(clippy::too_many_arguments)]
+fn migration_view_effects(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    candidate_ws: &mut crate::workspace::ManagedWorkspaces,
+    source_output: &str,
+    refill: Option<&str>,
+    target_output: &str,
+    target_prior: &str,
+    migrating: &BTreeSet<crate::workspace::WindowKey>,
+    snapshot: &crate::workspace_owner::MigrateFenceSnapshot,
+    tail_areas: &[MonitorArea],
+) -> Option<&'static str> {
+    // Per-effect fence gate shared by every hide/reveal below: real scope,
+    // lifetime, membership plus fresh topology on EACH call (never stubbed,
+    // never fixed areas). The project reassignment has not published yet, so
+    // membership still homes every migrating member on the source.
+    let fences_hold =
+        |state: &TileLoop, source_workspace: &str, target_prior: &str| -> Option<&'static str> {
+            let scope_ok = migrating.iter().all(|key| {
+                state.member_identity.get(key).is_some_and(|stored| {
+                    scope_allows(&state.scope, &stored.exe_path)
+                        && hosted_gate_allows(
+                            &stored.exe_path,
+                            key.hwnd,
+                            stored.pid,
+                            &state.scope_hosts,
+                        )
+                })
+            });
+            let lifetime_ok = migrating.iter().all(|key| {
+                state.member_tags.get(key).is_some_and(|stored| {
+                    crate::workspace_owner::visible_lifetime_ok(
+                        stored,
+                        live_member_tag(key.hwnd).as_deref(),
+                    )
+                })
+            });
+            let membership_ok = migrating.iter().all(|key| {
+                state.workspaces.member_loc(key).is_some_and(|fresh| {
+                    fresh.output == source_output && fresh.workspace == source_workspace
+                })
+            });
+            let topology_ok = fresh_cross_areas().is_some_and(|fresh| {
+                cross_topology_fresh(
+                    &crate::workspace_owner::migrate_snapshot_for_drag(snapshot),
+                    &fresh,
+                )
+            });
+            let live = crate::workspace_owner::MigrateFenceLive {
+                inner_gap: state.inner_gap,
+                outer_gap: state.outer_gap,
+                source_active: state.workspaces.active_id(source_output),
+                target_active: state.workspaces.active_id(target_output),
+                source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
+                target_tiled: state.workspaces.is_tiled(target_output, target_prior),
+                topology_ok,
+                scope_ok,
+                lifetime_ok,
+                membership_ok,
+                views_ok: state.workspaces.active_id(source_output).as_deref()
+                    == Some(source_workspace)
+                    && state.workspaces.active_id(target_output).as_deref() == Some(target_prior),
+                owner_ok: state
+                    .engine
+                    .owner()
+                    .is_some_and(|owner| owner.as_str() == snapshot.owner.as_str())
+                    && state.engine.generation().is_some_and(|generation| {
+                        generation.as_str() == snapshot.generation.as_str()
+                    }),
+            };
+            crate::workspace_owner::migrate_fences_hold(snapshot, &live)
+        };
+    // Pinned source workspace for the pre-commit view fences (the project
+    // reassignment has not published yet, so the source still shows it).
+    let source_workspace = snapshot.moved_workspace.as_str();
+    let mut newly_hidden: Vec<crate::workspace::WindowKey> = Vec::new();
+    // Hide the occupied target prior: visible members take a ledger hide and
+    // stay listed but hidden (D4). Already-hidden and minimized members keep
+    // their intent with no setter. Sticky never applies to the prior.
+    let prior_members: Vec<crate::workspace::WindowKey> = state
+        .workspaces
+        .workspace_members(target_output, target_prior)
+        .into_iter()
+        .collect();
+    for key in &prior_members {
+        if state.workspaces.is_hidden(key) {
+            continue;
+        }
+        if live_is_iconic(key.hwnd) || state.minimized_omitted.contains(key) {
+            continue;
+        }
+        if let Some(outcome) = fences_hold(state, source_workspace, target_prior) {
+            return Some(outcome);
+        }
+        let Some(expected) = state.member_identity.get(key).cloned() else {
+            continue;
+        };
+        #[cfg(test)]
+        {
+            let _ = (me, store, dir, expected);
+            state.workspaces.set_hidden(key, true);
+            candidate_ws.set_hidden(key, true);
+            newly_hidden.push(key.clone());
+        }
+        #[cfg(not(test))]
+        {
+            let iconic = false;
+            let (outcome, _) = workspace_hide_one(state, me, store, dir, key, &expected, iconic);
+            if outcome == "hidden" || state.hidden_claims.contains_key(key) {
+                state.workspaces.set_hidden(key, true);
+                candidate_ws.set_hidden(key, true);
+                newly_hidden.push(key.clone());
+            } else if outcome == "origin-vanished" || outcome == "identity-changed" {
+                drop_member_state(state, key);
+            } else if outcome == "scope-excluded" {
+                // Out-of-scope prior members stay visible with membership
+                // intact (same rule as selects), never a failure.
+            } else {
+                return Some(outcome);
+            }
+        }
+    }
+    // Reveal helper: one hidden-claim member whose new active view permits
+    // visibility. Preserves minimized intent via the stored iconic flag
+    // (never unminimizes). Mirrors the flag onto the candidate.
+    let reveal_one = |state: &mut TileLoop,
+                      candidate_ws: &mut crate::workspace::ManagedWorkspaces,
+                      key: &crate::workspace::WindowKey|
+     -> std::result::Result<(), &'static str> {
+        let Some(record) = state.hidden_claims.get(key).cloned() else {
+            state.workspaces.set_hidden(key, false);
+            candidate_ws.set_hidden(key, false);
+            return Ok(());
+        };
+        if let Some(outcome) = fences_hold(state, source_workspace, target_prior) {
+            return Err(outcome);
+        }
+        #[cfg(test)]
+        {
+            let _ = record;
+            state.hidden_claims.remove(key);
+            state.workspaces.set_hidden(key, false);
+            candidate_ws.set_hidden(key, false);
+            Ok(())
+        }
+        #[cfg(not(test))]
+        {
+            match crate::product_hide::sys::reveal_product_claim_to(
+                store,
+                me,
+                &record.claim,
+                record.iconic,
+            ) {
+                Ok(crate::product_hide::ProductTeardown::Retired) => {
+                    state.hidden_claims.remove(key);
+                    drop_member_state(state, key);
+                    candidate_ws.remove_window(key);
+                    Ok(())
+                }
+                Ok(_) => {
+                    state.hidden_claims.remove(key);
+                    state.workspaces.set_hidden(key, false);
+                    candidate_ws.set_hidden(key, false);
+                    Ok(())
+                }
+                Err(_) => Err("migrate-unverified"),
+            }
+        }
+    };
+    // Source refill shows (G37): reveal its hidden members now that the
+    // candidate shows the refill.
+    if let Some(refill) = refill {
+        let refill_members: Vec<crate::workspace::WindowKey> = candidate_ws
+            .workspace_members(source_output, refill)
+            .into_iter()
+            .collect();
+        for key in &refill_members {
+            // Minimized refill members stay minimized: the reveal path
+            // preserves iconic, so they still converge (no skip).
+            if reveal_one(state, candidate_ws, key).is_err() {
+                return Some("migrate-unverified");
+            }
+        }
+    }
+    // Migrated members preserve their pre-existing hidden/minimized intent:
+    // no reveal here (the move carries visibility as-is; an active view does
+    // not unhide intentional concealment nor unminimize). Membership was
+    // fenced per effect above.
+    let _ = tail_areas;
+    None
+}
+
+/// Single causal follow tail for committed workspace migrations (D6): follow
+/// the moved active client only. Empty and sticky-active migrations (no
+/// active window) take no setter. A carried fullscreen (live re-read
+/// immediately before focus, never the stale pre-plan row) or a minimized
+/// client takes no focus setter and only records foreground. Otherwise one
+/// [`actuate_focus`] attempt decides; a focus failure after the committed
+/// verified transfer reports the focus outcome with the transfer retained.
+/// Fresh topology is re-read immediately before the overlay/focus reads so a
+/// late fullscreen drift cannot slip into a focus actuation.
+#[allow(clippy::too_many_arguments)]
+fn migration_follow_tail(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    members: &BTreeSet<crate::workspace::WindowKey>,
+    migrate_rows: &[crate::workspace_owner::MigrateRow],
+    active: Option<tiler_core::directional::WindowId>,
+    focus_fulls_fallback: &[Rect],
+    log_migrate: &dyn Fn(&'static str, serde_json::Value),
+) -> &'static str {
+    let Some(active) = active else {
+        log_migrate("migrate-applied", serde_json::json!({"focus": "none"}));
+        return "migrate-applied";
+    };
+    let key = members.iter().find(|key| {
+        state
+            .member_tokens
+            .get(*key)
+            .is_some_and(|t| t == &active.0)
+    });
+    // Fresh fullscreen read immediately before any focus setter: the tail
+    // topology is re-read here (never the pre-plan row, never stale fulls),
+    // so a late fullscreen drift suppresses instead of focusing.
+    let fresh_areas = fresh_cross_areas();
+    let owned: Vec<Rect>;
+    let focus_fulls: &[Rect] = if let Some(areas) = fresh_areas.as_ref() {
+        owned = areas.iter().map(|a| a.full).collect();
+        &owned
+    } else {
+        focus_fulls_fallback
+    };
+    let row_fullscreen = migrate_rows
+        .iter()
+        .find(|row| row.token == active.0)
+        .map(|row| row.fullscreen)
+        .unwrap_or(false);
+    let fullscreen_live = key
+        .map(|key| {
+            let (_, live_full_opt) = live_overlay_flags(key.hwnd, focus_fulls);
+            live_full_opt.unwrap_or(row_fullscreen)
+        })
+        .unwrap_or(row_fullscreen);
+    if fullscreen_live {
+        if let Some(key) = key {
+            state.workspaces.note_foreground(key);
+        }
+        log_migrate(
+            "migrate-applied",
+            serde_json::json!({"window": active.0, "focus": "suppressed"}),
+        );
+        return "migrate-applied";
+    }
+    let minimized =
+        key.is_some_and(|key| live_is_iconic(key.hwnd) || state.minimized_omitted.contains(key));
+    if minimized {
+        log_migrate(
+            "migrate-applied",
+            serde_json::json!({"window": active.0, "focus": "suppressed"}),
+        );
+        return "migrate-applied";
+    }
+    let actuation = actuate_focus(state, me, focus_fulls, observed, retained, &active.0);
+    if actuation.outcome != "focus-ok" {
+        log_migrate(
+            actuation.outcome,
+            serde_json::json!({
+                "window": active.0,
+                "setter_accepted": actuation.setter_accepted,
+                "prime_inserted": actuation.prime_inserted,
+                "attach_ok": actuation.attach_ok,
+                "eventual": actuation.eventual,
+                "deferred": actuation.deferred,
+            }),
+        );
+        return actuation.outcome;
+    }
+    note_focus_advance(state, observed, retained, &active.0);
+    if let Some(key) = key {
+        state.workspaces.note_foreground(key);
+    }
+    log_migrate(
+        "migrate-applied",
+        serde_json::json!({"window": active.0, "setter_accepted": true}),
+    );
+    "migrate-applied"
+}
+
+/// Run one pinned whole-workspace migration through the commit-last native
+/// transfer (REQ-WS-12, decisions D1-D9/G37).
+///
+/// The caller already pinned `(source_output, source_workspace)` as the chord
+/// output's active workspace and `target_output` as the adjacent output with
+/// `target_prior` as its current workspace; all three stay frozen through
+/// transfer and follow (never re-ranked). The target migration domain carries
+/// the SAME workspace id on the target output (the prior stays listed and
+/// hidden, D4). This snapshots migration fences, dispatches the
+/// DISTINCT `MigrateWorkspace` command on a candidate Engine clone with the
+/// retained domain (source refill reads the live
+/// `core.migration_source_refill` mode), then actuates commit-last exactly
+/// like the explicit output-send foundation: fresh topology, one combined
+/// apply, its readback, float translation moves, and the arrival proof all
+/// verify before the project reassignment and the authoritative Engine
+/// publish once. Sticky members stay homed on the source refill; floats ride
+/// with class/origin via native output remap (move-only, never a resize).
+/// Follow foregrounds the moved active client once (suppressed for a carried
+/// fullscreen or a minimized client, which stay minimized); empty and
+/// sticky-active migrations take no focus setter. Minimized clients stay
+/// minimized. Failures stop narrowly with no replay and no guessed rollback;
+/// the retained Engine plan stands and the next observation converges. A
+/// focus failure after a committed verified transfer reports the focus
+/// outcome with the transfer retained, matching foundation semantics.
+/// Returns the workspace-migrate outcome token and logs the full action line.
+#[allow(clippy::too_many_arguments)]
+fn run_workspace_migrate(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    store: &LedgerStore,
+    dir: &Path,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    hint_cx: &mut HintCx,
+    source_output: &str,
+    source_workspace: &str,
+    source_rows: &[crate::workspace_owner::OwnerRow],
+    migrate_rows: &[crate::workspace_owner::MigrateRow],
+    target_output: &str,
+    target_prior: &str,
+    intent: &QueuedWorkspaceMigrateIntent,
+    tick: u64,
+    correlation: &CorrelationId,
+    correlation_str: &str,
+) -> &'static str {
+    let log_path = state.log_path.clone();
+    let log_migrate = |outcome: &'static str, extra: serde_json::Value| {
+        let mut line = serde_json::Map::new();
+        line.insert("event".to_owned(), serde_json::json!("workspace-migrate"));
+        line.insert("tick".to_owned(), serde_json::json!(tick));
+        line.insert("correlation".to_owned(), serde_json::json!(correlation_str));
+        line.insert(
+            "direction".to_owned(),
+            serde_json::json!(crate::snapkey::direction_name(intent.direction)),
+        );
+        line.insert("edge".to_owned(), serde_json::json!(intent.edge.as_str()));
+        line.insert("disposition".to_owned(), serde_json::json!("consumed"));
+        line.insert("outcome".to_owned(), serde_json::json!(outcome));
+        if let serde_json::Value::Object(map) = extra {
+            for (k, v) in map {
+                line.insert(k, v);
+            }
+        }
+        log_json_at(&log_path, serde_json::Value::Object(line));
+    };
+    let Some((source_domain_base, source_key)) = workspace_domain_for(
+        source_output,
+        source_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        log_migrate("unknown-output", serde_json::json!({}));
+        return "unknown-output";
+    };
+    let Some((target_domain_base, target_key)) = workspace_domain_for(
+        target_output,
+        source_workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        log_migrate("unknown-output", serde_json::json!({}));
+        return "unknown-output";
+    };
+    // Fresh user-safety gate before any Engine or project mutation.
+    if suspend_read(state, me, fulls).veto.block {
+        log_migrate("suspended", serde_json::json!({}));
+        return "suspended";
+    }
+    if foreground_elevated(me) {
+        log_migrate("elevated-foreground", serde_json::json!({}));
+        return "elevated-foreground";
+    }
+    if state.allowlist.is_some() && !state.workspace_proof {
+        log_migrate("workspace-disabled", serde_json::json!({}));
+        return "workspace-disabled";
+    }
+    // Whole-member scope/lifetime gates before any Engine or project
+    // mutation; tail-time fences re-verify live before commit. One drifted
+    // member refuses the whole migration (never a partial carry, never a
+    // skip): identity drift drops that member's runtime state first.
+    let members = state
+        .workspaces
+        .workspace_members(source_output, source_workspace);
+    for key in &members {
+        if let Some(stored) = state.member_identity.get(key) {
+            if !scope_allows(&state.scope, &stored.exe_path) {
+                log_migrate("scope-excluded", serde_json::json!({}));
+                return "scope-excluded";
+            }
+            if !hosted_gate_allows(&stored.exe_path, key.hwnd, stored.pid, &state.scope_hosts) {
+                log_migrate("scope-excluded", serde_json::json!({}));
+                return "scope-excluded";
+            }
+        }
+        let live_tag = live_member_tag(key.hwnd);
+        let lifetime_ok = state.member_tags.get(key).is_some_and(|stored| {
+            crate::workspace_owner::visible_lifetime_ok(stored, live_tag.as_deref())
+        });
+        if !lifetime_ok {
+            drop_member_state(state, key);
+            log_migrate("identity-changed", serde_json::json!({}));
+            return "identity-changed";
+        }
+    }
+    // Focused client binds to a migrating non-sticky member only; empty and
+    // sticky-active migrations carry no invented focus (native output
+    // switching only, D6).
+    let sticky_keys: BTreeSet<crate::workspace::WindowKey> = members
+        .iter()
+        .filter(|key| state.sticky.contains_key(*key))
+        .cloned()
+        .collect();
+    let focused_token = state
+        .focused_token(observed)
+        .map(|window| window.0.clone())
+        .filter(|token| {
+            migrate_rows
+                .iter()
+                .any(|row| &row.token == token && !row.sticky)
+        })
+        .unwrap_or_default();
+    // Carried pre-plan fences over the pinned pair: the target current view
+    // is the pinned prior, the source refill resolves at commit time through
+    // the shared G-37 selector (never an ad hoc fallback).
+    let source_area = areas.iter().find(|a| a.device == source_output);
+    let target_area = areas.iter().find(|a| a.device == target_output);
+    let (Some(source_area), Some(target_area)) = (source_area, target_area) else {
+        log_migrate("unknown-output", serde_json::json!({}));
+        return "unknown-output";
+    };
+    let source_bounds = match tiling_domain_bounds_with(source_area.work, state.outer_gap) {
+        Some(bounds) => bounds,
+        None => {
+            log_migrate("unknown-output", serde_json::json!({}));
+            return "unknown-output";
+        }
+    };
+    let target_bounds = match tiling_domain_bounds_with(target_area.work, state.outer_gap) {
+        Some(bounds) => bounds,
+        None => {
+            log_migrate("unknown-output", serde_json::json!({}));
+            return "unknown-output";
+        }
+    };
+    let snapshot = crate::workspace_owner::MigrateFenceSnapshot {
+        inner_gap: state.inner_gap,
+        outer_gap: state.outer_gap,
+        source_output: source_output.to_owned(),
+        target_output: target_output.to_owned(),
+        moved_workspace: source_workspace.to_owned(),
+        source_refill: None,
+        target_prior: target_prior.to_owned(),
+        source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
+        target_tiled: state.workspaces.is_tiled(target_output, target_prior),
+        direction: intent.direction,
+        source_full: source_area.full,
+        target_full: target_area.full,
+        source_bounds,
+        target_bounds,
+        owner: state.owner.as_str().to_owned(),
+        generation: state.generation.as_str().to_owned(),
+        member_count: migrate_rows.len(),
+    };
+    let membership_ok = members.iter().all(|key| {
+        state.workspaces.member_loc(key).is_some_and(|fresh| {
+            fresh.output == source_output && fresh.workspace == source_workspace
+        })
+    });
+    let live = crate::workspace_owner::MigrateFenceLive {
+        inner_gap: state.inner_gap,
+        outer_gap: state.outer_gap,
+        source_active: state.workspaces.active_id(source_output),
+        target_active: state.workspaces.active_id(target_output),
+        source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
+        target_tiled: state.workspaces.is_tiled(target_output, target_prior),
+        topology_ok: fresh_cross_areas().is_some_and(|fresh| {
+            cross_topology_fresh(
+                &crate::workspace_owner::migrate_snapshot_for_drag(&snapshot),
+                &fresh,
+            )
+        }),
+        scope_ok: true,
+        lifetime_ok: true,
+        membership_ok,
+        views_ok: state.workspaces.active_id(source_output).as_deref() == Some(source_workspace)
+            && state.workspaces.active_id(target_output).as_deref() == Some(target_prior),
+        owner_ok: true,
+    };
+    if let Some(outcome) = crate::workspace_owner::migrate_fences_hold(&snapshot, &live) {
+        if outcome == "identity-changed" {
+            for key in &members {
+                drop_member_state(state, key);
+            }
+        }
+        log_migrate(outcome, serde_json::json!({}));
+        return outcome;
+    }
+    // D4 untiled source: preserve native frames via move-only native remap
+    // with no tiled geometry and no Engine dispatch (the Engine is normally
+    // absent after release). The candidate Engine stays untouched; the empty
+    // plan below carries only the remembered follow focus. A stale retained
+    // source session refuses before effects below so the project commit can
+    // never straddle a retained Engine domain.
+    let source_tiled = state.workspaces.is_tiled(source_output, source_workspace);
+    // Candidate Engine for the whole-workspace route: gap adopts and the
+    // migrate dispatch below all run on the clone. The authoritative Engine
+    // publishes once, only after the verified tails commit.
+    let mut candidate = state.engine.clone();
+    let (reply, plan) = if !source_tiled {
+        let _ = hint_cx;
+        let active_window = if focused_token.is_empty() {
+            None
+        } else {
+            Some(tiler_core::directional::WindowId(focused_token.clone()))
+        };
+        let empty = tiler_core::boundary::MigrateWorkspacePlan {
+            base_revision: revision_for(state, source_output, source_workspace),
+            direction: intent.direction,
+            source: source_key.clone(),
+            target: target_key.clone(),
+            geometry: Vec::new(),
+            focus_domain: None,
+            focus_leaf: None,
+            active_window,
+            members: migrate_rows.iter().filter(|r| !r.sticky).count(),
+            floats: migrate_rows
+                .iter()
+                .filter(|r| !r.sticky && r.floating)
+                .count(),
+            preconditions: Vec::new(),
+        };
+        (
+            tiler_core::boundary::CoreReply::MigrateWorkspace(empty.clone()),
+            empty,
+        )
+    } else {
+        {
+            let source_windows: Vec<(WindowId, Rect, WindowSizeHints, bool)> = source_rows
+                .iter()
+                .map(|r| (WindowId(r.token.clone()), r.rect, r.hints, r.floating))
+                .collect();
+            let source_fp = crate::tiling::fingerprint(
+                &source_rows
+                    .iter()
+                    .map(|r| (r.token.clone(), r.rect))
+                    .collect::<Vec<_>>(),
+            );
+            let focused = if focused_token.is_empty() {
+                None
+            } else {
+                Some(WindowId(focused_token.clone()))
+            };
+            adopt_gaps_on_candidate(
+                &mut candidate,
+                state,
+                &source_domain_base,
+                &source_key,
+                state.outer_gap,
+                &source_windows,
+                focused.as_ref(),
+                revision_for(state, source_output, source_workspace),
+                source_fp,
+                correlation,
+            );
+        }
+        let combined_fp = {
+            let mut pairs: Vec<(String, Rect)> = source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            crate::tiling::fingerprint(&pairs)
+        };
+        // The shared hint-query budget is source-only here: the target domain
+        // carries no rows (the Engine refuses carried target residue), so the
+        // caller's `hint_cx` stays unconsumed by this route.
+        let _ = hint_cx;
+        let Some(mut migrate_event) = crate::workspace_owner::build_migrate_event(
+            &state.owner,
+            &state.generation,
+            correlation,
+            revision_for(state, source_output, source_workspace),
+            combined_fp,
+            (source_domain_base.clone(), source_key.clone()),
+            (target_domain_base.clone(), target_key.clone()),
+            migrate_rows,
+            &focused_token,
+            direction_name(intent.direction),
+            state.outer_gap,
+        ) else {
+            log_migrate("refused", serde_json::json!({}));
+            return "refused";
+        };
+        let reply = {
+            stamp_engine_event(state, &mut migrate_event);
+            candidate.handle(&migrate_event)
+        };
+        let plan = match &reply {
+            tiler_core::boundary::CoreReply::MigrateWorkspace(plan) => plan.clone(),
+            tiler_core::boundary::CoreReply::Rejected { kind, .. } => {
+                log_migrate(kind, serde_json::json!({}));
+                return kind;
+            }
+            tiler_core::boundary::CoreReply::Diverged(reason) => {
+                let outcome = reason.as_str();
+                log_migrate(outcome, serde_json::json!({}));
+                return outcome;
+            }
+            tiler_core::boundary::CoreReply::SnapshotInvalid { detail, .. } => {
+                log_migrate(detail, serde_json::json!({}));
+                return detail;
+            }
+            _ => {
+                log_migrate("refused", serde_json::json!({}));
+                return "refused";
+            }
+        };
+        (reply, plan)
+    };
+    // Untiled sources carry no Engine domain: a stale retained source session
+    // (release missed) refuses before any native effect so the project commit
+    // below can never straddle a retained Engine domain. Fail-closed with
+    // reconcile, no replay, no publication.
+    if !source_tiled && state.engine.session(&source_key).is_some() {
+        log_migrate("unverified", serde_json::json!({}));
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "unverified";
+    }
+    // Fresh topology before any native effect: the pinned pair must still
+    // touch with identical FULL rectangles and inset bounds (never
+    // re-ranked off the relocated members).
+    let drag_snapshot = crate::workspace_owner::migrate_snapshot_for_drag(&snapshot);
+    let Some(fresh_areas) = fresh_cross_areas() else {
+        log_migrate("migrate-unverified", serde_json::json!({}));
+        let fulls_owned = fulls.to_vec();
+        reconcile_tick(state, me, &fulls_owned, areas);
+        return "migrate-unverified";
+    };
+    if !cross_topology_fresh(&drag_snapshot, &fresh_areas) {
+        log_migrate("migrate-unverified", serde_json::json!({}));
+        let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "migrate-unverified";
+    }
+    let fresh_fulls: Vec<Rect> = fresh_areas.iter().map(|a| a.full).collect();
+    // One combined apply for tiled plain members only: the Engine plan
+    // reflows the relocated domain in DPI-aware physical coordinates with no
+    // rescaling. Core still projects retained tiled leaves for carried
+    // overlays (`fit_excluded` never removes them), so overlays are excluded
+    // here by inspection and ride the native D8 tail below (move-only, never
+    // a resize/refit/restore). Floats, hidden and minimized members converge
+    // Engine membership but never take geometry writes here.
+    let overlay_tokens: HashSet<String> = migrate_rows
+        .iter()
+        .filter(|row| !row.sticky && (row.fullscreen || row.maximized))
+        .map(|row| row.token.clone())
+        .collect();
+    let float_tokens_migrate: HashSet<String> = migrate_rows
+        .iter()
+        .filter(|row| !row.sticky && row.floating)
+        .map(|row| row.token.clone())
+        .collect();
+    let mut writable = writable_tokens(state, source_output, source_workspace, observed);
+    writable
+        .retain(|token| !overlay_tokens.contains(token) && !float_tokens_migrate.contains(token));
+    // Untiled source takes no tiled geometry: every non-sticky member moves
+    // natively move-only below (native frames preserved, no Engine dispatch).
+    if !source_tiled {
+        writable.clear();
+    }
+    // Untiled sources skip the combined tiled apply entirely (no Engine
+    // geometry to write or read back); tiled sources run it exactly once.
+    if !source_tiled {
+        let _ = &reply;
+    }
+    let summary = if source_tiled {
+        apply_geometry(
+            state,
+            ApplyInput {
+                me,
+                fulls: &fresh_fulls,
+                reply: &reply,
+                observed,
+                op: "workspace-migrate",
+                tick,
+                correlation: correlation_str,
+                skipped: Vec::new(),
+                writable: &writable,
+                output_token: state.workspaces.output_token(source_output),
+                workspace_token: state
+                    .workspaces
+                    .workspace_token(source_output, source_workspace),
+                revision: revision_for(state, source_output, source_workspace),
+            },
+        )
+    } else {
+        // No tiled writes were issued, so there is nothing to read back:
+        // report a clean empty apply for the gates below.
+        Some(ApplySummary {
+            applied: 0,
+            mismatched: 0,
+            readback_ok: true,
+            veto: None,
+        })
+    };
+    let Some(summary) = summary else {
+        log_migrate("migrate-unverified", serde_json::json!({}));
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "migrate-unverified";
+    };
+    if !summary.readback_ok {
+        log_migrate("migrate-unverified", serde_json::json!({}));
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        return "migrate-unverified";
+    }
+    if summary.mismatched > 0 {
+        // Partial native writes converge on observation without setter
+        // replay: reconcile the fresh domains and report, never a guessed
+        // rollback.
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        log_migrate("migrate-mismatch", serde_json::json!({}));
+        return "migrate-mismatch";
+    }
+    // ALL-member native output remap (D7/D8, move-only, never a resize or
+    // refit): every migrating non-sticky member outside the tiled-plain
+    // writable set remaps by the FULL-rectangle origin delta onto the target
+    // output. Plain floats and fullscreen overlays move with `SetWindowPos`
+    // NOSIZE; maximized overlays remap placement normal rect preserving
+    // `showCmd` (still maximized, reserved slot kept); minimized members
+    // remap placement normal rect preserving `showCmd` (still minimized);
+    // hidden members remap placement preserving hidden state. Sticky members
+    // stay on the source and take no move. Each setter re-verifies fresh
+    // identity/lifetime/scope/topology/view/overlay fences first; each
+    // arrival verifies monitor/identity (overlays) or output+size (floats)
+    // or output+show-state (concealed), never the old exact rect. Any
+    // failure stops narrowly with reconcile, no replay, no publication; the
+    // next observation converges the partial physical moves.
+    let row_by_token: HashMap<&str, &crate::workspace_owner::MigrateRow> = migrate_rows
+        .iter()
+        .map(|row| (row.token.as_str(), row))
+        .collect();
+    let mut transfers: Vec<(crate::workspace::WindowKey, String)> = Vec::new();
+    for key in &members {
+        let Some(token) = state.member_tokens.get(key).cloned() else {
+            continue;
+        };
+        let Some(row) = row_by_token.get(token.as_str()) else {
+            continue;
+        };
+        if row.sticky {
+            continue;
+        }
+        if writable.contains(token.as_str()) {
+            continue;
+        }
+        transfers.push((key.clone(), token));
+    }
+    transfers.sort_by(|a, b| a.1.cmp(&b.1));
+    for (key, token) in &transfers {
+        let Some(row) = row_by_token.get(token.as_str()).copied() else {
+            continue;
+        };
+        // Per-effect fences before the setter: scope, lifetime, topology,
+        // views, owner, overlay. Any drift refuses with reconcile and no
+        // replay.
+        let scope_ok = state.member_identity.get(key).is_some_and(|stored| {
+            scope_allows(&state.scope, &stored.exe_path)
+                && hosted_gate_allows(&stored.exe_path, key.hwnd, stored.pid, &state.scope_hosts)
+        });
+        if !scope_ok {
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("scope-excluded", serde_json::json!({"window": token}));
+            return "scope-excluded";
+        }
+        let lifetime_ok = state.member_tags.get(key).is_some_and(|stored| {
+            crate::workspace_owner::visible_lifetime_ok(
+                stored,
+                live_member_tag(key.hwnd).as_deref(),
+            )
+        });
+        if !lifetime_ok {
+            drop_member_state(state, key);
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("identity-changed", serde_json::json!({"window": token}));
+            return "identity-changed";
+        }
+        let Some(tail_areas) = fresh_cross_areas() else {
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        };
+        if !cross_topology_fresh(&drag_snapshot, &tail_areas) {
+            let tail_fulls: Vec<Rect> = tail_areas.iter().map(|a| a.full).collect();
+            reconcile_tick(state, me, &tail_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        }
+        if state.workspaces.active_id(source_output).as_deref() != Some(source_workspace)
+            || state.workspaces.active_id(target_output).as_deref() != Some(target_prior)
+        {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("view-changed", serde_json::json!({"window": token}));
+            return "view-changed";
+        }
+        if state
+            .engine
+            .owner()
+            .is_none_or(|owner| owner.as_str() != snapshot.owner.as_str())
+            || state
+                .engine
+                .generation()
+                .is_none_or(|generation| generation.as_str() != snapshot.generation.as_str())
+        {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("owner-changed", serde_json::json!({"window": token}));
+            return "owner-changed";
+        }
+        let hidden = state.workspaces.is_hidden(key);
+        let minimized = live_is_iconic(key.hwnd) || state.minimized_omitted.contains(key);
+        // Overlay drift: a visible member whose live flags no longer match
+        // the carried row authorizes no move. Hidden/minimized members keep
+        // no live frame (`None` fullscreen), so only the maximized bit is
+        // fenced there against the retained row.
+        if hidden || minimized {
+            let (live_max, _) = live_overlay_flags(key.hwnd, &fresh_fulls);
+            if live_max != row.maximized {
+                reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+                log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+                return "migrate-unverified";
+            }
+        } else {
+            let (live_max, live_full_opt) = live_overlay_flags(key.hwnd, &fresh_fulls);
+            if live_max != row.maximized
+                || live_full_opt.unwrap_or(row.fullscreen) != row.fullscreen
+            {
+                reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+                log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+                return "migrate-unverified";
+            }
+        }
+        // Source frame: live visible frame when present, else the carried
+        // normal frame (retained/member/float snapshot) for concealed
+        // members. No frame is never fabricated: missing refuses.
+        let frame = observed
+            .iter()
+            .find(|window| window.token == *token)
+            .map(|window| window.visible)
+            .or_else(|| retained.iter().find(|r| r.key == *key).and_then(|r| r.rect))
+            .or_else(|| state.member_rects.get(token).copied())
+            .or_else(|| state.float_rects.get(token).copied())
+            .unwrap_or(row.rect);
+        let moved = crate::workspace_owner::translate_rect_to_output(
+            frame,
+            snapshot.source_full,
+            snapshot.target_full,
+        );
+        if output_for_rect(&tail_areas, &moved) != target_output {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        }
+        let setter_ok = if hidden {
+            let target_area = tail_areas.iter().find(|a| a.device == target_output);
+            let target_work = target_area.map(|a| a.work).unwrap_or(snapshot.target_full);
+            let target_full = target_area.map(|a| a.full).unwrap_or(snapshot.target_full);
+            let basis = live_placement_workspace_coords(key.hwnd);
+            remap_placement_to_output(key.hwnd, moved, "hidden", target_work, target_full, basis)
+        } else if minimized {
+            let target_area = tail_areas.iter().find(|a| a.device == target_output);
+            let target_work = target_area.map(|a| a.work).unwrap_or(snapshot.target_full);
+            let target_full = target_area.map(|a| a.full).unwrap_or(snapshot.target_full);
+            let basis = live_placement_workspace_coords(key.hwnd);
+            remap_placement_to_output(
+                key.hwnd,
+                moved,
+                "minimized",
+                target_work,
+                target_full,
+                basis,
+            )
+        } else if row.fullscreen || row.maximized {
+            let source_area = tail_areas.iter().find(|a| a.device == source_output);
+            let target_area = tail_areas.iter().find(|a| a.device == target_output);
+            let source_work = source_area.map(|a| a.work).unwrap_or(snapshot.source_full);
+            let target_work = target_area.map(|a| a.work).unwrap_or(snapshot.target_full);
+            let source_full = source_area.map(|a| a.full).unwrap_or(snapshot.source_full);
+            let target_full = target_area.map(|a| a.full).unwrap_or(snapshot.target_full);
+            let basis = live_placement_workspace_coords(key.hwnd);
+            move_overlay_to_output(
+                key.hwnd,
+                moved,
+                row.maximized,
+                source_full,
+                target_full,
+                source_work,
+                target_work,
+                basis,
+            )
+        } else if row.floating || !source_tiled {
+            // Untiled plain members preserve native frames via the same
+            // move-only float path (never a resize/refit); tiled plain
+            // members never reach here (they ride the combined apply).
+            move_float_to_output(key.hwnd, moved)
+        } else {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        };
+        if !setter_ok {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        }
+        // Arrival proof per member before the next setter: identity still
+        // holds (pid/lifetime rechecked live) and the fresh native physical
+        // output verifies after the actual setter (never the pre-move stable
+        // cache, never translation math). Visible floats verify output plus
+        // preserved size; visible overlays verify monitor/identity only,
+        // never the old exact rect (D8); concealed members verify fresh
+        // placement output plus preserved show-state (still
+        // minimized/hidden, maximized slot kept).
+        #[cfg(test)]
+        let present = state.member_tags.contains_key(key);
+        #[cfg(not(test))]
+        let present = unsafe { IsWindow(key.hwnd as isize as HWND) } != 0;
+        if !present {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        }
+        let arrival_ok = if hidden {
+            // Concealed hidden arrival: fresh placement readback converted to
+            // screen must sit on the target output (physical proof, never
+            // translation math) and the project hidden intent must hold.
+            let target_area = tail_areas.iter().find(|a| a.device == target_output);
+            let target_work = target_area.map(|a| a.work).unwrap_or(snapshot.target_full);
+            let target_full = target_area.map(|a| a.full).unwrap_or(snapshot.target_full);
+            let basis = live_placement_workspace_coords(key.hwnd);
+            state.workspaces.is_hidden(key)
+                && fresh_arrival_placement(key.hwnd, target_work, target_full, basis)
+                    .is_some_and(|placed| output_for_rect(&tail_areas, &placed) == target_output)
+        } else if minimized {
+            // Concealed minimized arrival: still minimized plus fresh
+            // placement converted to screen on the target.
+            let target_area = tail_areas.iter().find(|a| a.device == target_output);
+            let target_work = target_area.map(|a| a.work).unwrap_or(snapshot.target_full);
+            let target_full = target_area.map(|a| a.full).unwrap_or(snapshot.target_full);
+            let basis = live_placement_workspace_coords(key.hwnd);
+            (live_is_iconic(key.hwnd) || state.minimized_omitted.contains(key))
+                && fresh_arrival_placement(key.hwnd, target_work, target_full, basis)
+                    .is_some_and(|placed| output_for_rect(&tail_areas, &placed) == target_output)
+        } else if (row.floating || !source_tiled) && !row.fullscreen && !row.maximized {
+            // Visible float (or untiled plain via the move-only path)
+            // arrival: fresh native visible frame preserves size on the target
+            // (causal readback after the setter, never stale cache).
+            fresh_arrival_rect(key.hwnd).is_some_and(|fresh| {
+                fresh.w == frame.w
+                    && fresh.h == frame.h
+                    && output_for_rect(&tail_areas, &fresh) == target_output
+            })
+        } else {
+            // Overlay (maximized/fullscreen) arrival: fresh native visible
+            // frame on the target monitor plus the live overlay flag, never
+            // the old exact rect (native re-fit may change the maximized
+            // frame size on the target work area).
+            let tail_fulls: Vec<Rect> = tail_areas.iter().map(|a| a.full).collect();
+            let (live_max, live_full_opt) = live_overlay_flags(key.hwnd, &tail_fulls);
+            let flag_ok = live_max == row.maximized
+                && live_full_opt.unwrap_or(row.fullscreen) == row.fullscreen;
+            flag_ok
+                && fresh_arrival_rect(key.hwnd)
+                    .is_some_and(|fresh| output_for_rect(&tail_areas, &fresh) == target_output)
+        };
+        if !arrival_ok {
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({"window": token}));
+            return "migrate-unverified";
+        }
+    }
+    // Required arrival proof before claiming success: every migrating tiled
+    // plain member with a planned write must read back at its planned rect on
+    // the destination monitor. Overlay/float/concealed arrivals verified per
+    // member above, never by their old frame (D8); only writable tiled plain
+    // writes gate here. A failed proof reports unverified with reconcile, no
+    // commit, no revert, and no replay; the next observation converges.
+    let writes = crate::workspace_owner::planned_writes(&reply);
+    if let Some(writes) = writes {
+        for write in &writes {
+            if !writable.contains(write.window.0.as_str()) {
+                continue;
+            }
+            let Some(key) = members.iter().find(|key| {
+                state
+                    .member_tokens
+                    .get(*key)
+                    .is_some_and(|t| t == &write.window.0)
+            }) else {
+                continue;
+            };
+            let effective = if write.overconstrained {
+                let hints = state
+                    .hint_logged
+                    .get(write.window.0.as_str())
+                    .copied()
+                    .unwrap_or(WindowSizeHints::none());
+                crate::tiling::overconstrained_effective(write.rect, hints)
+            } else {
+                write.rect
+            };
+            // Tiled plain arrival: fresh native frame after the combined
+            // apply must equal the planned rect on the destination monitor
+            // (causal readback, never the pre-move stable cache).
+            let Some(visible) = fresh_arrival_rect(key.hwnd) else {
+                reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+                log_migrate(
+                    "migrate-unverified",
+                    serde_json::json!({"window": write.window.0}),
+                );
+                return "migrate-unverified";
+            };
+            if visible != effective || output_for_rect(&fresh_areas, &visible) != target_output {
+                reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+                log_migrate(
+                    "migrate-unverified",
+                    serde_json::json!({"window": write.window.0}),
+                );
+                return "migrate-unverified";
+            }
+        }
+    }
+    // Final live fences after effects, before logical commit: suspend,
+    // elevated, and the full pinned-snapshot fence set re-verified live
+    // against the current fresh topology (current target_scope fences after
+    // effects). Any drift refuses with reconcile, no commit, no replay, and
+    // no success claim; both retained authorities stand and the next
+    // observation converges.
+    if suspend_read(state, me, &fresh_fulls).veto.block {
+        log_migrate("suspended", serde_json::json!({}));
+        return "suspended";
+    }
+    if foreground_elevated(me) {
+        log_migrate("elevated-foreground", serde_json::json!({}));
+        return "elevated-foreground";
+    }
+    {
+        let Some(tail_areas) = fresh_cross_areas() else {
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("migrate-unverified", serde_json::json!({}));
+            return "migrate-unverified";
+        };
+        if !cross_topology_fresh(&drag_snapshot, &tail_areas) {
+            let tail_fulls: Vec<Rect> = tail_areas.iter().map(|a| a.full).collect();
+            reconcile_tick(state, me, &tail_fulls, &tail_areas);
+            log_migrate("migrate-unverified", serde_json::json!({}));
+            return "migrate-unverified";
+        }
+        let membership_ok = members.iter().all(|key| {
+            state.workspaces.member_loc(key).is_some_and(|fresh| {
+                fresh.output == source_output && fresh.workspace == source_workspace
+            })
+        });
+        let views_ok = state.workspaces.active_id(source_output).as_deref()
+            == Some(source_workspace)
+            && state.workspaces.active_id(target_output).as_deref() == Some(target_prior);
+        let scope_ok = members.iter().all(|key| {
+            state.member_identity.get(key).is_some_and(|stored| {
+                scope_allows(&state.scope, &stored.exe_path)
+                    && hosted_gate_allows(
+                        &stored.exe_path,
+                        key.hwnd,
+                        stored.pid,
+                        &state.scope_hosts,
+                    )
+            })
+        });
+        let lifetime_ok = members.iter().all(|key| {
+            state.member_tags.get(key).is_some_and(|stored| {
+                crate::workspace_owner::visible_lifetime_ok(
+                    stored,
+                    live_member_tag(key.hwnd).as_deref(),
+                )
+            })
+        });
+        let owner_ok = state
+            .engine
+            .owner()
+            .is_some_and(|owner| owner.as_str() == snapshot.owner.as_str())
+            && state
+                .engine
+                .generation()
+                .is_some_and(|generation| generation.as_str() == snapshot.generation.as_str());
+        let live = crate::workspace_owner::MigrateFenceLive {
+            inner_gap: state.inner_gap,
+            outer_gap: state.outer_gap,
+            source_active: state.workspaces.active_id(source_output),
+            target_active: state.workspaces.active_id(target_output),
+            source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
+            target_tiled: state.workspaces.is_tiled(target_output, target_prior),
+            topology_ok: true,
+            scope_ok,
+            lifetime_ok,
+            membership_ok,
+            views_ok,
+            owner_ok,
+        };
+        if let Some(outcome) = crate::workspace_owner::migrate_fences_hold(&snapshot, &live) {
+            if outcome == "identity-changed" {
+                for key in &members {
+                    drop_member_state(state, key);
+                }
+            }
+            reconcile_tick(state, me, &fresh_fulls, &tail_areas);
+            log_migrate(outcome, serde_json::json!({}));
+            return outcome;
+        }
+    }
+    // Commit-last: the project reassignment runs on a clone through the
+    // stable-ID ring primitive (source refill reads the same live G-37
+    // mode), then both authorities publish once only after the membership
+    // plus both-view verification holds. A refusal below publishes nothing.
+    let refill_mode = state
+        .settings_live
+        .as_ref()
+        .map(|live| live.settings.core.migration_source_refill_mode())
+        .unwrap_or_default();
+    let mut candidate_ws = state.workspaces.clone();
+    let Some(outcome) = candidate_ws.migrate_workspace_excluding(
+        source_output,
+        target_output,
+        refill_mode,
+        &sticky_keys,
+    ) else {
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        log_migrate("unverified", serde_json::json!({}));
+        return "unverified";
+    };
+    let migrating: BTreeSet<crate::workspace::WindowKey> =
+        members.difference(&sticky_keys).cloned().collect();
+    // Empty-source convergence: when the primitive reports no refill the
+    // source keeps an empty order with no current view. Ordinary
+    // trailing-empty lifecycle (minimum-two, one empty) converges on the
+    // candidate before verification can publish; no ad-hoc empty-source
+    // success. Sticky residue re-homes to the converged refill below.
+    if outcome.source_refill.is_none() {
+        let displaced: Vec<String> = candidate_ws
+            .displaced_snapshot()
+            .values()
+            .flat_map(|r| r.workspace_ids.clone())
+            .collect();
+        let (removed, append) =
+            candidate_ws.plan_cleanup_excluding(source_output, &[], &displaced, &sticky_keys);
+        candidate_ws.apply_cleanup(source_output, &removed, append);
+        let converged_refill = candidate_ws.active_id(source_output);
+        // Re-home sticky residue left dangling on the moved id (the
+        // primitive keeps locations untouched when no refill exists) onto
+        // the converged refill, preserving hidden state.
+        if let Some(refill) = converged_refill.clone() {
+            for key in sticky_keys.iter() {
+                if let Some(loc) = candidate_ws.member_loc(key).cloned() {
+                    if loc.output == source_output && loc.workspace == outcome.moved_id {
+                        candidate_ws.assign(key.clone(), source_output, &refill, loc.hidden);
+                    }
+                } else if state.workspaces.member_loc(key).is_some_and(|fresh| {
+                    fresh.output == source_output && fresh.workspace == source_workspace
+                }) {
+                    let hidden = state.workspaces.is_hidden(key);
+                    candidate_ws.assign(key.clone(), source_output, &refill, hidden);
+                }
+            }
+        }
+        let source_members = converged_refill
+            .as_deref()
+            .map(|refill| candidate_ws.workspace_members(source_output, refill))
+            .unwrap_or_default();
+        let target_members = candidate_ws.workspace_members(target_output, &outcome.moved_id);
+        // Native view publication for the converged refill (same D4/G37
+        // staging as the non-empty path): hide the prior, reveal the
+        // converged refill before verification can publish.
+        {
+            let Some(view_areas) = fresh_cross_areas() else {
+                reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+                log_migrate("migrate-unverified", serde_json::json!({}));
+                return "migrate-unverified";
+            };
+            if let Some(view_outcome) = migration_view_effects(
+                state,
+                me,
+                store,
+                dir,
+                &mut candidate_ws,
+                source_output,
+                converged_refill.as_deref(),
+                target_output,
+                target_prior,
+                &migrating,
+                &snapshot,
+                &view_areas,
+            ) {
+                reconcile_tick(state, me, &fresh_fulls, &view_areas);
+                log_migrate(view_outcome, serde_json::json!({}));
+                return view_outcome;
+            }
+            let prior_members = state
+                .workspaces
+                .workspace_members(target_output, target_prior);
+            let refill_members = converged_refill
+                .as_deref()
+                .map(|refill| candidate_ws.workspace_members(source_output, refill))
+                .unwrap_or_default();
+            let views_physical = prior_members.iter().all(|key| {
+                candidate_ws.is_hidden(key)
+                    || live_is_iconic(key.hwnd)
+                    || state.minimized_omitted.contains(key)
+            }) && refill_members
+                .iter()
+                .all(|key| !candidate_ws.is_hidden(key));
+            if !views_physical {
+                reconcile_tick(state, me, &fresh_fulls, &view_areas);
+                log_migrate("migrate-unverified", serde_json::json!({}));
+                return "migrate-unverified";
+            }
+        }
+        if !crate::workspace_owner::verify_migration_transfer(
+            &migrating,
+            &sticky_keys,
+            &source_members,
+            &target_members,
+            &outcome.moved_id,
+            converged_refill.as_deref(),
+            candidate_ws.active_id(source_output).as_deref(),
+            candidate_ws.active_id(target_output).as_deref(),
+        ) {
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("unverified", serde_json::json!({}));
+            return "unverified";
+        }
+        // Publish the lifecycle-converged candidate, then run the single
+        // shared follow tail (fresh fullscreen/iconic re-read, no stale row).
+        state.workspaces = candidate_ws;
+        state.engine = candidate;
+        return migration_follow_tail(
+            state,
+            me,
+            observed,
+            retained,
+            &members,
+            migrate_rows,
+            plan.active_window.clone(),
+            &fresh_fulls,
+            &log_migrate,
+        );
+    }
+    let source_members = candidate_ws.workspace_members(
+        source_output,
+        outcome.source_refill.as_deref().unwrap_or(""),
+    );
+    let target_members = candidate_ws.workspace_members(target_output, &outcome.moved_id);
+    // Native view publication (D4/G37): hide the occupied target prior and
+    // reveal the source refill fenced per effect before the membership/view
+    // verification can publish. Failures reconcile without replay.
+    {
+        let Some(view_areas) = fresh_cross_areas() else {
+            reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+            log_migrate("migrate-unverified", serde_json::json!({}));
+            return "migrate-unverified";
+        };
+        if let Some(view_outcome) = migration_view_effects(
+            state,
+            me,
+            store,
+            dir,
+            &mut candidate_ws,
+            source_output,
+            outcome.source_refill.as_deref(),
+            target_output,
+            target_prior,
+            &migrating,
+            &snapshot,
+            &view_areas,
+        ) {
+            reconcile_tick(state, me, &fresh_fulls, &view_areas);
+            log_migrate(view_outcome, serde_json::json!({}));
+            return view_outcome;
+        }
+        // Both physical views verify before publish: the prior stays listed
+        // but hidden (minimized stays minimized), the refill shows.
+        let prior_members = state
+            .workspaces
+            .workspace_members(target_output, target_prior);
+        let refill_members = outcome
+            .source_refill
+            .as_deref()
+            .map(|refill| candidate_ws.workspace_members(source_output, refill))
+            .unwrap_or_default();
+        let views_physical = prior_members.iter().all(|key| {
+            candidate_ws.is_hidden(key)
+                || live_is_iconic(key.hwnd)
+                || state.minimized_omitted.contains(key)
+        }) && refill_members
+            .iter()
+            .all(|key| !candidate_ws.is_hidden(key));
+        if !views_physical {
+            reconcile_tick(state, me, &fresh_fulls, &view_areas);
+            log_migrate("migrate-unverified", serde_json::json!({}));
+            return "migrate-unverified";
+        }
+    }
+    if !crate::workspace_owner::verify_migration_transfer(
+        &migrating,
+        &sticky_keys,
+        &source_members,
+        &target_members,
+        &outcome.moved_id,
+        outcome.source_refill.as_deref(),
+        candidate_ws.active_id(source_output).as_deref(),
+        candidate_ws.active_id(target_output).as_deref(),
+    ) {
+        reconcile_tick(state, me, &fresh_fulls, &fresh_areas);
+        log_migrate("unverified", serde_json::json!({}));
+        return "unverified";
+    }
+    state.workspaces = candidate_ws;
+    state.engine = candidate;
+    // Verified: the single shared follow tail (D6) runs after publish.
+    migration_follow_tail(
+        state,
+        me,
+        observed,
+        retained,
+        &members,
+        migrate_rows,
+        plan.active_window.clone(),
+        &fresh_fulls,
+        &log_migrate,
+    )
+}
+
+/// Move one migrating float window across outputs (move-only, never a resize
+/// or refit): `SetWindowPos` with `SWP_NOSIZE | SWP_NOZORDER |
+/// SWP_NOACTIVATE` at the translated frame. No focus, no z-order, no show
+/// effects. Under test the move records into the injected float-move log and
+/// the ALL-member native-transfer log and reports success without touching
+/// native state.
+fn move_float_to_output(hwnd_u64: u64, moved: Rect) -> bool {
+    #[cfg(test)]
+    {
+        INJECTED_FLOAT_MOVES.with(|slot| slot.borrow_mut().push((hwnd_u64, moved)));
+        INJECTED_NATIVE_TRANSFERS.with(|slot| slot.borrow_mut().push((hwnd_u64, moved, "float")));
+        INJECTED_FLOAT_MOVE_OK.with(|slot| slot.get())
+    }
+    #[cfg(not(test))]
+    {
+        let hwnd = hwnd_u64 as isize as HWND;
+        if unsafe { IsWindow(hwnd) } == 0 {
+            return false;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                moved.x,
+                moved.y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            ) != 0
+        }
+    }
+}
+
+/// Move one migrating overlay window across outputs (D8, move-only, never a
+/// resize, refit, restore or remaximize): a visible fullscreen member moves
+/// with `SetWindowPos` `SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE` at the
+/// translated frame, preserving the native fullscreen frame with no extra
+/// geometry or focus writes. A maximized member remaps its live
+/// `WINDOWPLACEMENT` normal (restore) rect translated to the target,
+/// preserving the original restore size and `showCmd` (still maximized,
+/// still holding its reserved tile slot), never restoring first and never
+/// writing the observed maximized frame as the restore frame. Under test the
+/// maximized arm translates the injected normal boundary with the same pure
+/// helper and records the target screen rect as `(hwnd, moved, "overlay")`.
+#[allow(clippy::too_many_arguments)]
+fn move_overlay_to_output(
+    hwnd_u64: u64,
+    moved: Rect,
+    maximized: bool,
+    source_full: Rect,
+    target_full: Rect,
+    source_work: Rect,
+    target_work: Rect,
+    workspace_coords: bool,
+) -> bool {
+    #[cfg(test)]
+    {
+        if maximized {
+            let Some((source_raw, _)) = live_placement_normal(hwnd_u64) else {
+                return false;
+            };
+            let target_raw = translate_placement_normal_to_target(
+                source_raw,
+                source_work,
+                target_work,
+                source_full,
+                target_full,
+                workspace_coords,
+            );
+            let target_screen =
+                placement_raw_to_screen(target_raw, target_work, target_full, workspace_coords);
+            INJECTED_NATIVE_TRANSFERS
+                .with(|slot| slot.borrow_mut().push((hwnd_u64, target_screen, "overlay")));
+            return INJECTED_NATIVE_MOVE_OK.with(|slot| slot.get());
+        }
+        INJECTED_NATIVE_TRANSFERS.with(|slot| slot.borrow_mut().push((hwnd_u64, moved, "overlay")));
+        INJECTED_NATIVE_MOVE_OK.with(|slot| slot.get())
+    }
+    #[cfg(not(test))]
+    {
+        if maximized {
+            return remap_maximized_normal_to_output(
+                hwnd_u64,
+                source_full,
+                target_full,
+                source_work,
+                target_work,
+                workspace_coords,
+            );
+        }
+        let hwnd = hwnd_u64 as isize as HWND;
+        if unsafe { IsWindow(hwnd) } == 0 {
+            return false;
+        }
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                moved.x,
+                moved.y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            ) != 0
+        }
+    }
+}
+
+/// Remap one concealed member's `WINDOWPLACEMENT` normal rect across outputs
+/// (move-only, never a show-state change): reads the live placement to
+/// preserve the original restore size and `showCmd`, converts the target
+/// screen frame (`moved`, the FULL-delta translation of the retained normal
+/// frame) to the raw `rcNormalPosition` basis with the target monitor's
+/// `WORK` plus `FULL` inset delta (workspace coordinates for non-tool
+/// top-level windows per the `WINDOWPLACEMENT` contract, screen identity for
+/// tool windows), posts async (plus `WPF_ASYNCWINDOWPLACEMENT`, never blocking
+/// on a hung owner), so a minimized member stays minimized and a hidden member
+/// stays hidden. `kind` is `minimized` or `hidden` and is recorded verbatim in
+/// the test seam. Under test records the screen `moved` rect and reports the
+/// injected verdict without touching native state.
+fn remap_placement_to_output(
+    hwnd_u64: u64,
+    moved: Rect,
+    kind: &'static str,
+    target_work: Rect,
+    target_full: Rect,
+    workspace_coords: bool,
+) -> bool {
+    #[cfg(test)]
+    {
+        let _ = (target_work, target_full, workspace_coords);
+        INJECTED_NATIVE_TRANSFERS.with(|slot| slot.borrow_mut().push((hwnd_u64, moved, kind)));
+        INJECTED_NATIVE_MOVE_OK.with(|slot| slot.get())
+    }
+    #[cfg(not(test))]
+    {
+        let _ = kind;
+        remap_placement_normal_rect(hwnd_u64, moved, target_work, target_full, workspace_coords)
+    }
+}
+
+/// Production placement remap for minimized/hidden members: `GetWindowPlacement`,
+/// keep the original normal restore size and `showCmd`, write the target
+/// screen origin converted to the raw basis, post async. Returns `false` on
+/// any failure (never a partial show-state change).
+#[cfg(not(test))]
+fn remap_placement_normal_rect(
+    hwnd_u64: u64,
+    moved_screen: Rect,
+    target_work: Rect,
+    target_full: Rect,
+    workspace_coords: bool,
+) -> bool {
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+        return false;
+    }
+    let orig_w = placement
+        .rcNormalPosition
+        .right
+        .saturating_sub(placement.rcNormalPosition.left);
+    let orig_h = placement
+        .rcNormalPosition
+        .bottom
+        .saturating_sub(placement.rcNormalPosition.top);
+    if orig_w <= 0 || orig_h <= 0 {
+        return false;
+    }
+    let sized = Rect {
+        x: moved_screen.x,
+        y: moved_screen.y,
+        w: orig_w,
+        h: orig_h,
+    };
+    let raw = screen_to_placement_raw(sized, target_work, target_full, workspace_coords);
+    placement.rcNormalPosition.left = raw.x;
+    placement.rcNormalPosition.top = raw.y;
+    placement.rcNormalPosition.right = raw.x.saturating_add(raw.w);
+    placement.rcNormalPosition.bottom = raw.y.saturating_add(raw.h);
+    placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
+    unsafe { SetWindowPlacement(hwnd, &placement) != 0 }
+}
+
+/// Production maximized-overlay normal remap: single live `GetWindowPlacement`
+/// snapshot supplies both the normal (restore) rect and the preserved
+/// `showCmd`/`flags`, translated to the target with the source/target `FULL`
+/// delta plus the per-monitor inset-delta conversion. Preserves the original
+/// restore size and `showCmd`, posts async. Never writes the observed
+/// maximized frame as the restore frame, never invents a retained fallback,
+/// never changes show-state. Returns `false` on any failure.
+#[cfg(not(test))]
+fn remap_maximized_normal_to_output(
+    hwnd_u64: u64,
+    source_full: Rect,
+    target_full: Rect,
+    source_work: Rect,
+    target_work: Rect,
+    workspace_coords: bool,
+) -> bool {
+    // Single causal snapshot: one `GetWindowPlacement` read supplies geometry
+    // plus `showCmd`/`flags`, so a state change between two reads cannot mix
+    // a stale restore frame with a fresh show-state (or vice versa). Basis
+    // rides the same live style/parent read; no retained fallback, no
+    // observed-maximized-frame reuse.
+    let _ = workspace_coords;
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
+    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+        return false;
+    }
+    let w = placement
+        .rcNormalPosition
+        .right
+        .saturating_sub(placement.rcNormalPosition.left);
+    let h = placement
+        .rcNormalPosition
+        .bottom
+        .saturating_sub(placement.rcNormalPosition.top);
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let source_raw = Rect {
+        x: placement.rcNormalPosition.left,
+        y: placement.rcNormalPosition.top,
+        w,
+        h,
+    };
+    let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let top_level = unsafe { GetParent(hwnd) }.is_null();
+    let basis = placement_is_workspace_coords(exstyle, top_level);
+    let target_raw = translate_placement_normal_to_target(
+        source_raw,
+        source_work,
+        target_work,
+        source_full,
+        target_full,
+        basis,
+    );
+    placement.rcNormalPosition.left = target_raw.x;
+    placement.rcNormalPosition.top = target_raw.y;
+    placement.rcNormalPosition.right = target_raw.x.saturating_add(target_raw.w);
+    placement.rcNormalPosition.bottom = target_raw.y.saturating_add(target_raw.h);
+    placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
+    unsafe { SetWindowPlacement(hwnd, &placement) != 0 }
+}
+
 /// Drain one bounded batch of workspace history intents (item 1). Toggle and
 /// relative steps work on empty workspaces and unmanaged foreground: they
 /// select views, never movers, so no managed-focus gate applies. The
@@ -28345,7 +31350,6 @@ fn run_tile_loop(
         last_disabled,
         cli_overrides,
         snap_dropped: 0,
-        input_trace_snap_age: 0,
         cb_diag_dropped: 0,
         cb_diag_filtered: 0,
         cb_outbox_dropped: 0,
@@ -28411,6 +31415,7 @@ fn run_tile_loop(
         overlay_now: HashMap::new(),
         input_bridge: None,
         render_bridge: None,
+        render_frames: RenderFrameHealth::default(),
         pending_releases: crate::workspace::PendingReleases::new(),
         pending_retry_fp: 0,
     };
@@ -28711,8 +31716,6 @@ fn run_tile_loop(
                     last_deduped: 0,
                     pending_ack: None,
                     last_ack_logged: 0,
-                    last_trace_turns: 0,
-                    last_windrag_offers: 0,
                 });
             }
             Err(cause) => {
@@ -28793,6 +31796,12 @@ fn run_tile_loop(
     }
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
     let mut slow_last = Instant::now();
+    // Trace-only health window (input ages, owner work, windrag transport):
+    // plain local, never shared across threads. Each loop iteration lends
+    // it to its `OwnerWorkGuard` for the turn; the pending end-of-run
+    // summary flushes after the loop below. Untouched (and unborrowed)
+    // when tracing is off, so default runs pay nothing here.
+    let mut health = Health::new();
     let result = (|| -> Result<()> {
         let fulls = monitor_fulls(&areas);
         // Mouse prevention is deferred until an actual active tick or resume:
@@ -28827,15 +31836,19 @@ fn run_tile_loop(
             refresh_active_border(&mut state, me, &fulls);
             refresh_group_underlay(&mut state, me, &fulls, &areas);
         }
-        // Trace-only owner-work epoch/sequence: created only when tracing so
-        // default runs pay no timer/counter work. The per-iteration guard
-        // below derives its relative start from this single epoch.
-        let owner_epoch: Option<Instant> = if state.trace {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        // Trace-only owner-work sequence: counted only when tracing so
+        // default runs pay no timer/counter work.
         let mut owner_seq: u64 = 0;
+        // Last observed windrag offer count for change-only transport
+        // observations (replaces the per-offer `windrag-transport` line).
+        let mut trace_windrag_offers: u64 = 0;
+        // Last observed pump turn/offer counts for change-only input
+        // observations: a fresh turn (or batch/drop) samples the slot
+        // once; an unchanged diag is never resampled. No per-turn file
+        // writes: observations aggregate, only throttled outliers and
+        // window summaries log.
+        let mut trace_last_turns: u64 = 0;
+        let mut trace_last_offers: u64 = 0;
         // Trace-only outer-wait return counts (outer product wait only;
         // focus/proof `pump_wait` calls never touch these). `waits` counts
         // outer returns, `ack_only` the ack-only subset that returns early
@@ -28871,8 +31884,13 @@ fn run_tile_loop(
             // `ow_waits` per outer return plus one hit per set `WaitWake`
             // flag. The ack-only subset increments later at the early return,
             // once hook events are known.
-            let mut owner_work =
-                OwnerWorkGuard::begin(state.trace, &log_path, owner_epoch, owner_seq, state.tick);
+            let mut owner_work = OwnerWorkGuard::begin(
+                state.trace,
+                &log_path,
+                owner_seq,
+                state.tick,
+                if state.trace { Some(&mut health) } else { None },
+            );
             if state.trace {
                 owner_seq = owner_seq.saturating_add(1);
                 ow_counts.note_wait(wait);
@@ -29002,7 +32020,7 @@ fn run_tile_loop(
             // plus the bounded failure drain), then the pending finish is
             // serviced from the ack state with no blocking wait.
             drain_render_failures(&mut state);
-            poll_render_acks(&mut state);
+            poll_render_acks(&mut state, Instant::now());
             service_pending_drop(&mut state, me, &fulls, &areas);
             // Ack-only turns (renderer ack with no input, message, timeout,
             // or hook-callback event) loop here without reposting frames,
@@ -29244,6 +32262,10 @@ fn run_tile_loop(
                         taken
                     });
                 let mut batch = Vec::new();
+                // Fresh take-time age for the health window (trace-only);
+                // `None` unless a batch is taken below, so stale ages are
+                // never recorded.
+                let mut snap_age_us: Option<u64> = None;
                 if let Some(tagged) = taken {
                     if tagged.is_empty() {
                         // Keep-alive empty: nothing to dispatch.
@@ -29265,27 +32287,32 @@ fn run_tile_loop(
                             );
                         } else {
                             if state.trace {
-                                let age = crate::input_pump::snap_batch_age_us(
+                                snap_age_us = Some(crate::input_pump::snap_batch_age_us(
                                     &tagged.items,
                                     Instant::now(),
-                                );
-                                state.input_trace_snap_age = age;
+                                ));
                             }
                             batch = tagged.items;
                         }
                     }
                 }
-                // Trace-only input ages plus pump heartbeat/dispatch gaps
-                // from the bounded diag slot, with honest limits: queue ages
-                // cover classifier-queue plus pump-to-owner transport only;
-                // the heartbeat proves liveness; none measures OS hook
-                // delivery latency (native timestamp vs delivery rides the
-                // separate `delivery_gap_ms` aggregate, tick-count domain).
+                // Trace-only input health from the bounded diag slot: drop
+                // transitions keep their explicit `snap-drop` line, while
+                // turn samples aggregate into the window (a taken batch, a
+                // fresh drop, or any fresh pump turn: ordinary pump turns
+                // carry dispatch/gap/pending evidence even with no batch).
+                // Snap age is `Some` only for a freshly taken batch;
+                // pump age is `Some` only for a fresh offer (the slot
+                // value persists from the last offer); heartbeat/pending
+                // are last-observed values. The heartbeat proves liveness;
+                // native timestamp vs delivery rides the summary-only
+                // `delivery_gap_ms` aggregate, tick-count domain.
                 if state.trace
                     && let Some(bridge) = state.input_bridge.as_mut()
                 {
                     let diag = bridge.channels.diag.snapshot();
-                    if diag.snap_dropped != state.snap_dropped {
+                    let drops_changed = diag.snap_dropped != state.snap_dropped;
+                    if drops_changed {
                         let lost = diag.snap_dropped.saturating_sub(state.snap_dropped);
                         state.snap_dropped = diag.snap_dropped;
                         log_json_at(
@@ -29293,23 +32320,19 @@ fn run_tile_loop(
                             serde_json::json!({"event":"snap-drop","lost": lost}),
                         );
                     }
-                    if diag.turns != bridge.last_trace_turns || !batch.is_empty() {
-                        bridge.last_trace_turns = diag.turns;
-                        log_json_at(
-                            &log_path,
-                            serde_json::json!({
-                                "event": "input-queue-age",
-                                "snap_queue_age_us": state.input_trace_snap_age,
-                                "pump_queue_age_us": diag.queue_age_us,
-                                "heartbeat_us": diag.heartbeat_us,
-                                "turns": diag.turns,
-                                "dispatch_us": diag.dispatch_us,
-                                "delivery_gap_ms": diag.delivery_gap_ms,
-                                "pending": diag.pending_snap,
-                                "scope": "classifier-queue-plus-pump-transport-only",
-                                "excludes": "native-delivery-latency",
-                            }),
-                        );
+                    let turns_changed = diag.turns != trace_last_turns;
+                    let offers_changed = diag.offers != trace_last_offers;
+                    if !batch.is_empty() || drops_changed || turns_changed {
+                        trace_last_turns = diag.turns;
+                        if offers_changed {
+                            trace_last_offers = diag.offers;
+                        }
+                        let pump_age_us = if offers_changed {
+                            Some(diag.queue_age_us)
+                        } else {
+                            None
+                        };
+                        owner_work.observe_input(&diag, snap_age_us, pump_age_us);
                     }
                 }
                 batch
@@ -29332,6 +32355,7 @@ fn run_tile_loop(
             let mut workspace_events = Vec::new();
             let mut send_events = Vec::new();
             let mut output_events = Vec::new();
+            let mut migrate_events: Vec<QueuedWorkspaceMigrateIntent> = Vec::new();
             let mut history_events = Vec::new();
             let mut directional_events = Vec::new();
             for event in snap_events {
@@ -29339,6 +32363,7 @@ fn run_tile_loop(
                     QueuedSnapEvent::Workspace(intent) => workspace_events.push(intent),
                     QueuedSnapEvent::WorkspaceSend(intent) => send_events.push(intent),
                     QueuedSnapEvent::WorkspaceOutput(intent) => output_events.push(intent),
+                    QueuedSnapEvent::WorkspaceMigrate(intent) => migrate_events.push(intent),
                     QueuedSnapEvent::WorkspaceHistory(intent) => history_events.push(intent),
                     QueuedSnapEvent::Mask(_)
                     | QueuedSnapEvent::Intent(_)
@@ -29357,6 +32382,7 @@ fn run_tile_loop(
             if !workspace_events.is_empty()
                 || !send_events.is_empty()
                 || !output_events.is_empty()
+                || !migrate_events.is_empty()
                 || !history_events.is_empty()
             {
                 woke = true;
@@ -29422,6 +32448,10 @@ fn run_tile_loop(
                         edges = tagged.items;
                     }
                 }
+                // Trace-only windrag transport into the health window
+                // (change-only offers; hook stats and drop lines below
+                // stay explicit). The transport covers pump offer to
+                // owner take only, never queue wait or native delivery.
                 if state.trace {
                     let (offers, last_offer) = state
                         .input_bridge
@@ -29431,29 +32461,11 @@ fn run_tile_loop(
                             (diag.windrag_offers, diag.windrag_last_offer)
                         })
                         .unwrap_or((0, None));
-                    let changed = state.input_bridge.as_mut().is_some_and(|bridge| {
-                        if offers != bridge.last_windrag_offers {
-                            bridge.last_windrag_offers = offers;
-                            true
-                        } else {
-                            false
+                    if offers != trace_windrag_offers {
+                        trace_windrag_offers = offers;
+                        if let Some(offered) = last_offer {
+                            owner_work.observe_windrag(offered);
                         }
-                    });
-                    if changed && let Some(offered) = last_offer {
-                        let transport_us = Instant::now()
-                            .duration_since(offered)
-                            .as_micros()
-                            .min(u128::from(u64::MAX))
-                            as u64;
-                        log_json_at(
-                            &log_path,
-                            serde_json::json!({
-                                "event": "windrag-transport",
-                                "transport_us": transport_us,
-                                "scope": "pump-offer-to-owner-take-only",
-                                "excludes": "queue-wait-and-native-delivery",
-                            }),
-                        );
                     }
                 }
                 if let Some(bridge) = state.input_bridge.as_ref() {
@@ -29939,9 +32951,18 @@ fn run_tile_loop(
             // Trace-only owner-work gate: quiet short-poll iterations drop the
             // disabled guard silently above via `continue`. Active wakes arm
             // the single sample; RAII then records suspend/held/error exits.
+            // Due window summaries also flush on the idle path below (no new
+            // wake: the check rides this existing turn, and quiet windows
+            // with no activity emit nothing).
             if state.trace && (woke || slow) {
                 let gesture_held = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
                 owner_work.arm(ow_batch_total, ow_wakes, ow_starts, ow_ends, gesture_held);
+            }
+            // Per-turn maintenance-quiet flag for the trailing health
+            // flush at the end of the turn (set on the quiet branch).
+            let mut maintenance_quiet = false;
+            if state.trace && !(woke || slow) {
+                owner_work.finish_turn(false);
             }
             if !(woke || slow) {
                 continue;
@@ -30005,6 +33026,18 @@ fn run_tile_loop(
                         Some("suspended"),
                     );
                 }
+                if !migrate_events.is_empty() {
+                    workspace_migrate_tick(
+                        &mut state,
+                        me,
+                        store,
+                        dir,
+                        &fulls,
+                        &areas,
+                        migrate_events,
+                        Some("suspended"),
+                    );
+                }
                 if !history_events.is_empty() {
                     workspace_history_tick(
                         &mut state,
@@ -30055,6 +33088,12 @@ fn run_tile_loop(
                 hide_border(&mut state, "suspended");
                 hide_underlay(&mut state, "suspended");
                 hide_preview(&mut state, "suspended");
+                // Suspended turns still commit their owner sample (the
+                // guard would otherwise record it silently on drop with
+                // no summary flush); then the disarmed guard drops.
+                if state.trace {
+                    owner_work.finish_turn(false);
+                }
                 continue;
             }
             if state.suspended {
@@ -30291,6 +33330,18 @@ fn run_tile_loop(
                         Some("gesture"),
                     );
                 }
+                if !migrate_events.is_empty() {
+                    workspace_migrate_tick(
+                        &mut state,
+                        me,
+                        store,
+                        dir,
+                        &fulls,
+                        &areas,
+                        migrate_events,
+                        Some("gesture"),
+                    );
+                }
                 if !history_events.is_empty() {
                     workspace_history_tick(
                         &mut state,
@@ -30307,6 +33358,15 @@ fn run_tile_loop(
                 // observation plus the shared Engine resolver per moved
                 // pointer, on both producers. No focus, no geometry writes.
                 refresh_drag_preview(&mut state, me, &fulls, &areas);
+                // Due routine-frame summaries flush on this existing turn so
+                // per-move preview aggregates never strand behind the hold.
+                {
+                    let now = Instant::now();
+                    let lines = state.render_frames.take_due(now);
+                    for line in lines {
+                        log_json_at(&log_path, line);
+                    }
+                }
                 continue;
             }
             if ended.is_empty() {
@@ -30314,6 +33374,7 @@ fn run_tile_loop(
                     && workspace_events.is_empty()
                     && send_events.is_empty()
                     && output_events.is_empty()
+                    && migrate_events.is_empty()
                     && history_events.is_empty()
                 {
                     reconcile_tick(&mut state, me, &fulls, &areas);
@@ -30330,6 +33391,10 @@ fn run_tile_loop(
                         }
                     }
                     workspace_maintenance(&mut state, me, store, dir, &fulls, &areas);
+                    // Quiet-turn maintenance arms the trailing health
+                    // flush at the end of the turn so pending activity
+                    // never strands behind idle.
+                    maintenance_quiet = true;
                     poll_workspace_cli_request(&mut state, me, store, dir, &fulls, &areas);
                     poll_resize_cli_request(&mut state, me, dir, &fulls, &areas);
                 } else {
@@ -30367,6 +33432,18 @@ fn run_tile_loop(
                             &fulls,
                             &areas,
                             output_events,
+                            None,
+                        );
+                    }
+                    if !migrate_events.is_empty() {
+                        workspace_migrate_tick(
+                            &mut state,
+                            me,
+                            store,
+                            dir,
+                            &fulls,
+                            &areas,
+                            migrate_events,
                             None,
                         );
                     }
@@ -30425,6 +33502,18 @@ fn run_tile_loop(
                         Some("gesture"),
                     );
                 }
+                if !migrate_events.is_empty() {
+                    workspace_migrate_tick(
+                        &mut state,
+                        me,
+                        store,
+                        dir,
+                        &fulls,
+                        &areas,
+                        migrate_events,
+                        Some("gesture"),
+                    );
+                }
                 if !history_events.is_empty() {
                     workspace_history_tick(
                         &mut state,
@@ -30448,8 +33537,43 @@ fn run_tile_loop(
             // Same for the group fill: a moved target may have joined another
             // group, so the projected union re-resolves instead of lingering.
             refresh_group_underlay(&mut state, me, &fulls, &areas);
+            // End-of-turn health commit: records the armed owner sample
+            // (pre-log exclusive span, including this turn's refreshes)
+            // and flushes due summaries, plus trailing activity on
+            // maintenance-quiet turns. The guard then drops disarmed.
+            if state.trace {
+                owner_work.finish_turn(maintenance_quiet);
+            }
+            // Routine-frame summaries flush on this existing turn (no new
+            // wake): due windows always, trailing activity on
+            // maintenance-quiet turns. Runs in both trace and production
+            // modes so aggregated geometry churn never strands.
+            {
+                let now = Instant::now();
+                let lines = if maintenance_quiet {
+                    state.render_frames.take_trailing(now)
+                } else {
+                    state.render_frames.take_due(now)
+                };
+                for line in lines {
+                    log_json_at(&log_path, line);
+                }
+            }
         }
     })();
+    // Pending end-of-run health summary (trace-only, at most one marked
+    // line per stream): retained activity below the window age still
+    // reports instead of dying with the loop.
+    if state.trace {
+        for line in health.take_end_of_run(Instant::now()) {
+            log_json_at(&log_path, line);
+        }
+    }
+    // Pending routine-frame activity flushes regardless of trace mode so
+    // aggregated repaints never die with the loop.
+    for line in state.render_frames.take_end_of_run(Instant::now()) {
+        log_json_at(&log_path, line);
+    }
     for hook in hooks {
         unsafe {
             UnhookWinEvent(hook);
@@ -39753,6 +42877,7 @@ mod border_shell_tests {
 #[cfg(test)]
 mod owner_work_trace_tests {
     use super::{OwnerWorkGuard, hide_border, hide_underlay};
+    use crate::input_health::Health;
     use std::time::{Duration, Instant};
 
     fn temp_log(name: &str) -> std::path::PathBuf {
@@ -39816,7 +42941,7 @@ mod owner_work_trace_tests {
         // Trace-disabled: arm is a no-op and no file appears.
         let log_path = temp_log("disabled");
         {
-            let mut guard = OwnerWorkGuard::begin(false, &log_path, None, 0, 7);
+            let mut guard = OwnerWorkGuard::begin(false, &log_path, 0, 7, None);
             guard.arm(3, 1, 1, 1, true);
             guard.add_border_refresh(Duration::from_micros(5));
         }
@@ -39827,18 +42952,22 @@ mod owner_work_trace_tests {
         // Quiet trace (never armed): drops silently with no lines.
         let log_path = temp_log("quiet");
         {
-            let _guard = OwnerWorkGuard::begin(true, &log_path, Some(Instant::now()), 0, 7);
+            let mut health = Health::new();
+            let _guard = OwnerWorkGuard::begin(true, &log_path, 0, 7, Some(&mut health));
+            assert_eq!(log_lines(&log_path).len(), 0);
         }
         assert_eq!(log_lines(&log_path).len(), 0);
         let _ = std::fs::remove_file(&log_path);
     }
 
     #[test]
-    fn owner_work_guard_emits_one_closed_sample_on_scope_exit_and_early_return() {
-        let log_path = temp_log("sample");
-        let epoch = Instant::now();
+    fn owner_work_guard_aggregates_instead_of_per_wake_writes() {
+        // Armed samples aggregate into the window with no per-wake file
+        // line; the early-return path still commits exactly once via RAII.
+        let log_path = temp_log("aggregate");
+        let mut health = Health::new();
         {
-            let mut guard = OwnerWorkGuard::begin(true, &log_path, Some(epoch), 4, 9);
+            let mut guard = OwnerWorkGuard::begin(true, &log_path, 4, 9, Some(&mut health));
             assert!(
                 !guard.timing_active(),
                 "guard starts disarmed so quiet paths stay silent"
@@ -39847,45 +42976,857 @@ mod owner_work_trace_tests {
             assert!(guard.timing_active());
             guard.add_border_refresh(Duration::from_micros(12));
             guard.add_border_refresh(Duration::from_micros(8));
+            guard.finish_turn(false);
         }
-        // Early-exit path still samples exactly once via RAII.
-        (|early: bool| {
-            let mut guard = OwnerWorkGuard::begin(true, &log_path, Some(epoch), 5, 10);
+        {
+            // Early exit without `finish_turn`: `Drop` still commits.
+            let mut guard = OwnerWorkGuard::begin(true, &log_path, 5, 10, Some(&mut health));
             guard.arm(1, 0, 1, 0, false);
-            if early {
-                return;
-            }
-            guard.arm(0, 0, 0, 0, false);
-        })(true);
+        }
+        assert_eq!(
+            log_lines(&log_path).len(),
+            0,
+            "non-outlier samples write nothing per wake"
+        );
+        let _ = std::fs::remove_file(&log_path);
+        let lines = health.take_end_of_run(Instant::now());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let summary = &lines[0];
+        assert_eq!(summary["event"], "owner-work-summary");
+        assert_eq!(summary["samples"], 2, "explicit plus Drop-path commit");
+        assert_eq!(summary["border_refresh_max_us"], 20);
+        assert_eq!(summary["batch_events_total"], 4);
+        assert_eq!(summary["outliers"], 0);
+        assert_eq!(summary["scope"], crate::input_health::OWNER_SCOPE);
+        for banned in ["hwnd", "pid", "exe", "title", "token"] {
+            assert!(
+                !summary.to_string().to_lowercase().contains(banned),
+                "no identity in {summary}"
+            );
+        }
+    }
+
+    #[test]
+    fn owner_work_guard_outlier_is_immediate_and_counted_in_summary() {
+        // A slow turn logs one immediate outlier; the summary still
+        // carries the outlier total (immediate records keep window data).
+        let log_path = temp_log("outlier");
+        let mut health = Health::new();
+        {
+            let mut guard = OwnerWorkGuard::begin(true, &log_path, 6, 11, Some(&mut health));
+            guard.arm(2, 1, 0, 0, false);
+            std::thread::sleep(Duration::from_millis(60));
+            guard.finish_turn(false);
+        }
         let lines = log_lines(&log_path);
         let _ = std::fs::remove_file(&log_path);
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        let first: serde_json::Value = serde_json::from_str(&lines[0]).expect("sample parses");
-        assert_eq!(first["event"], "owner-work");
-        assert_eq!(first["seq"], 4);
-        assert_eq!(first["tick_at_start"], 9);
-        assert!(first["start_us"].is_u64(), "{first}");
-        assert!(first["busy_us"].is_u64(), "{first}");
-        assert_eq!(first["border_refresh_us"], 20);
-        assert_eq!(first["batch_events"], 3);
-        assert_eq!(first["wakes"], 1);
-        assert_eq!(first["starts"], 1);
-        assert_eq!(first["ends"], 1);
-        assert_eq!(first["gesture_held"], true);
-        for line in &lines {
-            for banned in ["hwnd", "pid", "exe", "title", "token"] {
-                assert!(
-                    !line.to_lowercase().contains(banned),
-                    "no identity in {line}"
-                );
-            }
-            let value: serde_json::Value = serde_json::from_str(line).expect("sample parses");
-            assert_eq!(value["event"], "owner-work");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let outlier: serde_json::Value = serde_json::from_str(&lines[0]).expect("outlier parses");
+        assert_eq!(outlier["event"], "owner-work-outlier");
+        assert_eq!(outlier["seq"], 6);
+        assert_eq!(outlier["tick_at_start"], 11);
+        assert!(
+            outlier["busy_us"].as_u64().unwrap_or(0) > crate::input_health::OWNER_BUSY_OUTLIER_US,
+            "{outlier}"
+        );
+        assert_eq!(outlier["stream_outliers_total"], 1);
+        let trailing = health.take_end_of_run(Instant::now());
+        assert_eq!(trailing.len(), 1);
+        assert_eq!(trailing[0]["event"], "owner-work-summary");
+        assert_eq!(trailing[0]["samples"], 1);
+        assert_eq!(trailing[0]["outliers"], 1, "summary keeps the total");
+    }
+}
+
+#[cfg(test)]
+mod render_frame_tests {
+    use super::{
+        RENDER_SUMMARY_WINDOW, RenderBridge, RenderCarrier, RenderFrameHealth, RenderFrameSample,
+        render_same_thread_gate,
+    };
+    use crate::render_handoff::{AppliedContent, CarrierAck, RenderChannels, RenderOutcome};
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn temp_log(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "tiler-render-frame-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn log_values(path: &std::path::Path) -> Vec<serde_json::Value> {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        text.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("log line parses"))
+            .collect()
+    }
+
+    fn sample_for(target: &str, x: i32, outcome: &'static str) -> RenderFrameSample {
+        RenderFrameSample {
+            outcome,
+            target: target.to_owned(),
+            outer: [x, 0, 100, 100],
+            color_hex: "#ff0000".to_owned(),
+            checksum_hex: "0123456789abcdef".to_owned(),
+            generation: Some(7),
+            safety: Some(1),
+            hidden_proven: false,
+            identity_proven: true,
+            source: "ack",
         }
-        let second: serde_json::Value = serde_json::from_str(&lines[1]).expect("sample parses");
-        assert_eq!(second["seq"], 5);
-        assert_eq!(second["tick_at_start"], 10);
-        assert_eq!(second["batch_events"], 1);
+    }
+
+    /// Test ack builder: `proof` aggregates the safety epoch plus the
+    /// identity-proof flag (one tuple, keeping the helper under the arg
+    /// limit); geometry/transport stay positional like the callers read.
+    fn ack_ex(
+        generation: u64,
+        target: &str,
+        x: i32,
+        outcome: RenderOutcome,
+        proof: (u64, bool),
+        queue_us: u64,
+        span_us: u64,
+    ) -> CarrierAck {
+        CarrierAck {
+            generation,
+            safety: proof.0,
+            outcome,
+            checksum: 0xabcd,
+            span_us,
+            queue_age_us: queue_us,
+            last_error: None,
+            hidden_proven: false,
+            identity_proven: proof.1,
+            applied: Some(AppliedContent::new(
+                target,
+                [x, 0, 100, 100],
+                "#ff0000".to_owned(),
+                Some([2, 2, 2]),
+                true,
+                1,
+            )),
+        }
+    }
+
+    fn shown_ack(generation: u64, target: &str, x: i32, queue_us: u64, span_us: u64) -> CarrierAck {
+        ack_ex(
+            generation,
+            target,
+            x,
+            RenderOutcome::Shown,
+            (1, true),
+            queue_us,
+            span_us,
+        )
+    }
+
+    fn refused_ack(generation: u64, reason: &'static str) -> CarrierAck {
+        CarrierAck {
+            generation,
+            safety: 1,
+            outcome: RenderOutcome::Refused(reason),
+            checksum: 0,
+            span_us: 3,
+            queue_age_us: 0,
+            last_error: None,
+            hidden_proven: false,
+            identity_proven: false,
+            applied: None,
+        }
+    }
+
+    /// Offline owner fixture with a bridged (channel-only, no thread) renderer
+    /// and a real temp log-file sink.
+    fn bridged_state(log_path: &std::path::Path, trace: bool) -> super::TileLoop {
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.log_path = log_path.to_owned();
+        state.trace = trace;
+        state.render_bridge = Some(RenderBridge {
+            channels: Arc::new(RenderChannels::new()),
+            handle: None,
+            gens: [0, 0, 0],
+            hide_posted: [false, false, false],
+            hide_reason: [None, None, None],
+            hidden_ack: [None, None, None],
+            posted: std::array::from_fn(|_| VecDeque::new()),
+            applied_visible: [false, false, false],
+            applied_note: [None, None, None],
+            applied_ack: [None, None, None],
+            applied_known: [false, false, false],
+            admission_open: true,
+            pending: None,
+        });
+        state
+    }
+
+    fn post_ack(state: &super::TileLoop, carrier: RenderCarrier, ack: CarrierAck) {
+        state
+            .render_bridge
+            .as_ref()
+            .expect("bridge")
+            .channels
+            .post_ack(carrier, ack);
+    }
+
+    #[test]
+    fn struct_flood_aggregates_with_maxima_and_latest_sample() {
+        let mut health = RenderFrameHealth::default();
+        let start = Instant::now();
+        health.note_transition(RenderCarrier::Border, "shown:win-a".to_owned());
+        for i in 0..3000u64 {
+            health.observe_routine(
+                RenderCarrier::Border,
+                start,
+                Some(100 + (i % 7)),
+                Some(5 + (i % 3)),
+                sample_for("win-a", i as i32, "shown"),
+            );
+        }
+        // No window elapsed: nothing due yet.
+        assert!(
+            health
+                .take_due(start + Duration::from_millis(999))
+                .is_empty()
+        );
+        let lines = health.take_due(start + RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let line = &lines[0];
+        assert_eq!(line["event"], "render-frame-summary");
+        assert_eq!(line["carrier"], "border");
+        assert_eq!(line["observed"], 3000);
+        assert_eq!(line["queue_max_us"], 106);
+        assert_eq!(line["span_max_us"], 7);
+        assert_eq!(line["sample"]["outcome"], "shown");
+        assert_eq!(line["sample"]["target"], "win-a");
+        assert_eq!(
+            line["sample"]["rect"],
+            serde_json::json!([2999, 0, 100, 100])
+        );
+        assert!(line.get("flushed").is_none());
+        let text = line.to_string().to_lowercase();
+        for banned in ["hwnd", "pid", "exe", "title"] {
+            assert!(!text.contains(banned), "no identity in {line}");
+        }
+    }
+
+    #[test]
+    fn struct_per_carrier_independence_and_reset() {
+        let mut health = RenderFrameHealth::default();
+        let start = Instant::now();
+        for carrier in RenderCarrier::all() {
+            health.note_transition(carrier, "shown:win-a".to_owned());
+        }
+        for i in 0..500u64 {
+            health.observe_routine(
+                RenderCarrier::Border,
+                start,
+                Some(i),
+                Some(1),
+                sample_for("win-a", 0, "shown"),
+            );
+            health.observe_routine(
+                RenderCarrier::Preview,
+                start,
+                Some(2 * i),
+                Some(2),
+                sample_for("mover", i as i32, "moved"),
+            );
+        }
+        // Underlay idle: only the two active carriers summarize.
+        let lines = health.take_due(start + RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        let border = lines
+            .iter()
+            .find(|l| l["carrier"] == "border")
+            .expect("border");
+        let preview = lines
+            .iter()
+            .find(|l| l["carrier"] == "preview")
+            .expect("preview");
+        assert_eq!(border["observed"], 500);
+        assert_eq!(border["queue_max_us"], 499);
+        assert_eq!(preview["observed"], 500);
+        assert_eq!(preview["queue_max_us"], 998);
+        // Maxima reset between windows.
+        health.observe_routine(
+            RenderCarrier::Border,
+            start + RENDER_SUMMARY_WINDOW,
+            Some(11),
+            Some(1),
+            sample_for("win-a", 0, "shown"),
+        );
+        let lines = health.take_due(start + 2 * RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["observed"], 1);
+        assert_eq!(lines[0]["queue_max_us"], 11);
+    }
+
+    #[test]
+    fn struct_no_activity_silence_and_flushes() {
+        let mut health = RenderFrameHealth::default();
+        let start = Instant::now();
+        assert!(health.take_due(start + RENDER_SUMMARY_WINDOW).is_empty());
+        assert!(health.take_trailing(start).is_empty());
+        assert!(health.take_end_of_run(start).is_empty());
+
+        health.note_transition(RenderCarrier::Underlay, "shown:g".to_owned());
+        health.observe_routine(
+            RenderCarrier::Underlay,
+            start,
+            Some(9),
+            Some(4),
+            sample_for("g", 1, "redrew"),
+        );
+        let lines = health.take_trailing(start + Duration::from_millis(100));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["flushed"], "maintenance-trailing");
+        assert_eq!(lines[0]["observed"], 1);
+        assert!(
+            health
+                .take_end_of_run(start + Duration::from_millis(200))
+                .is_empty()
+        );
+
+        // Throttled trailing retains data for the next due flush.
+        health.observe_routine(
+            RenderCarrier::Underlay,
+            start + RENDER_SUMMARY_WINDOW,
+            Some(30),
+            Some(6),
+            sample_for("g", 2, "redrew"),
+        );
+        assert!(
+            health
+                .take_trailing(start + RENDER_SUMMARY_WINDOW + Duration::from_millis(50))
+                .is_empty(),
+            "trailing inside one second of the last emit retains data"
+        );
+        let lines = health.take_due(start + 2 * RENDER_SUMMARY_WINDOW + Duration::from_millis(50));
+        assert_eq!(lines.len(), 1, "retained sample still summarizes");
+        assert_eq!(lines[0]["observed"], 1);
+        assert_eq!(lines[0]["queue_max_us"], 30);
+
+        // End-of-run flushes pending regardless of throttle.
+        health.observe_routine(
+            RenderCarrier::Underlay,
+            start + 2 * RENDER_SUMMARY_WINDOW,
+            Some(7),
+            Some(1),
+            sample_for("g", 3, "redrew"),
+        );
+        let lines = health.take_end_of_run(start + 2 * RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["flushed"], "end-of-run");
+        assert!(
+            health
+                .take_end_of_run(start + 2 * RENDER_SUMMARY_WINDOW)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn same_thread_gate_transition_aggregates_and_silence() {
+        let mut state = super::rmax03_adapter_tests::test_state();
+        let now = Instant::now();
+        // New target: transition, caller logs immediately.
+        assert!(!render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            true,
+            sample_for("win-a", 0, "shown"),
+        ));
+        // Same target with would-log: aggregate, caller suppresses.
+        assert!(render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            true,
+            sample_for("win-a", 5, "shown"),
+        ));
+        // Same target but silent under old rules: no aggregation.
+        assert!(!render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            false,
+            sample_for("win-a", 6, "shown"),
+        ));
+        let lines = state.render_frames.take_due(now + RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["observed"], 1);
+        assert_eq!(
+            lines[0]["sample"]["rect"],
+            serde_json::json!([5, 0, 100, 100])
+        );
+        // New target again: transition, caller logs immediately.
+        assert!(!render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-b",
+            now,
+            true,
+            sample_for("win-b", 0, "shown"),
+        ));
+    }
+
+    #[test]
+    fn file_sink_thousands_of_frames_bound_with_transition_and_failure() {
+        let log_path = temp_log("flood");
+        let mut state = bridged_state(&log_path, true);
+        let start = Instant::now();
+        // 3000 routine same-target frames with different rects: the first is
+        // the visibility transition (immediate proof + status), the rest
+        // aggregate into one ~1s summary.
+        for i in 0..3000u64 {
+            post_ack(
+                &state,
+                RenderCarrier::Border,
+                shown_ack(i + 1, "win-a", i as i32, 100 + (i % 5), 5 + (i % 3)),
+            );
+            super::poll_render_acks(&mut state, start);
+        }
+        let lines = log_values(&log_path);
+        let applied: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-applied")
+            .collect();
+        let status: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "active-border")
+            .collect();
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        assert_eq!(
+            applied.len(),
+            1,
+            "only the transition keeps render-applied: {lines:?}"
+        );
+        assert_eq!(applied[0]["outcome"], "shown");
+        assert_eq!(status.len(), 1, "only the transition keeps a status line");
+        assert_eq!(status[0]["outcome"], "shown");
+        assert!(summaries.is_empty(), "window not elapsed yet");
+        // Target transition logs immediately, not into the window.
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            shown_ack(4001, "win-b", 0, 50, 5),
+        );
+        super::poll_render_acks(&mut state, start);
+        // Repeated identical failures both log immediately (never aggregated).
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            refused_ack(4002, "scope-excluded"),
+        );
+        super::poll_render_acks(&mut state, start);
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            refused_ack(4003, "scope-excluded"),
+        );
+        super::poll_render_acks(&mut state, start);
+        let lines = log_values(&log_path);
+        let status: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "active-border")
+            .collect();
+        assert_eq!(
+            status.len(),
+            4,
+            "transition + 2 failures + first: {status:?}"
+        );
+        assert_eq!(status[1]["outcome"], "shown");
+        assert_eq!(status[1]["target"], "win-b");
+        assert_eq!(status[2]["outcome"], "hidden");
+        assert_eq!(status[2]["reason"], "scope-excluded");
+        assert_eq!(status[3]["outcome"], "hidden");
+        // Window elapse flushes the routine backlog as one summary.
+        super::poll_render_acks(&mut state, start + RENDER_SUMMARY_WINDOW);
+        let lines = log_values(&log_path);
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        assert_eq!(summaries.len(), 1, "{lines:?}");
+        assert_eq!(summaries[0]["carrier"], "border");
+        assert_eq!(summaries[0]["observed"], 2999);
+        assert_eq!(summaries[0]["queue_max_us"], 104);
+        assert_eq!(summaries[0]["span_max_us"], 7);
+        assert_eq!(
+            summaries[0]["sample"]["rect"],
+            serde_json::json!([2999, 0, 100, 100]),
+            "latest applied state rides the labelled sample"
+        );
+        assert_eq!(summaries[0]["sample"]["generation"], 3000);
+        assert_eq!(summaries[0]["sample"]["safety"], 1);
+        assert_eq!(summaries[0]["sample"]["hidden_proven"], false);
+        assert_eq!(summaries[0]["sample"]["id_proven"], true);
+        assert_eq!(summaries[0]["sample"]["outcome"], "shown");
+        assert_eq!(summaries[0]["sample"]["source"], "ack");
+        assert_eq!(summaries[0]["scope"], super::RENDER_FRAME_SCOPE);
+        // Before/after bound: 3000 routine frames + 1 target transition + 2
+        // failures collapse to 9 lines (transition proof+status, second
+        // transition proof+status, 2 failure proof+status pairs, 1 summary)
+        // where the old per-ack trace wrote two lines per frame (~6008).
+        assert_eq!(lines.len(), 9, "{lines:?}");
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn file_sink_production_failure_gate_unchanged() {
+        // Trace-off failure logging keeps its existing change gate: the first
+        // failure logs, an identical repeat stays quiet (bounded failure
+        // line), while a new error logs again.
+        let log_path = temp_log("fail-gate");
+        let mut state = bridged_state(&log_path, false);
+        let start = Instant::now();
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            refused_ack(1, "scope-excluded"),
+        );
+        super::poll_render_acks(&mut state, start);
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            refused_ack(2, "scope-excluded"),
+        );
+        super::poll_render_acks(&mut state, start);
+        let lines = log_values(&log_path);
+        assert_eq!(lines.len(), 1, "identical repeat stays quiet: {lines:?}");
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn file_sink_preview_per_move_aggregates() {
+        // Per-mouse-move preview churn with the same mover aggregates; the
+        // mover transition logs immediately.
+        let log_path = temp_log("preview");
+        let mut state = bridged_state(&log_path, false);
+        let start = Instant::now();
+        for i in 0..500u64 {
+            let mut ack = shown_ack(i + 1, "mover", 10 + i as i32, 20, 4);
+            ack.outcome = RenderOutcome::Shown;
+            post_ack(&state, RenderCarrier::Preview, ack);
+            super::poll_render_acks(&mut state, start);
+        }
+        super::poll_render_acks(&mut state, start + RENDER_SUMMARY_WINDOW);
+        let lines = log_values(&log_path);
+        let status: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "drag-preview")
+            .collect();
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        assert_eq!(status.len(), 1, "only the mover transition: {status:?}");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["carrier"], "preview");
+        assert_eq!(summaries[0]["observed"], 499);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn file_sink_coalesced_unchanged_changing_geometry_bounded() {
+        // The major trace high-rate source: coalesced Shown->Unchanged acks
+        // with applied payload and changing geometry aggregate instead of
+        // logging render-applied per ack.
+        let log_path = temp_log("unchanged");
+        let mut state = bridged_state(&log_path, true);
+        let start = Instant::now();
+        for i in 0..2000u64 {
+            post_ack(
+                &state,
+                RenderCarrier::Border,
+                ack_ex(
+                    i + 1,
+                    "win-a",
+                    i as i32,
+                    RenderOutcome::Unchanged,
+                    (1, true),
+                    40 + (i % 9),
+                    6,
+                ),
+            );
+            super::poll_render_acks(&mut state, start);
+        }
+        super::poll_render_acks(&mut state, start + RENDER_SUMMARY_WINDOW);
+        let lines = log_values(&log_path);
+        let applied: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-applied")
+            .collect();
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        // First Unchanged is the visibility transition (immediate proof plus
+        // the change-gated status line); the other 1999 aggregate.
+        assert_eq!(applied.len(), 1, "{lines:?}");
+        assert_eq!(applied[0]["outcome"], "unchanged");
+        assert_eq!(summaries.len(), 1, "{lines:?}");
+        assert_eq!(summaries[0]["observed"], 1999);
+        assert_eq!(summaries[0]["queue_max_us"], 48);
+        assert_eq!(summaries[0]["sample"]["outcome"], "unchanged");
+        assert_eq!(summaries[0]["sample"]["generation"], 2000);
+        assert_eq!(summaries[0]["sample"]["safety"], 1);
+        assert_eq!(summaries[0]["sample"]["id_proven"], true);
+        assert_eq!(summaries[0]["sample"]["source"], "ack");
+        assert_eq!(
+            summaries[0]["sample"]["rect"],
+            serde_json::json!([1999, 0, 100, 100])
+        );
+        assert!(lines.len() <= 4, "bound holds: {lines:?}");
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn file_sink_alternating_routine_outcomes_aggregate() {
+        // Alternating Shown/Redrew/Moved/Unchanged under one target, safety,
+        // and proof state aggregates: the key carries no outcome name, so
+        // cadence never breaks the window. Transitions and failures would
+        // still log immediately (covered by neighbouring tests).
+        let log_path = temp_log("alternating");
+        let mut state = bridged_state(&log_path, true);
+        let start = Instant::now();
+        let outcomes = [
+            RenderOutcome::Shown,
+            RenderOutcome::Redrew,
+            RenderOutcome::Moved,
+            RenderOutcome::Unchanged,
+        ];
+        for i in 0..1200u64 {
+            let outcome = outcomes[(i % 4) as usize].clone();
+            post_ack(
+                &state,
+                RenderCarrier::Underlay,
+                ack_ex(i + 1, "group", i as i32, outcome, (3, true), 25, 5),
+            );
+            super::poll_render_acks(&mut state, start);
+        }
+        super::poll_render_acks(&mut state, start + RENDER_SUMMARY_WINDOW);
+        let lines = log_values(&log_path);
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        assert_eq!(summaries.len(), 1, "{lines:?}");
+        assert_eq!(summaries[0]["carrier"], "underlay");
+        assert_eq!(summaries[0]["observed"], 1199);
+        // Latest sample wins, so the grouped outcome is the last one seen.
+        assert_eq!(summaries[0]["sample"]["outcome"], "unchanged");
+        assert_eq!(summaries[0]["sample"]["generation"], 1200);
+        assert_eq!(summaries[0]["sample"]["safety"], 3);
+        assert!(lines.len() <= 4, "bound holds: {lines:?}");
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn file_sink_safety_and_proof_changes_are_immediate() {
+        // Safety-epoch and proof-flag changes log immediately; a steady
+        // unproven state aggregates instead of failing per frame.
+        let log_path = temp_log("proof-change");
+        let mut state = bridged_state(&log_path, true);
+        let start = Instant::now();
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(1, "win-a", 0, RenderOutcome::Shown, (1, true), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(2, "win-a", 1, RenderOutcome::Shown, (1, true), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        // Safety epoch bump: immediate even with identical geometry/target.
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(3, "win-a", 1, RenderOutcome::Shown, (2, true), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        // Proof flag flips: immediate both ways.
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(4, "win-a", 1, RenderOutcome::Shown, (2, false), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        // Steady unproven state: aggregates, not a per-frame failure.
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(5, "win-a", 2, RenderOutcome::Shown, (2, false), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        // Proof restored: immediate again.
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(6, "win-a", 2, RenderOutcome::Shown, (2, true), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        post_ack(
+            &state,
+            RenderCarrier::Border,
+            ack_ex(7, "win-a", 3, RenderOutcome::Shown, (2, true), 10, 2),
+        );
+        super::poll_render_acks(&mut state, start);
+        super::poll_render_acks(&mut state, start + RENDER_SUMMARY_WINDOW);
+        let lines = log_values(&log_path);
+        let applied: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-applied")
+            .collect();
+        let summaries: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "render-frame-summary")
+            .collect();
+        // Transition + safety bump + two proof flips = 4 immediate proofs.
+        assert_eq!(applied.len(), 4, "{lines:?}");
+        assert_eq!(summaries.len(), 1, "{lines:?}");
+        assert_eq!(summaries[0]["observed"], 3);
+        assert_eq!(summaries[0]["sample"]["id_proven"], true);
+        assert_eq!(summaries[0]["sample"]["safety"], 2);
+        assert_eq!(summaries[0]["sample"]["generation"], 7);
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn same_thread_hide_then_show_preserves_lifecycle() {
+        // A same-thread hide records its diagnostic key, so the next show
+        // under the same target logs its lifecycle instead of aggregating
+        // against the stale show key.
+        let log_path = temp_log("hide-show");
+        let mut state = super::rmax03_adapter_tests::test_state();
+        state.log_path = log_path.clone();
+        let now = Instant::now();
+        assert!(!super::render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            true,
+            super::same_thread_sample(
+                "shown",
+                "win-a".to_owned(),
+                [0, 0, 10, 10],
+                String::new(),
+                String::new()
+            ),
+        ));
+        super::hide_border(&mut state, "idle");
+        // Show after hide: key changed (hidden:idle vs shown:win-a), so the
+        // caller must log immediately, not aggregate.
+        assert!(!super::render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            true,
+            super::same_thread_sample(
+                "shown",
+                "win-a".to_owned(),
+                [0, 0, 10, 10],
+                String::new(),
+                String::new()
+            ),
+        ));
+        // And the repeat aggregates again.
+        assert!(super::render_same_thread_gate(
+            &mut state,
+            RenderCarrier::Border,
+            "win-a",
+            now,
+            true,
+            super::same_thread_sample(
+                "shown",
+                "win-a".to_owned(),
+                [1, 0, 10, 10],
+                String::new(),
+                String::new()
+            ),
+        ));
+        let lines = log_values(&log_path);
+        assert!(
+            lines.iter().any(|l| l["outcome"] == "hidden"),
+            "hide line kept: {lines:?}"
+        );
+        let _ = std::fs::remove_file(&log_path);
+    }
+
+    #[test]
+    fn struct_same_thread_samples_keep_timings_null() {
+        // Same-thread windows carry no ack transport: maxima stay null (never
+        // zero-filled) and the sample is labelled accordingly.
+        let mut health = RenderFrameHealth::default();
+        let start = Instant::now();
+        health.observe_routine(
+            RenderCarrier::Border,
+            start,
+            None,
+            None,
+            super::same_thread_sample(
+                "shown",
+                "win-a".to_owned(),
+                [3, 0, 10, 10],
+                String::new(),
+                String::new(),
+            ),
+        );
+        let lines = health.take_due(start + RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0]["queue_max_us"].is_null(), "{lines:?}");
+        assert!(lines[0]["span_max_us"].is_null(), "{lines:?}");
+        assert_eq!(lines[0]["sample"]["source"], "same-thread");
+        assert!(lines[0]["sample"]["generation"].is_null());
+        assert!(lines[0]["sample"]["safety"].is_null());
+        // Acked maxima survive alongside unmeasured samples: only actual ack
+        // transport feeds the maxima.
+        health.observe_routine(
+            RenderCarrier::Border,
+            start + RENDER_SUMMARY_WINDOW,
+            Some(50),
+            Some(9),
+            sample_for("win-a", 0, "shown"),
+        );
+        health.observe_routine(
+            RenderCarrier::Border,
+            start + RENDER_SUMMARY_WINDOW,
+            None,
+            None,
+            super::same_thread_sample(
+                "shown",
+                "win-a".to_owned(),
+                [4, 0, 10, 10],
+                String::new(),
+                String::new(),
+            ),
+        );
+        let lines = health.take_due(start + 2 * RENDER_SUMMARY_WINDOW);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["observed"], 2);
+        assert_eq!(lines[0]["queue_max_us"], 50);
+        assert_eq!(lines[0]["span_max_us"], 9);
     }
 }
 
@@ -40500,7 +44441,8 @@ mod preview_tests {
 #[cfg(test)]
 mod rmax03_adapter_tests {
     use super::{
-        HintCx, RetainedRow, TileLoop, assemble_domain_rows, workspace_mode_known, writable_tokens,
+        HintCx, RenderFrameHealth, RetainedRow, TileLoop, assemble_domain_rows,
+        workspace_mode_known, writable_tokens,
     };
 
     /// Shared proof-style owner harness (no HWNDs, hooks, or live effects).
@@ -40543,7 +44485,6 @@ mod rmax03_adapter_tests {
             last_disabled: Vec::new(),
             cli_overrides: crate::tiling::CliOverrides::default(),
             snap_dropped: 0,
-            input_trace_snap_age: 0,
             cb_diag_dropped: 0,
             cb_diag_filtered: 0,
             cb_outbox_dropped: 0,
@@ -40609,6 +44550,7 @@ mod rmax03_adapter_tests {
             overlay_now: std::collections::HashMap::new(),
             input_bridge: None,
             render_bridge: None,
+            render_frames: RenderFrameHealth::default(),
             pending_releases: crate::workspace::PendingReleases::new(),
             pending_retry_fp: 0,
         };
@@ -55734,5 +59676,2060 @@ mod cross_drag_adapter_tests {
         ));
         // Zero movement routes nothing.
         assert_eq!(classify_gesture(&before, &before, Some((100, 100))), None);
+    }
+}
+
+#[cfg(test)]
+mod workspace_migrate_adapter_tests {
+    // Item 14 whole-active-workspace migration (R-WS-12 D1-D9/G37) through a
+    // real `TileLoop` against the real retained Engine (no HWNDs, hooks, or
+    // live effects): adjacent FULL-rectangle selection, live-observation row
+    // carry (maximized via `IsZoomed`, fullscreen via the live inference,
+    // sticky/float/fixed lanes), candidate-Engine `MigrateWorkspace` planning
+    // with the live G-37 refill mode, commit-last project plus Engine
+    // publication behind topology/readback/arrival/member/view fences, and
+    // narrow no-replay refusal on drift. Native setters stay user-owned live
+    // acceptance; these pin the portable transaction shape plus the headless
+    // verification gates.
+    use super::rmax03_adapter_tests::test_state;
+    use super::{
+        HintCx, MonitorArea, ObservedWindow, clear_pending_seams, inject_monitor_areas,
+        inject_pending_arrival, inject_pending_arrival_placement, inject_pending_elevated,
+        inject_pending_float_move_ok, inject_pending_focus, inject_pending_iconic,
+        inject_pending_native_move_ok, inject_pending_observe, inject_pending_overlay_seq,
+        inject_pending_placement_normal, inject_pending_suspend, inject_pending_tag,
+        output_for_rect, pending_apply_writables, pending_counters, pending_native_transfers,
+        revision_for, stamp_engine_event, workspace_domain_for,
+    };
+    use crate::snapkey::{QueuedWorkspaceMigrateIntent, SnapEdge};
+    use crate::workspace::{MemberLoc, WindowKey};
+    use std::collections::BTreeSet;
+    use tiler_core::directional::{Direction, WindowId};
+    use tiler_core::geometry::Rect;
+    use tiler_core::ids::CorrelationId;
+
+    fn area(device: &str, work: Rect, full: Rect) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work,
+            full,
+        }
+    }
+
+    fn areas() -> Vec<MonitorArea> {
+        vec![
+            area(
+                "mon-1",
+                Rect {
+                    x: 0,
+                    y: 40,
+                    w: 1920,
+                    h: 1040,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            area(
+                "mon-2",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ]
+    }
+
+    fn key(hwnd: u64, pid: u32) -> WindowKey {
+        WindowKey {
+            hwnd,
+            pid,
+            creation: format!("c{hwnd:016x}"),
+        }
+    }
+
+    fn me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 5001,
+            process_creation: "creation-me".to_owned(),
+            user_sid: "S-1-migrate".to_owned(),
+            session_id: 7,
+            exe_path: "C:\\test\\app.exe".to_owned(),
+        }
+    }
+
+    fn observed_window(
+        key: &WindowKey,
+        token: &str,
+        frame: Rect,
+        me: &crate::model::ProcessIdentity,
+    ) -> ObservedWindow {
+        ObservedWindow {
+            hwnd: key.hwnd,
+            token: token.to_owned(),
+            outer: frame,
+            visible: frame,
+            insets: crate::tiling::FrameInsets {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            identity: crate::tiling::ObservedTarget {
+                hwnd: key.hwnd,
+                pid: key.pid,
+                process_creation: key.creation.clone(),
+                exe_path: me.exe_path.clone(),
+                user_sid: me.user_sid.clone(),
+                session_id: me.session_id,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    struct MigrateRig {
+        state: super::TileLoop,
+        areas: Vec<MonitorArea>,
+        fulls: Vec<Rect>,
+        me: crate::model::ProcessIdentity,
+        keys: Vec<WindowKey>,
+        tokens: Vec<String>,
+        source_output: String,
+        source_ws: String,
+        target_output: String,
+        target_ws: String,
+        observed: Vec<ObservedWindow>,
+        source_rows: Vec<crate::workspace_owner::OwnerRow>,
+        intent: QueuedWorkspaceMigrateIntent,
+    }
+
+    /// Two-output rig with two tiled members on the source active workspace
+    /// plus a real retained Engine session: the destination holds its own
+    /// current workspace with no session (the Engine refuses carried target
+    /// residue, so the target stays adapter-owned until the move).
+    fn rig() -> MigrateRig {
+        clear_pending_seams();
+        let mut state = test_state();
+        let areas = areas();
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("mon-1");
+        state.workspaces.ensure_output("mon-2");
+        let ws_a = state.workspaces.active_id("mon-1").expect("active");
+        let ws_b = state.workspaces.active_id("mon-2").expect("active");
+        state.workspaces.set_tiled("mon-1", &ws_a, true);
+        state.workspaces.set_tiled("mon-2", &ws_b, true);
+        let src_bounds = workspace_domain_for("mon-1", &ws_a, &areas, 8, 8)
+            .expect("src domain")
+            .0
+            .bounds;
+        let me = me();
+        let tokens = vec!["mig-a".to_owned(), "mig-b".to_owned()];
+        let mut keys = Vec::new();
+        let mut observed = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            let k = key(0x6100u64 + i as u64, 9100u32 + i as u32);
+            let frame = Rect {
+                x: 100 + i as i32 * 500,
+                y: 100,
+                w: 400,
+                h: 300,
+            };
+            state.member_tokens.insert(k.clone(), token.clone());
+            state.member_identity.insert(
+                k.clone(),
+                crate::model::ProcessIdentity {
+                    pid: k.pid,
+                    process_creation: k.creation.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    exe_path: me.exe_path.clone(),
+                },
+            );
+            state
+                .member_tags
+                .insert(k.clone(), format!("tag-{:x}", k.hwnd));
+            inject_pending_tag(k.hwnd, Some(format!("tag-{:x}", k.hwnd)));
+            assert!(state.workspaces.assign(k.clone(), "mon-1", &ws_a, false));
+            observed.push(observed_window(&k, token, frame, &me));
+            keys.push(k);
+        }
+        // Real retained Engine session over the source rows (tiled pair,
+        // first member focused).
+        let domain = crate::workspace_owner::workspace_domain("mon-1", &ws_a, src_bounds, 8);
+        let carried: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = tokens
+            .iter()
+            .map(|token| {
+                (
+                    WindowId(token.clone()),
+                    src_bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("migrate-seed").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &tokens
+                .iter()
+                .map(|t| (t.clone(), src_bounds))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(tokens[0].clone())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(
+                reply,
+                tiler_core::boundary::CoreReply::Projection(_)
+                    | tiler_core::boundary::CoreReply::Tiled(_)
+            ),
+            "seed must converge, got {reply:?}"
+        );
+        let source_rows: Vec<crate::workspace_owner::OwnerRow> = tokens
+            .iter()
+            .map(|token| crate::workspace_owner::OwnerRow {
+                token: token.clone(),
+                rect: Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+            })
+            .collect();
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        MigrateRig {
+            state,
+            areas,
+            fulls,
+            me,
+            keys,
+            tokens,
+            source_output: "mon-1".to_owned(),
+            source_ws: ws_a,
+            target_output: "mon-2".to_owned(),
+            target_ws: ws_b,
+            observed,
+            source_rows,
+            intent: QueuedWorkspaceMigrateIntent {
+                direction: Direction::Right,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: true,
+                announce: true,
+                tick: std::time::Instant::now(),
+            },
+        }
+    }
+
+    /// Predict the migrated tiled geometry by replaying the production
+    /// `MigrateWorkspace` construction on a cloned Engine (no mutation):
+    /// success tests stage the prediction for the arrival proof.
+    fn predict_migrate_rects(
+        rig: &MigrateRig,
+        correlation: &CorrelationId,
+    ) -> Vec<crate::workspace_owner::PlannedWrite> {
+        let (source_base, source_key) =
+            workspace_domain_for(&rig.source_output, &rig.source_ws, &rig.areas, 8, 8)
+                .expect("source domain");
+        let (target_base, target_key) =
+            workspace_domain_for(&rig.target_output, &rig.source_ws, &rig.areas, 8, 8)
+                .expect("target domain");
+        let rows: Vec<crate::workspace_owner::MigrateRow> = rig
+            .tokens
+            .iter()
+            .map(|token| crate::workspace_owner::MigrateRow {
+                token: token.clone(),
+                rect: Rect {
+                    x: 100,
+                    y: 100,
+                    w: 400,
+                    h: 300,
+                },
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                fit_excluded: false,
+            })
+            .collect();
+        let combined_fp = {
+            let mut pairs: Vec<(String, Rect)> = rig
+                .source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            crate::tiling::fingerprint(&pairs)
+        };
+        let mut candidate = rig.state.engine.clone();
+        let event = crate::workspace_owner::build_migrate_event(
+            &rig.state.owner,
+            &rig.state.generation,
+            correlation,
+            revision_for(&rig.state, &rig.source_output, &rig.source_ws),
+            combined_fp,
+            (source_base, source_key),
+            (target_base, target_key),
+            &rows,
+            "",
+            "right",
+            8,
+        )
+        .expect("migrate event predicts");
+        let mut event = event;
+        stamp_engine_event(&rig.state, &mut event);
+        let reply = candidate.handle(&event);
+        crate::workspace_owner::planned_writes(&reply).expect("plan extracts")
+    }
+
+    fn run_migrate(rig: &mut MigrateRig, correlation: &CorrelationId, tick: u64) -> &'static str {
+        let mut hint_cx = HintCx::new();
+        let migrate_rows = super::migrate_rows_for(
+            &rig.state,
+            &rig.source_output,
+            &rig.source_ws,
+            &rig.source_rows,
+            &rig.observed,
+            &[],
+            &rig.fulls,
+        )
+        .expect("rows assemble");
+        let tmp = std::env::temp_dir().join(format!(
+            "tiler-migrate-{}-{}",
+            std::process::id(),
+            correlation.as_str()
+        ));
+        let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
+        super::run_workspace_migrate(
+            &mut rig.state,
+            &rig.me,
+            &store,
+            &tmp,
+            &rig.fulls,
+            &rig.areas,
+            &rig.observed,
+            &[],
+            &mut hint_cx,
+            &rig.source_output.clone(),
+            &rig.source_ws.clone(),
+            &rig.source_rows.clone(),
+            &migrate_rows,
+            &rig.target_output.clone(),
+            &rig.target_ws.clone(),
+            &rig.intent,
+            tick,
+            correlation,
+            correlation.as_str(),
+        )
+    }
+
+    #[test]
+    fn migrate_rows_carry_live_overlay_sticky_and_float_flags() {
+        // Touched `false` placeholders replaced with observations: the
+        // maximized flag re-reads live, fullscreen re-reads live, sticky
+        // rides the runtime set, floating rides the Engine row, and the
+        // float exception carries fit-exclusion while plain rows do not.
+        let mut rig = rig();
+        let sticky_key = rig.keys[1].clone();
+        rig.state.sticky.insert(sticky_key, false);
+        let float_token = rig.tokens[1].clone();
+        for row in rig.source_rows.iter_mut() {
+            if row.token == float_token {
+                row.floating = true;
+            }
+        }
+        // Live snapshot: first member maximized only, second plain. One
+        // entry per `live_overlay_flags` call, consumed in member order.
+        inject_pending_overlay_seq(vec![(true, Some(false)), (false, Some(false))]);
+        let rows = super::migrate_rows_for(
+            &rig.state,
+            &rig.source_output,
+            &rig.source_ws,
+            &rig.source_rows,
+            &rig.observed,
+            &[],
+            &rig.fulls,
+        )
+        .expect("rows assemble");
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].maximized, "live maximized observation carried");
+        assert!(!rows[0].fullscreen);
+        assert!(!rows[0].sticky);
+        assert!(!rows[0].floating);
+        assert!(!rows[0].fit_excluded, "plain rows carry no fit exclusion");
+        assert!(!rows[1].maximized);
+        assert!(rows[1].sticky, "sticky rides the runtime set");
+        assert!(rows[1].floating, "float rides the Engine row");
+        assert!(
+            rows[1].fit_excluded,
+            "float exception carries fit exclusion for the Engine gate"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_verified_tail_commits_both_authorities_without_focus() {
+        // Empty-focus migration (no foreground member): the Engine relocates
+        // the retained domain wholesale, the project rekeys every member to
+        // the target output with the moved id shown after the target current,
+        // and no focus setter runs. Staged arrival frames prove the transfer.
+        let mut rig = rig();
+        let correlation = CorrelationId::parse("corr-migrate-commit").expect("correlation");
+        let writes = predict_migrate_rects(&rig, &correlation);
+        assert!(!writes.is_empty(), "relocated domain plans tiled geometry");
+        for write in &writes {
+            assert_eq!(
+                output_for_rect(&rig.areas, &write.rect),
+                "mon-2",
+                "planned arrival must land on the destination monitor"
+            );
+            let key = rig
+                .keys
+                .iter()
+                .find(|key| {
+                    rig.state
+                        .member_tokens
+                        .get(*key)
+                        .is_some_and(|t| t == &write.window.0)
+                })
+                .expect("planned member");
+            // Pre-move cache stays on the source frame; the fresh post-setter
+            // boundary readback (distinct injection) proves arrival on target.
+            let pre = rig
+                .observed
+                .iter()
+                .find(|w| w.hwnd == key.hwnd)
+                .map(|w| w.visible)
+                .expect("pre-state frame");
+            rig.state.stable.insert(key.hwnd, pre);
+            inject_pending_arrival(key.hwnd, write.rect);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        // Both members read plain (no overlay): two live-overlay reads.
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let moved = rig.source_ws.clone();
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_migrate(&mut rig, &correlation, 31);
+        assert_eq!(outcome, "migrate-applied");
+        for key in &rig.keys {
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-2", "membership rekeys wholesale");
+            assert_eq!(loc.workspace, moved, "backing id preserved on target");
+        }
+        assert_eq!(
+            rig.state.workspaces.active_id("mon-2").as_deref(),
+            Some(moved.as_str()),
+            "target shows the migrated workspace"
+        );
+        assert_ne!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "verified transfer publishes the Engine once"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "empty-focus migration takes no focus setter"
+        );
+        assert!(
+            rig.state.workspaces.active_id("mon-1").is_some()
+                || rig.state.workspaces.scoped_ring_ids("mon-1").is_empty(),
+            "source refills through the shared selector or empties for lifecycle"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_late_topology_drift_retains_source_and_engine() {
+        // Fresh-topology drift after planning refuses with no commit and no
+        // replay: both retained authorities stand and the next observation
+        // converges.
+        let mut rig = rig();
+        let correlation = CorrelationId::parse("corr-migrate-topology").expect("correlation");
+        let writes = predict_migrate_rects(&rig, &correlation);
+        for write in &writes {
+            let key = rig
+                .keys
+                .iter()
+                .find(|key| {
+                    rig.state
+                        .member_tokens
+                        .get(*key)
+                        .is_some_and(|t| t == &write.window.0)
+                })
+                .expect("planned member");
+            let pre = rig
+                .observed
+                .iter()
+                .find(|w| w.hwnd == key.hwnd)
+                .map(|w| w.visible)
+                .expect("pre-state frame");
+            rig.state.stable.insert(key.hwnd, pre);
+            inject_pending_arrival(key.hwnd, write.rect);
+        }
+        let mut drifted = rig.areas.clone();
+        drifted[1].full.x = 2000;
+        inject_monitor_areas(Some(drifted));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let moved = rig.source_ws.clone();
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_migrate(&mut rig, &correlation, 32);
+        // The pre-commit fence sees the drift first: the pinned FULL pair no
+        // longer matches the fresh topology, so the transaction refuses as
+        // `topology-changed` with no commit and no replay.
+        assert_eq!(outcome, "topology-changed");
+        for key in &rig.keys {
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-1", "drift keeps source membership");
+            assert_eq!(loc.workspace, moved);
+        }
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "drift keeps the retained Engine"
+        );
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "refused transfer skips follow-focus"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_sticky_member_stays_homed_on_source_refill() {
+        // D7: a sticky all-desktops member never rides the moved entry. It
+        // re-homes to the source refill while migrating members relocate,
+        // and the transfer still verifies.
+        let mut rig = rig();
+        let sticky_key = rig.keys[1].clone();
+        rig.state.sticky.insert(sticky_key.clone(), false);
+        // Sticky member reads plain; the float-move tail skips sticky rows.
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        let rows = super::migrate_rows_for(
+            &rig.state,
+            &rig.source_output,
+            &rig.source_ws,
+            &rig.source_rows,
+            &rig.observed,
+            &[],
+            &rig.fulls,
+        )
+        .expect("rows assemble");
+        let sticky_row = rows
+            .iter()
+            .find(|row| row.token == rig.tokens[1])
+            .expect("sticky row");
+        assert!(sticky_row.sticky);
+        let migrating: BTreeSet<WindowKey> = rig
+            .state
+            .workspaces
+            .workspace_members(&rig.source_output, &rig.source_ws)
+            .difference(&BTreeSet::from([sticky_key.clone()]))
+            .cloned()
+            .collect();
+        assert_eq!(migrating.len(), 1, "only the non-sticky member migrates");
+        // Project-level proof through the stable-ID primitive plus the
+        // shared both-view verification (no native effects here).
+        let mut candidate = rig.state.workspaces.clone();
+        let outcome = candidate
+            .migrate_workspace_excluding(
+                &rig.source_output,
+                &rig.target_output,
+                rig.state
+                    .settings_live
+                    .as_ref()
+                    .map(|live| live.settings.core.migration_source_refill_mode())
+                    .unwrap_or_default(),
+                &BTreeSet::from([sticky_key.clone()]),
+            )
+            .expect("primitive rekeys");
+        let source_members = candidate.workspace_members(
+            &rig.source_output,
+            outcome.source_refill.as_deref().unwrap_or(""),
+        );
+        let target_members = candidate.workspace_members(&rig.target_output, &outcome.moved_id);
+        let sticky_set = BTreeSet::from([sticky_key]);
+        if outcome.source_refill.is_none() {
+            assert!(
+                !target_members.iter().any(|key| sticky_set.contains(key)),
+                "sticky never lands on the target"
+            );
+        } else {
+            assert!(
+                crate::workspace_owner::verify_migration_transfer(
+                    &migrating,
+                    &sticky_set,
+                    &source_members,
+                    &target_members,
+                    &outcome.moved_id,
+                    outcome.source_refill.as_deref(),
+                    candidate.active_id(&rig.source_output).as_deref(),
+                    candidate.active_id(&rig.target_output).as_deref(),
+                ),
+                "project transfer verifies with sticky homed on the refill"
+            );
+        }
+        let _ = MemberLoc {
+            output: String::new(),
+            workspace: String::new(),
+            hidden: false,
+        };
+        clear_pending_seams();
+    }
+
+    struct AllKindsRig {
+        state: super::TileLoop,
+        areas: Vec<MonitorArea>,
+        fulls: Vec<Rect>,
+        me: crate::model::ProcessIdentity,
+        keys: Vec<WindowKey>,
+        tokens: Vec<String>,
+        source_output: String,
+        source_ws: String,
+        target_output: String,
+        target_ws: String,
+        observed_visible: Vec<ObservedWindow>,
+        source_rows: Vec<crate::workspace_owner::OwnerRow>,
+        intent: QueuedWorkspaceMigrateIntent,
+    }
+
+    /// Five-member rig proving ALL-member native transfer: tiled plain,
+    /// maximized overlay, plain float, minimized (iconic omitted) and hidden.
+    /// The retained Engine seeds all five tiled (first focused); the float
+    /// rides `source_rows.floating`, the overlay rides live `IsZoomed`, the
+    /// minimized rides `minimized_omitted` plus iconic plus `member_rects`,
+    /// the hidden rides `assign(..., true)` plus `member_rects`. Visible
+    /// observation carries only the three visible members, mirroring
+    /// production (concealed members keep no live frame).
+    fn rig_all_kinds() -> AllKindsRig {
+        clear_pending_seams();
+        let mut state = test_state();
+        let areas = areas();
+        let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
+        state.workspaces.ensure_output("mon-1");
+        state.workspaces.ensure_output("mon-2");
+        let ws_a = state.workspaces.active_id("mon-1").expect("active");
+        let ws_b = state.workspaces.active_id("mon-2").expect("active");
+        state.workspaces.set_tiled("mon-1", &ws_a, true);
+        state.workspaces.set_tiled("mon-2", &ws_b, true);
+        let src_bounds = workspace_domain_for("mon-1", &ws_a, &areas, 8, 8)
+            .expect("src domain")
+            .0
+            .bounds;
+        let me = me();
+        let tokens = vec![
+            "mig-a".to_owned(),
+            "mig-b".to_owned(),
+            "mig-c".to_owned(),
+            "mig-d".to_owned(),
+            "mig-e".to_owned(),
+        ];
+        let mut keys = Vec::new();
+        let mut observed_visible = Vec::new();
+        let mut source_rows = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            let k = key(0x6200u64 + i as u64, 9200u32 + i as u32);
+            let frame = Rect {
+                x: 100 + i as i32 * 200,
+                y: 100,
+                w: 400,
+                h: 300,
+            };
+            state.member_tokens.insert(k.clone(), token.clone());
+            state.member_identity.insert(
+                k.clone(),
+                crate::model::ProcessIdentity {
+                    pid: k.pid,
+                    process_creation: k.creation.clone(),
+                    user_sid: me.user_sid.clone(),
+                    session_id: me.session_id,
+                    exe_path: me.exe_path.clone(),
+                },
+            );
+            state
+                .member_tags
+                .insert(k.clone(), format!("tag-{:x}", k.hwnd));
+            inject_pending_tag(k.hwnd, Some(format!("tag-{:x}", k.hwnd)));
+            let hidden = i == 4;
+            assert!(state.workspaces.assign(k.clone(), "mon-1", &ws_a, hidden));
+            // Concealed normal frames live in `member_rects` (the placement
+            // tail remaps them without changing showCmd).
+            if i == 3 || i == 4 {
+                state.member_rects.insert(token.clone(), frame);
+            }
+            if i < 3 {
+                observed_visible.push(observed_window(&k, token, frame, &me));
+            }
+            source_rows.push(crate::workspace_owner::OwnerRow {
+                token: token.clone(),
+                rect: frame,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: i == 2,
+            });
+            keys.push(k);
+        }
+        // Minimized member: iconic plus omitted (frameless non-overlay rows
+        // converge to `MinimizedSlot`, but migration still carries it).
+        let min_key = keys[3].clone();
+        state.minimized_omitted.insert(min_key.clone());
+        inject_pending_iconic(vec![min_key.hwnd]);
+        let domain = crate::workspace_owner::workspace_domain("mon-1", &ws_a, src_bounds, 8);
+        let carried: Vec<(
+            WindowId,
+            Rect,
+            tiler_core::size_hints::WindowSizeHints,
+            bool,
+        )> = tokens
+            .iter()
+            .map(|token| {
+                (
+                    WindowId(token.clone()),
+                    src_bounds,
+                    tiler_core::size_hints::WindowSizeHints::none(),
+                    false,
+                )
+            })
+            .collect();
+        let revision = state
+            .engine
+            .session(&domain.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let correlation = CorrelationId::parse("migrate-seed").expect("correlation");
+        let fp = crate::tiling::fingerprint(
+            &tokens
+                .iter()
+                .map(|t| (t.clone(), src_bounds))
+                .collect::<Vec<_>>(),
+        );
+        let event = crate::tiling::build_reconcile_event_for_floating(
+            &state.owner,
+            &state.generation,
+            &correlation,
+            revision,
+            fp,
+            &domain.0,
+            &domain.1,
+            8,
+            &carried,
+            Some(&WindowId(tokens[0].clone())),
+        );
+        let reply = state.engine.handle(&event);
+        assert!(
+            matches!(
+                reply,
+                tiler_core::boundary::CoreReply::Projection(_)
+                    | tiler_core::boundary::CoreReply::Tiled(_)
+            ),
+            "seed must converge, got {reply:?}"
+        );
+        inject_pending_suspend(Some(false));
+        inject_pending_elevated(Some(false));
+        inject_pending_float_move_ok(true);
+        inject_pending_native_move_ok(true);
+        AllKindsRig {
+            state,
+            areas,
+            fulls,
+            me,
+            keys,
+            tokens,
+            source_output: "mon-1".to_owned(),
+            source_ws: ws_a,
+            target_output: "mon-2".to_owned(),
+            target_ws: ws_b,
+            observed_visible,
+            source_rows,
+            intent: QueuedWorkspaceMigrateIntent {
+                direction: Direction::Right,
+                edge: SnapEdge::Down,
+                origin: None,
+                consumed: true,
+                announce: true,
+                tick: std::time::Instant::now(),
+            },
+        }
+    }
+
+    fn run_all_migrate(
+        rig: &mut AllKindsRig,
+        correlation: &CorrelationId,
+        tick: u64,
+    ) -> &'static str {
+        let mut hint_cx = HintCx::new();
+        let migrate_rows = super::migrate_rows_for(
+            &rig.state,
+            &rig.source_output,
+            &rig.source_ws,
+            &rig.source_rows,
+            &rig.observed_visible,
+            &[],
+            &rig.fulls,
+        )
+        .expect("rows assemble");
+        let tmp = std::env::temp_dir().join(format!(
+            "tiler-migrate-all-{}-{}",
+            std::process::id(),
+            correlation.as_str()
+        ));
+        let store = crate::storage::LedgerStore::open(&tmp).expect("ledger temp dir");
+        super::run_workspace_migrate(
+            &mut rig.state,
+            &rig.me,
+            &store,
+            &tmp,
+            &rig.fulls,
+            &rig.areas,
+            &rig.observed_visible,
+            &[],
+            &mut hint_cx,
+            &rig.source_output.clone(),
+            &rig.source_ws.clone(),
+            &rig.source_rows.clone(),
+            &migrate_rows,
+            &rig.target_output.clone(),
+            &rig.target_ws.clone(),
+            &rig.intent,
+            tick,
+            correlation,
+            correlation.as_str(),
+        )
+    }
+
+    /// Manual mixed-kind rows for arrival prediction without consuming the
+    /// scripted overlay queue: tiled plain, maximized overlay, float,
+    /// minimized plain, hidden plain.
+    fn mixed_rows_for_predict(rig: &AllKindsRig) -> Vec<crate::workspace_owner::MigrateRow> {
+        rig.tokens
+            .iter()
+            .enumerate()
+            .map(|(i, token)| {
+                let rect = rig.source_rows[i].rect;
+                crate::workspace_owner::MigrateRow {
+                    token: token.clone(),
+                    rect,
+                    hints: tiler_core::size_hints::WindowSizeHints::none(),
+                    floating: i == 2,
+                    fullscreen: false,
+                    maximized: i == 1,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    fit_excluded: i == 2,
+                }
+            })
+            .collect()
+    }
+
+    fn predict_mixed_writes(
+        rig: &AllKindsRig,
+        correlation: &CorrelationId,
+    ) -> Vec<crate::workspace_owner::PlannedWrite> {
+        let (source_base, source_key) =
+            workspace_domain_for(&rig.source_output, &rig.source_ws, &rig.areas, 8, 8)
+                .expect("source domain");
+        let (target_base, target_key) =
+            workspace_domain_for(&rig.target_output, &rig.source_ws, &rig.areas, 8, 8)
+                .expect("target domain");
+        let rows = mixed_rows_for_predict(rig);
+        let combined_fp = {
+            let mut pairs: Vec<(String, Rect)> = rig
+                .source_rows
+                .iter()
+                .map(|r| (r.token.clone(), r.rect))
+                .collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            crate::tiling::fingerprint(&pairs)
+        };
+        let mut candidate = rig.state.engine.clone();
+        let event = crate::workspace_owner::build_migrate_event(
+            &rig.state.owner,
+            &rig.state.generation,
+            correlation,
+            revision_for(&rig.state, &rig.source_output, &rig.source_ws),
+            combined_fp,
+            (source_base, source_key),
+            (target_base, target_key),
+            &rows,
+            "",
+            "right",
+            8,
+        )
+        .expect("migrate event predicts");
+        let mut event = event;
+        stamp_engine_event(&rig.state, &mut event);
+        let reply = candidate.handle(&event);
+        crate::workspace_owner::planned_writes(&reply).expect("plan extracts")
+    }
+
+    #[test]
+    fn migrate_all_member_kinds_remap_output_with_per_effect_fences() {
+        // D7/D8: tiled plain writes geometry; overlay, float, minimized and
+        // hidden remap natively (move-only, show-state preserved) with fresh
+        // per-effect fences and per-member arrival. The writable set holds
+        // only the tiled plain token; the native seam records the other four
+        // with their production boundary rects on the target.
+        let mut rig = rig_all_kinds();
+        let correlation = CorrelationId::parse("corr-migrate-all").expect("correlation");
+        let writes = predict_mixed_writes(&rig, &correlation);
+        let tiled_write = writes
+            .iter()
+            .find(|w| w.window.0 == "mig-a")
+            .expect("tiled plain plans geometry");
+        // Pre-move cache stays on the source frame; fresh post-setter
+        // boundary readback (distinct injection) proves arrival on target.
+        let pre_a = rig.source_rows[0].rect;
+        rig.state.stable.insert(rig.keys[0].hwnd, pre_a);
+        inject_pending_arrival(rig.keys[0].hwnd, tiled_write.rect);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        // Float arrival: same size on the target; overlay arrival: any frame
+        // on the target (monitor/identity, never the old exact rect).
+        // Concealed arrivals prove fresh placement on the target.
+        for (idx, token_idx) in [(2usize, 2usize), (1usize, 1usize)] {
+            let _ = idx;
+            let key = &rig.keys[token_idx];
+            let frame = rig.source_rows[token_idx].rect;
+            let moved =
+                crate::workspace_owner::translate_rect_to_output(frame, source_full, target_full);
+            assert_eq!(
+                output_for_rect(&rig.areas, &moved),
+                "mon-2",
+                "test moved math must land on target"
+            );
+            rig.state.stable.insert(key.hwnd, frame);
+            inject_pending_arrival(key.hwnd, moved);
+        }
+        for idx in [3usize, 4] {
+            let key = &rig.keys[idx];
+            let frame = rig.source_rows[idx].rect;
+            let moved =
+                crate::workspace_owner::translate_rect_to_output(frame, source_full, target_full);
+            rig.state.stable.insert(key.hwnd, frame);
+            inject_pending_arrival_placement(key.hwnd, moved);
+        }
+        // Maximized overlay remap reads the live restore frame, never the
+        // observed maximized frame: stage a restore rect with a distinct
+        // size in workspace coordinates on the source work area (unequal
+        // top inset: work y=40 vs target work y=0 exercises the WORK
+        // conversion, not just the FULL delta).
+        inject_pending_placement_normal(
+            rig.keys[1].hwnd,
+            Rect {
+                x: 100,
+                y: 60,
+                w: 320,
+                h: 240,
+            },
+            true,
+        );
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed_visible.clone(), Vec::new(), false);
+        // 3 visible rows (plain, overlay-max, float), 4 per-effect fence
+        // reads in transfer order (overlay, float, minimized, hidden), plus
+        // the overlay arrival flag re-read after its setter (native re-fit
+        // may change the maximized frame; the flag proves the slot).
+        inject_pending_overlay_seq(vec![
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_all_migrate(&mut rig, &correlation, 41);
+        assert_eq!(outcome, "migrate-applied");
+        let writables = pending_apply_writables();
+        assert_eq!(writables.len(), 1, "one combined tiled apply");
+        assert!(
+            writables[0].contains("mig-a"),
+            "tiled plain takes geometry: {:?}",
+            writables[0]
+        );
+        for excluded in ["mig-b", "mig-c", "mig-d", "mig-e"] {
+            assert!(
+                !writables[0].contains(excluded),
+                "native member takes no tiled geometry: {excluded}"
+            );
+        }
+        let native = pending_native_transfers();
+        let kinds: std::collections::BTreeMap<String, &'static str> = native
+            .iter()
+            .map(|(_, _, kind)| (String::new(), *kind))
+            .collect();
+        let _ = kinds;
+        let by_hwnd: std::collections::HashMap<u64, (Rect, &'static str)> = native
+            .iter()
+            .map(|(hwnd, rect, kind)| (*hwnd, (*rect, *kind)))
+            .collect();
+        for (idx, kind) in [
+            (1usize, "overlay"),
+            (2, "float"),
+            (3, "minimized"),
+            (4, "hidden"),
+        ] {
+            let key = &rig.keys[idx];
+            let (moved, got) = by_hwnd.get(&key.hwnd).unwrap_or_else(|| {
+                panic!("native transfer recorded for {} ({kind})", rig.tokens[idx])
+            });
+            assert_eq!(*got, kind, "transfer kind for {}", rig.tokens[idx]);
+            assert_eq!(
+                output_for_rect(&rig.areas, moved),
+                "mon-2",
+                "native remap lands on target for {}",
+                rig.tokens[idx]
+            );
+            if kind == "float" {
+                let frame = rig.source_rows[idx].rect;
+                assert_eq!(moved.w, frame.w, "float preserves width");
+                assert_eq!(moved.h, frame.h, "float preserves height");
+            }
+            if kind == "overlay" {
+                // Maximized remap preserves the restore size (320x240
+                // staged above), never the observed maximized frame size.
+                assert_eq!(moved.w, 320, "maximized remap preserves restore width");
+                assert_eq!(moved.h, 240, "maximized remap preserves restore height");
+            }
+        }
+        assert!(
+            !by_hwnd.contains_key(&rig.keys[0].hwnd),
+            "tiled plain never takes the native move path"
+        );
+        for (idx, key) in rig.keys.iter().enumerate() {
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-2", "membership rekeys {}", rig.tokens[idx]);
+            assert_eq!(loc.workspace, rig.source_ws);
+        }
+        assert_ne!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "verified transfer publishes the Engine once"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_failing_overlay_arrival_refuses_without_publish() {
+        // Setter succeeds but the overlay reads back on the source: arrival
+        // fails, nothing publishes, reconcile converges, no replay.
+        let mut rig = rig_all_kinds();
+        let correlation = CorrelationId::parse("corr-migrate-arrival").expect("correlation");
+        let writes = predict_mixed_writes(&rig, &correlation);
+        let tiled_write = writes
+            .iter()
+            .find(|w| w.window.0 == "mig-a")
+            .expect("tiled plain plans geometry");
+        rig.state
+            .stable
+            .insert(rig.keys[0].hwnd, rig.source_rows[0].rect);
+        inject_pending_arrival(rig.keys[0].hwnd, tiled_write.rect);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        let float_moved = crate::workspace_owner::translate_rect_to_output(
+            rig.source_rows[2].rect,
+            source_full,
+            target_full,
+        );
+        rig.state
+            .stable
+            .insert(rig.keys[2].hwnd, rig.source_rows[2].rect);
+        inject_pending_arrival(rig.keys[2].hwnd, float_moved);
+        // Overlay stages on the source (wrong output): the move-only setter
+        // succeeds but fresh monitor verification fails. Pre-state stays on
+        // source; fresh arrival stays on source too.
+        rig.state
+            .stable
+            .insert(rig.keys[1].hwnd, rig.source_rows[1].rect);
+        inject_pending_arrival(rig.keys[1].hwnd, rig.source_rows[1].rect);
+        inject_pending_placement_normal(
+            rig.keys[1].hwnd,
+            Rect {
+                x: 100,
+                y: 60,
+                w: 320,
+                h: 240,
+            },
+            true,
+        );
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed_visible.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_all_migrate(&mut rig, &correlation, 42);
+        assert_eq!(outcome, "migrate-unverified");
+        for key in &rig.keys {
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-1", "failed arrival keeps source");
+        }
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "failed arrival publishes nothing"
+        );
+        assert!(
+            pending_counters().reconcile >= 1,
+            "partial failure reconciles without replay"
+        );
+        // The overlay attempted the native move (setter succeeded) before
+        // arrival refused: the seam proves the attempt happened.
+        assert!(
+            pending_native_transfers()
+                .iter()
+                .any(|(hwnd, _, kind)| *hwnd == rig.keys[1].hwnd && *kind == "overlay"),
+            "overlay transfer attempted before arrival refusal"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_late_identity_after_first_transfer_refuses_without_publish() {
+        // Late per-effect fence drift after the first native transfer
+        // (overlay) succeeds: the float's live overlay no longer matches its
+        // carried row, so the tail stops before its setter, reconciles,
+        // publishes nothing. Proves no replay and no publication on
+        // failed arrivals/late fences. (Static lifetime tags cannot drift
+        // mid-run offline, so the late fence rides the queued overlay read;
+        // early lifetime fences are covered by the pre-plan gates.)
+        let mut rig = rig_all_kinds();
+        let correlation = CorrelationId::parse("corr-migrate-identity").expect("correlation");
+        let writes = predict_mixed_writes(&rig, &correlation);
+        let tiled_write = writes
+            .iter()
+            .find(|w| w.window.0 == "mig-a")
+            .expect("tiled plain plans geometry");
+        rig.state
+            .stable
+            .insert(rig.keys[0].hwnd, rig.source_rows[0].rect);
+        inject_pending_arrival(rig.keys[0].hwnd, tiled_write.rect);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        for idx in [1usize, 2] {
+            let moved = crate::workspace_owner::translate_rect_to_output(
+                rig.source_rows[idx].rect,
+                source_full,
+                target_full,
+            );
+            rig.state
+                .stable
+                .insert(rig.keys[idx].hwnd, rig.source_rows[idx].rect);
+            inject_pending_arrival(rig.keys[idx].hwnd, moved);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed_visible.clone(), Vec::new(), false);
+        // Rows (plain, overlay-max, float), overlay fence, overlay arrival
+        // flag, then the float fence drifts maximized true vs carried false.
+        inject_pending_placement_normal(
+            rig.keys[1].hwnd,
+            Rect {
+                x: 100,
+                y: 60,
+                w: 320,
+                h: 240,
+            },
+            true,
+        );
+        inject_pending_overlay_seq(vec![
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let outcome = run_all_migrate(&mut rig, &correlation, 43);
+        assert_eq!(outcome, "migrate-unverified");
+        for key in &rig.keys {
+            if *key == rig.keys[2] {
+                continue;
+            }
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-1", "late identity keeps source");
+        }
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "late identity publishes nothing"
+        );
+        let native = pending_native_transfers();
+        assert!(
+            native
+                .iter()
+                .any(|(hwnd, _, kind)| *hwnd == rig.keys[1].hwnd && *kind == "overlay"),
+            "first transfer ran before the late fence"
+        );
+        assert!(
+            !native.iter().any(|(hwnd, _, _)| *hwnd == rig.keys[2].hwnd),
+            "drifted member takes no setter after its fence fails"
+        );
+        assert!(
+            pending_counters().reconcile >= 1,
+            "late identity reconciles without replay"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_untiled_source_moves_only_without_tiled_geometry() {
+        // D4 untiled source: no both-tiled gate, no Engine dispatch, no
+        // tiled geometry. Both plain members remap move-only via the float
+        // path with fresh size-preserved arrival; with no retained source
+        // session the Engine stays untouched.
+        let mut rig = rig();
+        rig.state
+            .workspaces
+            .set_tiled(&rig.source_output, &rig.source_ws, false);
+        // Release the seeded source session: untiled workspaces carry no
+        // Engine domain, so the migration must see no stale retained session.
+        let (_, source_key) =
+            workspace_domain_for(&rig.source_output, &rig.source_ws, &rig.areas, 8, 8)
+                .expect("source domain");
+        rig.state.engine.remove(&source_key);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        for (idx, key) in rig.keys.iter().enumerate() {
+            let frame = rig.source_rows[idx].rect;
+            let moved =
+                crate::workspace_owner::translate_rect_to_output(frame, source_full, target_full);
+            rig.state.stable.insert(key.hwnd, frame);
+            inject_pending_arrival(key.hwnd, moved);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let correlation = CorrelationId::parse("corr-migrate-untiled-src").expect("correlation");
+        let outcome = run_migrate(&mut rig, &correlation, 51);
+        assert_eq!(outcome, "migrate-applied");
+        assert!(
+            pending_apply_writables().is_empty(),
+            "untiled source takes no tiled apply"
+        );
+        let native = pending_native_transfers();
+        for (idx, key) in rig.keys.iter().enumerate() {
+            assert!(
+                native
+                    .iter()
+                    .any(|(hwnd, _, kind)| *hwnd == key.hwnd && *kind == "float"),
+                "untiled plain member {} moves move-only",
+                rig.tokens[idx]
+            );
+        }
+        for key in &rig.keys {
+            let loc = rig.state.workspaces.member_loc(key).expect("homed");
+            assert_eq!(loc.output, "mon-2");
+            assert_eq!(loc.workspace, rig.source_ws);
+        }
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "untiled source with no session keeps the Engine untouched"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_untiled_source_with_stale_session_refuses_without_effects() {
+        // A stale retained source session on an untiled source refuses before
+        // any native effect: the rig seeds a session (release missed), so the
+        // migration must report unverified with no native moves and no
+        // publication, reconciling instead of straddling the retained domain.
+        let mut rig = rig();
+        rig.state
+            .workspaces
+            .set_tiled(&rig.source_output, &rig.source_ws, false);
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let engine_before = format!("{:?}", rig.state.engine);
+        let correlation = CorrelationId::parse("corr-migrate-untiled-stale").expect("correlation");
+        let outcome = run_migrate(&mut rig, &correlation, 56);
+        assert_eq!(outcome, "unverified");
+        assert!(
+            pending_native_transfers().is_empty(),
+            "stale session refuses before any native move"
+        );
+        assert_eq!(
+            format!("{:?}", rig.state.engine),
+            engine_before,
+            "stale session refusal publishes nothing"
+        );
+        assert!(
+            pending_counters().reconcile >= 1,
+            "stale session refusal reconciles"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_untiled_target_prior_does_not_gate() {
+        // D4 target prior untiled never gates capability: a tiled source
+        // still migrates with full Engine geometry and fresh arrival.
+        let mut rig = rig();
+        rig.state
+            .workspaces
+            .set_tiled(&rig.target_output, &rig.target_ws, false);
+        let correlation = CorrelationId::parse("corr-migrate-untiled-dst").expect("correlation");
+        let writes = predict_migrate_rects(&rig, &correlation);
+        assert!(!writes.is_empty());
+        for write in &writes {
+            let key = rig
+                .keys
+                .iter()
+                .find(|key| {
+                    rig.state
+                        .member_tokens
+                        .get(*key)
+                        .is_some_and(|t| t == &write.window.0)
+                })
+                .expect("planned member");
+            let pre = rig
+                .observed
+                .iter()
+                .find(|w| w.hwnd == key.hwnd)
+                .map(|w| w.visible)
+                .expect("pre-state");
+            rig.state.stable.insert(key.hwnd, pre);
+            inject_pending_arrival(key.hwnd, write.rect);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_migrate(&mut rig, &correlation, 52);
+        assert_eq!(outcome, "migrate-applied");
+        assert_eq!(
+            rig.state.workspaces.active_id("mon-2").as_deref(),
+            Some(rig.source_ws.as_str())
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_occupied_prior_hides_and_refill_shows() {
+        // D4/G37 views: an occupied target prior hides (ledger-authorized,
+        // stays listed) while the source refill shows; the moved workspace
+        // shows on target with membership rekeyed.
+        let mut rig = rig();
+        // Occupy the target prior with its own member (visible).
+        let prior_key = key(0x6300u64, 9300u32);
+        let prior_token = "prior-a".to_owned();
+        rig.state
+            .member_tokens
+            .insert(prior_key.clone(), prior_token.clone());
+        rig.state.member_identity.insert(
+            prior_key.clone(),
+            crate::model::ProcessIdentity {
+                pid: prior_key.pid,
+                process_creation: prior_key.creation.clone(),
+                user_sid: rig.me.user_sid.clone(),
+                session_id: rig.me.session_id,
+                exe_path: rig.me.exe_path.clone(),
+            },
+        );
+        rig.state
+            .member_tags
+            .insert(prior_key.clone(), "tag-prior".to_owned());
+        inject_pending_tag(prior_key.hwnd, Some("tag-prior".to_owned()));
+        assert!(
+            rig.state
+                .workspaces
+                .assign(prior_key.clone(), "mon-2", &rig.target_ws, false)
+        );
+        // Occupy the source refill (inactive ws) and mark it hidden (inactive
+        // view); migration must reveal it.
+        let refill_id = rig
+            .state
+            .workspaces
+            .scoped_ring_ids("mon-1")
+            .into_iter()
+            .find(|id| *id != rig.source_ws)
+            .expect("refill");
+        let refill_key = key(0x6301u64, 9301u32);
+        let refill_token = "refill-a".to_owned();
+        rig.state
+            .member_tokens
+            .insert(refill_key.clone(), refill_token);
+        rig.state.member_identity.insert(
+            refill_key.clone(),
+            crate::model::ProcessIdentity {
+                pid: refill_key.pid,
+                process_creation: refill_key.creation.clone(),
+                user_sid: rig.me.user_sid.clone(),
+                session_id: rig.me.session_id,
+                exe_path: rig.me.exe_path.clone(),
+            },
+        );
+        rig.state
+            .member_tags
+            .insert(refill_key.clone(), "tag-refill".to_owned());
+        inject_pending_tag(refill_key.hwnd, Some("tag-refill".to_owned()));
+        assert!(
+            rig.state
+                .workspaces
+                .assign(refill_key.clone(), "mon-1", &refill_id, true)
+        );
+        let correlation = CorrelationId::parse("corr-migrate-views").expect("correlation");
+        let writes = predict_migrate_rects(&rig, &correlation);
+        for write in &writes {
+            let k = rig
+                .keys
+                .iter()
+                .find(|k| {
+                    rig.state
+                        .member_tokens
+                        .get(*k)
+                        .is_some_and(|t| t == &write.window.0)
+                })
+                .expect("planned");
+            let pre = rig
+                .observed
+                .iter()
+                .find(|w| w.hwnd == k.hwnd)
+                .map(|w| w.visible)
+                .expect("pre");
+            rig.state.stable.insert(k.hwnd, pre);
+            inject_pending_arrival(k.hwnd, write.rect);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_migrate(&mut rig, &correlation, 53);
+        assert_eq!(outcome, "migrate-applied");
+        // Prior stays listed but hidden; refill shows; moved shows on target.
+        assert!(
+            rig.state
+                .workspaces
+                .scoped_ring_ids("mon-2")
+                .contains(&rig.target_ws)
+        );
+        assert!(
+            rig.state.workspaces.is_hidden(&prior_key),
+            "occupied prior hides"
+        );
+        assert!(
+            !rig.state.workspaces.is_hidden(&refill_key),
+            "source refill shows"
+        );
+        assert_eq!(
+            rig.state.workspaces.active_id("mon-2").as_deref(),
+            Some(rig.source_ws.as_str())
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_concealed_placement_mismatch_refuses() {
+        // Fresh concealed proof is physical: a minimized member whose
+        // post-setter placement still sits on the source refuses (never
+        // translation math, never the stale cache).
+        let mut rig = rig_all_kinds();
+        let correlation = CorrelationId::parse("corr-migrate-place-mismatch").expect("correlation");
+        let writes = predict_mixed_writes(&rig, &correlation);
+        let tiled_write = writes
+            .iter()
+            .find(|w| w.window.0 == "mig-a")
+            .expect("tiled");
+        rig.state
+            .stable
+            .insert(rig.keys[0].hwnd, rig.source_rows[0].rect);
+        inject_pending_arrival(rig.keys[0].hwnd, tiled_write.rect);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        for idx in [1usize, 2] {
+            let moved = crate::workspace_owner::translate_rect_to_output(
+                rig.source_rows[idx].rect,
+                source_full,
+                target_full,
+            );
+            rig.state
+                .stable
+                .insert(rig.keys[idx].hwnd, rig.source_rows[idx].rect);
+            inject_pending_arrival(rig.keys[idx].hwnd, moved);
+        }
+        // Minimized member stages on the source (wrong output): setter
+        // succeeds but fresh placement verification fails.
+        rig.state
+            .stable
+            .insert(rig.keys[3].hwnd, rig.source_rows[3].rect);
+        inject_pending_arrival_placement(rig.keys[3].hwnd, rig.source_rows[3].rect);
+        rig.state
+            .stable
+            .insert(rig.keys[4].hwnd, rig.source_rows[4].rect);
+        let hidden_moved = crate::workspace_owner::translate_rect_to_output(
+            rig.source_rows[4].rect,
+            source_full,
+            target_full,
+        );
+        inject_pending_arrival_placement(rig.keys[4].hwnd, hidden_moved);
+        inject_pending_placement_normal(
+            rig.keys[1].hwnd,
+            Rect {
+                x: 100,
+                y: 60,
+                w: 320,
+                h: 240,
+            },
+            true,
+        );
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed_visible.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_all_migrate(&mut rig, &correlation, 54);
+        assert_eq!(outcome, "migrate-unverified");
+        assert!(
+            pending_counters().reconcile >= 1,
+            "placement mismatch reconciles without replay"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_float_size_mismatch_refuses() {
+        // Fresh float proof preserves size: a post-setter frame with the
+        // wrong size refuses even on the target output.
+        let mut rig = rig_all_kinds();
+        let correlation = CorrelationId::parse("corr-migrate-size-mismatch").expect("correlation");
+        let writes = predict_mixed_writes(&rig, &correlation);
+        let tiled_write = writes
+            .iter()
+            .find(|w| w.window.0 == "mig-a")
+            .expect("tiled");
+        rig.state
+            .stable
+            .insert(rig.keys[0].hwnd, rig.source_rows[0].rect);
+        inject_pending_arrival(rig.keys[0].hwnd, tiled_write.rect);
+        let source_full = rig.areas[0].full;
+        let target_full = rig.areas[1].full;
+        let overlay_moved = crate::workspace_owner::translate_rect_to_output(
+            rig.source_rows[1].rect,
+            source_full,
+            target_full,
+        );
+        rig.state
+            .stable
+            .insert(rig.keys[1].hwnd, rig.source_rows[1].rect);
+        inject_pending_arrival(rig.keys[1].hwnd, overlay_moved);
+        // Float arrives on target but resized: size proof fails.
+        let mut float_wrong = crate::workspace_owner::translate_rect_to_output(
+            rig.source_rows[2].rect,
+            source_full,
+            target_full,
+        );
+        float_wrong.w += 50;
+        rig.state
+            .stable
+            .insert(rig.keys[2].hwnd, rig.source_rows[2].rect);
+        inject_pending_arrival(rig.keys[2].hwnd, float_wrong);
+        for idx in [3usize, 4] {
+            let moved = crate::workspace_owner::translate_rect_to_output(
+                rig.source_rows[idx].rect,
+                source_full,
+                target_full,
+            );
+            rig.state
+                .stable
+                .insert(rig.keys[idx].hwnd, rig.source_rows[idx].rect);
+            inject_pending_arrival_placement(rig.keys[idx].hwnd, moved);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed_visible.clone(), Vec::new(), false);
+        inject_pending_placement_normal(
+            rig.keys[1].hwnd,
+            Rect {
+                x: 100,
+                y: 60,
+                w: 320,
+                h: 240,
+            },
+            true,
+        );
+        inject_pending_overlay_seq(vec![
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (true, Some(false)),
+            (true, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+            (false, Some(false)),
+        ]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_all_migrate(&mut rig, &correlation, 55);
+        assert_eq!(outcome, "migrate-unverified");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_placement_work_conversion_handles_unequal_insets() {
+        // Pure WORK/FULL conversion (no native windows): a non-tool
+        // top-level restore rect rides workspace coordinates defined as
+        // screen minus the per-monitor taskbar inset delta
+        // (`WORK.left - FULL.left`, `WORK.top - FULL.top`), retaining the
+        // virtual-desktop monitor origin. Subtracting the entire `WORK`
+        // origin would normalize a right-monitor rect to x=100 and land it
+        // on the primary monitor.
+        use super::{
+            placement_raw_to_screen, screen_to_placement_raw, translate_placement_normal_to_target,
+        };
+        let source_work = Rect {
+            x: 0,
+            y: 40,
+            w: 1920,
+            h: 1040,
+        };
+        let target_work = Rect {
+            x: 1920,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let source_full = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let target_full = Rect {
+            x: 1920,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let source_raw = Rect {
+            x: 100,
+            y: 100,
+            w: 400,
+            h: 300,
+        };
+        let target_raw = translate_placement_normal_to_target(
+            source_raw,
+            source_work,
+            target_work,
+            source_full,
+            target_full,
+            true,
+        );
+        assert_eq!(
+            target_raw,
+            Rect {
+                x: 2020,
+                y: 140,
+                w: 400,
+                h: 300,
+            },
+            "right-monitor raw retains the virtual-desktop origin (2020), not normalized to 100"
+        );
+        let target_screen = placement_raw_to_screen(target_raw, target_work, target_full, true);
+        assert_eq!(
+            target_screen,
+            Rect {
+                x: 2020,
+                y: 140,
+                w: 400,
+                h: 300,
+            },
+            "zero-inset target converts raw back to the translated screen frame"
+        );
+        // Roundtrip on the source: raw -> screen -> raw is identity.
+        let source_screen = placement_raw_to_screen(source_raw, source_work, source_full, true);
+        assert_eq!(
+            source_screen,
+            Rect {
+                x: 100,
+                y: 140,
+                w: 400,
+                h: 300,
+            }
+        );
+        assert_eq!(
+            screen_to_placement_raw(source_screen, source_work, source_full, true),
+            source_raw
+        );
+        let tool_raw = translate_placement_normal_to_target(
+            source_raw,
+            source_work,
+            target_work,
+            source_full,
+            target_full,
+            false,
+        );
+        assert_eq!(
+            tool_raw,
+            Rect {
+                x: 2020,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+            "tool windows ride screen coordinates untouched by WORK"
+        );
+        // Left taskbar on the primary: work x=60 shifts the workspace x by
+        // the inset delta (60 - 0).
+        let primary_full = Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let left_work = Rect {
+            x: 60,
+            y: 0,
+            w: 1860,
+            h: 1080,
+        };
+        let screen = Rect {
+            x: 160,
+            y: 200,
+            w: 400,
+            h: 300,
+        };
+        assert_eq!(
+            screen_to_placement_raw(screen, left_work, primary_full, true),
+            Rect {
+                x: 100,
+                y: 200,
+                w: 400,
+                h: 300,
+            },
+            "left inset subtracts WORK - FULL"
+        );
+        assert_eq!(
+            screen_to_placement_raw(screen, left_work, primary_full, false),
+            screen,
+            "tool windows ignore the work origin"
+        );
+        // Right monitor with its own left taskbar (WORK.x = FULL.x + 60):
+        // the raw rect must keep the 1920 origin. The old entire-WORK
+        // subtraction would normalize to x=100 (primary).
+        let inset_target_work = Rect {
+            x: 1980,
+            y: 0,
+            w: 1860,
+            h: 1080,
+        };
+        let inset_screen = Rect {
+            x: 2080,
+            y: 200,
+            w: 400,
+            h: 300,
+        };
+        assert_eq!(
+            screen_to_placement_raw(inset_screen, inset_target_work, target_full, true),
+            Rect {
+                x: 2020,
+                y: 200,
+                w: 400,
+                h: 300,
+            },
+            "non-primary inset retains the monitor origin"
+        );
+        assert_eq!(
+            placement_raw_to_screen(
+                Rect {
+                    x: 2020,
+                    y: 200,
+                    w: 400,
+                    h: 300,
+                },
+                inset_target_work,
+                target_full,
+                true,
+            ),
+            inset_screen,
+        );
+        // Stacked monitor below with a top taskbar (FULL.y=1080, WORK.y=1120):
+        // translation must land at raw y=1180, not normalized y=100.
+        let stacked_full = Rect {
+            x: 0,
+            y: 1080,
+            w: 1920,
+            h: 1080,
+        };
+        let stacked_work = Rect {
+            x: 0,
+            y: 1120,
+            w: 1920,
+            h: 1040,
+        };
+        let stacked_raw = translate_placement_normal_to_target(
+            source_raw,
+            source_work,
+            stacked_work,
+            source_full,
+            stacked_full,
+            true,
+        );
+        assert_eq!(
+            stacked_raw,
+            Rect {
+                x: 100,
+                y: 1180,
+                w: 400,
+                h: 300,
+            },
+            "stacked inset retains the vertical monitor origin"
+        );
+        // Negative left monitor with a top taskbar (FULL.x=-1920):
+        // translation must keep x=-1820, not normalize to x=100.
+        let negative_full = Rect {
+            x: -1920,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let negative_work = Rect {
+            x: -1920,
+            y: 40,
+            w: 1920,
+            h: 1040,
+        };
+        let negative_raw = translate_placement_normal_to_target(
+            source_raw,
+            source_work,
+            negative_work,
+            source_full,
+            negative_full,
+            true,
+        );
+        assert_eq!(
+            negative_raw,
+            Rect {
+                x: -1820,
+                y: 100,
+                w: 400,
+                h: 300,
+            },
+            "negative monitor origin is retained"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_bordered_visible_arrival_distinguishes_outer() {
+        // Bordered windows verify on the visible (DWM) frame, never the
+        // outer `GetWindowRect`: the observed outer frame carries a 7px
+        // border each side while the visible frame rides the plan rect, and
+        // the staged arrival is the visible translation. Success with
+        // outer != visible locks the visible-basis contract.
+        let mut rig = rig();
+        let correlation = CorrelationId::parse("corr-migrate-bordered").expect("correlation");
+        let writes = predict_migrate_rects(&rig, &correlation);
+        assert!(!writes.is_empty());
+        for (idx, window) in rig.observed.iter_mut().enumerate() {
+            let visible = window.visible;
+            window.outer = Rect {
+                x: visible.x - 7,
+                y: visible.y - 7,
+                w: visible.w + 14,
+                h: visible.h + 14,
+            };
+            assert_ne!(
+                window.outer, window.visible,
+                "fixture must carry a border (member {idx})"
+            );
+        }
+        for write in &writes {
+            let key = rig
+                .keys
+                .iter()
+                .find(|key| {
+                    rig.state
+                        .member_tokens
+                        .get(*key)
+                        .is_some_and(|t| t == &write.window.0)
+                })
+                .expect("planned member");
+            let pre = rig
+                .observed
+                .iter()
+                .find(|w| w.hwnd == key.hwnd)
+                .map(|w| w.visible)
+                .expect("visible pre-state");
+            rig.state.stable.insert(key.hwnd, pre);
+            inject_pending_arrival(key.hwnd, write.rect);
+        }
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_observe(rig.observed.clone(), Vec::new(), false);
+        inject_pending_overlay_seq(vec![(false, Some(false)), (false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let outcome = run_migrate(&mut rig, &correlation, 57);
+        assert_eq!(outcome, "migrate-applied");
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_follow_tail_suppresses_on_live_fullscreen() {
+        // The follow tail re-reads fullscreen live immediately before focus:
+        // a stale plain row (fullscreen=false) with a live fullscreen frame
+        // suppresses instead of focusing.
+        let mut rig = rig();
+        let member = rig.keys[0].clone();
+        let token = rig.tokens[0].clone();
+        let rows = vec![crate::workspace_owner::MigrateRow {
+            token: token.clone(),
+            rect: rig.source_rows[0].rect,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            fit_excluded: false,
+        }];
+        let members: BTreeSet<WindowKey> = BTreeSet::from([member.clone()]);
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_overlay_seq(vec![(false, Some(true))]);
+        inject_pending_focus(Some("focus-ok"));
+        let log = |_outcome: &'static str, _extra: serde_json::Value| {};
+        let outcome = super::migration_follow_tail(
+            &mut rig.state,
+            &rig.me,
+            &rig.observed,
+            &[],
+            &members,
+            &rows,
+            Some(WindowId(token)),
+            &rig.fulls,
+            &log,
+        );
+        assert_eq!(outcome, "migrate-applied");
+        assert_eq!(
+            pending_counters().focus,
+            0,
+            "live fullscreen suppresses with no focus setter"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn migrate_follow_tail_focuses_when_live_plain() {
+        // Live plain (no fullscreen, not iconic) runs one focus actuation
+        // through the shared tail.
+        let mut rig = rig();
+        let member = rig.keys[0].clone();
+        let token = rig.tokens[0].clone();
+        let rows = vec![crate::workspace_owner::MigrateRow {
+            token: token.clone(),
+            rect: rig.source_rows[0].rect,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            fit_excluded: false,
+        }];
+        let members: BTreeSet<WindowKey> = BTreeSet::from([member]);
+        inject_monitor_areas(Some(rig.areas.clone()));
+        inject_pending_overlay_seq(vec![(false, Some(false))]);
+        inject_pending_focus(Some("focus-ok"));
+        let log = |_outcome: &'static str, _extra: serde_json::Value| {};
+        let outcome = super::migration_follow_tail(
+            &mut rig.state,
+            &rig.me,
+            &rig.observed,
+            &[],
+            &members,
+            &rows,
+            Some(WindowId(token)),
+            &rig.fulls,
+            &log,
+        );
+        assert_eq!(outcome, "migrate-applied");
+        assert_eq!(
+            pending_counters().focus,
+            1,
+            "live plain runs exactly one focus setter"
+        );
+        clear_pending_seams();
     }
 }

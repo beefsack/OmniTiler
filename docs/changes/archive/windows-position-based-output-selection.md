@@ -18,10 +18,10 @@
   topology, gap/mode/member/lifetime and arrival fences. Relocating the mover
   never re-ranks its destination. Explicit send uses ordinary admission;
   directional crossing retains R4 nearest-source landing.
-- Whole-workspace migration is absent from Windows and remains item 14.
-  Its future selector must use shared `select_for_migration` (largest shared
-  edge, then left/top/identity), never moving-window position. This record
-  closes current window-path integration, not that pending dependency.
+- Whole-workspace migration's item 14 dependency is closed offline 2026-10-14
+  ([record](windows-workspace-output-migration.md)): shared `select_for_migration`
+  chooses largest shared edge, then left/top/identity, never moving-window
+  position. This record's original evidence covers window-path integration.
 
 ## Evidence
 
@@ -46,4 +46,4 @@
   negative-coordinate and stacked arrangements.
 - Test panel/work-area gaps and mixed-DPI settlement, follow and rebound stay,
   source reflow and target admission; perform scoped stop/restore on both outputs.
-- Verify largest-edge migration separately when item 14 is implemented.
+- Verify largest-edge migration separately in the physical item 14 journey.

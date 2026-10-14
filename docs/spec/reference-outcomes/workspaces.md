@@ -830,8 +830,11 @@ verb inventory); selected intent and doc assertions are never evidence.
   [native map](../../../kwin/src/workspace-native.ts),
   [fixtures](../../../kwin/tests/workspace-migrate.test.ts),
   [record](../../changes/archive/kde-whole-workspace-output-migration.md).
-- Then Ours Windows: no-counterpart (index `Select`/`Send` only; no
-  whole-workspace verb). `S(S-ours-planops)`.
+- Then Ours Windows: mixed: hidden WS2 has no counterpart to the active-only
+  verbs; explicitly select WS2 in an independent leg, then migrate with its
+  stable ID and layout retained. Local adapter delivered offline 2026-10-14;
+  physical two-output journey TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08;
   D8 carry delivered offline).
 
@@ -1480,8 +1483,12 @@ Targets follow [workspace migration D1-D9](../../decisions.md#workspaces)
 (User 2026-10-08 selections, REQ-WS-12a..i). KDE
 R-WS-21..26 carry offline Engine/adapter/fixture evidence; D1-D9 native
 runtime outcomes are TBD (no live acceptance recorded here); D8 carry is
-delivered offline 2026-10-09 with live check pending. Ours Windows
-has no whole-workspace verb. Reference overlay-carry evidence below is
+delivered offline 2026-10-09 with live check pending. Ours Windows local
+adapter including D8 and G-37 delivered offline 2026-10-14
+([record](../../changes/archive/windows-workspace-output-migration.md));
+1,950 native MSVC tests pass, zero failed, one ignored. Non-local runtime
+modes remain item 12 and physical two-output journeys remain TBD.
+Reference overlay-carry evidence below is
 source-read at the stated pins; all other unsupported reference outcomes
 stay TBD:
 no new reference source was read for those fixtures. The hidden R-WS-12
@@ -1562,8 +1569,10 @@ baseline above is unchanged. Record:
   setting. Implemented offline (NORMATIVE D2, User 2026-10-08), native journey TBD.
   [Observer](../../../kwin/src/plan-adapter-entry.ts),
   [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: local independent project-owned per-output views provide
+  capability, with no KWin flag or native policy writes. Delivered offline
+  2026-10-14; item 12 non-local modes and physical journey remain pending.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08).
 
 <a id="r-ws-22-active-migrate-layout-retained"></a>
@@ -1652,8 +1661,12 @@ baseline above is unchanged. Record:
   [Engine](../../../crates/tiler-core/src/engine.rs),
   [native map](../../../kwin/src/workspace-native.ts),
   [engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: active stable ID/tree/unequal shares/remembered focus
+  retained via tiled Engine rekey; insert after target current, prior hidden,
+  source refill shown and follow after verified transfer. Untiled mode stays
+  untiled with move-only native remaps. Delivered offline 2026-10-14 with
+  real-Engine and native-boundary seams; physical view/focus timing TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08).
 
 <a id="r-ws-23-source-refill-empty-migrate"></a>
@@ -1743,8 +1756,12 @@ baseline above is unchanged. Record:
   [Discriminating variants](../reference-outcomes.md#2026-10-10-reference-comparison-discriminators).
   [Native map](../../../kwin/src/workspace-native.ts),
   [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: last-remaining default or eligible pre-mutation
+  per-output previous ID with MRU; invalid/out-of-scope/migrated IDs fall back.
+  Schema-v1 additive setting, UI Apply/Revert and live runtime delivered
+  offline 2026-10-14. Empty stable ID migration/lifecycle covered synthetically;
+  native lifecycle/focus and physical G-37 comparison TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08).
 
 <a id="r-ws-24-float-carry-sticky-stay"></a>
@@ -1822,8 +1839,10 @@ baseline above is unchanged. Record:
   native geometry TBD.
   [Adapter](../../../kwin/src/workspace-send-adapter.ts),
   [engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: F carries via move-only native output remap with fresh
+  arrival proof and retained class/origin; sticky S stays source and re-homes
+  to source refill. Delivered offline 2026-10-14; physical native geometry TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08).
 
 <a id="r-ws-25-overlay-refusal"></a>
@@ -1905,8 +1924,13 @@ baseline above is unchanged. Record:
   [fixtures](../../../kwin/tests/workspace-migrate.test.ts),
   [Engine fixtures](../../../kwin/tests/workspace-migrate-engine-fixture.test.ts),
   [record](../../changes/archive/migration-overlay-carry.md).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: D8 carry delivered offline 2026-10-14: real max/fullscreen
+  observations, overlay-only native remap, no ordinary overlay geometry or
+  fullscreen focus setter. Maximized normal restore size/show state and tiled
+  reserved slot retained; arrivals use fresh physical output/flags rather than
+  the old overlay frame. Native re-fit/fullscreen focus/mixed-DPI and mid-flight
+  physical outcomes remain TBD; scripted seams are offline evidence only.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE overlay carry (User 2026-10-08; D8 CHANGED,
   delivered offline, live check pending).
 
@@ -1988,8 +2012,11 @@ baseline above is unchanged. Record:
   [Native map](../../../kwin/src/workspace-native.ts),
   [adapter](../../../kwin/src/workspace-send-adapter.ts),
   [fixtures](../../../kwin/tests/workspace-migrate.test.ts).
-- Then Ours Windows: no-counterpart (no whole-workspace verb).
-  `S(S-ours-planops)`.
+- Then Ours Windows: moved previous IDs clear under per-output scope, without
+  ordinal reinterpretation/recreation; only moved hotplug-return association
+  removed, siblings retained. Commit-last candidates and failed-arrival
+  reconciliation covered offline 2026-10-14; physical hotplug/recovery TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User 2026-10-08).
 
 <a id="r-ws-27-two-candidate-migration-selection"></a>
@@ -2073,7 +2100,9 @@ baseline above is unchanged. Record:
   Implemented offline 2026-10-09: shared selector and KDE largest-edge/equal-edge
   regressions, real-Engine multi-candidate migration. Native journey TBD.
   [Record](../../changes/archive/position-based-output-selection.md).
-- Then Ours Windows: no-counterpart (no whole-workspace verb); same
-  selected largest-shared-edge then left/top target, implementation pending.
-  `S(S-ours-planops)`.
+- Then Ours Windows: U1 selected by shared largest-edge then left/top ranking,
+  regardless of B's centre. Selector and pinned migration path delivered offline
+  2026-10-14 with largest/equal-edge and unreadable/no-candidate regressions;
+  physical multi-candidate journey TBD.
+  [Record](../../changes/archive/windows-workspace-output-migration.md).
 - Variant hook: NORMATIVE workspace-output migration (User decision 2026-10-09).

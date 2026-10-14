@@ -261,6 +261,314 @@ pub fn stamp_send_output_target(event: &mut CoreEvent, target: &DomainKey) {
     }
 }
 
+/// One whole-workspace migration Engine row with live overlay/class flags.
+/// Unlike the send builders (which default flags to false and stamp narrow
+/// lanes), migration carries actual per-member observations: `maximized`
+/// from the live native read, `fullscreen` from the live inference,
+/// `sticky` from the runtime sticky set, `floating` from the session
+/// exception, and fixed-origin flags from the admission lanes. The caller
+/// supplies them; this builder never fabricates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrateRow {
+    pub token: String,
+    pub rect: Rect,
+    pub hints: tiler_core::size_hints::WindowSizeHints,
+    pub floating: bool,
+    pub fullscreen: bool,
+    pub maximized: bool,
+    pub sticky: bool,
+    pub fixed_auto: bool,
+    pub fixed_suppress: bool,
+    pub fit_excluded: bool,
+}
+
+/// Build the source observation plus empty-target pair for one Engine
+/// `MigrateWorkspace` request (R-WS-12, item 14). DISTINCT from both send
+/// builders: the target domain carries the SAME stable workspace id on a
+/// DIFFERENT output with empty `target_windows` (any carried target window
+/// is SAME-workspace residue and the Engine refuses it). The destination's
+/// DIFFERENT current workspace stays adapter-owned and is never carried.
+/// `focused_token` may be empty (empty/sticky-active migration carries no
+/// invented focus). Returns `None` when the workspace ids differ across the
+/// pair, the outputs match, or the focused token is dangling (named but not
+/// carried - the Engine would refuse it as `FocusMismatch`).
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn build_migrate_event(
+    owner: &OwnerId,
+    generation: &GenerationId,
+    correlation: &CorrelationId,
+    revision: u64,
+    fingerprint: u64,
+    source_domain: (OutputDomain, DomainKey),
+    target_domain: (OutputDomain, DomainKey),
+    source_rows: &[MigrateRow],
+    focused_token: &str,
+    direction: &str,
+    outer_gap: i32,
+) -> Option<CoreEvent> {
+    let (domain, domain_key) = source_domain;
+    let (target_domain_value, target_key) = target_domain;
+    if target_key.workspace != domain_key.workspace || target_key.output == domain_key.output {
+        return None;
+    }
+    if !focused_token.is_empty() && !source_rows.iter().any(|r| r.token == focused_token) {
+        return None;
+    }
+    let windows: Vec<EngineWindow> = source_rows
+        .iter()
+        .map(|row| EngineWindow {
+            window: WindowId(row.token.clone()),
+            output: domain_key.output.clone(),
+            workspace: domain_key.workspace.clone(),
+            rect: row.rect,
+            floating: row.floating,
+            fit_excluded: row.fit_excluded,
+            fullscreen: row.fullscreen,
+            maximized: row.maximized,
+            sticky: row.sticky,
+            fixed_auto: row.fixed_auto,
+            fixed_suppress: row.fixed_suppress,
+            hints: row.hints,
+        })
+        .collect();
+    Some(CoreEvent {
+        owner: owner.clone(),
+        generation: generation.clone(),
+        correlation: correlation.clone(),
+        revision,
+        fingerprint,
+        domain,
+        domain_key,
+        outer_gap,
+        focused_window: WindowId(focused_token.to_owned()),
+        windows,
+        directional: None,
+        directional_target_outer_gap: None,
+        target_domain: Some((target_domain_value, target_key)),
+        target_windows: Vec::new(),
+        closed_windows: Vec::new(),
+        command: CoreCommand::MigrateWorkspace {
+            direction: direction.to_owned(),
+        },
+    })
+}
+
+/// Verify the whole-workspace membership transfer plus both current views
+/// after the planned Engine mutation and the project reassignment, before
+/// publication or follow. This is the single publication gate: callers pass
+/// the effective refill (the primitive's selected refill, or the lifecycle-
+/// converged source current when the primitive reported no refill), never an
+/// ad hoc fallback around it.
+///
+/// - Every migrating (non-sticky) member is absent from the source workspace
+///   set and present in the target workspace set.
+/// - Every sticky member stays out of the target set (it remains homed on
+///   the source output's refill view, never the migrated id).
+/// - The target current view shows the migrated id; the source current view
+///   shows the effective refill id.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_migration_transfer(
+    migrating: &BTreeSet<WindowKey>,
+    sticky: &BTreeSet<WindowKey>,
+    source_members: &BTreeSet<WindowKey>,
+    target_members: &BTreeSet<WindowKey>,
+    moved_id: &str,
+    refill_id: Option<&str>,
+    source_active: Option<&str>,
+    target_active: Option<&str>,
+) -> bool {
+    if target_active != Some(moved_id) {
+        return false;
+    }
+    match refill_id {
+        Some(refill) => {
+            if source_active != Some(refill) {
+                return false;
+            }
+        }
+        None => {
+            if source_active.is_some() {
+                return false;
+            }
+        }
+    }
+    for member in migrating {
+        if source_members.contains(member) || !target_members.contains(member) {
+            return false;
+        }
+    }
+    for member in sticky {
+        if target_members.contains(member) {
+            return false;
+        }
+    }
+    let _ = moved_id;
+    true
+}
+
+/// Translate one frame rectangle across outputs by the FULL-rectangle origin
+/// delta, preserving size: the native output translation for migrating float,
+/// fullscreen, and overlay members (move-only, never a resize or refit).
+/// Saturating so extreme coordinates never wrap. Pure: the caller owns live
+/// currency (the pinned pair must still touch when this is used).
+#[must_use]
+pub fn translate_rect_to_output(frame: Rect, source_full: Rect, target_full: Rect) -> Rect {
+    Rect {
+        x: frame
+            .x
+            .saturating_sub(source_full.x)
+            .saturating_add(target_full.x),
+        y: frame
+            .y
+            .saturating_sub(source_full.y)
+            .saturating_add(target_full.y),
+        w: frame.w,
+        h: frame.h,
+    }
+}
+
+/// View a migration fence snapshot through the direction-free drag-drop fence
+/// shape (the direction selects the candidate only; evaluation never reads
+/// it). Lets migration tails reuse the shared exact FULL plus inset-bounds
+/// topology check instead of a second implementation.
+#[must_use]
+pub fn migrate_snapshot_for_drag(snapshot: &MigrateFenceSnapshot) -> DragDropFenceSnapshot {
+    DragDropFenceSnapshot {
+        inner_gap: snapshot.inner_gap,
+        outer_gap: snapshot.outer_gap,
+        source_output: snapshot.source_output.clone(),
+        source_workspace: snapshot.moved_workspace.clone(),
+        target_output: snapshot.target_output.clone(),
+        target_workspace: snapshot.target_prior.clone(),
+        source_tiled: snapshot.source_tiled,
+        target_tiled: snapshot.target_tiled,
+        overlay_maximized: false,
+        overlay_fullscreen: false,
+        source_full: snapshot.source_full,
+        target_full: snapshot.target_full,
+        source_bounds: snapshot.source_bounds,
+        target_bounds: snapshot.target_bounds,
+        owner: snapshot.owner.clone(),
+        generation: snapshot.generation.clone(),
+    }
+}
+
+/// Select the adjacent output for one whole-workspace migration through the
+/// shared largest-shared-edge rule (never window position). Returns
+/// `Ok(None)` when no candidate edge-touches (caller-side no-op, no wrap);
+/// `Err` on any unreadable topology, duplicate ids, source rect mismatch, or
+/// unknown source (fail-closed, never a silent skip). Work areas and gaps
+/// never participate: callers pass FULL rectangles.
+pub fn select_migration_target(
+    direction: tiler_core::directional::Direction,
+    source_output: &str,
+    outputs: &[DirectionalOutput],
+) -> Result<Option<String>, tiler_core::output_selection::SelectionError> {
+    use tiler_core::directional::OutputId;
+    use tiler_core::output_selection::{OutputEntry, select_for_migration};
+    let Some(source) = outputs.iter().find(|o| o.id == source_output) else {
+        return Err(tiler_core::output_selection::SelectionError::UnreadableTopology);
+    };
+    let source_entry = OutputEntry {
+        id: OutputId(source.id.clone()),
+        rect: source.full,
+    };
+    let mut entries = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        entries.push(OutputEntry {
+            id: OutputId(output.id.clone()),
+            rect: output.full,
+        });
+    }
+    match select_for_migration(direction, &source_entry, &entries)? {
+        Some(candidate) => Ok(Some(candidate.id.0)),
+        None => Ok(None),
+    }
+}
+
+/// Carried pre-plan migration fences: pinned source/target outputs, the moved
+/// workspace id, both current views (target current before the move, source
+/// refill after), gaps, modes, owner binding, and the resolved direction.
+/// Tails re-verify live before any Engine or project mutation and again
+/// before publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrateFenceSnapshot {
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub source_output: String,
+    pub target_output: String,
+    pub moved_workspace: String,
+    pub source_refill: Option<String>,
+    pub target_prior: String,
+    pub source_tiled: bool,
+    pub target_tiled: bool,
+    pub direction: tiler_core::directional::Direction,
+    pub source_full: Rect,
+    pub target_full: Rect,
+    pub source_bounds: Rect,
+    pub target_bounds: Rect,
+    pub owner: String,
+    pub generation: String,
+    pub member_count: usize,
+}
+
+/// Live tail-time migration fence readings matched against a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrateFenceLive {
+    pub inner_gap: i32,
+    pub outer_gap: i32,
+    pub source_active: Option<String>,
+    pub target_active: Option<String>,
+    pub source_tiled: bool,
+    pub target_tiled: bool,
+    pub topology_ok: bool,
+    pub scope_ok: bool,
+    pub lifetime_ok: bool,
+    pub membership_ok: bool,
+    pub views_ok: bool,
+    pub owner_ok: bool,
+}
+
+/// Re-verify carried pre-plan migration fences against live tail-time
+/// readings. `None` holds; `Some(outcome)` refuses with no further effects
+/// and no replay. Membership semantics differ before and after the project
+/// reassignment (the caller passes the matching value); views are checked
+/// pre-commit against the pinned prior views and post-commit through
+/// [`verify_migration_transfer`]. Never fabricates state, only compares.
+#[must_use]
+pub const fn migrate_fences_hold(
+    snap: &MigrateFenceSnapshot,
+    live: &MigrateFenceLive,
+) -> Option<&'static str> {
+    if !live.owner_ok {
+        return Some("owner-changed");
+    }
+    if !live.topology_ok {
+        return Some("topology-changed");
+    }
+    if live.inner_gap != snap.inner_gap || live.outer_gap != snap.outer_gap {
+        return Some("deferred");
+    }
+    if live.source_tiled != snap.source_tiled || live.target_tiled != snap.target_tiled {
+        return Some("mode-changed");
+    }
+    if !live.scope_ok {
+        return Some("scope-excluded");
+    }
+    if !live.lifetime_ok {
+        return Some("identity-changed");
+    }
+    if !live.membership_ok {
+        return Some("unverified");
+    }
+    if !live.views_ok {
+        return Some("view-changed");
+    }
+    None
+}
+
 /// Send-specific overlay binding for a floating focused mover (D16 combo
 /// carry, 2026-10-13): when the mover rides floating, carry its exact live
 /// maximized flag on its own Engine rows so the shared deferred arm binds
@@ -844,6 +1152,7 @@ pub fn planned_writes(reply: &tiler_core::boundary::CoreReply) -> Option<Vec<Pla
         R::FocusDirectional(plan) => Some(map(&plan.geometry)),
         R::SendWorkspace(plan) => Some(map(&plan.geometry)),
         R::SendOutput(plan) => Some(map(&plan.geometry)),
+        R::MigrateWorkspace(plan) => Some(map(&plan.geometry)),
         _ => None,
     }
 }
@@ -11582,6 +11891,683 @@ mod fixed_admission_tests {
             assert!(directional_focus_crosses(Direction::Right));
             assert!(!directional_focus_crosses(Direction::Up));
             assert!(!directional_focus_crosses(Direction::Down));
+        }
+    }
+
+    mod migration_tests {
+        // Item 14/19 portable migration policy: DISTINCT `MigrateWorkspace`
+        // event construction (SAME id, DIFFERENT output, empty target),
+        // `MigrateWorkspace` reply extraction, whole-membership/both-view
+        // verification, largest-shared-edge selection, and fence evaluation.
+        // Real-Engine planning runs through the production builder with
+        // retained nested topology below.
+        use super::*;
+        use tiler_core::directional::Direction;
+
+        fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
+            Rect { x, y, w, h }
+        }
+
+        fn domains() -> ((OutputDomain, DomainKey), (OutputDomain, DomainKey)) {
+            let source = workspace_domain("primary", "ws-2", rect(0, 40, 1920, 1040), 8);
+            let target = workspace_domain("right", "ws-2", rect(1920, 0, 1920, 1080), 8);
+            (source, target)
+        }
+
+        fn row(token: &str) -> MigrateRow {
+            MigrateRow {
+                token: token.to_owned(),
+                rect: rect(100, 100, 400, 300),
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                fit_excluded: false,
+            }
+        }
+
+        fn ids() -> (OwnerId, GenerationId, CorrelationId) {
+            (
+                OwnerId::parse("owner-a").expect("owner"),
+                GenerationId::parse("gen-1").expect("generation"),
+                CorrelationId::parse("corr-migrate").expect("correlation"),
+            )
+        }
+
+        #[test]
+        fn migrate_event_carries_same_id_different_output_with_empty_target() {
+            let (owner, generation, correlation) = ids();
+            let (source, target) = domains();
+            let rows = vec![row("a"), row("b")];
+            let event = build_migrate_event(
+                &owner,
+                &generation,
+                &correlation,
+                7,
+                9,
+                source.clone(),
+                target.clone(),
+                &rows,
+                "a",
+                "right",
+                8,
+            )
+            .expect("migrate event");
+            assert!(matches!(
+                event.command,
+                CoreCommand::MigrateWorkspace { ref direction } if direction == "right"
+            ));
+            assert_eq!(event.domain_key.workspace.0, "ws-2");
+            assert_eq!(
+                event.target_domain.as_ref().expect("target").1.workspace.0,
+                "ws-2"
+            );
+            assert_eq!(
+                event.target_domain.as_ref().expect("target").1.output.0,
+                "right"
+            );
+            assert!(
+                event.target_windows.is_empty(),
+                "migration target carries no observation"
+            );
+            assert_eq!(event.focused_window.0, "a");
+            assert_eq!(event.windows.len(), 2);
+            // Empty focus migrates without fabricated focus.
+            let empty = build_migrate_event(
+                &owner,
+                &generation,
+                &correlation,
+                7,
+                9,
+                source,
+                target,
+                &rows,
+                "",
+                "right",
+                8,
+            )
+            .expect("empty focus event");
+            assert!(empty.focused_window.0.is_empty());
+        }
+
+        #[test]
+        fn migrate_event_refuses_split_id_same_output_and_dangling_focus() {
+            let (owner, generation, correlation) = ids();
+            let (source, target) = domains();
+            let rows = vec![row("a")];
+            // SAME output refuses.
+            let same = workspace_domain("primary", "ws-2", rect(0, 40, 1920, 1040), 8);
+            assert!(
+                build_migrate_event(
+                    &owner,
+                    &generation,
+                    &correlation,
+                    7,
+                    9,
+                    source.clone(),
+                    same,
+                    &rows,
+                    "a",
+                    "right",
+                    8,
+                )
+                .is_none()
+            );
+            // DIFFERENT workspace id refuses (destination current is never
+            // carried as the target).
+            let split = workspace_domain("right", "ws-9", rect(1920, 0, 1920, 1080), 8);
+            assert!(
+                build_migrate_event(
+                    &owner,
+                    &generation,
+                    &correlation,
+                    7,
+                    9,
+                    source.clone(),
+                    split,
+                    &rows,
+                    "a",
+                    "right",
+                    8,
+                )
+                .is_none()
+            );
+            // Dangling focus (named but not carried) refuses.
+            assert!(
+                build_migrate_event(
+                    &owner,
+                    &generation,
+                    &correlation,
+                    7,
+                    9,
+                    source,
+                    target,
+                    &rows,
+                    "ghost",
+                    "right",
+                    8,
+                )
+                .is_none()
+            );
+        }
+
+        #[test]
+        fn migrate_reply_extracts_planned_geometry() {
+            use tiler_core::boundary::{CoreReply, MigrateWorkspacePlan};
+            use tiler_core::session::DomainKey as Key;
+            let plan = MigrateWorkspacePlan {
+                base_revision: 7,
+                direction: Direction::Right,
+                source: Key {
+                    output: OutputId("primary".to_owned()),
+                    workspace: WorkspaceId("ws-2".to_owned()),
+                },
+                target: Key {
+                    output: OutputId("right".to_owned()),
+                    workspace: WorkspaceId("ws-2".to_owned()),
+                },
+                geometry: vec![tiler_core::session::DesiredGeometry {
+                    window: WindowId("a".to_owned()),
+                    leaf: tiler_core::directional::NodeId("n0".to_owned()),
+                    output: OutputId("right".to_owned()),
+                    workspace: WorkspaceId("ws-2".to_owned()),
+                    rect: rect(1920, 0, 960, 1040),
+                    overconstrained: false,
+                    client_clamped: false,
+                }],
+                focus_domain: None,
+                focus_leaf: None,
+                active_window: Some(WindowId("a".to_owned())),
+                members: 1,
+                floats: 0,
+                preconditions: Vec::new(),
+            };
+            let writes = planned_writes(&CoreReply::MigrateWorkspace(plan)).expect("extracts");
+            assert_eq!(writes.len(), 1);
+            assert_eq!(writes[0].window.0, "a");
+            assert_eq!(writes[0].rect, rect(1920, 0, 960, 1040));
+        }
+
+        #[test]
+        fn migration_transfer_verifies_members_and_both_views() {
+            use crate::workspace::WindowKey as Key;
+            let k = |hwnd: u64| Key {
+                hwnd,
+                pid: 100,
+                creation: format!("c{hwnd:016x}"),
+            };
+            let (a, b, s) = (k(1), k(2), k(3));
+            let migrating: BTreeSet<Key> = [a.clone(), b.clone()].into_iter().collect();
+            let sticky: BTreeSet<Key> = [s.clone()].into_iter().collect();
+            let source: BTreeSet<Key> = BTreeSet::new();
+            let target: BTreeSet<Key> = [a.clone(), b.clone()].into_iter().collect();
+            assert!(verify_migration_transfer(
+                &migrating,
+                &sticky,
+                &source,
+                &target,
+                "ws-2",
+                Some("ws-1"),
+                Some("ws-1"),
+                Some("ws-2"),
+            ));
+            // Sticky in the target set never verifies.
+            let target_bad: BTreeSet<Key> = [a.clone(), b.clone(), s.clone()].into_iter().collect();
+            assert!(!verify_migration_transfer(
+                &migrating,
+                &sticky,
+                &source,
+                &target_bad,
+                "ws-2",
+                Some("ws-1"),
+                Some("ws-1"),
+                Some("ws-2"),
+            ));
+            // Missing member never verifies.
+            let target_short: BTreeSet<Key> = [a.clone()].into_iter().collect();
+            assert!(!verify_migration_transfer(
+                &migrating,
+                &sticky,
+                &source,
+                &target_short,
+                "ws-2",
+                Some("ws-1"),
+                Some("ws-1"),
+                Some("ws-2"),
+            ));
+            // Wrong views never verify.
+            assert!(!verify_migration_transfer(
+                &migrating,
+                &sticky,
+                &source,
+                &target,
+                "ws-2",
+                Some("ws-1"),
+                Some("ws-9"),
+                Some("ws-2"),
+            ));
+            assert!(!verify_migration_transfer(
+                &migrating,
+                &sticky,
+                &source,
+                &target,
+                "ws-2",
+                Some("ws-1"),
+                Some("ws-1"),
+                Some("ws-9"),
+            ));
+        }
+
+        #[test]
+        fn migration_selection_uses_largest_edge_never_window_position() {
+            let outputs = vec![
+                DirectionalOutput {
+                    id: "src".to_owned(),
+                    full: rect(0, 0, 800, 800),
+                },
+                DirectionalOutput {
+                    id: "wide".to_owned(),
+                    full: rect(800, 0, 800, 600),
+                },
+                DirectionalOutput {
+                    id: "narrow".to_owned(),
+                    full: rect(800, 600, 800, 200),
+                },
+            ];
+            assert_eq!(
+                select_migration_target(Direction::Right, "src", &outputs).expect("readable"),
+                Some("wide".to_owned())
+            );
+            // Equal edges tie by left/top.
+            let tied = vec![
+                DirectionalOutput {
+                    id: "src".to_owned(),
+                    full: rect(0, 0, 800, 800),
+                },
+                DirectionalOutput {
+                    id: "low".to_owned(),
+                    full: rect(800, 400, 800, 400),
+                },
+                DirectionalOutput {
+                    id: "high".to_owned(),
+                    full: rect(800, 0, 800, 400),
+                },
+            ];
+            assert_eq!(
+                select_migration_target(Direction::Right, "src", &tied).expect("readable"),
+                Some("high".to_owned())
+            );
+            // No candidate is a no-op; unreadable refuses; unknown source refuses.
+            let far = vec![
+                DirectionalOutput {
+                    id: "src".to_owned(),
+                    full: rect(0, 0, 800, 800),
+                },
+                DirectionalOutput {
+                    id: "far".to_owned(),
+                    full: rect(2000, 0, 800, 800),
+                },
+            ];
+            assert_eq!(
+                select_migration_target(Direction::Right, "src", &far).expect("readable"),
+                None
+            );
+            let mut bad = tied.clone();
+            bad[1].full.w = 0;
+            assert!(select_migration_target(Direction::Right, "src", &bad).is_err());
+            assert!(select_migration_target(Direction::Right, "ghost", &tied).is_err());
+        }
+
+        #[test]
+        fn migration_fences_distinguish_currency_failures() {
+            let snap = MigrateFenceSnapshot {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_output: "primary".to_owned(),
+                target_output: "right".to_owned(),
+                moved_workspace: "ws-2".to_owned(),
+                source_refill: None,
+                target_prior: "ws-3".to_owned(),
+                source_tiled: true,
+                target_tiled: true,
+                direction: Direction::Right,
+                source_full: rect(0, 0, 1920, 1080),
+                target_full: rect(1920, 0, 1920, 1080),
+                source_bounds: rect(0, 40, 1920, 1040),
+                target_bounds: rect(1920, 0, 1920, 1080),
+                owner: "owner-a".to_owned(),
+                generation: "gen-1".to_owned(),
+                member_count: 2,
+            };
+            let live = MigrateFenceLive {
+                inner_gap: 8,
+                outer_gap: 8,
+                source_active: Some("ws-2".to_owned()),
+                target_active: Some("ws-3".to_owned()),
+                source_tiled: true,
+                target_tiled: true,
+                topology_ok: true,
+                scope_ok: true,
+                lifetime_ok: true,
+                membership_ok: true,
+                views_ok: true,
+                owner_ok: true,
+            };
+            assert_eq!(migrate_fences_hold(&snap, &live), None);
+            let mut drifted = live.clone();
+            drifted.topology_ok = false;
+            assert_eq!(
+                migrate_fences_hold(&snap, &drifted),
+                Some("topology-changed")
+            );
+            let mut drifted = live.clone();
+            drifted.views_ok = false;
+            assert_eq!(migrate_fences_hold(&snap, &drifted), Some("view-changed"));
+            let mut drifted = live.clone();
+            drifted.membership_ok = false;
+            assert_eq!(migrate_fences_hold(&snap, &drifted), Some("unverified"));
+            let mut drifted = live.clone();
+            drifted.lifetime_ok = false;
+            assert_eq!(
+                migrate_fences_hold(&snap, &drifted),
+                Some("identity-changed")
+            );
+            let mut drifted = live.clone();
+            drifted.scope_ok = false;
+            assert_eq!(migrate_fences_hold(&snap, &drifted), Some("scope-excluded"));
+            let mut drifted = live.clone();
+            drifted.source_tiled = false;
+            assert_eq!(migrate_fences_hold(&snap, &drifted), Some("mode-changed"));
+            let mut drifted = live.clone();
+            drifted.owner_ok = false;
+            assert_eq!(migrate_fences_hold(&snap, &drifted), Some("owner-changed"));
+        }
+
+        #[test]
+        fn real_engine_migrate_preserves_nested_shares_focus_and_floats() {
+            use tiler_core::boundary::{CoreCommand, CoreReply};
+            use tiler_core::contract::Observation;
+            use tiler_core::directional::{Axis, Node, SameAxisMove};
+            use tiler_core::seed::{EngineWindow, seed_session};
+            use tiler_core::session::{ObservedWindow, SessionObservation};
+            let (owner, generation, correlation) = ids();
+            let mut engine = tiler_core::engine::Engine::new();
+            engine.sync_binding(&owner, &generation);
+            let (source, target) = domains();
+            let seed_order = ["win-a", "win-b", "win-c", "win-d"]
+                .iter()
+                .enumerate()
+                .map(|(i, window)| EngineWindow {
+                    window: WindowId(window.to_string()),
+                    output: tiler_core::directional::OutputId("primary".to_owned()),
+                    workspace: WorkspaceId("ws-2".to_owned()),
+                    rect: rect((i as i32) * 100, 0, 100, 100),
+                    floating: false,
+                    fit_excluded: false,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    hints: tiler_core::size_hints::WindowSizeHints::none(),
+                })
+                .collect::<Vec<_>>();
+            let seeded =
+                seed_session(&owner, &generation, 7, &source.0, &seed_order).expect("seeds four");
+            engine.store_committed(source.1.clone(), seeded, 8);
+            // Float win-d first so the tiled tree stays the flat triple for
+            // the nesting move below (a floated nested member would dissolve
+            // its group instead). Always carries all four windows so later
+            // converges never drop the slotless exception.
+            let float_d = |engine: &mut tiler_core::engine::Engine, focus: &str| {
+                let session = engine.session(&source.1).expect("session").clone();
+                let base = session.accepted_revision();
+                let obs: Vec<ObservedWindow> = ["win-a", "win-b", "win-c", "win-d"]
+                    .iter()
+                    .map(|w| ObservedWindow {
+                        window: WindowId(w.to_string()),
+                        output: tiler_core::directional::OutputId("primary".to_owned()),
+                        workspace: WorkspaceId("ws-2".to_owned()),
+                        floating: *w == "win-d",
+                        fullscreen: false,
+                        maximized: false,
+                        sticky: false,
+                        fixed_auto: false,
+                        fixed_suppress: false,
+                        hints: tiler_core::size_hints::WindowSizeHints::none(),
+                    })
+                    .collect();
+                let mut session = session;
+                session
+                    .converge_observation(
+                        &SessionObservation {
+                            observation: Observation::new(
+                                owner.clone(),
+                                generation.clone(),
+                                base,
+                                7,
+                            ),
+                            windows: obs,
+                        },
+                        Some(&WindowId(focus.to_owned())),
+                    )
+                    .expect("float converges");
+                session
+            };
+            let op_event = |focused: &str,
+                            command: CoreCommand,
+                            correlation: &str|
+             -> tiler_core::boundary::CoreEvent {
+                tiler_core::boundary::CoreEvent {
+                    owner: owner.clone(),
+                    generation: generation.clone(),
+                    correlation: CorrelationId::parse(correlation).expect("valid"),
+                    revision: 0,
+                    fingerprint: 7,
+                    domain: source.0.clone(),
+                    domain_key: source.1.clone(),
+                    outer_gap: 8,
+                    focused_window: WindowId(focused.to_owned()),
+                    windows: seed_order.clone(),
+                    directional: None,
+                    directional_target_outer_gap: None,
+                    target_domain: None,
+                    target_windows: vec![],
+                    closed_windows: vec![],
+                    command,
+                }
+            };
+            let floated = float_d(&mut engine, "win-b");
+            engine.store_committed(source.1.clone(), floated, 8);
+            // Nest win-b under win-c: the perpendicular move restructures the
+            // flat triple into H[win-a, V[win-c, win-b]] with focus on B.
+            match engine.handle(&op_event(
+                "win-b",
+                CoreCommand::Move {
+                    window: "win-b".to_owned(),
+                    direction: "down".to_owned(),
+                    cross_output_transfer: false,
+                    same_axis_move: SameAxisMove::GroupWithNeighbor,
+                },
+                "corr-nest",
+            )) {
+                CoreReply::MoveDirectional(_) => {}
+                other => panic!("nesting move must plan, got {other:?}"),
+            }
+            // Unbalance the root shares with a keyboard resize of win-a.
+            match engine.handle(&op_event(
+                "win-a",
+                CoreCommand::Resize {
+                    window: "win-a".to_owned(),
+                    direction: "right".to_owned(),
+                    mode: "outwards".to_owned(),
+                    press_index: 0,
+                },
+                "corr-resize",
+            )) {
+                CoreReply::Resize(_) => {}
+                other => panic!("share resize must plan, got {other:?}"),
+            }
+            // Re-sync remembered focus to B without touching the tree.
+            let refocused = float_d(&mut engine, "win-b");
+            engine.store_committed(source.1.clone(), refocused.clone(), 8);
+            let nested = refocused;
+            // Assert the actual nested unequal-share precondition explicitly:
+            // H[win-a, V[win-b, win-c]] with unequal root shares, focus B.
+            let pre_tree = nested.tree_for(&source.1).cloned().expect("nested tree");
+            match &pre_tree {
+                Node::Group {
+                    axis: Axis::Horizontal,
+                    children,
+                    shares,
+                    id: _,
+                } => {
+                    assert_eq!(children.len(), 2, "root pairs A against one group");
+                    assert!(
+                        matches!(&children[0], Node::Leaf { id } if id.0 == "leaf-win-a"),
+                        "first root child is A, got {:?}",
+                        children[0]
+                    );
+                    assert_ne!(
+                        shares[0], shares[1],
+                        "root shares unequal after resize, got {shares:?}"
+                    );
+                    match &children[1] {
+                        Node::Group {
+                            axis: Axis::Vertical,
+                            children: inner,
+                            shares: vshares,
+                            id: _,
+                        } => {
+                            let ids: Vec<&str> = inner
+                                .iter()
+                                .map(|n| match n {
+                                    Node::Leaf { id } => id.0.as_str(),
+                                    _ => "?",
+                                })
+                                .collect();
+                            assert_eq!(ids, vec!["leaf-win-b", "leaf-win-c"]);
+                            assert_eq!(vshares.len(), 2);
+                        }
+                        other => panic!("second root child is the V group, got {other:?}"),
+                    }
+                }
+                other => panic!("nested H root, got {other:?}"),
+            }
+            let (pre_focus_domain, pre_focus_leaf) = nested.focus();
+            assert_eq!(pre_focus_domain, Some(source.1.clone()));
+            assert_eq!(
+                pre_focus_leaf.map(|l| l.0.clone()),
+                Some("leaf-win-b".to_owned()),
+                "remembered focus is B"
+            );
+            assert!(
+                nested.is_exception(&WindowId("win-d".to_owned())),
+                "D floats"
+            );
+            let pre_float_geometry = nested.floating_geometry(&WindowId("win-d".to_owned()));
+            let pre_revision = nested.accepted_revision();
+            engine.store_committed(source.1.clone(), nested, 8);
+            // Production builder carries the retained set: three tiled
+            // members plain, the float exception with floating plus
+            // fit-excluded.
+            let plain = |token: &str| MigrateRow {
+                token: token.to_owned(),
+                rect: rect(0, 0, 10, 10),
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                fit_excluded: false,
+            };
+            let rows = vec![
+                plain("win-a"),
+                plain("win-b"),
+                plain("win-c"),
+                MigrateRow {
+                    token: "win-d".to_owned(),
+                    rect: rect(0, 0, 10, 10),
+                    hints: tiler_core::size_hints::WindowSizeHints::none(),
+                    floating: true,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    fit_excluded: true,
+                },
+            ];
+            let event = build_migrate_event(
+                &owner,
+                &generation,
+                &correlation,
+                0,
+                7,
+                source.clone(),
+                target.clone(),
+                &rows,
+                "win-b",
+                "right",
+                8,
+            )
+            .expect("migrate event");
+            assert!(event.target_windows.is_empty());
+            let reply = engine.handle(&event);
+            let plan = match reply {
+                CoreReply::MigrateWorkspace(plan) => plan,
+                other => panic!("migrate must plan, got {other:?}"),
+            };
+            // Actual reply extraction through the production helper.
+            let writes =
+                planned_writes(&CoreReply::MigrateWorkspace(plan.clone())).expect("plan extracts");
+            assert_eq!(plan.members, 4, "complete member set relocates");
+            assert_eq!(plan.floats, 1, "float exception carried");
+            assert_eq!(plan.active_window, Some(WindowId("win-b".to_owned())));
+            assert_eq!(plan.source.workspace.0, "ws-2");
+            assert_eq!(plan.target.workspace.0, "ws-2");
+            assert_eq!(plan.target.output.0, "right");
+            assert_eq!(
+                plan.base_revision, pre_revision,
+                "revision binding preserved"
+            );
+            assert!(!writes.is_empty(), "retained geometry extracts");
+            // Retained nested tree, unequal shares, remembered focus, float
+            // class/origin, and tiled slot count survive the rekey.
+            let moved = engine.session(&plan.target).expect("relocated session");
+            assert_eq!(
+                moved.tree_for(&plan.target),
+                Some(&pre_tree),
+                "nested unequal-share tree preserved"
+            );
+            let (focus_domain, focus_leaf) = moved.focus();
+            assert_eq!(focus_domain, Some(plan.target.clone()));
+            assert_eq!(
+                focus_leaf.map(|l| l.0.clone()),
+                Some("leaf-win-b".to_owned()),
+                "remembered B focus retained"
+            );
+            assert!(
+                moved.is_exception(&WindowId("win-d".to_owned())),
+                "D stays float"
+            );
+            assert_eq!(
+                moved.floating_geometry(&WindowId("win-d".to_owned())),
+                pre_float_geometry,
+                "float origin geometry retained"
+            );
+            assert_eq!(moved.snapshot().windows.len(), 3, "three tiled slots kept");
+            assert_eq!(moved.exception_count(), 1, "one slotless exception kept");
+            assert!(
+                engine.session(&plan.source).is_none(),
+                "source slot released"
+            );
+            let _ = CoreCommand::Reconcile;
         }
     }
 }
