@@ -26,7 +26,18 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   byte-for-byte into a same-namespace `include!`; 20 helpers stay in the first
   file and all 27 test names are preserved. Parent remains 35,537 lines.
 - Required build/test/fmt/clippy/diff gates pass: 2,106 / 0 / 1.
+- Shell/monitor/observe: parent 35,537 -> 34,884 lines; children 69 / 106 /
+  511 lines. Bodies compare identically after removing necessary visibility
+  changes and one rustfmt signature reflow. Original public paths are preserved
+  through parent re-exports; shared state stays in the parent. Required gates
+  pass with the same 2,106 / 0 / 1 baseline.
 
 ## Remaining work
 
-Production map orders 14-30, starting with shell/monitor/observe.
+Production map orders 15-30, starting with hints/seams/placement/minmax.
+
+## Commit records
+
+| Commit | Extraction | Parent lines afterward | Child lines |
+| --- | --- | ---: | ---: |
+| `114d8ae` | D23 subdivision | 35,537 | 2,061 / 1,535 |

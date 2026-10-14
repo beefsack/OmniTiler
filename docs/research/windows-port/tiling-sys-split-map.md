@@ -43,7 +43,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 11 | `tests_windrag`, `tests_intent_wake`, `tests_launch`, `tests_stage3` | Gesture and dispatch tests | 483 / 193 / 352 / 598 | Preserve cfg attributes and preceding module comments | Extracted; 476 / 190 / 342 / 588 lines |
 | 12 | `tests_esc`, `tests_input_snapshot`, `tests_same_axis`, `tests_border_shell`, `tests_owner_work` | Remaining small test modules | 19 / 203 / 166 / 39 / 163 | Narrow parent seams | Extracted; 16 / 200 / 163 / 36 / 160 lines |
 | 13 | `tests_rmax03` | `rmax03_adapter_tests`, including shared fixture | 599 | 58 fixture references plus existing scope tests; same module name and parent level retained | Extracted last; 594 lines |
-| 14 | `shell`, `monitors`, `observe` | Shell constants/filters, monitor areas, hook queue/wake, observation/identity | 200 / 250 / 250 | Shared types; monitor/input coupling | Pending |
+| 14 | `shell`, `monitors`, `observe` | Shell constants/filters, monitor areas, hook queue/wake, observation/identity | 200 / 250 / 250 | Shared types; monitor/input coupling | Extracted; 69 / 106 / 511 lines |
 | 15 | `hints`, `pending_seams`, `placement`, `minmax` | Hint types, test injectors/live seams, placement translation, hint acquisition | 1,100 total | cfg branches travel with their items; avoid overlapping ownership | Pending |
 | 16 | `trace`, `owner_work`, `input` | JSON/border trace glue, work guard, preview bounds, input bridge/snapshot | 1,200 total | Keep shared `TileLoop` fields in parent initially | Pending |
 | 17 | `render_1`, `_2`, `retained` | Render bridge/carriers/acks/health, hidden/closed/retained records | 1,800 total | Native/render coupling and shared fields | Pending |
@@ -73,7 +73,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
   This is the current baseline. Moves must preserve counts; an increase is
   accepted only when verified as new tests in pulled upstream commits.
   No live tests for these moves.
-- Current parent: **35,537 lines**, down **26,380** (42.6%) after 14 extraction
+- Phase-1 parent: **35,537 lines**, down **26,380** (42.6%) after 14 extraction
   commits. All 28 inline test modules now occupy 28 child files totaling
   **26,288 lines**. No inline test modules remain. The production prefix before
   the original inline test section is byte-identical to baseline.
@@ -81,8 +81,11 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Phase 2 subdivides D23 at a whole-test boundary with same-namespace `include!`:
   2,061 / 1,535 lines, byte-identical moved bodies and all 27 names preserved.
   All required gates pass with 2,106 / 0 / 1.
-- Next: production orders 14-30. Start with shell/monitor/observe
-  leaves, then hints/seams/placement/minmax. Keep `TileLoop` state in the parent
+- Row 14 extracts shell/monitor/observe leaves; parent now **34,884 lines**.
+  Whole bodies preserved apart from necessary visibility and one formatted
+  signature. Public identity/observation and PMv2 paths remain re-exported.
+- Next: production orders 15-30, starting hints/seams/placement/minmax.
+  Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
 - Production risk: moving a function into a child changes unqualified name
   resolution and sibling access. Confirm imports and minimal visibility rather

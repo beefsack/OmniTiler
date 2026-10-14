@@ -542,7 +542,9 @@ decisions of 2026-09-24 are under
    names preserved. Original
   test counts preserved; upstream shared policy adds 11 tests, yielding
   2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
-   Next: production responsibilities in map order, starting shell/monitor/observe
+   Shell/monitor/observe production leaves extracted: parent now 34,884 lines,
+   children 69 / 106 / 511 lines. Next: hints/seams/placement/minmax, then the
+   remaining production responsibilities in map order
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
    [phase 2](changes/windows-tiling-sys-split-phase2.md)).
