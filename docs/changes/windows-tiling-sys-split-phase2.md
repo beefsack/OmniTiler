@@ -57,9 +57,15 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   admission also has four necessary formatted signatures. Required gates pass:
   2,106 / 0 / 1.
 
+- Rows/reconcile/geometry/focus-actuation: parent 27,706 -> 25,630 lines;
+  children 906 / 289 / 529 / 391 lines. Moved bodies preserve exact text apart
+  from necessary visibility/imports and one formatted signature; child-local
+  helpers stay private. Crate-visible `owner_snap_dropped` path is preserved.
+  Required gates pass: 2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 20-30, starting with rows/reconcile/geometry/focus-actuation;
+Production map orders 21-30, starting with keyboard/chords/dispatch;
 retain the whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
@@ -72,3 +78,4 @@ retain the whole observation `TileLoop` impl for later extraction.
 | `9fb3247` | Trace/owner-work/preview/input | 33,138 | 93 / 250 / 139 / 248 |
 | `5f3c764` | Render/retained | 31,690 | 469 / 966 / 41 |
 | `d8bd237` | Focus/underlay/probes | 29,158 | 609 / 705 / 1,002 / 251 |
+| `9654902` | Fullscreen/admission | 27,706 | 645 / 848 |

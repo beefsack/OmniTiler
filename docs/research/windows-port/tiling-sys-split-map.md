@@ -49,7 +49,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 17 | `render_1`, `_2`, `retained` | Render bridge/carriers/acks/health, hidden/closed/retained records | 1,800 total | Native/render coupling and shared fields | Extracted; 469 / 966 / 41 lines |
 | 18 | `focus`, `underlay_1`, `_2`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Observation `TileLoop` impl stays intact in parent for later extraction | Extracted; 609 / 705 / 1,002 / 251 lines |
 | 19 | `fullscreen`, `admission` | Fullscreen metadata/holds/exit, admission/float gates, event stamps | 600 / 900 | Ownership and engine seams | Extracted; 645 / 848 lines |
-| 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Pending |
+| 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Extracted; 906 / 289 / 529 / 391 lines |
 | 21 | `keyboard_1`, `_2`, `chords_1`, `_2`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Large individual functions may exceed cap intact | Pending |
 | 22 | `directional_1`, `_2`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Pending |
 | 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Pending |
@@ -96,10 +96,13 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Row 18 extracts focus/underlay/probes; parent becomes **29,158 lines**.
   `live_overlay_flags` retains its public parent path. Comparison permits only
   visibility/import changes and one formatted signature. Gates: 2,106 / 0 / 1.
-- Row 19 extracts fullscreen/admission; parent now **27,706 lines**.
+- Row 19 extracts fullscreen/admission; parent becomes **27,706 lines**.
   Exact bodies preserved after necessary visibility/import changes and four
   formatted admission signatures. Required gates pass with 2,106 / 0 / 1.
-- Next: production orders 20-30, starting rows/reconcile/geometry/focus-actuation. The whole
+- Row 20 extracts rows/reconcile/geometry/focus-actuation; parent now
+  **25,630 lines**. Bodies preserve exact text except necessary visibility/imports
+  and one formatted signature. Required gates pass with 2,106 / 0 / 1.
+- Next: production orders 21-30, starting keyboard/chords/dispatch. The whole
   observation `TileLoop` impl remains in the parent for later extraction.
   Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
