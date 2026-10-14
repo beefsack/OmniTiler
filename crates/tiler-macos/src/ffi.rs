@@ -272,17 +272,24 @@ mod macos {
     const K_EVENT_HOTKEY_PRESSED: u32 = 5;
 
     /// Carbon Event Manager entry points, resolved at runtime.
+    /// HotKey's dispatcher-target route installs the handler proc directly,
+    /// without a UPP wrapper (pinned source in the Phase 0 change record).
+    /// `NewEventHandlerUPP`, `InstallApplicationEventHandler` and
+    /// `DisposeEventHandlerUPP` were unavailable on the observed runtime;
+    /// the previous application-target + UPP route therefore failed closed.
     struct CarbonTable {
-        get_app_target: unsafe extern "C" fn() -> RawRef,
-        new_upp: unsafe extern "C" fn(
-            handler: unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
-        ) -> RawRef,
-        install:
-            unsafe extern "C" fn(RawRef, u32, *const EventTypeSpec, RawRef, *mut RawRef) -> i32,
+        get_dispatcher_target: unsafe extern "C" fn() -> RawRef,
+        install: unsafe extern "C" fn(
+            RawRef,
+            unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
+            u32,
+            *const EventTypeSpec,
+            RawRef,
+            *mut RawRef,
+        ) -> i32,
         register: unsafe extern "C" fn(u32, u32, EventHotKeyID, RawRef, u32, *mut RawRef) -> i32,
         unregister: unsafe extern "C" fn(RawRef) -> i32,
         remove: unsafe extern "C" fn(RawRef) -> i32,
-        dispose: unsafe extern "C" fn(RawRef),
         kind: unsafe extern "C" fn(RawConstRef) -> u32,
     }
 
@@ -312,19 +319,14 @@ mod macos {
                         }};
                     }
                     Some(CarbonTable {
-                        get_app_target: resolve!(
-                            "GetApplicationEventTarget" as unsafe extern "C" fn() -> RawRef
-                        ),
-                        new_upp: resolve!(
-                            "NewEventHandlerUPP"
-                                as unsafe extern "C" fn(
-                                    unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
-                                ) -> RawRef
+                        get_dispatcher_target: resolve!(
+                            "GetEventDispatcherTarget" as unsafe extern "C" fn() -> RawRef
                         ),
                         install: resolve!(
-                            "InstallApplicationEventHandler"
+                            "InstallEventHandler"
                                 as unsafe extern "C" fn(
                                     RawRef,
+                                    unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
                                     u32,
                                     *const EventTypeSpec,
                                     RawRef,
@@ -348,7 +350,6 @@ mod macos {
                         remove: resolve!(
                             "RemoveEventHandler" as unsafe extern "C" fn(RawRef) -> i32
                         ),
-                        dispose: resolve!("DisposeEventHandlerUPP" as unsafe extern "C" fn(RawRef)),
                         kind: resolve!("GetEventKind" as unsafe extern "C" fn(RawConstRef) -> u32),
                     })
                 }
@@ -388,10 +389,10 @@ mod macos {
 
     /// Owned Carbon hotkey registration. Main-thread-bound by construction
     /// (contains raw refs; intentionally `!Send`). `Drop` unregisters.
+    /// The handler proc installs directly (no UPP wrapper on this route).
     pub struct CarbonHotkey {
         hotkey_ref: RawRef,
         handler_ref: RawRef,
-        upp: RawRef,
         refcon: *mut CarbonRefcon,
         // `Rc` is `!Send + !Sync`, so this handle stays thread-bound without
         // any `unsafe impl`. Must be created/used/dropped on the same thread.
@@ -411,9 +412,6 @@ mod macos {
                     }
                     if !self.handler_ref.is_null() {
                         (table.remove)(self.handler_ref);
-                    }
-                    if !self.upp.is_null() {
-                        (table.dispose)(self.upp);
                     }
                 }
                 if !self.refcon.is_null() {
@@ -441,20 +439,27 @@ mod macos {
         let refcon_ptr = Box::into_raw(refcon);
         // SAFETY: all pointers null-checked; Carbon refs released in `Drop`
         // in reverse order; the refcon outlives the handler registration.
+        // The dispatcher-target route installs the proc directly (no UPP).
         unsafe {
-            let upp = (table.new_upp)(carbon_hotkey_handler);
-            if upp.is_null() {
-                drop(Box::from_raw(refcon_ptr));
-                return Err(-1);
-            }
             let spec = EventTypeSpec {
                 event_class: K_EVENT_CLASS_KEYBOARD,
                 event_kind: K_EVENT_HOTKEY_PRESSED,
             };
             let mut handler_ref: RawRef = std::ptr::null_mut();
-            let status = (table.install)(upp, 1, &spec, refcon_ptr as RawRef, &mut handler_ref);
+            let target = (table.get_dispatcher_target)();
+            if target.is_null() {
+                drop(Box::from_raw(refcon_ptr));
+                return Err(-1);
+            }
+            let status = (table.install)(
+                target,
+                carbon_hotkey_handler,
+                1,
+                &spec,
+                refcon_ptr as RawRef,
+                &mut handler_ref,
+            );
             if status != 0 {
-                (table.dispose)(upp);
                 drop(Box::from_raw(refcon_ptr));
                 return Err(status);
             }
@@ -467,20 +472,18 @@ mod macos {
                 keycode,
                 carbon_modifiers,
                 hot_id,
-                (table.get_app_target)(),
+                (table.get_dispatcher_target)(),
                 0,
                 &mut hotkey_ref,
             );
             if status != 0 {
                 (table.remove)(handler_ref);
-                (table.dispose)(upp);
                 drop(Box::from_raw(refcon_ptr));
                 return Err(status);
             }
             Ok(CarbonHotkey {
                 hotkey_ref,
                 handler_ref,
-                upp,
                 refcon: refcon_ptr,
                 _not_send: std::marker::PhantomData,
             })

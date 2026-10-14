@@ -68,10 +68,10 @@ taps, AX control, or Space moves:
 ```zsh
 mise exec -- cargo run --locked -p tiler-macos -- help
 mise exec -- cargo run --locked -p tiler-macos -- preflight
-mise exec -- cargo run --locked -p tiler-macos -- ax-enumerate
+mise exec -- just launch -- ax-enumerate
 mise exec -- cargo run --locked -p tiler-macos -- secure-input
 mise exec -- cargo run --locked -p tiler-macos -- spaces-diagnose
-mise exec -- cargo run --locked -p tiler-macos -- cg-owned-windows --pid PID --nonce HEX
+mise exec -- just launch -- cg-owned-windows --pid PID --nonce HEX
 ```
 
 TCC attribution: a directly executed binary (`cargo run`, or the executable
@@ -98,15 +98,15 @@ Explicit bounded modes (all finite; `--ctrl meta|ctrl|alt|shift`, default
 `meta`; fixed probe chord `0x04`):
 
 ```zsh
-mise exec -- cargo run --locked -p tiler-macos -- ax-observe --pid PID --nonce HEX --timeout-ms 1000
-mise exec -- cargo run --locked -p tiler-macos -- input-register --seconds 10
-mise exec -- cargo run --locked -p tiler-macos -- input-tap --seconds 10
-mise exec -- cargo run --locked -p tiler-macos -- input-tap --seconds 10 --suppress
-mise exec -- cargo run --locked -p tiler-macos -- spaces-diagnose --wid WID [--pid PID --nonce HEX]
-mise exec -- cargo run --locked -p tiler-macos -- spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested
-mise exec -- cargo run --locked -p tiler-macos -- spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested
-mise exec -- cargo run --locked -p tiler-macos -- probe-spawn --seconds 30
-mise exec -- cargo run --locked -p tiler-macos -- spaces-session [--seconds N] [--allow-untested]
+mise exec -- just launch -- ax-observe --pid PID --nonce HEX --timeout-ms 1000
+mise exec -- just launch -- input-register --seconds 10 --ctrl ctrl
+mise exec -- just launch -- input-tap --seconds 10 --ctrl ctrl
+mise exec -- just launch -- input-tap --seconds 10 --ctrl ctrl --suppress
+mise exec -- just launch -- spaces-diagnose --wid WID [--pid PID --nonce HEX]
+mise exec -- just launch -- --timeout 120 -- spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested
+mise exec -- just launch -- --timeout 120 -- spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested
+mise exec -- just launch -- --timeout 45 -- probe-spawn --seconds 30
+mise exec -- just launch -- --timeout 120 -- spaces-session [--seconds N] [--allow-untested]
 mise exec -- just launch -- --timeout 120 -- ax-session --seconds 30
 ```
 
@@ -118,7 +118,9 @@ controlled partial-write (position accepted, size refused) restoration. No
 cross-command title auth inside; per-leg in-process latencies in the report.
 The responsive phase additionally self-closes the owned window on a timer
 while the joined observer pumps, proving `AXUIElementDestroyed` delivery with
-CG-absence plus process-alive readbacks before the exact-Child stop.
+on-screen CG absence plus process-alive readbacks before the exact-Child stop.
+Offscreen CG entries can linger until app exit and are reported explicitly;
+the final stop must separately prove no CG residue.
 
 `ax-observe` authenticates the owned session (spawn record: pid/nonce,
 expected helper, live bundle-or-exe plus CURRENT live window nonce) and
@@ -145,8 +147,10 @@ counts, frame preimage/readback/restore, tap deliveries, re-enable events).
 the restore on the successful path. Partial position/size write failures
 trigger exact-preimage restoration with structured failure/restoration
 evidence (pure fault-injection regression tests cover the set, readback,
-restore-write, restore-verify, and ownership legs on all platforms); live
-dispatch still pending. The caller waits a documented 75 s worst case (5
+restore-write, restore-verify, and ownership legs on all platforms). Full and
+controlled partial-write restoration also have owned-fixture live evidence in
+the [Phase 0 record](../../docs/changes/macos-phase-0.md). The caller waits a
+documented 75 s worst case (5
 write-boundary revalidations × 8 s AX-title fallback + 5 frame legs × 2
 calls × 2 s element messaging timeout + 15 s slack, worker never
 cancelled); a timeout means outcome unknown with a restore possibly still in

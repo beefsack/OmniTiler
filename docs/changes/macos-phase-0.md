@@ -293,12 +293,17 @@ Raw operational diagnostics remain outside repository records.
 
 This is an incomplete Phase 0 milestone, not release or live-control acceptance.
 
-1. **Exact next action — bounded Ctrl hotkeys:** establish Carbon registration
-   and synthetic delivery, then exact-chord intercepting tap suppression,
-   disabled-tap recovery and bounded exit/release on owned frontmost windows.
-   Read enabled Mission Control Ctrl+arrow/digit bindings and distinguish
-   synthetic results from later user-owned physical acceptance. Launch through
-   LaunchServices; Input Monitoring only if the selected mode proves it needs it.
+1. **Exact next action — regular-app focus fixture:** use disposable TextEdit
+   with its pre-existing process/window state captured; first prove agreement
+   between NSWorkspace frontmost and AX focus, plus an independent restore to
+   the original frontmost app. Only then run per-event-gated Ctrl+h synthetic
+   Carbon delivery and exact tap suppression/passthrough/release tests. Preserve
+   the two failed Accessory-helper approaches below; do not repeat them. Complete
+   actual disabled-tap recovery and an independent hard lifetime ceiling. Read
+   and map enabled Mission Control Ctrl+arrow/digit bindings before collision
+   probes; registration success alone is not collision behavior. Physical
+   acceptance remains separate. Launch through LaunchServices; Input Monitoring
+   only if the selected mode proves it needs it.
 2. Space writes require a second disposable Space and independently demonstrated
    restoration surviving primary exit. The same-holder readback is **not** that
    proof; `spaces-session` never dispatches a write, even with `--allow-untested`.
@@ -357,3 +362,53 @@ Phase 1 implication: retain per-app AX threads, maintained public bindings,
 private identity join, bounded calls and readback-driven restoration. Hotkey and
 native Spaces architecture verdicts await their live legs; native Spaces-first
 is not yet established or rejected with SIP enabled.
+
+## Input registration milestone and focus-fixture blocker (2026-10-14)
+
+| Capability | Verdict | Evidence and latency |
+| --- | --- | --- |
+| Carbon Ctrl+h registration / release | Works | Dispatcher-target route returns status 0; bounded 8s run and final retained-build 2s run end with no process. Zero deliveries without accepted test input is not delivery proof |
+| CGEventTap create / release | Works for bounded idle runs | 8s observe-only and explicitly armed suppression runs create/release the tap; zero matched/suppressed events, no disable notification |
+| Carbon delivery / exact suppression / inexact passthrough / post-release delivery | Blocked by fixture | Ctrl+h posts refused because workspace frontmost still identified the protected terminal; zero-event suppression and silence are vacuous |
+| Timeout/user-input tap disable and recovery | Unverified | Zero disables observed; no actual disable/recovery evidence or independent hard-exit acceptance |
+| Ctrl+arrow/digit collisions | Partial diagnostics only | Experimental Carbon left/right/up/down/digit1 registrations returned 0; Ctrl+Left tap observed two events and kept both (5s run). Single-Space layout stayed unchanged; shortcut enablement-to-chord mapping and native collision effects remain unproven |
+| Native Spaces mutations | Untested | No temporary Space, move, switch or UI creation/destruction dispatched; no SIP rejection observed or inferred |
+
+The legacy Carbon table failed closed with status -2 because
+`NewEventHandlerUPP`, `InstallApplicationEventHandler` and
+`DisposeEventHandlerUPP` were unavailable. The retained repair uses
+`GetEventDispatcherTarget` + `InstallEventHandler` with the proc directly;
+registration and handler are released before callback state. Pinned source:
+[HotKey registration](https://github.com/soffes/HotKey/blob/a3cf605d7a96f6ff50e04fcb6dea6e2613cfcbe4/Sources/HotKey/HotKeysController.swift#L60-L67),
+[handler](https://github.com/soffes/HotKey/blob/a3cf605d7a96f6ff50e04fcb6dea6e2613cfcbe4/Sources/HotKey/HotKeysController.swift#L158),
+[unregister](https://github.com/soffes/HotKey/blob/a3cf605d7a96f6ff50e04fcb6dea6e2613cfcbe4/Sources/HotKey/HotKeysController.swift#L88).
+Independent review accepted this minimal ABI/lifetime repair.
+
+Two focus-fixture approaches failed: external activation/restoration using
+NSRunningApplication and SetFrontProcess; then helper self-activation/yield
+plus those external routes. AX focused PID and NSWorkspace frontmost disagreed,
+and explicit restoration did not land within its deadline. The structured run
+reported restoration failure even after exact helper termination; it did not
+claim clean focus. That experimental input-session harness and all synthetic,
+watchdog, helper-stimulus and CLI extensions were removed; only the reviewed
+Carbon table repair remains. This is a fixture blocker, not evidence that
+macOS denies hotkeys or that SIP rejects Spaces.
+
+Fresh read-only checks after helper exit verified the original frontmost app
+again and the initial Space layout/current exactly (`spaces:[1]`, `current:1`).
+Runtime records are empty, all probes/helpers exited, no hooks remain, no
+temporary Space was created, and no unrelated window was mutated. The retained
+tree passes 107 unit + 9 integration tests, strict clippy and formatting;
+signed rebuild/verification and LaunchServices trust true pass again.
+
+Final retained signed build, source `fbaddfb` plus the Carbon repair:
+
+- `tiler-macos` SHA-256: `e2eae926679efcd8d52c3106ee3079e7089d136d8845d6a8aa9f72ef1f3608aa`
+- `tiler-macos-probe-target` SHA-256: `33ae89813437ead4b4402f8072cf347d40ed576fd556f7ed40957502e2f87563`
+
+Phase 0 remains **incomplete**: AX implies a viable bounded per-app Phase 1
+boundary; input effects and native Spaces-first viability still require live
+acceptance. Keep tier-2 policy unchanged. A scripting addition with reduced SIP
+would contradict that policy; parking remains an unselected alternative to
+surface only if safe native routes fail. Neither alternative is justified by
+the current fixture failure.

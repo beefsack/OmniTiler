@@ -5,7 +5,9 @@ language/threading/native-Spaces/Meta/signing/floor decisions are now adopted
 in the table below. Read-only display/Space/current queries have live evidence;
 Signing/TCC rebuild survival and owned AX identity, notifications, frame/partial
 restoration, focus/raise, and stalled-app timeout now have live evidence. Input
-delivery and Space mutations remain unverified.
+delivery and Space mutations remain unverified. Carbon registration and bounded
+idle tap creation/release pass; the synthetic input fixture is blocked on
+AX/workspace focus disagreement and restoration, with its harness removed.
 The [active record](../../changes/macos-phase-0.md) and
 [setup runbook](../../macos-dev-environment.md) carry the current evidence.
 Upstream source text is not runtime proof,
@@ -103,8 +105,13 @@ partial-write restoration read back exact preimages (22ms and 28ms in the final
 run); raise readback took 12ms after owned activation. A 20s stalled helper
 refused AX nonce authentication within 3.4s using messaging timeouts, then
 authenticated after recovery. These are owned-fixture results, not ordinary-app
-acceptance or latency distributions. Carbon delivery and tap
-suppression/recovery are unverified. Owned window membership is proven through
+acceptance or latency distributions. Carbon dispatcher-target registration
+passes live (legacy UPP helper symbols were absent); bounded idle taps create
+and release. Carbon delivery and exact tap suppression/recovery are unverified:
+two Accessory-helper focus approaches failed and the synthetic gate refused
+Ctrl+h posts. The next fixture uses a disposable regular app with focus and
+independent restoration proven before posting; the failed harness was removed.
+Owned window membership is proven through
 the Child holder; direct Space move/restore is implemented but untested, while
 switch/create/destroy remain unsupported. No API failure is
 attributed to SIP from these results. Native/portable Cargo build/test/strict
