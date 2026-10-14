@@ -28,6 +28,20 @@ decisions of 2026-09-24 are under
   offline review. Software disable/return, priority and vertical send subcases
   pass. Protected placement restored and development stopped. Remaining
   inventory legs are pending; no full inventory gate completed.
+  - User live 2026-10-14: shortcut Apply passed; cross-output R4 right passed
+    (`L=H[W1,W2,W3*]`, `R=W4` -> `L=H[W1,W2]`, `R=H[W3*,W4]`).
+  - DEFECT | R4 left into an occupied target: from `R=H[W3*,W4]` onto
+    `L=H[W1,W2]` the result was `L=H[H[W1,W3],W2]`, `R=W4`. COSMIC R4
+    ([rules](cosmic-move-conformance.md#the-rules), S20/S23) gives a top-level
+    D-axis split with the mover nearest the source: `L=H[H[W1,W2],W3]`.
+  - DEFECT | Cross-output drag: dragging a window from the left to the right
+    output showed no drop targets and other windows jumped before drop; the
+    log was flooded with `drag-preview-refused reason=absent`.
+- P1 | Shared settings schema and tabbed Settings | Settings dialog has too
+  much on one page. Investigate a core-owned settings definition (tabs,
+  fields, types, defaults, validation) that each platform renders natively and
+  persists, so KDE, Windows and macOS do not maintain separate dialogs. Options
+  and recommendation first; pre-0.1 vs post-0.1 is a user decision.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
