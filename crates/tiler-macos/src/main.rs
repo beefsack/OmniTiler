@@ -320,9 +320,12 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             Ok(body.to_string())
         }
         Command::SpacesSwitch { pid, nonce, space } => {
-            // Explicitly unsupported: switching is scripting-addition-gated
-            // (or global synthetic gestures). Authenticate first so foreign
-            // sessions fail as ownership errors, then report the route.
+            // Explicitly unsupported: no implemented switch route with
+            // proven recovery (native legs need Dock injection; surveyed
+            // non-SA legs are global synthetic gestures, AX Mission Control
+            // automation, or posted system chords). Authenticate first
+            // so foreign sessions fail as ownership errors, then report the
+            // route. Missing implementation/recovery is never a SIP rejection.
             tiler_macos::ax::authorize_owned_action(pid, &nonce).map_err(|e| (2, e.to_string()))?;
             let status = tiler_macos::spaces::switch_space_status(space);
             Err((

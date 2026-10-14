@@ -181,6 +181,32 @@ pub struct SlsDisplay {
     pub current: Option<u64>,
 }
 
+/// Read-only Space type from `SLSSpaceGetType` (signature pinned against
+/// yabai `src/misc/extern.h`: `extern int SLSSpaceGetType(int cid,
+/// uint64_t sid)`; type ids pinned against yabai `src/space.c`
+/// (`space_is_user`, `space_is_fullscreen`, `space_is_system`): 0=user,
+/// 4=fullscreen, 2=system). Plain data only, never a pointer across the
+/// boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SlsSpaceType {
+    User,
+    Fullscreen,
+    System,
+    Other(i32),
+}
+
+/// Pure mapping of the raw `SLSSpaceGetType` integer to [`SlsSpaceType`].
+/// No live state: unknown ids stay `Other`, never guessed into a known
+/// kind.
+pub fn classify_space_type(raw: i32) -> SlsSpaceType {
+    match raw {
+        0 => SlsSpaceType::User,
+        4 => SlsSpaceType::Fullscreen,
+        2 => SlsSpaceType::System,
+        other => SlsSpaceType::Other(other),
+    }
+}
+
 /// Outcome of one bounded event-tap run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TapRunReport {
@@ -1514,6 +1540,68 @@ mod macos {
         }
     }
 
+    // -- Read-only Space type (`SLSSpaceGetType`, pinned yabai signature) --
+    //
+    // Signature pinned against yabai `src/misc/extern.h`:
+    //   `extern int SLSSpaceGetType(int cid, uint64_t sid);`
+    // Type ids pinned against yabai `src/space.c` (`space_is_user` 0,
+    // `space_is_fullscreen` 4, `space_is_system` 2). Read-only: gates the
+    // Tier-2 move/restore target and preimage to user Spaces (no proven
+    // restore out of fullscreen/system Spaces).
+    // Source: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h#L56-L56
+    // and https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space.c#L88-L101
+    // (live behavior still UNVERIFIED on a Mac — a missing symbol is `Err`,
+    // never a guessed type).
+
+    struct SlsSpaceTypeTable {
+        get_type: unsafe extern "C" fn(i32, u64) -> i32,
+    }
+
+    static SLS_SPACE_TYPE_TABLE: OnceLock<Option<SlsSpaceTypeTable>> = OnceLock::new();
+
+    fn sls_space_type_table() -> Option<&'static SlsSpaceTypeTable> {
+        SLS_SPACE_TYPE_TABLE
+            .get_or_init(|| {
+                // SAFETY: symbol null-checked before transmuting to its
+                // pinned yabai declaration; a missing symbol fails the table
+                // closed, never guessed.
+                unsafe {
+                    let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let cname = CString::new("SLSSpaceGetType").expect("static");
+                    let sym = libc::dlsym(handle, cname.as_ptr());
+                    if sym.is_null() {
+                        return None;
+                    }
+                    Some(SlsSpaceTypeTable {
+                        get_type: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(i32, u64) -> i32,
+                        >(sym),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// Read-only Space type for one Space ID (see [`super::classify_space_type`]).
+    /// Missing symbols are `Err` with the cause named — never a guessed type.
+    pub fn sls_space_type(sid: u64) -> Result<super::SlsSpaceType, String> {
+        let base = sls_table().ok_or_else(|| "SLS symbols unavailable".to_owned())?;
+        let table =
+            sls_space_type_table().ok_or_else(|| "SLSSpaceGetType unavailable".to_owned())?;
+        // SAFETY: resolved non-null symbols; plain integer data; the return
+        // value is classified by the pure mapper, never trusted raw.
+        unsafe {
+            Ok(super::classify_space_type((table.get_type)(
+                (base.connection)(),
+                sid,
+            )))
+        }
+    }
+
     // -- Public CGWindowList identity (maintained `core-graphics` binding) --
     //
     // Owned helper window IDs come from `CGWindowListCopyWindowInfo` via the
@@ -1712,8 +1800,10 @@ mod macos {
     // (async ObjC API with no synchronous effect readback in surveyed
     // source). The sole callable write is direct
     // `SLSMoveWindowsToManagedSpace`: source-derived, UNTESTED live, and
-    // potentially ineffective on the macOS 15 floor (where upstream prefers
-    // the workaround branch). It returns void: dispatch is never effect
+    // bypassed upstream on macOS 12.7+/13.6+/14.5+/15+ via
+    // `workspace_use_macos_space_workaround` (yabai `src/workspace.m`),
+    // which forces the SA-first branch with the compat-ID fallback after SA
+    // failure. It returns void: dispatch is never effect
     // evidence — callers must read back `SLSCopySpacesForWindows`
     // membership afterwards. Live behavior of the path below is UNTESTED;
     // dispatch plus readbacks are the evidence.
@@ -2456,7 +2546,7 @@ pub use macos::{
     process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
     secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
     sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
-    sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
+    sls_move_windows_direct, sls_space_type, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -2545,6 +2635,10 @@ mod stub {
     }
 
     pub fn sls_move_windows_direct(_sid: u64, _wids: &[u32]) -> Result<(), String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn sls_space_type(_sid: u64) -> Result<super::SlsSpaceType, String> {
         Err("macOS-only".to_owned())
     }
 
@@ -2742,7 +2836,7 @@ pub use stub::{
     process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
     secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
     sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
-    sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
+    sls_move_windows_direct, sls_space_type, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]
@@ -2775,9 +2869,21 @@ mod tests {
     }
 
     #[test]
+    fn space_type_mapping_matches_pinned_yabai_ids() {
+        // Pinned yabai `src/space.c`: 0=user, 4=fullscreen, 2=system.
+        // Unknown ids stay `Other`, never guessed into a known kind.
+        assert_eq!(classify_space_type(0), SlsSpaceType::User);
+        assert_eq!(classify_space_type(4), SlsSpaceType::Fullscreen);
+        assert_eq!(classify_space_type(2), SlsSpaceType::System);
+        assert_eq!(classify_space_type(7), SlsSpaceType::Other(7));
+        assert_eq!(classify_space_type(-1), SlsSpaceType::Other(-1));
+    }
+
+    #[test]
     fn sls_probe_never_panics() {
         let _ = sls_connection_available();
         let _ = sls_main_connection_id();
+        let _ = sls_space_type(1);
     }
 
     #[cfg(not(target_os = "macos"))]

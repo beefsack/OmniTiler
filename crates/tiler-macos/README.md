@@ -200,9 +200,13 @@ never auto-restores — `spaces-restore` performs the inverse with the same
 full validation (usable after the mover exits, via the spawn record), so the
 independent restore path is proven on its own — but independent restore is
 NOT considered proven until a live test demonstrates it.
+Source and destination must read back as user Spaces; unreadable Space type,
+unknown frontmost context and loginwindow fail closed before dispatch. A
+frontmost observation is not an atomic lock detector. Source and target must
+map unambiguously to the same display; cross-display recovery remains unproven.
 `spaces-switch`, `spaces-create` and `spaces-destroy` stay explicitly
-unsupported: those routes have no safe native recovery in surveyed source
-(see route table below) and the commands report the route instead of
+unsupported: their non-SA routes are unimplemented here with recovery unproven
+(see the [route survey and live plan](../../docs/research/macos-port/native-spaces-routes.md)) and the commands report the route instead of
 executing.
 
 Native-Space write routes (source-only determination at pinned yabai
@@ -212,8 +216,9 @@ rejection asserted without live evidence):
 | Operation | Tier-2 route | Scripting-addition only? |
 | --- | --- | --- |
 | Window move | Direct `SLSMoveWindowsToManagedSpace` only (UNTESTED, possibly ineffective on the macOS 15 floor); compat-ID fallback disabled (no exact restoration); bridged async op detected, never executed ([space_manager.c](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705), [extern.h](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h#L63-L63)) | No (SA attempt omitted) |
-| Switch vs focus | Switch: cross-display swaps windows via the move route, same-display is SA focus only; focus alternative is SA first else synthesized Dock-swipe gestures with cursor warp/click ([space_manager.c](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L927-L1035)) | No Tier-2 safe route with proven recovery (gesture fallback is global synthetic input; swap leg inherits the UNTESTED move route) |
-| Create / destroy / reorder / display-move | None (SA-only, [space_manager.c](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1037-L1072)) | Yes |
+| Switch vs focus | Yabai non-SA gesture fallback; AX Mission Control and enabled system chords are additional candidates | No; unimplemented here, recovery unproven |
+| Create / destroy | Yabai commands use SA; Hammerspoon uses non-SA AX Mission Control | Yabai yes; UI alternative no, unimplemented here |
+| Reorder / Space-to-display move | Yabai SA internal Dock functions | Yes in surveyed yabai; no proven non-SA implementation |
 
 ## Signed app recipe (stable identity)
 

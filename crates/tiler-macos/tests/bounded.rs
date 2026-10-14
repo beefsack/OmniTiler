@@ -85,18 +85,28 @@ fn spaces_restore_validates_identity_every_write() {
 }
 
 #[test]
-fn spaces_switch_create_destroy_report_sa_gated_routes() {
+fn spaces_switch_create_destroy_report_unsupported_routes() {
     let switch = tiler_macos::spaces::switch_space_status(2);
     assert!(!switch.supported);
     assert!(switch.reason.contains("scripting-addition"));
+    assert!(!switch.route.contains("SA-only"));
+    // Non-SA alternatives named; refusal is missing recovery, not SIP.
+    assert!(switch.route.contains("gotoSpace"));
+    assert!(switch.reason.contains("Mission Control"));
+    assert!(switch.reason.contains("not a SIP rejection"));
 
     let create = tiler_macos::spaces::create_space_status();
     assert!(!create.supported);
     assert!(create.reason.contains("scripting-addition"));
+    // Non-SA alternative named; refusal is missing recovery, not SIP.
+    assert!(create.reason.contains("Mission Control"));
+    assert!(create.reason.contains("not a SIP rejection"));
 
     let destroy = tiler_macos::spaces::destroy_space_status(2);
     assert!(!destroy.supported);
     assert!(destroy.reason.contains("scripting-addition"));
+    assert!(destroy.reason.contains("Mission Control"));
+    assert!(destroy.reason.contains("not a SIP rejection"));
 }
 
 #[test]

@@ -487,3 +487,44 @@ and diff checks. Unsafe blocks in `ffi.rs`: **49 → 54 (+5)**; no unsafe added
 elsewhere and no custom unsafe Send/Sync. Full-agreement focus and Phase 0 input
 acceptance remain incomplete. No durable focus-route decision is promoted from
 partial evidence.
+
+## Native Spaces offline preparation (2026-10-14)
+
+The [native-Spaces route survey and bounded plan](../research/macos-port/native-spaces-routes.md)
+classify pinned yabai branches and nine other tools, separate source facts,
+upstream claims and our readbacks, and define one-temporary-Space move/back,
+switch/back, removal and ordered snapshot restoration. The bridged-operation
+SIP-on report in yabai #2788 contradicts a blanket impossibility verdict;
+compat-ID still lacks exact metadata restoration, and upstream bypasses direct
+SLS moves on macOS 15+. No Space/UI/input write was run in this preparation.
+
+Read-only hotkey inspection now distinguishes preference overrides from
+effective Carbon chord dictionaries (CG versus Carbon modifier domains, no
+array-index-to-symbolic-ID mapping). Personal bindings remain outside project
+records; unresolved Desktop-N mappings must not enable settings implicitly.
+This does not establish physical collision, delivery or suppression behavior.
+
+Offline code preparation adds read-only user-Space type checks, an unambiguous
+same-display bound and a non-loginwindow/readable-frontmost gate (rechecked
+before dispatch) to both existing move and independent restore paths.
+Explicit `--allow-untested`, identity, topology and membership
+gates remain. Status/help now name non-SA Mission Control and system-chord
+candidates as unimplemented/recovery-unproven, not rejected by SIP or tier-2
+policy. Compat/bridged/UI/input writers remain unavailable. Phase 0 is ongoing;
+no workspace-mode or SIP-policy decision is promoted.
+
+Independent review accepted the pinned private ABI and scoped plan; its
+cross-display finding is closed by the code bound. Frontmost revalidation
+accepts a bundle-less helper only at the freshly authenticated owned PID;
+unidentified foreign frontmost state still refuses. Final offline gates:
+119 macOS unit + 9 integration tests, strict all-targets clippy on the
+portable/macOS allowlist, workspace formatting and diff checks pass. Non-macOS
+stubs were reviewed; native Linux/Windows compilation is not claimed from
+these checks. The active Phase 0 record remains open for live acceptance.
+
+Exact native-Spaces continuation: establish a fresh unlocked, signed/trusted
+baseline with an owned disposable fixture and inspect the actual Desktop-N
+shortcut labels read-only; then follow the survey's physical temporary-Space
+setup and independent restore proof before any gated API experiment. The
+full-agreement input fixture remains a separate outstanding leg; protected
+terminal windows are never an agent restore target.

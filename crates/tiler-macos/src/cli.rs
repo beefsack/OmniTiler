@@ -153,7 +153,11 @@ pub fn help_text() -> String {
            \x20 spaces-switch --pid PID --nonce HEX --space ID\n\
            \x20 spaces-create --pid PID --nonce HEX\n\
            \x20 spaces-destroy --pid PID --nonce HEX --space ID\n\
-           \x20 \x20 (explicitly unsupported: scripting-addition-gated; report the route, never execute)\n\
+           \x20 \x20 (explicitly unsupported: no implemented route with proven recovery;\n\
+           \x20 \x20 report the route, never execute — surveyed non-SA alternatives are\n\
+           \x20 \x20 visible AX Mission Control automation (create/remove/goto) and global\n\
+           \x20 \x20 synthetic gestures / drag+system-chord (switch/move); all unimplemented\n\
+           \x20 \x20 here with recovery unproven, never a SIP rejection)\n\
            \x20 probe-spawn [--hung-ms MS] [--slow-ms MS] [--seconds N]\n\
            \x20 spaces-session [--seconds N] [--allow-untested]\n\
            \x20 \x20 (single bounded Child-holder session: lifecycle proofs, CG identity,\n\

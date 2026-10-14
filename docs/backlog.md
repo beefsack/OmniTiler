@@ -3280,7 +3280,10 @@ decisions of 2026-09-24 are under
   prove original → owned target → original agreement, then Ctrl-chord
   delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
   and enabled Mission Control collisions; native Space move/switch/create
-  probes follow ([record](changes/macos-phase-0.md)). Readiness research
+  probes follow ([record](changes/macos-phase-0.md)); offline
+  [native-Spaces routes and recovery plan](research/macos-port/native-spaces-routes.md)
+  now distinguish SIP-on bridged-move claims, blocked compat restoration,
+  Mission Control alternatives and read-only hotkey mapping limits. Readiness research
   done (`f095042`): setup/TCC/signing runbook, sourced prior-art survey and
   tentative plan, which recommended public AX/AppKit. User direction
   (2026-10-03) supersedes that default: lower-level, lower-jank yabai-style
