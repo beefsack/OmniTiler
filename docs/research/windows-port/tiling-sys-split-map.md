@@ -45,7 +45,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 13 | `tests_rmax03` | `rmax03_adapter_tests`, including shared fixture | 599 | 58 fixture references plus existing scope tests; same module name and parent level retained | Extracted last; 594 lines |
 | 14 | `shell`, `monitors`, `observe` | Shell constants/filters, monitor areas, hook queue/wake, observation/identity | 200 / 250 / 250 | Shared types; monitor/input coupling | Extracted; 69 / 106 / 511 lines |
 | 15 | `hints`, `pending_seams`, `placement`, `minmax` | Hint types, test injectors/live seams, placement translation, hint acquisition | 1,100 total | cfg branches travel with their items; avoid overlapping ownership | Extracted; 138 / 495 / 177 / 314 lines |
-| 16 | `trace`, `owner_work`, `input` | JSON/border trace glue, work guard, preview bounds, input bridge/snapshot | 1,200 total | Keep shared `TileLoop` fields in parent initially | Pending |
+| 16 | `trace`, `owner_work`, `preview`, `input` | JSON/border trace glue, work guard, preview bounds, input bridge/snapshot | 1,200 total | Shared `TileLoop` fields and crate-visible snapshot planner stay in parent | Extracted; 93 / 250 / 139 / 248 lines |
 | 17 | `render_1`, `_2`, `retained` | Render bridge/carriers/acks/health, hidden/closed/retained records | 1,800 total | Native/render coupling and shared fields | Pending |
 | 18 | `focus`, `underlay_1`, `_2`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Several `TileLoop` methods; move whole impl blocks/items | Pending |
 | 19 | `fullscreen`, `admission` | Fullscreen metadata/holds/exit, admission/float gates, event stamps | 600 / 900 | Ownership and engine seams | Pending |
@@ -84,10 +84,13 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Row 14 extracts shell/monitor/observe leaves; parent becomes **34,884 lines**.
   Whole bodies preserved apart from necessary visibility and one formatted
   signature. Public identity/observation and PMv2 paths remain re-exported.
-- Row 15 extracts hints/seams/placement/minmax; parent now **33,818 lines**.
+- Row 15 extracts hints/seams/placement/minmax; parent becomes **33,818 lines**.
   Bodies and cfg branches preserved with necessary visibility/import changes
   and two formatted signatures. Required gates pass with 2,106 / 0 / 1.
-- Next: production orders 16-30, starting trace/owner-work/input.
+- Row 16 extracts trace/owner-work/preview/input; parent now **33,138 lines**.
+  `SnapshotOffer` and `plan_snapshot_offer` stay in the parent, preserving their
+  crate-visible paths in all builds. Required gates pass with 2,106 / 0 / 1.
+- Next: production orders 17-30, starting render/retained.
   Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
 - Production risk: moving a function into a child changes unqualified name

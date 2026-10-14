@@ -35,10 +35,15 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   138 / 495 / 177 / 314 lines. All cfg branches travel with their items;
   comparison permits only necessary visibility/imports and two formatted
   signatures. Required gates pass on final formatted source: 2,106 / 0 / 1.
+- Trace/owner-work/preview/input: parent 33,818 -> 33,138 lines; children
+  93 / 250 / 139 / 248 lines. Bodies differ only by necessary visibility,
+  imports and four formatted signatures. Shared fields remain in the parent;
+  crate-visible snapshot planner and enum also remain there to preserve paths
+  in all builds. Required gates pass: 2,106 / 0 / 1.
 
 ## Remaining work
 
-Production map orders 16-30, starting with trace/owner-work/input.
+Production map orders 17-30, starting with render/retained.
 
 ## Commit records
 
@@ -46,3 +51,4 @@ Production map orders 16-30, starting with trace/owner-work/input.
 | --- | --- | ---: | ---: |
 | `114d8ae` | D23 subdivision | 35,537 | 2,061 / 1,535 |
 | `06b8e28` | Shell/monitor/observe | 34,884 | 69 / 106 / 511 |
+| `40540a0` | Hints/seams/placement/minmax | 33,818 | 138 / 495 / 177 / 314 |
