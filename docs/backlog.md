@@ -52,6 +52,10 @@ decisions of 2026-09-24 are under
     agreement, no-jump hold and cancellation remain pending; original Planner
     mismatch/malformed-topology bands remain unrooted. Recommendation: physical
     repeat with loaded effect/oracle, rather than further fixture redesign.
+    Flat-profile test-device probes positioned exactly within one output, but
+    a held cross-seam endpoint missed by 150 logical pixels; later controller-DOWN
+    fixture results are excluded from product acceptance. Synthetic journeys
+    parked; original pointer/focus and protected placement restored exactly.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and

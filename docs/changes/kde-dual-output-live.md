@@ -877,6 +877,53 @@ Accepted subcases and remaining gaps are qualified below.
   open. Existing tentative timing/reuse/diagnostic choices remain user-review
   pending; no additional product decision was selected.
 
+### Coordinate-controlled fixture follow-up (2026-10-15)
+
+- The temporary pointer's newly appeared KWin InputDevice object was identified
+  by exact device name, vendor/product, pointer capability and sysName; identity
+  was rechecked before each property write. Flat profile with zero acceleration
+  read back successfully. No real input device was reconfigured.
+- Small same-output motion-only probes and their return legs had exact logical
+  travel. This establishes local fixture positioning, not cross-output mapping.
+  During a held native drag across the mixed-scale seam, a planned endpoint
+  missed by 150 logical pixels and the fixture aborted/released. The mover's
+  native output changed, but that is not a successful drop or preview result.
+  Scale, native drag relocation and coordinate handling are not independently
+  distinguished; do not label the shortfall a product rendering defect.
+- Initial journey labels were invalid: both supposed cross-output drags stayed
+  on the first output, and timed screenshots were taken after release. A later
+  fixture proved two owned clients on the first output and one on the second,
+  but its runs remained development-DOWN. Its exact same-output held arrivals
+  and screenshots are native fixture evidence only, not OmniTiler acceptance.
+  Additional fixture refusals covered an over-bound hop, a stale checkpoint
+  after screenshot capture and an empty target without owned pointer cover.
+- No occupied cross-output preview/drop, continuous re-cross, empty-target drop,
+  Esc or next-drag product leg is accepted. The misalignment and original
+  mismatch/malformed-topology bands remain unreproduced and unrooted; Planner
+  behavior cannot be evaluated from controller-DOWN runs. Moving preview CPU
+  cost also remains unmeasured. Further synthetic journeys are parked in favor
+  of the physical repeat below; no absolute-axis fallback was introduced.
+- Temporary safety checks cover strict device ownership/profile restoration,
+  motion-only probes with zero button events, fresh owned-active/cursor checks,
+  per-leg foreign-window checks and abort releases. Shell-background rows are
+  excluded only with an explicit false normal-window flag; hidden protected
+  rows require proven-hidden views. Offline helper regressions pass 40/40.
+  Legacy relative-motion verbs remain disabled. This fixture is not a delivered
+  repository harness, and passing local probes do not authorize seam motion.
+- Final restoration used one motion-only action within an owned first-output
+  cover, restoring the original follow-up pointer exactly before closing that
+  cover. Independent baseline/final native snapshots match original pointer,
+  focus, both protected placements/memberships and shown views. Test-device
+  properties were restored and verified before destruction; only its generated
+  configuration section was removed. Output configuration is unchanged, owned
+  clients/scripts/devices are absent, and final `just dev-status` is DOWN.
+  Normal desktop/spare identity rotation remains a lifecycle observation.
+- Evidence keys: `wu-driver-run`, `wu-journey-evidence/fixture-proof`,
+  `wjourney`, `J1.leg2`, `J4.hold2`, and `wu-restore-evidence/restoration` /
+  `final`. No production source changed and no new product decision was made.
+  Existing Rust/KWin/Settings gates remain applicable to unchanged product
+  source; this record-only diff passes whitespace checks.
+
 ### Physical repeat
 
 1. From DOWN, start `just dev trace` and retain its printed combined log location.
