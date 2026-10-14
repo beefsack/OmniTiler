@@ -356,9 +356,9 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 ## Next action
 
-- Establish a protected-free shown source and destination through a verified
-  view-switch route, plus direct scoped tree/spare diagnostics. Then complete
-  occupied-right R4, exact D13 tree and guarded cross-output drag.
+- Repeat the corrected occupied-target R4 journey and physical cross-output
+  drag; resolve the occupied-target topology question below. Exact tree/spare
+  diagnostics and the remaining inventory legs still need distinct evidence.
 - Keep the failed rapid fixture parked. A replacement needs persistent clients,
   correct native direction and actual overlapping-flight/delayed/replay evidence.
 - Reach missing history, floating-workspace and migration actions through the
@@ -642,3 +642,38 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   deferred: the staging recipe also replaces the effect payload, and the
   loaded-library identity was not verified. Dual-output live inventory gaps
   remain as qualified above.
+
+## Occupied-target R4 insertion correction (2026-10-14)
+
+- Reproduced the wrong target tree offline with the reported logical geometry:
+  left 2048x1152, right 1920x1080 offset down 72. Rust topology uses logical
+  bounds; output scales do not participate in this insertion branch.
+- Root cause: `crates/tiler-core/src/session/ops/move.rs` occupied R4 insertion
+  unconditionally nested beside the remembered target leaf. Remembering far-side
+  W1 in `L=H[W1,W2]` produced `H[H[W1,W3],W2]`; the mirrored rightward case
+  likewise stranded the mover inside the target instead of nearest the source.
+- Corrected parallel-root far-side insertion to use the existing whole-root
+  fallback. The two mirrored tests in `session_cross_output.rs` fail on the old
+  implementation and pass with exact root-child order and complete geometry.
+  Near-side remembered-leaf, nested and perpendicular behavior is retained.
+- A separate right-then-left journey passes with exact intermediate and return
+  root shapes. Fixture admission first needs an R3 escape to establish the flat
+  triple; both subsequent moves are R4. This journey also passes before repair
+  because the departed remembered leaf becomes invalid and triggers fallback;
+  it is a continuity check, not the RED discriminator. Native observation can
+  select a surviving target leaf; the far-side fixtures isolate that failure.
+- Product-intent question is parked in the
+  [minimal discriminator](../spec/reference-outcomes.md#kde-occupied-r4-target-shape-discriminator).
+  Current documented policy permits remembered-leaf/root insertion; COSMIC R4
+  always wraps the whole target, even a parallel root. R-OUT-01 establishes i3
+  flat tail insertion and sway's parallel-left flat branch, but sway's exact
+  wrapper and Hyprland's exact shape are TBD. No established Tier 1 majority
+  overrides COSMIC under the reference-tier rule. Recommendation: whole-target
+  D-axis wrapping for all occupied R4 targets; this broader change is unselected.
+- Native exact-tree re-verification remains pending. The existing live record
+  lacks a direct scoped tree diagnostic, so projected frames are not promoted
+  to proof of the corrected hierarchy.
+- Integrated offline gates: KWin typecheck and full suite 1547/1547; Rust
+  workspace 1858 passed, formatting and all-target Clippy with warnings denied;
+  diff whitespace check passes. Independent review accepted the mirrored
+  nearest-source correction without selecting the broader target-shape policy.

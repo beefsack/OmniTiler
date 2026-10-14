@@ -30,10 +30,13 @@ decisions of 2026-09-24 are under
   inventory legs are pending; no full inventory gate completed.
   - User live 2026-10-14: shortcut Apply passed; cross-output R4 right passed
     (`L=H[W1,W2,W3*]`, `R=W4` -> `L=H[W1,W2]`, `R=H[W3*,W4]`).
-  - DEFECT | R4 left into an occupied target: from `R=H[W3*,W4]` onto
-    `L=H[W1,W2]` the result was `L=H[H[W1,W3],W2]`, `R=W4`. COSMIC R4
-    ([rules](cosmic-move-conformance.md#the-rules), S20/S23) gives a top-level
-    D-axis split with the mover nearest the source: `L=H[H[W1,W2],W3]`.
+  - DEFECT narrowed | R4 far-side remembered-leaf insertion fixed offline,
+    RED/GREEN both ways: `L=H[W1,W2]` now gains W3 at its near root edge as
+    `H[H[W1,W2],W3]`, never `H[H[W1,W3],W2]`.
+    [Record](changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14).
+    Corrected native tree repeat pending. Product-intent question remains:
+    COSMIC always root-wraps; retained near-side remembered-leaf nesting differs
+    ([discriminator](spec/reference-outcomes.md#kde-occupied-r4-target-shape-discriminator)).
   - DEFECT | Cross-output drag: dragging a window from the left to the right
     output showed no drop targets and other windows jumped before drop; the
     log was flooded with `drag-preview-refused reason=absent`.

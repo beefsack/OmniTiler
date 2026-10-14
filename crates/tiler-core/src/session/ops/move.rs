@@ -1250,16 +1250,43 @@ pub(in crate::session) fn apply_move_operation(
                     let new_id =
                         generate_move_group_id(focused_leaf, base_revision, "r4", &node_ids);
                     node_ids.insert(new_id.clone());
-                    if let Some(focus_leaf) = valid_target_focus {
-                        let nested = nest_focused_ordered(
-                            policy,
-                            existing,
-                            &focus_leaf,
-                            mover_leaf_node,
-                            new_id,
-                            axis,
-                            mover_first,
-                        )?;
+                    // Beside-insertion beside the remembered leaf keeps W nearest
+                    // the source only when that leaf already sits at the target
+                    // root edge nearest the source. A far-side remembered leaf
+                    // in a parallel target root would strand W mid-row (e.g.
+                    // moving left with W1 remembered in H[W1,W2] gives the
+                    // defective H[H[W1,W3],W2]); fall back to root-edge
+                    // insertion there so W still lands nearest the source.
+                    // Nested and perpendicular targets keep beside-insertion.
+                    let nested = valid_target_focus.as_ref().and_then(|focus_leaf| {
+                        let far_side = match &existing {
+                            Node::Group {
+                                axis: root_axis,
+                                children,
+                                ..
+                            } if *root_axis == axis && children.len() >= 2 => {
+                                let near_edge = if mover_first { 0 } else { children.len() - 1 };
+                                children.iter().position(|c| {
+                                    c.id() == focus_leaf || subtree_contains(c, focus_leaf)
+                                }) != Some(near_edge)
+                            }
+                            _ => false,
+                        };
+                        if far_side {
+                            None
+                        } else {
+                            nest_focused_ordered(
+                                policy,
+                                existing.clone(),
+                                focus_leaf,
+                                mover_leaf_node.clone(),
+                                new_id.clone(),
+                                axis,
+                                mover_first,
+                            )
+                        }
+                    });
+                    if let Some(nested) = nested {
                         desired_trees.insert(target_key.clone(), Some(nested));
                     } else {
                         // Root fallback: wrap the entire existing target with

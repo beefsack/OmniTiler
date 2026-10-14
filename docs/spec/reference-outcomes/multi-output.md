@@ -50,7 +50,13 @@ paneru legs distinguish the native Space from virtual rows.
   `L=H[X,A*]`, `R=B`, edge insertion nearest source. Reciprocal FULL
   rectangle selection now includes sole root leaves; work-area placement and
   commit/arrival fences retained. [Item-5 offline record](../../changes/archive/four-direction-output-transfer.md);
-  native journey pending. User decision 2026-10-09 window-based selection
+  Far-side remembered-leaf correction is RED/GREEN offline in both directions:
+  parallel `H[W1,W2]` target now root-wraps with the mover nearest source,
+  never nests beside far-side W1. Whole-root wrapping for every occupied
+  target versus retained near-side remembered-leaf nesting remains unresolved
+  ([discriminator](../reference-outcomes.md#kde-occupied-r4-target-shape-discriminator),
+  [record](../../changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14));
+  corrected native tree journey pending. User decision 2026-10-09 window-based selection
   delivered offline ([selection record](../../changes/archive/position-based-output-selection.md)); single-target crossing stands.
 - Then Ours Windows: exhausted horizontal crossing to the target current
   workspace delivered offline in the [foundation](../../changes/windows-multi-output-foundation.md).

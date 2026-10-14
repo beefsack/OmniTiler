@@ -1147,3 +1147,250 @@ fn cross_output_pending_and_uncertain_guards() {
     let _ = s.note_adapter_loss();
     assert!(s.divergence().is_some());
 }
+
+// Far-side fixtures below use the defect logical geometry exactly
+// (L (0,0,2048,1152), R (2048,72,1920,1080); scales live adapter-side).
+fn defect_two_output_session() -> Session {
+    Session::new(
+        owner(),
+        generation(),
+        0,
+        7,
+        vec![
+            OutputDomain {
+                id: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2048,
+                    h: 1152,
+                },
+                gap: 0,
+                adjacent: [(Direction::Right, OutputId("out-2".to_owned()))]
+                    .into_iter()
+                    .collect(),
+            },
+            OutputDomain {
+                id: OutputId("out-2".to_owned()),
+                workspace: WorkspaceId("ws-b".to_owned()),
+                bounds: Rect {
+                    x: 2048,
+                    y: 72,
+                    w: 1920,
+                    h: 1080,
+                },
+                gap: 0,
+                adjacent: [(Direction::Left, OutputId("out-1".to_owned()))]
+                    .into_iter()
+                    .collect(),
+            },
+        ],
+    )
+    .expect("defect two-output session")
+}
+
+// Move left from R=H[W3,W4] onto L=H[W1,W2] with far-side W1 remembered:
+// the mover must land at the root edge nearest the source, never mid-row.
+#[test]
+fn r4_left_far_side_remembered_lands_at_root_edge() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-1", "out-1", "ws-a", "far-0000");
+    admit(&mut s, "win-2", "out-1", "ws-a", "far-0001");
+    let k1 = key("out-1", "ws-a");
+    // Remember the far-side (west) leaf: focus W1 before leaving the domain.
+    let w2 = window_in(&s, &k1, "win-2");
+    focus_commit(&mut s, &k1, &w2, Direction::Left, "far-focus-w1");
+    assert_eq!(focused_window(&s, &k1).0, "win-1");
+    let target_root_before = root_id(&s, "out-1", "ws-a").expect("target root");
+    admit(&mut s, "win-3", "out-2", "ws-b", "far-0002");
+    admit(&mut s, "win-4", "out-2", "ws-b", "far-0003");
+    let k2 = key("out-2", "ws-b");
+    let w4 = focused_window(&s, &k2);
+    assert_eq!(w4.0, "win-4");
+    focus_commit(&mut s, &k2, &w4, Direction::Left, "far-focus-w3");
+    assert_eq!(focused_window(&s, &k2).0, "win-3");
+    let plan = move_commit(&mut s, &k2, Direction::Left, "far-move-left");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k1);
+    assert_eq!(plan.desired_focus_leaf.0, "leaf-win-3");
+    assert_eq!(leaves(&s, "out-2", "ws-b"), vec!["leaf-win-4".to_string()]);
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec![
+            "leaf-win-1".to_string(),
+            "leaf-win-2".to_string(),
+            "leaf-win-3".to_string()
+        ]
+    );
+    let mover_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-3").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-1", "ws-a").expect("new root"),
+        "mover sits at the target root, not nested beside far-side W1"
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec![target_root_before, "leaf-win-3".to_string()],
+        "mover lands last (nearest the eastern source)"
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Mirror: move right from L=H[W3,W4] onto R=H[W1,W2] with far-side W2
+// remembered: the mover must land first at the target root, never mid-row.
+#[test]
+fn r4_right_far_side_remembered_lands_at_root_edge() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-1", "out-2", "ws-b", "far-0000");
+    admit(&mut s, "win-2", "out-2", "ws-b", "far-0001");
+    // Last-admitted W2 is already the remembered far-side (east) leaf.
+    let k2 = key("out-2", "ws-b");
+    assert_eq!(focused_window(&s, &k2).0, "win-2");
+    let target_root_before = root_id(&s, "out-2", "ws-b").expect("target root");
+    admit(&mut s, "win-3", "out-1", "ws-a", "far-0002");
+    admit(&mut s, "win-4", "out-1", "ws-a", "far-0003");
+    let k1 = key("out-1", "ws-a");
+    assert_eq!(focused_window(&s, &k1).0, "win-4");
+    let plan = move_commit(&mut s, &k1, Direction::Right, "far-move-right");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k2);
+    assert_eq!(plan.desired_focus_leaf.0, "leaf-win-4");
+    assert_eq!(leaves(&s, "out-1", "ws-a"), vec!["leaf-win-3".to_string()]);
+    assert_eq!(
+        leaves(&s, "out-2", "ws-b"),
+        vec![
+            "leaf-win-4".to_string(),
+            "leaf-win-1".to_string(),
+            "leaf-win-2".to_string()
+        ]
+    );
+    let mover_parent = parent_of(&s, "out-2", "ws-b", "leaf-win-4").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-2", "ws-b").expect("new root"),
+        "mover sits at the target root, not nested beside far-side W2"
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec!["leaf-win-4".to_string(), target_root_before],
+        "mover lands first (nearest the western source)"
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Full user journey: L=H[W1,W2,W3*], R=W4; move W3 right, then (still
+// focused) move it back left. Return must land at the root edge nearest
+// the source: L=H[H[W1,W2],W3], R=W4.
+#[test]
+fn r4_right_then_left_journey_returns_to_root_edge() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-1", "out-1", "ws-a", "j-0000");
+    admit(&mut s, "win-2", "out-1", "ws-a", "j-0001");
+    admit(&mut s, "win-3", "out-1", "ws-a", "j-0002");
+    admit(&mut s, "win-4", "out-2", "ws-b", "j-0003");
+    let k1 = key("out-1", "ws-a");
+    let k2 = key("out-2", "ws-b");
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec![
+            "leaf-win-1".to_string(),
+            "leaf-win-2".to_string(),
+            "leaf-win-3".to_string()
+        ]
+    );
+    assert_eq!(leaves(&s, "out-2", "ws-b"), vec!["leaf-win-4".to_string()]);
+    // Focus returns to W3 on out-1 via cross-output focus, as the user would.
+    let w4 = focused_window(&s, &k2);
+    assert_eq!(w4.0, "win-4");
+    let obs = complete_obs(&s);
+    let focus_plan = s
+        .propose_cross_output_focus(
+            &k2,
+            &w4,
+            Direction::Left,
+            &obs,
+            &correlation("j-focus"),
+            &FocusCapabilities::full(),
+        )
+        .expect("cross focus to W3");
+    assert_eq!(focus_plan.desired_focus_leaf.0, "leaf-win-3");
+    let base = s.accepted_revision();
+    s.acknowledge(&AdapterAck::new(
+        correlation("j-focus"),
+        owner(),
+        generation(),
+        base,
+        AckOutcome::Accepted,
+    ))
+    .expect("ack");
+    s.verify_focus(&FocusPostObservation::new(
+        Observation::new(owner(), generation(), base, 960),
+        correlation("j-focus"),
+        true,
+        focus_plan.dispatch.preconditions.clone(),
+        focus_plan.dispatch.operation.clone(),
+    ))
+    .expect("verify cross focus");
+    assert_eq!(focused_window(&s, &k1).0, "win-3");
+    // Session admission nests (H[W1,H[W2,W3]]), so one local R3 escape
+    // flattens to H[W1,W2,W3] first; the next press crosses.
+    let flat = move_commit(&mut s, &k1, Direction::Right, "j-flatten");
+    assert_eq!(flat.dispatch.rule, tiler_core::directional::Rule::R3);
+    assert_eq!(focused_window(&s, &k1).0, "win-3");
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec![
+            "leaf-win-1".to_string(),
+            "leaf-win-2".to_string(),
+            "leaf-win-3".to_string()
+        ]
+    );
+    // Move right: L collapses to H[W1,W2], R gains W3 nearest the source.
+    let right = move_commit(&mut s, &k1, Direction::Right, "j-move-right");
+    assert_eq!(right.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(right.desired_focus_domain, k2);
+    assert_eq!(right.desired_focus_leaf.0, "leaf-win-3");
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec!["leaf-win-1".to_string(), "leaf-win-2".to_string()]
+    );
+    assert_eq!(
+        leaves(&s, "out-2", "ws-b"),
+        vec!["leaf-win-3".to_string(), "leaf-win-4".to_string()]
+    );
+    let r_parent = parent_of(&s, "out-2", "ws-b", "leaf-win-3").expect("mover parent");
+    assert_eq!(r_parent.1, Axis::Horizontal);
+    assert_eq!(r_parent.0, root_id(&s, "out-2", "ws-b").expect("root"));
+    assert_eq!(
+        r_parent.2,
+        vec!["leaf-win-3".to_string(), "leaf-win-4".to_string()]
+    );
+    assert_geometry_complete_for(&right, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    // Still focused: move back left onto occupied L.
+    assert_eq!(focused_window(&s, &k2).0, "win-3");
+    let l_root_mid = root_id(&s, "out-1", "ws-a").expect("mid root");
+    let left = move_commit(&mut s, &k2, Direction::Left, "j-move-left");
+    assert_eq!(left.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(left.desired_focus_domain, k1);
+    assert_eq!(left.desired_focus_leaf.0, "leaf-win-3");
+    assert_eq!(leaves(&s, "out-2", "ws-b"), vec!["leaf-win-4".to_string()]);
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec![
+            "leaf-win-1".to_string(),
+            "leaf-win-2".to_string(),
+            "leaf-win-3".to_string()
+        ]
+    );
+    let l_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-3").expect("mover parent");
+    assert_eq!(l_parent.1, Axis::Horizontal);
+    assert_eq!(l_parent.0, root_id(&s, "out-1", "ws-a").expect("new root"));
+    assert_eq!(l_parent.2, vec![l_root_mid, "leaf-win-3".to_string()]);
+    assert_geometry_complete_for(&left, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}

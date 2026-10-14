@@ -21,6 +21,14 @@ trivially different start state.
 | --- | --- | --- | --- |
 | Own mover absent after native transfer setters | Place sole owned A on an otherwise empty shown workspace; move right into an empty adjacent output, then left back; record transfer stages, scopes, membership and focus | Reproduced post-setter `geometry-scope` refusal with `fresh_len=0 flight_len=1`, then native arrival by reconcile. Corrected exact-minus-mover tolerance is post-setter only; gated sole-source repeats both ways and occupied left repeat reach native-written/followed/arrived ([record](../changes/kde-dual-output-live.md)) | Unrelated/pre-transfer drift remains refused offline; occupied right live repeat, arbitrary partial-write recovery and exact reference outcomes TBD. No new transfer policy selected |
 
+### KDE occupied R4 target-shape discriminator
+
+Variant of [R-OUT-01](reference-outcomes/multi-output.md#r-out-01-move-left-onto-an-occupied-output).
+
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| Parallel multi-window target with far-side remembered leaf | Set `L=H[W1,W2]` remembering W1, `R=H[W3*,W4]`; move W3 left. Mirror with the target remembering its far-right leaf | Before repair `L=H[H[W1,W3],W2]`; corrected existing root fallback gives `L=H[H[W1,W2],W3]`, mirrored right gives `H[W4,H[W1,W2]]`. Both regressions fail before repair and pass afterward ([record](../changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14)) | COSMIC always wraps the whole target, including a parallel root. Current KDE remembered-leaf nesting differs when that leaf is near-side; whole-root wrap versus remembered-leaf nesting versus flat edge insertion remains a product-intent question. R-OUT-01 proves i3 flat tail insertion; sway has a parallel-left flat branch, exact wrapper TBD; Hyprland exact shape TBD. No established overriding Tier 1 majority. Corrected live shape TBD |
+
 ### KDE dual-output admission and workspace-scope discriminators
 
 Variants of [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window-with-two-occupied-outputs) and [R-WS-11](reference-outcomes/workspaces.md#r-ws-11-next-workspace-previous-workspace).
