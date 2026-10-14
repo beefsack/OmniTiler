@@ -633,7 +633,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 
 - After integrating concurrent Windows/macOS deliveries, settings-only native
   build with warnings denied and CTest pass (26/26); KWin typecheck and full
-  suite pass (1535/1535); Rust workspace tests pass (1856), formatting and
+  suite pass (1535/1535); Rust workspace tests pass (1855), formatting and
   all-target Clippy with warnings denied pass; diff whitespace checks pass.
 - Non-macOS lint integration required cfg-gating macOS-only helpers/imports
   and constants. macOS validation order is preserved; no macOS live or host
