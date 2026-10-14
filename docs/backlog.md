@@ -38,12 +38,14 @@ decisions of 2026-09-24 are under
     regressions cover target preservation and remembered-leaf variants.
     [Record](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
     Corrected native exact-tree repeat remains pending in the multi-output checks.
-  - DEFECT narrowed | Cross-output drag preview lookup, hidden-output reconcile
-    hold/reply fences and repeated refusal/backoff logging fixed offline;
-    `2adc1fc`; 12 regression cases and full 1547-test KWin suite pass.
+  - DEFECT narrowed | Cross-output drag source/verdict lookup, hidden-output
+    reconcile fences, missing-preview-reply recovery and redundant preview
+    planning/logging corrected offline; full KWin suite passes 1565 tests.
     [Record and physical repeat](changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
-    Physical preview/drop agreement, no-jump hold, inverse, empty-target and
-    cancellation checks remain pending.
+    Native occupied/empty/reverse crossings prove fallback recovery only: effect
+    and oracle unavailable. Physical smoothness, cursor alignment, preview/drop
+    agreement, no-jump hold and cancellation remain pending; Planner mismatch /
+    malformed-topology bands need the new bounded stage diagnostics.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and

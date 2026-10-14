@@ -726,6 +726,88 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 - Development readback remains DOWN. No new live input, test clients, output
   mutation or lifecycle startup was performed for these corrections.
 
+### Follow-up drag failures and correction (2026-10-15)
+
+- Delivered corrections: `af1054c` (native drag sessions, reply recovery and
+  stable-preview reuse), `4dd2f67` (counted Planner summary coalescing),
+  `334e133` (bounded ambiguous-refusal stages), `f3ccb34` (portable lint
+  integration).
+- A later two-output run still produced 6204 preview-settled records and 12659
+  Planner summaries. Its first preview session reached Finish; subsequent
+  verdicts reported `drag-unknown-window`, with ordinary stale reconciles
+  continuing. These observations do not prove a permanently wedged flight.
+- Acceptance for the follow-up: consecutive cross-output gestures remain
+  eligible; same-gesture re-cross uses logical destination bounds; lost preview
+  replies and abandoned idle holds recover with bounded diagnostics; repeated
+  samples do not cause redundant planning or outcome-log floods. Keep native
+  cancellation and refusal behavior and verify occupied, empty and same-output
+  controls separately.
+- Foreground-only Started/verdict lookup is independently reproduced when the
+  mover belongs to another observed output. Cross-domain lookup now retains
+  fresh observed eligibility. A destination becoming foreground before mover
+  arrival also has a reproduced overly narrow preview reply fence.
+- Offline regressions fail before those repairs and pass afterward. Preview
+  reply expiry now invalidates late replies, including when no pending sample
+  exists. Idle hold release gains a once-only abandonment diagnostic.
+- Same-gesture right-then-left logical-domain coverage passes; coordinate
+  misalignment is not yet reproduced and is not claimed fixed.
+- Exact semantic reuse avoids redundant Planner calls for unchanged pointer,
+  scene and hover state, excluding native frame drift. Membership, logical
+  bounds/gaps, hints/eligibility, exact native reference, owner/generation and
+  applied layout epoch invalidate reuse. Only `unchanged` and
+  `unsupported-capability` refusals reuse; ephemeral refusals always retry.
+  Identical rendered rectangles skip redundant overlay calls. A 200-sample
+  stationary-pointer probe produced two plans, one overlay set and one settled
+  line; this does not establish physical smoothness while moving.
+- KWin logs preview state transitions and terminal counters. Planner summaries
+  coalesce repeated preview outcomes, retain failure/recovery transitions and
+  flush omitted-correlation spans/counts at a boundary or after 64 repeats.
+  Non-preview commands retain complete summaries. Independent review corrected
+  refusal-state loss, missing non-preview flushes, omitted layout/ref cache keys
+  and accidental per-sample stage logging before acceptance.
+- Tentative, user review pending: use a two-second per-preview reply deadline,
+  exact semantic reuse without a new sampling-rate timer, and counted
+  state-change diagnostics. These choices preserve the selected resolver,
+  cancellation and interactive-hold behavior.
+- Native synthetic crossings reached an empty target, an occupied target and
+  the reverse output. Each oracle call failed while the effect was unloaded;
+  each hold expired and subsequent reconcile restored tiling. These are
+  fallback-placement/recovery observations, not preview rendering, drop-intent
+  or preview/drop-agreement passes. One occupied crossing reproduced a Planner
+  `cross-domain-mismatch` refusal, then preview recovery. No
+  `drag-unknown-window` or `malformed-topology` was seen in this short repeat.
+- A reverse drop activated a non-test window; further input stopped. An
+  ownership-checked refocus refused without effects. Owned clients exited,
+  development returned DOWN and pre-existing output/membership/frame sets,
+  output configuration and shown views match baseline. Original focus was not
+  restored; packaged enablement returned true through managed teardown.
+- Missing effect/oracle readiness excludes all clean-drop acceptance in that
+  repeat. Three-second holds, edge sweeps, same-output control, continuous
+  re-cross and Esc remain pending. The existing atomic input fixture cannot
+  express the hold/sweep sequence; no repeated harness redesign was attempted.
+- The original run's parsed `drag-unknown-window` verdicts establish an oracle
+  reply path there; the later missing-oracle repeat cannot explain those events.
+  Its 37 Planner `cross-domain-mismatch` and 56 `malformed-topology` samples
+  remain unrooted. Adapter-faithful retained Planner fixtures did not reproduce
+  them. Bounded `direction=drag-stage` diagnostics now identify the failing
+  convergence/capture/resolver/projection stage on a repeat; no guard was widened
+  on speculation, and wire outcomes remain unchanged.
+- Offline RED/GREEN regressions cover cross-domain Started/verdict lookup,
+  destination-foreground reply timing, missing-reply recovery with and without
+  queued samples, idle abandonment diagnostics, reuse/invalidation, refusal
+  retry, summary preservation and stage/count logging. Same-gesture re-cross is
+  a passing coordinate control, not a RED reproduction of visual misalignment.
+- Integrated gates pass: Rust workspace build and 1895 tests, formatting,
+  all-target Clippy with warnings denied; KWin typecheck and 1565 tests;
+  settings-only warnings-denied build and CTest 26/26; whitespace checks.
+  Integration needed the non-macOS probe stub to mirror its native function's
+  argument-count lint allowance; native behavior is unchanged.
+- Remaining P0 acceptance: physical smoothness and renderer alignment, exact
+  drop/preview agreement and the ambiguous Planner refusal bands. Next action:
+  run the physical-repeat sequence below with the effect loaded and its oracle
+  endpoint available, retain the combined log, and inspect `direction=drag-stage`
+  plus preview terminal counters. The record remains active for those gaps.
+
 ### Physical repeat
 
 1. Start `just dev` and retain its printed combined log location. Put two
