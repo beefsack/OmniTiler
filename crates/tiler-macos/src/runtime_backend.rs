@@ -57,7 +57,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::runtime::{AX_CALL_TIMEOUT, AxCompletion, FrameCommand, ObservedWindow};
+#[cfg(target_os = "macos")]
+use crate::runtime::AX_CALL_TIMEOUT;
+use crate::runtime::{AxCompletion, FrameCommand, ObservedWindow};
 
 pub use crate::runtime_observe::BackendSnapshot;
 
