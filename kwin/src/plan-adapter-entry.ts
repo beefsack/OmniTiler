@@ -147,6 +147,11 @@ export const WORKSPACE_TILING_TOGGLE_TEXT = "Toggle tiling for current workspace
 // default. Every other currently-unbound action stays unbound.
 export const WORKSPACE_TILING_TOGGLE_SEQUENCE = "Meta+Y";
 
+// Dedicated move-preview reply deadline: a dispatched drag-preview whose
+// planner reply never arrives recovers through this bound (same scale as the
+// oracle verdict bound) instead of wedging sampling or the gesture.
+export const DRAG_PREVIEW_REPLY_TIMEOUT_MS = 2000;
+
 export interface PlanEntryHandle {
     readonly stop: () => void;
     readonly requestFocus: (direction: unknown) => void;
@@ -4691,6 +4696,21 @@ function startPlanAdapterEntryOnce(
                         live = null;
                     }
                     if (live !== null && live.move !== true) {
+                        // Orphan-hold diagnostic: Started armed this hold but
+                        // no Finished ever arrived, so the observed gesture is
+                        // already idle and ordinary reconcile resumes. Logged
+                        // once by construction: the hold is deleted below and
+                        // never re-enters this branch.
+                        let abandonedCorrelation = "none";
+                        try {
+                            const start = oracleStarts.get(ref);
+                            if (start !== undefined && start.move === true) {
+                                abandonedCorrelation = `drag-${String(start.epoch)}`;
+                            }
+                        } catch (error) {
+                            void error;
+                            abandonedCorrelation = "none";
+                        }
                         try {
                             interactiveMoveRefs.delete(ref);
                         } catch (error) {
@@ -4706,6 +4726,7 @@ function startPlanAdapterEntryOnce(
                         } catch (error) {
                             void error;
                         }
+                        try { log(`omnitiler:route-diag:drag-move-abandoned correlation=${abandonedCorrelation}`); } catch (error) { void error; }
                     }
                 }
                 // Observed-state gate: a resize hold survives while KWin
@@ -7741,6 +7762,89 @@ function startPlanAdapterEntryOnce(
     // the pointer route and never change a share.
     interface OracleStart { id: string; rect: { x: number; y: number; w: number; h: number }; move: boolean; resize: boolean; epoch: number; grabbed: OracleGrabbed | null; grabSource: OracleGrabSource | "missing"; pointerStart: { x: number; y: number } | null; floatingStart: boolean; domainOutput: string; domainWorkspace: string }
     const oracleStarts = new Map<object, OracleStart>();
+    // Oracle window lookup across domains: one foreground observation plus
+    // one hidden collection, matched as a unit. The native mover may sit on
+    // another output than the active window (cross-output drag, post-drop
+    // foreground switch), so a foreground-only search would drop the Started
+    // capture and misroute the finish verdict as unknown-window. Like the
+    // adapter's hidden holder policy, an id claimed by more than one live
+    // ref stays fail-closed ambiguous instead of routing the first hit.
+    interface OracleObservedWindow {
+        ref: object;
+        id: string;
+        rect: { x: number; y: number; w: number; h: number };
+        floating: boolean;
+        domainOutput: string;
+        domainWorkspace: string;
+    }
+    interface OracleDomains {
+        foreground: PlanObserved | null;
+        hidden: ReadonlyArray<PlanObserved>;
+    }
+    const collectOracleDomains = (): OracleDomains => {
+        let foreground: PlanObserved | null = null;
+        try {
+            foreground = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
+        } catch (error) {
+            void error;
+            foreground = null;
+        }
+        let hidden: ReadonlyArray<PlanObserved> = [];
+        try {
+            const list = observeHiddenDomains(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
+            hidden = Array.isArray(list) ? list : [];
+        } catch (error) {
+            void error;
+            hidden = [];
+        }
+        return { foreground, hidden };
+    };
+    const findOracleWindow = (domains: OracleDomains, match: (entry: { ref: object; id: string }) => boolean): OracleObservedWindow | null => {
+        const hits: OracleObservedWindow[] = [];
+        const seen = new Set<object>();
+        const consider = (observed: PlanObserved | null): void => {
+            try {
+                if (observed === null) {
+                    return;
+                }
+                for (const entry of observed.windows) {
+                    let ok = false;
+                    try {
+                        ok = match(entry);
+                    } catch (error) {
+                        void error;
+                        ok = false;
+                    }
+                    if (!ok || seen.has(entry.ref)) {
+                        continue;
+                    }
+                    seen.add(entry.ref);
+                    let floating = false;
+                    try {
+                        floating = (entry as { floating?: unknown }).floating === true;
+                    } catch (error) {
+                        void error;
+                        floating = false;
+                    }
+                    hits.push({ ref: entry.ref, id: entry.id, rect: { x: entry.rect.x, y: entry.rect.y, w: entry.rect.w, h: entry.rect.h }, floating, domainOutput: observed.domainOutput, domainWorkspace: observed.domainWorkspace });
+                }
+            } catch (error) {
+                void error;
+            }
+        };
+        consider(domains.foreground);
+        try {
+            for (const candidate of domains.hidden) {
+                consider(candidate);
+            }
+        } catch (error) {
+            void error;
+        }
+        if (hits.length !== 1) {
+            return null;
+        }
+        return hits[0] as OracleObservedWindow;
+    };
     const interactiveResizeRefs = new Set<object>();
     // Tiled-move suppression mirrors the resize hold: while a tiled member is
     // being moved, ordinary reconcile stays suppressed exactly as during
@@ -7774,6 +7878,10 @@ function startPlanAdapterEntryOnce(
         pending: { x: number; y: number } | null;
         finished: boolean;
         overlay: boolean;
+        lastShownRect: { x: number; y: number; w: number; h: number } | null;
+        timeoutCancel: (() => void) | null;
+        timeoutToken: number;
+        timeoutLogged: boolean;
     }
     const movePreviewSessions = new Map<object, MovePreviewSession>();
     const overlayCall = (method: string, ...args: ReadonlyArray<unknown>): boolean => {
@@ -7800,10 +7908,31 @@ function startPlanAdapterEntryOnce(
             return false;
         }
     };
+    const cancelPreviewTimeout = (session: MovePreviewSession): void => {
+        // Invalidate the per-dispatch deadline token first so a stale timer
+        // callback can never act, then cancel the timer itself. A
+        // synchronous planner reply must not cancel a newer deadline armed
+        // by the recursive pending dispatch it triggers.
+        try {
+            session.timeoutToken += 1;
+        } catch (error) {
+            void error;
+        }
+        try {
+            const cancel = session.timeoutCancel;
+            session.timeoutCancel = null;
+            if (typeof cancel === "function") {
+                cancel();
+            }
+        } catch (error) {
+            void error;
+        }
+    };
     const clearMovePreviewFull = (ref: object): void => {
         try {
             const session = movePreviewSessions.get(ref);
             if (session !== undefined) {
+                cancelPreviewTimeout(session);
                 if (session.overlay) {
                     log(`omnitiler:route-diag:drag-preview-cleared correlation=${session.correlation} reason=terminal`);
                 }
@@ -7828,12 +7957,14 @@ function startPlanAdapterEntryOnce(
             if (session === undefined) {
                 return;
             }
+            cancelPreviewTimeout(session);
             if (session.overlay) {
                 log(`omnitiler:route-diag:drag-preview-cleared correlation=${session.correlation} reason=finish`);
             }
             session.finished = true;
             session.pending = null;
             session.overlay = false;
+            session.lastShownRect = null;
             adapter.invalidateDragPreviewReply(session.correlation);
             overlayCall(DRAG_PREVIEW_CLEAR_METHOD);
         } catch (error) {
@@ -7890,88 +8021,79 @@ function startPlanAdapterEntryOnce(
     };
     const captureOracleStart = (ref: object): void => {
         try {
-            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
-            if (observed === null) {
+            const found = findOracleWindow(collectOracleDomains(), (entry) => entry.ref === ref);
+            if (found === null) {
+                oracleStarts.delete(ref);
                 clearMovePreviewFull(ref);
                 return;
             }
-            for (const entry of observed.windows) {
-                if (entry.ref === ref) {
-                    const state = readLiveState(ref);
-                    if (state === null) {
-                        oracleStarts.delete(ref);
-                        clearMovePreviewFull(ref);
-                        return;
-                    }
-                    // Route-owned start pointer capture: always read, never
-                    // trace-gated. Trace-only measurement keeps its own
-                    // separate capture. Fail-closed null, never throws.
-                    let pointerStart: { x: number; y: number } | null = null;
-                    try {
-                        pointerStart = readMeasurePointer(liveWorkspace);
-                    } catch (error) {
-                        void error;
-                    }
-                    const rect = { x: entry.rect.x, y: entry.rect.y, w: entry.rect.w, h: entry.rect.h };
-                    let grabbed: OracleGrabbed | null = null;
-                    let grabSource: OracleGrabSource | "missing" = "missing";
-                    try {
-                        const identified = identifyGrabbedEdges(rect, pointerStart);
-                        if (identified !== null) {
-                            grabbed = identified.grabbed;
-                            grabSource = identified.source;
-                        }
-                    } catch (error) {
-                        void error;
-                    }
-                    oracleStarts.set(ref, { id: entry.id, rect, move: state.move, resize: state.resize, epoch: (oracleEpoch += 1), grabbed, grabSource, pointerStart, floatingStart: (entry as { floating?: unknown }).floating === true, domainOutput: observed.domainOutput, domainWorkspace: observed.domainWorkspace });
-                    if (state.move === false && state.resize === true) {
-                        clearMovePreviewFull(ref);
-                        if (!interactiveResizeRefs.has(ref)) {
-                            interactiveResizeRefs.add(ref);
-                            adapter.setInteractiveResizeActive(true);
-                        }
-                        // No Started-keyed expiry exists: the hold lasts until
-                        // Finished/removal, or until the observed-state gate
-                        // sees resize!==true. A still-resizing window is never
-                        // retiled mid-gesture.
-                    }
-                    // Tiled-move hold: any move gesture on a tiled member
-                    // suppresses ordinary reconcile exactly as a resize hold.
-                    // Floating (including sticky, which observes as floating)
-                    // never enters the hold and stays native-only. The start
-                    // floating state is recorded so a move that STARTS
-                    // floating stays unaffected even if tiled at finish.
-                    // No Started-keyed expiry exists: the hold lasts until
-                    // Finished/route/settle/removal, or until the observed
-                    // state gate sees move!==true. A normal Finish hands the
-                    // hold to the per-finish guard below.
-                    if (state.move === true) {
-                        let floating = false;
-                        try {
-                            floating = (entry as { floating?: unknown }).floating === true;
-                        } catch (error) {
-                            void error;
-                            floating = false;
-                        }
-                        if (!floating) {
-                            if (!interactiveMoveRefs.has(ref)) {
-                                interactiveMoveRefs.add(ref);
-                                adapter.setInteractiveResizeActive(true);
-                            }
-                            const started = oracleStarts.get(ref);
-                            if (started !== undefined) {
-                                armMovePreview(ref, started);
-                            }
-                        } else {
-                            clearMovePreviewFull(ref);
-                        }
-                    }
+            {
+                const state = readLiveState(ref);
+                if (state === null) {
+                    oracleStarts.delete(ref);
+                    clearMovePreviewFull(ref);
                     return;
                 }
+                // Route-owned start pointer capture: always read, never
+                // trace-gated. Trace-only measurement keeps its own
+                // separate capture. Fail-closed null, never throws.
+                let pointerStart: { x: number; y: number } | null = null;
+                try {
+                    pointerStart = readMeasurePointer(liveWorkspace);
+                } catch (error) {
+                    void error;
+                }
+                const rect = { x: found.rect.x, y: found.rect.y, w: found.rect.w, h: found.rect.h };
+                let grabbed: OracleGrabbed | null = null;
+                let grabSource: OracleGrabSource | "missing" = "missing";
+                try {
+                    const identified = identifyGrabbedEdges(rect, pointerStart);
+                    if (identified !== null) {
+                        grabbed = identified.grabbed;
+                        grabSource = identified.source;
+                    }
+                } catch (error) {
+                    void error;
+                }
+                oracleStarts.set(ref, { id: found.id, rect, move: state.move, resize: state.resize, epoch: (oracleEpoch += 1), grabbed, grabSource, pointerStart, floatingStart: found.floating, domainOutput: found.domainOutput, domainWorkspace: found.domainWorkspace });
+                if (state.move === false && state.resize === true) {
+                    clearMovePreviewFull(ref);
+                    if (!interactiveResizeRefs.has(ref)) {
+                        interactiveResizeRefs.add(ref);
+                        adapter.setInteractiveResizeActive(true);
+                    }
+                    // No Started-keyed expiry exists: the hold lasts until
+                    // Finished/removal, or until the observed-state gate
+                    // sees resize!==true. A still-resizing window is never
+                    // retiled mid-gesture.
+                }
+                // Tiled-move hold: any move gesture on a tiled member
+                // suppresses ordinary reconcile exactly as a resize hold.
+                // Floating (including sticky, which observes as floating)
+                // never enters the hold and stays native-only. The start
+                // floating state is recorded so a move that STARTS
+                // floating stays unaffected even if tiled at finish.
+                // No Started-keyed expiry exists: the hold lasts until
+                // Finished/route/settle/removal, or until the observed
+                // state gate sees move!==true. A normal Finish hands the
+                // hold to the per-finish guard below.
+                if (state.move === true) {
+                    const floating = found.floating;
+                    if (!floating) {
+                        if (!interactiveMoveRefs.has(ref)) {
+                            interactiveMoveRefs.add(ref);
+                            adapter.setInteractiveResizeActive(true);
+                        }
+                        const started = oracleStarts.get(ref);
+                        if (started !== undefined) {
+                            armMovePreview(ref, started);
+                        }
+                    } else {
+                        clearMovePreviewFull(ref);
+                    }
+                }
+                return;
             }
-            oracleStarts.delete(ref);
-            clearMovePreviewFull(ref);
         } catch (error) {
             void error;
             clearMovePreviewFull(ref);
@@ -8012,6 +8134,7 @@ function startPlanAdapterEntryOnce(
     const onMovePreviewReply = (ref: object, session: MovePreviewSession, result: PlanDragPreviewResult | null): void => {
         try {
             session.busy = false;
+            cancelPreviewTimeout(session);
             const start = validMovePreview(ref, session);
             if (start === null) {
                 return;
@@ -8019,14 +8142,30 @@ function startPlanAdapterEntryOnce(
             if (result === null) {
                 if (session.overlay) {
                     session.overlay = false;
+                    session.lastShownRect = null;
                     log(`omnitiler:route-diag:drag-preview-cleared correlation=${session.correlation} reason=refused`);
                     overlayCall(DRAG_PREVIEW_CLEAR_METHOD);
                 }
-            } else if (overlayCall(DRAG_PREVIEW_SET_METHOD, result.rect.x, result.rect.y, result.rect.w, result.rect.h)) {
-                if (!session.overlay) {
-                    log(`omnitiler:route-diag:drag-preview-shown correlation=${session.correlation}`);
+            } else {
+                // Identical-rect repeats never re-set the native overlay:
+                // the adapter reuses the cached applied result for unchanged
+                // samples, so re-setting would be per-sample native traffic
+                // with no visual change.
+                const shown = session.lastShownRect;
+                const sameRect =
+                    session.overlay &&
+                    shown !== null &&
+                    shown.x === result.rect.x &&
+                    shown.y === result.rect.y &&
+                    shown.w === result.rect.w &&
+                    shown.h === result.rect.h;
+                if (!sameRect && overlayCall(DRAG_PREVIEW_SET_METHOD, result.rect.x, result.rect.y, result.rect.w, result.rect.h)) {
+                    if (!session.overlay) {
+                        log(`omnitiler:route-diag:drag-preview-shown correlation=${session.correlation}`);
+                    }
+                    session.overlay = true;
+                    session.lastShownRect = { x: result.rect.x, y: result.rect.y, w: result.rect.w, h: result.rect.h };
                 }
-                session.overlay = true;
             }
             const next = session.pending;
             if (next !== null && !session.finished) {
@@ -8065,6 +8204,65 @@ function startPlanAdapterEntryOnce(
             }
             if (!ok && session.busy) {
                 session.busy = false;
+                return;
+            }
+            if (session.busy !== true) {
+                // A synchronous planner reply already settled (and possibly
+                // re-dispatched); never arm a stale deadline over it.
+                return;
+            }
+            // Dedicated reply deadline, tokenized per dispatch: a dispatched
+            // preview whose planner reply never arrives must not wedge
+            // sampling (busy forever) or the gesture (pending forever). On
+            // expiry the adapter live slot is invalidated so a late reply
+            // can never render or carry a prior, then the latest pending
+            // sample dispatches. Only one diagnostic logs per session.
+            cancelPreviewTimeout(session);
+            let token = 0;
+            try {
+                session.timeoutToken += 1;
+                token = session.timeoutToken;
+            } catch (error) {
+                void error;
+                return;
+            }
+            try {
+                const cancel = scheduleOnce(DRAG_PREVIEW_REPLY_TIMEOUT_MS, () => {
+                    try {
+                        session.timeoutCancel = null;
+                        if (movePreviewSessions.get(ref) !== session || session.timeoutToken !== token || session.finished) {
+                            return;
+                        }
+                        const live = validMovePreview(ref, session);
+                        if (live === null) {
+                            return;
+                        }
+                        if (!session.busy) {
+                            return;
+                        }
+                        session.busy = false;
+                        try {
+                            adapter.invalidateDragPreviewReply(session.correlation);
+                        } catch (error) {
+                            void error;
+                        }
+                        if (!session.timeoutLogged) {
+                            session.timeoutLogged = true;
+                            try { log(`omnitiler:route-diag:drag-preview-timeout correlation=${session.correlation}`); } catch (error) { void error; }
+                        }
+                        const next = session.pending;
+                        if (next !== null && !session.finished) {
+                            session.pending = null;
+                            dispatchMovePreview(ref, session, next);
+                        }
+                    } catch (error) {
+                        void error;
+                    }
+                });
+                session.timeoutCancel = typeof cancel === "function" ? cancel : null;
+            } catch (error) {
+                void error;
+                session.timeoutCancel = null;
             }
         } catch (error) {
             void error;
@@ -8112,6 +8310,10 @@ function startPlanAdapterEntryOnce(
                 pending: null,
                 finished: false,
                 overlay: false,
+                lastShownRect: null,
+                timeoutCancel: null,
+                timeoutToken: 0,
+                timeoutLogged: false,
             });
         } catch (error) {
             void error;
@@ -8555,24 +8757,19 @@ function startPlanAdapterEntryOnce(
                 try { log(`omnitiler:route-diag:drag-context-invalid correlation=${verdict.correlation}`); } catch (error) { void error; }
                 return;
             }
-            const observed = observeNative(liveWorkspace, nativeIds, floatingIds, domainGaps, reportEligibility, nativeOwners, lastHoming);
-            if (observed === null) {
+            const domains = collectOracleDomains();
+            const found = findOracleWindow(domains, (entry) => entry.id === verdict.windowIdentity);
+            if (found === null) {
                 takeOwnStart(ctx);
-                try { log(`omnitiler:route-diag:drag-scope-invalid correlation=${verdict.correlation}`); } catch (error) { void error; }
-                return;
-            }
-            let ref: object | null = null;
-            for (const entry of observed.windows) {
-                if (entry.id === verdict.windowIdentity) {
-                    ref = entry.ref;
-                    break;
+                if (domains.foreground === null) {
+                    try { log(`omnitiler:route-diag:drag-scope-invalid correlation=${verdict.correlation}`); } catch (error) { void error; }
+                } else {
+                    try { log(`omnitiler:route-diag:drag-unknown-window correlation=${verdict.correlation}`); } catch (error) { void error; }
                 }
-            }
-            if (ref === null) {
-                takeOwnStart(ctx);
-                try { log(`omnitiler:route-diag:drag-unknown-window correlation=${verdict.correlation}`); } catch (error) { void error; }
                 return;
             }
+            const ref: object = found.ref;
+            const floatingFound = found.floating;
             if (ref !== ctx.ref) {
                 takeOwnStart(ctx);
                 try { log(`omnitiler:route-diag:drag-ref-mismatch correlation=${verdict.correlation}`); } catch (error) { void error; }
@@ -8608,18 +8805,7 @@ function startPlanAdapterEntryOnce(
                 // tiling. No focus is forced: an unfocused source dispatches
                 // as observed and the Planner refuses it, converging through
                 // the marker like any refusal.
-                let floatingFinish = false;
-                try {
-                    for (const entry of observed.windows) {
-                        if (entry.id === verdict.windowIdentity) {
-                            floatingFinish = (entry as { floating?: unknown }).floating === true;
-                            break;
-                        }
-                    }
-                } catch (error) {
-                    void error;
-                    floatingFinish = false;
-                }
+                const floatingFinish = floatingFound;
                 const floatingStart = start.floatingStart === true;
                 if (floatingStart !== floatingFinish) {
                     try { log(`omnitiler:route-diag:drag-move-floating-mismatch correlation=${verdict.correlation} start=${floatingStart ? "floating" : "tiled"} finish=${floatingFinish ? "floating" : "tiled"}`); } catch (error) { void error; }

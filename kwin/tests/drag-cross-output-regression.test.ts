@@ -600,4 +600,124 @@ describe("cross-output drag regression (exact L/R geometry)", () => {
         assert.ok(windows.some((entry) => entry["window"] === "win-c"), "destination sibling retained");
         assert.ok(mocks.logs.some((line) => line.includes("drag-drop-cross-output") && line.includes("correlation=drag-80")));
     });
+
+    it("preview reply stays live when the foreground switches to the destination before the mover arrives", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        // Dispatch while the mover is still native on L (foreground L).
+        mocks.observeImpl = () => domain(OUT_L, L_BOUNDS, "win-a", [
+            win("win-a", refs.mover, OUT_L, { x: 0, y: 0, w: 1024, h: 1152 }),
+            win("win-b", refs.sib, OUT_L, { x: 1024, y: 0, w: 1024, h: 1152 }),
+        ], refs.mover, "fp-L");
+        mocks.hiddenImpl = () => [domain(OUT_R, R_BOUNDS, "win-c", [
+            win("win-c", refs.dest, OUT_R, { x: 2048, y: 72, w: 1920, h: 1008 }),
+        ], refs.dest, "fp-R")];
+        const adapter = enableAdapter(mocks);
+        const seen: Array<PlanDragPreviewResult | null> = [];
+        assert.equal(adapter.requestDragPreview("win-a", 2500, 500, "drag-79", { output: OUT_L, workspace: WS }, (r) => seen.push(r)), true);
+        // Foreground follows the pointer to R before the mover arrives
+        // natively: the mover still lives on hidden L mid-transfer.
+        mocks.observeImpl = () => domain(OUT_R, R_BOUNDS, "win-c", [
+            win("win-c", refs.dest, OUT_R, { x: 2048, y: 72, w: 1920, h: 1008 }),
+        ], refs.dest, "fp-R-fg");
+        mocks.hiddenImpl = () => [domain(OUT_L, L_BOUNDS, "win-a", [
+            win("win-a", refs.mover, OUT_L, { x: 0, y: 0, w: 1024, h: 1152 }),
+            win("win-b", refs.sib, OUT_L, { x: 1024, y: 0, w: 1024, h: 1152 }),
+        ], refs.mover, "fp-L-mover")];
+        mocks.previewCalls[0]?.callback(previewReply(corrOf(mocks.previewCalls[0] as Call), OUT_R));
+        assert.equal(seen.length, 1, "in-flight reply still settles");
+        assert.ok(seen[0] !== null, "destination scope stays live while the mover is mid-transfer, not stale-scope");
+        assert.ok(!mocks.logs.some((line) => line.includes("drag-preview-settled") && line.includes("correlation=drag-79") && line.includes("stale-scope")));
+        adapter.clearDragPreview("drag-79");
+    });
+
+    it("right-then-left previews bind the correct logical output domain, bounds, and target scope", () => {
+        // Mixed scale, vertically offset logical fixtures: small 1280x720 top
+        // output beside a large 4k output dropped 400px lower.
+        const topBounds = { x: 0, y: 0, w: 1280, h: 720 };
+        const lowBounds = { x: 1280, y: 400, w: 3840, h: 2160 };
+        const outTop = "out-T";
+        const outLow = "out-B";
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        const topDomain = (): PlanObserved => domain(outTop, topBounds, "win-a", [
+            win("win-a", refs.mover, outTop, { x: 0, y: 0, w: 640, h: 720 }),
+            win("win-b", refs.sib, outTop, { x: 640, y: 0, w: 640, h: 720 }),
+        ], refs.mover, "fp-top");
+        const lowDomain = (): PlanObserved => domain(outLow, lowBounds, "win-c", [
+            win("win-c", refs.dest, outLow, { x: 1280, y: 400, w: 3840, h: 2088 }),
+        ], refs.dest, "fp-low");
+        mocks.observeImpl = topDomain;
+        mocks.hiddenImpl = () => [lowDomain()];
+        const adapter = enableAdapter(mocks);
+        // Right: pointer over the low output resolves the low domain.
+        const seenRight: Array<PlanDragPreviewResult | null> = [];
+        assert.equal(adapter.requestDragPreview("win-a", 2000, 1200, "drag-81", { output: outTop, workspace: WS }, (r) => seenRight.push(r)), true);
+        const rightPayload = JSON.parse(mocks.previewCalls[0]?.payload as string) as Record<string, unknown>;
+        assert.equal((rightPayload["domain"] as Record<string, unknown>)["output"], outLow);
+        assert.deepEqual((rightPayload["domain"] as Record<string, unknown>)["bounds"], lowBounds);
+        mocks.previewCalls[0]?.callback(previewReply(corrOf(mocks.previewCalls[0] as Call), outLow));
+        assert.ok(seenRight[0] !== null);
+        adapter.clearDragPreview("drag-81");
+        // Then left: pointer back over the top output resolves the top domain.
+        const seenLeft: Array<PlanDragPreviewResult | null> = [];
+        assert.equal(adapter.requestDragPreview("win-a", 500, 300, "drag-82", { output: outTop, workspace: WS }, (r) => seenLeft.push(r)), true);
+        const leftPayload = JSON.parse(mocks.previewCalls[1]?.payload as string) as Record<string, unknown>;
+        assert.equal((leftPayload["domain"] as Record<string, unknown>)["output"], outTop);
+        assert.deepEqual((leftPayload["domain"] as Record<string, unknown>)["bounds"], topBounds);
+        mocks.previewCalls[1]?.callback(previewReply(corrOf(mocks.previewCalls[1] as Call), outTop));
+        assert.ok(seenLeft[0] !== null);
+        adapter.clearDragPreview("drag-82");
+    });
+
+    it("same drag re-crosses right-then-left after the native output flips", () => {
+        const refs = makeRefs();
+        const mocks = mockEnv(refs);
+        const leftWithMover = (): PlanObserved => domain(OUT_L, L_BOUNDS, "win-a", [
+            win("win-a", refs.mover, OUT_L, { x: 0, y: 0, w: 1024, h: 1152 }),
+            win("win-b", refs.sib, OUT_L, { x: 1024, y: 0, w: 1024, h: 1152 }),
+        ], refs.mover, "fp-L");
+        const rightAlone = (): PlanObserved => domain(OUT_R, R_BOUNDS, "win-c", [
+            win("win-c", refs.dest, OUT_R, { x: 2048, y: 72, w: 1920, h: 1008 }),
+        ], refs.dest, "fp-R");
+        mocks.observeImpl = leftWithMover;
+        mocks.hiddenImpl = () => [rightAlone()];
+        const adapter = enableAdapter(mocks);
+        // Right: the same drag-83 gesture samples over R.
+        const seenRight: Array<PlanDragPreviewResult | null> = [];
+        assert.equal(adapter.requestDragPreview("win-a", 2500, 500, "drag-83", { output: OUT_L, workspace: WS }, (r) => seenRight.push(r)), true);
+        const rightPayload = JSON.parse(mocks.previewCalls[0]?.payload as string) as Record<string, unknown>;
+        assert.equal((rightPayload["domain"] as Record<string, unknown>)["output"], OUT_R);
+        mocks.previewCalls[0]?.callback(previewReply(corrOf(mocks.previewCalls[0] as Call), OUT_R));
+        assert.ok(seenRight[0] !== null);
+        // Native output flips mid-gesture: the mover now lives on R and the
+        // foreground follows it there.
+        mocks.observeImpl = () => domain(OUT_R, R_BOUNDS, "win-c", [
+            win("win-c", refs.dest, OUT_R, { x: 2048, y: 72, w: 960, h: 1008 }),
+            win("win-a", refs.mover, OUT_R, { x: 3008, y: 72, w: 960, h: 1008 }),
+        ], refs.dest, "fp-R-mover");
+        mocks.hiddenImpl = () => [domain(OUT_L, L_BOUNDS, "win-b", [
+            win("win-b", refs.sib, OUT_L, { x: 0, y: 0, w: 2048, h: 1152 }),
+        ], refs.sib, "fp-L-sib")];
+        // Left: the same drag-83 correlation samples back over L.
+        const seenLeft: Array<PlanDragPreviewResult | null> = [];
+        assert.equal(adapter.requestDragPreview("win-a", 500, 500, "drag-83", { output: OUT_L, workspace: WS }, (r) => seenLeft.push(r)), true);
+        const leftCall = mocks.previewCalls[mocks.previewCalls.length - 1] as Call;
+        const leftPayload = JSON.parse(leftCall.payload) as Record<string, unknown>;
+        assert.equal((leftPayload["domain"] as Record<string, unknown>)["output"], OUT_L, "re-cross resolves the left domain");
+        assert.deepEqual((leftPayload["domain"] as Record<string, unknown>)["bounds"], L_BOUNDS, "re-cross carries the left bounds");
+        assert.equal(((leftPayload["command"] as Record<string, unknown>)["source_output"]), OUT_L, "Started source binding retained");
+        const leftRect = { x: 0, y: 0, w: 1024, h: 1080 };
+        leftCall.callback(JSON.stringify({
+            v: 1, correlation_id: corrOf(leftCall), outcome: "preview", kind: "drag-preview", base_revision: 2,
+            detail: { kind: "drag-preview", capability: "place-tiled" },
+            preview_rect: leftRect,
+            hover_prior: { domain_output: OUT_L, domain_workspace: WS, source_leaf: "win-a-leaf", source_window: "win-a", revision: 2, prior: null },
+        }));
+        assert.equal(seenLeft.length, 1);
+        assert.ok(seenLeft[0] !== null, "re-cross reply applies in the left scope");
+        assert.deepEqual(seenLeft[0]?.rect, leftRect);
+        assert.ok(leftRect.x >= L_BOUNDS.x && leftRect.y >= L_BOUNDS.y && leftRect.x + leftRect.w <= L_BOUNDS.x + L_BOUNDS.w && leftRect.y + leftRect.h <= L_BOUNDS.y + L_BOUNDS.h, "preview rect inside the left output bounds");
+        adapter.clearDragPreview("drag-83");
+    });
 });

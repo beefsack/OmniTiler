@@ -1322,6 +1322,41 @@ function sanitizeKind(value: unknown): string {
     return value;
 }
 
+// Canonical preview-reuse key piece for the carried hover prior. The shape
+// is fixed and bounded (validated at carry time); the key is compared only,
+// never logged.
+function previewPriorKey(prior: unknown): string {
+    if (prior === undefined) {
+        return "-";
+    }
+    if (!isRecord(prior)) {
+        return "invalid";
+    }
+    const inner = prior["prior"];
+    let innerKey = "absent";
+    if (inner === null) {
+        innerKey = "null";
+    } else if (isRecord(inner)) {
+        innerKey = `${String(inner["group"]).slice(0, 128)}:${String(inner["edge"]).slice(0, 16)}`;
+    } else if (inner !== undefined) {
+        innerKey = "invalid";
+    }
+    return [
+        String(prior["domain_output"]).slice(0, 128),
+        String(prior["domain_workspace"]).slice(0, 128),
+        String(prior["source_leaf"]).slice(0, 128),
+        String(prior["source_window"]).slice(0, 128),
+        String(prior["revision"]).slice(0, 16),
+        innerKey,
+    ].join("|");
+}
+
+// Internal settled-key piece for a preview rect. Compared only, never
+// logged: rects stay out of the log surface per the privacy contract.
+function previewRectKey(rect: PlanRect): string {
+    return `${String(rect.x)},${String(rect.y)},${String(rect.w)},${String(rect.h)}`;
+}
+
 // Exact Engine gap-mismatch messages for the correlated update-gaps retry.
 function sanitizeDetail(value: unknown): string | null {
     if (typeof value !== "string" || value.length === 0 || value.length > 64) {
@@ -2440,6 +2475,20 @@ export class PlanAdapter {
     // owner/generation, callback). Entry-driven clearing; terminals consume.
     private dragPreviewSeq = 0;
     private lastPreviewRefuseKey: string | null = null;
+    // Committed-state epoch for the preview dispatch key: bumped exactly
+    // when applied evidence commits from a planner-applied reply (or an
+    // applied domain release drops its slot), never on frame noise. The
+    // shared core plans from observed ids/hints plus its retained tree, so
+    // a successful layout command can change that tree under identical
+    // window ids and bounds; the epoch forces the next identical-pointer
+    // sample to re-plan instead of reusing a stale cached rect.
+    private appliedEpoch = 0;
+    // Exact native-ref identity tokens for the preview dispatch key: a
+    // reused stable id with a different live ref (but identical flags and
+    // homing) must re-plan, while native-rect drift on the same ref still
+    // reuses. Weak-held so entries never outlive their windows.
+    private refTokens = new WeakMap<object, number>();
+    private refTokenSeq = 0;
     private dragPreview = new Map<
         string,
         {
@@ -2451,8 +2500,31 @@ export class PlanAdapter {
                 generation: string;
                 window: string;
                 correlation: string;
+                key: string;
                 callback: (result: PlanDragPreviewResult | null) => void;
             };
+            // Per-sample dedup: the last dispatched semantic key plus the
+            // cached applied result for exact reuse. The key covers pointer,
+            // effective domain membership sans native rects, bounds/gaps,
+            // mover eligibility flags, owner/generation, the committed-state
+            // epoch, exact native-ref identity, and the carried
+            // prior; rects are intentionally excluded (the resolver never
+            // sees them) so native drag-geometry drift alone never re-plans.
+            // A deterministic planner refusal caches its key the same way so
+            // identical repeats answer null without re-planning. Counters
+            // feed the end summary.
+            reuseKey?: string;
+            reuseResult?: PlanDragPreviewResult | null;
+            reuseScope?: string;
+            reuseWindow?: string;
+            refuseKey?: string;
+            refuseReason?: string;
+            refuseScope?: string;
+            refuseWindow?: string;
+            lastSettledKey?: string;
+            dispatched?: number;
+            reused?: number;
+            suppressedSettled?: number;
         }
     >();
 
@@ -2540,6 +2612,7 @@ export class PlanAdapter {
         this.pinnedOwner = null;
         this.activationStep = 0;
         this.plannerSession = 0;
+        this.appliedEpoch = 0;
         this.knownOwner = null;
         this.nextIsRecovery = false;
         this.activeProbe = 0;
@@ -6111,7 +6184,7 @@ export class PlanAdapter {
         const previewKey = isDragCorrelation(previewCorrelation) ? (previewCorrelation as string) : null;
         const refuseDrag = (reason: string, output?: string, workspace?: string): false => {
             if (previewKey !== null) {
-                this.dragPreview.delete(previewKey);
+                this.clearDragPreview(previewKey);
             }
             if (drag !== null) {
                 this.noteDragRejected(drag, reason, typeof windowId === "string" ? windowId : null, output, workspace);
@@ -6218,7 +6291,7 @@ export class PlanAdapter {
             (drag !== null ? this.dragPreview.get(drag)?.prior : undefined);
         // Consume the preview entry so late replies fence out; the prior above already rides the wire.
         if (previewKey !== null) {
-            this.dragPreview.delete(previewKey);
+            this.clearDragPreview(previewKey);
         }
         const intent: AutoIntent = {
             op: "drag-drop",
@@ -6299,6 +6372,7 @@ export class PlanAdapter {
                 );
             }
             if (drag !== null) {
+                this.emitPreviewSummary(drag);
                 this.dragPreview.delete(drag);
             }
             try {
@@ -6356,6 +6430,63 @@ export class PlanAdapter {
         const snapshot = this.carriedSnapshot(focusedObserved);
         this.noteObservation(snapshot.fingerprint);
         const prior = this.dragPreview.get(drag)?.prior;
+        // Exact semantic reuse: an unchanged pointer/scene (including a
+        // stable carried prior) answers from the cached applied result with
+        // no D-Bus plan. Mover native-rect drift is excluded from the key;
+        // pointer, membership, bounds/gaps, eligibility flags,
+        // owner/generation, the committed-state epoch, exact native-ref
+        // identity, and the prior all re-plan.
+        const dispatchKey = this.previewDispatchKey(
+            windowId as string,
+            x as number,
+            y as number,
+            snapshot,
+            pointer.explicitSource,
+            prior,
+            focusedObserved,
+        );
+        const reusable = this.dragPreview.get(drag);
+        if (reusable?.reuseKey === dispatchKey && reusable.reuseResult !== undefined && reusable.reuseResult !== null) {
+            if (
+                reusable.reuseScope === undefined ||
+                reusable.reuseWindow === undefined ||
+                this.isPreviewScopeLive(reusable.reuseScope, reusable.reuseWindow)
+            ) {
+                reusable.reused = (reusable.reused ?? 0) + 1;
+                const cached = reusable.reuseResult;
+                this.notePreviewSettled(drag, reusable, { rect: { ...cached.rect }, hoverPrior: cached.hoverPrior }, "applied", "preview");
+                try {
+                    callback?.({ rect: { ...cached.rect }, hoverPrior: cached.hoverPrior });
+                } catch (error) {
+                    void error;
+                }
+                return true;
+            }
+        }
+        // Deterministic planner refusals reuse the same way: an unchanged
+        // sample answers null with no D-Bus plan. Only the deterministic
+        // `unchanged` / `unsupported-capability` refusals cache; every
+        // other refusal (cross-domain-mismatch, malformed-topology,
+        // stale-*, not-tiled, transport faults, ...) always re-dispatches
+        // so the same pointer recovers when planner or session state
+        // changes. Scope liveness still gates.
+        const refused = this.dragPreview.get(drag);
+        if (refused?.refuseKey === dispatchKey && refused.refuseReason !== undefined) {
+            if (
+                refused.refuseScope === undefined ||
+                refused.refuseWindow === undefined ||
+                this.isPreviewScopeLive(refused.refuseScope, refused.refuseWindow)
+            ) {
+                refused.reused = (refused.reused ?? 0) + 1;
+                this.notePreviewSettled(drag, refused, null, "refused", refused.refuseReason);
+                try {
+                    callback?.(null);
+                } catch (error) {
+                    void error;
+                }
+                return false;
+            }
+        }
         const command: Record<string, unknown> = {
             op: "drag-preview",
             window: windowId as string,
@@ -6380,8 +6511,10 @@ export class PlanAdapter {
             generation: this.generation,
             window: windowId as string,
             correlation,
+            key: dispatchKey,
             callback: callback ?? ((): void => {}),
         };
+        entry.dispatched = (entry.dispatched ?? 0) + 1;
         this.dragPreview.set(drag, entry);
         this.lastPreviewRefuseKey = null;
         const target = isUniqueOwner(this.pinnedOwner) ? (this.pinnedOwner as string) : PLAN_SERVICE;
@@ -6401,10 +6534,14 @@ export class PlanAdapter {
     // correlation). Never touches the ordinary single-flight.
     clearDragPreview(dragCorrelation?: unknown): void {
         if (isDragCorrelation(dragCorrelation)) {
+            this.emitPreviewSummary(dragCorrelation as string);
             this.dragPreview.delete(dragCorrelation as string);
             return;
         }
         if (dragCorrelation === undefined) {
+            for (const key of [...this.dragPreview.keys()]) {
+                this.emitPreviewSummary(key);
+            }
             this.dragPreview.clear();
         }
     }
@@ -6431,6 +6568,9 @@ export class PlanAdapter {
         }
         delete entry.live;
         if (entry.prior === undefined) {
+            // The finish edge drops the holder before any end summary could
+            // run: emit first so dispatched counts are never lost.
+            this.emitPreviewSummary(drag);
             this.dragPreview.delete(drag);
         }
     }
@@ -6446,7 +6586,28 @@ export class PlanAdapter {
             const fresh = this.freshObserved();
             const moverInFresh = fresh !== null && fresh.windows.some((entry) => entry.id === windowId);
             if (fresh !== null && this.domainKey(snapshotOf(fresh)) === scope) {
-                return moverInFresh;
+                if (moverInFresh) {
+                    return true;
+                }
+                // The foreground already switched to the destination before
+                // the mover arrived natively: the scope is still observed
+                // (fresh itself) and the mover is live in a hidden domain
+                // (transfer in flight). Fencing this as stale would turn
+                // every such reply into stale-scope noise.
+                try {
+                    for (const candidate of this.env.observeHidden?.() ?? []) {
+                        try {
+                            if (candidate.windows.some((entry) => entry.id === windowId)) {
+                                return true;
+                            }
+                        } catch (error) {
+                            void error;
+                        }
+                    }
+                } catch (error) {
+                    void error;
+                }
+                return false;
             }
             let destStillObserved = false;
             let moverInScope = false;
@@ -6477,6 +6638,109 @@ export class PlanAdapter {
         }
     }
 
+    // Exact native-ref identity token for the preview dispatch key.
+    // Compared only, never logged. Monotonic per adapter life; Weak-held
+    // refs never leak.
+    private refToken(ref: object): number {
+        const known = this.refTokens.get(ref);
+        if (known !== undefined) {
+            return known;
+        }
+        this.refTokenSeq += 1;
+        this.refTokens.set(ref, this.refTokenSeq);
+        return this.refTokenSeq;
+    }
+
+    // Exact semantic dispatch key for per-sample preview dedup. Pointer
+    // x/y, effective-domain scope (output/workspace/bounds/gaps plus
+    // directional domains), member identity WITHOUT native rects, mover
+    // eligibility flags, owner/generation, the committed-state epoch, exact
+    // native-ref identity, and the carried prior all bind;
+    // native drag-geometry drift alone reuses. Compared only, never logged.
+    private previewDispatchKey(
+        windowId: string,
+        x: number,
+        y: number,
+        snapshot: PlanSnapshot,
+        explicitSource: { output: string; workspace: string } | null,
+        prior: unknown,
+        observed: PlanObserved,
+    ): string {
+        const refById = new Map<string, object>();
+        for (const entry of observed.windows) {
+            if (!refById.has(entry.id)) {
+                refById.set(entry.id, entry.ref);
+            }
+        }
+        const members = snapshot.windows
+            .map((entry) => {
+                const min = entry.minSize !== undefined ? `${String(entry.minSize.w)}x${String(entry.minSize.h)}` : "-";
+                const max = entry.maxSize !== undefined ? `${String(entry.maxSize.w)}x${String(entry.maxSize.h)}` : "-";
+                const ref = refById.get(entry.id);
+                const token = ref === undefined ? "-" : String(this.refToken(ref));
+                return `${entry.id}|${entry.output}|${entry.workspace}|${entry.fullscreen ? "1" : "0"}|${entry.maximized ? "1" : "0"}|${entry.floating ? "1" : "0"}|${entry.sticky === true ? "1" : "0"}|${entry.resourceClass}|${min}|${max}|${entry.fixedAuto === true ? "1" : "0"}|${entry.fixedSuppress === true ? "1" : "0"}|${token}`;
+            })
+            .sort()
+            .join(";");
+        const bounds = snapshot.domainBounds;
+        const domains = (snapshot.domains ?? [])
+            .map((domain) => `${domain.output}|${domain.workspace}|${String(domain.bounds.x)},${String(domain.bounds.y)},${String(domain.bounds.w)},${String(domain.bounds.h)}|${String(domain.gap)}|${String(domain.outerGap)}`)
+            .sort()
+            .join(";");
+        return [
+            `${windowId}|${String(x)},${String(y)}`,
+            `${snapshot.domainOutput}|${snapshot.domainWorkspace}|${String(bounds.x)},${String(bounds.y)},${String(bounds.w)},${String(bounds.h)}|${String(snapshot.domainGap)}|${String(snapshot.domainOuterGap)}|${snapshot.focusedId}`,
+            domains,
+            members,
+            explicitSource === null ? "-" : `${explicitSource.output}|${explicitSource.workspace}`,
+            `${this.owner}|${this.generation}|${String(this.appliedEpoch)}`,
+            previewPriorKey(prior),
+        ].join("#");
+    }
+
+    // State-change settled logging across one drag: identical
+    // outcome/reason/rect/prior repeats increment the suppressed counter
+    // instead of logging per sample. Every transition (including every
+    // refusal cause) still logs.
+    private notePreviewSettled(
+        drag: string,
+        holder: { lastSettledKey?: string; suppressedSettled?: number },
+        result: PlanDragPreviewResult | null,
+        outcome: string,
+        reason: string,
+    ): void {
+        const key =
+            result === null
+                ? `null|${sanitizeKind(outcome)}|${sanitizeKind(reason)}`
+                : `ok|${sanitizeKind(outcome)}|${sanitizeKind(reason)}|${previewRectKey(result.rect)}|${previewPriorKey(result.hoverPrior)}`;
+        if (holder.lastSettledKey === key) {
+            holder.suppressedSettled = (holder.suppressedSettled ?? 0) + 1;
+            return;
+        }
+        holder.lastSettledKey = key;
+        this.logToken(
+            `${LOG_PREFIX}:drag-preview-settled correlation=${drag} outcome=${sanitizeKind(outcome)} reason=${sanitizeKind(reason)}`,
+        );
+    }
+
+    // Bounded end summary for one drag: plan counts plus the suppressed
+    // settled repeats. Emitted at most once per clearing; silent when the
+    // drag never planned.
+    private emitPreviewSummary(drag: string): void {
+        const entry = this.dragPreview.get(drag);
+        if (entry === undefined) {
+            return;
+        }
+        const dispatched = entry.dispatched ?? 0;
+        const reused = entry.reused ?? 0;
+        if (dispatched + reused === 0) {
+            return;
+        }
+        this.logToken(
+            `${LOG_PREFIX}:drag-preview-summary correlation=${drag} dispatched=${String(dispatched)} reused=${String(reused)} suppressed_settled=${String(entry.suppressedSettled ?? 0)}`,
+        );
+    }
+
     private onDragPreviewReply(reply: unknown, drag: string, seq: number): void {
         const entry = this.dragPreview.get(drag);
         const live = entry?.live;
@@ -6485,13 +6749,59 @@ export class PlanAdapter {
         }
         const done = (result: PlanDragPreviewResult | null, outcome: string, reason: string): void => {
             if (result === null) {
-                this.dragPreview.delete(drag);
+                // Refusals clear live/prior/reuse but retain the holder
+                // (counters plus settled dedup) so identical repeats stay
+                // bounded instead of flooding per sample. Only deterministic
+                // planner refusals (`unchanged`, `unsupported-capability`)
+                // cache their dispatch key for reuse; every ephemeral
+                // refusal and every transport fault always re-dispatches.
+                const cache = this.dragPreview.get(drag);
+                if (cache !== undefined) {
+                    delete cache.live;
+                    delete cache.prior;
+                    delete cache.reuseKey;
+                    delete cache.reuseResult;
+                    delete cache.reuseScope;
+                    delete cache.reuseWindow;
+                    if (outcome === "refused" && (reason === "unchanged" || reason === "unsupported-capability")) {
+                        cache.refuseKey = live.key;
+                        cache.refuseReason = sanitizeKind(reason);
+                        cache.refuseScope = live.scope;
+                        cache.refuseWindow = live.window;
+                    } else {
+                        delete cache.refuseKey;
+                        delete cache.refuseReason;
+                        delete cache.refuseScope;
+                        delete cache.refuseWindow;
+                    }
+                } else {
+                    this.dragPreview.delete(drag);
+                }
             } else {
                 this.clearPreviewLive(drag);
+                const cache = this.dragPreview.get(drag);
+                if (cache !== undefined) {
+                    cache.reuseKey = live.key;
+                    cache.reuseResult = { rect: { x: result.rect.x, y: result.rect.y, w: result.rect.w, h: result.rect.h }, hoverPrior: result.hoverPrior };
+                    cache.reuseScope = live.scope;
+                    cache.reuseWindow = live.window;
+                    delete cache.refuseKey;
+                    delete cache.refuseReason;
+                    delete cache.refuseScope;
+                    delete cache.refuseWindow;
+                }
             }
-            this.logToken(
-                `${LOG_PREFIX}:drag-preview-settled correlation=${drag} outcome=${sanitizeKind(outcome)} reason=${sanitizeKind(reason)}`,
-            );
+            const holder = this.dragPreview.get(drag);
+            if (holder !== undefined) {
+                this.notePreviewSettled(drag, holder, result, outcome, reason);
+            } else {
+                // Refusals drop the entry: still report the transition, which
+                // carries the failure cause. Consecutive identical refusals
+                // stay bounded through the refuse-key dedup at dispatch.
+                this.logToken(
+                    `${LOG_PREFIX}:drag-preview-settled correlation=${drag} outcome=${sanitizeKind(outcome)} reason=${sanitizeKind(reason)}`,
+                );
+            }
             try {
                 live.callback(result);
             } catch (error) {
@@ -6593,6 +6903,7 @@ export class PlanAdapter {
         } catch (error) {
             void error;
         }
+        this.emitPreviewSummary(drag);
         this.dragPreview.delete(drag);
     }
 
@@ -6605,6 +6916,7 @@ export class PlanAdapter {
             this.noteDragRejected(drag, reason, flightState.pointerSource, flightState.snapshot.domainOutput, flightState.snapshot.domainWorkspace);
             if (flightState.op === "drag-drop") {
                 this.logCrossDragRefused(flightState, reason);
+                this.emitPreviewSummary(drag);
                 this.dragPreview.delete(drag);
             }
             return;
@@ -11007,6 +11319,8 @@ export class PlanAdapter {
                         this.appliedById.delete(id);
                     }
                 }
+                // Committed slot release, same invalidation as below.
+                this.appliedEpoch += 1;
                 if (flightState.background === true) {
                     this.clearBackgroundReconcile(base);
                 }
@@ -11083,6 +11397,10 @@ export class PlanAdapter {
                         this.appliedById.delete(id);
                     }
                 }
+                // Committed planner state applied locally: the retained tree
+                // may have changed under identical window ids and bounds, so
+                // cached preview keys must re-plan on the next sample.
+                this.appliedEpoch += 1;
             }
             if (flightState.op === "pointer-resize" && flightState.pointerSource !== null) {
                 // The echo fence compares what native will show: minimum-
@@ -12588,6 +12906,8 @@ export class PlanAdapter {
                 this.appliedById.delete(id);
             }
         }
+        // Committed slot drop: cached preview keys must re-plan.
+        this.appliedEpoch += 1;
         this.sendForcedDomains.delete(key);
         this.backgroundAttempts.delete(key);
         // D23: a released domain drops its planner slot, so pending closes
