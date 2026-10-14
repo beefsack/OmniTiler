@@ -2563,7 +2563,8 @@ platform API behavior.
   User 2026-10-14: explicit numbered/relative workspace FOLLOW sends and
   output FOLLOW sends focus the fullscreen mover after verified arrival,
   like other follow sends; STAY is unchanged. Delivered offline with
-  mover-focus and no-mover-focus stay regressions; physical recheck pending.
+  mover-focus and no-mover-focus stay regressions; user physical recheck
+  passed 2026-10-14.
   This supersedes the Table A item 9 fullscreen-follow focus suppression;
   explicit commands are honoured, with no unsolicited-event focus changes.
   Managed app-owned fullscreen with a retained tile uses the same stable-flag carry

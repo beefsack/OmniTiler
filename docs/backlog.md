@@ -330,9 +330,14 @@ decisions of 2026-09-24 are under
     arrival like other follow sends (stay unchanged); real-game check under
     gaming coexistence. Delivered offline 2026-10-14 for numbered/relative
     workspace and output follows, with mover-focus and unchanged stay
-    regressions; user physical recheck pending ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
+    regressions; user physical recheck passed 2026-10-14 (fullscreen Notepad
+    kept focus across workspace follow sends) ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
   - Windows review follow-ups (User 2026-10-14):
-    - 5b open: does OS-permitted activation switch+focus override the D27 fullscreen/game urgency-only guard (decisions.md D27)? Recommendation: guard remains an exception per Gaming Compatibility principle.
+    - 5b open: does OS-permitted activation switch+focus override the D27
+      fullscreen/game urgency-only guard (decisions.md D27)? User leans
+      toward keeping the guard as an exception (Gaming Compatibility); to be
+      confirmed during dogfooding.
+    - Reconcile `tick` skipped count without identities accepted for now.
     - (6) D23 source slot after a minimized window is rehomed elsewhere: user
       leans option B (forget the source slot; later return uses ordinary send
       admission). Check Tier 1 reference behavior before deciding; shared-core
@@ -653,8 +658,8 @@ decisions of 2026-09-24 are under
   physical two-output journey ([exact steps](changes/windows-multi-output-foundation.md#remaining-physical-check))
   and Linux/KWin gates; record stays active;
   (10) taskbar workspace indicator research pulled forward as a Windows
-  dogfooding blocker (user 2026-10-14); recommendation pending user choice
-  ([indicator options](research/windows-port/taskbar-workspace-indicator.md)).
+  dogfooding blocker (user 2026-10-14); pager-style target selected, surface
+  research pending ([indicator options](research/windows-port/taskbar-workspace-indicator.md)).
   Hidden-workspace Alt+Tab/taskbar semantics remain in workspace-presentation
   research as a Windows release gate
   ([note](research/windows-port/alt-tab-hidden-workspaces.md));
@@ -754,8 +759,14 @@ decisions of 2026-09-24 are under
   [evidence](changes/archive/non-native-tiler-host-interaction.md).
   - Taskbar indicator slice pulled forward as a high-priority Windows dogfooding
     blocker (user 2026-10-14). [Indicator options and recommendation](research/windows-port/taskbar-workspace-indicator.md):
-    single numbered tray icon plus per-output popup recommended;
-    recommendation pending user choice.
+    single numbered tray icon plus per-output popup recommended.
+    User 2026-10-14 target (aspirational): a KDE Plasma pager-style
+    indicator in the taskbar of every output, showing only that output's
+    workspaces: numbered workspace cells, empty cells a slightly darker
+    shaded rectangle, each window a lighter rectangle with a light 1 px
+    border and its app icon centred, the active workspace in an active
+    colour. User asked whether Windows 11 taskbar widget-style surfaces
+    (like search) can host it; follow-up research pending.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product
