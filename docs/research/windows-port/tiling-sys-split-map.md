@@ -50,8 +50,8 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 18 | `focus`, `underlay_1`, `_2`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Observation `TileLoop` impl stays intact in parent for later extraction | Extracted; 609 / 705 / 1,002 / 251 lines |
 | 19 | `fullscreen`, `admission` | Fullscreen metadata/holds/exit, admission/float gates, event stamps | 600 / 900 | Ownership and engine seams | Extracted; 645 / 848 lines |
 | 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Extracted; 906 / 289 / 529 / 391 lines |
-| 21 | `keyboard_1`, `_2`, `chords_1`, `_2`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Large individual functions may exceed cap intact | Pending |
-| 22 | `directional_1`, `_2`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Pending |
+| 21 | `keyboard_1`, `_2`, `chords_1`, `_2`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | `keyboard_tick` stays intact: 2,138-line child exceeds soft cap | Extracted; 2,138 / 296 / 213 / 1,132 / 1,377 lines |
+| 22 | `directional_1`, `_2`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Extracted; 368 / 626 / 1,175 / 1,455 lines |
 | 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Pending |
 | 24 | `selection`, `sends` | Workspace select/send, trailing-spare/follow behavior | 2,300 total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
 | 25 | `cli_poll_1`, `_2`, `workspace_tick_1`, `_2`, `migration` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Pending |
@@ -102,7 +102,14 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Row 20 extracts rows/reconcile/geometry/focus-actuation; parent becomes
   **25,630 lines**. Bodies preserve exact text except necessary visibility/imports
   and one formatted signature. Required gates pass with 2,106 / 0 / 1.
-- Next: production orders 21-30, starting keyboard/chords/dispatch. The whole
+- Row 21 extracts keyboard/chords/dispatch; parent becomes **20,511 lines**.
+  Bodies compare exactly after removing visibility/import changes. `keyboard_1`
+  exceeds the soft cap solely to preserve `keyboard_tick` intact. Public launch
+  API paths are preserved; required gates pass with 2,106 / 0 / 1.
+- Row 22 extracts directional/output-send/cross-drag; parent now **16,917 lines**.
+  Bodies compare exactly after removing visibility/import changes. All four
+  children meet the soft cap; required gates pass with 2,106 / 0 / 1.
+- Next: production orders 23-30, starting restart/assignments. The whole
   observation `TileLoop` impl remains in the parent for later extraction.
   Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.

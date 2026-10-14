@@ -69,9 +69,14 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   `keyboard_1` is a deliberate soft-cap exception: the single `keyboard_tick`
   function stays intact. Required gates pass: 2,106 / 0 / 1.
 
+- Directional/output-send/cross-drag: parent 20,511 -> 16,917 lines; children
+  368 / 626 / 1,175 / 1,455 lines. All moved bodies compare exactly after
+  removing necessary visibility/imports; no signature reflows. Required gates
+  pass: 2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 22-30, starting with directional/output-send/cross-drag;
+Production map orders 23-30, starting with restart/assignments;
 retain the whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
@@ -86,3 +91,4 @@ retain the whole observation `TileLoop` impl for later extraction.
 | `d8bd237` | Focus/underlay/probes | 29,158 | 609 / 705 / 1,002 / 251 |
 | `9654902` | Fullscreen/admission | 27,706 | 645 / 848 |
 | `2be88c0` | Rows/reconcile/geometry/focus-actuation | 25,630 | 906 / 289 / 529 / 391 |
+| `f13aeba` | Keyboard/chords/dispatch | 20,511 | 2,138 / 296 / 213 / 1,132 / 1,377 |
