@@ -103,6 +103,159 @@ fn plan_egress_for_error(request: &str) -> String {
     tiler_protocol::planner_protocol::summarize_plan_egress(request, "")
 }
 
+/// Sanitize one free-form token for the preview dedup signature: lowercase
+/// dashes only, capped at 64 chars, else `unknown`. Mirrors the
+/// protocol-summary vocabulary so the signature can only contain fixed
+/// tokens. Missing kind degrades to `-`, matching `summarize_plan_egress`.
+fn preview_summary_token(raw: Option<&str>, missing: &str) -> String {
+    match raw {
+        Some(text)
+            if !text.is_empty()
+                && text.len() <= 64
+                && text.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') =>
+        {
+            text.to_owned()
+        }
+        Some(_) => "unknown".to_owned(),
+        None => missing.to_owned(),
+    }
+}
+
+/// Sanitize one correlation id for the suppressed-run span: alphanumeric
+/// plus dash/underscore/dot, capped at 64 chars, else `unknown`. Mirrors
+/// the core correlation charset (without adding the dependency); absent
+/// degrades to `-`. Span-only: signature tokens keep the closed
+/// lowercase-dash vocabulary above.
+fn preview_span_token(raw: Option<&str>, missing: &str) -> String {
+    match raw {
+        Some(text)
+            if !text.is_empty()
+                && text.len() <= 64
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.') =>
+        {
+            text.to_owned()
+        }
+        Some(_) => "unknown".to_owned(),
+        None => missing.to_owned(),
+    }
+}
+/// Normalized drag-preview log signature plus the validated request
+/// correlation, or `None` for non-preview commands (never deduplicated).
+/// Single parse; no new content on the log surface.
+fn preview_log_parts(request: &str, reply: &str) -> Option<(String, String)> {
+    let request_value: serde_json::Value = serde_json::from_str(request).ok()?;
+    let request_object = request_value.as_object()?;
+    let op = request_object
+        .get("command")?
+        .as_object()?
+        .get("op")?
+        .as_str()?;
+    if op != "drag-preview" {
+        return None;
+    }
+    let correlation = preview_span_token(
+        request_object
+            .get("correlation_id")
+            .and_then(serde_json::Value::as_str),
+        "-",
+    );
+    let reply_value: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
+    let reply_object = reply_value.as_object();
+    let outcome = preview_summary_token(
+        reply_object
+            .and_then(|object| object.get("outcome"))
+            .and_then(|value| value.as_str()),
+        "unknown",
+    );
+    let kind = preview_summary_token(
+        reply_object
+            .and_then(|object| object.get("kind"))
+            .and_then(|value| value.as_str()),
+        "-",
+    );
+    let detail = match reply_object.and_then(|object| object.get("detail")) {
+        Some(serde_json::Value::String(detail)) => preview_summary_token(Some(detail), "-"),
+        _ => "-".to_owned(),
+    };
+    let signature = format!("op=drag-preview outcome={outcome} kind={kind} detail={detail}");
+    Some((signature, correlation))
+}
+
+/// Bounded drag-preview summary logging across preview correlations.
+/// Consecutive identical summaries coalesce; the flush carries the
+/// suppressed span's first/last correlations so the omitted run stays
+/// reconstructible. Transitions and non-preview commands flush first.
+#[derive(Debug, Default)]
+struct PreviewLogDedup {
+    last_signature: Option<String>,
+    suppressed: u64,
+    span_first: Option<String>,
+    span_last: Option<String>,
+}
+
+impl PreviewLogDedup {
+    /// Maximum silent repeats before a periodic count flush keeps an
+    /// unterminated burst observable.
+    const FLUSH_BOUND: u64 = 64;
+
+    /// Classify one authorized `DescribePlan` outcome into the exact stderr
+    /// lines to emit, in order. Pure state machine over redacted summaries;
+    /// never echoes request/reply bytes beyond the existing summary lines.
+    fn observe(&mut self, request: &str, reply: &str) -> Vec<String> {
+        let ingress = tiler_protocol::planner_protocol::summarize_plan_ingress(request);
+        let egress = tiler_protocol::planner_protocol::summarize_plan_egress(request, reply);
+        let Some((signature, correlation)) = preview_log_parts(request, reply) else {
+            let mut lines = Vec::with_capacity(3);
+            if let Some(summary) = self.take_summary() {
+                lines.push(summary);
+            }
+            lines.push(ingress);
+            lines.push(egress);
+            return lines;
+        };
+        if self.last_signature.as_deref() == Some(signature.as_str()) {
+            self.suppressed += 1;
+            if self.span_first.is_none() {
+                self.span_first = Some(correlation.clone());
+            }
+            self.span_last = Some(correlation);
+            if self.suppressed >= Self::FLUSH_BOUND {
+                return self.take_summary().into_iter().collect();
+            }
+            return Vec::new();
+        }
+        let mut lines = Vec::with_capacity(3);
+        if let Some(summary) = self.take_summary() {
+            lines.push(summary);
+        }
+        self.last_signature = Some(signature);
+        self.suppressed = 0;
+        self.span_first = None;
+        self.span_last = None;
+        lines.push(ingress);
+        lines.push(egress);
+        lines
+    }
+
+    /// Take the pending suppressed-count summary, if any. Clears the run.
+    fn take_summary(&mut self) -> Option<String> {
+        let signature = self.last_signature.take()?;
+        let suppressed = self.suppressed;
+        self.suppressed = 0;
+        let first = self.span_first.take().unwrap_or_else(|| "-".to_owned());
+        let last = self.span_last.take().unwrap_or_else(|| "-".to_owned());
+        if suppressed == 0 {
+            return None;
+        }
+        Some(format!(
+            "{} direction=preview-summary {signature} suppressed={suppressed} span_first={first} span_last={last}",
+            tiler_protocol::planner_protocol::PLAN_SUMMARY_PREFIX,
+        ))
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PlanEarlyExit {
     Busy,
@@ -144,6 +297,11 @@ pub struct PlannerEndpoint {
     operation_lock: Arc<async_lock::Mutex<()>>,
     planner: Arc<std::sync::Mutex<tiler_protocol::planner_protocol::Planner>>,
     intent_store: Option<FloatIntentStore>,
+    /// Bounded drag-preview log dedup shared across calls (see
+    /// [`PreviewLogDedup`]). Held only for the short classify step after the
+    /// operation lock is released, so logging never holds planning state.
+    /// Cloned endpoints share one dedup run, matching the shared planner.
+    preview_log: Arc<std::sync::Mutex<PreviewLogDedup>>,
     /// Separate intent single-flight: intent I/O (including bus credential
     /// and namespace queries) never holds the plan lock, so an overlapping
     /// settled-intent call cannot make `DescribePlan` go busy. Concurrent
@@ -160,6 +318,7 @@ impl PlannerEndpoint {
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
             intent_store: FloatIntentStore::from_runtime_dir(),
+            preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -174,6 +333,7 @@ impl PlannerEndpoint {
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
             intent_store: Some(FloatIntentStore::with_root(root)),
+            preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -188,6 +348,7 @@ impl PlannerEndpoint {
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
             intent_store: None,
+            preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -221,6 +382,15 @@ impl PlannerEndpoint {
             ));
         }
         Ok(reply)
+    }
+
+    /// Take the pending drag-preview suppressed-count summary, if any, for
+    /// the evaluation-failure branch so a burst stays attributable before
+    /// its terminal line. Never fails; poison degrades to no summary.
+    /// Plain-impl helper (never a D-Bus method): the `zbus::interface` impl
+    /// below cannot expose `Option<String>` returns.
+    fn take_preview_summary(&self) -> Option<String> {
+        self.preview_log.lock().ok()?.take_summary()
     }
 }
 
@@ -397,6 +567,9 @@ impl PlannerEndpoint {
             Ok(reply) => reply,
             Err(error) => {
                 drop(_guard);
+                if let Some(summary) = self.take_preview_summary() {
+                    eprintln!("{summary}");
+                }
                 eprintln!("{}", plan_egress_for_error(&request));
                 return Err(error);
             }
@@ -410,28 +583,35 @@ impl PlannerEndpoint {
         // Bounded normal-level summaries: one ingress line per authorized
         // command plus one terminal line per reply, plus one fixed
         // uncorrelated early-exit line for oversize/busy/closed/unauthorized.
-        // The reply is returned with the lock released and no
-        // logging beyond these lines, so output never triggers bus activation
-        // and never holds the operation lock. Opt-in trace mode
+        // Consecutive identical drag-preview outcomes coalesce through the
+        // preview dedup (first line, transitions, changed failure causes and
+        // every non-preview command still emit; a suppressed run flushes as one
+        // counted summary). The reply is returned with the lock released and
+        // no logging beyond these lines, so output never triggers bus
+        // activation and never holds the operation lock. Opt-in trace mode
         // (`OMNITILER_TRACE=1`) appends the bounded structural shape
         // line (carried-entry counts plus fingerprint; still no ids, rects,
         // domains, owner, or payload bytes) to the Planner's own log file
-        // (stderr); the KWin journal surface stays exactly one bounded line
-        // per command plus one per rejection.
+        // (stderr) whenever a line emitted above; the KWin journal surface
+        // stays bounded per command.
         drop(_guard);
-        // Both summaries are pure over the request/reply strings and are
+        // The summaries are pure over the request/reply strings and are
         // emitted here, after the guard is released, so logging never holds
         // the operation lock. The single-flight transport serializes calls,
-        // preserving ingress/egress order in the log.
-        eprintln!(
-            "{}",
-            tiler_protocol::planner_protocol::summarize_plan_ingress(&request)
-        );
-        eprintln!(
-            "{}",
-            tiler_protocol::planner_protocol::summarize_plan_egress(&request, &reply)
-        );
-        if planner_trace_enabled() {
+        // preserving ingress/egress order in the log. A poisoned dedup lock
+        // fails open with the full pair, never suppressing.
+        let lines = match self.preview_log.lock() {
+            Ok(mut dedup) => dedup.observe(&request, &reply),
+            Err(_) => vec![
+                tiler_protocol::planner_protocol::summarize_plan_ingress(&request),
+                tiler_protocol::planner_protocol::summarize_plan_egress(&request, &reply),
+            ],
+        };
+        let emitted = !lines.is_empty();
+        for line in lines {
+            eprintln!("{line}");
+        }
+        if emitted && planner_trace_enabled() {
             eprintln!(
                 "{}",
                 tiler_protocol::planner_protocol::summarize_plan_shape(&request)
@@ -1763,5 +1943,176 @@ mod tests {
         );
         assert!(loss.is_err(), "real name loss stays terminal");
         assert_eq!(registered, None);
+    }
+
+    fn preview_request(correlation: &str) -> String {
+        format!(
+            "{{\"correlation_id\":\"{correlation}\",\"revision\":2,\"owner\":\"owner-9\",\"command\":{{\"op\":\"drag-preview\",\"window\":\"win-aaa\",\"x\":900,\"y\":5}},\"windows\":[{{\"window\":\"win-aaa\",\"rect\":{{\"x\":0,\"y\":0,\"w\":600,\"h\":800}}}}],\"fingerprint\":123}}"
+        )
+    }
+
+    fn preview_success_reply(correlation: &str) -> String {
+        format!(
+            "{{\"v\":1,\"correlation_id\":\"{correlation}\",\"outcome\":\"preview\",\"kind\":\"drag-preview\",\"base_revision\":2,\"detail\":{{\"kind\":\"drag-preview\"}},\"preview_rect\":{{\"x\":600,\"y\":0,\"w\":600,\"h\":800}}}}"
+        )
+    }
+
+    #[test]
+    fn preview_dedup_suppresses_repeated_preview_success_and_counts() {
+        let mut dedup = super::PreviewLogDedup::default();
+        let first = dedup.observe(
+            &preview_request("gen-1-v1"),
+            &preview_success_reply("gen-1-v1"),
+        );
+        assert_eq!(
+            first.len(),
+            2,
+            "first preview of a run emits ingress plus egress, {first:?}"
+        );
+        assert!(first[0].contains("direction=ingress"), "{first:?}");
+        assert!(first[1].contains("direction=egress"), "{first:?}");
+        assert!(first[1].contains("outcome=preview"), "{first:?}");
+        for seq in 2..10 {
+            let correlation = format!("gen-1-v{seq}");
+            let lines = dedup.observe(
+                &preview_request(&correlation),
+                &preview_success_reply(&correlation),
+            );
+            assert!(
+                lines.is_empty(),
+                "identical preview success stays silent, {correlation} {lines:?}"
+            );
+        }
+        // A state transition flushes the suppressed count, then emits the new lines.
+        let refused = "{\"v\":1,\"correlation_id\":\"gen-1-v10\",\"outcome\":\"rejected\",\"kind\":\"unsupported-capability\"}";
+        let lines = dedup.observe(&preview_request("gen-1-v10"), refused);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("direction=preview-summary")
+                    && line.contains("suppressed=8")
+                    && line.contains("span_first=gen-1-v2")
+                    && line.contains("span_last=gen-1-v9")),
+            "transition flushes the run count, {lines:?}"
+        );
+        assert_eq!(
+            lines.len(),
+            3,
+            "summary plus ingress plus egress, {lines:?}"
+        );
+        assert!(lines[1].contains("direction=ingress"), "{lines:?}");
+        assert!(
+            lines[2].contains("kind=unsupported-capability"),
+            "{lines:?}"
+        );
+        for line in &lines {
+            assert!(!line.contains("win-aaa"), "no window id escapes, {line}");
+            assert!(!line.contains("owner-9"), "no owner escapes, {line}");
+            assert!(!line.contains('\n'), "{line}");
+        }
+    }
+
+    #[test]
+    fn preview_dedup_coalesces_failures_but_never_suppresses_nonpreview() {
+        let mut dedup = super::PreviewLogDedup::default();
+        let refused = "{\"v\":1,\"correlation_id\":\"gen-1-v1\",\"outcome\":\"rejected\",\"kind\":\"unsupported-capability\"}";
+        let first = dedup.observe(&preview_request("gen-1-v1"), refused);
+        assert_eq!(first.len(), 2, "first failure of a run emits, {first:?}");
+        let refused2 = "{\"v\":1,\"correlation_id\":\"gen-1-v2\",\"outcome\":\"rejected\",\"kind\":\"unsupported-capability\"}";
+        let second = dedup.observe(&preview_request("gen-1-v2"), refused2);
+        assert!(
+            second.is_empty(),
+            "identical preview failures coalesce, {second:?}"
+        );
+        let other = "{\"v\":1,\"correlation_id\":\"gen-1-v3\",\"outcome\":\"rejected\",\"kind\":\"not-tiled\"}";
+        let third = dedup.observe(&preview_request("gen-1-v3"), other);
+        assert_eq!(
+            third.len(),
+            3,
+            "a new failure cause flushes the run count, {third:?}"
+        );
+        let reconcile_request = "{\"correlation_id\":\"reconcile-1\",\"revision\":3,\"command\":{\"op\":\"reconcile\"}}";
+        let reconcile_reply = "{\"v\":1,\"correlation_id\":\"reconcile-1\",\"outcome\":\"planned\",\"kind\":\"reconcile\",\"base_revision\":3}";
+        let fourth = dedup.observe(reconcile_request, reconcile_reply);
+        assert_eq!(
+            fourth.len(),
+            2,
+            "nonpreview commands never suppress, {fourth:?}"
+        );
+        let fifth = dedup.observe(reconcile_request, reconcile_reply);
+        assert_eq!(
+            fifth.len(),
+            2,
+            "repeated nonpreview commands never suppress, {fifth:?}"
+        );
+    }
+
+    #[test]
+    fn preview_dedup_flushes_suppressed_run_before_nonpreview() {
+        let mut dedup = super::PreviewLogDedup::default();
+        let first = dedup.observe(
+            &preview_request("gen-1-v1"),
+            &preview_success_reply("gen-1-v1"),
+        );
+        assert_eq!(first.len(), 2, "{first:?}");
+        for seq in 2..5 {
+            let correlation = format!("gen-1-v{seq}");
+            assert!(
+                dedup
+                    .observe(
+                        &preview_request(&correlation),
+                        &preview_success_reply(&correlation)
+                    )
+                    .is_empty(),
+                "repeat {correlation} suppresses"
+            );
+        }
+        let reconcile_request = "{\"correlation_id\":\"reconcile-1\",\"revision\":3,\"command\":{\"op\":\"reconcile\"}}";
+        let reconcile_reply = "{\"v\":1,\"correlation_id\":\"reconcile-1\",\"outcome\":\"planned\",\"kind\":\"reconcile\",\"base_revision\":3}";
+        let lines = dedup.observe(reconcile_request, reconcile_reply);
+        assert_eq!(
+            lines.len(),
+            3,
+            "summary plus ingress plus egress, {lines:?}"
+        );
+        assert!(
+            lines[0].contains("direction=preview-summary")
+                && lines[0].contains("suppressed=3")
+                && lines[0].contains("span_first=gen-1-v2")
+                && lines[0].contains("span_last=gen-1-v4"),
+            "nonpreview flushes the pending run count, {lines:?}"
+        );
+        assert!(lines[1].contains("direction=ingress"), "{lines:?}");
+        assert!(lines[2].contains("direction=egress"), "{lines:?}");
+    }
+
+    #[test]
+    fn preview_dedup_coalesces_identical_failures_with_count() {
+        let mut dedup = super::PreviewLogDedup::default();
+        let refused = "{\"v\":1,\"correlation_id\":\"gen-1-v1\",\"outcome\":\"rejected\",\"kind\":\"unsupported-capability\"}";
+        let first = dedup.observe(&preview_request("gen-1-v1"), refused);
+        assert_eq!(first.len(), 2, "first failure of a run emits, {first:?}");
+        let refused2 = "{\"v\":1,\"correlation_id\":\"gen-1-v2\",\"outcome\":\"rejected\",\"kind\":\"unsupported-capability\"}";
+        let second = dedup.observe(&preview_request("gen-1-v2"), refused2);
+        assert!(
+            second.is_empty(),
+            "identical failure repeats coalesce, {second:?}"
+        );
+        let lines = dedup.observe(
+            &preview_request("gen-1-v3"),
+            &preview_success_reply("gen-1-v3"),
+        );
+        assert_eq!(
+            lines.len(),
+            3,
+            "transition flushes the failure count, {lines:?}"
+        );
+        assert!(
+            lines[0].contains("direction=preview-summary")
+                && lines[0].contains("suppressed=1")
+                && lines[0].contains("span_first=gen-1-v2")
+                && lines[0].contains("span_last=gen-1-v2"),
+            "{lines:?}"
+        );
     }
 }
