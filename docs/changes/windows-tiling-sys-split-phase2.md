@@ -31,13 +31,18 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   changes and one rustfmt signature reflow. Original public paths are preserved
   through parent re-exports; shared state stays in the parent. Required gates
   pass with the same 2,106 / 0 / 1 baseline.
+- Hints/seams/placement/minmax: parent 34,884 -> 33,818 lines; children
+  138 / 495 / 177 / 314 lines. All cfg branches travel with their items;
+  comparison permits only necessary visibility/imports and two formatted
+  signatures. Required gates pass on final formatted source: 2,106 / 0 / 1.
 
 ## Remaining work
 
-Production map orders 15-30, starting with hints/seams/placement/minmax.
+Production map orders 16-30, starting with trace/owner-work/input.
 
 ## Commit records
 
 | Commit | Extraction | Parent lines afterward | Child lines |
 | --- | --- | ---: | ---: |
 | `114d8ae` | D23 subdivision | 35,537 | 2,061 / 1,535 |
+| `06b8e28` | Shell/monitor/observe | 34,884 | 69 / 106 / 511 |
