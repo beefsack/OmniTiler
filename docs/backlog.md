@@ -525,6 +525,16 @@ decisions of 2026-09-24 are under
   one tiny dedicated FFI module per crate, every other module/crate forbids
   unsafe. Queue after current Windows release-gate work; timing tentative.
   Preserve safe input/render handoffs. [Rule](decisions.md#rust-unsafe-guardrail).
+- P1 | Module size refactoring | User 2026-10-14: split oversized source
+  files toward the [file size](principles.md#file-size) soft caps.
+  Behavior-preserving moves only, between feature deliveries. Windows first:
+  `crates/tiler-windows/src/tiling_sys.rs` (~61k lines), then
+  `workspace_owner.rs` (~12k) and `snapkey.rs` (~6.5k). Shared crates
+  (`tiler-protocol` `planner_protocol.rs`, `tiler-core` `engine.rs` and
+  `session.rs`) and KDE files
+  (`kwin/src/plan-adapter.ts`, `plan-adapter-entry.ts`,
+  `workspace-send-adapter.ts`, `kwin/tests/plan-adapter.test.ts`) are split
+  in coordination with their work streams. About 40 files exceed 2k lines.
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in

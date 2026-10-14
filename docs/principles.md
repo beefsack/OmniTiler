@@ -68,6 +68,14 @@ Project principles, approved by the user.
 - Unsafe code is forbidden by default across the project; each minimal
   module is an explicit, reviewed opt-in exception.
 
+## File Size
+
+- Keep source files small enough to read and review in one pass. Soft cap:
+  about 1,500 lines per production source file and about 3,000 lines per
+  test file.
+- The cap is a trigger to split by responsibility, not a hard limit; exceed
+  it only when splitting would make the code harder to follow.
+
 ## Observability
 
 - Observability is a core requirement across every component: normal logs must
