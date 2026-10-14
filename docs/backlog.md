@@ -59,8 +59,11 @@ decisions of 2026-09-24 are under
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and
-  persists, so KDE, Windows and macOS do not maintain separate dialogs. Options
-  and recommendation first; pre-0.1 vs post-0.1 is a user decision.
+  persists, so KDE, Windows and macOS do not maintain separate dialogs.
+  [Options and recommendation](research/shared-settings-schema.md) delivered
+  2026-10-15; decision pending user. Recommend KDE-only tabs independently
+  pre-0.1, shared Rust catalog with checked-in generated artifacts post-0.1;
+  route and timing remain user decisions.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
