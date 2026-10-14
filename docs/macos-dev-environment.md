@@ -6,27 +6,32 @@
 - Evidence checked 2026-10-03: **V** = fetched primary doc/source below;
   **R** = repository inspection; **O** = upstream report; **U** = unverified on a Mac;
   **P** = recommendation, not an adopted decision. Source keys at the end.
-  Documented commands still need host verification.
+- Read-only host baseline 2026-10-14 (generic; no machine details recorded):
+  Apple Silicon host newer than the provisional macOS 15 floor; CLT selected
+  with the SDK path resolving, mise tools installed, SIP enabled, and the
+  portable-crate build boundary (section 4) passing. Full Xcode absent, so
+  `xcodebuild` is unavailable; plain `codesign` is present without full Xcode.
 - Related research: [prior art](research/macos-port/prior-art.md) and the
-  [tentative plan](research/macos-port/plan.md). The proposed default uses
-  public AX without reducing SIP; surveyed managers use different routes.
+  [tier-2 plan](research/macos-port/plan.md). Selected default (user
+  2026-10-03, [decisions](decisions.md#scope-and-platform-goals)): tier 2,
+  public plus private APIs with SIP left enabled; no Dock injection, no
+  reduced SIP. Surveyed managers use different routes.
   This runbook grants no live-testing authority and makes no install.
-- Tentative floor: macOS 15 (Sequoia), open decision. **V: S8:** Xcode 16.x
-  runs on Sequoia 15.x with a macOS 15 SDK; **V: S14:** Homebrew supports
-  Apple Silicon on Sequoia (15) or higher. Floor stays open; the user
-  confirms the actual host OS. No adoption/date claims are made here.
-- Intel scope is open. **P:** recommend arm64-first until a physical Intel
-  host exists; do not claim Intel parity without one.
+- Adopted 2026-10-14: **macOS 15 minimum, Apple Silicon only**. Current
+  Homebrew Mac-only OS events give 15+ approximately 93.27% coverage; this
+  developer/event-weighted sample is a proxy, not population proof.
+  [Decision, sources, and API-risk rationale](decisions.md#scope-and-platform-goals).
+  A newer development OS does not validate the floor; Intel is out of scope.
 
-## Decisions needed from the user
+## Adopted and remaining setup decisions
 
 | Decision | Options and consequences | Recommendation (P) |
 | --- | --- | --- |
-| Install governance | This doc as the macOS dependency list (mirrors the Windows rule in root `AGENTS.md`) vs another declaration file. New macOS tools added here first with user approval; the user performs installs. | Adopt this doc; open. |
-| OS floor and Intel | Tentative macOS 15 floor vs higher; arm64-first vs committing to Intel. Intel needs its own host and CI leg before parity claims. | Confirm macOS 15 floor; arm64-first; open. |
-| Dev signer and release membership | Local unsigned/ad-hoc vs Apple Development or persistent local self-signed cert for TCC dev; Developer ID plus paid Developer Program membership for notarized release. Choice fixes the stable identity strategy below. | Decide before first TCC grant; open. |
+| Install governance | This doc as the macOS dependency list (mirrors the Windows rule in root `AGENTS.md`) vs another declaration file. New macOS tools added here first with user approval; the user performs installs. | **Adopted:** root `AGENTS.md` names this doc as the macOS dependency list with the same user-owns-installs rule as Windows. |
+| OS floor and Intel | **Adopted 2026-10-14:** macOS 15+, Apple Silicon only. | Separate floor-runtime validation remains required. |
+| Dev signer and release membership | **Adopted 2026-10-14:** persistent self-signed development identity; no paid membership initially. | Release Developer ID/notarization remains open; see section 5. |
 | mise as install route | Tool-agnostic installs now vs adopting mise later as the cross-platform route. | **Adopted:** root `mise.toml` manages Rust (via rustup), just, gh, rg, jq with OS-filtered entries (Linux ignores it); `yq` stays Windows-only and is not in the macOS inventory. Manual prerequisites stay manual: Xcode/CLT, host shell bootstrap, Git route per user choice. User runs `mise trust` / `mise install` from the repo root; gates use `mise exec -- cargo ...`. |
-| UI language | Rust AppKit bindings vs a small Swift UI bridge. | Rust-first spike; add Swift only for a demonstrated gap; open. |
+| UI language | **Adopted 2026-10-14:** all Rust, including UI. | Trusted bindings first; minimal isolated unsafe FFI module, unsafe forbidden elsewhere. |
 
 ## Day-one setup, in order
 
@@ -42,8 +47,8 @@ uname -m
 system_profiler SPDisplaysDataType
 ```
 
-- **P:** require `arm64` (`uname -m` prints `arm64`) for the arm64-first
-  path. Record the macOS version against the tentative floor above.
+- Require `arm64` (`uname -m` prints `arm64`). Check the adopted floor locally;
+  do not record the development host's OS version in repository files.
 - Second display is optional. Accept single-display first; two-display
   proof needs the physical second screen, not a virtual one.
 
@@ -53,7 +58,8 @@ system_profiler SPDisplaysDataType
 man pages, and toolchain binaries as Xcode and installs at
 `/Library/Developer/CommandLineTools`. CLT is sufficient as the Rust
 linker/SDK. **V: S1:** `xcodebuild` (and `xctrace`) ship with Xcode only,
-so the full Xcode GUI plus archive/export/signing workflow needs Xcode.
+so the `xcodebuild`-based archive/export workflow needs full Xcode; plain
+`codesign` invocation does not itself require it (see host baseline above).
 
 ```zsh
 xcode-select --install
@@ -68,8 +74,8 @@ pkgutil --pkg-info=com.apple.pkg.CLTools_Executables
   `sudo xcode-select -s /Applications/Xcode.app`, then
   `xcodebuild -version` and the `xcrun` SDK path above.
 - **V: S1:** after a macOS upgrade, re-check with Software Update or
-  `softwareupdate -l`; an old CLT package may be incompatible. Exact
-  CLT/Xcode versions on the future host are **U** (not yet recorded).
+  `softwareupdate -l`; an old CLT package may be incompatible. The current
+  generic host baseline is recorded above.
 
 ### 3. Install mise, then Rust and CLIs (root `mise.toml`)
 
@@ -108,8 +114,11 @@ mise exec -- rustup which cargo
   a manager). just, gh, rg and jq are mise-managed (root `mise.toml`,
   [OS-filtered entries](https://mise.jdx.dev/dev-tools/)).
   **V: S16:** just offers Homebrew, Cargo and prebuilt routes;
-  verify `mise exec -- just --version`. The root justfile remains
-  Linux-oriented.
+  verify `mise exec -- just --version`. The root `justfile` is the cross-OS
+  entry point (per-OS imports; only the current OS recipes load); macOS
+  recipes live in `just/macos.just`: `preflight`, `build`, `test`, `clippy`,
+  `fmt`, `app <identity>`, and `verify`; `dev` remains a fail-closed stub
+  until the full-solution loop exists.
 - **V: S14:** Homebrew is optional, never forced. Default prefix on
   Apple Silicon is `/opt/homebrew`; follow its homepage post-install
   shellenv directions for zsh.
@@ -120,17 +129,17 @@ mise exec -- rustup which cargo
 
 **R:** `Cargo.toml` workspace members are `tiler-core`,
 `tiler-protocol`, `omnitiler`, `tiler-kwin-effect-ffi`, and
-`tiler-windows`. Only the three portable crates below are the Mac
-baseline. `omnitiler` is the Linux/KDE service (rustix plus
+`tiler-windows`, and `tiler-macos`. The portable crates plus macOS probe
+below are the Mac baseline. `omnitiler` is the Linux/KDE service (rustix plus
 zbus/D-Bus integration), not a supported Mac target; `tiler-windows`
 is the Windows adapter. This is a supported-gate boundary, not a claim
 that every excluded crate necessarily fails to compile on macOS.
 
 ```zsh
-mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi
-mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi
+mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
+mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
 mise exec -- cargo fmt --all -- --check
-mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi --all-targets -- -D warnings
+mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos --all-targets -- -D warnings
 ```
 
 - **P:** explicit `-p` flags are the boundary; do not change
@@ -160,8 +169,48 @@ mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin
   Keychain Access > Certificate Assistant > Create a Certificate, with
   type Code Signing; retain that certificate/private key across builds.
   Inspect available identities with `security find-identity -v -p codesigning`.
-  Sign nested executables first and the bundle last. User picks the identity;
-  no certificate or bundle ID has been adopted here.
+  Sign nested executables first and the bundle last. The adopted probe bundle
+  ID is `io.github.omnitiler.macos.probe`; the following procedure retains one
+  self-signed identity across rebuilds.
+
+#### Persistent self-signed development identity
+
+Use the built-in **Keychain Access** application (no full Xcode or paid
+account required):
+
+1. Select the **login** keychain, then **Keychain Access > Certificate
+   Assistant > Create a Certificate**.
+2. Name it **OmniTiler Mac Dev**, select **Self Signed Root** as Identity
+   Type and **Code Signing** as Certificate Type. Create it in the login
+   keychain, retaining its private key. Do not create a fresh identity per build.
+3. If the certificate is not a valid signing identity, open its **Get Info >
+   Trust**, set **Code Signing** to **Always Trust**, and leave unrelated
+   trust purposes at their defaults. Complete any authentication locally.
+4. Check `security find-identity -v -p codesigning`; it must list exactly
+   the intended persistent identity. Never put the private key/password in
+   source, scripts, logs, or repository files.
+5. From the repository root:
+
+   ```zsh
+   mise exec -- just app 'OmniTiler Mac Dev'
+   mise exec -- just verify
+   ```
+
+The recipe uses the fixed build-tree path `target/macos/OmniTilerProbe.app`,
+fixed ID, nested-first signing, hardened runtime with no timestamp (local
+development only), and no ad-hoc fallback. It requires only existing CLT and
+macOS tools: `codesign`, `security`, `otool`, `spctl`, and `shasum` plus the
+host shell utilities. It builds with `MACOSX_DEPLOYMENT_TARGET=15.0` and checks
+both Mach-O minimum-version load commands. Plain Cargo builds do not enforce
+that bundle deployment target. `spctl` rejection of an unnotarized local
+self-signed build is diagnostic, not a permission grant or reason to disable
+Gatekeeper. A CLI self-signed import succeeded, but certificate verification
+reported `CSSMERR_TP_NOT_TRUSTED`, and a disposable codesign operation timed
+out at key-access authorization. That identity/private key was removed;
+zero valid identities remain. Complete the manual trust steps above; if codesign
+requests private-key access during the build, handle that specific key's
+authorization locally in the system dialog. Persistent signing and grant
+survival are still unverified. [Current evidence](changes/macos-phase-0.md).
 
 ### 6. Permissions, TCC resets, and stable identity
 
@@ -175,14 +224,15 @@ mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin
 - The commands below are permission **resets**, not grants. After a
   reset the user relaunches the app and grants again in System Settings.
   Service support varies by host OS: check `man tccutil` on the Mac.
-  The following is a template: replace the quoted placeholder with the
-  future app's actual bundle ID before running. No ID has been selected.
+  The following forms target only the development probe's adopted bundle ID.
+  Run a reset only when diagnosing that app's stale permission state, after
+  stopping it; it is not a normal build step.
 
 ```zsh
 man tccutil
-tccutil reset Accessibility '<actual-dev-bundle-id>'
-tccutil reset ListenEvent '<actual-dev-bundle-id>'
-tccutil reset ScreenCapture '<actual-dev-bundle-id>'
+tccutil reset Accessibility 'io.github.omnitiler.macos.probe'
+tccutil reset ListenEvent 'io.github.omnitiler.macos.probe'
+tccutil reset ScreenCapture 'io.github.omnitiler.macos.probe'
 ```
 
 - **V: S9:** omitting the bundle ID resets that service for every app in
@@ -200,6 +250,15 @@ tccutil reset ScreenCapture '<actual-dev-bundle-id>'
   requirement. Self-signed local trust does not transfer to other
   machines; release uses Developer ID (see above). Never edit the TCC
   database directly.
+- Once the signed bundle exists, add **OmniTilerProbe.app** with the **+**
+  button under **System Settings > Privacy & Security > Accessibility**, and
+  enable it. Use the file picker's **Go to Folder** to reach the fixed bundle
+  under the checkout's `target/macos/` directory. Stop/relaunch the probe and
+  run its bundled executable's `preflight`; require `ax_trusted:true` before
+  AX writes. Add the same signed bundle under **Input Monitoring** only if
+  the bounded tap leg reports that permission is required; stop/relaunch
+  after a change. Do not grant the terminal as a workaround. No Screen
+  Recording grant is needed for these metadata-only probes.
 
 ### 7. Unsigned runs, quarantine, and Gatekeeper
 
@@ -218,25 +277,40 @@ tccutil reset ScreenCapture '<actual-dev-bundle-id>'
   `macos-15-intel`, `macos-26-intel` (plus an `xcode-27` preview label).
   `macos-latest` currently resolves to the macOS 26 arm64 image.
 - Implemented: one arm64 job pinned at `macos-15` using
-  `jdx/mise-action@v4` (runs `mise install`), with tool version smoke
+  `jdx/mise-action@v4` (runs `mise install`), refreshing stable via
+  `mise exec -- rustup update stable --no-self-update`, with tool version smoke
   checks (`mise exec -- <tool> --version` for rustc, cargo, just, gh, rg,
   jq), a `rustc -vV` host check (`aarch64-apple-darwin`), rustfmt/clippy
-  component checks, and `git diff --check`. No live TCC/AX claims from CI;
+  presence checks (`cargo fmt/clippy --version`), and `git diff --check`.
+  The job also builds/tests/formats/strict-clippies the portable allowlist
+  plus `tiler-macos`; Windows checks its non-macOS stub and Linux workspace
+  gates include it. No live TCC/AX claims from CI;
   headless success does not establish TCC, AX, visuals or gaming.
 
 ### 9. Future native iteration loop
 
-- No macOS adapter, bundle target or dev/stop/restore recipe exists yet.
-  The proposed loop is restore parked windows, stop the old owner, build
-  and sign a fixed-path `.app`, relaunch, then recheck AX/input status.
-  Sync source via Git with separate host `target/` and recovery state.
-  Before window/input experiments, establish a macOS live-testing protocol
-  and separately authorize the scope, as for the Windows port.
+- `tiler-macos` contains explicit bounded probes, an owned AppKit helper, and
+  authenticated `probe-stop`; it is not a tiling adapter or full dev loop.
+  `just app`/`just verify` build and inspect the fixed signed bundle without
+  launching hooks or windows. Read the [probe CLI](../crates/tiler-macos/README.md)
+  and [live protocol](live-macos-testing.md) before experiments. Owned
+  native-Space move/restore commands are direct-SLS-only and untested;
+  switch/create/destroy report unsupported source-derived routes. The current
+  helper uses its exact spawned Child and a per-run pipe nonce, not a
+  LaunchServices launch-date token. `spaces-session` proves owned CG identity,
+  Space membership and graceful/kill cleanup while holding that Child; it
+  dispatches no Space writes. Cross-command nonce-title authentication is
+  blocked when CG titles are withheld; a bounded AX-title fallback is
+  implemented but its positive leg awaits Accessibility trust. Independent
+  Space restoration and all move/switch effects remain unproven. The AX
+  partial-write restoration fix has fault-injection coverage, not live
+  acceptance. [Current evidence](changes/macos-phase-0.md).
 
 ## Verification checklist
 
-- [ ] Physical Apple Silicon host recorded: `sw_vers`, `uname -m`,
-  display topology; second display noted if present.
+- [ ] Supported OS/architecture and display topology verified locally with
+  `sw_vers`, `uname -m`; omit development-host version and hardware details
+  from repository evidence.
 - [ ] CLT or Xcode path verified: `xcode-select -p`, SDK path, and
   (Xcode only) `xcodebuild -version`.
 - [ ] `mise exec -- rustc -vV` shows `aarch64-apple-darwin`;

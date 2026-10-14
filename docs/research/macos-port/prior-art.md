@@ -4,8 +4,10 @@ Status: researched 2026-10-03, source inspection only. Upstream behavior is
 not a macOS guarantee or our acceptance evidence. Unknown means not established
 from the fetched sources. Recommendations live in the [tentative plan](plan.md).
 
-Recommended architecture, not newly approved: public AX, no reduced SIP;
-managed per-display workspaces mandatory for feature-complete; underlay
+Selected direction (user 2026-10-03,
+[decisions](../../decisions.md#scope-and-platform-goals)): tier 2, public
+plus private APIs with SIP left enabled; no Dock injection, no reduced SIP.
+Managed per-display workspaces mandatory for feature-complete; underlay
 experiment with outline fallback; same KDE actions/behavior; modifier mapping
 open; per-binding shortcut conflict list decided 2026-10-03; gaming needs no
 overlays/moves/input interference.
@@ -191,13 +193,64 @@ overlays/moves/input interference.
   was not opened here.
 - Rectangle Pro and komorebi-for-mac window-control internals: not stated on
   fetched pages. Closed-source stays Unknown (Rectangle Pro).
-- Glide canonical home: tmandry/glide and glide-wm/glide both visible with
-  recent commits. Confirm the maintained home/revision before reuse.
+- Glide canonical home: resolved 2026-10-14 to `tmandry/glide`
+  (`glide-wm/glide` redirects there via API; snapshot `ef3b30f8` below).
+  Earlier dual listing above is a historical fetch record.
 - License texts opened for all rows except Rectangle Pro (proprietary page,
   no license text) and dep libs (soffes/HotKey README states MIT; full dep
   license texts not opened).
 - Dated evidence is latest-commit visibility on fetched feeds, not an
   activity verdict. Swindler (2022-09-06) is the only clearly stale tree.
+
+## Source checkout snapshot (2026-10-14)
+
+Full default-branch checkouts taken 2026-10-14 for source availability;
+commit dates are committer dates. These snapshots do not replace source
+evidence cited at historical pins (the plan.md blob links and the spec
+oracle pins in `docs/spec/reference-outcomes.md` stay authoritative for
+their claims). `koekeishiya/*` URLs in the Sources list below are
+historical fetch records; the canonical owner is now `asmvik` (both
+`koekeishiya/yabai` and `koekeishiya/skhd` redirect there via API,
+verified 2026-10-14; the `asmvik/yabai` README/wiki links above were
+already canonical). `MrKai77/Loop` differs from canonical `mrkai77/Loop`
+by case only.
+
+| Checkout | Upstream URL | Branch | HEAD SHA | Commit date |
+| --- | --- | --- | --- | --- |
+| cosmic-comp | https://github.com/pop-os/cosmic-comp | master | 4d14528f9108cbc0df5404b3b4b8fa6db75ddb41 | 2026-10-08 |
+| Hyprland | https://github.com/hyprwm/Hyprland | main | 1bd31aaa579a40680ce876e1547e371b60c45522 | 2026-10-13 |
+| i3 | https://github.com/i3/i3 | next | be04c853ee7fa01a82a0c81f8217565395e2627c | 2026-10-12 |
+| sway | https://github.com/swaywm/sway | master | 1652c54b73f67df17b7b4ab0b0f7048204aa8104 | 2026-09-21 |
+| yabai | https://github.com/asmvik/yabai | master | dd845723416f5fe92af49fad5ebab00369e07edd | 2026-06-14 |
+| skhd | https://github.com/asmvik/skhd | master | a7105d5b3db6b25d01c0ded79a25536ab284b34f | 2025-12-10 |
+| AeroSpace | https://github.com/nikitabobko/AeroSpace | main | 74a1bf17e82d70e0a21945ba04bb4f590bf19f83 | 2026-10-01 |
+| Amethyst | https://github.com/ianyh/Amethyst | development | 5cfe2fe12b1a933139010da5760aaa7e44033e9b | 2026-10-13 |
+| Silica | https://github.com/ianyh/Silica | master | ebead82a28486e7719b7ed69633ecfed8a4fe2d2 | 2026-09-29 |
+| hammerspoon | https://github.com/Hammerspoon/hammerspoon | master | 23e387e2805a9890066366e0ac96c71b27f0cfd5 | 2026-07-08 |
+| phoenix | https://github.com/kasper/phoenix | master | 916f8f19740530cd7cd63448ec0b6fa62925cebf | 2025-08-31 |
+| Loop | https://github.com/MrKai77/Loop | develop | 573ace3071641bbe002527ccfc0811842300ccba | 2026-10-13 |
+| FlashSpace | https://github.com/wojciech-kulik/FlashSpace | main | 968015308d8d284a98831f90f365538a63456ee9 | 2026-09-17 |
+| komorebi-for-mac | https://github.com/LGUG2Z/komorebi-for-mac | master | bdf10452f10ebf15ec1978cb05d0aac79ef5611f | 2026-05-04 |
+| glide | https://github.com/tmandry/glide | main | ef3b30f88445fe4b517eb4c60023011f6d3725dd | 2026-10-12 |
+| Swindler | https://github.com/tmandry/Swindler | main | bf2c42f1db8bb1aa6c0b634d9fca3ab4bd37931d | 2022-09-05 |
+| paneru | https://github.com/karinushka/paneru | main | 8a213313538a352537b26e25131cfe75f1e00724 | 2026-10-07 |
+| JankyBorders | https://github.com/FelixKratz/JankyBorders | main | a7297ca7d1933f3a30b12e8f10750e8d84eeee1e | 2026-05-14 |
+| PaperWM.spoon | https://github.com/mogenson/PaperWM.spoon | main | 2a561eb63df4fd72fc2556e411bd4e1c88f57f48 | 2026-10-13 |
+| Rectangle | https://github.com/rxhanson/Rectangle | main | 1d46069c27b3b0564bd7cc1e6d97bf6d53093079 | 2026-10-13 |
+| HotKey | https://github.com/soffes/HotKey | main | a3cf605d7a96f6ff50e04fcb6dea6e2613cfcbe4 | 2024-12-28 |
+| AXSwift | https://github.com/tmandry/AXSwift | main | e18a18453d135ad45809a384ee5139e05ea52def | 2021-11-14 |
+| rift | https://github.com/acsandmann/rift | main | 8114ccc534b5c9a7e6a77ce27568d8739be9216f | 2026-10-13 |
+| Defi | https://github.com/qeude/Defi | main | effabd625a26dc8593d4420032cf9dffb8d9ffbe | 2026-10-13 |
+| glazewm | https://github.com/glzr-io/glazewm | main | 5709ad0a3c7c386bbc3e38166a865ffc12937515 | 2026-04-09 |
+
+All 25 checkouts are full (non-shallow) clones. `rift`
+(acsandmann/rift, ~2.5k stars, pushed 2026-10-14) and `Defi` (qeude/Defi,
+MIT, pushed 2026-10-13, Niri-inspired scrollable tiler) are GitHub-search
+additions. `glazewm` HEAD matches the plan-cited pin `5709ad0a`.
+Swindler's repo-level push stamp (2023-12-31) comes from side branch
+`restoration`; default-branch `main` HEAD is still 2022-09-05. The spec
+`PaperWM` profile pin `8bf6dd26` is absent from `PaperWM.spoon` (that pin
+belongs to the GNOME Shell PaperWM tree, not the macOS spoon).
 
 ## Sources (only URLs fetched in this unit)
 

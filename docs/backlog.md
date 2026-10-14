@@ -3260,7 +3260,13 @@ decisions of 2026-09-24 are under
   source analysis: FancyWM core submodules and niri/sway/river/awesome/dwm
   (distinct from the completed bounded matrix source-fill passes).
   [Evidence](changes/archive/prior-art-catalogue.md).
-- P1 | macOS port | Starts after KDE 0.1 ships (user 2026-10-10). Readiness research
+- P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
+  sequencing of 2026-10-10. Documentation review and reference-source pins
+  done ([kickoff](changes/archive/macos-port-kickoff.md)); Phase 0 decisions
+  recorded 2026-10-14 ([decisions](decisions.md)); probe crate, live-testing
+  protocol, helper lifecycle and read-only Space membership delivered; signed
+  bundle, Accessibility grant, AX/hotkey legs and Space mutation probes pending
+  ([record](changes/macos-phase-0.md)). Readiness research
   done (`f095042`): setup/TCC/signing runbook, sourced prior-art survey and
   tentative plan, which recommended public AX/AppKit. User direction
   (2026-10-03) supersedes that default: lower-level, lower-jank yabai-style
@@ -4036,8 +4042,8 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   owns containment and any host-setting/thread/registry/policy alternative;
   none of those mechanisms is selected or authorized by the ratification.
   [record](changes/windows-gaming-coexistence.md)
-- macOS Phase 0: after KDE 0.1 ships, decide host/floor, Intel support, stable
-  signer and Meta mapping when macOS starts. [plan](research/macos-port/plan.md)
+- macOS Phase 0 (started 2026-10-14): decide host/floor, Intel support, stable
+  signer and Meta mapping. [plan](research/macos-port/plan.md)
 - Windows package/update channel: deferred to Windows release planning;
   short research refresh then user decision, most obvious and unsurprising
   for users. Blocks release packaging, not parity. [plan](research/windows-port/plan.md)

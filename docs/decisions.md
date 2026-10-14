@@ -40,11 +40,12 @@ platform API behavior.
 - Elevated (administrator) windows stay unmanaged by default: they float at
   their native position while other windows keep tiling. A future opt-in
   where the user runs the tiler elevated may be considered; not a default now.
-- macOS decisions (version floor, App Store, shortcut consent, updates, UI
-  language) are deferred until macOS spiking starts.
-- macOS starts after KDE 0.1 ships (user 2026-10-10). Phase 0 host/floor,
-  Intel, signer and Meta inputs are decided then; core extraction (K2/K3)
-  and the shared restart store remain tied to that start. Phase 0 carries
+- macOS App Store, distribution, updates, and native-settings takeover choices
+  remain open; the Phase 0 decisions below settle the initial architecture.
+- macOS starts now (user 2026-10-14), superseding the 2026-10-10 sequencing
+  after KDE 0.1 ships. K2/K3 core extraction and the shared restart store are now due for
+  consumer-driven review, not automatic extraction. See the
+  [kickoff evidence](changes/archive/macos-port-kickoff.md). Phase 0 carries
   capability-first spikes and one registration plus one interception hotkey
   path from the non-native research
   ([API layer/events](research/non-native-tiler-host-interaction.md#d1-api-layer-authority-events-and-reconcile),
@@ -56,6 +57,49 @@ platform API behavior.
   route (AeroSpace-style) may be evaluated later. Default to tier 2, public
   plus private APIs with SIP left enabled; no Dock injection or reduced SIP.
   Re-evaluate deeper tiers only if tier 2 cannot solve a problem well.
+- macOS Phase 0 decisions (2026-10-14):
+  - **All Rust**, including UI. Prefer trusted, battle-hardened dependencies
+    (`objc2`, core-foundation family) before custom unsafe bindings. Any
+    unavoidable unsafe stays in one dedicated, minimal FFI module per crate;
+    forbid unsafe everywhere else under the existing guardrail below.
+  - **Threading from day one:** main thread AppKit/UI only; dedicated input
+    thread with minimal event-tap callbacks; one Accessibility thread per
+    application; one engine thread owning core state; channels between them.
+    A hung application's AX calls must not stall other apps. AX messaging
+    timeouts and tap-disabled-by-timeout recovery are design inputs, not
+    later optimizations.
+  - **Native macOS Spaces first**, with yabai the primary reference and a
+    strong general reference. An AeroSpace-style virtual/parking mode may
+    later become a user setting alongside native Spaces; it is not initial
+    implementation scope.
+  - **Ctrl is default Meta**, and macOS Meta must be user-configurable.
+    Retain the per-binding conflict list and Compatible/Authentic presets;
+    Mission Control's Ctrl+arrow and Ctrl+digit bindings are expected conflicts.
+  - **Apple Silicon only; macOS 15 minimum.** The floor uses the oldest
+    version clearing approximately 90% in the usable current public sample:
+    [Homebrew 30-day OS events](https://formulae.brew.sh/analytics/os-version/30d/),
+    fetched 2026-10-14, period starting 2026-09-14: 12,461,979 events on
+    macOS 15 or newer / 13,361,038 macOS events = **93.27%**; newer-only
+    coverage is 71.72%. This is an opt-in developer/event-weighted proxy,
+    not a measured share of all active Mac users (nor an arm64-only panel).
+    [StatCounter](https://gs.statcounter.com/os-version-market-share/macos/desktop/worldwide)
+    explicitly warns that modern releases are misreported as Catalina, so
+    its September 2026 version shares cannot resolve this choice. No material
+    API-risk evidence currently requires a newer floor: AX/Carbon/tap APIs
+    predate it and yabai's private-Space workarounds cover 15. Private APIs
+    still need per-release testing; a newer development OS does not validate
+    the floor. Revisit the estimate with better population data.
+  - **Persistent self-signed development identity initially**, with stable
+    bundle ID/path/designated requirement. No paid Apple Developer membership
+    initially; release signing/notarization remains a separate decision.
+  - **Owned probe helpers use simple child ownership:** retain the exact
+    spawned Child, verify its PID, per-run pipe nonce, executable and fresh
+    CG owner-PID/window association. No LaunchServices launch-date token or
+    alternative process-start machinery. Separate commands additionally
+    require a current nonce-title match; unreadable titles fail closed.
+  - Live procedures are governed by the
+    [macOS live-testing guide](live-macos-testing.md); capability and recovery
+    evidence is tracked in [Phase 0](changes/macos-phase-0.md).
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring

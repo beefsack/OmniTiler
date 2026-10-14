@@ -17,6 +17,15 @@
   writes), read and follow [docs/live-windows-testing.md](docs/live-windows-testing.md).
   It does not grant mutation authorization.
 
+## Live macOS Testing
+
+- Before any live macOS testing (AX control, event taps or hotkey
+  interception, moving/hiding/restyling other windows, desktop overlays,
+  native-Space moves or focus changes, TCC consent and reset flows, or
+  forced-crash recovery probes), read and follow
+  [docs/live-macos-testing.md](docs/live-macos-testing.md).
+  It does not grant mutation authorization.
+
 ## Local-System Information
 
 - Never commit local paths or information about local machines (paths, host names, hardware/resource details); describe test conditions generically.
