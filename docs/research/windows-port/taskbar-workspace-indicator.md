@@ -365,6 +365,88 @@ whether to ABM_REMOVE vs hide-keep-reservation is validation TBD.
   nudge while the main controller was alive; post-controller-exit recovery was
   not proven. These are bounded observations, not production recovery acceptance.
 
+### Live spike 2
+
+**Visible layered-child rendering was demonstrated; repeatability is now
+blocked.** Follow-up conditions: physical Windows 11 build 26300.9711,
+one scaled-DPI primary output, ordinary integrity, no secondary taskbar.
+
+#### Working technique
+
+- `Shell_TrayWnd` had extended style `0x88`, without
+  `WS_EX_NOREDIRECTIONBITMAP`. Its full-width
+  `Windows.UI.Composition.DesktopWindowContentBridge` had `0x200000`, with
+  that flag. Explicit native `HWND_TOP` ordering alone did not expose plain
+  GDI cells, even with the child ahead of the bridge in native sibling order.
+- Create a captionless owned window with `WS_EX_LAYERED | WS_EX_TOOLWINDOW |
+  WS_EX_NOACTIVATE`; `SetParent` into the taskbar; replace `WS_POPUP` with
+  `WS_CHILD | WS_VISIBLE`. Map the tray-adjacent screen origin to parent client
+  coordinates; use `SetWindowPos(... HWND_TOP ...)` with
+  `SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED`. Paint only on changes
+  through ordinary GDI `WM_PAINT`/`BeginPaint`/`EndPaint`.
+- Both `SetLayeredWindowAttributes(..., 255, LWA_ALPHA)` and magenta
+  `LWA_COLORKEY` produced visible cells. The opaque-alpha path is the simplest
+  candidate for fully painted pager cells. The latter mirrors TrafficMonitor's
+  `TaskBarDlg.cpp` `ApplyWindowTransparentColor` GDI path; its DirectComposition
+  branch is separate. TrafficMonitor sources were inspected without pinning
+  an upstream revision; this is not a TrafficMonitor runtime compatibility test.
+- Layered children require the Windows 8+ compatibility manifest. The prototype
+  embedded `app.manifest` through MSVC `/MANIFEST:EMBED` + `/MANIFESTINPUT`,
+  declaring Win8/8.1/Win10 `supportedOS`, `asInvoker`, and PMv2 `dpiAwareness`.
+  The working probe's embedded `RT_MANIFEST` was extracted and its launch
+  succeeded. The repository currently has no custom `.manifest`/`build.rs`
+  or manifest-embedding dependency in `tiler-windows`; product adoption needs
+  an explicit compatibility-manifest build change.
+- Evidence capture must include layered windows: `SRCCOPY | CAPTUREBLT`.
+  Corrected captures showed 4,060 red, 4,060 green and 4,060 blue pixels plus
+  780 border pixels in the 216x60 diagnostic child, matching the floating
+  positive control. Initial layered negatives omitted this capture flag;
+  mixed layered APIs and prematurely released swap-chain resources also
+  invalidated exploratory negatives. No actual DirectComposition target was
+  tested, and none was needed for the successful layered-GDI run.
+
+#### Behavior and cost evidence
+
+| Check | Result / limit |
+| --- | --- |
+| App icons / visuals | One real Character Map icon obtained through bounded `WM_GETICON` (big-icon fallback), borrowed without destruction, and drawn centered with `DrawIconEx`; composed pixels changed. A second distinct icon and icons inside miniature window rectangles remain unproven. Packaged Notepad/Paint launch delegation complicated ownership; Calculator/ApplicationFrameHost icon resolution remains a separate gap, not solved by taking the host's icon. |
+| Cell mouse input / DPI | Three absolute virtual-desktop `SendInput` clicks delivered nine injected events and three `WM_LBUTTONDOWN` messages; local selection changed and its tint composed. Not a product workspace-switch test. Parent/child DPI matched and `AreDpiAwarenessContextsEqual(PMv2)` passed at the existing scale. Fixed-size diagnostic geometry does not prove dynamic or mixed-DPI correctness. |
+| Fullscreen | With the working visible child retained, a foreground borderless owned helper occluded all pager pixels and won all three hit tests. The child reappeared after helper restoration without a floating fallback or explicit pager hide. `WS_VISIBLE` stayed true, so that flag is not a fullscreen safety signal. Exclusive fullscreen, games and auto-hide remain untested. |
+| Shell interaction | A Start-area mouse click was injected, but the open check matched a generic visible CoreWindow rather than an identity-bound Start host. Reliable Start-click acceptance and an owned app's taskbar-button click remain open; the app-button test was deferred when its bounds were not resolved. |
+| Sustained redraw / cost | A 32-second Character Map churn run reported no disappearance in 33 sparse samples, with eight paints. Prototype CPU: 15ms over 10s idle (about 0.15% of one core), 94ms over 32.8s active (about 0.29%). Average paint 1.55ms, maximum 2.80ms. Paint invalidation was change-driven, but the harness woke its message pump every 10ms. Idle paint count was not retained; these are rough prototype costs, not zero-idle or continuous no-flicker proof. GPU/DWM costs were not measured. |
+
+#### Repeatability blocker, cleanup and recommendation
+
+- Later validation stopped at `SetParent` with projection HRESULT
+  `0x80070057` (`E_INVALIDARG`). Native last-error reset/readback was missing,
+  so this does not establish an Explorer-side error or its cause. A rerun of
+  the hash-identical working probe also failed its child factory/verification;
+  even its floating positive-control capture lacked the expected colors.
+  Successful rendering remains valid for the earlier run, not repeatably proven.
+- Native child enumeration also returned only three descendants despite all
+  nine baseline handles being individually alive with unchanged parents,
+  classes, rectangles and Explorer identity. Its cause is unknown; a factory
+  that relies solely on that enumeration can falsely reject parenting.
+- Final read-only checks found no prototype/app residue; baseline taskbar
+  handles and Explorer/Terminal process identities were preserved. No shell
+  repair was performed. Full visual/input restoration remains a physical check.
+- Earlier separate-controller nudge/recover restored the helper geometry but
+  checked only class/window existence. Strong identity-bound recovery and
+  post-controller-exit acceptance were not established; the strengthened final
+  code never reached those phases. Earlier behavior records and later failed
+  binaries must not be treated as one verified artifact.
+- **Do not begin product implementation until parenting and the pixel positive
+  control are repeatable.** Once re-proven, prefer the manifested opaque layered
+  GDI child at the tray-adjacent anchor, with no topmost floating fallback.
+  Close two-icon, shell-click and exact-recovery gaps before broader use.
+- Rough implementation estimate: **800-1,400 handwritten Windows-specific LOC**
+  in a new native pager module, not `tiling_sys.rs`: host/paint/DPI, icon
+  fetch/cache, input-to-existing-workspace requests, fullscreen guard and
+  identity/lifecycle handling. Tests and any shared-core additions are separate.
+  Keep unsafe API effects contained; no DirectComposition dependency is justified
+  by the successful run. Secondary taskbars, crowded layouts, display/Explorer
+  lifecycle, alignment/auto-hide, changing DPI and real-game safety remain open.
+
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4
 [ideskband2]: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl/nn-shobjidl-ideskband2

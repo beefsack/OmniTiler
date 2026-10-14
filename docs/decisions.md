@@ -514,8 +514,9 @@ platform API behavior.
     the existing tray icon stays for settings/toggles. AppBar rejected because
     reservation interacts with maximized windows; injection rejected.
     Taskbar-child embedding remains an unselected feasibility candidate:
-    [live spike](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14)
-    found successful parenting/hit-testing but no visible child composition.
+    [live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14)
+    progressed from invisible plain GDI to visible manifested layered GDI,
+    but repeatability and remaining interaction/recovery checks are unresolved.
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,

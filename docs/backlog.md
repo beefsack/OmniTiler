@@ -767,12 +767,15 @@ decisions of 2026-09-24 are under
     border and its app icon centred, the active workspace in an active
     colour. Pager is visualization plus click-to-switch; existing tray icon
     stays for settings/toggles. AppBar rejected (maximized-window interaction);
-    injection rejected. [Live spike 2026-10-14](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
-    tray-adjacent anchor moved less than the measured legacy app-list edge, but
-    the parented/hit-testable child did not visibly compose. Floating topmost
-    comparison painted over fullscreen. Embedded hosting remains BLOCKED on
-    visible composition; no product host selected. Secondary taskbar, real
-    app-content bounds, auto-hide/alignment, DPI changes and game safety unproven.
+    injection rejected. [Live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
+    tray-adjacent moved less than the measured legacy app-list edge. [Live spike 2](research/windows-port/taskbar-workspace-indicator.md#live-spike-2)
+    demonstrated manifested layered-GDI child pixels, injected cell clicks,
+    one real app icon and borderless-helper occlusion; later parenting/pixel
+    checks did not reproduce the result. BLOCKED on repeatability; no product
+    host selected. Two-icon, Start/app-button clicks and exact recovery remain
+    open, alongside secondary taskbars, real app-content bounds, auto-hide,
+    alignment, DPI changes and game safety. New native module estimate 800-1,400
+    Windows-specific LOC (tests/shared core separate), not `tiling_sys.rs`.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product
