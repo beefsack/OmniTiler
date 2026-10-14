@@ -3265,8 +3265,12 @@ decisions of 2026-09-24 are under
   done ([kickoff](changes/archive/macos-port-kickoff.md)); Phase 0 decisions
   recorded 2026-10-14 ([decisions](decisions.md)); probe crate, live-testing
   protocol, helper lifecycle and read-only Space membership delivered; signed
-  bundle, Accessibility grant, AX/hotkey legs and Space mutation probes pending
-  ([record](changes/macos-phase-0.md)). Readiness research
+  bundle with stable designated requirement and Accessibility grant (via
+  LaunchServices launch) verified; owned-window AX legs live-proven (identity
+  join, observers, frame set/restore, focus/raise, stalled-app timeout);
+  Carbon registration and idle tap lifecycle work. Pending: focus-agreement
+  fixture, Ctrl-chord delivery/suppression/tap recovery, native Space
+  move/switch/create probes ([record](changes/macos-phase-0.md)). Readiness research
   done (`f095042`): setup/TCC/signing runbook, sourced prior-art survey and
   tentative plan, which recommended public AX/AppKit. User direction
   (2026-10-03) supersedes that default: lower-level, lower-jank yabai-style
