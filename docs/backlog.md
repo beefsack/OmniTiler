@@ -646,9 +646,11 @@ decisions of 2026-09-24 are under
   ordinary-float transfer remain outside this foundation. Pending: user
   physical two-output journey ([exact steps](changes/windows-multi-output-foundation.md#remaining-physical-check))
   and Linux/KWin gates; record stays active;
-  (10) taskbar workspace indicator is combined with hidden-workspace Alt+Tab/
-  taskbar semantics in Windows workspace-presentation research after
-  multi-output, as a Windows release gate
+  (10) taskbar workspace indicator research pulled forward as a Windows
+  dogfooding blocker (user 2026-10-14); recommendation pending user choice
+  ([indicator options](research/windows-port/taskbar-workspace-indicator.md)).
+  Hidden-workspace Alt+Tab/taskbar semantics remain in workspace-presentation
+  research as a Windows release gate
   ([note](research/windows-port/alt-tab-hidden-workspaces.md));
   (11) settings core slice delivered (`df4edc5`, `1c97c52`, `999f2f3`,
   `81986ab`; CI green; `just settings`;
@@ -744,14 +746,16 @@ decisions of 2026-09-24 are under
   [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
   [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [evidence](changes/archive/non-native-tiler-host-interaction.md).
-  - D27 Windows urgency presentation input (2026-10-14): native shell flash heard
-    for hidden owned helpers, but visible urgency was not established and no
-    product marker exists. [Evidence/options](changes/archive/windows-d27-activation-verification.md):
-    native taskbar-only, workspace urgency or tray-only indicator. Recommendation
-    is workspace-level urgency within this presentation research;
-    tentative, pending user review. Appearance, mark/clear semantics and permitted
-    request-versus-selection handling remain unselected; approved Mark urgent
-    only/fullscreen-game guard unchanged.
+  - Taskbar indicator slice pulled forward as a high-priority Windows dogfooding
+    blocker (user 2026-10-14). [Indicator options and recommendation](research/windows-port/taskbar-workspace-indicator.md):
+    single numbered tray icon plus per-output popup recommended;
+    recommendation pending user choice.
+  - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
+    in the indicator, cleared on visit. Native shell flash was heard for hidden
+    owned helpers, but visible urgency was not established and no product
+    observer/marker exists. [Evidence](changes/archive/windows-d27-activation-verification.md).
+    Appearance and permitted request-versus-selection handling remain
+    unselected; approved Mark urgent only/fullscreen-game guard unchanged.
 - P1 | KDE follow-ups from the Windows port | Audit 2026-10-05
   ([note](research/cross-platform-core/post-windows-audit.md)); user order
   B1/B2, B3-B5, B7, B8. B1/B2 stale maximize/sticky attempted-state
