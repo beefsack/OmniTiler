@@ -1267,14 +1267,19 @@ platform API behavior.
   lost, as the user accepted 2026-09-26. Partial Revert failure retains the
   list for a later resume. Shortcut operations emit bounded structured
   diagnostics (see Observability above); logging never affects behavior.
-- Shortcut Apply reliability (tentative 2026-10-14, pending user review): bound
+- Shortcut Apply reliability (approved by user 2026-10-14): bound
   writes per explicit Apply/Force/Revert operation rather than the Settings
-  window lifetime; serialize expensive shortcut work off the UI thread with
-  guarded controls and epoch-bound reload staging. The previous OmniTiler
-  identity `kwin/plasma-auto-tiler-*` remains a confirmed Force conflict and
-  is labeled accordingly; Revert leaves those project-owned actions cleared.
-  Describe an already-relocated Lock Session as unchanged, including preserved
-  alternate keys; retain the approved System Monitor exception. [Delivery and
+  window lifetime. Additional serialization/throttling is unnecessary: writes
+  are already serial and fast. Run shortcut discovery/mutation on the serialized
+  background worker with working status, disabled shortcut controls and
+  epoch-bound reload staging. In-flight work can delay Settings close if D-Bus
+  hangs; do not add per-call deadlines now, revisit only if a hang is observed.
+  Remove previous-identity handling for `kwin/plasma-auto-tiler-*`: ordinary
+  foreign holders, no special label or project-owned Revert skip. This is
+  pre-release development residue; no pre-release migrations, per Simplicity.
+  Omit Lock Session's exempt line when actual keys equal post keys; show it only
+  when Apply moves the binding, including preserved alternate keys and the
+  approved System Monitor exception. [Delivery and
   live evidence](changes/archive/kde-shortcut-apply-failure.md).
 - Required-chord corrections (user 2026-09-28; all through reversible
   Apply/Force/Revert, never
@@ -1363,6 +1368,10 @@ platform API behavior.
   wire fixtures; native observation/activation acceptance remains user-owned.
   [Evidence](changes/archive/triage-batch1-kde-shared.md).
 - R-OUT-05: opening with two occupied outputs routes to the focused output and focuses the newcomer, not by pointer (User 2026-10-10, 0.1 triage D06).
+  User 2026-10-14 approves KDE adapter routing for 0.1. Move output selection
+  into Rust core/Planner in post-0.1 Push code down, alongside born-maximized;
+  the current Planner receives an already selected native domain. Native
+  timing/safety checks remain adapter responsibilities. [Delivery](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14).
 - R-CLOSE-02: a reopened client is fresh admission at current focus, never old-slot restoration (User 2026-10-10, 0.1 triage D07).
 - Shared:
   - User statement 2026-10-03: default split placement is long-edge based: a
@@ -2033,6 +2042,9 @@ platform API behavior.
 
 ## Live KWin/Plasma Boundary
 
+- User 2026-10-14: desktop ID/order/count changes and default tiling groups
+  produced by OmniTiler's normal lifecycle are observations, not restoration
+  failures. [Test procedure](changes/kde-dual-output-live.md#approved-test-procedure-2026-10-14).
 - Reversible, project-scoped live host tests may run under the reviewed
   repository protocol. They must be namespaced, fail closed, and provide exact
   restoration; if exact restoration cannot be verified, stop and leave the
@@ -2104,6 +2116,9 @@ platform API behavior.
   those logs first.
 - Carry trace/correlation IDs across components and services; distinguish
   dispatch vs acceptance vs completion vs uncertainty.
+- User 2026-10-14: output-send diagnostics carry the originating operation's
+  route, including late replies after a newer opposite-kind flight starts.
+  [Evidence](changes/kde-dual-output-live.md#product-defect-and-offline-fix).
 - Normal operation shows bounded summaries; opt-in trace covers high-volume
   detail with no frame/poll noise.
 - Redact captions, application content, secrets, raw environment, native
@@ -2787,6 +2802,13 @@ platform API behavior.
   `workspace.sendClientToScreen(window, output)` and exact desktop assignment,
   with native write order output, then desktop membership, then source/target geometry (B6 effective origin+minimum targets for overconstrained members). KWin keeps a short flight-local source/target pin with separate unanswered-request and arrival deadlines, stale-reply discard before any setter, prompt follow once on fresh exact mover-on-target proof, forced complete both-domain reconcile even on equal applied evidence with unreadable quarantine, and no `blocksPlan`. Timeout, stale scope, wrong output,
   failed write, identity loss, or partial proof converge on the next complete observations without replay, phantom, or verified-success claim.
+- User 2026-10-14 approves R4 own-mover observation tolerance only after native
+  transfer setters: allow exactly the flight set minus its mover with retained
+  native identity and in-scope output/single-desktop proof. Pre-transfer,
+  domain and non-mover refusal guards remain; arrival/follow still need fresh
+  exact target placement. Tier 1 COSMIC, Hyprland, i3 and sway all cross to the
+  adjacent output with the mover followed/focused; this delivers that cleanly
+  rather than through recovery. [Evidence](changes/kde-dual-output-live.md#rightward-r4-defect-correction-and-re-verification).
 - The portable world Engine owns independent per-domain Sessions, outer gaps,
   seeding, and relocation behind
   typed events and replies. Do not merge per-domain revisions, fingerprints,

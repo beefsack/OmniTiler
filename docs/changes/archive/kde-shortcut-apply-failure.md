@@ -25,18 +25,22 @@
 
 ## Decisions
 
-- Tentative, pending user review: use operation-scoped bounded writes so repeated
+- Approved by user 2026-10-14: use operation-scoped bounded writes so repeated
   legitimate Apply/Force/Revert actions do not exhaust the Settings lifetime.
-- Tentative, pending user review: describe Lock Session as unchanged when its
-  actual and intended keys match. Retain the approved System Monitor exception.
-- Tentative, pending user review: recognize the previous OmniTiler identity
-  `kwin/plasma-auto-tiler-*` for Revert's project-owned skip and label it in
-  conflict rows. The project rename in `b639878` establishes provenance. These
-  holders still conflict until explicit confirmed Force clears the required
-  keys; neither a persisted record nor its identity proves a live callback.
-- Tentative, pending user review: run shortcut discovery/mutation on a serialized
+  Additional serialization/throttling was considered and rejected as unnecessary:
+  writes are already serial and fast.
+- Approved by user 2026-10-14: omit the Lock Session exempt line entirely when
+  actual and post keys match; show it only when Apply moves the binding. Retain
+  preserved-alternate wording and the approved System Monitor exception for moves.
+- Approved by user 2026-10-14: remove previous-identity handling for
+  `kwin/plasma-auto-tiler-*`; these are ordinary foreign holders. They were
+  pre-release development residue, not a migration requirement. No pre-release
+  migrations; prefer Simplicity.
+- Approved by user 2026-10-14: run shortcut discovery/mutation on a serialized
   background thread with visible working status and disabled shortcut controls.
   Modal Force holds the same guard; reload evidence is bound to the draft epoch.
+  An in-flight D-Bus hang can delay Settings close. Per-call deadlines are not
+  adopted now; revisit only if a hang is observed.
 
 ## Root causes and fixes
 
@@ -52,20 +56,20 @@
   now covers discovery, presets, Apply, Force and Revert. Fresh full Force
   revalidation and immediate per-holder checks remain intact; no stale snapshot
   is substituted for current evidence.
-- Historical IDs were correctly listed as holders, but the rename lost their
-  project-owned Revert classification. They now carry the previous-identity
-  label and remain cleared on Revert, including when defaults are nonempty.
+- The initial delivery added previous-identity labels and a project-owned
+  Revert skip. User review rejected that special handling; both are removed.
+  Old-name records now follow ordinary foreign-holder reporting and Revert.
 - The lock text always said "will move", even when actual and intended keys
   matched. `Screensaver` is a real alternate key in Lock Session's key set,
-  not another action. The dialog now describes unchanged bindings or preserved
-  alternatives accurately and describes System Monitor as retained/displaced
+  not another action. The dialog now omits unchanged bindings, describes preserved
+  alternatives for actual moves, and describes System Monitor as retained/displaced
   without claiming a physical delivery observation.
 
 ## Verification and outcome (2026-10-14)
 
 - Settings-only Qt/KF production and tests build with `-Wall -Wextra -Werror`;
   native CTest 26/26 pass. Full-catalog tests cover 94-write Apply, 137-write
-  Force, repeated operations, historical-ID clear/Revert and multi-key lock text.
+  Force, repeated operations, foreign-holder clear/Revert and multi-key lock text.
 - Async regressions cover event-loop responsiveness during delayed reads/writes,
   store-thread affinity, concurrent-request rejection, teardown, modal refresh
   followed by Force, and two loads with intervening live binding drift.
@@ -97,6 +101,11 @@
   were preserved and KWin owner identity remained stable.
 - Both rebuilt settings KCMs are staged for reopening; the effect binary is
   byte-identical to its pre-test image.
+- Approved-review followup: deleted previous-identity helpers, matches, labels
+  and their tests; unchanged Lock Session line omission is covered by the dialog
+  regression. Fresh settings-only build with warnings denied and CTest 26/26 pass.
+  Followup staging and live reopen remain pending because the staging recipe also
+  replaces the effect payload and loaded-library identity was not verified.
 
 ## Remaining scope and risks
 
@@ -105,6 +114,7 @@
   [shortcut verification](../../live-shortcut-override-verification.md) work.
 - Background operations still use the transport's existing D-Bus timeouts;
   closing the module waits for in-flight work to preserve store lifetime. An
-  unavailable daemon can therefore delay close. Overall deadlines/cancellation
-  are a separate followup, not proven by healthy-daemon latency measurements.
+  unavailable daemon can therefore delay close. User 2026-10-14 accepts this;
+  per-call deadlines are deferred unless a hang is observed. Healthy-daemon
+  latency measurements do not prove hung-daemon behavior.
 - Next action: resume the separate KDE dual-output acceptance item.

@@ -310,9 +310,13 @@ offline); workspace send still refuses cross-output (`S(S-ours-out)` pinned base
   after-focus at the strip end appends); newcomer C focused (`dont_focus`
   false default); the pointer on D2 plays no role in routing.
   `S(S-pan-spawn)` + `S(S-pan-fresh)`.
-- Then Ours KDE: admission anchor and newcomer desired focus are
-  sourced; output routing plus native activation TBD.
-  `S(S-ours-admit)` + `S(S-ours-out)`; queued.
+- Then Ours KDE: focused-output routing delivered offline, with exact-birth,
+  shown-target and eligibility fences plus synchronous known-managed focus
+  capture before debounce. Sampled opposite-pointer native admissions land on
+  the focused output and focus C in both directions; the inverse correction
+  has routed/native membership evidence. Remaining timing/game variants TBD
+  ([record](../../changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)).
+  `S(S-ours-admit)` + `S(S-ours-out)`.
 - Then Ours Windows: same Engine anchor leg as Ours KDE; output
   routing plus native activation TBD. `S(S-ours-admit)` +
   `S(S-ours-out)`; queued.

@@ -11,17 +11,23 @@ decisions of 2026-09-24 are under
 ## Open work
 
 - DELIVERED | KDE Settings shortcut Apply failure | Operation-scoped bounds,
-  responsive KCM execution and historical-identity/Lock reporting fixed;
+  responsive KCM execution and Lock reporting fixed; user 2026-10-14 removes
+  pre-release previous-identity handling and omits unchanged Lock exempt lines;
   live 43-holder Force (136 writes) and full Apply (93 writes) passed in about
   250/187 ms, configuration restored. [Record](changes/archive/kde-shortcut-apply-failure.md).
 - P0 | KDE dual-output live testing and fixes | Comprehensive native
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),
   [checks](#multi-output-setup)); fix defects found and record outcomes.
-  [Partial native pass](changes/kde-dual-output-live.md): callback focus and
-  explicit output sends passed sampled subcases; further live work blocked by
-  pre-existing desktop identity restoration after selected startup cleanup.
-  No full inventory gate completed.
+  [Partial native pass](changes/kde-dual-output-live.md): D06 focused-output
+  routing corrected and opposite-pointer admission reverified both ways;
+  output follow/stay, workspace source-empty/spare lifecycle and native
+  fullscreen/maximize restore have sampled evidence. Output-send diagnostics
+  and R4 own-mover tolerance reverified live; latest KWin suite passes 1535
+  tests. Unified input/callback wrapper and post-query polling repair pass
+  offline review. Software disable/return, priority and vertical send subcases
+  pass. Protected placement restored and development stopped. Remaining
+  inventory legs are pending; no full inventory gate completed.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
@@ -141,6 +147,10 @@ decisions of 2026-09-24 are under
   before dispatch and the planner protocol lacks the decision. Runtime
   protocol changes and build-time generation were declined
   ([record](changes/archive/born-maximized-shared-policy.md)).
+  User 2026-10-14 also defers D06 focused-output newcomer selection from the
+  KDE adapter into Rust core/Planner to this post-0.1 pass, alongside
+  born-maximized; adapter routing remains selected for 0.1
+  ([record](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)).
   Link with KDE interaction performance/threading and
   [Live sibling reflow while dragging](#open-work).
 - P2 | KDE interaction performance and threading | New post-0.1 research,
@@ -3539,9 +3549,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   - D05 / R-INS-05 (offline-proven, native live pending): focus an ordinary float
     after B was the tiled focus; open a newcomer. Anchor at tiling neighbor B
     using its long edge, not root-wrap; verify real native newcomer activation.
-  - D06 / R-OUT-05 (two outputs, observe-first): occupy both, focus one with
-    pointer on the other; open a newcomer. Focused-output arrival and newcomer
-    activation required; record native mapping before designing any reroute.
+  - D06 / R-OUT-05 (two outputs): occupy both, focus one with pointer on the
+    other; open a newcomer. Focused-output arrival and newcomer activation
+    required. Adapter routing corrected after native inverse failure;
+    opposite-pointer admissions pass both ways. Remaining birth/activation
+    timing and real-game variants stay pending in the
+    [partial native pass](changes/kde-dual-output-live.md).
   - D07 / R-CLOSE-02: close, refocus a different tile, fresh-reopen; new admission
     at current focus, no old-slot restoration. Exact ratio/order/focus evidence TBD.
   - D08 / R-CLOSE-03: close the sole shown-workspace window; same workspace stays
@@ -3953,12 +3966,17 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 ### Multi-output setup
 
 - [Checklist and partial native results](changes/kde-dual-output-live.md):
-  two Wayland-native newcomers on the first focused output, local/cross-output
-  left/right callback focus, explicit rightward sends to empty/occupied targets
-  and destination work-area/gap geometry passed. Physical shortcut delivery,
-  second-output newcomer admission and the remaining rows below are still
-  pending. Desktop identity restoration after startup cleanup blocks further
-  live cases; output topology and shortcuts are unchanged, development stopped.
+  newcomers on both outputs and first-output opposite-pointer admission;
+  corrected sole-source R4 left/right native-written/followed/arrived;
+  explicit output follow and callback stay; first-output workspace follow/
+  stay/source-empty/spare lifecycle; native maximize/fullscreen hold/restore
+  on both scales. Unified action gate and post-query polling repair pass
+  offline review; exact-tree diagnostics and safe drag geometry remain fixture gaps.
+  Recovered software disable/return and priority subcases plus vertical setup/
+  restore pass. Protected placements, outputs and packaged enablement restored;
+  prior shortcut backup matches baseline, development stopped.
+  Product desktop cleanup remains an observation. Full inventory gates and
+  all unexercised subcases remain pending in the checklist.
 
 - KDE Q4 R-WS-12/R-WS-21..26 (offline delivered, user decisions 2026-10-08): rebind
   the four empty-default migration actions; local/global-unique with native
@@ -3991,10 +4009,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   verify source selection/MRU focus and ordinary remembered-leaf admission.
   Check membership-only floating boundaries with only tiled-side reflow.
   [Record](changes/archive/four-direction-output-transfer.md),
-  [live guide](live-kwin-testing.md). [Partial native pass](changes/kde-dual-output-live.md):
-  explicit output-right to empty/occupied targets passed via callbacks;
-  exhausted directional crossing, leftward/stay/floating and vertical cases
-  remain pending. Physical shortcut delivery remains unverified.
+   [live guide](live-kwin-testing.md). [Partial native pass](changes/kde-dual-output-live.md):
+   output-left/right follow and stay (invokeShortcut) have arrival/focus evidence;
+   diagnostic routes reverified live. Sole-source R4 arrived/followed both ways
+   after the own-mover observation-gap fix. Exact D13 local-wrap, occupied R4
+   repeat, floating-workspace/fixed boundaries, vertical cases and physical
+   stay bindings remain pending.
 - Core extraction K1 visual policy: confirmed by the user
   (2026-09-30: active border, fullscreen/maximise suppression, group
   underlay, drag preview). Remaining: border, underlay and preview remap
@@ -4019,6 +4039,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   [failures](changes/archive/multi-output-failures.md)
   [snapshot](changes/archive/multi-output-directional-snapshot.md)
   [convergence](changes/archive/observation-convergence.md)
+- Native dual-output mode subcases: maximize/fullscreen enter, five-second
+  fullscreen hold and tile-frame restoration passed using native setters and
+  independent `maximizeMode`/`fullScreen` readbacks on both scales.
+  Overlay-held carry, reserved-slot proof and born-state/game legs remain
+  pending. Early JavaScript-expando/synchronous probes are excluded.
+  [record](changes/kde-dual-output-live.md)
 - Cross-output drops at the pointer: occupied and empty destinations (incl.
   native-output lag), source membership removal, preview/drop agreement at
   group edges, center snap-back with hidden preview, wrong-output and refusal
@@ -4032,15 +4058,25 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   ping-pong, unreadable outputs imply no departure, stale replies ignored,
   immediate/delayed send/R4 follow and forced refresh.
   [record](changes/archive/robust-difference-reconciliation.md)
+  Sampled output sends and corrected sole-source R4 settle/follow both ways;
+  dedicated quiet/delayed/rapid/stale-replay cases remain pending.
+  [native results](changes/kde-dual-output-live.md)
 - Process-loss and sleep recovery cases on a multi-output setup.
   [live plan](changes/archive/recovery-process-sleep-audit.md#live-test-plan)
 - Output hotplug displacement/return: disconnect preserves layouts per
   surviving monitor; reconnect returns workspaces with current contents;
   explicit moves stay at their destination.
+  Sampled software disable/return preserves client/backing identity and restores
+  its output/frame; priority exchange and exact topology restore pass. Inverse
+  disable, changed contents/explicit moves and physical unplug remain pending.
+  [Native results](changes/kde-dual-output-live.md)
   [investigation](changes/reliability-condition-investigation.md)
 - Multi-output workspace anti-oscillation: trailing-empty behavior on a
-  multi-output setup.
+  multi-output setup. First-output fill/append and emptied-source retirement
+  observed with independent second-output view; dedicated close/empty/switch,
+  stable-spare repetitions and inverse-output cases remain pending.
   [runbook](live-oscillation-verification.md)
+  [native results](changes/kde-dual-output-live.md)
 - Native dev lifecycle removal/dogfood coexistence: removal and
   dogfood-coexistence refusal unverified (startup/discovery already
   accepted).
