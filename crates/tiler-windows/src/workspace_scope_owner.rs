@@ -16,8 +16,9 @@
 //! into the retained [`tiler_core::workspace_scope::ScopeHistory`]; shared
 //! resolves over one logical ring/history ([`WorkspaceScopeOwner::shared_ring`]
 //! plus [`ScopeHistory`] shared entries) across output-bound Engine domains.
-//! In particular `sync_monitor_outputs` (stage C seam) is untouched by this
-//! module: no hotplug/displacement/reconnect wiring lands here.
+//! In particular hotplug/displacement/reconnect wiring lives in
+//! `tiling_sys_scope_hotplug`, not here: this module only holds adopted mode,
+//! scoped selection/history, and the shared-order baseline.
 //!
 //! Native effects, sends and trailing lifecycle use this policy through the
 //! adjacent runtime scope modules. Stage C still owns disconnect/reconnect
@@ -44,8 +45,7 @@ pub const SCOPE_PENDING_LANE: &str = "workspace-scope-pending";
 /// global-unique (per-output entries) and shared (single entry); it stays
 /// empty for local mode, which keeps recording into `ManagedWorkspaces`.
 /// `shared_order` is the single logical shared ring, synced explicitly via
-/// `sync_shared_order` (stage C wires hotplug sync). `sync_monitor_outputs`
-/// stays untouched.
+/// `sync_shared_order` (hotplug keeps it stably synced).
 #[derive(Debug, Clone)]
 pub struct WorkspaceScopeOwner {
     adopted: WorkspaceMode,
@@ -108,7 +108,7 @@ impl WorkspaceScopeOwner {
     }
 
     /// Single logical shared ring across output-bound domains. Empty until
-    /// `sync_shared_order`; stage C wires hotplug sync.
+    /// `sync_shared_order`; hotplug keeps it stably synced.
     #[must_use]
     pub const fn shared_order(&self) -> &Vec<String> {
         &self.shared_order
@@ -469,8 +469,8 @@ impl WorkspaceScopeOwner {
     }
 
     /// Discard one output's scoped history (disconnect path). The caller
-    /// still discards the workspace history separately; shared history is
-    /// untouched here (stage C decides shared disconnect semantics).
+    /// still discards the workspace history separately; shared history
+    /// persists across disconnects (scope-wide, never output-bound).
     pub fn discard_scoped_output(&mut self, output: &str) {
         self.history.discard_output(output);
     }

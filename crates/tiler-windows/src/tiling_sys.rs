@@ -28384,7 +28384,14 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
 /// displaced layouts are never merged, hidden windows never lost, and on
 /// return the workspaces come back with then-current contents. Focus
 /// preserves the surviving view unless the removed monitor held focus.
+/// Mode-aware monitor topology sync (item 12 stage C): thin dispatcher into
+/// [`tiling_sys_scope_hotplug`]. Local keeps the legacy body below unchanged;
+/// global-unique adds scoped history/trailing and shared skips displacement.
 fn sync_monitor_outputs(state: &mut TileLoop, areas: &[MonitorArea]) {
+    tiling_sys_scope_hotplug::sync_monitor_outputs(state, areas);
+}
+
+fn sync_monitor_outputs_local(state: &mut TileLoop, areas: &[MonitorArea]) {
     let current: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
     // Returning displaced origins are recreated by `reconnect_output` without
     // baseline empties below: never `ensure_output` them here, or a duplicate
@@ -31535,7 +31542,8 @@ fn run_tile_loop(
     sync_monitor_outputs(&mut state, &areas);
     // Item 12 stage B: scoped startup priming on the fixed topology (mode
     // order/history baselines plus shared current convergence and the
-    // trailing floor). Runs once here; later hotplug stays owned by stage C.
+    // trailing floor). Runs once here; later hotplug syncs mode-aware
+    // through `tiling_sys_scope_hotplug`.
     tiling_sys_scope_trailing::prime_after_sync(&mut state);
     log_json_at(
         &log_path,
@@ -35611,6 +35619,9 @@ mod tiling_sys_scope_sends;
 #[path = "tiling_sys_scope_trailing.rs"]
 mod tiling_sys_scope_trailing;
 
+#[path = "tiling_sys_scope_hotplug.rs"]
+mod tiling_sys_scope_hotplug;
+
 #[cfg(test)]
 #[path = "tiling_sys_scope_tests.rs"]
 mod tiling_sys_scope_tests;
@@ -35618,6 +35629,10 @@ mod tiling_sys_scope_tests;
 #[cfg(test)]
 #[path = "tiling_sys_scope_send_tests.rs"]
 mod tiling_sys_scope_send_tests;
+
+#[cfg(test)]
+#[path = "tiling_sys_scope_hotplug_tests.rs"]
+mod tiling_sys_scope_hotplug_tests;
 
 #[cfg(test)]
 mod same_axis_move_tests {

@@ -511,7 +511,10 @@ verb inventory); selected intent and doc assertions are never evidence.
   [delivery record](../../changes/archive/windows-workspace-history-ring.md).
   Native exact-owner CLI toggle WS2 then WS3 agent-observed 2026-10-11
   at base `553c65b` plus [item-2 record](../../changes/archive/windows-workspace-send-follow-stay.md).
-  Physical chord result TBD; non-local/multi-output pending.
+  All-mode owner/scoped history and mode-aware hotplug delivered offline
+  2026-10-15; single-output CLI toggle repeated in all modes
+  ([final record](../../changes/archive/windows-workspace-scope-hotplug.md)).
+  Physical chord and native multi-output/hotplug results TBD.
 - Variant hook: provisional/TBD (history-toggle hook, to discuss).
 
 ### R-WS-09: select WS2; select WS1 (return focus and viewport)
@@ -732,7 +735,10 @@ verb inventory); selected intent and doc assertions are never evidence.
   Native CLI wrap/trailing/>9 in an 11-ID ring and native Settings outcomes
   agent-observed 2026-10-11, base `553c65b` plus
   [item-2 record](../../changes/archive/windows-workspace-send-follow-stay.md).
-  Physical chord/preset OS outcomes TBD; non-local/multi-output pending.
+  All-mode scoped ring and topology synchronization delivered offline
+  2026-10-15; single-output CLI wrap/trailing repeated in every mode
+  ([final record](../../changes/archive/windows-workspace-scope-hotplug.md)).
+  Physical chord/preset OS and native multi-output outcomes TBD.
 - Variant hook: provisional/TBD (relative-switch hook, to discuss).
 
 ### R-WS-12: move whole WS2 to R
@@ -979,14 +985,19 @@ path to the already-decided follow default. Shared core/KDE item 2 is
 implemented offline. Windows local items 1/2 delivered with native gates and
 scoped agent-observed CLI/Settings outcomes 2026-10-11, base `553c65b` plus
 [record](../../changes/archive/windows-workspace-send-follow-stay.md).
-Physical shortcut containment and non-local/multi-output runtime remain
-pending in the [handoff](../../backlog.md).
+Physical shortcut containment and native multi-output outcomes remain pending
+in the [handoff](../../backlog.md).
 Item 12 stage A adds opt-in shared-core policy evidence on 2026-10-15:
 28 tests cover local/global-unique/shared history and rings, stable-ID
 invalidation, assignment, swap and migration plans, plus pure disconnect/
 re-prime primitives ([tests](../../../crates/tiler-core/tests/workspace_scope.rs),
 [record](../../changes/archive/windows-workspace-scope-policy.md)). This is
-not Windows owner adoption or full hotplug-journey evidence.
+not Windows owner adoption or full hotplug-journey evidence. Stages B/C now
+deliver owner adoption and mode-aware topology integration offline, with 17
+simulated-topology regressions and 2,095 passed / 1 ignored locked native tests
+on 2026-10-15 ([final record](../../changes/archive/windows-workspace-scope-hotplug.md)).
+Single-output native CLI regression passes in all modes; physical multi-output
+outcomes stay TBD.
 
 ### R-WS-15: previous on L after a workspace change on R
 
@@ -1073,8 +1084,9 @@ not Windows owner adoption or full hotplug-journey evidence.
   (base `91db9d2` plus [record](../../changes/archive/windows-workspace-history-ring.md));
   local single-display runtime wired. Shared-core local/global-unique isolation
   and single shared history tested offline 2026-10-15 ([tests](../../../crates/tiler-core/tests/workspace_scope.rs)).
-  This two-output owner journey and non-local modes remain pending; native
-  outcome TBD (item 1.2).
+  All-mode owner selection/history and topology integration delivered offline
+  2026-10-15 ([record](../../changes/archive/windows-workspace-scope-hotplug.md));
+  this physical two-output journey remains TBD (item 1.2).
 - Variant hook: provisional/TBD (R-WS-08 history scope).
 
 ### R-WS-16: previous after the visited empty workspace is removed
@@ -1138,6 +1150,8 @@ not Windows owner adoption or full hotplug-journey evidence.
   recreation/reinterpretation. Portable lifecycle regression passed
   2026-10-10, base `91db9d2` plus
   [record](../../changes/archive/windows-workspace-history-ring.md).
+  All-mode scoped cleanup/invalidation and topology integration delivered
+  offline 2026-10-15 ([record](../../changes/archive/windows-workspace-scope-hotplug.md)).
   Exact given trailing-empty removal applicability/native result stays TBD.
 - Variant hook: provisional/TBD (R-WS-08 previous-ID validity).
 
@@ -1235,14 +1249,20 @@ not Windows owner adoption or full hotplug-journey evidence.
   second toggle; pure disconnect/reconnect invalidation tested offline
   2026-10-10, base `91db9d2` plus
   [record](../../changes/archive/windows-workspace-history-ring.md).
-  Mode-aware hotplug integration remains pending; native journey TBD.
+  Mode-aware owner hotplug delivered offline 2026-10-15: simulated global
+  foreground-removal drives the production branch and verifies observation,
+  return-scope invalidation and conditional no-op; local body unchanged,
+  shared no-displacement discriminator separately covered
+  ([tests](../../../crates/tiler-windows/src/tiling_sys_scope_hotplug_tests.rs),
+  [record](../../changes/archive/windows-workspace-scope-hotplug.md)). Physical
+  native journey and unsupported outcomes stay TBD.
 - Variant hook: provisional/TBD (R-WS-08 hotplug history).
 
 #### Shared-mode hotplug discriminator (2026-10-15)
 
 | Variant | Minimal action sequence | Selected Ours target / evidence | Unsupported outcomes |
 | --- | --- | --- | --- |
-| One shared scope versus displaced per-output projects | On L/R in shared mode, visit occupied WS1 -> WS2 -> WS3; keep the active window on R; disconnect R; invoke previous twice on L; reconnect R; invoke previous twice again. Record stable workspace IDs, shared order, contents, current views and each observed change | Tentative per [decisions](../../decisions.md#workspaces): mirror KDE's shared hotplug branch, with no project displacement or return mapping; one shared history/ring records actual observed changes only. KDE `reconcileOutputDisplacement` skips displacement for shared mode; Windows implementation pending. Reconnect never consults/restores history | Exact Tier 1/2 shared-model applicability, native evacuation/focus/frames, observed switch sequence and first/second toggle targets TBD for user testing; do not infer them from the local/global-unique R-WS-17 fixture |
+| One shared scope versus displaced per-output projects | On L/R in shared mode, visit occupied WS1 -> WS2 -> WS3; keep the active window on R; disconnect R; invoke previous twice on L; reconnect R; invoke previous twice again. Record stable workspace IDs, shared order, contents, current views and each observed change | Tentative per [decisions](../../decisions.md#workspaces): mirror KDE's shared hotplug branch, with no project displacement or return mapping; one shared history/ring records actual observed changes only. KDE `reconcileOutputDisplacement` skips displacement for shared mode; Windows topology integration delivered offline 2026-10-15 ([record](../../changes/archive/windows-workspace-scope-hotplug.md)), retaining shared history and sibling Engine domains. Reconnect never consults/restores history | Exact Tier 1/2 shared-model applicability, native evacuation/focus/frames, observed switch sequence and first/second toggle targets TBD for user testing; do not infer them from the local/global-unique R-WS-17 fixture |
 
 ### R-WS-18: relative next send fills the trailing empty
 

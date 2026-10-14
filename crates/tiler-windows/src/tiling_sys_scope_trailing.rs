@@ -146,7 +146,7 @@ fn retained_ids(state: &super::TileLoop) -> Vec<String> {
 /// never reach here (retained above), and unmapped relevant (non-empty) or
 /// pending/drag sessions survive by construction. Occupied/visible ids never
 /// prune, so their domains are untouched.
-fn prune_retired_engine_domains(state: &mut super::TileLoop, removed: &[String]) {
+pub(super) fn prune_retired_engine_domains(state: &mut super::TileLoop, removed: &[String]) {
     if removed.is_empty() {
         return;
     }
@@ -197,7 +197,7 @@ fn shared_occupied_id(state: &super::TileLoop, id: &str, sticky: &BTreeSet<Windo
 /// plan over the output's ring with cross-output visibility plus Engine
 /// retention, pruned to output-scoped ids with the global live-count floor.
 /// Local mode never enters (the caller keeps the legacy sequence inline).
-fn global_cleanup_output(state: &mut super::TileLoop, output: &str) {
+pub(super) fn global_cleanup_output(state: &mut super::TileLoop, output: &str) {
     let sticky = sticky_set(state);
     let visible: Vec<String> = visible_union(state).into_iter().collect();
     let retained = retained_ids(state);
@@ -241,7 +241,7 @@ fn global_cleanup_output(state: &mut super::TileLoop, output: &str) {
 /// One logical shared ring cleanup across all output domains: removals strip
 /// the logical ids everywhere plus the shared order, then the ring mints
 /// trailing spares until the minimum holds with a globally unoccupied tail.
-fn shared_cleanup(state: &mut super::TileLoop) {
+pub(super) fn shared_cleanup(state: &mut super::TileLoop) {
     let outputs = state.workspaces.output_keys();
     if outputs.is_empty() {
         return;
@@ -425,8 +425,8 @@ pub(super) fn tail_trailing(state: &mut super::TileLoop, outputs: &[String]) {
 }
 
 /// Startup priming after the initial `sync_monitor_outputs` (fixed topology
-/// only: no hotplug/disconnect/reconnect behavior changes here, and stage C
-/// keeps owning later syncs). Local needs nothing (output creation already
+/// only: no hotplug/disconnect/reconnect behavior changes here; the hotplug
+/// module owns later syncs). Local needs nothing (output creation already
 /// primed local baselines with the minimum pair). Global-unique primes one
 /// scoped baseline per output and converges the per-output minimum.
 /// Shared syncs the one logical order, converges every output onto a single

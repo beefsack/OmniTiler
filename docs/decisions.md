@@ -563,17 +563,22 @@ platform API behavior.
   scoped numbering and KDE's visible-elsewhere swap rule, with no new
   addressing. Local/global-unique retain per-output history/rings; shared
   retains one history/ring per decisions 1.2/1.5 below.
-- Tentative (autonomous 2026-10-15), pending user review: shared-mode hotplug
+- Tentative (2026-10-15), pending user review: shared-mode hotplug
   mirrors KDE, without project displacement/return mapping. Windows hotplug
-  implementation remains pending. The [shared-mode discriminator](spec/reference-outcomes/workspaces.md#shared-mode-hotplug-discriminator-2026-10-15)
+  integration delivered offline 2026-10-15
+  ([record](changes/archive/windows-workspace-scope-hotplug.md)); disconnected
+  output history discards while the one shared history persists. The [shared-mode discriminator](spec/reference-outcomes/workspaces.md#shared-mode-hotplug-discriminator-2026-10-15)
   leaves unsupported reference and native outcomes TBD for user testing.
 - Item 12 pure scope policy and Windows mode schema/selector delivered offline
   2026-10-15 ([record](changes/archive/windows-workspace-scope-policy.md));
   Windows owner selection, sends, history, global swaps and shared trailing
   lifecycle delivered 2026-10-15
   ([record](changes/archive/windows-workspace-scope-owner.md)). Single-output
-  native CLI journeys passed in all three modes; physical two-output and
-  mode-aware hotplug remain pending.
+  native CLI journeys passed in all three modes; final mode-aware hotplug and
+  17 topology regressions delivered offline 2026-10-15
+  ([record](changes/archive/windows-workspace-scope-hotplug.md)). Single-output
+  native regression and clean stop/restore repeated successfully; physical
+  two-output journeys remain pending.
 - Tentative (autonomous 2026-10-15), pending user review: Windows shared-mode
   startup uses the first live output's active workspace in stable output-key
   order as the initial logical view, converges other output-bound domains,

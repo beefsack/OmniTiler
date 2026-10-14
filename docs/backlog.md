@@ -879,8 +879,9 @@ decisions of 2026-09-24 are under
     marker/restart/failure/game/DPI pending); (d) keyboard resize delivered
   2026-10-11, base `f794cf9` + delivery commit (handoff item 6,
   [record](changes/archive/windows-keyboard-resize.md)); physical interception
-  remains user-owned. Non-local workspace modes remain unimplemented despite
-  catalog/settings text (`workspace.rs:95-108`).
+  remains user-owned. Non-local workspace modes, including mode-aware hotplug,
+  delivered offline 2026-10-15; physical two-output journeys remain user-owned
+  ([record](changes/archive/windows-workspace-scope-hotplug.md)).
   [decisions](decisions.md#window-state-float-sticky-maximize-fullscreen)
   [audit](research/cross-platform-core/post-windows-audit.md)
 - P1 | Adopt reference-consensus additions | User 2026-10-07 accepted the
@@ -1055,7 +1056,7 @@ decisions of 2026-09-24 are under
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
   | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
-  | 12 | Non-local workspace modes parity (d) | Stages A/B delivered 2026-10-15: shared policy/settings and Windows owner selection/send/history/swap/trailing integration. Locked gates 2,078 passed / 1 ignored; single-output native CLI journeys passed in all modes. Stage C hotplug and physical two-output acceptance pending ([owner record](changes/archive/windows-workspace-scope-owner.md)). |
+  | 12 | Non-local workspace modes parity (d) | Offline-complete 2026-10-15: stages A/B/C deliver scope policy/settings, owner selection/send/history/swap/trailing and mode-aware hotplug. Locked gates 2,095 passed / 1 ignored, including 17 new topology tests; single-output native select/previous/relative/send regression passed in all modes with clean stop/settings restore. Physical two-output journeys user-owned in [pending checks](#multi-output-setup); shared choices remain tentative ([final record](changes/archive/windows-workspace-scope-hotplug.md)). |
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Windows local adapter including D8 carry and item-16 largest-edge selection delivered offline 2026-10-14; 1,950 native MSVC tests pass, one ignored ([record](changes/archive/windows-workspace-output-migration.md)). Core/KDE already delivered offline. Physical two-output journeys pending; item 12 remains the non-local-mode dependency. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
@@ -2476,8 +2477,16 @@ decisions of 2026-09-24 are under
     0 failed, 1 ignored. Single-output native CLI selection, sends and mode
     retention passed in all modes; clean graceful stop and restore verified
     ([record and handover](changes/archive/windows-workspace-scope-owner.md)).
-    Stage C pending: mode-aware hotplug/displacement/return and full R-WS-17
-    journeys; native multi-output evidence remains pending.
+    Stage C delivered offline 2026-10-15: adopted-mode topology dispatch,
+    global scoped discard/re-prime/observations and shared order/domain sync
+    without project displacement. Sibling Engine domains and true pending/drag
+    state survive; ordinary idle orphan domains prune. Seventeen simulated
+    topology regressions pass; final locked gates 2,095 passed / 1 ignored,
+    single-output native select/previous/relative/send repeated in every mode
+    with verified clean stop and saved-settings restoration
+    ([final record](changes/archive/windows-workspace-scope-hotplug.md)).
+    Item 12 is offline-complete; physical R-WS-17/multi-output acceptance stays
+    user-owned in [pending checks](#multi-output-setup), unsupported outcomes TBD.
     Shared startup anchor is tentative pending the two-output discriminator.
     Prerequisites (handoff items 1/2, multi-output foundation, explicit output
     sends and local whole-workspace migration) delivered.
@@ -2486,14 +2495,14 @@ decisions of 2026-09-24 are under
     #### Item 12 behavior and reference seams
 
     - Normative: [spec](spec/functional-spec.md#workspaces) REQ-WS-08/11
-      (Win columns: history/toggle and relative-switch implementation
-      pending, non-local modes pending);
+      (Win columns: all-mode history/toggle/relative and mode-aware topology
+      delivered offline 2026-10-15; physical multi-output pending);
       [matrix](spec/reference-outcomes/workspaces.md) R-WS-08/11 plus
       R-WS-15 (per-output isolation vs shared), R-WS-16 (removed-ID
       invalidation), R-WS-17 (hotplug history/scope). KDE mappings are
       selected and the spec carries scoped history/rings; any exact
       Windows outcome not defined is a TBD governing row, never invention.
-    - KDE exact (verified 2026-10-08 at `db31234`):
+    - Historical KDE seams (verified 2026-10-08 at `db31234`):
       `kwin/src/workspace-native.ts:990` `selectPrevious` (shared branch
       :995 `selectPreviousShared` :2250; per-output `previousByOutput`,
       `previousInScope`, `swapGlobalIfVisibleElsewhere` for global-unique),
@@ -2506,7 +2515,8 @@ decisions of 2026-09-24 are under
       ordinals, and :35 `plan_trailing` handles local cleanup. It does not
       supply the KDE global/shared mapping machinery; preserve D1 ownership
       if this adapter parity needs a new shared-core contract.
-    - Windows exact (verified 2026-10-08 at `db31234`):
+    - Historical Windows gaps (verified 2026-10-08 at `db31234`, superseded
+      by stages A/B/C above):
       `src/workspace.rs:95-109` `ManagedWorkspaces` fields are
       outputs/displaced/membership/next_ws/next_output/default_tiled/tiled:
       no previous-history or relative-ring resolver, no mode-scope field.
@@ -2540,23 +2550,27 @@ decisions of 2026-09-24 are under
       discard disconnected-output history, never consult history for
       reconnect selection. Membership/visibility/recovery routing follows
       the transfer. No new shortcut, no new preset, no tray command.
-    - [ ] Portable: local vs global-unique vs shared isolation (R-WS-15),
+    - [x] Portable: local vs global-unique vs shared isolation (R-WS-15),
       surviving-empty vs removed/moved id (R-WS-16), disconnect/displacement/
       reconnect/return scope with conditional second toggle (R-WS-17),
       output-focus-alone non-recording, cross-output previous and relative
-      selection, >9/trailing wrap per scope. Port
-      `kwin/tests/workspace-previous-relative.test.ts` case for case.
+      selection, >9/trailing wrap per scope.
+      `kwin/tests/workspace-previous-relative.test.ts` cases covered by shared
+      policy and Windows owner/topology fixtures; physical outcomes remain TBD.
     - Settings/input/catalog/presets: scope configuration is now selected
       tentatively in [decisions](decisions.md#workspaces) and delivered in
-      stage A; live scope adoption is restart-required, pending stage B.
+      stage A; startup adoption and restart-required drift delivered in stage B
+      and reverified in stage C.
       Existing workspace shortcut rows
       (`src/settings.rs:819-826`) and handoff items 1/2 supply the selected
       chords; `compatible_disabled_ids` :1528 remains their policy. Scope
       configuration exposure is `core.workspace.mode`; the new three-choice
       Settings selector is separate from per-workspace tiling and the tray's
       tiled/floating action. Existing shortcuts/presets need no new rows.
-    - [ ] Windows-only: owner selection/foreground/CLI producers, hotplug
-      journeys, multi-output native evidence on a multi-output Windows setup.
+    - [x] Windows-only offline: owner selection/foreground/CLI producers and
+      mode-aware simulated hotplug; single-output native CLI regression passes.
+    - [ ] Windows-only physical: hotplug, multi-output and keyboard journeys on
+      a multi-output setup, listed in [pending checks](#multi-output-setup).
     - User journey: two-output L/R with WS1/WS2 on L; L WS1->WS2, change
       R, focus L, previous twice (local: WS1 then WS2; R unchanged);
       shared mode WS1->WS2->WS3 then previous twice (WS2 then WS3);
@@ -4011,6 +4025,26 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   [coverage](changes/archive/observability-coverage-assessment.md)
 
 ### Multi-output setup
+
+- Windows item 12 (offline-complete 2026-10-15; user-owned physical journeys):
+  - Local/global-unique: Previous twice and full relative ring on each output,
+    with output-focus-alone leaving history unchanged.
+  - Global-unique: select a workspace visible elsewhere, then swap back; retain
+    distinct layouts/shares, float/overlay state, member homing and focus.
+  - Shared: select and send follow/stay from each output; preserve both
+    output-bound layouts, one logical history/ring/trailing spare and visible/
+    occupied cleanup protection. Restart with stable-key-first differing from
+    primary/focused output to discriminate the tentative startup anchor.
+  - In each mode, disconnect/reconnect with foreground on removed output, then
+    survivor; send explicitly and open new contents while absent. Verify
+    disconnected-output history discard/re-prime, reconnect selection independent
+    of history, conditional R-WS-17 second toggle, then-current local/global
+    displaced return versus shared no project displacement/return mapping.
+  - Repeat across mixed DPI/work areas with native frame/focus continuity and
+    verified graceful stop/settings/window restoration. Physical keyboard
+    delivery remains pending; nearest-survivor discrimination needs three outputs.
+  [Evidence and tentative boundaries](changes/archive/windows-workspace-scope-hotplug.md),
+  [R-WS-17](spec/reference-outcomes/workspaces.md#r-ws-17-previous-around-disconnect-displacement-and-reconnect-return).
 
 - [Checklist and partial native results](changes/kde-dual-output-live.md):
   newcomers on both outputs and first-output opposite-pointer admission;

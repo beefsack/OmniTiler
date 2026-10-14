@@ -1244,6 +1244,143 @@ impl ManagedWorkspaces {
         true
     }
 
+    /// Shared-mode disconnect without project displacement (item 12 stage C,
+    /// KDE parity: `reconcileOutputDisplacement` returns early for shared).
+    ///
+    /// Drops the removed output's entry with no displaced record and no
+    /// return mapping: the surviving destination first adopts any missing
+    /// origin ids, then origin members re-home under the same logical id
+    /// (hidden state preserved; remembered focus stays with the surviving
+    /// entries). The origin's local
+    /// previous/baseline discards with the output; the destination validates.
+    /// Returns the origin's id list for stale Engine-session pruning.
+    /// Returns an empty list and changes nothing when either output is
+    /// unknown or both are the same.
+    pub fn drop_output_merge_to(&mut self, origin: &str, dest: &str) -> Vec<String> {
+        if origin == dest || !self.outputs.contains_key(origin) || !self.outputs.contains_key(dest)
+        {
+            return Vec::new();
+        }
+        let ids: Vec<String> = self
+            .outputs
+            .get(origin)
+            .map(|s| s.order.iter().map(|e| e.id.clone()).collect())
+            .unwrap_or_default();
+        let mut moving: BTreeMap<String, Vec<WindowKey>> = BTreeMap::new();
+        for (key, loc) in &self.membership {
+            if loc.output == origin {
+                moving
+                    .entry(loc.workspace.clone())
+                    .or_default()
+                    .push(key.clone());
+            }
+        }
+        // Converge the destination onto the origin's id set first so no
+        // same-logical-id membership strands on an unlisted id: transiently
+        // divergent shared unions converge here (empty entries, fresh
+        // tokens), never as orphans.
+        for ws in &ids {
+            if self
+                .outputs
+                .get(dest)
+                .is_none_or(|s| s.order.iter().all(|e| e.id != *ws))
+            {
+                self.ensure_workspace_id(dest, ws);
+            }
+        }
+        self.outputs.remove(origin);
+        for (ws, keys) in &moving {
+            let listed = self
+                .outputs
+                .get(dest)
+                .is_some_and(|s| s.order.iter().any(|e| e.id == *ws));
+            if !listed {
+                continue;
+            }
+            if let Some(state) = self.outputs.get_mut(dest)
+                && let Some(entry) = state.order.iter_mut().find(|e| e.id == *ws)
+            {
+                for key in keys {
+                    entry.members.insert(key.clone());
+                    if let Some(loc) = self.membership.get_mut(key) {
+                        loc.output = dest.to_owned();
+                    }
+                }
+            }
+        }
+        self.discard_output_history(origin);
+        self.validate_history(dest);
+        ids
+    }
+
+    /// Shared-mode reconnect convergence (item 12 stage C): recreate the
+    /// returning origin with exactly the live shared ids (fresh per-output
+    /// tokens, default-seeded session modes, empty members) and activate the
+    /// given view when listed. Unlike `ensure_output` this never mints
+    /// baseline empties, so no non-shared residue pollutes the shared ring.
+    /// A missing active falls back to the first id. The origin baseline
+    /// primes at the returning view without recording: reconnect selection
+    /// never consults history. Existing origins converge missing ids and
+    /// re-activate (degenerate guard; shared disconnects always drop).
+    pub fn insert_shared_output(&mut self, origin: &str, ids: &[String], active_id: &str) {
+        if !self.outputs.contains_key(origin) {
+            self.next_output += 1;
+            let token = format!("o{}", self.next_output);
+            let mut order = Vec::new();
+            for id in ids {
+                self.next_ws += 1;
+                let token = format!("ws{}", self.next_ws);
+                self.seed_mode(id);
+                order.push(WorkspaceEntry {
+                    id: id.clone(),
+                    token,
+                    members: BTreeSet::new(),
+                    last_focus: None,
+                });
+            }
+            let active = ids
+                .iter()
+                .position(|id| id == active_id)
+                .unwrap_or(0)
+                .min(order.len().saturating_sub(1));
+            self.outputs.insert(
+                origin.to_owned(),
+                OutputState {
+                    key: origin.to_owned(),
+                    token,
+                    order,
+                    active,
+                },
+            );
+        } else {
+            for id in ids {
+                if self
+                    .outputs
+                    .get(origin)
+                    .is_some_and(|s| s.order.iter().any(|e| e.id == *id))
+                {
+                    continue;
+                }
+                self.next_ws += 1;
+                let token = format!("ws{}", self.next_ws);
+                self.seed_mode(id);
+                if let Some(state) = self.outputs.get_mut(origin) {
+                    state.order.push(WorkspaceEntry {
+                        id: id.clone(),
+                        token,
+                        members: BTreeSet::new(),
+                        last_focus: None,
+                    });
+                }
+            }
+            self.activate(origin, active_id);
+        }
+        if let Some(active) = self.active_id(origin) {
+            self.baseline.insert(origin.to_owned(), active);
+        }
+        self.validate_history(origin);
+    }
+
     /// Move the source output's whole active workspace onto the target output
     /// (item 14 portable reassignment; the native runtime verifies arrival
     /// separately before publication). The entry keeps its stable id, token, members,
