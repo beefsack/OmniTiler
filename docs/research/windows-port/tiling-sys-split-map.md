@@ -36,13 +36,13 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 4 | `tests_d23_minimize` | `d23_minimize_adapter_tests` | 3,599 | Kept intact to preserve shared helpers and test namespace; design further split at whole-test boundaries | Extracted; 3,595 lines; subdivision remains |
 | 5 | `tests_float_unfloat` | `float_unfloat_clear_tests` | 2,216 | Clear-effects trait and fixture | Extracted; 2,207 lines |
 | 6 | `tests_workspace_migrate` | `workspace_migrate_adapter_tests` | 2,054 | Engine event stamps, migration and injectors | Extracted; 2,047 lines |
-| 7 | `tests_output_send`, `tests_cross_drag` | Output-send and cross-drag adapter tests | 1,614 / 704 | Shared fixture; keep separate module names | Pending |
-| 8 | `tests_restart`, `tests_orientation`, `tests_float_nav` | Workspace/navigation tests | 848 / 562 / 531 | Engine fixture, retained-state seams | Pending |
-| 9 | `tests_deferred_send`, `tests_render_frame`, `tests_preview` | Deferred send, renderer and preview tests | 779 / 791 / 607 | Render seams and test injection | Pending |
-| 10 | `tests_born_maximized`, `tests_owned_exit`, `tests_send_preflight`, `tests_float_send_gate` | Admission and exit tests | 924 / 285 / 69 / 188 | Fullscreen/float ownership seams | Pending |
-| 11 | `tests_windrag`, `tests_intent_wake`, `tests_launch`, `tests_stage3` | Gesture and dispatch tests | 483 / 193 / 352 / 598 | Preserve cfg attributes and preceding module comments | Pending |
-| 12 | `tests_esc`, `tests_input_snapshot`, `tests_same_axis`, `tests_border_shell`, `tests_owner_work` | Remaining small test modules | 19 / 203 / 166 / 39 / 163 | Narrow parent seams | Pending |
-| 13 | `tests_rmax03` | `rmax03_adapter_tests`, including shared fixture | 599 | 58 fixture references plus existing scope tests; keep module name and parent level | Pending; leave fixture in parent until leaves move |
+| 7 | `tests_output_send`, `tests_cross_drag` | Output-send and cross-drag adapter tests | 1,614 / 704 | Shared fixture; keep separate module names | Extracted; 1,606 / 699 lines |
+| 8 | `tests_restart`, `tests_orientation`, `tests_float_nav` | Workspace/navigation tests | 848 / 562 / 531 | Engine fixture, retained-state seams | Extracted; 843 / 559 / 527 lines |
+| 9 | `tests_deferred_send`, `tests_render_frame`, `tests_preview` | Deferred send, renderer and preview tests | 779 / 791 / 607 | Render seams and test injection | Extracted; 775 / 788 / 595 lines |
+| 10 | `tests_born_maximized`, `tests_owned_exit`, `tests_send_preflight`, `tests_float_send_gate` | Admission and exit tests | 924 / 285 / 69 / 188 | Fullscreen/float ownership seams | Extracted; 913 / 282 / 66 / 184 lines |
+| 11 | `tests_windrag`, `tests_intent_wake`, `tests_launch`, `tests_stage3` | Gesture and dispatch tests | 483 / 193 / 352 / 598 | Preserve cfg attributes and preceding module comments | Extracted; 476 / 190 / 342 / 588 lines |
+| 12 | `tests_esc`, `tests_input_snapshot`, `tests_same_axis`, `tests_border_shell`, `tests_owner_work` | Remaining small test modules | 19 / 203 / 166 / 39 / 163 | Narrow parent seams | Extracted; 16 / 200 / 163 / 36 / 160 lines |
+| 13 | `tests_rmax03` | `rmax03_adapter_tests`, including shared fixture | 599 | 58 fixture references plus existing scope tests; same module name and parent level retained | Extracted last; 594 lines |
 | 14 | `shell`, `monitors`, `observe` | Shell constants/filters, monitor areas, hook queue/wake, observation/identity | 200 / 250 / 250 | Shared types; monitor/input coupling | Pending |
 | 15 | `hints`, `pending_seams`, `placement`, `minmax` | Hint types, test injectors/live seams, placement translation, hint acquisition | 1,100 total | cfg branches travel with their items; avoid overlapping ownership | Pending |
 | 16 | `trace`, `owner_work`, `input` | JSON/border trace glue, work guard, preview bounds, input bridge/snapshot | 1,200 total | Keep shared `TileLoop` fields in parent initially | Pending |
@@ -73,11 +73,15 @@ Numbered production stems denote further whole-item subdivisions as needed.
   This is the current baseline. Moves must preserve counts; an increase is
   accepted only when verified as new tests in pulled upstream commits.
   No live tests for these moves.
-- Current parent: **46,182 lines**, down **15,735** (25.4%) after six moves;
-  **10,717 lines** of baseline inline test modules remain. Production is intact.
-- Next extraction: order 7, output-send then cross-drag tests; leave the shared
-  fixture and all production seams in the parent. Continue orders 8-13, then
-  D23 subdivision and production orders 14-30.
+- Current parent: **35,537 lines**, down **26,380** (42.6%) after 14 extraction
+  commits. All 28 inline test modules now occupy 28 child files totaling
+  **26,288 lines**. No inline test modules remain. The production prefix before
+  the original inline test section is byte-identical to baseline.
+- Completed phase-1 evidence: [record](../../changes/archive/windows-tiling-sys-split-phase1.md).
+- Next: design the D23 subdivision boundary while preserving test names and
+  namespace; then production orders 14-30. Start with shell/monitor/observe
+  leaves, then hints/seams/placement/minmax. Keep `TileLoop` state in the parent
+  initially and use narrow imports/re-exports for moved leaves.
 - Production risk: moving a function into a child changes unqualified name
   resolution and sibling access. Confirm imports and minimal visibility rather
   than assuming private child items remain callable from the parent.

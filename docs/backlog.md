@@ -535,14 +535,15 @@ decisions of 2026-09-24 are under
   (`kwin/src/plan-adapter.ts`, `plan-adapter-entry.ts`,
   `workspace-send-adapter.ts`, `kwin/tests/plan-adapter.test.ts`) are split
   in coordination with their work streams. About 40 files exceed 2k lines.
-  Windows phase 1: six test-module moves reduce `tiling_sys.rs` from 61,917
-  to 46,182 lines (-15,735, 25.4%); new children total 15,686 lines.
+  Windows phase 1: 14 pure-move extraction commits reduce `tiling_sys.rs`
+  from 61,917 to 35,537 lines (-26,380, 42.6%). All 28 inline test modules
+  now occupy separate child files totaling 26,288 lines; production unchanged.
   D23 minimize remains 3,595 lines and needs further subdivision. Original
   test counts preserved; upstream shared policy adds 11 tests, yielding
-  2,106 passed / 0 failed / 1 ignored after rebase. Next: output-send and
-  cross-drag tests, remaining test leaves, then production responsibilities
+  2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
+  Next: D23 subdivision design, then production responsibilities in map order
   ([split map](research/windows-port/tiling-sys-split-map.md),
-  [record](changes/windows-tiling-sys-split-phase1.md)).
+  [record](changes/archive/windows-tiling-sys-split-phase1.md)).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in
