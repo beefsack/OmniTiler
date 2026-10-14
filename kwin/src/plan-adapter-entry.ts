@@ -282,6 +282,31 @@ function isOpaqueId(value: unknown): value is string {
     return true;
 }
 
+// Live-ref lifetime check: the ref is the identical object in the current
+// window list. Values read from an unlisted ref prove nothing.
+function isListedWindow(surface: object, ref: object): boolean {
+    try {
+        const lister = readProp(surface, "windowList");
+        if (typeof lister !== "function") {
+            return false;
+        }
+        const rawList = Reflect.apply(lister as (...args: ReadonlyArray<never>) => unknown, surface, []);
+        const list = decodeList(rawList, MAX_LIST);
+        if (list === null) {
+            return false;
+        }
+        for (const item of list) {
+            if (item === ref) {
+                return true;
+            }
+        }
+        return false;
+    } catch (error) {
+        void error;
+        return false;
+    }
+}
+
 function resolveLexicalWorkspace(): unknown {
     try {
         const candidate: unknown = workspace;
@@ -5092,6 +5117,128 @@ function startPlanAdapterEntryOnce(
             }
         },
         readWindowConstraints: (ref) => readWindowConstraints(ref),
+        // R-OUT-05 newcomer routing reads. Lifetime first (listed identity),
+        // then classification; null is unknown and refuses routing.
+        readIsTransient: (ref) => {
+            try {
+                if (!isListedWindow(surface, ref)) {
+                    return null;
+                }
+                // Both reads must be well-typed: an absent/non-boolean
+                // transient flag or a malformed parent is unknown, never a
+                // definite false.
+                const flag = readProp(ref, "transient");
+                if (typeof flag !== "boolean") {
+                    return null;
+                }
+                const parent = readProp(ref, "transientFor");
+                if (parent !== null && parent !== undefined && (typeof parent !== "object" || parent === null)) {
+                    return null;
+                }
+                return flag === true || (typeof parent === "object" && parent !== null) ? true : false;
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
+        readShownWorkspace: (name) => {
+            try {
+                const screens = decodeList(readProp(surface, "screens"), MAX_LIST);
+                if (screens === null) {
+                    return null;
+                }
+                for (const item of screens) {
+                    if (typeof item !== "object" || item === null || readProp(item as object, "name") !== name) {
+                        continue;
+                    }
+                    const read = readDesktopForOutput(surface, item as object);
+                    return read === null ? null : read.id;
+                }
+                return null;
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
+        readFullscreenOnDomain: (output, workspace) => {
+            try {
+                const screens = decodeList(readProp(surface, "screens"), MAX_LIST);
+                if (screens === null) {
+                    return null;
+                }
+                let outputObj: object | null = null;
+                for (const item of screens) {
+                    if (typeof item === "object" && item !== null && readProp(item as object, "name") === output) {
+                        outputObj = item as object;
+                        break;
+                    }
+                }
+                if (outputObj === null) {
+                    return null;
+                }
+                const desktops = decodeList(readProp(surface, "desktops"), MAX_DESKTOPS);
+                if (desktops === null) {
+                    return null;
+                }
+                let desktopRef: object | null = null;
+                for (const item of desktops) {
+                    if (typeof item === "object" && item !== null && readProp(item as object, "id") === workspace) {
+                        desktopRef = item as object;
+                        break;
+                    }
+                }
+                if (desktopRef === null) {
+                    return null;
+                }
+                const lister = readProp(surface, "windowList");
+                if (typeof lister !== "function") {
+                    return null;
+                }
+                const rawList = Reflect.apply(lister as (...args: ReadonlyArray<never>) => unknown, surface, []);
+                const list = decodeList(rawList, MAX_LIST);
+                if (list === null) {
+                    return null;
+                }
+                for (const item of list) {
+                    if (typeof item !== "object" || item === null) {
+                        continue;
+                    }
+                    const ref = item as object;
+                    const winOutput = readProp(ref, "output");
+                    if (typeof winOutput !== "object" || winOutput === null || readProp(winOutput as object, "name") !== output) {
+                        continue;
+                    }
+                    const membership = decodeList(readProp(ref, "desktops"), MAX_DESKTOPS);
+                    if (membership === null) {
+                        return null;
+                    }
+                    // Mirror observeNative: onAllDesktops (sticky) windows
+                    // belong to every desktop, so a sticky fullscreen peer
+                    // counts as an overlay on this domain.
+                    const allDesktops = readProp(ref, "onAllDesktops");
+                    if (typeof allDesktops !== "boolean") {
+                        return null;
+                    }
+                    let onDesktop = allDesktops;
+                    for (const member of membership) {
+                        if (member === desktopRef) {
+                            onDesktop = true;
+                            break;
+                        }
+                    }
+                    if (!onDesktop) {
+                        continue;
+                    }
+                    if (readProp(ref, "fullScreen") !== false) {
+                        return true;
+                    }
+                }
+                return false;
+            } catch (error) {
+                void error;
+                return null;
+            }
+        },
         // Bounded R4 signal fences grounded in the documented notify
         // signals: outputChanged carries the old output (re-read for the
         // current value), desktopsChanged for membership, and

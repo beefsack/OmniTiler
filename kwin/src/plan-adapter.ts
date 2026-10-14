@@ -20,6 +20,11 @@ import { orderGeometryWrites } from "./geometry-order";
 import { normalizeSameAxisMove } from "./same-axis-move";
 import { BORN_MAXIMIZED_DEFAULT, normalizeBornMaximized } from "./born-maximized";
 import {
+    applyNewcomerOutputRoute,
+    decideNewcomerOutputRoute,
+    type NewcomerRouteDomain,
+} from "./newcomer-output-route";
+import {
     FIXED_SIZE_PREDICATE_DEFAULT,
     FIXED_SIZE_PREDICATE_EITHER,
     normalizeFixedSizePredicate,
@@ -691,6 +696,15 @@ export interface PlanAdapterEnv {
     readonly setDesktops?: (mover: object, desktops: ReadonlyArray<object>) => boolean;
     readonly readOutputName?: (ref: object) => string | null;
     readonly readDesktopIds?: (ref: object) => ReadonlyArray<string> | null;
+    // R-OUT-05 newcomer routing reads. `readIsTransient` reports whether the
+    // live ref is a transient/dialog client (null when unclassifiable, which
+    // refuses routing); `readShownWorkspace` reports the output's currently
+    // shown workspace id; `readFullscreenOnDomain` reports whether any live
+    // window on that output/workspace is fullscreen (null when unreadable).
+    // Absent or null reads refuse routing before any write.
+    readonly readIsTransient?: ((ref: object) => boolean | null) | undefined;
+    readonly readShownWorkspace?: ((output: string) => string | null) | undefined;
+    readonly readFullscreenOnDomain?: ((output: string, workspace: string) => boolean | null) | undefined;
     readonly readGeometry?: (ref: object) => PlanRect | null;
     // Trace-only native constraint read. It is optional so the planner route
     // remains usable on older script surfaces and isolated tests.
@@ -2245,6 +2259,17 @@ export class PlanAdapter {
     // enable/disable) and retained across planner recovery like the Windows
     // latches; bounded at 4096 ids with oldest-first eviction.
     private floatingFirstSeen = new Set<string>();
+    // R-OUT-05 focused-output newcomer routing (User 2026-10-10, 0.1 triage
+    // D06): stable ids already placed (never re-routed), the `windowAdded`
+    // birth ref (one-shot per foreground refresh), and the anchor domain
+    // from the last round whose active window was an eligible managed
+    // member. Lifetime-bound like the markers above: cleared on
+    // enable/disable, pruned on verified native removal. Bounded at 4096
+    // ids with oldest-first eviction.
+    private routeSeenIds = new Set<string>();
+    private routeBirthRef: object | null = null;
+    private routeAnchor: (NewcomerRouteDomain & { round: number }) | null = null;
+    private routeRound = 0;
     private reconcileAttempts = 0;
     // One-shot forced complete reconciliation for send-settled domains,
     // keyed by domain output/workspace. A terminal send flight carries its
@@ -2494,6 +2519,10 @@ export class PlanAdapter {
         this.heldInitialFullscreen.clear();
         this.floatingFirstSeen.clear();
         this.fixedClients.clear();
+        this.routeSeenIds.clear();
+        this.routeBirthRef = null;
+        this.routeAnchor = null;
+        this.routeRound = 0;
         this.settleDragRestoreUnavailable();
         this.reconcileAttempts = 0;
         this.sendForcedDomains.clear();
@@ -2548,6 +2577,10 @@ export class PlanAdapter {
         this.heldInitialFullscreen.clear();
         this.floatingFirstSeen.clear();
         this.fixedClients.clear();
+        this.routeSeenIds.clear();
+        this.routeBirthRef = null;
+        this.routeAnchor = null;
+        this.routeRound = 0;
         this.settleDragRestoreUnavailable();
         this.reconcileAttempts = 0;
         this.sendForcedDomains.clear();
@@ -3387,6 +3420,7 @@ export class PlanAdapter {
     noteNativeRemovedId(id: string): void {
         this.fixedClients.delete(id);
         this.floatingFirstSeen.delete(id);
+        this.routeSeenIds.delete(id);
         if (!this.intentActive) {
             return;
         }
@@ -4598,6 +4632,316 @@ export class PlanAdapter {
             void error;
             return false;
         }
+    }
+
+    // R-OUT-05 routing attempt. Exact birth identity only: the candidate must
+    // be the signaled birth ref, the active window, the single unknown id,
+    // and cross-output against a fresh anchor, with no flight holding the
+    // single-flight. Returns the observation to continue with, or null to
+    // abort on uncertain post-write state. Seen ids and the anchor advance on
+    // every continued path, so a newcomer is never re-routed after admission
+    // or native user movement.
+    private maybeRouteNewcomerToManagedOutput(fresh: PlanObserved, birthRef: object | null): PlanObserved | null {
+        this.routeRound += 1;
+        const anchor = this.routeAnchor;
+        const anchorFresh = anchor !== null && this.routeRound - anchor.round <= 1;
+        const unknown: PlanObservedWindow[] = [];
+        for (const entry of fresh.windows) {
+            if (!this.routeSeenIds.has(entry.id) && !this.appliedById.has(entry.id)) {
+                unknown.push(entry);
+            }
+        }
+        const candidate = unknown.length === 1 ? (unknown[0] as PlanObservedWindow) : null;
+        let continued: PlanObserved | null = fresh;
+        if (birthRef === null) {
+            // Ordinary round: bookkeeping only, silent.
+        } else if (candidate === null) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-${unknown.length === 0 ? "birth-unobserved" : "multi-unknown"}`);
+        } else if (candidate.ref !== birthRef) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-birth-mismatch window=${candidate.id}`);
+        } else if (fresh.activeRef !== candidate.ref) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-inactive-newcomer window=${candidate.id}`);
+        } else if (anchor === null || !anchorFresh) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-${anchor === null ? "no-managed-domain" : "stale-anchor"} window=${candidate.id}`);
+        } else if (fresh.domainOutput === anchor.output) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-same-output window=${candidate.id}`);
+        } else if (this.inFlight || this.r4Flight !== null || this.deferredAuto !== null) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-flight-busy window=${candidate.id}`);
+        } else {
+            continued = this.attemptNewcomerRoute(fresh, candidate, anchor);
+        }
+        if (continued === null) {
+            return null;
+        }
+        this.noteRouteSeen(continued);
+        this.updateRouteAnchor(continued);
+        return continued;
+    }
+
+    private noteRouteSeen(observed: PlanObserved): void {
+        try {
+            for (const entry of observed.windows) {
+                if (this.routeSeenIds.size >= 4096) {
+                    const oldest = this.routeSeenIds.values().next();
+                    if (oldest.done) {
+                        break;
+                    }
+                    this.routeSeenIds.delete(oldest.value);
+                }
+                this.routeSeenIds.add(entry.id);
+            }
+        } catch (error) {
+            void error;
+        }
+    }
+
+    // Anchor housekeeping: the domain whose active window is an eligible
+    // managed member (observed flags only). An overlay, floating, or sticky
+    // focus never anchors, so a fullscreen/float-held view cannot bless a
+    // later route; the target itself is re-proved live below anyway.
+    private updateRouteAnchor(observed: PlanObserved): void {
+        try {
+            const active = observed.windows.find((entry) => entry.ref === observed.activeRef);
+            if (active === undefined) {
+                return;
+            }
+            if (active.fullscreen || active.maximized || active.floating === true || active.sticky === true) {
+                return;
+            }
+            this.routeAnchor = { output: observed.domainOutput, workspace: observed.domainWorkspace, round: this.routeRound };
+        } catch (error) {
+            void error;
+        }
+    }
+
+    // D06 synchronous capture on the native activated notification. Only a
+    // known managed target identity reanchors: the signaled ref must be the
+    // live active window and the fresh observation's activeRef, and the
+    // focused member must be observed-eligible (no overlay/float/sticky),
+    // tiled, unheld, non-transient, non-fixed, and already seen or applied.
+    // An unknown newcomer's own activation (including a pre-added birth
+    // activation) never reanchors; a null/absent payload, a stale target, or
+    // any unreadable guard refuses silently. Round stays current so the next
+    // debounced refresh treats the capture as fresh.
+    private captureRouteAnchorOnActivated(target: object | undefined): void {
+        try {
+            if (typeof target !== "object" || target === null) {
+                return;
+            }
+            let currentActive: object | null = null;
+            try {
+                currentActive = this.env.active();
+            } catch (error) {
+                void error;
+                currentActive = null;
+            }
+            if (currentActive !== target) {
+                return;
+            }
+            const fresh = this.freshObserved();
+            if (fresh === null || fresh.activeRef !== target) {
+                return;
+            }
+            const active = fresh.windows.find((entry) => entry.ref === fresh.activeRef);
+            if (active === undefined) {
+                return;
+            }
+            if (active.fullscreen || active.maximized || active.floating === true || active.sticky === true) {
+                return;
+            }
+            if (!this.isTiledDomain(fresh.domainOutput, fresh.domainWorkspace)) {
+                return;
+            }
+            if (this.heldInitialFullscreen.get(active.id) === active.ref) {
+                return;
+            }
+            if (!this.routeSeenIds.has(active.id) && !this.appliedById.has(active.id)) {
+                return;
+            }
+            let transient: boolean | null = null;
+            try {
+                transient = this.env.readIsTransient?.(active.ref) ?? null;
+            } catch (error) {
+                void error;
+                transient = null;
+            }
+            if (transient !== false) {
+                return;
+            }
+            const hints = this.hintSizesFor(active.ref);
+            try {
+                if (isFixedSize(hints.minSize, hints.maxSize, this.readFixedSizePredicate())) {
+                    return;
+                }
+            } catch (error) {
+                void error;
+                return;
+            }
+            try {
+                const record = this.fixedClients.get(active.id);
+                if (record !== undefined && record.ref === active.ref && (record.kind === "auto" || record.kind === "suppress")) {
+                    return;
+                }
+            } catch (error) {
+                void error;
+                return;
+            }
+            this.routeAnchor = { output: fresh.domainOutput, workspace: fresh.domainWorkspace, round: this.routeRound };
+        } catch (error) {
+            void error;
+        }
+    }
+
+    private attemptNewcomerRoute(
+        fresh: PlanObserved,
+        candidate: PlanObservedWindow,
+        anchor: NewcomerRouteDomain,
+    ): PlanObserved | null {
+        // Fixed-size provenance: the carried snapshot plus a synchronous
+        // constraint-hint check, since auto-classification can lag birth by
+        // a round. Hints mark fixed-size windows (games among them), never a
+        // claim that every fixed window is a game.
+        const snapshot = this.carriedSnapshot(fresh);
+        const snapEntry = snapshot.windows.find((entry) => entry.id === candidate.id);
+        const hints = this.hintSizesFor(candidate.ref);
+        const fixedHint = isFixedSize(hints.minSize, hints.maxSize, this.readFixedSizePredicate());
+        const decision = decideNewcomerOutputRoute({
+            newcomerOutput: fresh.domainOutput,
+            flags: {
+                fullscreen: snapEntry?.fullscreen ?? candidate.fullscreen,
+                maximized: snapEntry?.maximized ?? candidate.maximized,
+                floating: (snapEntry?.floating ?? candidate.floating) === true,
+                sticky: (snapEntry?.sticky ?? candidate.sticky) === true,
+                fixedAuto: snapEntry?.fixedAuto === true || fixedHint ? true : undefined,
+                fixedSuppress: snapEntry?.fixedSuppress,
+            },
+            unknownCount: 1,
+            addedSinceRefresh: true,
+            lastManaged: anchor,
+            flightBusy: false,
+        });
+        if (!decision.ok) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-${decision.reason} window=${candidate.id}`);
+            return fresh;
+        }
+        // Transient/dialog: unclassifiable refuses. Read live per attempt;
+        // the foreground observation carries no transient signal.
+        let transient: boolean | null = null;
+        try {
+            transient = this.env.readIsTransient?.(candidate.ref) ?? null;
+        } catch (error) {
+            void error;
+            transient = null;
+        }
+        if (transient !== false) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-${transient === true ? "transient" : "transient-unknown"} window=${candidate.id}`);
+            return fresh;
+        }
+        // Stale-target guards, all before writes: the anchor desktop must
+        // still be shown on a present, tiled, overlay-free output.
+        let shown: string | null = null;
+        try {
+            shown = this.env.readShownWorkspace?.(decision.target.output) ?? null;
+        } catch (error) {
+            void error;
+            shown = null;
+        }
+        if (shown === null || shown !== decision.target.workspace) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-stale-target window=${candidate.id}`);
+            return fresh;
+        }
+        if (!this.isTiledDomain(decision.target.output, decision.target.workspace)) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-target-floating window=${candidate.id}`);
+            return fresh;
+        }
+        let overlay: boolean | null = null;
+        try {
+            overlay = this.env.readFullscreenOnDomain?.(decision.target.output, decision.target.workspace) ?? null;
+        } catch (error) {
+            void error;
+            overlay = null;
+        }
+        if (overlay !== false) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-${overlay === true ? "target-overlay" : "target-overlay-unknown"} window=${candidate.id}`);
+            return fresh;
+        }
+        const sendTransfer = this.env.sendClientToScreen;
+        if (sendTransfer === undefined) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=refused-no-transfer window=${candidate.id}`);
+            return fresh;
+        }
+        const setDesktops = this.env.setDesktops;
+        const newcomerRef = candidate.ref;
+        const observedOutput = fresh.domainOutput;
+        let mutated = false;
+        const outcome = applyNewcomerOutputRoute(
+            {
+                resolveOutput: (name) => this.env.resolveOutput?.(name) ?? null,
+                resolveDesktop: (workspace) => this.env.resolveDesktop?.(workspace) ?? null,
+                sendClientToScreen: (mover, output) => {
+                    mutated = true;
+                    return sendTransfer(mover, output);
+                },
+                setDesktops:
+                    setDesktops === undefined
+                        ? undefined
+                        : (mover, desktops) => {
+                              mutated = true;
+                              return setDesktops(mover, desktops);
+                          },
+                readOutputName: (ref) => this.env.readOutputName?.(ref) ?? null,
+                readDesktopIds: (ref) => this.env.readDesktopIds?.(ref) ?? null,
+                setActive: (target) => this.env.setActive(target),
+                reobserve: (ref) => {
+                    const next = this.freshObserved();
+                    if (next === null) {
+                        return null;
+                    }
+                    for (const entry of next.windows) {
+                        if (entry.ref === ref) {
+                            // Post-move safety recheck before any focus write:
+                            // transient state plus floating/sticky/fixed
+                            // flags, from the fresh observation and the
+                            // synchronous hint read.
+                            let moved: boolean | null = null;
+                            try {
+                                moved = this.env.readIsTransient?.(ref) ?? null;
+                            } catch (error) {
+                                void error;
+                                moved = null;
+                            }
+                            if (moved !== false) {
+                                return null;
+                            }
+                            if (entry.floating === true || entry.sticky === true) {
+                                return null;
+                            }
+                            const movedHints = this.hintSizesFor(ref);
+                            if (isFixedSize(movedHints.minSize, movedHints.maxSize, this.readFixedSizePredicate())) {
+                                return null;
+                            }
+                            return { output: entry.output, workspace: entry.workspace, fullscreen: entry.fullscreen, maximized: entry.maximized };
+                        }
+                    }
+                    return null;
+                },
+            },
+            newcomerRef,
+            observedOutput,
+            decision.target,
+        );
+        if (outcome === "routed" || outcome === "routed-focus-failed") {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=${outcome} window=${candidate.id}`);
+            return this.freshObserved();
+        }
+        if (!mutated) {
+            this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=${outcome} window=${candidate.id}`);
+            return fresh;
+        }
+        // A write landed but the sequence failed: the pre-write observation
+        // is stale ground. Continue only on re-observed truth, else abort.
+        this.logToken(`${LOG_PREFIX}:newcomer-route epoch=${this.epoch} outcome=${outcome}-mutated window=${candidate.id}`);
+        return this.freshObserved();
     }
 
     // R-MAX-03 recorder for the workspace-floating skips: every id in an
@@ -6962,6 +7306,14 @@ export class PlanAdapter {
         if (!this.enabled) {
             return;
         }
+        // R-OUT-05: retain the birth ref (the entry forwards the
+        // `windowAdded` payload through this target). Identity, never
+        // dereferenced: the route later requires the candidate to BE this
+        // ref. Consumed one-shot per foreground refresh below; a missing
+        // payload refuses routing.
+        if (kind === "added") {
+            this.routeBirthRef = typeof target === "object" && target !== null ? target : null;
+        }
         // Evict only the removed native object, never inferred absence.
         // Exact-object eviction covers marker-only ids with no applied slot,
         // so truly removed windows never leave session-local residue. No
@@ -6992,6 +7344,16 @@ export class PlanAdapter {
         // armed one-shot mover signals. No transaction-lifetime Plan block.
         if (this.r4WriteDepth > 0) {
             return;
+        }
+        // D06 pre-debounce anchor: the debounced refresh observes only the
+        // birth domain, so a managed focus shift landing before the debounce
+        // would otherwise route against the stale anchor. Capture the last
+        // active eligible known-managed domain synchronously here, before the
+        // coalesced-debounce early return below. Unknown refs (births),
+        // ineligible flags, and unreadable guards never reanchor. Silent:
+        // no diagnostics, no epoch, no dispatch.
+        if (kind === "activated") {
+            this.captureRouteAnchorOnActivated(target);
         }
         if (kind === "maximize" && this.maximizeAdmissionEcho !== null) {
             if (target === this.maximizeAdmissionEcho) {
@@ -7199,6 +7561,10 @@ export class PlanAdapter {
         if (!this.enabled) {
             return;
         }
+        // R-OUT-05 birth one-shot: consumed here so an unreadable round never
+        // carries a stale birth into a later unrelated observation.
+        const birthRef = this.routeBirthRef;
+        this.routeBirthRef = null;
         let fresh = this.freshObserved();
         if (fresh === null) {
             // D23: a sole-minimize close leaves no live observation (unknown,
@@ -7216,6 +7582,16 @@ export class PlanAdapter {
             // R-MAX-03: record floating-first sightings before the skip.
             this.noteFloatingFirstSighted(fresh);
             this.logRefreshClassification("foreground", "equal", "workspace-floating", "quiet");
+            return;
+        }
+        // R-OUT-05 focused-output newcomer routing: an eligible newcomer the
+        // host mapped onto a non-focused output moves to the anchor output's
+        // shown workspace before tiling, with newcomer focus after proof.
+        // Refusals fail open to native admission on the observed output. A
+        // null return aborts the round (uncertain post-write state; the next
+        // signal retries convergence without routing).
+        fresh = this.maybeRouteNewcomerToManagedOutput(fresh, birthRef);
+        if (fresh === null) {
             return;
         }
         const prepared = this.clearMaximizeAtAdmission(fresh, null);
