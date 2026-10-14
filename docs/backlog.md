@@ -42,10 +42,16 @@ decisions of 2026-09-24 are under
     reconcile fences, missing-preview-reply recovery and redundant preview
     planning/logging corrected offline; full KWin suite passes 1565 tests.
     [Record and physical repeat](changes/kde-dual-output-live.md#cross-output-drag-lifecycle-correction-2026-10-14).
-    Native occupied/empty/reverse crossings prove fallback recovery only: effect
-    and oracle unavailable. Physical smoothness, cursor alignment, preview/drop
-    agreement, no-jump hold and cancellation remain pending; Planner mismatch /
-    malformed-topology bands need the new bounded stage diagnostics.
+    Earlier occupied/empty/reverse crossings prove fallback recovery only. Native
+    effect/oracle availability established under normal `just dev trace` on
+    2026-10-15; mapped-binary freshness unproven. Same-output probe excluded from
+    clean acceptance after accelerated pointer overshoot onto a non-test frame;
+    relative synthetic move/drag now refuses before device allocation. Original
+    focus and protected placement restored, development DOWN. Physical
+    smoothness/CPU cost, cursor alignment on continuous re-cross, preview/drop
+    agreement, no-jump hold and cancellation remain pending; original Planner
+    mismatch/malformed-topology bands remain unrooted. Recommendation: physical
+    repeat with loaded effect/oracle, rather than further fixture redesign.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and

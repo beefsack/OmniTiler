@@ -21,12 +21,13 @@
 
 ## Must-pass checklist
 
-Results combine the native passes and continuations on 2026-10-14.
-Partial coverage does not complete an inventory gate. The physical input gate
-was repaired and reviewed before the latest journeys. Earlier unowned-active
+Results combine the native passes and continuations on 2026-10-14 and 2026-10-15.
+Partial coverage does not complete an inventory gate. The active-window input
+gate was repaired and reviewed before the earlier journeys. Earlier unowned-active
 emissions remain excluded. A later unowned-active native maximize callback
 also violated fixture ownership; its effect was restored and further live
-checks stopped. Accepted subcases and remaining gaps are qualified below.
+checks stopped. The latest pointer-path violation is separately recorded below.
+Accepted subcases and remaining gaps are qualified below.
 
 | ID | Inventory | Journey | Outcome / evidence |
 | --- | --- | --- | --- |
@@ -35,9 +36,9 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 | T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS prior sampled callbacks retained. BLOCKED populated history: history/switch callbacks absent from the bounded action fixture. PENDING: both-output ring cases, shared-scope refusal and presets |
 | T04 | #15 | Relative workspace send follow/stay, ring ends, trailing-empty fill and sole-mover source emptying on both outputs | PASS primary-scope next/previous follow, native arrival/state-confirmed, source retirement and other-view independence; stay retained view/membership. Secondary shown current outside its managed ring refused before commit twice. Stay-focus fixture lacked a same-output eligible peer and is not defect evidence. PENDING: complete ring-end/previous/stay matrix on both outputs |
 | T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | BLOCKED: migration actions are registered but unbound and absent from the bounded callback fixture. Native per-output capability verified; direct controller effective mode and migration acceptance remain pending |
-| T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. PENDING: rendering and dynamic mode/scale changes. Exact effect identity was confirmed loaded only during final cleanup; earlier unrelated-name queries do not establish its loaded state |
+| T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. Latest normal development startup established effect/oracle availability during the run. PENDING: mapped-binary freshness, rendering and dynamic mode/scale changes; load/setter diagnostics do not prove rendering |
 | T07 | #1, #34 | Fullscreen/maximize on each output, carry/restore, reserved slot and no unsolicited fullscreen geometry/focus writes | PASS tiled-overlay subcases: five-second fullscreen hold; fullscreen carry left and maximize carry right with arrival/follow; destination peer retained half-slot; native overlay exit restored exact original modes/frames. PENDING: intentional-float overlay, born-state and real-game legs. Earlier synchronous/expando probes remain invalid |
-| T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | BLOCKED: protected frames leave no safe cross-output grab/path/drop in the current shown views; plain titlebar dispatch lacks a guarded destination/path route. No drag emitted. Atomic wrapper offline-reviewed; protected-free fixture, preview/drop, cancel and removal proof remain pending |
+| T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | BLOCKED: earlier crossings prove fallback recovery only. Latest effect-loaded same-output attempt violated pointer-path ownership through acceleration overshoot and is excluded from clean acceptance. Relative synthetic motion/drag now refuses before device allocation; physical preview/drop, hold, re-cross, cancel and removal proof remain pending |
 | T09 | #49 | Hidden/sticky domains quiet; immediate/delayed and rapid transfers reconcile without ping-pong or stale replay | PASS prior quiet/sticky and two correlated successive output-transfer round trips. Latest rapid fixture parked: wrong-direction no-target dispatch and timeout-bound clients are not transfer evidence. No new PASS. PENDING: in-flight rapid stress, actual delayed arrival/reply and stale replay |
 | T10 | #14, #51 | Disable/re-enable displacement/return and primary change; exact topology restoration; physical unplug remains a distinct leg | PASS prior sampled software cases plus inverse disable/displace/return with exact frames and output configuration; explicit workspace move while absent was not undone by return. Return affinity of changed donor contents remains qualified. PENDING: new-content discriminator and physical unplug |
 | T11 | #14 | Output-local trailing empty workspace: fill, close/empty, switch, stable spare and independent other output | PASS prior subcases plus two relative-follow fills, source retirement, sole-client close and three-second stable empty shown view with the other output unchanged. PENDING: direct per-output spare identity, switch/history route, repetition and complete inverse matrix; global append/order alone is not identity proof |
@@ -808,19 +809,94 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   endpoint available, retain the combined log, and inspect `direction=drag-stage`
   plus preview terminal counters. The record remains active for those gaps.
 
+### Native effect readiness and fixture stop (2026-10-15)
+
+- Normal KDE development uses the checkout's dev-staged native effect, not a
+  system-installed replacement. `just dev` preflights discovery and loads
+  `omnitiler-active-border` before `dev-on`
+  (`just/linux.just:905-933,1159-1168`); the helper verifies the pinned compositor
+  owner and loaded state (`scripts/dev-native-effect.sh:495-513`). Lower-level
+  `dev-on` alone does not load the effect. Owned transient loads are unloaded
+  during normal teardown; an unloaded effect after teardown is expected.
+- Read-only discovery and ABI checks passed. A detached normal `just dev trace`
+  run began DOWN, built/staged the native payload, reported a successful
+  transient load and reached UP. Effect readback was loaded during the run;
+  the retained combined log contains a fresh native `drag-verdict` and
+  `drag-measure` for the owned mover. No system install or session restart was
+  needed to establish effect/oracle availability. The previous missing-effect
+  run's exact startup cause is not established; it did not reproduce under this
+  normal entry point.
+- Mapped-library freshness remains unproven: ABI/build compatibility and a
+  rebuilt stage are not mapped-inode/hash evidence. The entry point's stale
+  binary warning is unconditional and proves neither freshness nor staleness.
+  A user logout/login is the documented route to remove this uncertainty after
+  rebuilding, not a prerequisite inferred from this successful transient load.
+- FAIL fixture pointer-path ownership, evidence keys `w-effect-readiness/ptr`,
+  `post1` and `combined-final`: a same-output modifier-drag requested relative
+  motion of -360 but the actual vertical travel was -667. The pointer finished
+  over a non-test window while the active window remained owned. The precheck
+  used raw deltas as logical coordinates; the postcheck verified active identity
+  but not the cursor path. Its successful return therefore did not establish
+  safe pointer delivery. Further synthetic pointer work stopped.
+- That gesture produced two preview-set/clear pairs, 12 preview dispatches and
+  an `unsupported-capability` drop refusal followed by stable reconcile. The
+  fresh native verdict and rejection are transport/refusal evidence only.
+  No held-preview screenshot was captured; cursor-aligned rendering, valid
+  drop/preview agreement and next-drag acceptance are not claimed.
+- Cross-output occupied L-to-R and R-to-L, continuous re-cross, three-second
+  hold/two-edge sweep, empty target and Esc remain pending. The fixture cannot
+  express held checkpoints/sweeps safely; plain drag lacks destination/path
+  guards, and accelerated relative motion cannot prove the requested path.
+  Options: physical journeys, or a separately verified coordinate-controlled
+  fixture. Recommendation: physical repeat below rather than more fixture work.
+- Temporary fixture repair now rejects `move`, `drag` and `moddrag` at policy,
+  action-wrapper and emitter entry points before device allocation/emission.
+  The acceleration-overshoot regression verifies zero device opens, queries and
+  events. Independent static review accepted the fail-closed repair; keyboard
+  and single-point click ownership/freshness checks remain covered. Historical
+  restore-script manifest omissions were classified as review-only evidence,
+  restoring the wrapper audit. Offline fixture gates: policy 71/71, emitter
+  16/16, wrapper 92/92, acceleration regression 13/13. These helpers are temporary,
+  not a delivered repository harness or a passing live drag fixture.
+- No `cross-domain-mismatch`, `malformed-topology` or `direction=drag-stage`
+  appeared in this same-output probe. It does not root the original 37/56 bands
+  or reproduce cross-output overlay misalignment. Moving CPU cost was not
+  measured: sample spacing and reply latency cannot substitute for profiling.
+  No production guard or timing policy was changed on that evidence.
+- Restoration: baseline/final/post-teardown snapshots match both pre-existing
+  windows' frames, output, membership and original active identity; shown views
+  and output configuration match, shortcut contents are restored. Normal
+  desktop/spare rotation remains a lifecycle observation. Pointer position was
+  not restored. Development is DOWN, effect unloaded, Planner/tray names
+  unowned, and owned clients, diagnostic scripts and fixture devices are absent.
+- Fresh integrated offline gates pass at `2af0848`: Rust workspace build and
+  1932 tests, formatting, all-target Clippy with warnings denied; KWin typecheck
+  and 1565 tests; settings-only warnings-denied build and CTest 26/26. The shared
+  workspace-scope policy is included. This continuation changes records only;
+  product fixes remain the preceding delivered commits, and native P0 remains
+  open. Existing tentative timing/reuse/diagnostic choices remain user-review
+  pending; no additional product decision was selected.
+
 ### Physical repeat
 
-1. Start `just dev` and retain its printed combined log location. Put two
-   ordinary tiled test windows on L and one on R; focus the intended mover.
+1. From DOWN, start `just dev trace` and retain its printed combined log location.
+   Require the `omnitiler-active-border` transient-load message, loaded Effects
+   readback and the native oracle endpoint before testing. If rebuilt binary
+   freshness is uncertain, stop, log out/in, then repeat startup. Put two ordinary
+   tiled test windows on L and one on R; focus the intended mover. Use physical
+   input while relative-motion fixture verbs remain disabled, with paths over
+   test windows only.
 2. Use the usual titlebar or Meta+left-button drag from L to an edge of R's
    existing tile, outside its center/stack zone. Keep the button held for three
    seconds after crossing, move between two valid edges, then release.
 3. During the hold, require a target-slot preview and stable non-dragged frames
    on both outputs. At release, require preview clearance and destination
    insertion matching the preview, without snap-back or source restore fights.
-4. Repeat R to L, then a same-output control. Repeat onto an empty shown target
-   workspace. Finally cross onto an occupied target and cancel with Esc; require
-   preview clearance and the selected cancellation behavior without stuck holds.
+4. Repeat R to L, then cross right and back left without releasing and check
+   preview/cursor alignment throughout. Run a same-output control and repeat
+   onto an empty shown target workspace. Finally cross onto an occupied target
+   and cancel with Esc; require preview clearance and the selected cancellation
+   behavior without stuck holds. Start another drag after each terminal action.
 5. Inspect the combined log for the gesture correlations: no repeated identical
    `drag-preview-refused reason=absent` or busy/backoff flood, and no reconcile
    geometry actuation while held. A real refusal should remain identifiable.
