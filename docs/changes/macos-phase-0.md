@@ -532,8 +532,10 @@ terminal windows are never an agent restore target.
 CI follow-up identified a pre-existing non-macOS strict-clippy failure in the
 eight-argument helper stub (introduced with the regular-policy fixture): the
 macOS implementation had the scoped lint allowance but its stub did not.
-The stub now mirrors it without changing the signature or behavior. Prior
-Linux/Windows build and test steps passed; current cross-platform gates need
-the corrected revision. A separate native-effect packaging failure omits the
+The stub now mirrors it without changing the signature or behavior. Corrected
+revision `7655bb6` passes CI macOS and Windows build/test/format/strict-clippy,
+and Linux workspace tests/format/strict-clippy
+([run](https://github.com/beefsack/OmniTiler/actions/runs/38564752460)).
+A separate pre-existing native-effect packaging failure omits the
 macOS workspace member from its Nix source subset; it is not a Space-probe
 runtime result.
