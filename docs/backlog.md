@@ -3309,7 +3309,13 @@ decisions of 2026-09-24 are under
   pending acceptance: Accessory-helper AX/CG focus worked but NSWorkspace
   disagreed; same-route original-app restore observed once. Regular-policy
   full-agreement fixture awaits an unlocked baseline (final NSWorkspace/AX
-  readback identified loginwindow; recovery refused without dispatch). Next:
+  readback identified loginwindow; recovery refused without dispatch).
+  Phase 1 [threading/lifecycle skeleton](changes/macos-phase-1-skeleton.md)
+  delivered offline: shared Engine owner, minimal configurable-modifier input
+  boundary, per-app AX observer/actuation owners, typed handoffs, bounded
+  stop/reap, structured logs and failure-isolation fixtures. Native tap install,
+  live tiling and durable stranded-window recovery are not enabled by this
+  skeleton. Next:
   prove original → owned target → original agreement, then Ctrl-chord
   delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
   and enabled Mission Control collisions; native Space move/switch/create
@@ -3324,10 +3330,11 @@ decisions of 2026-09-24 are under
   default tier 2 (public plus private APIs, SIP enabled, no Dock injection).
   Plan revised to tier 2 from nine pinned local sources (`df018fb`,
   `05d1d1f`; [record](changes/archive/macos-tier2-plan.md)). Phase 0 inputs
-  are decided when macOS starts: host model/macOS floor (Apple Silicon,
-  provisional 15+), Intel (arm64 first), stable signer (Developer ID if
-  available), Meta mapping (Cmd). Core extraction (K2/K3) and shared restart
-  store remain tied to that start. Carry the non-native capability-first
+  are adopted: Apple Silicon only, macOS 15 minimum, persistent self-signed
+  development identity, configurable Meta with Ctrl default, all Rust,
+  per-app AX/input/engine threading and native Spaces first. Core extraction
+  (K2/K3) and the shared restart store remain consumer-driven reviews; the
+  window-policy slice is a separate follow-up. Carry the non-native capability-first
   spikes and one registration plus one interception hotkey path into Phase 0,
   then Phase 1 lifecycle/recovery and hotkey probes on a Mac.
   [API layer/events](research/non-native-tiler-host-interaction.md#d1-api-layer-authority-events-and-reconcile),

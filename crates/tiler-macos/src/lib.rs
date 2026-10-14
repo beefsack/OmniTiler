@@ -1,6 +1,8 @@
 #![deny(unsafe_code)]
 
-//! macOS Phase 0 capability probe (TIER 2, SIP left enabled).
+//! macOS Phase 0 capability probes and offline Phase 1 threading skeleton
+//! (TIER 2, SIP left enabled). [`runtime`] owns the shared-core lifecycle;
+//! existing probe entry points retain their bounded capability contracts.
 //!
 //! Threading contract (see `engine`):
 //! - Main thread: AppKit/UI only (`probe_target` window runs here).
@@ -35,6 +37,14 @@ pub mod input;
 pub mod input_match;
 pub mod ownership;
 pub mod probe_target;
+pub mod runtime;
+pub mod runtime_backend;
+mod runtime_core;
+pub mod runtime_lifecycle;
+pub mod runtime_log;
+mod runtime_observe;
+mod runtime_thread;
+pub mod runtime_types;
 pub mod session;
 pub mod spaces;
 

@@ -1204,6 +1204,391 @@ mod macos {
         }
     }
 
+    // -- Phase 1 thread-affine observer guard (isolated) --
+    //
+    // Long-lived per-app observer for the Phase 1 runtime worker. Shape
+    // pinned against yabai `src/application.c` (`AXObserverCreate` per app +
+    // `AXObserverAddNotification` on the application element +
+    // `CFRunLoopAddSource(CFRunLoopGetMain(),
+    // AXObserverGetRunLoopSource(...), kCFRunLoopDefaultMode)`; teardown
+    // invalidates the source) and the rift/glide `Observer` builder shape
+    // (`Observer::new(pid)` then install on the current thread's runloop;
+    // callbacks carry no layout work; the handle is `!Send` without any
+    // `unsafe impl`):
+    // - yabai dd845723416f5fe92af49fad5ebab00369e07edd
+    //   `src/application.c` (observer create/add/runloop-source wiring)
+    // - rift 8114ccc534b5c9a7e6a77ce27568d8739be9216f
+    //   `src/sys/observer.rs` + `src/sys/run_loop.rs` (thread-affine
+    //   `Observer`, runloop install)
+    // - glide ef3b30f88445fe4b517eb4c60023011f6d3725dd
+    //   `src/sys/observer.rs` + `src/sys/run_loop.rs` (same builder shape)
+    //
+    // Differences from those sources (deliberate): the callback here does NO
+    // subscription work and NO AX reads — it only bumps an atomic and
+    // non-blocking-wakes a bounded channel. Registration covers the shared
+    // session sets ([`AX_SESSION_APP_NOTIFICATIONS`] plus per-window
+    // [`AX_SESSION_WINDOW_NOTIFICATIONS`]); per-window subscriptions re-sync
+    // when newly observed windows appear. There is deliberately NO
+    // cross-thread runloop wake handle: rift/glide expose one via `unsafe
+    // impl Send` on their `WakeupHandle`, which this crate forbids. Command
+    // and stop latency is therefore bounded by the caller's pump slice
+    // (correctness never depends on it); document the bound at the call
+    // site. Create, pump, sync, focused-read, and teardown all run on the
+    // owning worker thread.
+
+    use objc2_core_foundation::CFRunLoopSource;
+
+    struct Phase1Refcon {
+        notified: Arc<AtomicU32>,
+        wake: SyncSender<()>,
+    }
+
+    unsafe extern "C-unwind" fn phase1_observer_callback(
+        _observer: NonNull<AXObserver>,
+        _element: NonNull<AXUIElement>,
+        _notification: NonNull<CFString>,
+        refcon: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: `refcon` is the live `Box<Phase1Refcon>` installed by
+        // `Phase1Observer::create`, reclaimed only after notifications are
+        // removed and the runloop source is invalidated on the owner thread.
+        // Minimal work only: bump plus non-blocking wake. No AX, no layout,
+        // no log, no panics.
+        if refcon.is_null() {
+            return;
+        }
+        let state = unsafe { &*(refcon as *const Phase1Refcon) };
+        state.notified.fetch_add(1, Ordering::SeqCst);
+        let _ = state.wake.try_send(());
+    }
+
+    struct Phase1WindowWatch {
+        wid: u32,
+        element: AxElement,
+        names: Vec<String>,
+    }
+
+    /// Thread-affine Phase 1 observer guard. `!Send + !Sync` via
+    /// `PhantomData<Rc>` (no `unsafe impl`): the compiler rejects moving it
+    /// off the owning worker thread. Prefer explicit [`Self::shutdown`] for
+    /// an honest teardown report; `Drop` repeats the same steps
+    /// best-effort when the owner exits without it.
+    pub struct Phase1Observer {
+        observer: CFRetained<AXObserver>,
+        app: AxElement,
+        app_names: Vec<String>,
+        windows: Vec<Phase1WindowWatch>,
+        source: Option<CFRetained<CFRunLoopSource>>,
+        refcon: Option<*mut Phase1Refcon>,
+        notified: Arc<AtomicU32>,
+        wake_rx: std::sync::mpsc::Receiver<()>,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for Phase1Observer {
+        fn drop(&mut self) {
+            // SAFETY: same teardown ordering as `shutdown` (removals, then
+            // source invalidation, then refcon reclaim); statuses ignored —
+            // explicit `shutdown` is the honest path.
+            let _ = self.teardown();
+        }
+    }
+
+    impl Phase1Observer {
+        /// Create and install the observer on the calling (owner) thread's
+        /// runloop. Registers the app-level session set; per-window
+        /// subscriptions arrive via [`Self::sync_windows`]. The messaging
+        /// timeout is set BEFORE any registration; refusal fails creation.
+        pub fn create(pid: i32, messaging_timeout_secs: f32) -> Result<Self, String> {
+            if pid <= 1 {
+                return Err(format!("refusing reserved pid {pid}"));
+            }
+            let app = AxElement::application(pid).ok_or_else(|| format!("bad pid {pid}"))?;
+            if ax_set_messaging_timeout(&app, messaging_timeout_secs) != 0 {
+                return Err(format!(
+                    "pid {pid}: messaging timeout unset before observer registration"
+                ));
+            }
+            let mut observer_raw: *mut AXObserver = std::ptr::null_mut();
+            // SAFETY: out-pointer valid; maintained `AXObserver::create`;
+            // nonzero status leaves `observer_raw` null and returns fast.
+            let status = unsafe {
+                AXObserver::create(
+                    pid,
+                    Some(phase1_observer_callback),
+                    NonNull::new(std::ptr::addr_of_mut!(observer_raw)).expect("non-null"),
+                )
+            };
+            if status.0 != 0 || observer_raw.is_null() {
+                return Err(format!(
+                    "AXObserverCreate pid {pid}: {}",
+                    super::ax_error_name(status.0)
+                ));
+            }
+            // SAFETY: create-rule +1 retained; owned exactly once.
+            let observer: CFRetained<AXObserver> =
+                unsafe { CFRetained::from_raw(NonNull::new(observer_raw).expect("non-null")) };
+            let notified = Arc::new(AtomicU32::new(0));
+            let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel::<()>(64);
+            let refcon = Box::new(Phase1Refcon {
+                notified: notified.clone(),
+                wake: wake_tx,
+            });
+            let refcon_ptr = Box::into_raw(refcon);
+            let mut app_names: Vec<String> = Vec::new();
+            // SAFETY: observer/app live in maintained wrappers; names are
+            // fresh `CFString`s; refcon valid until reclaimed in `teardown`
+            // after removals + source invalidation.
+            unsafe {
+                for name in super::AX_SESSION_APP_NOTIFICATIONS {
+                    let cf_name = CFString::from_str(name);
+                    let status = observer.add_notification(
+                        &app.inner,
+                        &cf_name,
+                        refcon_ptr as *mut std::ffi::c_void,
+                    );
+                    if status.0 == 0 {
+                        app_names.push((*name).to_owned());
+                    }
+                }
+            }
+            if app_names.is_empty() {
+                // SAFETY: nothing registered and no source installed, so no
+                // callback can fire; reclaim exactly once.
+                unsafe {
+                    drop(Box::from_raw(refcon_ptr));
+                }
+                return Err(format!(
+                    "pid {pid}: no AX notifications registered (bad pid or no consent)"
+                ));
+            }
+            // SAFETY: live observer must vend a runloop source (OS contract);
+            // the maintained accessor asserts non-null. Installed on the
+            // calling (owner) thread's runloop.
+            let source: CFRetained<CFRunLoopSource> = unsafe { observer.run_loop_source() };
+            let rl = match CFRunLoop::current() {
+                Some(rl) => rl,
+                None => {
+                    unsafe {
+                        for name in app_names {
+                            let cf_name = CFString::from_str(&name);
+                            let _ = observer.remove_notification(&app.inner, &cf_name);
+                        }
+                        drop(Box::from_raw(refcon_ptr));
+                    }
+                    return Err("AX observer runloop unavailable".to_owned());
+                }
+            };
+            // SAFETY: extern-static default-mode read; source/runloop live.
+            unsafe {
+                let mode = kCFRunLoopDefaultMode;
+                rl.add_source(Some(&source), mode);
+            }
+            Ok(Self {
+                observer,
+                app,
+                app_names,
+                windows: Vec::new(),
+                source: Some(source),
+                refcon: Some(refcon_ptr),
+                notified,
+                wake_rx,
+                _not_send: std::marker::PhantomData,
+            })
+        }
+
+        /// Pump the owner thread's runloop for at most `slice` (capped):
+        /// notifications delivered here only bump the counter (see
+        /// `take_notified`). The cap bounds command/stop latency without a
+        /// cross-thread wake handle; delivery itself still wakes the slice.
+        pub fn pump(&self, slice: Duration) {
+            while self.wake_rx.try_recv().is_ok() {}
+            // SAFETY: extern-static default-mode read; bounded slice keeps a
+            // hung app from stalling the owner past one slice.
+            unsafe {
+                let mode = kCFRunLoopDefaultMode;
+                CFRunLoop::run_in_mode(mode, slice.as_secs_f64().min(0.25), false);
+            }
+        }
+
+        /// Notifications delivered since the last call (counter reset).
+        /// The wake channel is drained so it never accumulates.
+        pub fn take_notified(&self) -> u32 {
+            while self.wake_rx.try_recv().is_ok() {}
+            self.notified.swap(0, Ordering::SeqCst)
+        }
+
+        /// Re-sync per-window subscriptions to the currently observed set.
+        /// New windows join (unjoined wids are skipped, never watched
+        /// foreign); gone windows are removed best-effort. At most 64
+        /// watched windows. App-level join/timeout failures are `Err`;
+        /// per-window misses are skipped without failing the whole sync.
+        pub fn sync_windows(
+            &mut self,
+            wids: &[u32],
+            messaging_timeout_secs: f32,
+        ) -> Result<(), String> {
+            const MAX_WATCHED: usize = 64;
+            let wanted: Vec<u32> = wids.iter().copied().take(MAX_WATCHED).collect();
+            if ax_set_messaging_timeout(&self.app, messaging_timeout_secs) != 0 {
+                return Err("observer window sync: messaging timeout unset".to_owned());
+            }
+            let mut windows = self
+                .app
+                .windows()
+                .map_err(|code| format!("observer window sync: {}", super::ax_error_name(code)))?;
+            // Drop gone watches (removals best-effort; teardown retries).
+            let mut kept = Vec::with_capacity(self.windows.len());
+            for watch in std::mem::take(&mut self.windows) {
+                if wanted.contains(&watch.wid) {
+                    kept.push(watch);
+                } else {
+                    // SAFETY: live observer/element; statuses teardown-only.
+                    unsafe {
+                        for name in &watch.names {
+                            let cf_name = CFString::from_str(name);
+                            let _ = self
+                                .observer
+                                .remove_notification(&watch.element.inner, &cf_name);
+                        }
+                    }
+                }
+            }
+            self.windows = kept;
+            let Some(refcon_ptr) = self.refcon else {
+                return Err("observer window sync: torn down".to_owned());
+            };
+            for wid in wanted {
+                if self.windows.iter().any(|w| w.wid == wid) {
+                    continue;
+                }
+                // Per-candidate join with its own finite bound FIRST: a
+                // candidate whose timeout refuses is skipped (narrow abort),
+                // never read unbounded. When every candidate refuses, the
+                // whole sync fails honestly instead of joining unbounded.
+                let mut refused_joins = 0usize;
+                let mut joined: Option<usize> = None;
+                for (index, window) in windows.iter().enumerate() {
+                    if ax_set_messaging_timeout(window, messaging_timeout_secs) != 0 {
+                        refused_joins += 1;
+                        continue;
+                    }
+                    if ax_window_id(window) == Some(wid) {
+                        joined = Some(index);
+                        break;
+                    }
+                }
+                let Some(pos) = joined else {
+                    if refused_joins > 0 && refused_joins == windows.len() {
+                        return Err(
+                            "observer window sync: messaging timeout unset for all candidates"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                };
+                let mut names: Vec<String> = Vec::new();
+                // SAFETY: live observer/element; refcon installed until
+                // `teardown` (checked above).
+                unsafe {
+                    for name in super::AX_SESSION_WINDOW_NOTIFICATIONS {
+                        let cf_name = CFString::from_str(name);
+                        let status = self.observer.add_notification(
+                            &windows[pos].inner,
+                            &cf_name,
+                            refcon_ptr as *mut std::ffi::c_void,
+                        );
+                        if status.0 == 0 {
+                            names.push((*name).to_owned());
+                        }
+                    }
+                }
+                if names.is_empty() {
+                    windows.remove(pos);
+                    continue;
+                }
+                let element = windows.remove(pos);
+                self.windows.push(Phase1WindowWatch {
+                    wid,
+                    element,
+                    names,
+                });
+            }
+            Ok(())
+        }
+
+        /// Best-effort focused window of the observed app (`AXFocusedWindow`
+        /// joined to a window id). `None` is honest unknown — never a claim
+        /// of "no focus". The app-level timeout gates the attribute read and
+        /// a per-window timeout gates the identity join: a join that refuses
+        /// its bound yields unknown, never an unbounded read.
+        pub fn focused_wid(&self, messaging_timeout_secs: f32) -> Option<u32> {
+            if ax_set_messaging_timeout(&self.app, messaging_timeout_secs) != 0 {
+                return None;
+            }
+            let value = self.app.copy_attribute("AXFocusedWindow").ok()?;
+            let inner: CFRetained<AXUIElement> = value.downcast().ok()?;
+            let window = AxElement {
+                inner,
+                _not_send: std::marker::PhantomData,
+            };
+            if ax_set_messaging_timeout(&window, messaging_timeout_secs) != 0 {
+                return None;
+            }
+            ax_window_id(&window)
+        }
+
+        /// Honest teardown: removes every registration, invalidates the
+        /// runloop source, and reclaims the refcon exactly once. `Err`
+        /// names failed removals (OS status names only); the guard is
+        /// consumed so teardown runs once (`Drop` becomes a no-op).
+        pub fn shutdown(mut self) -> Result<(), String> {
+            let failures = self.teardown();
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(format!("observer teardown: {}", failures.join("; ")))
+            }
+        }
+
+        fn teardown(&mut self) -> Vec<String> {
+            let mut failures = Vec::new();
+            // SAFETY: observer/app/watches live until reclaimed below;
+            // statuses recorded, never assumed.
+            unsafe {
+                for name in std::mem::take(&mut self.app_names) {
+                    let cf_name = CFString::from_str(&name);
+                    let status = self.observer.remove_notification(&self.app.inner, &cf_name);
+                    if status.0 != 0 {
+                        failures.push(format!("{name}: {}", super::ax_error_name(status.0)));
+                    }
+                }
+                for watch in std::mem::take(&mut self.windows) {
+                    for name in watch.names {
+                        let cf_name = CFString::from_str(&name);
+                        let status = self
+                            .observer
+                            .remove_notification(&watch.element.inner, &cf_name);
+                        if status.0 != 0 {
+                            failures.push(format!("{name}: {}", super::ax_error_name(status.0)));
+                        }
+                    }
+                }
+                if let Some(source) = self.source.take() {
+                    if let Some(rl) = CFRunLoop::current() {
+                        let mode = kCFRunLoopDefaultMode;
+                        rl.remove_source(Some(&source), mode);
+                    }
+                    source.invalidate();
+                }
+                if let Some(refcon_ptr) = self.refcon.take() {
+                    drop(Box::from_raw(refcon_ptr));
+                }
+            }
+            failures
+        }
+    }
+
     /// Observe Secure Input state. `None` (missing symbol) is unknown, never
     /// inactive.
     pub fn secure_input_known() -> Option<bool> {
@@ -2537,16 +2922,17 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
-    SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_observe_session, ax_raise,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id,
-    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
-    cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
-    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
-    secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
-    sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
-    sls_move_windows_direct, sls_space_type, sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
+    ax_set_size, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
+    carbon_register, cg_post_event_access_known, cg_window_list_all, frontmost_app,
+    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
+    run_owned_probe_window, running_apps, secure_input_known, slps_available, slps_post_event,
+    slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_spaces,
+    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
+    sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -2722,6 +3108,42 @@ mod stub {
         Err(AX_NOT_IMPLEMENTED)
     }
 
+    /// Off-macOS stub for the Phase 1 thread-affine observer guard: creation
+    /// always fails fast (AX is macOS-only); every other method is a no-op so
+    /// portable code paths compile without live behavior.
+    pub struct Phase1Observer {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Phase1Observer {
+        pub fn create(_pid: i32, _messaging_timeout_secs: f32) -> Result<Self, String> {
+            Err("Phase1Observer is macOS-only".to_owned())
+        }
+
+        pub fn pump(&self, _slice: Duration) {}
+
+        pub fn take_notified(&self) -> u32 {
+            0
+        }
+
+        pub fn sync_windows(
+            &mut self,
+            _wids: &[u32],
+            _messaging_timeout_secs: f32,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        pub fn focused_wid(&self, _messaging_timeout_secs: f32) -> Option<u32> {
+            None
+        }
+
+        pub fn shutdown(self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     pub fn secure_input_known() -> Option<bool> {
         None
     }
@@ -2829,16 +3251,17 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
-    SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_observe_session, ax_raise,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id,
-    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
-    cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
-    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
-    secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
-    sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
-    sls_move_windows_direct, sls_space_type, sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
+    ax_set_size, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
+    carbon_register, cg_post_event_access_known, cg_window_list_all, frontmost_app,
+    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
+    run_owned_probe_window, running_apps, secure_input_known, slps_available, slps_post_event,
+    slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_spaces,
+    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
+    sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]

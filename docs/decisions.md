@@ -110,6 +110,20 @@ platform API behavior.
   - Live procedures are governed by the
     [macOS live-testing guide](live-macos-testing.md); capability and recovery
     evidence is tracked in [Phase 0](changes/macos-phase-0.md).
+  - **Tentative, pending user review (Phase 1 skeleton):** use standard-library
+    bounded data handoffs, whole per-app latest-wins desired-frame batches,
+    and separate lifecycle/stop admission. App generations and source sequences
+    fence late observations/results; queued focus is only intent, never focus
+    proof. Join only exited threads under one stop deadline; retain unfinished
+    handles for later reap, and retain panic/unclean evidence across repeated
+    stop calls. Normal structured logs use a bounded writer handoff so a slow
+    sink cannot stall functional owners. No new channel/runtime dependency.
+  - **Tentative, pending user review:** the native AX observer pumps its own
+    run loop in at most 20 ms slices; commands and stop may wait for that
+    slice plus an in-flight bounded AX call. This avoids a custom unsafe
+    cross-thread run-loop handle. Input's inactive source parks until explicitly
+    woken; the engine waits for inbox work. Native latency/idle cost remains
+    unmeasured. [Offline evidence](changes/macos-phase-1-skeleton.md).
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring

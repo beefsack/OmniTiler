@@ -10,6 +10,11 @@ idle tap creation/release pass; the synthetic input fixture is blocked on
 AX/workspace focus disagreement and restoration, with its harness removed.
 The [active record](../../changes/macos-phase-0.md) and
 [setup runbook](../../macos-dev-environment.md) carry the current evidence.
+The [Phase 1 threading skeleton](../../changes/macos-phase-1-skeleton.md)
+now drives the existing shared Engine offline: engine/input/per-app AX owners,
+native thread-affine observer seam, typed observations/actuation/focus, bounded
+stop/reap and structured logs. Failure fixtures prove isolation and lifecycle
+fences; this does not complete the live Phase 0 or recovery/hotkey gates.
 Upstream source text is not runtime proof,
 and a dispatched setter is not proof of an observed effect.
 Labels used below: FACT (read from pinned source),
@@ -906,12 +911,12 @@ mapping, TCC/native IDs, and the event loop. Own-repo source baseline:
   bindings collide; anti-cheat safety is a non-guarantee; no injection
   to work around it.
 
-## Phases (owned probes first; Engine only after lifecycle proof)
+## Phases (owned probes first; live Engine tiling after lifecycle proof)
 
 | Phase | Scope | Exit evidence |
 | --- | --- | --- |
 | 0. Decisions + seam contract | Apply the adopted inputs below; [setup runbook](../../macos-dev-environment.md), [live protocol](../../live-macos-testing.md), stable signed identity; portable-crate baseline; consumer-driven core policy review (no Win32 mechanics). Capability-first spikes: owned-window AX observation/focus readback, Carbon registration and intercepting tap, native Spaces with SIP enabled. [Active evidence](../../changes/macos-phase-0.md). Phase 1 completes lifecycle/recovery and hotkey acceptance | Decisions recorded; probe contracts and initial capability evidence recorded; reproducible signed `.app` with stable TCC consent; CI allowlist green |
-| 1. Lifecycle, recovery, hotkeys | AX observer loop on owned apps; Carbon-vs-tap comparison; sleep/wake/session/Space/display callbacks; independent stranded-restore probe with durable preimages; settable/error/readback matrix | Conflict/suppression/TCC/SecureInput/timeout matrix; forced-kill restore with manual route. No hiding of ordinary user windows before this gate passes |
+| 1. Lifecycle, recovery, hotkeys | Offline [threading skeleton delivered](../../changes/macos-phase-1-skeleton.md): one core owner, input boundary, per-app AX observers/workers, typed handoffs, bounded stop/reap, failure fixtures. Single synthetic domain only; no live tiling entry point. Continue AX observer loop acceptance on owned apps; Carbon-vs-tap comparison; sleep/wake/session/Space/display callbacks; independent stranded-restore probe with durable preimages; settable/error/readback matrix | Offline isolation/panic/stale-generation/stop fixtures pass. Live conflict/suppression/TCC/SecureInput/timeout matrix and forced-kill restore with manual route remain pending. No hiding of ordinary user windows before this gate passes |
 | 2. Engine tiling, then workspaces + parity | Visible-ordinary-Space tiling first (`Engine::handle` + session plans + visual/size-hint policy); per-app skips; min-size hints (`SLSWindowIteratorGetConstraints` class vs AX probing); fullscreen/float/sticky classification; then per-display native Spaces using verified section 5 paths; active border with outline fallback; drag/drop preview. Parking deferred to a later setting | Requested-vs-observed frames across scale/animation; no fullscreen-game writes; revoke/wake/hotplug recovery; two-display send/switch/trailing-empty; shell acceptance; no game cost; preview without focus theft |
 | 3. Settings/menu/distribution/update + parity queue | Native menu/settings; per-binding conflict UX; notarized DMG + cask; update/uninstall lifecycle; mirror the Windows parity queue (maximise/fullscreen/float/sticky) per item | Live settings/readback; TCC survival across update; clean login/exit; quarantine path documented |
 
