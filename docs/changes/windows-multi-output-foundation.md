@@ -80,9 +80,8 @@
   review confirms native lifetime/scope/veto checks remain intact and
   observation updates caches without publishing Engine or membership changes.
   Local-first focus now also retains candidate MRU only after verified focus.
-- Tentative, pending user review: failed transfer retains original logical
-  membership while observed partial native writes converge without replay;
-  a verified transfer stands if its later focus actuation fails. See
+- User 2026-10-14 accepted the transfer-refusal and follow-focus failure policy;
+  see
   [decisions](../decisions.md#windows-multi-output-foundation).
 - Synthetic coverage includes all-four adjacent-output selection and occupied
   Engine plans; occupied/empty keyboard and drag destinations; independent

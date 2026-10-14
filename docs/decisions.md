@@ -19,6 +19,14 @@ Historical implementation detail is recoverable in Git history.
   The prior non-tiling ten-minute Windows loop is `lifecycle-smoke`.
 - Unsupported platforms fail explicitly rather than starting a partial loop.
   [Implementation and acceptance](changes/dev-entry-point.md).
+- User 2026-10-14: Windows `just dev` user-accepted (including tray Stop and
+  whole-desktop use); further issues become new backlog items.
+- User 2026-10-14: agent-owned identity-tagged `tiler-test-window.exe` is the
+  standard disposable helper for Windows agent live tests; each live test
+  still needs a user desktop hand-over.
+- User 2026-10-14 approved as delivered: `just/` platform-file layout, macOS
+  `dev` stub, retained per-run Windows payload dirs with current pointer, and
+  KDE-wins mixed desktop lists.
 
 ## Scope and Platform Goals
 
@@ -212,9 +220,10 @@ platform API behavior.
   requires creator-side native destruction and successful thread exit. Missing
   completion prevents overlapping replacement, using existing process recovery.
 - Preview finish is a bounded pending owner operation: creator-verified hide
-  acknowledgement precedes fresh owner revalidation and actuation. Tentative,
-  pending user review: no hide proof within 500 ms refuses that finish without
-  drop/snap-back writes; an overlapping pending finish refuses narrowly.
+  acknowledgement precedes fresh owner revalidation and actuation. User
+  2026-10-14 approved as delivered: no hide proof within 500 ms refuses that
+  finish without drop/snap-back writes; an overlapping pending finish refuses
+  narrowly.
 - Stage 2 native offline and scoped agent live evidence, with physical checks
   still pending: [render-thread record](changes/archive/windows-render-thread.md).
 - Stage 3 single-output hardening, 2026-10-13: input/render idle waits are
@@ -277,14 +286,14 @@ platform API behavior.
 
 ## Windows Multi-Output Foundation
 
-- Tentative, pending user review (2026-10-13): cross-output keyboard moves and
+- User 2026-10-14 approved as delivered: cross-output keyboard moves and
   native/Win-drag releases plan on a candidate Engine. Retained Engine state
   and workspace membership publish only after fresh topology, geometry
   readback and arrival verification; empty-destination drops also require
   source reflow verification. Refusal retains original logical membership.
   Native writes are not atomic: partial physical changes converge through
   subsequent observation, without replaying the refused transfer.
-- Tentative, pending user review: a verified transfer stands if subsequent
+- User 2026-10-14 approved as delivered: a verified transfer stands if subsequent
   foreground actuation fails; report the focus failure without claiming
   successful follow-focus. No workspace switch or visibility hide accompanies
   these transfers.
@@ -292,6 +301,9 @@ platform API behavior.
   domain-scoped hover state and occupied two-domain drag support add no planner
   wire fields. Physical multi-output acceptance remains pending in the
   [foundation record](changes/windows-multi-output-foundation.md).
+- User 2026-10-14 approved as delivered: items 14/19 migration (nonactivating
+  move-only fullscreen/float remaps; maximized/minimized keep restore rectangle
+  and show state across outputs).
 
 ## Project Name
 
@@ -494,6 +506,8 @@ platform API behavior.
     Settings and the conflict row open the singleton UI; Stop uses ordinary
     teardown with graceful icon deletion and dead-owner cleanup through the
     existing recovery lease. Explorer may initially put the icon in overflow.
+  - User 2026-10-14 approved as delivered: tray menu Stop uses a 50 ms
+    menu-thread check and `EndMenu` (`f4b9f41`).
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,
@@ -788,6 +802,10 @@ platform API behavior.
 
 ## Move, Layout and Output Commands
 
+- User 2026-10-14 approved as delivered: Windows movement and send commands
+  repeat while their modifiers remain held, including Win+Shift+arrow and
+  explicit output sends. Toggle commands retain one action per press in their
+  topic sections.
 - User decisions 2026-10-12 (0.1 triage): D09 / MOV-06 defaults to Geometric
   middle; post-0.1 `Nested move entry` has only Geometric middle (COSMIC) /
   Remembered child (i3, sway). D10 / MOV-07 defaults to Wrap; post-0.1
@@ -841,7 +859,7 @@ platform API behavior.
       base `755aab8` + delivery commit ([record](changes/archive/windows-parent-orientation-toggle.md)).
       Native gates and agent-observed Settings/owner adoption passed; physical
       toggle and OS suppression remain user-owned pending.
-    - Windows held-repeat choice (tentative, pending user review): one toggle
+    - Windows held-repeat choice (User 2026-10-14 approved as delivered): one toggle
       per discrete down; held repeats consumed without dispatch, release/repress
       toggles again. [Discriminator](spec/reference-outcomes.md#r-lay-01-windows-held-key-discriminator)
       leaves physical/KDE/unsupported reference outcomes TBD.
@@ -898,10 +916,12 @@ platform API behavior.
       retains per-desktop work areas. Largest-edge migration subsequently
       delivered offline with item 14
       ([record](changes/archive/windows-workspace-output-migration.md)).
-    - Windows tentative, pending user review: held output-send repeats dispatch
-      while the original Win/Ctrl/Alt and Shift polarity remain live. Follow
+    - Windows held output-send repeats (User 2026-10-14 approved as delivered):
+      repeats dispatch while the original Win/Ctrl/Alt and Shift polarity
+      remain live. Follow
       rejects Shift; explicitly rebound stay accepts Win+Ctrl+Alt or
-      Win+Ctrl+Alt+Shift and uses its canonical directional letter hold slot.
+      Win+Ctrl+Alt+Shift for now (exact Shift distinction only if a need
+      appears) and uses its canonical directional letter hold slot.
       [Discriminator](spec/reference-outcomes.md#windows-output-send-held-key-discriminator).
 ## Fixed-Size Admission
 - User decisions 2026-10-08 and 2026-10-10 (fixed-size admission R-SPC-04
@@ -957,7 +977,12 @@ platform API behavior.
     owner restart in the same intentional-float store, with recompute
     fallback if unavailable.
   - D7 status: Linux planner/KDE delivered offline ([record](changes/archive/fixed-window-tile-override-restart.md)); Windows fixed-origin tile marker delivered offline 2026-10-11 ([record](changes/archive/windows-fixed-size-admission.md)). Only settled tile wins over known automatic fixed origin write `OmniTiler.TileOverride.v1`; generic non-fixed unfloats do not. Hydration covers visible and retained/maximized admitted lifetimes before automatic classification, without requiring hints or granting write/recovery authority.
-  - Tentative Windows D3/D4/Q3 intersection, native verification pending: hydrated fixed-origin overrides keep the reserved tiled slot beneath maximize under both `core.born_maximized` values, including hint loss. Generic non-fixed maximize routing remains unchanged; the R-SPC-13 native discriminator stays TBD.
+  - Tentative Windows D3/D4/Q3 intersection, native verification pending (User
+    2026-10-14: kept for now; Tier 1 research before a shared cross-platform
+    decision): hydrated fixed-origin overrides keep the reserved tiled slot
+    beneath maximize under both `core.born_maximized` values, including hint
+    loss. Generic non-fixed maximize routing remains unchanged; the R-SPC-13
+    native discriminator stays TBD.
   - D8 no-touch: automatic fixed floats are membership-only: no
     geometry, focus, stacking or keep-above writes. Manual floats
     retain keep-above because intentional floats stay above windowed
@@ -1041,7 +1066,7 @@ platform API behavior.
   authority. Fixed tile-override marker is now wired by item 13/D7
   ([record](changes/archive/windows-fixed-size-admission.md)); only known
   automatic fixed provenance permits its success-only write.
-  Tentative, pending user review: dotted/versioned `OmniTiler.*.v1`
+  User 2026-10-14 approved as delivered: dotted/versioned `OmniTiler.*.v1`
   classification names replace the old sticky name (old markers not hydrated),
   and test-needed exact-owner `workspace --float` / `--sticky` controls reuse
   normal dispatch. Native `GetPropW` NULL cannot distinguish every unreadable
@@ -1146,7 +1171,7 @@ platform API behavior.
   (Authentic takes over, Compatible disables). KDE/macOS counterparts are
   not yet selected. Delivered offline 2026-10-12
   ([record](changes/archive/windows-launcher-shortcuts.md)); physical check
-  pending. Tentative, pending user review: the browser opens an empty
+  pending. User 2026-10-14 approved as delivered: the browser opens an empty
   `https://` URL through the shell `open` verb, and a missing `wt.exe`
   logs narrowly with no fallback.
 - Conflict model (user 2026-10-03, all platforms): a per-binding conflict
@@ -1312,7 +1337,9 @@ platform API behavior.
   remain user-owned. Windows delivered offline 2026-10-13
   ([record](changes/archive/windows-workspace-tiling-shortcut.md)): Win+Y
   routes to the existing tray workspace-mode toggle; no new focus/window
-  policy. The recorded Mixed Reality conflict follows Authentic takeover /
+  policy. One toggle per discrete press; held repeats consumed without
+  dispatch (User 2026-10-14 approved as delivered). The recorded Mixed Reality
+  conflict follows Authentic takeover /
   Compatible disabled (87 catalog rows, 41 Compatible-disabled rows).
   Native/physical toggle, tray sync, Apply/Revert, presets, rebind/disable and
   takeover-off release remain user-owned.
@@ -1574,7 +1601,8 @@ platform API behavior.
 - User decision 2026-10-13: group underlay default is candidate C `#662a82da`
   (40% accent blue, Qt `#AARRGGBB`: alpha 0x66, RGB #2a82da) on KDE and
   Windows, for now. KDE kcfg/effect/KCM default delivered offline 2026-10-13;
-  explicit saved colors are preserved, with no migration. Windows render/
+  explicit saved colors are preserved, with no migration (confirmed User
+  2026-10-14). Windows render/
   settings defaults and CLI/proof mirrors delivered offline 2026-10-13;
   explicit saved/CLI colors preserved, schema v1, no migration
   ([delivery](changes/archive/windows-underlay-default.md)). Before 0.1, user-owned
@@ -2121,6 +2149,11 @@ platform API behavior.
   [Evidence](changes/kde-dual-output-live.md#product-defect-and-offline-fix).
 - Normal operation shows bounded summaries; opt-in trace covers high-volume
   detail with no frame/poll noise.
+- User 2026-10-14: Windows trace outlier thresholds are 50 ms
+  queue/transport/work and 10 ms dispatch, otherwise one summary per second
+  while active. Windows
+  reconcile `tick` records now emit only a deduplicated skipped count
+  (`eae2934`; [trace-volume record](changes/archive/windows-trace-volume.md)).
 - Redact captions, application content, secrets, raw environment, native
   identifiers, raw native IDs, and raw native D-Bus payloads, plus unbounded
   pointer steps. Logging failures never block or change behavior.
@@ -2172,11 +2205,11 @@ platform API behavior.
   marking/clearing, fullscreen/game and explicit selection remain TBD
   ([delivery and options](changes/archive/windows-d27-activation-verification.md),
   [earlier assessment](changes/archive/windows-item22-verification.md)).
-- Tentative, pending user review (2026-10-14): assess hidden urgency presentation
-  in the existing Windows workspace presentation research; recommendation is
-  workspace-level urgency rather than reliance on an unproven hidden taskbar
-  flash. Appearance/mark-clear semantics and request-versus-selection handling
-  remain unselected; no Windows native-switch exception or new UI is adopted.
+- User 2026-10-14 (5a): hidden-window urgency marks the workspace urgent
+  in the planned workspace indicator, cleared on visit; designed within Windows
+  workspace presentation research; until then native Windows behavior only.
+- Tentative, pending user review (2026-10-14): request-versus-selection handling
+  remains unselected; no Windows native-switch exception or new UI is adopted.
 - Post-0.1 setting `Activation request` has two options: `Mark urgent only`
   (default; tooltip Hyprland, i3, sway) and `Switch and focus` (tooltip
   COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad
@@ -2396,7 +2429,8 @@ platform API behavior.
   [Windows floating navigation](changes/archive/windows-floating-directional-navigation.md)
   passes native MSVC offline gates; Windows local misses retain until the
   existing cross-output actuation gap is delivered under handoff item 5.
-- Tentative 2026-10-12, pending user review: Windows float candidate encounter
+- User 2026-10-14 approved (current observed-before-retained order kept):
+  Windows float candidate encounter
   order is eligible observations followed by retained maximized rows, with
   sticky-first layering over the combined list. Equal-axis ties between the
   two sets can differ from host enumeration order. Visible sticky candidates
@@ -2405,7 +2439,8 @@ platform API behavior.
   Reference tally: 0 explicit observed-first outcomes, 2 applicable but
   incomparable live-list mechanisms (COSMIC/Hyprland), 7 unavailable profiles.
   Distance still wins across classes/layers; only equal-axis ties use this order.
-  Keep tentative pending deeper comparable tie-order research
+  Deeper comparable tie-order research is closed with the P2 item; revisit only
+  if dogfooding shows a wrong pick
   ([basis](changes/archive/windows-floating-directional-navigation.md#user-accepted-physical-evidence---2026-10-12)).
 
 - Intentional normal and sticky floating request KWin's public `keepAbove=true`.
@@ -2535,7 +2570,7 @@ platform API behavior.
   fences, while R-MAX-05 toggle refusal remains. Unreadable fullscreen flags
   defer before effects; slotless born-fullscreen stays ineligible.
   Test-needed `workspace --fullscreen` reuses exact-owner consume-once CLI
-  transport and toggle authority; grammar is tentative, pending user review.
+  transport and toggle authority (User 2026-10-14 approved as delivered).
   Physical shortcuts/native flag races/app-owned games/cross-output pending.
 - KDE borderless-windowed fullscreen heuristic (born-fullscreen option 3,
   user 2026-10-10): stays conditional. The user watches for borderless games
@@ -2554,7 +2589,8 @@ platform API behavior.
     2026-10-12). Retained slots exempt; fullscreen wins. Stop/crash preserve
     frames and maximize state; identity-safe recovery reveals hidden members.
     One native toggle attempt per discrete Win+M down (the discrete rule also
-    fixes KDE's map-refusal case); held repeats consumed without dispatch.
+    fixes KDE's map-refusal case); held repeats consumed without dispatch
+    (User 2026-10-14 approved as delivered).
     Status: scoped synthetic proof passed; native system-command and
     double-click paths proven in scoped runs; physical input and other output/DPI
     arrangements remain user-owned
@@ -2576,7 +2612,8 @@ platform API behavior.
     hold before any later explicit exit. App-owned fullscreen without that
     preimage refuses (user 2026-10-07 R-MAX-05; a later spike explores
     retaining state early). No synthesized app F11, no guessed restore. One
-    attempt per discrete down; held repeats consumed. Failed effects retain any
+    attempt per discrete down; held repeats consumed (User 2026-10-14 approved
+    as delivered). Failed effects retain any
     usable preimage for a later explicit press. Captionless
     full-monitor windows classify as fullscreen on Windows for borderless-game
     compatibility while KDE stays flag-based (deliberate difference, user
@@ -2605,7 +2642,8 @@ platform API behavior.
     preimages even without later readback. Evaluate on a local Engine clone
     and commit after target effects verify; failed effects never strand
     membership. Born-fullscreen holds stay distinct from intentional float
-    actuation. One attempt per discrete down. B9 selected behavior
+    actuation. One attempt per discrete down (User 2026-10-14 approved as
+    delivered). B9 selected behavior
     (unmaximize-then-fresh-admit) is delivered offline on KDE and Windows
     ([Windows record](changes/archive/windows-maximized-intentional-unfloat.md));
     native clear/frame/focus timing remains pending.
@@ -2661,6 +2699,7 @@ platform API behavior.
       launch physically user-accepted 2026-10-12 under G-06's conditions;
       browser/session/fixed/game/DPI/multi-output acceptance pending
       ([record](changes/archive/windows-born-maximized-setting.md)).
+      - User 2026-10-14: `CoreSettings::born_maximized_mode()` accessor accepted.
       R-MAX-03 parity delivered offline with item 11; fixed-client detection
       delivered offline with item 13.
       - KDE offline-delivered: setting + KCM + adapter subsequent-only

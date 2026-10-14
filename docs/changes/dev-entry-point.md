@@ -31,18 +31,16 @@ runbook's stop-command spelling.
 
 ## Material decisions
 
-- Tentative, pending user review: platform files live under `just/`, and macOS
-  has a small explicit unsupported `dev` stub.
+- User 2026-10-14: platform-file layout and macOS stub accepted;
+  [decision](../decisions.md#development-entry-point).
 - Windows cleanup belongs inside PowerShell `finally`, not subsequent just
   recipe lines. Do not register a PowerShell-scriptblock console cancel handler.
 - Final cleanup reports use direct console output because Ctrl+C can suppress
   PowerShell pipeline output even after cleanup completes. The wrapper exits
   with the computed cleanup result; just's interrupted command-shell layer can
   still return 1, so the report and independent readbacks establish teardown.
-- Tentative, pending user review: when KDE and GNOME both occur in the desktop
-  list, KDE wins. Windows foreground payloads use unique child directories
-  under `target/windows-dev`; a runtime pointer makes `just stop` recover the
-  matching payload. Build-output copies are retained without automatic pruning.
+- User 2026-10-14: mixed-desktop dispatch and retained Windows payloads/current
+  pointer accepted; [decision](../decisions.md#development-entry-point).
 - The unique executable path attributes a broker launch before readiness.
   Cleanup compares the full captured owner identity when available, refuses
   foreign ledger owners, and waits up to five seconds for publication when
@@ -161,8 +159,8 @@ runbook's stop-command spelling.
 
 ## Bounded verification continuation
 
-- Tentative, pending user review: use an agent-owned disposable test helper,
-  identity-tagged and independently checked, to establish non-hooking hide,
+- Use the [accepted standard test helper](../decisions.md#development-entry-point),
+  independently checked, to establish non-hooking hide,
   graceful owner exit and post-exit independent restore before further native
   journeys. Dispose of the exact helper window after restoration.
 - Continue underlay rendering with a CLI-only `#662a82da` override, tray
@@ -203,6 +201,12 @@ runbook's stop-command spelling.
   pending checks, not additional dev-lifecycle acceptance claims.
 
 ## Acceptance journeys
+
+- User 2026-10-14 accepted Windows `just dev`, including tray Stop and
+  whole-desktop use; [decision](../decisions.md#development-entry-point).
+  This supersedes the pending Windows dev-lifecycle acceptance above; specific
+  feature checks remain in their own records. Linux KDE streaming/teardown
+  acceptance remains pending, so this record stays active.
 
 ### Windows
 

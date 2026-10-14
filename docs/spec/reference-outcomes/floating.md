@@ -434,7 +434,7 @@ Column legs below use separately stated column Givens with the same identities a
   1950, positive-delta nearest); tiles excluded. `S(S-pan-cmds)` +
   `S(S-pan-flt)`.
 - Then Ours KDE: G by top-left x delta; ordinary/sticky share candidates, nearer B excluded; offline `D(D-float-nav)`, live TBD
-- Then Ours Windows: G selected by top-left x delta; sticky-first single race, nearer tiles excluded; visible non-home sticky and retained maximized float targets participate. Offline 2026-10-12, base `e506350`, axis/tie/candidate fixtures. Float-origin Win+arrow focus physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact tie/non-home sticky/game/DPI/multi-output TBD. Observed-before-retained tie order remains Tentative 2026-10-12, pending user review; no comparable reference majority; [record](../../changes/archive/windows-floating-directional-navigation.md).
+- Then Ours Windows: G selected by top-left x delta; sticky-first single race, nearer tiles excluded; visible non-home sticky and retained maximized float targets participate. Offline 2026-10-12, base `e506350`, axis/tie/candidate fixtures. Float-origin Win+arrow focus physically user-accepted 2026-10-12 under R-FLT-07's conditions; exact tie/non-home sticky/game/DPI/multi-output TBD. Observed-before-retained tie order approved User 2026-10-14, current order kept ([decision](../../decisions.md#window-state-float-sticky-maximize-fullscreen)); no comparable reference majority; [record](../../changes/archive/windows-floating-directional-navigation.md).
 - Variant hook: V-FLOAT-FOCUS.
 
 <a id="r-flt-10-backfill-semantic-float-move-scrolling"></a>

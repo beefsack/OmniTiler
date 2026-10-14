@@ -72,7 +72,7 @@ implementation record. Selected intent and doc assertions alone are never eviden
   Real retained Engine H/V root flips preserve order/shares/focus and double
   toggle restores tree; native gates and agent-observed Settings/preset/live
   routing adoption passed. Positive physical toggle/OS suppression pending;
-  Authentic owns Win+O, Compatible disables ours. Held-repeat choice tentative.
+  Authentic owns Win+O, Compatible disables ours. Held-repeat choice approved User 2026-10-14 as delivered ([decision](../../decisions.md#move-layout-and-output-commands)).
 - Variant hook: provisional/TBD (orientation-scope hook, to discuss).
 
 ### R-LAY-02: rotate 90 degrees; mirror left/right (separate fresh legs)

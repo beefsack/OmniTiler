@@ -319,84 +319,31 @@ decisions of 2026-09-24 are under
     and focus, unmaximize/remaximize on target and return work; D23 minimize
     reflows, restore rejoins, minimized close keeps tiling sound. One issue:
     fullscreen send arrives without focus (trace `focus-suppressed`), the
-    tentative R-MAX-09 fullscreen-follow focus suppression. User 2026-10-14
+    then-current R-MAX-09 fullscreen-follow focus suppression. User 2026-10-14
     selected option A: a verified follow send focuses the fullscreen mover on
     arrival like other follow sends (stay unchanged); real-game check under
     gaming coexistence. Delivered offline 2026-10-14 for numbered/relative
     workspace and output follows, with mover-focus and unchanged stay
     regressions; user physical recheck pending ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
-  - User review of Windows tentatives 2026-10-14 (promote to `decisions.md`
-    and clear the "tentative" labels with the next delivery): (1) fullscreen
-    follow focus: option A above, delivered offline; user physical recheck
-    pending. (2) Held repeats: keep toggles at one action
-    per press (Win+Y, Win+O, float/maximize/fullscreen) and keep movement/send
-    repeats while modifiers stay held (Win+Ctrl+Alt output send like
-    Win+Shift+arrow); approved as delivered. (3) Rebound output-send stay on
-    letters accepts Win+Ctrl+Alt with or without Shift; approved for now,
-    exact Shift distinction only if a need appears. (4) Tray menu stop via
-    50 ms menu-thread check and `EndMenu` (`f4b9f41`): approved as delivered.
-    (5a) D27 hidden-window urgency: mark the workspace urgent in the planned
-    workspace indicator, cleared on visit; designed within Windows workspace
-    presentation research; until then native Windows behavior only.
-    (5b) OS-permitted activations (Windows foreground lock passed) are
-    legitimate: switch to the window's workspace and focus, analogous to the
-    KDE valid-token exception; no app-vs-user classifier.
-    (6) D23 source slot after a minimized window is rehomed elsewhere: user
-    leans option B (forget the source slot once placed elsewhere; a later
-    return uses ordinary send admission). Before deciding, check Tier 1
-    reference behavior (expected: position lost after moving workspace);
-    shared-core change affecting KDE; low priority.
-    (7) Saved underlay colors always win; no migration to `#662a82da`.
-    (8) Windows `just dev` user-accepted 2026-10-14 (including tray Stop and
-    whole-desktop use); further issues become new backlog items. Archive
-    `docs/changes/dev-entry-point.md` once the Linux KDE `just dev` check passes
-    (or split that check into its own backlog line).
-    (9) `CoreSettings::born_maximized_mode()` accessor: accepted.
-    (10) Agent-owned identity-tagged `tiler-test-window.exe` is the standard
-    disposable helper for agent live tests (each live test still needs a
-    user desktop hand-over): accepted.
-    (11) Trace outlier thresholds 50 ms queue/transport/work, 10 ms dispatch,
-    otherwise one summary per second while active: accepted.
-    (12) Items 14/19 migration: nonactivating move-only fullscreen/float
-    remaps; maximized/minimized keep restore rectangle and show state across
-    outputs: accepted.
-    (13) Accepted as delivered: Win+O held repeat one toggle per press;
-    render 500 ms hide-proof timeout refuses that drop with no writes; Win+B
-    shell `open` of bare `https://`, Win+T missing `wt.exe` logs only;
-    unverified cross-output transfer keeps original membership and partial
-    writes converge by observation, verified transfer stands if follow-focus
-    fails; dev entry-point `just/` layout, macOS stub, KDE wins mixed desktop
-    lists, retained per-run Windows payload dirs with current pointer;
-    `OmniTiler.*.v1` marker names and exact-owner `workspace --float`/
-    `--sticky`/`--fullscreen` test controls.
-    (13f) Fixed-size window with a durable tile override launching maximized
-    keeps a maximized overlay over a reserved slot under both
-    `core.born_maximized` values: kept for now. User wants consistency with
-    Tier 1 reference WMs and treats this as a cross-platform (shared) policy,
-    not Windows-only: research Tier 1 behavior, then decide for all targets.
-    (13g) Rust `unsafe` policy refined by user 2026-10-14, in preference
-    order: (i) use a popular, maintained, high-quality, battle-hardened
-    dependency that contains the unsafe and exposes safe Rust APIs (unsafe
-    inside the dependency is fine); (ii) avoid unsafe entirely; (iii) worst
-    case, a minimal FFI module with all else forbidden. Invert the default:
-    workspace `[workspace.lints.rust] unsafe_code = "forbid"`, FFI crates
-    override to `deny` with `#![allow(unsafe_code)]` only on the approved
-    module, plus a CI check that no other `allow(unsafe_code)` exists.
-    The `windows` crate keeps most Win32 functions `unsafe fn`, so it does not
-    satisfy (i) alone. Next: research safe Win32 wrapper crates (e.g.
-    `winsafe`) against our API surface (LL/WinEvent hooks, window procs,
-    DWM/cloak, layered windows/GDI, tray, SPI, ToolHelp, tokens, WTS,
-    accessibility); options plus recommendation to the user. Supersedes the
-    open "wrap FFI vs another crate" question. User follow-up: `winsafe`
-    likely fails the popularity/battle-hardened bar; `windows` and
-    `windows-sys` likely pass. If both expose Win32 calls as `unsafe fn`
-    (verify), (i) is unmet and (iii) applies: one minimal FFI module built on
-    either crate. Remaining choice: `windows` conveniences versus
-    `windows-sys` simplicity/compile cost/migration churn; check runtime
-    overhead (expected negligible) in the research unit.
-    (13h) Float-vs-maximized directional focus tie order: keep current
-    observed-before-retained order for now; close the P2 research item and
-    revisit only if dogfooding shows a wrong pick.
+  - Windows review follow-ups (User 2026-10-14):
+    - 5b open: does OS-permitted activation switch+focus override the D27 fullscreen/game urgency-only guard (decisions.md D27)? Recommendation: guard remains an exception per Gaming Compatibility principle.
+    - (6) D23 source slot after a minimized window is rehomed elsewhere: user
+      leans option B (forget the source slot; later return uses ordinary send
+      admission). Check Tier 1 reference behavior before deciding; shared-core
+      change affecting KDE, low priority.
+    - (8) Linux KDE `just dev` streaming/teardown check remains pending;
+      [entry-point record](changes/dev-entry-point.md) stays active until it passes.
+    - (13f) Research Tier 1 fixed-size durable-override born-maximized behavior,
+      then decide shared policy for all targets; [current tentative](decisions.md#fixed-size-admission).
+    - (13g) Research safe Win32 wrappers against hooks, window procs, DWM/cloak,
+      layered windows/GDI, tray, SPI, ToolHelp, tokens, WTS and accessibility,
+      under the [unsafe principle](principles.md#unsafe-code). User expects
+      `winsafe` may fail the popularity/battle-hardened bar; verify whether
+      `windows` and `windows-sys` expose the required calls only as `unsafe fn`.
+      If so, compare one minimal FFI module on either crate: conveniences versus
+      simplicity, compile cost, migration churn and runtime overhead; recommend
+      a route to the user. Follow through with default-forbid lints, narrow
+      module opt-in and a CI check against other `allow(unsafe_code)` sites.
   - User 2026-10-14: the Windows taskbar workspace indicator is now high
     priority and blocks Windows dogfooding (tiling otherwise close to dogfood
     ready, apart from the parked Win+G/Win+F11 Xbox prompts). Pull the
@@ -405,7 +352,7 @@ decisions of 2026-09-24 are under
   - (f) Offline-delivered 2026-10-12 (`b8edd14`, `8e56546`, CI green):
     Win+B opens the system-default browser via shell `open` of bare
     `https://`, Win+T launches `wt.exe` (missing Terminal logs and
-    continues); both tentative, pending user review. Physical check pending:
+    continues); [accepted implementation](decisions.md#shortcuts-conflicts-and-presets). Physical check pending:
     Authentic launches, Compatible inert, rebind/disable
     ([record](changes/archive/windows-launcher-shortcuts.md)).
   - (a) Offline-delivered: pending first-run prompt cancels on graceful stop,
@@ -567,13 +514,6 @@ decisions of 2026-09-24 are under
   retain required data-loss safety. KDE user-tested live 2026-10-12: dialogs
   worked; result text shortened in `b718987` (short-text recheck pending).
   [flow and evidence](changes/archive/kde-shortcut-result-dialogs.md).
-- P2 | Windows float/maximized focus tie research | Tentative 2026-10-12,
-  pending user review: observed-before-retained encounter order only affects
-  equal-axis ties, not distance ranking. Existing-source tally: 0 explicit
-  observed-first, 2 applicable but incomparable live-list mechanisms, 7
-  unavailable profiles. Keep current order; deeper comparable reference
-  tie-order research pending. [Discriminator](spec/reference-outcomes.md#windows-floating-candidate-discriminator-2026-10-12),
-  [tally](changes/archive/windows-floating-directional-navigation.md#user-accepted-physical-evidence---2026-10-12).
 - P1 | Windows fullscreen-exit acceptance | Startup/born exits, retained managed
   slot return, borderless exit and owned-exit metadata retirement pinned offline
   2026-10-12; directional post-clear owned-metadata veto corrected. Owned

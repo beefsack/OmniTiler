@@ -54,14 +54,14 @@ Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Missing hide proof | Show a drag preview for A; end the gesture; withhold the renderer's verified hidden acknowledgement past 500 ms; later try a fresh gesture | Tentative, pending user review: refuse that finish without Engine drop, focus, geometry or snap-back writes; retain the hide safety obligation. A verified hide instead permits fresh owner revalidation before actuation; cancel/Esc/suspend/new gesture/stop invalidate pending work ([record](../changes/archive/windows-render-thread.md)) | Deterministic pending-owner fixtures prove ordering/refusal. Agent live verified hide-before-own-slot-drop, not a physical structural drop. Native missing-ack and exact reference-WM outcomes TBD; no crash/game experiment inferred |
+| Missing hide proof | Show a drag preview for A; end the gesture; withhold the renderer's verified hidden acknowledgement past 500 ms; later try a fresh gesture | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-owner-threading)): refuse that finish without Engine drop, focus, geometry or snap-back writes; retain the hide safety obligation. A verified hide instead permits fresh owner revalidation before actuation; cancel/Esc/suspend/new gesture/stop invalidate pending work ([record](../changes/archive/windows-render-thread.md)) | Deterministic pending-owner fixtures prove ordering/refusal. Agent live verified hide-before-own-slot-drop, not a physical structural drop. Native missing-ack and exact reference-WM outcomes TBD; no crash/game experiment inferred |
 
 ### Windows cross-output transfer failure discriminator
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Failed transfer tail | Exhaust a tiled move into another output, or release a native/Win-drag there; refuse final topology, geometry readback or arrival proof (also source reflow for an empty drag destination) | Tentative, pending user review: discard candidate Engine changes, retain original logical membership and skip follow-focus; any partial native geometry converges through subsequent observation without replay. Occupied/empty release and keyboard refusal fixtures pass ([record](../changes/windows-multi-output-foundation.md)) | Physical refusal timing, partial-write recovery and exact reference-WM outcomes TBD |
-| Focus fails after verified transfer | Complete the same transfer with verified arrival; refuse its subsequent foreground setter | Tentative, pending user review: verified membership/Engine transfer stands; report focus failure without claiming follow-focus | Physical setter refusal and exact reference-WM outcomes TBD |
+| Failed transfer tail | Exhaust a tiled move into another output, or release a native/Win-drag there; refuse final topology, geometry readback or arrival proof (also source reflow for an empty drag destination) | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-multi-output-foundation)): discard candidate Engine changes, retain original logical membership and skip follow-focus; any partial native geometry converges through subsequent observation without replay. Occupied/empty release and keyboard refusal fixtures pass ([record](../changes/windows-multi-output-foundation.md)) | Physical refusal timing, partial-write recovery and exact reference-WM outcomes TBD |
+| Focus fails after verified transfer | Complete the same transfer with verified arrival; refuse its subsequent foreground setter | User 2026-10-14 approved as delivered ([decision](../decisions.md#windows-multi-output-foundation)): verified membership/Engine transfer stands; report focus failure without claiming follow-focus | Physical setter refusal and exact reference-WM outcomes TBD |
 
 ### R-FLT-06 readings
 
@@ -98,7 +98,7 @@ establish KGlobalAccel's held-key delivery or select a repeat-suppression policy
 
 | Variant | Minimal action sequence | Windows offline outcome / tentative decision | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Held orientation toggle | Focus B in `H[A,B*]`; hold Win+O past repeat delay; release; press once again | Tentative, pending user review: one toggle on discrete down, consumed repeats do not retoggle; release/repress returns H. Classifier/queue tests 2026-10-11, base `755aab8` + delivery commit ([record](../changes/archive/windows-parent-orientation-toggle.md)) | Windows physical delivery/OS suppression TBD, user-owned. KDE held callback behavior and exact reference-WM held sequence TBD; no unsupported outcome inferred |
+| Held orientation toggle | Focus B in `H[A,B*]`; hold Win+O past repeat delay; release; press once again | User 2026-10-14 approved as delivered ([decision](../decisions.md#move-layout-and-output-commands)): one toggle on discrete down, consumed repeats do not retoggle; release/repress returns H. Classifier/queue tests 2026-10-11, base `755aab8` + delivery commit ([record](../changes/archive/windows-parent-orientation-toggle.md)) | Windows physical delivery/OS suppression TBD, user-owned. KDE held callback behavior and exact reference-WM held sequence TBD; no unsupported outcome inferred |
 
 ### R-CTL-05 M13 readings
 
@@ -151,7 +151,7 @@ native outcomes remain pending
 
 | Variant | Minimal action sequence | Windows offline outcome / decision | Reference / native |
 | --- | --- | --- | --- |
-| Observed/retained equal-axis tie (R-FLT-09) | Float F and G; maximize another float M; arrange G's top-left x equal to M's visible top-left x; focus F to their right and press Left, then repeat from their left with Right; reverse G/M stacking and repeat | Tentative 2026-10-12, pending user review: observed G precedes retained M within its ordinary layer, Left keeps G and Right keeps M. One shared axis-distance race across classes/layers, so nearer M still beats farther G; encounter order affects ties only ([record](../changes/archive/windows-floating-directional-navigation.md)) | Exact combined-order/stacking outcomes and Windows physical tie order TBD. Source tally: COSMIC 3d55cba0 and Hyprland ae50c4d6 use unified live-list races, no comparable observed/retained split; 7 other available profiles lack the exact maximize/float-origin leg. No reference majority for observed-first; native maximum geometry need not equal restore geometry |
+| Observed/retained equal-axis tie (R-FLT-09) | Float F and G; maximize another float M; arrange G's top-left x equal to M's visible top-left x; focus F to their right and press Left, then repeat from their left with Right; reverse G/M stacking and repeat | User 2026-10-14 approved, current order kept ([decision](../decisions.md#window-state-float-sticky-maximize-fullscreen)): observed G precedes retained M within its ordinary layer, Left keeps G and Right keeps M. One shared axis-distance race across classes/layers, so nearer M still beats farther G; encounter order affects ties only ([record](../changes/archive/windows-floating-directional-navigation.md)) | Exact combined-order/stacking outcomes and Windows physical tie order TBD. Source tally: COSMIC 3d55cba0 and Hyprland ae50c4d6 use unified live-list races, no comparable observed/retained split; 7 other available profiles lack the exact maximize/float-origin leg. No reference majority for observed-first; native maximum geometry need not equal restore geometry |
 | Owned fullscreen transition (G-06, R-MAX-08) | Maximize B; enter project fullscreen; during a transitional non-covering frame press move Right while owned fullscreen metadata is present | Tentative 2026-10-12, pending user review: metadata vetoes maximize clear even if the fresh geometry is not a full cover; no clear or move. Pre-clear fullscreen precedence is pinned offline; actual transition routing is native TBD ([record](../changes/archive/windows-maximized-directional-navigation.md)) | Exact reference outcomes and Windows native transition timing TBD; no game experiment inferred |
 
 ### Windows fullscreen-exit discriminators (2026-10-12)
@@ -5212,7 +5212,7 @@ commits; PaperWM.spoon stays corroboration only, never a separate profile.
 
 ## Windows output-send held-key discriminator
 
-- Tentative, pending user review; offline evidence `fda618f`, 2026-10-14.
+- User 2026-10-14 approved as delivered ([decision](../decisions.md#move-layout-and-output-commands)); offline evidence `fda618f`, 2026-10-14.
   Fresh action-sequence sub-leg of R-OUT-04/07, not a reference vote.
 
 | Given | When | Windows offline outcome | Physical/reference outcome |
