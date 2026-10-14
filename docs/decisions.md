@@ -557,7 +557,8 @@ platform API behavior.
 - Tentative (autonomous 2026-10-15), pending user review: workspace scope
   saves immediately on Apply but is adopted only on owner restart. The running
   owner retains its startup mode and reports restart-required drift, matching
-  KDE's `workspaceMode` handling. Owner adoption/reporting remains pending.
+  KDE's `workspaceMode` handling. Windows owner adoption/reporting delivered
+  2026-10-15, with single-output native CLI evidence.
 - Tentative (autonomous 2026-10-15), pending user review: global-unique keeps
   scoped numbering and KDE's visible-elsewhere swap rule, with no new
   addressing. Local/global-unique retain per-output history/rings; shared
@@ -568,7 +569,18 @@ platform API behavior.
   leaves unsupported reference and native outcomes TBD for user testing.
 - Item 12 pure scope policy and Windows mode schema/selector delivered offline
   2026-10-15 ([record](changes/archive/windows-workspace-scope-policy.md));
-  runtime adoption and hotplug remain pending.
+  Windows owner selection, sends, history, global swaps and shared trailing
+  lifecycle delivered 2026-10-15
+  ([record](changes/archive/windows-workspace-scope-owner.md)). Single-output
+  native CLI journeys passed in all three modes; physical two-output and
+  mode-aware hotplug remain pending.
+- Tentative (autonomous 2026-10-15), pending user review: Windows shared-mode
+  startup uses the first live output's active workspace in stable output-key
+  order as the initial logical view, converges other output-bound domains,
+  and primes one history without recording startup as a previous transition.
+  Primary-output and focused-output alternatives have no established reference
+  outcome; the [startup discriminator](spec/reference-outcomes.md#windows-shared-startup-discriminator)
+  leaves them TBD for two-output user testing.
 
 - User decision 2026-10-12, D16 / REQ-WS-05 / R-WS-05, option (a): sending
   a floating window to another workspace keeps it floating on arrival and

@@ -2541,6 +2541,10 @@ struct TileLoop {
     /// Project-owned per-output-local workspaces. Independent Engine domains
     /// per `(output, workspace)` preserve each layout plus last focus.
     workspaces: crate::workspace::ManagedWorkspaces,
+    /// Startup-adopted workspace-scope mode plus scoped history (item 12
+    /// stage B). Adopted once from the saved mode before `sync_monitor_outputs`;
+    /// live file edits never adopt, only report restart-required drift.
+    scope_owner: crate::workspace_scope_owner::WorkspaceScopeOwner,
     /// Stable session tokens per member key. The token (not the ephemeral
     /// product nonce) is the Engine identity; the nonce lives only in
     /// `hidden_claims` plus the ledger while hidden.
@@ -20776,26 +20780,9 @@ fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, store: &Ledge
         retired_any = true;
     }
     if retired_any {
-        for output in state.workspaces.output_keys() {
-            let Some(active_id) = state.workspaces.active_id(&output) else {
-                continue;
-            };
-            let displaced: Vec<String> = state
-                .workspaces
-                .displaced_snapshot()
-                .values()
-                .flat_map(|r| r.workspace_ids.clone())
-                .collect();
-            let sticky_keys: BTreeSet<crate::workspace::WindowKey> =
-                state.sticky.keys().cloned().collect();
-            let (removed, append) = state.workspaces.plan_cleanup_excluding(
-                &output,
-                std::slice::from_ref(&active_id),
-                &displaced,
-                &sticky_keys,
-            );
-            state.workspaces.apply_cleanup(&output, &removed, append);
-        }
+        // Trailing convergence through the shared scope contract (item 12
+        // stage B): local keeps the exact legacy per-output loop.
+        tiling_sys_scope_trailing::converge_all(state);
     }
 }
 
@@ -21607,6 +21594,55 @@ fn workspace_do_select(
     }
     let source_token = state.workspaces.workspace_token(output, &current);
     let target_token = state.workspaces.workspace_token(output, target);
+    // Item 12 stage B scoped effects: shared selections converge every
+    // live output onto the logical id and global-unique targets visible
+    // elsewhere swap the two views (native transfer plus history on both
+    // outputs). All other targets run the ordinary single-output path below.
+    {
+        let adopted = state.scope_owner.adopted();
+        if adopted == tiler_core::workspace_scope::WorkspaceMode::Shared {
+            if let Some(plan) = state
+                .scope_owner
+                .plan_shared_select(&state.workspaces, target)
+            {
+                return tiling_sys_scope_effects::shared_select(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    fulls,
+                    areas,
+                    observed,
+                    output,
+                    &plan,
+                    ctx,
+                    focus_hint,
+                    suppress_focus,
+                    skip_geometry,
+                );
+            }
+        } else if adopted == tiler_core::workspace_scope::WorkspaceMode::GlobalUnique
+            && let Some(plan) = state
+                .scope_owner
+                .swap_plan_for(&state.workspaces, output, target)
+        {
+            return tiling_sys_scope_effects::global_swap_select(
+                state,
+                me,
+                store,
+                dir,
+                fulls,
+                areas,
+                observed,
+                output,
+                &plan,
+                ctx,
+                focus_hint,
+                suppress_focus,
+                skip_geometry,
+            );
+        }
+    }
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let leaving = state.workspaces.workspace_members(output, &current);
     let mut hide_failed = false;
@@ -21843,25 +21879,16 @@ fn workspace_do_select(
     // verified hide/reveal above), not the final action success label,
     // controls history. Same-view activation returned early above and never
     // records; failed hide/reveal returned partial before activation.
-    state.workspaces.observe_workspace_change(output, target);
-    // Trailing maintenance: keep one empty, minimum two, active preserved.
-    // Sticky members never occupy, so a sticky-only workspace prunes like an
-    // empty one while the sticky float state itself is retained.
-    let active_id = state.workspaces.active_id(output).unwrap_or_default();
-    let displaced: Vec<String> = state
-        .workspaces
-        .displaced_snapshot()
-        .values()
-        .flat_map(|r| r.workspace_ids.clone())
-        .collect();
-    let sticky_keys: BTreeSet<crate::workspace::WindowKey> = state.sticky.keys().cloned().collect();
-    let (removed, append) = state.workspaces.plan_cleanup_excluding(
-        output,
-        std::slice::from_ref(&active_id),
-        &displaced,
-        &sticky_keys,
-    );
-    state.workspaces.apply_cleanup(output, &removed, append);
+    // Item 12 stage B: scoped recording (local into workspaces,
+    // global-unique/shared into the scope owner); focus-alone never records.
+    {
+        let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+        owner.record_completed(spaces, output, target);
+    }
+    // Trailing maintenance through the shared scope contract (item 12
+    // stage B): local keeps the exact legacy per-output sequence, scoped
+    // modes converge per-output plans / the one logical ring.
+    tiling_sys_scope_trailing::trailing_after_select(state, output);
     // Post-reveal fresh observation: the pre-switch `observed` cannot contain
     // the hidden target set, so focusing from it always misses as `vanished`.
     // Re-enumerate, republish origins, establish the appropriate target focus
@@ -22629,7 +22656,8 @@ fn workspace_send_stay_native(
     }
     // Ordinary lifecycle supplies the next spare when the transfer filled the
     // trailing empty; the source view stays selected throughout.
-    ensure_trailing_spare(state, output);
+    // Item 12 stage B: scoped trailing spare.
+    tiling_sys_scope_sends::trailing_spare_scoped(state, output);
     SendEffect {
         outcome: "ok",
         focus: "none",
@@ -22775,36 +22803,28 @@ fn workspace_do_send(
     if state.allowlist.is_some() && !state.workspace_proof {
         return fail("workspace-disabled");
     }
-    let target_id = match target {
-        SendTarget::Numbered(0) => {
-            // Trailing send reuses or creates without switching first.
-            match state.workspaces.resolve_send_trailing(output) {
-                Some((id, _)) => id,
-                None => return fail("unknown-output"),
-            }
-        }
-        SendTarget::Numbered(index) => match state.workspaces.resolve_send(output, index) {
-            Some(id) => id,
-            None => return fail("unknown-target"),
-        },
-        SendTarget::Relative(delta) => {
-            // Frozen once before transfer: the item 1 scoped ring step from
-            // the mover's source workspace (wrapping through the trailing
-            // empty and ordinals beyond 9, never MRU, never creating).
-            // Filling the trailing empty invokes ordinary lifecycle for the
-            // next spare after transfer.
-            match state
-                .workspaces
-                .resolve_relative_from(output, &loc.workspace, delta)
-            {
-                Some(id) => id,
-                None => return fail("unknown-target"),
-            }
+    let target_id = match tiling_sys_scope_sends::resolve_scoped_send_target(
+        state,
+        output,
+        &loc.workspace,
+        target,
+    ) {
+        // Item 12 stage B: numbered/relative/trailing resolve over the
+        // adopted scoped ring (local delegates to the workspace resolvers,
+        // so the local path is unchanged); shared trailing creation mints
+        // one logical id across all output domains.
+        tiling_sys_scope_sends::ScopedSendTarget::Id(id) => id,
+        tiling_sys_scope_sends::ScopedSendTarget::Unknown(outcome) => {
+            return fail(outcome);
         }
     };
     if target_id == loc.workspace {
         return fail("no-op");
     }
+    // Shared convergence before tokens/fences: outputs lacking the logical
+    // target id gain an empty entry so the transfer below preserves the
+    // window's output-bound domain instead of refusing.
+    tiling_sys_scope_sends::ensure_shared_send_entry(state, output, &target_id);
     let source_token = state.workspaces.workspace_token(output, &loc.workspace);
     let target_token = state.workspaces.workspace_token(output, &target_id);
     let fail_at = |outcome: &'static str| SendEffect {
@@ -23724,8 +23744,8 @@ fn workspace_send_stay(
     // Ordinary lifecycle supplies the next spare when the transfer filled the
     // trailing empty; the source view stays selected throughout (no history
     // record: only verified selects record; trailing maintenance retains the
-    // null focus by never touching focus).
-    ensure_trailing_spare(state, output);
+    // null focus by never touching focus). Item 12 stage B: scoped spare.
+    tiling_sys_scope_sends::trailing_spare_scoped(state, output);
     // Exact-lifetime focus plan through the tested classifier: genuine null
     // (sole-mover stay emptied the source) resolves Null with ok/no-focus
     // and no setter; a some-but-stale mapping resolves Stale with
@@ -24669,7 +24689,8 @@ fn poll_workspace_cli_request(
     }
     // Resolve without preactivating (same as the hook select path):
     // resolvers never touch ACTIVE; only the transition activates. History
-    // forms resolve purely like the hook history path.
+    // forms resolve purely like the hook history path. Scoped resolvers keep
+    // the local path equivalent and share trailing creation across outputs.
     let (target, none_outcome, dispatch_op, dispatch_index): (
         Option<String>,
         &'static str,
@@ -24677,32 +24698,42 @@ fn poll_workspace_cli_request(
         u8,
     ) = match request.action {
         WorkspaceAction::Select => {
-            let target = if request.index == 0 {
-                state
-                    .workspaces
-                    .resolve_send_trailing(&output)
-                    .map(|(id, _)| id)
+            if request.index == 0 {
+                let sticky: BTreeSet<crate::workspace::WindowKey> =
+                    state.sticky.keys().cloned().collect();
+                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                match owner.resolve_trailing_select(spaces, &output, &sticky) {
+                    crate::workspace_scope_owner::TrailingResolve::Reuse(id) => {
+                        (Some(id), "unknown-output", "select", request.index)
+                    }
+                    crate::workspace_scope_owner::TrailingResolve::Unknown => {
+                        (None, "unknown-output", "select", request.index)
+                    }
+                }
             } else {
-                state.workspaces.resolve_send(&output, request.index)
-            };
-            let none_outcome = if request.index == 0 {
-                "unknown-output"
-            } else {
-                "unknown-target"
-            };
-            (target, none_outcome, "select", request.index)
+                let target =
+                    state
+                        .scope_owner
+                        .resolve_numbered(&state.workspaces, &output, request.index);
+                (target, "unknown-target", "select", request.index)
+            }
         }
-        WorkspaceAction::Previous => (
-            state.workspaces.resolve_previous(&output),
-            "unknown-target",
-            "previous",
-            0,
-        ),
+        WorkspaceAction::Previous => {
+            let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+            (
+                owner.resolve_previous(spaces, &output),
+                "unknown-target",
+                "previous",
+                0,
+            )
+        }
         WorkspaceAction::RelativeHistory => match request.direction {
             Some(direction) => {
                 let delta = direction.delta();
                 (
-                    state.workspaces.resolve_relative(&output, delta),
+                    state
+                        .scope_owner
+                        .resolve_relative(&state.workspaces, &output, delta),
                     "unknown-target",
                     if delta < 0 {
                         "relative-prev"
@@ -24959,16 +24990,21 @@ fn workspace_tick(
                 // Resolve without preactivating: `select`/`select_trailing`
                 // mutate ACTIVE, which makes `workspace_do_select` see
                 // `current == target` and return `already-active` with no
-                // native effects. `resolve_send`/`resolve_send_trailing`
-                // resolve (and append trailing when needed) without touching
-                // ACTIVE; only the transition activates after hide/reveal.
-                let target = if index == 0 {
-                    state
-                        .workspaces
-                        .resolve_send_trailing(&output)
-                        .map(|(id, _)| id)
+                // native effects. Scoped resolvers resolve (minting shared
+                // trailing when needed) without touching ACTIVE; only the
+                // transition activates after hide/reveal.
+                let target: Option<String> = if index == 0 {
+                    let sticky: BTreeSet<crate::workspace::WindowKey> =
+                        state.sticky.keys().cloned().collect();
+                    let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                    match owner.resolve_trailing_select(spaces, &output, &sticky) {
+                        crate::workspace_scope_owner::TrailingResolve::Reuse(id) => Some(id),
+                        crate::workspace_scope_owner::TrailingResolve::Unknown => None,
+                    }
                 } else {
-                    state.workspaces.resolve_send(&output, index)
+                    state
+                        .scope_owner
+                        .resolve_numbered(&state.workspaces, &output, index)
                 };
                 match target {
                     Some(id) => {
@@ -25857,6 +25893,12 @@ fn workspace_migrate_one(
             }),
         );
     };
+    // Item 12 stage B: shared whole-workspace migration refuses per the
+    // established contract before any mutation.
+    if let Some(outcome) = tiling_sys_scope_sends::migration_scope_refusal(state) {
+        log_refuse(outcome);
+        return outcome;
+    }
     let Some(source_workspace) = state.workspaces.active_id(output) else {
         log_refuse("unknown-output");
         return "unknown-output";
@@ -27337,6 +27379,18 @@ fn run_workspace_migrate(
         // shared follow tail (fresh fullscreen/iconic re-read, no stale row).
         state.workspaces = candidate_ws;
         state.engine = candidate;
+        // Item 12 stage B: completed migration views record through the
+        // scope contract (global-unique converged refill plus target
+        // arrival; local stays on the primitive's own invalidation).
+        let moved = outcome.moved_id.clone();
+        let converged = converged_refill.clone();
+        tiling_sys_scope_trailing::note_migration_completed(
+            state,
+            source_output,
+            converged.as_deref(),
+            target_output,
+            &moved,
+        );
         return migration_follow_tail(
             state,
             me,
@@ -27420,6 +27474,18 @@ fn run_workspace_migrate(
     }
     state.workspaces = candidate_ws;
     state.engine = candidate;
+    // Item 12 stage B: completed migration views record through the scope
+    // contract (global-unique source refill plus target arrival; local stays
+    // on the primitive's own invalidation).
+    let refill = outcome.source_refill.clone();
+    let moved = outcome.moved_id.clone();
+    tiling_sys_scope_trailing::note_migration_completed(
+        state,
+        source_output,
+        refill.as_deref(),
+        target_output,
+        &moved,
+    );
     // Verified: the single shared follow tail (D6) runs after publish.
     migration_follow_tail(
         state,
@@ -27823,10 +27889,23 @@ fn workspace_history_tick(
         // Pure resolution: no activation, append, or creation. Previous
         // validates its stable id (clears removed/out-of-scope); relative
         // wraps the full scoped ring including trailing empty and >9.
+        // Scoped resolvers keep local equivalent; `workspace_do_select`
+        // dispatches shared/global-swap native effects.
         let target: Option<String> = match op {
-            WorkspaceHistoryOp::Previous => state.workspaces.resolve_previous(&output),
-            WorkspaceHistoryOp::Prev => state.workspaces.resolve_relative(&output, -1),
-            WorkspaceHistoryOp::Next => state.workspaces.resolve_relative(&output, 1),
+            WorkspaceHistoryOp::Previous => {
+                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                owner.resolve_previous(spaces, &output)
+            }
+            WorkspaceHistoryOp::Prev => {
+                state
+                    .scope_owner
+                    .resolve_relative(&state.workspaces, &output, -1)
+            }
+            WorkspaceHistoryOp::Next => {
+                state
+                    .scope_owner
+                    .resolve_relative(&state.workspaces, &output, 1)
+            }
         };
         match target {
             Some(id) => {
@@ -30971,6 +31050,16 @@ fn apply_live_settings(
             }),
         );
     }
+    // Item 12 stage B: a saved scope-mode change never adopts live. The
+    // pending choice stays in the saved document (assigned to `live.settings`
+    // below) and takes effect only on the next owner restart; the drift lane
+    // is informational and never wakes the pump.
+    if let Some((lane, event)) =
+        crate::workspace_scope_owner::pending_scope_lane(&state.scope_owner, &settings)
+    {
+        log_json_at(&log_path, event);
+        lanes.push(lane);
+    }
     if base.border != state.border {
         state.border = base.border;
         lanes.push("border");
@@ -31080,9 +31169,11 @@ fn apply_live_settings(
         );
     }
     if let Some(live) = state.settings_live.as_mut() {
+        let saved_scope = crate::workspace_scope_owner::saved_mode(&settings);
+        let status = state.scope_owner.status_for(revision, saved_scope);
         live.settings = settings;
         live.mtime = mtime;
-        live.status = format!("saved:{revision}");
+        live.status = status;
     }
     log_json_at(
         &log_path,
@@ -31333,6 +31424,7 @@ fn run_tile_loop(
         resize_repeat: None,
         last_enumerated: 0,
         workspaces: ManagedWorkspaces::new(),
+        scope_owner: crate::workspace_scope_owner::WorkspaceScopeOwner::new(),
         member_tokens: std::collections::BTreeMap::new(),
         member_rects: HashMap::new(),
         hidden_claims: std::collections::BTreeMap::new(),
@@ -31416,6 +31508,14 @@ fn run_tile_loop(
             "scope": "startup",
         }),
     );
+    // Item 12 stage B: the saved scope mode adopts only on owner restart.
+    // The adopted mode stays in force for the whole run; later live edits
+    // report drift without adopting. Startup priming follows the initial
+    // monitor sync; later hotplug retains its current behavior.
+    let startup_scope = crate::workspace_scope_owner::startup_mode(state.settings_live.as_ref());
+    state.scope_owner =
+        crate::workspace_scope_owner::WorkspaceScopeOwner::adopt_startup(startup_scope);
+    log_json_at(&log_path, state.scope_owner.startup_event());
     let mut areas = all_monitors()?;
     let (mut monitor, mut monitor_count) = (areas[0].clone(), areas.len());
     let mode = if workspace_proof {
@@ -31433,6 +31533,10 @@ fn run_tile_loop(
     // Per-output-local workspaces start from live monitors: one domain set
     // per device key, retained Engine sessions per (output, workspace).
     sync_monitor_outputs(&mut state, &areas);
+    // Item 12 stage B: scoped startup priming on the fixed topology (mode
+    // order/history baselines plus shared current convergence and the
+    // trailing floor). Runs once here; later hotplug stays owned by stage C.
+    tiling_sys_scope_trailing::prime_after_sync(&mut state);
     log_json_at(
         &log_path,
         serde_json::json!({
@@ -35497,6 +35601,23 @@ mod input_snapshot_offer_tests {
         crate::snapkey::sys::test_clear_state();
     }
 }
+
+#[path = "tiling_sys_scope_effects.rs"]
+mod tiling_sys_scope_effects;
+
+#[path = "tiling_sys_scope_sends.rs"]
+mod tiling_sys_scope_sends;
+
+#[path = "tiling_sys_scope_trailing.rs"]
+mod tiling_sys_scope_trailing;
+
+#[cfg(test)]
+#[path = "tiling_sys_scope_tests.rs"]
+mod tiling_sys_scope_tests;
+
+#[cfg(test)]
+#[path = "tiling_sys_scope_send_tests.rs"]
+mod tiling_sys_scope_send_tests;
 
 #[cfg(test)]
 mod same_axis_move_tests {
@@ -44468,6 +44589,7 @@ mod rmax03_adapter_tests {
             resize_repeat: None,
             last_enumerated: 0,
             workspaces: crate::workspace::ManagedWorkspaces::new(),
+            scope_owner: crate::workspace_scope_owner::WorkspaceScopeOwner::new(),
             member_tokens: std::collections::BTreeMap::new(),
             member_rects: std::collections::HashMap::new(),
             hidden_claims: std::collections::BTreeMap::new(),

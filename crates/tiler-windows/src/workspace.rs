@@ -513,6 +513,292 @@ impl ManagedWorkspaces {
         true
     }
 
+    /// Exchange two workspace views across outputs (global-unique
+    /// visible-elsewhere swap primitive, item 12 stage B).
+    ///
+    /// Implements the stage A core contract
+    /// ([`tiler_core::workspace_scope::apply_swap_assignments`]) natively:
+    /// both ids leave every scope, then the target appends to the active
+    /// output's scope end and the active current appends to the other
+    /// output's scope end (KDE assignment order; ordinals churn by design).
+    /// The plan derives from observed current views, never from assumed
+    /// entry homing: even when the target is listed (owned) on the
+    /// requesting output but shown on the other output, both ids are
+    /// stripped everywhere and re-appended per the plan. Members,
+    /// remembered focus (`last_focus`), and entry tokens travel with the
+    /// entries; per-member output locations rekey by id to the new home
+    /// output while workspace membership and hidden state are preserved.
+    /// Same-id duplicates (shared-convergence residue) merge members
+    /// losslessly into the traveling entry, keeping the shown output's
+    /// remembered focus; session tiled state is keyed by workspace id and
+    /// travels unchanged. Both current views land via explicit activation,
+    /// so views and assignments always reflect the plan.
+    ///
+    /// Sticky all-desktop members mirror the migration rule: they stay homed
+    /// on their output and never ride a traveling entry. Sticky keys are
+    /// stripped from both traveling entries (a sticky remembered-focus entry
+    /// clears rather than carries) and re-homed to the incoming entry on
+    /// their own output with hidden state preserved; sticky locations
+    /// outside the two participating outputs stay untouched (the migration
+    /// no-refill precedent).
+    ///
+    /// Returns false and changes nothing when either output is unknown,
+    /// either id is absent everywhere, or both ids address the same output.
+    /// Local per-output history (`previous`/`baseline`) is untouched:
+    /// scoped modes record into the scope owner, and local mode never swaps.
+    pub fn swap_entries(
+        &mut self,
+        a_output: &str,
+        a_id: &str,
+        b_output: &str,
+        b_id: &str,
+        sticky: &BTreeSet<WindowKey>,
+    ) -> bool {
+        if a_output == b_output {
+            return false;
+        }
+        if !self.outputs.contains_key(a_output) || !self.outputs.contains_key(b_output) {
+            return false;
+        }
+        if !self
+            .outputs
+            .values()
+            .any(|s| s.order.iter().any(|e| e.id == a_id))
+            || !self
+                .outputs
+                .values()
+                .any(|s| s.order.iter().any(|e| e.id == b_id))
+        {
+            return false;
+        }
+        // Strip both ids from every scope, collecting the traveling entries.
+        // Same-id duplicates merge members losslessly; remembered focus
+        // prefers the entry homed on the output that showed the id.
+        let mut traveling_a: Option<WorkspaceEntry> = None;
+        let mut traveling_b: Option<WorkspaceEntry> = None;
+        for (output_key, state) in self.outputs.iter_mut() {
+            let mut kept = Vec::with_capacity(state.order.len());
+            for mut entry in std::mem::take(&mut state.order) {
+                let slot = if entry.id == a_id {
+                    &mut traveling_a
+                } else if entry.id == b_id {
+                    &mut traveling_b
+                } else {
+                    kept.push(entry);
+                    continue;
+                };
+                let shown_here = output_key == (if entry.id == a_id { a_output } else { b_output });
+                match slot.take() {
+                    None => *slot = Some(entry),
+                    Some(mut base) => {
+                        if shown_here {
+                            for key in base.members {
+                                entry.members.insert(key);
+                            }
+                            if entry.last_focus.is_none() {
+                                entry.last_focus = base.last_focus;
+                            }
+                            *slot = Some(entry);
+                        } else {
+                            for key in entry.members {
+                                base.members.insert(key);
+                            }
+                            if base.last_focus.is_none() {
+                                base.last_focus = entry.last_focus;
+                            }
+                            *slot = Some(base);
+                        }
+                    }
+                }
+            }
+            state.order = kept;
+            state.active = state.active.min(state.order.len().saturating_sub(1));
+        }
+        let Some(mut entry_a) = traveling_a else {
+            return false;
+        };
+        let Some(mut entry_b) = traveling_b else {
+            return false;
+        };
+        for entry in [&mut entry_a, &mut entry_b] {
+            for key in sticky.iter() {
+                entry.members.remove(key);
+                if entry.last_focus.as_ref() == Some(key) {
+                    entry.last_focus = None;
+                }
+            }
+        }
+        // Rekey by id, never by assumed homing: every non-sticky member of a
+        // swapped id moves to the destination output; sticky members keep
+        // their output and follow the swap only across the two participating
+        // outputs.
+        for (key, loc) in self.membership.iter_mut() {
+            if loc.workspace == a_id {
+                if sticky.contains(key) {
+                    if loc.output == a_output {
+                        loc.workspace = b_id.to_owned();
+                    }
+                } else {
+                    loc.output = b_output.to_owned();
+                }
+            } else if loc.workspace == b_id {
+                if sticky.contains(key) {
+                    if loc.output == b_output {
+                        loc.workspace = a_id.to_owned();
+                    }
+                } else {
+                    loc.output = a_output.to_owned();
+                }
+            }
+        }
+        // Append per the contract: target to the active scope end, active
+        // current to the other scope end.
+        if let Some(state) = self.outputs.get_mut(a_output) {
+            state.order.push(entry_b);
+        }
+        if let Some(state) = self.outputs.get_mut(b_output) {
+            state.order.push(entry_a);
+        }
+        // Sticky re-home into the incoming entries' member sets (the
+        // migration rule): a sticky key whose location now names the
+        // incoming entry joins that entry's set so location and membership
+        // agree and the sticky window stays visible on its home output.
+        for output in [a_output, b_output] {
+            let Some(state) = self.outputs.get_mut(output) else {
+                continue;
+            };
+            for entry in state.order.iter_mut() {
+                for key in sticky.iter() {
+                    if self
+                        .membership
+                        .get(key)
+                        .is_some_and(|loc| loc.output == output && loc.workspace == entry.id)
+                    {
+                        entry.members.insert(key.clone());
+                    }
+                }
+            }
+        }
+        let a_ok = self.activate(a_output, b_id);
+        let b_ok = self.activate(b_output, a_id);
+        // Infallible by the pre-checks plus the appends above: both outputs
+        // are known, both ids were present, and each swapped id was just
+        // appended to its destination scope end. A false here would mean the
+        // entries already exchanged while the views did not land (partial
+        // without history); no rollback, the debug assert owns the invariant.
+        debug_assert!(a_ok && b_ok, "swap appends land activation");
+        a_ok && b_ok
+    }
+
+    /// Append an empty entry carrying an existing global id (shared-mode
+    /// convergence, item 12 stage B): the logical shared id joins this
+    /// output-bound domain so every live output can show the same id while
+    /// keeping its own Engine layout domain. The entry mints a fresh unique
+    /// token, seeds the default tiled mode only when the id carries no
+    /// session state yet (an id live elsewhere keeps its flag), and never
+    /// activates: the caller activates after the verified transition.
+    /// Trailing lifecycle still owns creation of brand-new ids; this only
+    /// converges an already-live shared id. Returns true when created.
+    pub fn ensure_workspace_id(&mut self, output: &str, id: &str) -> bool {
+        let known = self
+            .outputs
+            .get(output)
+            .is_some_and(|s| s.order.iter().any(|e| e.id == id));
+        if known || !self.outputs.contains_key(output) {
+            return false;
+        }
+        self.next_ws += 1;
+        let token = format!("ws{}", self.next_ws);
+        self.seed_mode(id);
+        let Some(state) = self.outputs.get_mut(output) else {
+            return false;
+        };
+        state.order.push(WorkspaceEntry {
+            id: id.to_owned(),
+            token,
+            members: BTreeSet::new(),
+            last_focus: None,
+        });
+        true
+    }
+
+    /// Mint one brand-new logical shared id and append an empty entry for it
+    /// on every listed output (item 12 stage B shared trailing creation).
+    /// The id is fresh (`ws-{next}`); each output mints its own fresh unique
+    /// token for the same id (per-output Engine layout domains stay
+    /// distinct), seeds the default tiled mode once, and never activates:
+    /// the caller selects after. Outputs missing from the map are skipped;
+    /// outputs already carrying the id (impossible for a fresh id) keep
+    /// theirs. Returns the new id, or an empty string when no output was
+    /// listed (nothing minted, nothing appended).
+    pub fn mint_shared_id(&mut self, outputs: &[String]) -> String {
+        if outputs.is_empty() {
+            return String::new();
+        }
+        self.next_ws += 1;
+        let id = format!("ws-{}", self.next_ws);
+        self.seed_mode(&id);
+        for output in outputs {
+            if self
+                .outputs
+                .get(output)
+                .is_none_or(|s| s.order.iter().all(|e| e.id != id))
+            {
+                self.next_ws += 1;
+                let token = format!("ws{}", self.next_ws);
+                if let Some(state) = self.outputs.get_mut(output) {
+                    state.order.push(WorkspaceEntry {
+                        id: id.clone(),
+                        token,
+                        members: BTreeSet::new(),
+                        last_focus: None,
+                    });
+                }
+            }
+        }
+        id
+    }
+
+    /// Strip logical shared ids from every output-bound domain at once (item
+    /// 12 stage B shared trailing cleanup). Entries name removed ids; member
+    /// sets of removed entries are already empty of non-sticky members by
+    /// construction (only invisible empty non-final ids plan removal), while
+    /// sticky float state stays owned by the owner tables exactly like the
+    /// single-output path. Per-output actives clamp onto the surviving
+    /// scope, session modes/displaced records prune to live, and each
+    /// output's local previous/baseline validates like
+    /// [`ManagedWorkspaces::apply_cleanup`]. Scoped (non-local) history
+    /// validation stays with the scope owner; nothing recreates here.
+    pub fn remove_shared_ids(&mut self, removed: &[String]) {
+        if removed.is_empty() {
+            return;
+        }
+        for state in self.outputs.values_mut() {
+            state.order.retain(|e| !removed.contains(&e.id));
+        }
+        for state in self.outputs.values_mut() {
+            if state.order.is_empty() {
+                state.active = 0;
+            } else {
+                state.active = state.active.min(state.order.len() - 1);
+            }
+        }
+        self.prune_modes();
+        let live: BTreeSet<String> = self
+            .outputs
+            .values()
+            .flat_map(|s| s.order.iter().map(|e| e.id.clone()))
+            .collect();
+        for record in self.displaced.values_mut() {
+            record.workspace_ids.retain(|id| live.contains(id));
+        }
+        self.displaced.retain(|_, r| !r.workspace_ids.is_empty());
+        let outputs: Vec<String> = self.outputs.keys().cloned().collect();
+        for output in &outputs {
+            self.validate_history(output);
+        }
+    }
+
     pub fn select(&mut self, output: &str, index: u8) -> Option<String> {
         let state = self.outputs.get_mut(output)?;
         let pos = policy::select_existing(state.order.len(), index)?;

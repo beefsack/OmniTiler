@@ -29,3 +29,4 @@ pub mod win_mouse;
 pub mod winarrow;
 pub mod workspace;
 pub mod workspace_owner;
+pub mod workspace_scope_owner;

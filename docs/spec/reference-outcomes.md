@@ -44,6 +44,12 @@ Shared-mode hotplug has a separate [minimal action-sequence discriminator](refer
 one shared history/ring without project displacement; unsupported reference and
 native outcomes remain TBD.
 
+### Windows shared startup discriminator
+
+| Variant | Minimal action sequence | Ours offline outcome | Reference / native |
+| --- | --- | --- | --- |
+| Different stable-first and primary/focused outputs | With two outputs whose stable-key order differs from primary order, restart the owner in shared mode; select Previous before any completed switch; repeat with foreground on the other output | Tentative 2026-10-15: stable-first output supplies the initial logical view, all outputs converge to it, Previous has no prior transition. Synthetic owner coverage passes ([record](../changes/archive/windows-workspace-scope-owner.md)) | Exact KDE/reference startup anchor, primary/focused alternatives and physical two-output Windows outcome TBD; single-output startup cannot distinguish them |
+
 ### KDE cross-output drag native-scope discriminator
 
 Variant of [R-MOU-03](reference-outcomes/mouse.md#r-mou-03-drag-across-outputs-and-onto-a-workspace-target).

@@ -1053,7 +1053,7 @@ decisions of 2026-09-24 are under
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
   | 11 | Born-max/floating-retile overlay parity (b) incl R-MAX-03 | Windows delivered offline; ordinary retile/restore and both-values born Paint launch physically user-accepted 2026-10-12, scoped single output. Tray focus observation only; hidden/session/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-floating-retile-overlay.md). |
-  | 12 | Non-local workspace modes parity (d) | Depends on handoff items 1/2 (ring + follow/stay) and the parity-queue multi-output foundation; last. |
+  | 12 | Non-local workspace modes parity (d) | Stages A/B delivered 2026-10-15: shared policy/settings and Windows owner selection/send/history/swap/trailing integration. Locked gates 2,072 passed / 1 ignored; single-output native CLI journeys passed in all modes. Stage C hotplug and physical two-output acceptance pending ([owner record](changes/archive/windows-workspace-scope-owner.md)). |
   | 13 | Q2 fixed-size float admission R-SPC-04 | Windows delivered offline 2026-10-11, prerequisite a41fcb5 plus runtime delivery: max-track observation, predicate/schema/UI, D1-D8 lifetime/origin and fixed-origin D7 markers. Native/game acceptance pending; fixed-override maximize route tentative. [Record](changes/archive/windows-fixed-size-admission.md). |
   | 14 | Q4 whole-workspace migration R-WS-12 | Windows local adapter including D8 carry and item-16 largest-edge selection delivered offline 2026-10-14; 1,950 native MSVC tests pass, one ignored ([record](changes/archive/windows-workspace-output-migration.md)). Core/KDE already delivered offline. Physical two-output journeys pending; item 12 remains the non-local-mode dependency. |
   | 15 | B9 / M09 maximized intentional unfloat R-FLT-06 | Windows delivered offline; ordinary scoped native clear/observe/fresh admission and focus agent-observed 2026-10-12. Physical B9/fixed marker/restart/failure/game/DPI pending; independent of Q3 retile. [Record](changes/archive/windows-maximized-intentional-unfloat.md). |
@@ -2459,16 +2459,24 @@ decisions of 2026-09-24 are under
   - Item 12: non-local workspace modes parity (d). Decisions 1.2/1.5
     ([decisions](decisions.md#workspaces)): local and
     global-unique keep per-output history/rings, shared keeps one
-    history/ring. KDE mappings delivered offline; Windows runtime local-only
-    today. Stage A delivered offline 2026-10-15: opt-in shared-core scope,
+    history/ring. KDE mappings delivered offline. Stage A delivered offline
+    2026-10-15: opt-in shared-core scope,
     mapping, history, ring, swap and migration plans; Windows schema-v1
     `core.workspace.mode` backfill/validation and restart-required Settings
     selector. Locked gates: 2,024 passed / 1 ignored; KDE planner fixture
     build passed ([record](changes/archive/windows-workspace-scope-policy.md)).
-    Stage B pending: owner adoption, selection/send/foreground/CLI routing,
-    actual-transition observation and restart-required drift reporting.
+    Stage B delivered 2026-10-15: owner adoption and restart-required drift,
+    numbered/previous/relative selection and follow/stay sends through hook,
+    foreground and CLI paths; completed-only scoped history, global-unique
+    two-output swap effects and shared logical view/ring/history/trailing
+    cleanup with output-bound Engine domains. Existing local tests unchanged.
+    Locked build/test/format/strict-clippy/diff gates passed: 2,072 passed,
+    0 failed, 1 ignored. Single-output native CLI selection, sends and mode
+    retention passed in all modes; clean graceful stop and restore verified
+    ([record and handover](changes/archive/windows-workspace-scope-owner.md)).
     Stage C pending: mode-aware hotplug/displacement/return and full R-WS-17
     journeys; native multi-output evidence remains pending.
+    Shared startup anchor is tentative pending the two-output discriminator.
     Prerequisites (handoff items 1/2, multi-output foundation, explicit output
     sends and local whole-workspace migration) delivered.
     - KDE: consume shared workspace-scope policy (optional, coordinate with KDE stream).
