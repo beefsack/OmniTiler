@@ -47,22 +47,20 @@ paneru legs distinguish the native Space from virtual rows.
   North/South do). `D1`/`D2` displays keep their strips.
   `S(S-pan-swap)`.
 - Then Ours KDE: exhausted horizontal R4 into output's current workspace,
-  `L=H[X,A*]`, `R=B`, edge insertion nearest source. Reciprocal FULL
+  `L=H[X,A*]`, `R=B`, whole-target wrap nearest source per REQ-MOV-08
+  ([discriminator](../reference-outcomes.md#kde-occupied-r4-target-shape-discriminator));
+  empty takes the mover alone. Reciprocal FULL
   rectangle selection now includes sole root leaves; work-area placement and
   commit/arrival fences retained. [Item-5 offline record](../../changes/archive/four-direction-output-transfer.md);
-  Far-side remembered-leaf correction is RED/GREEN offline in both directions:
-  parallel `H[W1,W2]` target now root-wraps with the mover nearest source,
-  never nests beside far-side W1. Whole-root wrapping for every occupied
-  target versus retained near-side remembered-leaf nesting remains unresolved
-  ([discriminator](../reference-outcomes.md#kde-occupied-r4-target-shape-discriminator),
-  [record](../../changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14));
-  corrected native tree journey pending. User decision 2026-10-09 window-based selection
+  corrected native tree journey pending; live acceptance TBD. User decision 2026-10-09 window-based selection
   delivered offline ([selection record](../../changes/archive/position-based-output-selection.md)); single-target crossing stands.
 - Then Ours Windows: exhausted horizontal crossing to the target current
   workspace delivered offline in the [foundation](../../changes/windows-multi-output-foundation.md).
   Shared window-based selector audited/regressed `fda618f`, 2026-10-14
   ([record](../../changes/archive/windows-position-based-output-selection.md));
-  nearest-source R4 landing and work-area placement retained. Native gates
+  selected 2026-10-14 whole-target R4 wrap nearest source shared with core
+  (no remembered-leaf insertion, no flat append; empty takes mover alone)
+  and work-area placement retained. Native gates
   1,892 passed, zero failed, one ignored; physical two-output journey pending.
 - Variant hook: V-R4-DIR.
 

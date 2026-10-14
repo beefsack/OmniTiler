@@ -2654,62 +2654,6 @@ fn subtree_contains(node: &Node, leaf: &NodeId) -> bool {
     }
 }
 
-fn nest_focused_ordered(
-    policy: &dyn LayoutPolicy,
-    node: Node,
-    focused: &NodeId,
-    new_leaf: Node,
-    group_id: NodeId,
-    axis: Axis,
-    mover_first: bool,
-) -> Option<Node> {
-    match node {
-        Node::Leaf { id } if &id == focused => {
-            let children = if mover_first {
-                vec![new_leaf, Node::Leaf { id }]
-            } else {
-                vec![Node::Leaf { id }, new_leaf]
-            };
-            Some(Node::Group {
-                id: group_id,
-                axis,
-                children,
-                shares: policy.new_group_shares().to_vec(),
-            })
-        }
-        Node::Leaf { .. } => None,
-        Node::Group {
-            id,
-            axis: parent_axis,
-            children,
-            shares,
-        } => {
-            for (index, child) in children.iter().enumerate() {
-                if subtree_contains(child, focused) {
-                    let updated = nest_focused_ordered(
-                        policy,
-                        child.clone(),
-                        focused,
-                        new_leaf.clone(),
-                        group_id.clone(),
-                        axis,
-                        mover_first,
-                    )?;
-                    let mut new_children = children.clone();
-                    new_children[index] = updated;
-                    return Some(Node::Group {
-                        id,
-                        axis: parent_axis,
-                        children: new_children,
-                        shares: shares.clone(),
-                    });
-                }
-            }
-            None
-        }
-    }
-}
-
 fn nest_focused_with_new(
     policy: &dyn LayoutPolicy,
     node: Node,

@@ -903,6 +903,19 @@ platform API behavior.
       tiled-subject eligibility, sticky excluded. Floating-workspace
       boundaries transfer membership only, reflowing only tiled sides.
       Ordinary float transfer remains a separate open item.
+    - 5.5 (User decision 2026-10-14): exhausted directional R4 into an
+      occupied target always wraps its whole tree in a new top-level D-axis
+      split, with the mover nearest the source. Preserve nested same-axis
+      groups: Left onto `H[A,B]` gives `H[H[A,B],W]`, Right gives
+      `H[W,H[A,B]]`; Up onto `V[A,B]` gives `V[V[A,B],W]`, Down gives
+      `V[W,V[A,B]]`. A single target leaf is wrapped identically; an empty
+      target takes the mover alone. Never nest beside a remembered/last-focused
+      leaf or append to the existing root. Tier 1 COSMIC observed
+      [R4, S20 and S23](cosmic-move-conformance.md#the-rules) select this
+      shape; i3 flat append was considered and rejected. Rationale: predictable
+      placement independent of target focus history, preserving the target
+      layout as one unchanged subtree. Shared core applies this to KDE and
+      Windows. [Offline delivery and pending native proof](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
     - Status: shared core/KDE window-based selection delivered offline
       2026-10-09 ([selection record](changes/archive/position-based-output-selection.md));
       core/protocol four-direction moves, explicit output follow/stay
@@ -2834,7 +2847,7 @@ platform API behavior.
   workspace. Local R1/R2/R3 wins first. USER item 5 (2026-10-07) extends
   crossing to all four directions and sole root leaves, selecting reciprocal
   neighbors on full output rectangles; wrapping and workspace
-  cycling remain excluded. Rust converges complete source plus target observations, then synchronously commits the planned R4 topology into the canonical per-domain sessions and returns both-domain geometry plus the native assignment; no pair survives the call. Rust retains target remembered-leaf/root edge insertion nearest the source (explicit output send instead uses ordinary admission) and the existing owner, generation, revision, correlation,
+  cycling remain excluded. Rust converges complete source plus target observations, then synchronously commits the planned R4 topology into the canonical per-domain sessions and returns both-domain geometry plus the native assignment; no pair survives the call. Occupied R4 uses whole-target D-axis wrapping nearest the source (Move item 5.5; explicit output send instead uses ordinary admission), retaining the existing owner, generation, revision, correlation,
   single-flight, visibility, exception, and
   fail-closed target fences, with no acknowledgement, verification, pending, status, cancel, or abandon. The active `DescribePlan` route delivers the
   corresponding exhausted horizontal focus transfer with no layout or

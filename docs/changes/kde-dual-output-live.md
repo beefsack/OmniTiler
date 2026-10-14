@@ -357,7 +357,7 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 ## Next action
 
 - Repeat the corrected occupied-target R4 journey and physical cross-output
-  drag; resolve the occupied-target topology question below. Exact tree/spare
+  drag under the whole-target wrap decision below. Exact tree/spare
   diagnostics and the remaining inventory legs still need distinct evidence.
 - Keep the failed rapid fixture parked. A replacement needs persistent clients,
   correct native direction and actual overlapping-flight/delayed/replay evidence.
@@ -663,14 +663,16 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   because the departed remembered leaf becomes invalid and triggers fallback;
   it is a continuity check, not the RED discriminator. Native observation can
   select a surviving target leaf; the far-side fixtures isolate that failure.
-- Product-intent question is parked in the
+- At this revision, the product-intent question was parked in the
   [minimal discriminator](../spec/reference-outcomes.md#kde-occupied-r4-target-shape-discriminator).
-  Current documented policy permits remembered-leaf/root insertion; COSMIC R4
+  The then-documented policy permitted remembered-leaf/root insertion; COSMIC R4
   always wraps the whole target, even a parallel root. R-OUT-01 establishes i3
   flat tail insertion and sway's parallel-left flat branch, but sway's exact
   wrapper and Hyprland's exact shape are TBD. No established Tier 1 majority
   overrides COSMIC under the reference-tier rule. Recommendation: whole-target
-  D-axis wrapping for all occupied R4 targets; this broader change is unselected.
+  D-axis wrapping for all occupied R4 targets. The later
+  [whole-target decision](#whole-target-r4-wrap-decision-2026-10-14) selects
+  and implements that broader change.
 - Native exact-tree re-verification remains pending. The existing live record
   lacks a direct scoped tree diagnostic, so projected frames are not promoted
   to proof of the corrected hierarchy.
@@ -753,5 +755,46 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
 - Final Rust workspace tests pass 1870 cases, formatting and all-target Clippy
   with warnings denied pass. KDE source is unchanged by integration; its
   typecheck and 1547/1547-test evidence remains current. Diff whitespace passes.
-- Occupied-target shape selection and physical R4/drag acceptance remain pending;
-  the broader dual-output inventory stays active.
+- At this revision, occupied-target shape selection and physical R4/drag
+  acceptance remained pending; the broader dual-output inventory stays active.
+
+## Whole-target R4 wrap decision (2026-10-14)
+
+- User 2026-10-14 selects Tier 1 COSMIC observed R4 whole-target wrapping
+  ([rules, S20 and S23](../cosmic-move-conformance.md#the-rules)); i3 flat
+  append was considered and rejected. Predictable placement independent of
+  target focus history preserves the existing target layout unchanged.
+  [Durable decision](../decisions.md#move-layout-and-output-commands), item 5.5.
+- Acceptance: every occupied exhausted directional crossing adds a new
+  top-level D-axis split around the entire target, mover nearest source.
+  Left gives `H[H[A,B],W]`, Right `H[W,H[A,B]]`, Up `V[V[A,B],W]`,
+  Down `V[W,V[A,B]]`. Same-axis nesting is intentional. Single-leaf targets
+  are wrapped the same way; empty targets retain a lone mover. Explicit
+  output-send admission and local R1/R2/R3 rules retain their existing policy.
+- Implementation removes remembered-leaf selection, beside-insertion and its
+  unused helper from the shared core. It supersedes `e94723f`'s far-side-only
+  repair: both near- and far-side memories now produce whole-target wraps.
+  No normalization flattens the new same-axis group.
+- RED/GREEN: the new near-side left regression failed before repair with
+  `H[W1,H[W2,W3]]` instead of `H[H[W1,W2],W3]`, then passed afterward.
+  Horizontal and vertical regressions cover both remembered sides, nested
+  and perpendicular targets, complete geometry, source collapse and focus.
+  Exact wrapped-child equality proves target identity, children and shares
+  survive. Existing all-direction empty/single-target tests remain passing;
+  the right-then-left journey asserts both intermediate and return shapes.
+- Windows consumes the shared core behavior. Its existing transfer tests
+  assert routing/geometry rather than the old tree shape; no Windows edits
+  were needed. KWin's conformance model already wraps the entire target, so
+  no adapter or KWin test changes were needed. Stale core/protocol test
+  comments were aligned with the selected shape. Specification and reference
+  Ours lines now distinguish this policy from explicit-send admission.
+- Independent source review accepted the whole-wrap branch, retained target
+  subtree, source collapse, focus and same-axis nesting. Focused cross-output
+  tests pass (20). Final offline gates pass: Rust workspace tests, formatting,
+  all-target Clippy with warnings denied and diff whitespace. KWin files did
+  not change; its existing typecheck and 1547-test evidence remains current.
+- Pending user exact-tree journey: `L=H[W1,W2,W3*]`, `R=W4`; move right ->
+  `L=H[W1,W2]`, `R=H[W3,W4]`; move left -> `L=H[H[W1,W2],W3]`, `R=W4`.
+  Verify the nested same-axis group and W3 focus. Native proof is deferred;
+  projected frames do not substitute for hierarchy. The broader dual-output
+  inventory remains active.

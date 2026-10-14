@@ -2395,10 +2395,9 @@ fn root_children(tree: &Node) -> (tiler_core::directional::Axis, Vec<String>) {
 fn r4_vertical_cross_occupied_landing_nearest_source() {
     // Stacked outputs: win-t occupies out-bottom; V[win-1 win-2] sits on
     // out-top with the mover win-2 at the bottom edge. Moving Down crosses
-    // after local exhaustion (item 5.1) and lands with the existing edge
-    // insertion nearest the source (item 5.2 landing, unchanged): the mover
-    // splits beside the remembered target leaf on the D axis with W nearest
-    // the source (above), i.e. mover first.
+    // after local exhaustion (item 5.1) and lands with a whole-target D-axis
+    // wrap nearest the source: the target becomes V[W, win-t] with the mover
+    // first (above).
     let mut s = stacked_session();
     admit_commit(&mut s, "win-t", "out-bottom", "ws-1", true, "v-0");
     admit_commit(&mut s, "win-1", "out-top", "ws-1", false, "v-1");

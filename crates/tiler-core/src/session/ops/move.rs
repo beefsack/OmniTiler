@@ -215,22 +215,6 @@ impl super::super::Session {
             }
         };
         let base_revision = session_observation.observation.revision;
-        // Target focused leaf for R4 occupied insertion: the target domain's
-        // valid last-focused tiled leaf, else root fallback in apply.
-        let target_focus = match &plan.operation {
-            MoveOperation::CrossOutput {
-                target_output,
-                target_workspace,
-                ..
-            } => {
-                let target_key = DomainKey {
-                    output: target_output.clone(),
-                    workspace: target_workspace.clone(),
-                };
-                self.remembered_leaf(&target_key)
-            }
-            _ => None,
-        };
         let Some((desired_trees, desired_windows, desired_focus_domain, desired_focus_leaf)) =
             apply_move_operation(
                 self.policy(),
@@ -242,7 +226,6 @@ impl super::super::Session {
                 direction,
                 &plan,
                 base_revision,
-                target_focus,
             )
         else {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
@@ -497,7 +480,6 @@ pub(in crate::session) fn apply_move_operation(
     direction: Direction,
     plan: &MovePlan,
     base_revision: u64,
-    target_focus: Option<NodeId>,
 ) -> Option<AppliedMove> {
     use crate::directional::{EscapeContinuation, FocusedSide, Insertion, Rule};
     let operation = &plan.operation;
@@ -1215,11 +1197,9 @@ pub(in crate::session) fn apply_move_operation(
             // Extract mover from source (a sole leaf empties its domain).
             let new_source = remove_leaf_from_tree(policy, Some(source_tree), focused_leaf);
             desired_trees.insert(source.clone(), new_source);
-            // Attach to target: beside the target domain's valid focused leaf
-            // or as root. Source C-41 selects focused-leaf/root insertion for
-            // the multiwindow-target case; this complements S20/S22/S23 (whose
-            // single-leaf occupied targets cannot distinguish wrapping from
-            // focused insertion).
+            // COSMIC R4: wrap the whole target in a new top-level D-axis
+            // split, mover nearest the source (first on Right/Down, last
+            // on Left/Up).
             let target_tree = desired_trees.get(&target_key).cloned().flatten();
             match target {
                 CrossOutputTarget::Empty => {
@@ -1230,84 +1210,27 @@ pub(in crate::session) fn apply_move_operation(
                 }
                 CrossOutputTarget::Occupied => {
                     let existing = target_tree?;
-                    // Validate the supplied target focus: still a leaf in the
-                    // target tree and still linked there as a tiled window.
-                    let valid_target_focus = target_focus.as_ref().and_then(|leaf| {
-                        if !collect_leaves(&existing).contains(leaf) {
-                            return None;
-                        }
-                        desired_windows
-                            .values()
-                            .any(|l| {
-                                &l.leaf == leaf
-                                    && l.output == target_key.output
-                                    && l.workspace == target_key.workspace
-                            })
-                            .then(|| leaf.clone())
-                    });
                     let axis = Axis::for_direction(direction);
                     let mover_first = step_for_direction(direction) == 1;
                     let new_id =
                         generate_move_group_id(focused_leaf, base_revision, "r4", &node_ids);
                     node_ids.insert(new_id.clone());
-                    // Beside-insertion beside the remembered leaf keeps W nearest
-                    // the source only when that leaf already sits at the target
-                    // root edge nearest the source. A far-side remembered leaf
-                    // in a parallel target root would strand W mid-row (e.g.
-                    // moving left with W1 remembered in H[W1,W2] gives the
-                    // defective H[H[W1,W3],W2]); fall back to root-edge
-                    // insertion there so W still lands nearest the source.
-                    // Nested and perpendicular targets keep beside-insertion.
-                    let nested = valid_target_focus.as_ref().and_then(|focus_leaf| {
-                        let far_side = match &existing {
-                            Node::Group {
-                                axis: root_axis,
-                                children,
-                                ..
-                            } if *root_axis == axis && children.len() >= 2 => {
-                                let near_edge = if mover_first { 0 } else { children.len() - 1 };
-                                children.iter().position(|c| {
-                                    c.id() == focus_leaf || subtree_contains(c, focus_leaf)
-                                }) != Some(near_edge)
-                            }
-                            _ => false,
-                        };
-                        if far_side {
-                            None
-                        } else {
-                            nest_focused_ordered(
-                                policy,
-                                existing.clone(),
-                                focus_leaf,
-                                mover_leaf_node.clone(),
-                                new_id.clone(),
-                                axis,
-                                mover_first,
-                            )
+                    let combined = if mover_first {
+                        Node::Group {
+                            id: new_id,
+                            axis,
+                            children: vec![mover_leaf_node, existing],
+                            shares: policy.new_group_shares().to_vec(),
                         }
-                    });
-                    if let Some(nested) = nested {
-                        desired_trees.insert(target_key.clone(), Some(nested));
                     } else {
-                        // Root fallback: wrap the entire existing target with
-                        // W nearest the source.
-                        let combined = if mover_first {
-                            Node::Group {
-                                id: new_id,
-                                axis,
-                                children: vec![mover_leaf_node, existing],
-                                shares: policy.new_group_shares().to_vec(),
-                            }
-                        } else {
-                            Node::Group {
-                                id: new_id,
-                                axis,
-                                children: vec![existing, mover_leaf_node],
-                                shares: policy.new_group_shares().to_vec(),
-                            }
-                        };
-                        desired_trees.insert(target_key.clone(), Some(combined));
-                    }
+                        Node::Group {
+                            id: new_id,
+                            axis,
+                            children: vec![existing, mover_leaf_node],
+                            shares: policy.new_group_shares().to_vec(),
+                        }
+                    };
+                    desired_trees.insert(target_key.clone(), Some(combined));
                 }
             }
             // Mover link follows to the target domain; leaf identity kept.
@@ -1550,7 +1473,6 @@ mod tests {
                 direction,
                 &plan,
                 7,
-                None,
             )
             .unwrap_or_else(|| panic!("flat swap applies {focused:?} {direction:?}"));
             assert_eq!(focus_domain, key);
@@ -1586,7 +1508,6 @@ mod tests {
             Direction::Right,
             &plan,
             7,
-            None,
         )
         .expect("wrap applies");
         let updated = desired_trees.get(&key).cloned().flatten().expect("tree");
@@ -1621,7 +1542,6 @@ mod tests {
                 Direction::Right,
                 &forged_wrap_mode,
                 7,
-                None,
             )
             .is_none(),
             "R2c swap under GroupWithNeighbor must refuse"
@@ -1645,7 +1565,6 @@ mod tests {
                 Direction::Right,
                 &forged_flat_mode,
                 7,
-                None,
             )
             .is_none(),
             "leaf-neighbor wrap under SwapWithNeighbor must refuse"
@@ -1668,7 +1587,6 @@ mod tests {
                 Direction::Right,
                 &forged_neighbor,
                 7,
-                None,
             )
             .is_none(),
             "non-adjacent R2c swap must refuse"
@@ -1686,7 +1604,6 @@ mod tests {
                 Direction::Right,
                 &swap,
                 7,
-                None,
             )
             .is_some()
         );
@@ -1701,7 +1618,6 @@ mod tests {
                 Direction::Right,
                 &wrap,
                 7,
-                None,
             )
             .is_some()
         );
@@ -1744,7 +1660,6 @@ mod tests {
             Direction::Right,
             &plan,
             7,
-            None,
         )
         .expect("group-neighbor wrap applies");
         assert_eq!(focus_domain, key);
@@ -1818,7 +1733,6 @@ mod tests {
                 Direction::Right,
                 &forged,
                 7,
-                None,
             )
             .is_none(),
             "binary R2c swap must refuse"
@@ -1857,7 +1771,6 @@ mod tests {
                 Direction::Right,
                 &flat_group_wrap,
                 7,
-                None,
             )
             .is_some(),
             "group-neighbor wrap stays valid under SwapWithNeighbor"

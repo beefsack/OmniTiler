@@ -1075,7 +1075,7 @@ fn s21_perpendicular_move_stays_local_r1() {
 fn multiwindow_target_preserves_members_and_focuses_mover() {
     // Occupied multiwindow target: all target members survive with distinct
     // positive contained rects (no root collapse), the mover joins the
-    // target beside the remembered leaf, the source collapses, focus follows.
+    // target in a whole-target D-axis wrap, the source collapses, focus follows.
     let mut planner = Planner::new();
     let windows = vec![
         win("win-a", "out-1", "ws-a", 10, 10, 100, 80),

@@ -659,10 +659,11 @@ fn cross_workspace_s22_empty_target() {
 
 // Occupied multiwindow target with distinct workspaces: the target's
 // remembered last-focus is the nontrivial nested leaf Z in H[X,V[Y,Z]].
-// Crossing A left must insert beside Z (not wrap the whole target tree),
-// collapse the source, and follow focus with complete per-domain geometry.
+// Crossing A left wraps the whole target tree as H[H[X,V[Y,Z]],A] with the
+// mover nearest the source, collapse the source, and follow focus with
+// complete per-domain geometry.
 #[test]
-fn cross_workspace_occupied_multiwindow_focused_insertion() {
+fn cross_workspace_occupied_multiwindow_wraps_whole_target() {
     let mut s = two_output_session();
     // Target out-1/ws-a: X, then Y (wide -> H[X,Y]), then Z (tall -> splits
     // the focused Y vertically). Remembered last-focus becomes leaf-win-z.
@@ -716,23 +717,23 @@ fn cross_workspace_occupied_multiwindow_focused_insertion() {
     }
     // Source collapses to B alone.
     assert_eq!(leaves(&s, "out-2", "ws-b"), vec!["leaf-win-b".to_string()]);
-    // Mover inserted beside Z: new Horizontal pair [Z, A], nested (not root),
-    // root identity preserved, remaining target structure unchanged.
+    // Whole-target wrap: new Horizontal root [old root, A] with the mover
+    // nearest the source (last); nested V[Y,Z] preserved unchanged.
     let mover_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-a").expect("mover parent");
     assert_eq!(mover_parent.1, Axis::Horizontal);
     assert_eq!(
-        mover_parent.2,
-        vec!["leaf-win-z".to_string(), "leaf-win-a".to_string()],
-        "mover sits nearest the source beside the remembered leaf"
-    );
-    assert_ne!(
         mover_parent.0,
-        root_id(&s, "out-1", "ws-a").expect("target root")
+        root_id(&s, "out-1", "ws-a").expect("new root"),
+        "mover sits at the new target root"
     );
     assert_eq!(
-        root_id(&s, "out-1", "ws-a").expect("root"),
-        target_root_before
+        mover_parent.2,
+        vec![target_root_before, "leaf-win-a".to_string()],
+        "mover lands last (nearest the eastern source)"
     );
+    let z_parent_after = parent_of(&s, "out-1", "ws-a", "leaf-win-z").expect("Z parent");
+    assert_eq!(z_parent_after.0, z_parent_before.0);
+    assert_eq!(z_parent_after.1, Axis::Vertical);
     assert_eq!(
         leaves(&s, "out-1", "ws-a"),
         vec![
@@ -1190,6 +1191,20 @@ fn defect_two_output_session() -> Session {
     .expect("defect two-output session")
 }
 
+fn stacked_two_output_session() -> Session {
+    Session::new(
+        owner(),
+        generation(),
+        0,
+        7,
+        vec![
+            domain_ws("out-top", "ws-a", vec![(Direction::Down, "out-bottom")], 0),
+            domain_ws("out-bottom", "ws-b", vec![(Direction::Up, "out-top")], 0),
+        ],
+    )
+    .expect("stacked two-output session")
+}
+
 // Move left from R=H[W3,W4] onto L=H[W1,W2] with far-side W1 remembered:
 // the mover must land at the root edge nearest the source, never mid-row.
 #[test]
@@ -1392,5 +1407,396 @@ fn r4_right_then_left_journey_returns_to_root_edge() {
     assert_eq!(l_parent.0, root_id(&s, "out-1", "ws-a").expect("new root"));
     assert_eq!(l_parent.2, vec![l_root_mid, "leaf-win-3".to_string()]);
     assert_geometry_complete_for(&left, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// R4 occupied always wraps the whole target (user decision 2026-10-14):
+// Left onto H[W1,W2] gives H[H[W1,W2],W3] with the mover nearest the source,
+// regardless of the remembered leaf. Near-side W2 remembered would previously
+// nest as H[W1,H[W2,W3]].
+#[test]
+fn r4_left_near_side_remembered_wraps_whole_target() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-1", "out-1", "ws-a", "near-0000");
+    admit(&mut s, "win-2", "out-1", "ws-a", "near-0001");
+    // Last-admitted W2 is the remembered near-side (east) leaf.
+    let k1 = key("out-1", "ws-a");
+    assert_eq!(focused_window(&s, &k1).0, "win-2");
+    let target_root_before = root_id(&s, "out-1", "ws-a").expect("target root");
+    admit(&mut s, "win-3", "out-2", "ws-b", "near-0002");
+    admit(&mut s, "win-4", "out-2", "ws-b", "near-0003");
+    let k2 = key("out-2", "ws-b");
+    let w4 = focused_window(&s, &k2);
+    assert_eq!(w4.0, "win-4");
+    focus_commit(&mut s, &k2, &w4, Direction::Left, "near-focus-w3");
+    assert_eq!(focused_window(&s, &k2).0, "win-3");
+    let plan = move_commit(&mut s, &k2, Direction::Left, "near-move-left");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k1);
+    assert_eq!(plan.desired_focus_leaf.0, "leaf-win-3");
+    assert_eq!(leaves(&s, "out-2", "ws-b"), vec!["leaf-win-4".to_string()]);
+    let mover_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-3").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-1", "ws-a").expect("new root")
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec![target_root_before, "leaf-win-3".to_string()]
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Mirror: Right onto H[W1,W2] with near-side (west) W1 remembered gives
+// H[W4,H[W1,W2]], not nested H[H[W4,W1],W2].
+#[test]
+fn r4_right_near_side_remembered_wraps_whole_target() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-1", "out-2", "ws-b", "rn-0000");
+    admit(&mut s, "win-2", "out-2", "ws-b", "rn-0001");
+    let k2 = key("out-2", "ws-b");
+    // Remember the near-side (west) leaf W1 before leaving the domain.
+    let w2 = window_in(&s, &k2, "win-2");
+    focus_commit(&mut s, &k2, &w2, Direction::Left, "rn-focus-w1");
+    assert_eq!(focused_window(&s, &k2).0, "win-1");
+    let target_root_before = root_id(&s, "out-2", "ws-b").expect("target root");
+    admit(&mut s, "win-3", "out-1", "ws-a", "rn-0002");
+    admit(&mut s, "win-4", "out-1", "ws-a", "rn-0003");
+    let k1 = key("out-1", "ws-a");
+    // win-4 sits at the right root edge; move right crosses.
+    assert_eq!(focused_window(&s, &k1).0, "win-4");
+    let plan = move_commit(&mut s, &k1, Direction::Right, "rn-move-right");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k2);
+    assert_eq!(plan.desired_focus_leaf.0, "leaf-win-4");
+    assert_eq!(leaves(&s, "out-1", "ws-a"), vec!["leaf-win-3".to_string()]);
+    let mover_parent = parent_of(&s, "out-2", "ws-b", "leaf-win-4").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-2", "ws-b").expect("new root")
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec!["leaf-win-4".to_string(), target_root_before]
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Nested target preservation: L=H[X,V[Y,Z]] with deep leaf Z remembered;
+// moving W left wraps the whole target as H[H[X,V[Y,Z]],W], keeping V[Y,Z]
+// intact, never splitting Z.
+#[test]
+fn r4_left_nested_target_wraps_whole_and_preserves_nesting() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-x", "out-1", "ws-a", "nest-0000");
+    admit(&mut s, "win-y", "out-1", "ws-a", "nest-0001");
+    admit_with_placement(
+        &mut s,
+        "win-z",
+        "out-1",
+        "ws-a",
+        "nest-0002",
+        Rect {
+            x: 0,
+            y: 0,
+            w: 80,
+            h: 120,
+        },
+    );
+    let k1 = key("out-1", "ws-a");
+    // Z is the remembered deep leaf; its parent is nested, not the root.
+    let target_root_before = root_id(&s, "out-1", "ws-a").expect("target root");
+    let target_tree_before = tree_of(&s, "out-1", "ws-a").expect("target tree");
+    let z_parent_before = parent_of(&s, "out-1", "ws-a", "leaf-win-z").expect("Z parent");
+    assert_ne!(z_parent_before.0, target_root_before);
+    admit(&mut s, "win-3", "out-2", "ws-b", "nest-0003");
+    admit(&mut s, "win-4", "out-2", "ws-b", "nest-0004");
+    let k2 = key("out-2", "ws-b");
+    let w4 = focused_window(&s, &k2);
+    focus_commit(&mut s, &k2, &w4, Direction::Left, "nest-focus-w3");
+    let plan = move_commit(&mut s, &k2, Direction::Left, "nest-move-left");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k1);
+    let mover_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-3").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-1", "ws-a").expect("new root")
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec![target_root_before, "leaf-win-3".to_string()]
+    );
+    // Nested V[Y,Z] survives unchanged inside the wrapped target.
+    let z_parent_after = parent_of(&s, "out-1", "ws-a", "leaf-win-z").expect("Z parent");
+    assert_eq!(z_parent_after.0, z_parent_before.0);
+    assert_eq!(z_parent_after.1, Axis::Vertical);
+    assert_eq!(
+        z_parent_after.2,
+        vec!["leaf-win-y".to_string(), "leaf-win-z".to_string()]
+    );
+    // The wrapped child is the original target tree exactly.
+    match tree_of(&s, "out-1", "ws-a").expect("new target tree") {
+        tiler_core::directional::Node::Group { children, .. } => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[0], target_tree_before);
+        }
+        other => panic!("expected new root group, got {other:?}"),
+    }
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Perpendicular target preservation: L=V[X1,X2]; moving W left wraps as
+// H[V[X1,X2],W] on the D axis, never splitting the remembered leaf.
+#[test]
+fn r4_left_perpendicular_target_wraps_whole() {
+    let mut s = defect_two_output_session();
+    admit(&mut s, "win-x1", "out-1", "ws-a", "perp-0000");
+    admit_with_placement(
+        &mut s,
+        "win-x2",
+        "out-1",
+        "ws-a",
+        "perp-0001",
+        Rect {
+            x: 0,
+            y: 0,
+            w: 80,
+            h: 120,
+        },
+    );
+    let k1 = key("out-1", "ws-a");
+    assert_eq!(root_axis(&s, "out-1", "ws-a"), Some(Axis::Vertical));
+    let target_root_before = root_id(&s, "out-1", "ws-a").expect("target root");
+    admit(&mut s, "win-3", "out-2", "ws-b", "perp-0002");
+    admit(&mut s, "win-4", "out-2", "ws-b", "perp-0003");
+    let k2 = key("out-2", "ws-b");
+    let w4 = focused_window(&s, &k2);
+    focus_commit(&mut s, &k2, &w4, Direction::Left, "perp-focus-w3");
+    let plan = move_commit(&mut s, &k2, Direction::Left, "perp-move-left");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k1);
+    let mover_parent = parent_of(&s, "out-1", "ws-a", "leaf-win-3").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Horizontal);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-1", "ws-a").expect("new root")
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec![target_root_before, "leaf-win-3".to_string()]
+    );
+    // Perpendicular V target keeps its shape as the wrapped child.
+    assert_eq!(
+        leaves(&s, "out-1", "ws-a"),
+        vec![
+            "leaf-win-x1".to_string(),
+            "leaf-win-x2".to_string(),
+            "leaf-win-3".to_string()
+        ]
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-1", "ws-a"), ("out-2", "ws-b")]);
+    assert!(!s.has_pending());
+}
+
+// Up onto V[W1,W2]: V[V[W1,W2],W3] with the mover last (nearest the source
+// below), for both near-side (south W2) and far-side (north W1) remembered
+// leaves.
+#[test]
+fn r4_up_remembered_leaf_variants_wrap_whole_target() {
+    for remembered in ["near", "far"] {
+        let mut s = stacked_two_output_session();
+        admit(
+            &mut s,
+            "win-1",
+            "out-top",
+            "ws-a",
+            &format!("up-{remembered}-0000"),
+        );
+        admit_with_placement(
+            &mut s,
+            "win-2",
+            "out-top",
+            "ws-a",
+            &format!("up-{remembered}-0001"),
+            Rect {
+                x: 0,
+                y: 0,
+                w: 80,
+                h: 120,
+            },
+        );
+        let k_top = key("out-top", "ws-a");
+        assert_eq!(root_axis(&s, "out-top", "ws-a"), Some(Axis::Vertical));
+        if remembered == "far" {
+            // Remember the far-side (north) leaf W1 before leaving the domain.
+            let w2 = window_in(&s, &k_top, "win-2");
+            focus_commit(
+                &mut s,
+                &k_top,
+                &w2,
+                Direction::Up,
+                &format!("up-{remembered}-focus-w1"),
+            );
+            assert_eq!(focused_window(&s, &k_top).0, "win-1");
+        } else {
+            // Last-admitted W2 is the remembered near-side (south) leaf.
+            assert_eq!(focused_window(&s, &k_top).0, "win-2");
+        }
+        let target_root_before = root_id(&s, "out-top", "ws-a").expect("target root");
+        let target_tree_before = tree_of(&s, "out-top", "ws-a").expect("target tree");
+        // Sole-leaf source crosses up without local restructure.
+        admit(
+            &mut s,
+            "win-3",
+            "out-bottom",
+            "ws-b",
+            &format!("up-{remembered}-0002"),
+        );
+        let k_bottom = key("out-bottom", "ws-b");
+        let plan = move_commit(
+            &mut s,
+            &k_bottom,
+            Direction::Up,
+            &format!("up-{remembered}-move"),
+        );
+        assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+        assert_eq!(plan.desired_focus_domain, k_top);
+        assert_eq!(plan.desired_focus_leaf.0, "leaf-win-3");
+        assert_eq!(leaves(&s, "out-bottom", "ws-b"), Vec::<String>::new());
+        let mover_parent = parent_of(&s, "out-top", "ws-a", "leaf-win-3").expect("mover parent");
+        assert_eq!(mover_parent.1, Axis::Vertical);
+        assert_eq!(
+            mover_parent.0,
+            root_id(&s, "out-top", "ws-a").expect("new root")
+        );
+        assert_eq!(
+            mover_parent.2,
+            vec![target_root_before, "leaf-win-3".to_string()],
+            "mover lands last (nearest the southern source), remembered {remembered}"
+        );
+        // The wrapped child is the original target tree exactly.
+        match tree_of(&s, "out-top", "ws-a").expect("new target tree") {
+            tiler_core::directional::Node::Group { children, .. } => {
+                assert_eq!(children.len(), 2);
+                assert_eq!(children[0], target_tree_before);
+            }
+            other => panic!("expected new root group, got {other:?}"),
+        }
+        assert_geometry_complete_for(&plan, &s, &[("out-top", "ws-a"), ("out-bottom", "ws-b")]);
+        assert!(!s.has_pending());
+    }
+}
+
+// Down onto V[W1,W2]: V[W3,V[W1,W2]] with the mover first (nearest the
+// source above), for both near-side (north W1) and far-side (south W2)
+// remembered leaves.
+#[test]
+fn r4_down_remembered_leaf_variants_wrap_whole_target() {
+    for remembered in ["near", "far"] {
+        let mut s = stacked_two_output_session();
+        admit(
+            &mut s,
+            "win-1",
+            "out-bottom",
+            "ws-b",
+            &format!("dn-{remembered}-0000"),
+        );
+        admit_with_placement(
+            &mut s,
+            "win-2",
+            "out-bottom",
+            "ws-b",
+            &format!("dn-{remembered}-0001"),
+            Rect {
+                x: 0,
+                y: 0,
+                w: 80,
+                h: 120,
+            },
+        );
+        let k_bottom = key("out-bottom", "ws-b");
+        assert_eq!(root_axis(&s, "out-bottom", "ws-b"), Some(Axis::Vertical));
+        if remembered == "near" {
+            // Remember the near-side (north) leaf W1 before leaving the domain.
+            let w2 = window_in(&s, &k_bottom, "win-2");
+            focus_commit(
+                &mut s,
+                &k_bottom,
+                &w2,
+                Direction::Up,
+                &format!("dn-{remembered}-focus-w1"),
+            );
+            assert_eq!(focused_window(&s, &k_bottom).0, "win-1");
+        } else {
+            // Last-admitted W2 is the remembered far-side (south) leaf.
+            assert_eq!(focused_window(&s, &k_bottom).0, "win-2");
+        }
+        let target_root_before = root_id(&s, "out-bottom", "ws-b").expect("target root");
+        admit(
+            &mut s,
+            "win-3",
+            "out-top",
+            "ws-a",
+            &format!("dn-{remembered}-0002"),
+        );
+        let k_top = key("out-top", "ws-a");
+        let plan = move_commit(
+            &mut s,
+            &k_top,
+            Direction::Down,
+            &format!("dn-{remembered}-move"),
+        );
+        assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+        assert_eq!(plan.desired_focus_domain, k_bottom);
+        assert_eq!(plan.desired_focus_leaf.0, "leaf-win-3");
+        assert_eq!(leaves(&s, "out-top", "ws-a"), Vec::<String>::new());
+        let mover_parent = parent_of(&s, "out-bottom", "ws-b", "leaf-win-3").expect("mover parent");
+        assert_eq!(mover_parent.1, Axis::Vertical);
+        assert_eq!(
+            mover_parent.0,
+            root_id(&s, "out-bottom", "ws-b").expect("new root")
+        );
+        assert_eq!(
+            mover_parent.2,
+            vec!["leaf-win-3".to_string(), target_root_before],
+            "mover lands first (nearest the northern source), remembered {remembered}"
+        );
+        assert_geometry_complete_for(&plan, &s, &[("out-top", "ws-a"), ("out-bottom", "ws-b")]);
+        assert!(!s.has_pending());
+    }
+}
+
+// Vertical onto a perpendicular target: Down onto H[X1,X2] wraps the whole
+// target as V[W,H[X1,X2]] on the D axis.
+#[test]
+fn r4_down_perpendicular_target_wraps_whole() {
+    let mut s = stacked_two_output_session();
+    admit(&mut s, "win-x1", "out-bottom", "ws-b", "vp-0000");
+    admit(&mut s, "win-x2", "out-bottom", "ws-b", "vp-0001");
+    let k_bottom = key("out-bottom", "ws-b");
+    assert_eq!(root_axis(&s, "out-bottom", "ws-b"), Some(Axis::Horizontal));
+    let target_root_before = root_id(&s, "out-bottom", "ws-b").expect("target root");
+    admit(&mut s, "win-3", "out-top", "ws-a", "vp-0002");
+    let k_top = key("out-top", "ws-a");
+    let plan = move_commit(&mut s, &k_top, Direction::Down, "vp-move");
+    assert_eq!(plan.dispatch.rule, tiler_core::directional::Rule::R4);
+    assert_eq!(plan.desired_focus_domain, k_bottom);
+    let mover_parent = parent_of(&s, "out-bottom", "ws-b", "leaf-win-3").expect("mover parent");
+    assert_eq!(mover_parent.1, Axis::Vertical);
+    assert_eq!(
+        mover_parent.0,
+        root_id(&s, "out-bottom", "ws-b").expect("new root")
+    );
+    assert_eq!(
+        mover_parent.2,
+        vec!["leaf-win-3".to_string(), target_root_before]
+    );
+    assert_geometry_complete_for(&plan, &s, &[("out-top", "ws-a"), ("out-bottom", "ws-b")]);
     assert!(!s.has_pending());
 }

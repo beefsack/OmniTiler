@@ -30,13 +30,14 @@ decisions of 2026-09-24 are under
   inventory legs are pending; no full inventory gate completed.
   - User live 2026-10-14: shortcut Apply passed; cross-output R4 right passed
     (`L=H[W1,W2,W3*]`, `R=W4` -> `L=H[W1,W2]`, `R=H[W3*,W4]`).
-  - DEFECT narrowed | R4 far-side remembered-leaf insertion fixed offline,
-    RED/GREEN both ways: `L=H[W1,W2]` now gains W3 at its near root edge as
-    `H[H[W1,W2],W3]`, never `H[H[W1,W3],W2]`.
-    `e94723f`; [record](changes/kde-dual-output-live.md#occupied-target-r4-insertion-correction-2026-10-14).
-    Corrected native tree repeat pending. Product-intent question remains:
-    COSMIC always root-wraps; retained near-side remembered-leaf nesting differs
-    ([discriminator](spec/reference-outcomes.md#kde-occupied-r4-target-shape-discriminator)).
+  - DEFECT corrected offline | User 2026-10-14 selects COSMIC R4 whole-target
+    D-axis wrapping for every occupied target, including parallel roots:
+    `L=H[W1,W2]` gains W3 as `H[H[W1,W2],W3]`. Near/far remembered-leaf
+    insertion and flat append are excluded; empty targets stay lone movers.
+    Supersedes the far-side-only `e94723f` correction; all-direction core
+    regressions cover target preservation and remembered-leaf variants.
+    [Record](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
+    Corrected native exact-tree repeat remains pending in the multi-output checks.
   - DEFECT narrowed | Cross-output drag preview lookup, hidden-output reconcile
     hold/reply fences and repeated refusal/backoff logging fixed offline;
     `2adc1fc`; 12 regression cases and full 1547-test KWin suite pass.
@@ -3959,6 +3960,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   Product desktop cleanup remains an observation. Full inventory gates and
   all unexercised subcases remain pending in the checklist.
 
+- Occupied R4 whole-target wrap (User 2026-10-14, offline delivered): start
+  `L=H[W1,W2,W3*]`, `R=W4`; move right -> `L=H[W1,W2]`, `R=H[W3,W4]`;
+  move left -> `L=H[H[W1,W2],W3]`, `R=W4`. Verify the exact tree, including
+  the nested same-axis group, with focus following W3. Native tree proof
+  remains pending; projected frames alone do not establish hierarchy.
+  [Record](changes/kde-dual-output-live.md#whole-target-r4-wrap-decision-2026-10-14).
 - KDE Q4 R-WS-12/R-WS-21..26 (offline delivered, user decisions 2026-10-08): rebind
   the four empty-default migration actions; local/global-unique with native
   `perOutputVirtualDesktops` on migrates, off/unreadable/shared refuses before

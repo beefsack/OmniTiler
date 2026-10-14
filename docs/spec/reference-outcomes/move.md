@@ -598,14 +598,17 @@ observation or new reference vote.
 - Then paneru: up (North) crosses via the no-peer fall-through to `ToNextDisplay` (`Single` has no stack neighbour); mirrored South same by the min.y gate; East/West stay (no display fall-through for E/W). `S(S-pan-swap-peer)` + `S(S-pan-swap)` + `S(S-pan-display)`.
 - Then Ours KDE: A crosses to U's current workspace; sole root is eligible
   in all four directions, source becomes empty. Empty target becomes sole A;
-  occupied target uses unchanged R4 edge insertion nearest the source.
+  occupied target uses selected 2026-10-14 whole-target R4 wrap nearest the
+  source per REQ-MOV-08 ([discriminator](../reference-outcomes.md#kde-occupied-r4-target-shape-discriminator));
+  no remembered-leaf insertion, no flat append; empty takes the mover alone.
   Core compass tests and production-entry/Engine fixture delivered offline;
   [record](../../changes/archive/four-direction-output-transfer.md). Native journey TBD.
   Single-candidate fixture: crossing stands under the User decision 2026-10-09
   window-based selection; multi-candidate selection now delivered offline
   ([selection record](../../changes/archive/position-based-output-selection.md)).
 - Then Ours Windows: sole-root four-direction crossing to empty/occupied
-  current targets delivered offline in the foundation; shared selector audited
+  current targets delivered offline in the foundation; occupied landing follows
+  the selected whole-target R4 wrap nearest source shared with core; shared selector audited
   `fda618f`, 2026-10-14 ([record](../../changes/archive/windows-position-based-output-selection.md)).
   Native gates 1,892 passed, zero failed, one ignored; physical journey TBD.
 - Variant hook: V-R4-DIR.
@@ -637,13 +640,16 @@ observation or new reference vote.
   two-candidate observer tests, mirrored shared selector tests and real-Engine
   non-left/top R4 crossing. Pinned dispatch target survives mover relocation;
   delayed arrival follows once; removal refuses and reconciles.
+  Landing into an occupied target follows the selected 2026-10-14 whole-target
+  R4 wrap nearest source; empty takes the mover alone.
   [Record](../../changes/archive/position-based-output-selection.md).
   Native journey TBD.
 - Then Ours Windows: shared window-based selection wired by the foundation,
   audited/regressed `fda618f`, 2026-10-14: centre precedence, exact half-open
   odd-extent seam, span-overlap fallback and left/top/identity ties. Non-left/top
   target remains pinned after arrival ([record](../../changes/archive/windows-position-based-output-selection.md)).
-  Physical multi-candidate journey TBD; item 5.2.
+  Occupied landing follows the selected whole-target R4 wrap nearest source
+  shared with core. Physical multi-candidate journey TBD; item 5.2.
 - Variant hook: V-R4-DIR.
 
 #### R-MOV-12 technical selection discriminators (fresh legs)
