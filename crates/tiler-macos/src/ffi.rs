@@ -143,6 +143,36 @@ impl std::fmt::Display for AxObserveError {
 
 impl std::error::Error for AxObserveError {}
 
+/// App-level session notification names (observed on the application
+/// element; each fires for any window of the app). Names per the surveyed
+/// AX notification taxonomy (AXSwift `AXNotification`: windowCreated,
+/// focusedWindowChanged, windowMoved, windowResized); registration success
+/// is still verified per name at runtime — an unsupported name fails to add.
+pub const AX_SESSION_APP_NOTIFICATIONS: &[&str] = &[
+    "AXWindowCreated",
+    "AXFocusedWindowChanged",
+    "AXWindowMoved",
+    "AXWindowResized",
+];
+
+/// Window-level session notification names (observed on the joined owned
+/// window element, never a foreign one). `AXUIElementDestroyed` covers the
+/// owned window's teardown; `AXMoved`/`AXResized` are the element-level
+/// companions of the app-level move/resize notifications.
+pub const AX_SESSION_WINDOW_NOTIFICATIONS: &[&str] =
+    &["AXMoved", "AXResized", "AXUIElementDestroyed"];
+
+/// Outcome of one bounded owned-session observation run. `notifications_added`
+/// names exactly what registered; `notifications_received` carries per-name
+/// delivery counts (names absent from it delivered zero). Counts only — never
+/// titles, frames, or content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxSessionOutcome {
+    pub notifications_added: Vec<String>,
+    pub notifications_received: Vec<(String, u32)>,
+    pub messaging_timeout_set: bool,
+}
+
 /// One managed display's Space membership. IDs only; no names, no content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlsDisplay {
@@ -886,6 +916,202 @@ mod macos {
         })
     }
 
+    struct SessionRefcon {
+        tx: SyncSender<EngineMessage>,
+        pid: u32,
+        counts: std::sync::Mutex<std::collections::HashMap<String, u32>>,
+    }
+
+    unsafe extern "C-unwind" fn ax_session_callback(
+        _observer: NonNull<AXObserver>,
+        _element: NonNull<AXUIElement>,
+        notification: NonNull<CFString>,
+        refcon: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: `refcon` is the live `Box<SessionRefcon>` installed below,
+        // reclaimed only after notifications are removed and the observer is
+        // released. `notification` is borrowed (no ownership transfer); only
+        // its string copy leaves. Minimal work: count + non-blocking send.
+        // No panics.
+        if refcon.is_null() {
+            return;
+        }
+        let state = unsafe { &*(refcon as *const SessionRefcon) };
+        let name = unsafe { notification.as_ref() }.to_string();
+        if let Ok(mut counts) = state.counts.lock() {
+            *counts.entry(name).or_insert(0) += 1;
+        }
+        let _ = state.tx.try_send(EngineMessage::AxEvent { pid: state.pid });
+    }
+
+    /// Bounded owned-session observation on the calling thread's runloop.
+    /// Registers the app-level session set on the application element plus,
+    /// when `window_wid` joins an owned window, the window-level set on that
+    /// exact window element (never a foreign one). Pumps the runloop until
+    /// `timeout`, then tears everything down and reports per-name delivery
+    /// counts. A hung app stalls at most one slice past its messaging
+    /// timeout; failures (bad PID, unjoined WID, no consent) return fast.
+    /// Every `AxElement` is constructed, used, and dropped on the calling
+    /// (observer) thread.
+    pub fn ax_observe_session(
+        pid: i32,
+        window_wid: Option<u32>,
+        timeout: Duration,
+        messaging_timeout_secs: f32,
+        tx: &SyncSender<EngineMessage>,
+    ) -> Result<AxSessionOutcome, AxObserveError> {
+        if pid <= 1 {
+            return Err(AxObserveError::InvalidPid(format!(
+                "refusing reserved pid {pid}"
+            )));
+        }
+        let app = AxElement::application(pid)
+            .ok_or_else(|| AxObserveError::InvalidPid(format!("bad pid {pid}")))?;
+        let messaging_timeout_set = ax_set_messaging_timeout(&app, messaging_timeout_secs) == 0;
+        // Join the requested window before creating the observer: an
+        // unjoined WID fails here, never as a silent empty watch.
+        let window: Option<AxElement> = match window_wid {
+            None => None,
+            Some(wid) => {
+                let windows = app.windows().map_err(|code| {
+                    AxObserveError::System(format!("windows: {}", ax_error_name(code)))
+                })?;
+                match windows.into_iter().find(|w| ax_window_id(w) == Some(wid)) {
+                    Some(w) => {
+                        let _ = ax_set_messaging_timeout(&w, messaging_timeout_secs);
+                        Some(w)
+                    }
+                    None => {
+                        return Err(AxObserveError::System(format!(
+                            "wid {wid} not joined to pid {pid}"
+                        )));
+                    }
+                }
+            }
+        };
+        let mut observer_raw: *mut AXObserver = std::ptr::null_mut();
+        // SAFETY: out-pointer valid; maintained `AXObserver::create`; nonzero
+        // status leaves `observer_raw` null and returns fast.
+        let status = unsafe {
+            AXObserver::create(
+                pid,
+                Some(ax_session_callback),
+                NonNull::new(std::ptr::addr_of_mut!(observer_raw)).expect("non-null"),
+            )
+        };
+        if status.0 != 0 || observer_raw.is_null() {
+            return Err(AxObserveError::System(format!(
+                "AXObserverCreate pid {pid}: {}",
+                ax_error_name(status.0)
+            )));
+        }
+        // SAFETY: create-rule +1 retained; owned by `CFRetained` exactly once.
+        let observer: CFRetained<AXObserver> =
+            unsafe { CFRetained::from_raw(NonNull::new(observer_raw).expect("non-null")) };
+        let refcon = Box::new(SessionRefcon {
+            tx: tx.clone(),
+            pid: pid as u32,
+            counts: std::sync::Mutex::new(std::collections::HashMap::new()),
+        });
+        let refcon_ptr = Box::into_raw(refcon);
+        let mut added: Vec<String> = Vec::new();
+        // SAFETY: observer/app/window live in maintained wrappers; names are
+        // fresh `CFString`s; refcon valid until reclaimed below after
+        // notifications are removed.
+        unsafe {
+            for name in AX_SESSION_APP_NOTIFICATIONS {
+                let cf_name = CFString::from_str(name);
+                let status = observer.add_notification(
+                    &app.inner,
+                    &cf_name,
+                    refcon_ptr as *mut std::ffi::c_void,
+                );
+                if status.0 == 0 {
+                    added.push((*name).to_owned());
+                }
+            }
+            if let Some(window) = window.as_ref() {
+                for name in AX_SESSION_WINDOW_NOTIFICATIONS {
+                    let cf_name = CFString::from_str(name);
+                    let status = observer.add_notification(
+                        &window.inner,
+                        &cf_name,
+                        refcon_ptr as *mut std::ffi::c_void,
+                    );
+                    if status.0 == 0 {
+                        added.push((*name).to_owned());
+                    }
+                }
+            }
+            if added.is_empty() {
+                drop(Box::from_raw(refcon_ptr));
+                return Err(AxObserveError::System(
+                    "no AX notifications registered (bad pid or no consent)".to_owned(),
+                ));
+            }
+            // Note: the maintained `run_loop_source` asserts non-null and
+            // would panic on null; a null source here would mean an OS
+            // contract violation (live observer must vend a source).
+            let source = observer.run_loop_source();
+            let rl = CFRunLoop::current().ok_or_else(|| {
+                for name in added.clone() {
+                    let cf_name = CFString::from_str(&name);
+                    let _ = observer.remove_notification(&app.inner, &cf_name);
+                    if let Some(window) = window.as_ref() {
+                        let _ = observer.remove_notification(&window.inner, &cf_name);
+                    }
+                }
+                drop(Box::from_raw(refcon_ptr));
+                AxObserveError::System("AX observer runloop unavailable".to_owned())
+            })?;
+            let mode = kCFRunLoopDefaultMode;
+            rl.add_source(Some(&source), mode);
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                CFRunLoop::run_in_mode(mode, 0.25, false);
+            }
+            rl.remove_source(Some(&source), mode);
+            source.invalidate();
+            // Counts are collected while the refcon is still owned (shared
+            // borrow of the live Box); reclaim happens last, after removals,
+            // so no callback can observe a freed refcon.
+            // SAFETY: `refcon_ptr` is the live Box installed above; no
+            // callback runs past `invalidate()` on this thread's runloop, and
+            // the observer belongs to this thread only.
+            let mut received: Vec<(String, u32)> = (&*refcon_ptr)
+                .counts
+                .lock()
+                .map(|counts| {
+                    let mut out: Vec<(String, u32)> =
+                        counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                    out.sort_unstable();
+                    out
+                })
+                .unwrap_or_default();
+            // Removal targets both elements (a name registered on one is a
+            // harmless miss on the other); statuses are teardown-only.
+            // `added_names` preserves the registered set for the outcome:
+            // added-but-silent names must appear there too.
+            let added_names = added.clone();
+            for name in added {
+                let cf_name = CFString::from_str(&name);
+                let _ = observer.remove_notification(&app.inner, &cf_name);
+                if let Some(window) = window.as_ref() {
+                    let _ = observer.remove_notification(&window.inner, &cf_name);
+                }
+            }
+            // SAFETY: notifications removed and the runloop source
+            // invalidated above; no callback can fire afterwards, so the
+            // refcon is reclaimed exactly once here.
+            drop(Box::from_raw(refcon_ptr));
+            Ok(AxSessionOutcome {
+                notifications_added: added_names,
+                notifications_received: std::mem::take(&mut received),
+                messaging_timeout_set,
+            })
+        }
+    }
+
     /// Observe Secure Input state. `None` (missing symbol) is unknown, never
     /// inactive.
     pub fn secure_input_known() -> Option<bool> {
@@ -1557,6 +1783,43 @@ mod macos {
             .filter(|b| !b.is_empty())
     }
 
+    /// Frontmost application identity (PID plus bundle ID) from the maintained
+    /// `objc2-app-kit` binding. No AX involved (works without consent) and no
+    /// titles/content: PIDs and bundle IDs only. `None` when unreadable.
+    /// Used for focus preimage baselines and frontmost-restore verification.
+    pub fn frontmost_app() -> Option<(i32, String)> {
+        use objc2_app_kit::NSWorkspace;
+        let workspace = NSWorkspace::sharedWorkspace();
+        let app = workspace.frontmostApplication()?;
+        let pid = app.processIdentifier();
+        if pid <= 1 {
+            return None;
+        }
+        let bundle = app
+            .bundleIdentifier()
+            .map(|b| b.to_string())
+            .unwrap_or_default();
+        Some((pid, bundle))
+    }
+
+    /// Normal application activation (no synthetic input, no window actions):
+    /// asks the running application for `pid` to activate with default
+    /// options. Returns whether the request was sent — focus arrival is async
+    /// and MUST be verified separately (AX focused preimage or frontmost
+    /// poll). Callers restrict targets to the owned helper (focus leg) and
+    /// the recorded pre-frontmost app (restore leg); anything else,
+    /// especially the controlling terminal's windows, is out of scope.
+    pub fn activate_app(pid: i32) -> bool {
+        if pid <= 1 {
+            return false;
+        }
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => app.activateWithOptions(NSApplicationActivationOptions::empty()),
+            None => false,
+        }
+    }
+
     /// Live executable path via maintained `libc::proc_pidpath`. Bounded buffer.
     pub fn process_executable_path(pid: i32) -> Option<String> {
         if pid <= 1 {
@@ -1606,11 +1869,42 @@ mod macos {
         CFRunLoop::run_in_mode(mode, millis.min(1000) as f64 / 1000.0, false);
     }
 
+    /// Drain pending AppKit events without blocking: dequeue whatever is
+    /// available (distant past = return immediately, never wait) and dispatch
+    /// each through the application. Without this, machinery that arrives as
+    /// application events — notably activation requests — is never serviced:
+    /// the request reports sent while focus never transfers and AX focus
+    /// legs fail. Bounded: at most 64 dequeues per call (`None` ends the
+    /// drain early), zero sleep. Maintained `objc2-app-kit` wrappers only.
+    pub fn drain_app_events(app: &objc2_app_kit::NSApplication) {
+        use objc2_app_kit::NSEventMask;
+        use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
+        // SAFETY: extern-static default-mode read (same pattern as
+        // `pump_runloop_once`); the static is a framework constant.
+        let mode = unsafe { NSDefaultRunLoopMode };
+        let expiration = NSDate::distantPast();
+        for _ in 0..64 {
+            let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                NSEventMask::Any,
+                Some(&expiration),
+                mode,
+                true,
+            );
+            match event {
+                Some(event) => app.sendEvent(&event),
+                None => break,
+            }
+        }
+    }
+
     /// Owned probe window runner. Creates the window on the calling (main)
     /// thread with the given title (the caller's per-run nonce title),
     /// pumps the runloop until it is serviced, invokes `ready`, and
     /// only then applies the optional stall (so a hung target is a *live*
     /// unresponsive window, not a missing one). Never touches other windows.
+    /// A nonzero `close_window_ms` closes only this window at that deadline
+    /// past `ready` (owned teardown stimulus for the destroyed leg) while the
+    /// process keeps running to its deadline.
     ///
     /// No focus theft: the app uses the `Accessory` policy (no Dock icon,
     /// never key) and the window is shown with `orderFront:` (never
@@ -1620,6 +1914,9 @@ mod macos {
         seconds: u64,
         hung_ms: u64,
         title: &str,
+        fixed_size: bool,
+        defer_window_ms: u64,
+        close_window_ms: u64,
         ready: &dyn Fn(),
     ) -> Result<(), String> {
         use objc2::MainThreadMarker;
@@ -1634,26 +1931,106 @@ mod macos {
         // SAFETY: fresh `alloc()` on the main thread; no pointers escape.
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        // Complete the launch sequence without entering `run`: a bare
+        // `sharedApplication` plus manual runloop pumping shows the window at
+        // the window-server level (CG sees it) but never registers the app
+        // with the accessibility system (AX sees zero windows), which fails
+        // every owned AX leg. `finishLaunching` publishes the AX hierarchy
+        // while the manual bounded pump below keeps lifetime control. It does
+        // not activate, so focus is never stolen.
+        app.finishLaunching();
+        // Deferred creation for the creation-notification leg: pump bounded
+        // (events drained, runloop sliced) with no window yet, so a
+        // pre-window observer deterministically covers the creation below.
+        // Still no focus theft (nothing to show until the window exists).
+        let defer_left = defer_window_ms.min(20_000);
+        let defer_deadline = Instant::now() + Duration::from_millis(defer_left);
+        while Instant::now() < defer_deadline {
+            // Each pump iteration drains an autorelease pool: a manual pump
+            // without one never finalizes deferred AppKit teardown (e.g. a
+            // programmatic window close announces destruction but its surface
+            // lingers), and leaks autoreleased objects for the whole run.
+            // Real NSApplication loops drain per event; this is that hygiene
+            // for the manual loop.
+            objc2::rc::autoreleasepool(|_| {
+                drain_app_events(&app);
+                pump_runloop_once(50);
+            });
+        }
         let frame = NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(480.0, 320.0));
+        // Fault control for the live partial-write leg: without `Resizable`
+        // the window accepts AX position writes but refuses AX size writes,
+        // so a frame transaction against it must restore the exact preimage.
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | if fixed_size {
+                NSWindowStyleMask::empty()
+            } else {
+                NSWindowStyleMask::Resizable
+            };
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 mtm.alloc::<NSWindow>(),
                 frame,
-                NSWindowStyleMask(15),
+                style,
                 NSBackingStoreType(2),
                 false,
             )
         };
         window.setTitle(&NSString::from_str(title));
         window.orderFront(None);
-        pump_runloop_once(200);
+        objc2::rc::autoreleasepool(|_| {
+            pump_runloop_once(200);
+        });
         ready();
         if hung_ms > 0 {
             std::thread::sleep(Duration::from_millis(hung_ms.min(20_000)));
         }
+        // Owned teardown stimulus: close only this window at the deadline,
+        // then keep running windowless until the seconds deadline or the
+        // holder stop. Programmatic close of the owned window (no user
+        // action, no other window touched). With a stall active the close
+        // waits for the stall (documented); the session holder uses no stall
+        // here, so the deadline is exact.
+        let close_at = if close_window_ms > 0 {
+            Some(Instant::now() + Duration::from_millis(close_window_ms.min(20_000)))
+        } else {
+            None
+        };
+        let mut closed = false;
         let deadline = Instant::now() + Duration::from_secs(seconds.clamp(1, 600));
         while Instant::now() < deadline {
-            pump_runloop_once(50);
+            if !closed
+                && let Some(close_deadline) = close_at
+                && Instant::now() >= close_deadline
+            {
+                window.close();
+                closed = true;
+                // First-party close report: execution proof, the window's own
+                // visibility readback, plus the helper's own window-server
+                // readback (own-PID window count after the close). The holder
+                // awaits this marker AND an independent CG absence readback;
+                // either alone proves nothing.
+                let own_windows = cg_window_list_all()
+                    .map(|list| {
+                        let me = std::process::id();
+                        list.iter().filter(|w| w.pid == me).count()
+                    })
+                    .unwrap_or(usize::MAX);
+                println!(
+                    "{}",
+                    serde_json::json!({"closed": true, "windows": own_windows, "visible": window.isVisible()})
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            // Service application events (activation and friends) as well as
+            // the bare runloop: focus machinery arrives as NSEvents, and a
+            // pump that never dequeues them leaves activation parked.
+            objc2::rc::autoreleasepool(|_| {
+                drain_app_events(&app);
+                pump_runloop_once(50);
+            });
         }
         Ok(())
     }
@@ -1827,14 +2204,14 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, ax_focused_preimage,
-    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_raise, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id, ax_window_title,
-    bundle_id_for_pid, carbon_register, cg_post_event_access_known, cg_window_list_all,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, running_apps, secure_input_known, sls_connection_available,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, activate_app,
+    ax_focused_preimage, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
+    ax_set_size, ax_window_id, ax_window_title, bundle_id_for_pid, carbon_register,
+    cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
+    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
+    secure_input_known, sls_connection_available, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -1979,6 +2356,16 @@ mod stub {
         Err(AxObserveError::Unsupported("macOS-only".to_owned()))
     }
 
+    pub fn ax_observe_session(
+        _pid: i32,
+        _window_wid: Option<u32>,
+        _timeout: Duration,
+        _messaging_timeout_secs: f32,
+        _tx: &SyncSender<EngineMessage>,
+    ) -> Result<AxSessionOutcome, AxObserveError> {
+        Err(AxObserveError::Unsupported("macOS-only".to_owned()))
+    }
+
     pub fn carbon_register(
         _keycode: u32,
         _carbon_modifiers: u32,
@@ -2016,6 +2403,14 @@ mod stub {
         None
     }
 
+    pub fn frontmost_app() -> Option<(i32, String)> {
+        None
+    }
+
+    pub fn activate_app(_pid: i32) -> bool {
+        false
+    }
+
     pub fn process_executable_path(_pid: i32) -> Option<String> {
         None
     }
@@ -2045,6 +2440,9 @@ mod stub {
         _seconds: u64,
         _hung_ms: u64,
         _title: &str,
+        _fixed_size: bool,
+        _defer_window_ms: u64,
+        _close_window_ms: u64,
         _ready: &dyn Fn(),
     ) -> Result<(), String> {
         Err("owned probe window is macOS-only".to_owned())
@@ -2053,14 +2451,14 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, ax_focused_preimage,
-    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_raise, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id, ax_window_title,
-    bundle_id_for_pid, carbon_register, cg_post_event_access_known, cg_window_list_all,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, running_apps, secure_input_known, sls_connection_available,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, activate_app,
+    ax_focused_preimage, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
+    ax_set_size, ax_window_id, ax_window_title, bundle_id_for_pid, carbon_register,
+    cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
+    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
+    secure_input_known, sls_connection_available, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]

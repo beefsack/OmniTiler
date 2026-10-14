@@ -69,6 +69,26 @@ pub struct ProbeTargetSpec {
     pub mode: TargetMode,
     pub hung_ms: u64,
     pub seconds: u64,
+    /// Owned fault control for the partial-write leg: a non-resizable window
+    /// accepts AX position writes but refuses AX size writes, so a frame
+    /// transaction against it exercises the exact-preimage restore path live.
+    /// Default off; enabled via `--fixed-size` (probe binary and
+    /// `probe-spawn`/`ax-session` holders).
+    pub fixed_size: bool,
+    /// Owned determinism control for the creation-notification leg: the
+    /// helper pumps its runloop this many milliseconds AFTER process start
+    /// (identity printed, app AX-registered) but BEFORE creating its window,
+    /// so a pre-window observer deterministically covers the creation.
+    /// Default 0 (window immediately); the session holder uses 2000.
+    /// Clamped to 20000 in the helper, like the stall bounds.
+    pub defer_window_ms: u64,
+    /// Owned teardown stimulus for the destroyed-notification leg: the
+    /// helper closes its OWN window this many milliseconds after printing
+    /// `ready`, while the joined observer still pumps, and keeps running
+    /// (process alive, no windows) until its seconds deadline or the exact
+    /// holder stop. Default 0 (never self-closes); the session holder uses
+    /// 9000. Clamped to 20000 in the helper.
+    pub close_window_ms: u64,
 }
 
 impl ProbeTargetSpec {
@@ -92,19 +112,55 @@ impl ProbeTargetSpec {
             mode,
             hung_ms: hung_ms.max(slow_ms),
             seconds,
+            fixed_size: false,
+            defer_window_ms: 0,
+            close_window_ms: 0,
         })
+    }
+
+    /// Enable the non-resizable fault-control window. Builder (not a `new`
+    /// parameter) so existing call sites keep their shape.
+    pub fn with_fixed_size(mut self, fixed_size: bool) -> Self {
+        self.fixed_size = fixed_size;
+        self
+    }
+
+    /// Defer window creation by `ms` (see field docs). Builder; clamped to
+    /// 20000 in the helper.
+    pub fn with_defer_window_ms(mut self, ms: u64) -> Self {
+        self.defer_window_ms = ms;
+        self
+    }
+
+    /// Self-close the owned window `ms` after `ready` (see field docs).
+    /// Builder; clamped to 20000 in the helper.
+    pub fn with_close_window_ms(mut self, ms: u64) -> Self {
+        self.close_window_ms = ms;
+        self
     }
 
     /// argv fragment for spawning the helper (no shell; exact args).
     pub fn argv(&self) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "--nonce".to_owned(),
             self.nonce.clone(),
             "--hung-ms".to_owned(),
             self.hung_ms.to_string(),
             "--seconds".to_owned(),
             self.seconds.to_string(),
-        ]
+        ];
+        if self.fixed_size {
+            args.push("--fixed-size".to_owned());
+        }
+        if self.defer_window_ms > 0 {
+            args.push("--defer-window-ms".to_owned());
+            args.push(self.defer_window_ms.to_string());
+        }
+        if self.close_window_ms > 0 {
+            args.push("--close-window-ms".to_owned());
+            args.push(self.close_window_ms.to_string());
+        }
+        args
     }
 }
 
@@ -141,6 +197,56 @@ mod tests {
         assert_eq!(s.mode, TargetMode::Hung);
         assert!(ProbeTargetSpec::new("short", 0, 0, 10).is_err());
         assert!(ProbeTargetSpec::new("0123456789abcdef", 0, 0, 0).is_err());
+    }
+
+    #[test]
+    fn fixed_size_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert!(!plain.fixed_size);
+        assert!(!plain.argv().contains(&"--fixed-size".to_owned()));
+        let fixed = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_fixed_size(true);
+        assert!(fixed.fixed_size);
+        let argv = fixed.argv();
+        assert!(argv.contains(&"--fixed-size".to_owned()));
+        // Flag position is stable: appended after the --seconds value.
+        assert_eq!(argv[argv.len() - 2], "10");
+        assert_eq!(argv[argv.len() - 1], "--fixed-size");
+    }
+
+    #[test]
+    fn defer_window_ms_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert_eq!(plain.defer_window_ms, 0);
+        assert!(!plain.argv().contains(&"--defer-window-ms".to_owned()));
+        let deferred = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_defer_window_ms(2000);
+        assert_eq!(deferred.defer_window_ms, 2000);
+        let argv = deferred.argv();
+        let flag = argv
+            .iter()
+            .position(|a| a == "--defer-window-ms")
+            .expect("flag present");
+        assert_eq!(argv[flag + 1], "2000");
+    }
+
+    #[test]
+    fn close_window_ms_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert_eq!(plain.close_window_ms, 0);
+        assert!(!plain.argv().contains(&"--close-window-ms".to_owned()));
+        let closing = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_close_window_ms(9000);
+        assert_eq!(closing.close_window_ms, 9000);
+        let argv = closing.argv();
+        let flag = argv
+            .iter()
+            .position(|a| a == "--close-window-ms")
+            .expect("flag present");
+        assert_eq!(argv[flag + 1], "9000");
     }
 
     // Unix-only: reads `/dev/urandom`, which does not exist on Windows.
@@ -532,7 +638,10 @@ pub fn load_verified_record(pid: u32, nonce: &str) -> Result<SpawnRecord, String
         Err(cg_err) => {
             match crate::cg::verify_ax_title_nonce(pid, &record.nonce, &record.helper_path) {
                 Ok(()) => Ok(record),
-                Err(_) => Err(cg_err.to_string()),
+                // Both legs reported: the CG cause plus the fallback cause
+                // (counts/reasons only, never titles), so a refusal names
+                // which title channel failed instead of hiding one.
+                Err(ax_err) => Err(format!("{cg_err}; ax-title fallback: {ax_err}")),
             }
         }
     }
@@ -569,14 +678,22 @@ pub struct SpawnSession {
     pub helper_path: String,
 }
 
-/// Spawn the helper and return only after it proves itself on stdout:
-/// an identity line (`bundle`, exact child PID, issued nonce) AND a `ready`
-/// marker printed only after the runloop actually services the owned window.
-/// A hung/slow stall is therefore scheduled *after* ready, so the child is
-/// a live (unresponsive) window for real AX-latency measurement, not a
-/// missing one. Identity mismatch, early exit, or either timeout kills the
-/// exact child handle and fails; no PID guessing, no orphaned helper.
-pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
+/// Raw helper spawn: the exact `Child`, its PID, the canonical helper path,
+/// and the stdout line channel. No handshake and no record yet — the caller
+/// binds identity next. Holder sessions use this seam to attach AX
+/// observation BEFORE the window exists (so window creation is observable);
+/// [`spawn_verified`] below keeps the strict spawn-then-handshake order.
+/// The reader thread forwards EVERY non-empty line (unbounded channel, never
+/// blocks) and exits at child death; callers read exactly the lines their
+/// protocol needs.
+pub struct UnreadySpawn {
+    pub child: Child,
+    pub pid: u32,
+    pub helper_path: String,
+    pub lines: std::sync::mpsc::Receiver<String>,
+}
+
+pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, String> {
     let helper = helper_binary_next_to_current_exe()?;
     let helper_canon = helper
         .canonicalize()
@@ -590,31 +707,17 @@ pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
         .spawn()
         .map_err(|e| format!("spawn probe helper: {e}"))?;
     let pid = child.id();
-    let cleanup_kill = |child: &mut Child| {
+    let stdout = child.stdout.take().ok_or_else(|| {
         let _ = child.kill();
         let _ = child.wait();
-    };
-    // Poll the exact child for early exit with its status for the message.
-    let early_exit = |child: &mut Child| -> Option<String> {
-        match child.try_wait() {
-            Ok(Some(status)) => Some(format!("probe helper exited early: {status}")),
-            Ok(None) => None,
-            Err(e) => Some(format!("probe wait failed: {e}")),
-        }
-    };
-    let stdout = child.stdout.take().ok_or_else(|| {
-        cleanup_kill(&mut child);
         "probe helper stdout unavailable".to_owned()
     })?;
-    // Bounded handshake: reader thread forwards the first two non-empty
-    // lines (identity, then ready); the owner waits bounded for each.
     let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
     std::thread::Builder::new()
         .name("probe-handshake".to_owned())
         .spawn(move || {
             let mut reader = std::io::BufReader::new(stdout);
             let mut line = String::new();
-            let mut forwarded = 0u32;
             loop {
                 line.clear();
                 match reader.read_line(&mut line) {
@@ -627,35 +730,68 @@ pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
                         if line_tx.send(trimmed).is_err() {
                             break;
                         }
-                        forwarded += 1;
-                        if forwarded >= 2 {
-                            break;
-                        }
                     }
                     Err(_) => break,
                 }
             }
         })
         .map_err(|e| {
-            cleanup_kill(&mut child);
+            let _ = child.kill();
+            let _ = child.wait();
             format!("handshake thread: {e}")
         })?;
+    Ok(UnreadySpawn {
+        child,
+        pid,
+        helper_path: helper_canon,
+        lines: line_rx,
+    })
+}
+
+/// Poll the exact child for early exit with its status for the message.
+fn early_exit_text(child: &mut Child) -> Option<String> {
+    match child.try_wait() {
+        Ok(Some(status)) => Some(format!("probe helper exited early: {status}")),
+        Ok(None) => None,
+        Err(e) => Some(format!("probe wait failed: {e}")),
+    }
+}
+
+/// Wait for the identity + ready handshake on a raw spawn: an identity line
+/// (`bundle`, exact child PID, issued nonce) AND a `ready` marker printed
+/// only after the runloop actually services the owned window. A hung/slow
+/// stall is therefore scheduled *after* ready, so the child is a live
+/// (unresponsive) window for real AX-latency measurement, not a missing one.
+/// Identity mismatch, early exit, or either timeout kills the exact child
+/// handle and fails; no PID guessing, no orphaned helper.
+pub fn await_handshake(spawn: &mut UnreadySpawn, spec: &ProbeTargetSpec) -> Result<(), String> {
+    let pid = spawn.pid;
     let fail = |child: &mut Child, msg: String| -> String {
-        if let Some(exit) = early_exit(child) {
-            cleanup_kill(child);
+        if let Some(exit) = early_exit_text(child) {
+            let _ = child.kill();
+            let _ = child.wait();
             return format!("{msg}; {exit}");
         }
-        cleanup_kill(child);
+        let _ = child.kill();
+        let _ = child.wait();
         msg
     };
-    let line = line_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| {
-        let msg = "probe helper identity handshake timed out".to_owned();
-        let msg = early_exit(&mut child).unwrap_or(msg);
-        cleanup_kill(&mut child);
-        msg
+    let line = spawn
+        .lines
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| {
+            let msg = "probe helper identity handshake timed out".to_owned();
+            let msg = early_exit_text(&mut spawn.child).unwrap_or(msg);
+            let _ = spawn.child.kill();
+            let _ = spawn.child.wait();
+            msg
+        })?;
+    let identity: serde_json::Value = serde_json::from_str(&line).map_err(|_| {
+        fail(
+            &mut spawn.child,
+            "probe helper identity not JSON".to_owned(),
+        )
     })?;
-    let identity: serde_json::Value = serde_json::from_str(&line)
-        .map_err(|_| fail(&mut child, "probe helper identity not JSON".to_owned()))?;
     let bundle = identity
         .get("bundle")
         .and_then(|v| v.as_str())
@@ -666,43 +802,69 @@ pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     if check_handshake_identity(bundle, claimed_pid, claimed_nonce, pid, &spec.nonce).is_err() {
-        cleanup_kill(&mut child);
+        let _ = spawn.child.kill();
+        let _ = spawn.child.wait();
         return Err("probe helper identity mismatch (bundle/pid/nonce)".to_owned());
     }
     // Ready marker: proves the owned window was serviced by the runloop
     // before the parent returns. Early exit or timeout fails closed.
-    let ready_line = line_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| {
-        let msg = "probe helper ready marker timed out (window never serviced)".to_owned();
-        let msg = early_exit(&mut child).unwrap_or(msg);
-        cleanup_kill(&mut child);
-        msg
+    let ready_line = spawn
+        .lines
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| {
+            let msg = "probe helper ready marker timed out (window never serviced)".to_owned();
+            let msg = early_exit_text(&mut spawn.child).unwrap_or(msg);
+            let _ = spawn.child.kill();
+            let _ = spawn.child.wait();
+            msg
+        })?;
+    let ready: serde_json::Value = serde_json::from_str(&ready_line).map_err(|_| {
+        fail(
+            &mut spawn.child,
+            "probe helper ready marker not JSON".to_owned(),
+        )
     })?;
-    let ready: serde_json::Value = serde_json::from_str(&ready_line)
-        .map_err(|_| fail(&mut child, "probe helper ready marker not JSON".to_owned()))?;
     if ready.get("ready").and_then(|v| v.as_bool()) != Some(true) {
-        cleanup_kill(&mut child);
+        let _ = spawn.child.kill();
+        let _ = spawn.child.wait();
         return Err("probe helper ready marker missing".to_owned());
     }
-    // The child proved itself (identity + ready window) on its own pipe
-    // under the exact `Child` handle: record the session. Currency for
-    // later cross-command uses comes from the live window-nonce title, not
-    // from any start token.
-    let record = SpawnRecord {
+    Ok(())
+}
+
+/// Write the durable spawn record after a proven handshake. Currency for
+/// later cross-command uses comes from the live window-nonce title, not
+/// from any start token.
+pub fn record_spawn(pid: u32, spec: &ProbeTargetSpec, helper_path: &str) -> Result<(), String> {
+    write_spawn_record(&SpawnRecord {
         pid,
         nonce: spec.nonce.clone(),
-        helper_path: helper_canon,
-    };
-    if let Err(e) = write_spawn_record(&record) {
-        cleanup_kill(&mut child);
+        helper_path: helper_path.to_owned(),
+    })
+}
+
+/// Spawn the helper and return only after it proves itself on stdout:
+/// an identity line (`bundle`, exact child PID, issued nonce) AND a `ready`
+/// marker printed only after the runloop actually services the owned window.
+/// A hung/slow stall is therefore scheduled *after* ready, so the child is
+/// a live (unresponsive) window for real AX-latency measurement, not a
+/// missing one. Identity mismatch, early exit, or either timeout kills the
+/// exact child handle and fails; no PID guessing, no orphaned helper.
+pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
+    let mut raw = start_helper_process(spec)?;
+    let pid = raw.pid;
+    let helper_path = raw.helper_path.clone();
+    await_handshake(&mut raw, spec)?;
+    if let Err(e) = record_spawn(pid, spec, &helper_path) {
+        let _ = raw.child.kill();
+        let _ = raw.child.wait();
         return Err(e);
     }
-    // Re-take stdout ownership note: the reader thread already exited after
-    // two lines or EOF; the child stays alive under this exact handle.
     Ok(SpawnSession {
-        child,
+        child: raw.child,
         pid,
         nonce: spec.nonce.clone(),
-        helper_path: record.helper_path,
+        helper_path,
     })
 }
 

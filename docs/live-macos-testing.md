@@ -89,6 +89,17 @@ selected route; Dock injection and SIP reduction are out of scope.
   with `codesign` display and designated-requirement output recorded. A
   rebuilt ad-hoc binary may lose TCC grants; path stability alone is not
   proof.
+- Launch TCC-dependent probes through LaunchServices, attributed to the signed
+  bundle, rather than executing its binary from the shell. Direct execution
+  inherits the terminal's responsible-process attribution: `ax_trusted:false`
+  there does not establish that the bundle lacks consent. Use
+  `mise exec -- just preflight-app` and `mise exec -- just launch -- <args>`.
+  The underlying route is `open -n --stdout <file> --stderr <file>
+  target/macos/OmniTilerProbe.app --args <args>`. `open -W` failed for this
+  bundle; the launch wrapper polls output and process quiescence with a bounded
+  deadline. It cannot observe the app's exit status: inspect the JSON outcome,
+  not the wrapper status alone. After rebuilding, require `ax_trusted:true`
+  through this route before AX effects; a lost grant is a stop condition.
 
 ## Recovery Ladder
 
@@ -162,6 +173,13 @@ experiment.
   not feature evidence. Distinguish requested actions, observed effects
   (with AX, CG, and Space-membership readback), exact restoration, and
   uncertainty; retain the machine responses that gate them.
+- Owned AppKit helpers must complete `finishLaunching()` and pump AppKit events
+  as well as their run loop. CG-visible windows alone do not prove an AX
+  hierarchy or functional activation. To test AX destruction notifications,
+  close the owned window while its app remains alive; process termination alone
+  did not deliver that notification. A closed window may retain an offscreen CG
+  entry until app exit. Distinguish notification delivery, on-screen absence,
+  lingering records, and final process/window cleanup.
 - Physical shortcut, display, game, and shell-acceptance checks
   (Mission Control, Dock, Cmd-Tab, focus behavior) remain user-owned.
   Record what was actually observed; synthetic input, hosted CI, and

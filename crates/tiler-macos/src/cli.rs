@@ -20,6 +20,9 @@ pub enum Command {
         nonce: String,
         timeout_ms: u64,
     },
+    AxSession {
+        seconds: u64,
+    },
     AxSetFrame {
         pid: u32,
         nonce: String,
@@ -79,6 +82,7 @@ pub enum Command {
         hung_ms: u64,
         slow_ms: u64,
         seconds: u64,
+        fixed_size: bool,
     },
     SpacesSession {
         seconds: u64,
@@ -115,9 +119,15 @@ pub fn help_text() -> String {
            \x20 spaces-diagnose [--wid WID [--pid PID --nonce HEX]]  read-only SLS display/Space/current/membership diagnostics\n\
           \x20 cg-owned-windows --pid PID --nonce HEX  read-only CGWindowList identity for the owned PID (no AX)\n\
           \n\
-           bounded owned-probe modes (require spawned probe target identity):\n\
-           \x20 ax-observe --pid PID --nonce HEX --timeout-ms MS\n\
-           \x20 \x20 (observes the owned session only; arbitrary/foreign PIDs refused)\n\
+            bounded owned-probe modes (require spawned probe target identity):\n\
+            \x20 ax-observe --pid PID --nonce HEX --timeout-ms MS\n\
+            \x20 \x20 (observes the owned session only; arbitrary/foreign PIDs refused)\n\
+            \x20 ax-session [--seconds N]\n\
+            \x20 \x20 (single bounded Child-holder AX session: focus-restoration proof\n\
+            \x20 \x20 first, then pre-window + window-joined observers with driven\n\
+            \x20 \x20 move/resize, owned self-activation, raise with readback,\n\
+            \x20 \x20 frontmost restore, and a fixed-size partial-write leg;\n\
+            \x20 \x20 no cross-command title auth inside)\n\
            \x20 ax-set-frame --pid PID --nonce HEX --wid WID\n\
            \x20 ax-raise --pid PID --nonce HEX --wid WID\n\
            \x20 \x20 (refuses when focus preimage is foreign; never steals focus)\n\
@@ -229,6 +239,22 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 nonce,
                 timeout_ms,
             }
+        }
+        "ax-session" => {
+            let mut seconds = DEFAULT_PROBE_SECONDS;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    other => return Err(format!("ax-session: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::AxSession { seconds }
         }
         "ax-set-frame" => {
             let (pid, nonce, wid) = parse_owned_wid(args, "ax-set-frame")?;
@@ -491,6 +517,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut hung_ms = 0u64;
             let mut slow_ms = 0u64;
             let mut seconds = DEFAULT_PROBE_SECONDS;
+            let mut fixed_size = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -509,6 +536,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         seconds =
                             parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
                     }
+                    "--fixed-size" => {
+                        fixed_size = true;
+                    }
                     other => return Err(format!("probe-spawn: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -517,6 +547,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 hung_ms,
                 slow_ms,
                 seconds,
+                fixed_size,
             }
         }
         "probe-stop" => {
@@ -816,6 +847,41 @@ mod tests {
             }
         ));
         assert!(parse_args(&argv(&["spaces-session", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn ax_session_is_bounded_holder_with_seconds_cap() {
+        let r = parse_args(&argv(&["ax-session"])).unwrap();
+        assert!(r.may_mutate);
+        assert!(matches!(
+            r.command,
+            Command::AxSession {
+                seconds: DEFAULT_PROBE_SECONDS,
+            }
+        ));
+        let r = parse_args(&argv(&["ax-session", "--seconds", "20"])).unwrap();
+        assert!(matches!(r.command, Command::AxSession { seconds: 20 }));
+        assert!(parse_args(&argv(&["ax-session", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn probe_spawn_fixed_size_is_explicit_opt_in() {
+        let r = parse_args(&argv(&["probe-spawn"])).unwrap();
+        assert!(matches!(
+            r.command,
+            Command::ProbeSpawn {
+                fixed_size: false,
+                ..
+            }
+        ));
+        let r = parse_args(&argv(&["probe-spawn", "--fixed-size"])).unwrap();
+        assert!(matches!(
+            r.command,
+            Command::ProbeSpawn {
+                fixed_size: true,
+                ..
+            }
+        ));
     }
 
     #[test]

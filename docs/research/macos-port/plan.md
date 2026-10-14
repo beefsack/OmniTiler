@@ -3,7 +3,9 @@
 Status: Phase 0 in progress, 2026-10-14. Tier 2 was selected 2026-10-03;
 language/threading/native-Spaces/Meta/signing/floor decisions are now adopted
 in the table below. Read-only display/Space/current queries have live evidence;
-AX writes, input delivery, signing, and Space mutations remain unverified.
+Signing/TCC rebuild survival and owned AX identity, notifications, frame/partial
+restoration, focus/raise, and stalled-app timeout now have live evidence. Input
+delivery and Space mutations remain unverified.
 The [active record](../../changes/macos-phase-0.md) and
 [setup runbook](../../macos-dev-environment.md) carry the current evidence.
 Upstream source text is not runtime proof,
@@ -90,17 +92,25 @@ does not advance these pins or their line citations.
 The [active change](../../changes/macos-phase-0.md) records the partial
 milestone and exact continuation. Read-only SLS enumeration returned a display,
 its Space list and matching current Space. Secure Input reported inactive.
-AX app enumeration worked, but window reads failed with trust false; no AX
-join/observer/frame/focus/timeout effect has been verified. Persistent untrusted
-self-signed signing now passes strict verification with an identical bundle ID
-and designated requirement across two clean rebuilds; Accessibility trust is
-false and grant survival remains unverified. Carbon delivery and tap
+The signed bundle is AX-trusted when launched through LaunchServices; direct
+shell execution reports the terminal's trust, not the bundle's grant. Persistent
+self-signed signing passes strict verification with stable bundle ID and
+designated requirement; the Accessibility grant survived repeated rebuilds.
+Owned AX-to-CG joins and nonce authentication work. Per-app threads delivered
+created/moved/resized/focused/destroyed notifications; window self-close while
+the app lived was needed for the destroyed leg. Full frame transaction and
+partial-write restoration read back exact preimages (22ms and 28ms in the final
+run); raise readback took 12ms after owned activation. A 20s stalled helper
+refused AX nonce authentication within 3.4s using messaging timeouts, then
+authenticated after recovery. These are owned-fixture results, not ordinary-app
+acceptance or latency distributions. Carbon delivery and tap
 suppression/recovery are unverified. Owned window membership is proven through
 the Child holder; direct Space move/restore is implemented but untested, while
 switch/create/destroy remain unsupported. No API failure is
 attributed to SIP from these results. Native/portable Cargo build/test/strict
 clippy and formatting pass; configured Linux/Windows CI results are pending.
-The unsafe module is isolated but still needs public-binding minimization.
+The unsafe module is isolated; public AX/CF bindings use maintained crates,
+while private signatures and the wrapper's size remain review concerns.
 
 Initial workspace probes target native Spaces. Lower-level order-out remains
 research; parking is deferred to a potential later setting.

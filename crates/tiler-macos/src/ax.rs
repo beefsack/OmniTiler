@@ -105,7 +105,11 @@ pub fn authorize_owned_action(target_pid: u32, nonce: &str) -> Result<OwnedIdent
 /// `authorize_owned_action` before this call) plus the fresh CG owner-PID
 /// join at use carry ownership, so a missing bundle with a live PID defers
 /// to the record instead of failing.
-fn live_owned_bundle(target_pid: u32) -> Result<String, AxError> {
+///
+/// `pub(crate)` for holder-grade sessions (`ax_session`), which bind the
+/// same live bundle to the exact held `Child` plus fresh CG joins instead of
+/// the title-proof record path used here.
+pub(crate) fn live_owned_bundle(target_pid: u32) -> Result<String, AxError> {
     let pid_i32: i32 = target_pid
         .try_into()
         .map_err(|_| AxError::Ownership(format!("pid {target_pid} out of range")))?;
@@ -520,10 +524,13 @@ pub fn run_frame_transaction<O: FrameTxOps>(
     }
     let restore_error: Option<String> = match ops.set_frame(&preimage) {
         Ok(()) => None,
-        Err(code) => Some(format!(
-            "RESTORE FAILED (window left modified): {}",
-            ax_error_name(code)
-        )),
+        // Neutral write status only: the write returned an error. Whether
+        // the window is actually left modified is decided ONLY by the restore
+        // readback below (`restored` plus `restore_readback`) — never by this
+        // string. (A refused leg can coincide with an already-correct end
+        // state, e.g. restoring size on a non-resizable window whose size
+        // never moved.)
+        Err(code) => Some(format!("restore write failed: {}", ax_error_name(code))),
     };
     let restore_readback: Option<crate::ffi::AxFrame> = match ops.get_frame() {
         Ok(frame) => Some(frame),
@@ -967,8 +974,11 @@ const FRAME_OVERHEAD_SECS: u64 = 15;
 /// 5×(2×2 s) frame legs + 15 s overhead = 75 s. A caller timeout therefore
 /// means "outcome unknown, a restore may still be in flight" — never clean,
 /// never complete.
+///
+/// `pub(crate)` so holder-grade sessions (`ax_session`) wait out the same
+/// documented worst case on their own worker threads.
 #[cfg(any(test, target_os = "macos"))]
-const SET_FRAME_OUTER_SECS: u64 = FRAME_TX_REVALIDATIONS * REVALIDATION_FALLBACK_SECS
+pub(crate) const SET_FRAME_OUTER_SECS: u64 = FRAME_TX_REVALIDATIONS * REVALIDATION_FALLBACK_SECS
     + FRAME_LEGS * FRAME_LEG_CALLS * FRAME_LEG_TIMEOUT_SECS
     + FRAME_OVERHEAD_SECS;
 
@@ -1330,20 +1340,20 @@ mod tests {
         assert_eq!(f.preimage, pre);
         assert_eq!(f.attempted, att);
         assert_eq!(f.applied, Some(att));
-        assert!(f.error.contains("RESTORE FAILED"));
+        assert!(f.error.contains("restore write failed"));
         // The primary error text and the structured restore field must agree:
         // the restore failure is retained explicitly, never nulled.
         assert_eq!(f.restore_error, Some(f.error.clone()));
         assert!(
             f.restore_error
                 .as_deref()
-                .is_some_and(|e| e.contains("RESTORE FAILED"))
+                .is_some_and(|e| e.contains("restore write failed"))
         );
         assert!(f.restore_refused.is_none());
         // CLI Display status surfaces the same restore failure.
         let text = AxError::FrameTx(Box::new(f)).to_string();
         assert!(text.contains("restore-write"));
-        assert!(text.contains("RESTORE FAILED"));
+        assert!(text.contains("restore write failed"));
     }
 
     struct FailRestoreTx {

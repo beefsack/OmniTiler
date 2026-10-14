@@ -11,7 +11,7 @@
 use std::io::Write;
 
 fn usage() -> &'static str {
-    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N]"
+    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS]"
 }
 
 fn main() {
@@ -30,6 +30,9 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let mut hung_ms = 0u64;
     let mut slow_ms = 0u64;
     let mut seconds = tiler_macos::config::DEFAULT_PROBE_SECONDS;
+    let mut fixed_size = false;
+    let mut defer_window_ms = 0u64;
+    let mut close_window_ms = 0u64;
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -61,12 +64,36 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
                     .parse::<u64>()
                     .map_err(|_| (2, usage().to_owned()))?;
             }
+            "--fixed-size" => {
+                fixed_size = true;
+            }
+            "--defer-window-ms" => {
+                i += 1;
+                defer_window_ms = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<u64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+            }
+            "--close-window-ms" => {
+                i += 1;
+                close_window_ms = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<u64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+            }
             other => return Err((2, format!("unknown arg '{other}\n{usage}", usage = usage()))),
         }
         i += 1;
     }
     let nonce = nonce.ok_or((2, usage().to_owned()))?;
     let spec = tiler_macos::probe_target::ProbeTargetSpec::new(&nonce, hung_ms, slow_ms, seconds)
+        .map(|s| {
+            s.with_fixed_size(fixed_size)
+                .with_defer_window_ms(defer_window_ms)
+                .with_close_window_ms(close_window_ms)
+        })
         .map_err(|e| (2, e))?;
     run_target(&spec).map_err(|e| (1, e))
 }
@@ -91,6 +118,9 @@ fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), S
         spec.seconds,
         spec.hung_ms,
         &tiler_macos::probe_target::probe_window_title(&spec.nonce),
+        spec.fixed_size,
+        spec.defer_window_ms,
+        spec.close_window_ms,
         &|| {
             println!("{}", serde_json::json!({"ready": true}));
             let _ = std::io::stdout().flush();

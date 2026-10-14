@@ -293,17 +293,13 @@ Raw operational diagnostics remain outside repository records.
 
 This is an incomplete Phase 0 milestone, not release or live-control acceptance.
 
-1. **Exact next action — Accessibility grant:** add the fixed signed bundle
-   `target/macos/OmniTilerProbe.app` under **System Settings → Privacy & Security →
-   Accessibility**, enable it, and relaunch bundled `preflight`; require
-   `ax_trusted:true` and test grant survival across a genuine rebuild. Input
-   Monitoring only if the tap mode requires it. No terminal grant workaround.
-2. Verify the AX nonce-title fallback on the signed, Accessibility-enabled bundle,
-   including forged/stale nonce refusal. Then prove cross-command graceful stop and
-   owned join/observer/frame/focus/timeout legs with exact recovery readbacks;
-   raise requires an already-owned focus preimage. Carbon/tap legs need bounded
-   release proof and user physical-delivery/suppression observations.
-3. Space writes require a second disposable Space and independently demonstrated
+1. **Exact next action — bounded Ctrl hotkeys:** establish Carbon registration
+   and synthetic delivery, then exact-chord intercepting tap suppression,
+   disabled-tap recovery and bounded exit/release on owned frontmost windows.
+   Read enabled Mission Control Ctrl+arrow/digit bindings and distinguish
+   synthetic results from later user-owned physical acceptance. Launch through
+   LaunchServices; Input Monitoring only if the selected mode proves it needs it.
+2. Space writes require a second disposable Space and independently demonstrated
    restoration surviving primary exit. The same-holder readback is **not** that
    proof; `spaces-session` never dispatches a write, even with `--allow-untested`.
    Establish signed/trusted UI automation and separate restore first, then use
@@ -314,3 +310,50 @@ This is an incomplete Phase 0 milestone, not release or live-control acceptance.
    failure may be inferred from symbol presence, no dispatch or missing topology.
 
 Existing kickoff evidence remains in `archive/macos-port-kickoff.md`.
+
+## Live AX milestone (2026-10-14; supersedes earlier permission blockers)
+
+Physical graphical-session probes, SIP enabled. Fixed signed bundle
+`io.github.omnitiler.macos.probe`, persistent signer, identical designated
+requirement across rebuilds (leaf hash omitted). LaunchServices preflight reports
+`ax_trusted:true`, `post_event_access:true`, Secure Input Inactive and SLS symbols
+present. The grant survived repeated genuine rebuilds. Direct executable launch
+reports trust false because the terminal is the responsible process; it is not
+evidence of missing bundle consent. `open -W` failed; `just preflight-app` and
+`just launch` use bounded polling. Wrapper exit is not the app's exit status;
+JSON readbacks gate capability acceptance.
+
+| Capability | Verdict | Observed evidence and latency |
+| --- | --- | --- |
+| Enumeration / private AX-to-CG join | Works on owned fixture | Trusted enumeration returned windows; AX WID equals fresh CG owner-PID/WID; final holder join 9ms |
+| AX-title nonce / separate stop | Works | CG title withheld, positive AX fallback authenticates; forged nonce and missing stale record refused; separate graceful stop verified exit (~1.4s including launch polling) |
+| Per-app AX observers | Works on owned fixture | Two per-app native threads: created 1, window-moved 4, window-resized 4, moved 2, resized 2, focused 2, destroyed 1; engine receives all 16 events |
+| Frame transaction | Works | Applied frame read back; exact preimage restored, 22ms including restoration |
+| Partial write restoration | Works | Fixed-size helper accepts position, refuses size (`kAXErrorFailure`); applied frame proves partial write; exact preimage restored, 28ms. Restore-write refusal retained separately from successful readback |
+| Focus / raise | Works on owned fixture | Initial activation/restore proof passed; activation 102ms, raise 12ms with AX focused WID/PID readback; original frontmost app restored |
+| Stalled-app timeout | Works, bounded refusal | 20s owned-helper stall: 2s messaging timeout produces `kAXErrorCannotComplete`, cross-command authentication refuses within 3.4s; same helper authenticates after recovery (~1.5s including polling) |
+| Cleanup | Works | Exact children gracefully stopped, reaped, records removed, process-gone true and CG residue false; no taps, hotkeys or Space writes |
+
+The owned helper needed `finishLaunching()` to expose AX windows and AppKit
+event draining to complete activation. Observer attachment before deferred
+window creation proves the created leg. SIGTERM teardown produced no destroyed
+notification; closing the owned window while its app remained alive delivered
+one. The self-close marker reported invisible, and CG retained only an offscreen
+record until app exit: on-screen absence is not total record disappearance.
+An initial close-wait scheduling miss and a total-CG-absence assumption were
+resolved by the helper visibility marker plus explicit lingering-entry readback.
+No ordinary-app or physical shortcut acceptance is implied.
+
+Independent review accepted the identity/unsafe/recovery/launch boundary and
+verified fixes for destroyed-delivery evidence and misleading restore-write
+wording. Final checks: 107 unit + 9 integration macOS tests, strict all-targets
+clippy, formatting, signed bundle verification and shell syntax pass. Source:
+`e9f628a` plus this milestone's probe/launch changes. Signed executable SHA-256:
+
+- `tiler-macos`: `1cfb7a5aed2786179b19a6900273f18d660eb5fb75150dd256b3626600208d26`
+- `tiler-macos-probe-target`: `4a7c5e44cb07d1b5f5630c452c3f51782d6b7e38bbe51d499106178b04f97d7c`
+
+Phase 1 implication: retain per-app AX threads, maintained public bindings,
+private identity join, bounded calls and readback-driven restoration. Hotkey and
+native Spaces architecture verdicts await their live legs; native Spaces-first
+is not yet established or rejected with SIP enabled.

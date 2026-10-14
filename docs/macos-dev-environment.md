@@ -256,11 +256,14 @@ tccutil reset ScreenCapture 'io.github.omnitiler.macos.probe'
   button under **System Settings > Privacy & Security > Accessibility**, and
   enable it. Use the file picker's **Go to Folder** to reach the fixed bundle
   under the checkout's `target/macos/` directory. Stop/relaunch the probe and
-  run its bundled executable's `preflight`; require `ax_trusted:true` before
-  AX writes. Add the same signed bundle under **Input Monitoring** only if
+  run `mise exec -- just preflight-app` through LaunchServices; require
+  `ax_trusted:true` before AX writes. Add the same signed bundle under
+  **Input Monitoring** only if
   the bounded tap leg reports that permission is required; stop/relaunch
   after a change. Do not grant the terminal as a workaround. No Screen
-  Recording grant is needed for these metadata-only probes.
+  Recording grant is needed for these metadata-only probes. Direct shell
+  execution is attributed to the terminal and does not test the bundle's grant;
+  see the [launch protocol](live-macos-testing.md#required-preflight).
 
 ### 7. Unsigned runs, quarantine, and Gatekeeper
 

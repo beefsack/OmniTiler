@@ -24,6 +24,7 @@
 //! (proven recovery not demonstrated); no guessed SLS writes or injection.
 
 pub mod ax;
+pub mod ax_session;
 pub mod cg;
 pub mod cli;
 pub mod config;

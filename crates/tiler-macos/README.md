@@ -74,6 +74,26 @@ mise exec -- cargo run --locked -p tiler-macos -- spaces-diagnose
 mise exec -- cargo run --locked -p tiler-macos -- cg-owned-windows --pid PID --nonce HEX
 ```
 
+TCC attribution: a directly executed binary (`cargo run`, or the executable
+path inside the `.app`) runs under the terminal's responsible-process
+attribution, so `ax_trusted:false` there is expected and is not a consent
+failure. Every TCC-dependent probe (anything reading AX trust, observing,
+or mutating owned windows) must instead run through LaunchServices so the
+window server attributes it to the signed bundle, via the robust
+poll-for-output route (`open -W` cannot block on this bundle):
+
+```zsh
+mise exec -- just preflight-app
+mise exec -- just launch -- ax-enumerate
+mise exec -- just launch -- --timeout 60 -- spaces-session --seconds 20
+```
+
+Status honesty: the wrapper observes output files and process quiescence —
+it cannot see the probe's real exit code (`open` never reports it). Read the
+JSON payload (`verified_exit`/`restored`/`effect_verified`) as the outcome;
+a wrapper timeout or any stderr content is never success evidence, even with
+partial stdout beside it.
+
 Explicit bounded modes (all finite; `--ctrl meta|ctrl|alt|shift`, default
 `meta`; fixed probe chord `0x04`):
 
@@ -87,7 +107,18 @@ mise exec -- cargo run --locked -p tiler-macos -- spaces-move --pid PID --nonce 
 mise exec -- cargo run --locked -p tiler-macos -- spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested
 mise exec -- cargo run --locked -p tiler-macos -- probe-spawn --seconds 30
 mise exec -- cargo run --locked -p tiler-macos -- spaces-session [--seconds N] [--allow-untested]
+mise exec -- just launch -- --timeout 120 -- ax-session --seconds 30
 ```
+
+`ax-session` is the Child-holder AX session: it proves focus restoration on
+a throwaway spawn first, then runs pre-window plus window-joined observers
+with a driven move/resize, owned self-activation, raise with focus readback,
+frontmost restore, and exact-Child stop — then a fixed-size phase proving
+controlled partial-write (position accepted, size refused) restoration. No
+cross-command title auth inside; per-leg in-process latencies in the report.
+The responsive phase additionally self-closes the owned window on a timer
+while the joined observer pumps, proving `AXUIElementDestroyed` delivery with
+CG-absence plus process-alive readbacks before the exact-Child stop.
 
 `ax-observe` authenticates the owned session (spawn record: pid/nonce,
 expected helper, live bundle-or-exe plus CURRENT live window nonce) and
@@ -181,6 +212,12 @@ script fails closed until a persistent identity exists:
 mise exec -- just app 'OmniTiler Mac Dev'
 mise exec -- just verify
 ```
+
+Confirm the bundle grant through the LaunchServices route (never the bare
+executable path): `mise exec -- just preflight-app` must report
+`ax_trusted:true` before any TCC-dependent leg. A rebuild must preserve the
+grant (stable designated requirement across rebuilds); if trust is lost,
+stop — no TCC UI scripting and no `tccutil reset` in this flow.
 
 The script builds both binaries, assembles the `.app`, signs nested
 executables first and the bundle last, then runs `codesign --verify --deep

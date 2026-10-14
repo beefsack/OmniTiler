@@ -74,6 +74,13 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             })
             .to_string())
         }
+        Command::AxSession { seconds } => {
+            // Bounded Child-holder AX session: focus-restoration proof first,
+            // then driven observer/frame/focus legs on the exact held
+            // children plus a fixed-size partial-write leg. No cross-command
+            // title auth inside; no hotkeys, taps, or Space writes.
+            tiler_macos::ax_session::run_ax_session(seconds)
+        }
         Command::AxSetFrame { pid, nonce, wid } => {
             // Same authenticated spawn record as stop (pid/nonce, expected
             // helper, live bundle-or-exe plus CURRENT live window nonce)
@@ -336,10 +343,12 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             hung_ms,
             slow_ms,
             seconds,
+            fixed_size,
         } => {
             let nonce = tiler_macos::probe_target::mint_nonce().map_err(|e| (1, e))?;
             let spec =
                 tiler_macos::probe_target::ProbeTargetSpec::new(&nonce, hung_ms, slow_ms, seconds)
+                    .map(|s| s.with_fixed_size(fixed_size))
                     .map_err(|e| (2, e))?;
             let mut session = tiler_macos::probe_target::spawn_verified(&spec)
                 .map_err(|e| (1, format!("spawn failed: {e}")))?;
