@@ -46,9 +46,16 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   restore wake and `TileLoop` impls remain for their later responsibilities.
   Required gates pass: 2,106 / 0 / 1.
 
+- Focus/underlay/probes: parent 31,690 -> 29,158 lines; children 609 / 705 /
+  1,002 / 251 lines. Bodies differ only by necessary visibility/imports and
+  one formatted signature. Public overlay-flags path remains re-exported in
+  all builds. The observation `TileLoop` impl remains intact in the parent.
+  Required gates pass: 2,106 / 0 / 1.
+
 ## Remaining work
 
-Production map orders 18-30, starting with focus/underlay/probes.
+Production map orders 19-30, starting with fullscreen/admission; retain the
+whole observation `TileLoop` impl for later extraction.
 
 ## Commit records
 
@@ -58,3 +65,4 @@ Production map orders 18-30, starting with focus/underlay/probes.
 | `06b8e28` | Shell/monitor/observe | 34,884 | 69 / 106 / 511 |
 | `40540a0` | Hints/seams/placement/minmax | 33,818 | 138 / 495 / 177 / 314 |
 | `9fb3247` | Trace/owner-work/preview/input | 33,138 | 93 / 250 / 139 / 248 |
+| `5f3c764` | Render/retained | 31,690 | 469 / 966 / 41 |

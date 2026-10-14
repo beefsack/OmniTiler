@@ -1,0 +1,705 @@
+use super::*;
+
+/// Hide the underlay fill with a change-only `group-underlay` log line.
+/// Bridged hides post through the handoff like the border; the ack logs.
+pub(super) fn hide_underlay(state: &mut TileLoop, reason: &str) {
+    if state.render_bridge.is_some() {
+        hide_render_carrier(state, RenderCarrier::Underlay, reason);
+        return;
+    }
+    let was_visible = state.underlay_overlay.is_visible();
+    state.underlay_overlay.hide();
+    let signature = format!("hidden:{reason}");
+    if state.underlay_last.as_deref() == Some(signature.as_str()) && !was_visible {
+        return;
+    }
+    state.underlay_last = Some(signature);
+    // Diagnostic key first (no product effect): see `hide_border`.
+    note_render_hidden(state, RenderCarrier::Underlay, format!("hidden:{reason}"));
+    log_json_at(
+        &state.log_path,
+        serde_json::json!({
+            "event": "group-underlay",
+            "tick": state.tick,
+            "outcome": "hidden",
+            "reason": reason,
+        }),
+    );
+}
+
+/// Hide the drop preview with change-only logging (no-op when already
+/// hidden). Every cancel, refusal, zero, self/centre/outside, suspend,
+/// teardown, and drift path funnels here so no stale rectangle survives.
+/// Bridged hides post through the handoff; the ack logs. Settle-time finish
+/// uses [`hide_preview_finish`] instead so the Engine drop runs only after
+/// the renderer acknowledges the hide.
+pub(super) fn hide_preview(state: &mut TileLoop, reason: &str) {
+    if state.render_bridge.is_some() {
+        hide_render_carrier(state, RenderCarrier::Preview, reason);
+        return;
+    }
+    let was_visible = state.preview_overlay.is_visible();
+    state.preview_overlay.hide();
+    let signature = format!("hidden:{reason}");
+    if state.preview_last.as_deref() == Some(signature.as_str()) && !was_visible {
+        return;
+    }
+    state.preview_last = Some(signature);
+    // Diagnostic key first (no product effect): see `hide_border`.
+    note_render_hidden(state, RenderCarrier::Preview, format!("hidden:{reason}"));
+    log_json_at(
+        &state.log_path,
+        serde_json::json!({
+            "event": "drag-preview",
+            "tick": state.tick,
+            "outcome": "hidden",
+            "reason": reason,
+        }),
+    );
+}
+
+/// Level-observed Win+Shift chord: either Win side plus any Shift side held.
+/// Extras are allowed (only these keys are read) and either press order works
+/// because this samples levels, never sequences edges. Independent of the
+/// keyboard-hook gesture path, so a bare hold with no other key still reads.
+pub(super) fn chord_held_now() -> (bool, bool) {
+    let down = |vk: u32| unsafe { GetAsyncKeyState(vk as i32) } < 0;
+    aggregate_chord_keys(
+        down(VK_LWIN),
+        down(VK_RWIN),
+        down(VK_SHIFT),
+        down(VK_LSHIFT),
+        down(VK_RSHIFT),
+    )
+}
+
+/// `WM_NCHITTEST` timeout for one move/size classification: bounded like the
+/// minimum-hint query, fail-closed to `Unknown` on timeout or failure.
+const HITTEST_TIMEOUT_MS: u32 = 10;
+
+/// Classify one open move/size gesture at START via the official
+/// `WM_NCHITTEST` result at the current cursor position. `EVENT_SYSTEM_MOVESIZESTART`
+/// does not distinguish move from resize; asking the window itself (through
+/// `DefWindowProc`, system-marshalled like `WM_GETMINMAXINFO`) is a bounded
+/// START-drain heuristic: no new hook, no SC_MOVE/SC_SIZE interception, no
+/// deferred rect comparison (which cannot show a stationary start). Hung or
+/// unreadable windows classify `Unknown` and never trigger.
+pub(super) fn classify_move_size_start(hwnd_u64: u64) -> MoveSizeKind {
+    let hwnd = hwnd_u64 as isize as HWND;
+    let mut cursor: POINT = unsafe { std::mem::zeroed() };
+    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+        return MoveSizeKind::Unknown;
+    }
+    // MAKELPARAM packing: low word x, high word y (truncation is the packing).
+    let lparam = ((cursor.y as u32) << 16) | (cursor.x as u32 & 0xFFFF);
+    let mut result: usize = 0;
+    let sent = unsafe {
+        SetLastError(0);
+        SendMessageTimeoutW(
+            hwnd,
+            WM_NCHITTEST,
+            0,
+            lparam as usize as LPARAM,
+            SMTO_ABORTIFHUNG,
+            HITTEST_TIMEOUT_MS,
+            &mut result,
+        )
+    };
+    if sent == 0 {
+        return MoveSizeKind::Unknown;
+    }
+    classify_hit_test(result as u32)
+}
+
+/// Fresh outer rectangle for one HWND via a single `GetWindowRect` read.
+/// START-time fallback only, when `stable` has no pre-gesture entry. `None`
+/// on failure: the caller treats the gesture as no-start.
+pub(super) fn live_outer_rect(hwnd_u64: u64) -> Option<Rect> {
+    let hwnd = hwnd_u64 as isize as HWND;
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+        return None;
+    }
+    let w = rect.right.saturating_sub(rect.left);
+    let h = rect.bottom.saturating_sub(rect.top);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    Some(Rect {
+        x: rect.left,
+        y: rect.top,
+        w,
+        h,
+    })
+}
+
+/// Fresh renderable check for one underlay anchor candidate: a live,
+/// visible, non-iconic, non-cloaked top-level window. DWM cloak-query
+/// failure fails closed (not renderable). Smallest causal gate so a stale
+/// Engine member (minimized/hidden/cloaked between reconciles) never wins
+/// the lowest-in-z anchor.
+fn underlay_anchor_renderable(hwnd_u64: u64) -> bool {
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    if unsafe { IsWindowVisible(hwnd) } == 0 {
+        return false;
+    }
+    if unsafe { IsIconic(hwnd) } != 0 {
+        return false;
+    }
+    let mut cloaked: i32 = 0;
+    if unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        )
+    } != 0
+    {
+        return false;
+    }
+    cloaked == 0
+}
+
+/// Map one Engine `no-group` reason to the closed underlay hide vocabulary.
+/// `NoParentGroup` is the root-leaf focus the resolver reports; focus drift
+/// between the fresh foreground read and the retained focus reports
+/// `focus-changed` and may restore on the next valid refresh.
+fn underlay_no_group_reason(reason: NoGroupReason) -> &'static str {
+    match reason {
+        NoGroupReason::Pending => "pending",
+        NoGroupReason::Diverged => "diverged",
+        NoGroupReason::NoParentGroup => "root-leaf",
+        NoGroupReason::FocusMismatch | NoGroupReason::FocusUnmapped => "focus-changed",
+        NoGroupReason::NoSession
+        | NoGroupReason::DomainMismatch
+        | NoGroupReason::StaleRevision
+        | NoGroupReason::NoTree => "no-group",
+    }
+}
+
+/// Fast group-underlay refresh for one loop wake: the movement-only staged
+/// lifetime (A Win+Shift chord, B focused interactive move) over the
+/// Engine-projected source-group union.
+///
+/// Trigger is the shared OR: level-observed Win+Shift (either side, extras
+/// allowed, either order) or a classified `Move` gesture on the actual
+/// foreground window. Resize alone never triggers; the chord stays
+/// independent during resize. Move-start evidence never depends on modifier
+/// observation.
+///
+/// Geometry is the authoritative Engine route only: `CoreCommand::ActiveGroup`
+/// through `resolve_active_group`/`describe_active_group` with the fresh
+/// actual focused token (never an unfocused dragged id, which would persist
+/// false retained focus). Pending/drag residue fails closed in the resolver;
+/// the union shown is always the projected source union, never live dragged
+/// bounds. The fill lands directly beneath the lowest renderable member in
+/// `EnumWindows` order (the border surface included when visible), i.e. below
+/// members and below the active border.
+pub(super) fn refresh_group_underlay(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    fulls: &[Rect],
+    areas: &[MonitorArea],
+) {
+    if !state.underlay.enabled {
+        hide_underlay(state, "disabled");
+        return;
+    }
+    let (win_held, shift_held) = chord_held_now();
+    let chord = tiler_core::visual::group_underlay_chord_held(win_held, shift_held);
+    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    if foreground == 0 {
+        hide_underlay(state, "no-target");
+        return;
+    }
+    if owned_overlay_hwnd(state, RenderCarrier::Border) == Some(foreground)
+        || owned_overlay_hwnd(state, RenderCarrier::Underlay) == Some(foreground)
+    {
+        return;
+    }
+    // Fresh actual focused-subject match: only a classified move on this exact
+    // foreground window feeds the move arm. Stale START entries for other
+    // windows never match, and END/removal clearing drops them.
+    let move_active = state
+        .move_kind
+        .get(&foreground)
+        .is_some_and(|kind| *kind == MoveSizeKind::Move);
+    if !tiler_core::visual::group_underlay_trigger(chord, move_active) {
+        hide_underlay(state, "idle");
+        return;
+    }
+    if let Some(entries) = state.allowlist.as_ref() {
+        let entry = entries.iter().find(|e| e.hwnd == foreground);
+        let Some(entry) = entry else {
+            hide_underlay(state, "allowlist-changed");
+            return;
+        };
+        if verify_proof_owned(foreground, entry, me).is_err() {
+            hide_underlay(state, "identity-changed");
+            return;
+        }
+    }
+    let hwnd = foreground as isize as HWND;
+    let window = match observe_window(hwnd, me, fulls, &mut state.tokens) {
+        Ok(window) => window,
+        Err(ObserveFailure::Known(_, reason)) => {
+            hide_underlay(
+                state,
+                match reason {
+                    SkipReason::Minimized => "minimized",
+                    SkipReason::Maximized => "maximized",
+                    SkipReason::Fullscreen => "fullscreen",
+                    _ => "no-target",
+                },
+            );
+            return;
+        }
+        Err(ObserveFailure::Unknown) => {
+            hide_underlay(state, "no-target");
+            return;
+        }
+    };
+    if !scope_allows(&state.scope, &window.identity.exe_path)
+        || !hosted_gate_allows(
+            &window.identity.exe_path,
+            window.hwnd,
+            window.identity.pid,
+            &state.scope_hosts,
+        )
+    {
+        hide_underlay(state, "scope-excluded");
+        return;
+    }
+    if window.facts.minimized {
+        hide_underlay(state, "minimized");
+        return;
+    }
+    if window.facts.maximized {
+        hide_underlay(state, "maximized");
+        return;
+    }
+    if window.facts.captionless_fullscreen {
+        hide_underlay(state, "fullscreen");
+        return;
+    }
+    // Tiled membership only: a focused window with no Engine membership has
+    // no group to highlight.
+    let member_key = state
+        .member_tokens
+        .iter()
+        .find(|(_, token)| token.as_str() == window.token.as_str())
+        .map(|(key, _)| key.clone());
+    let Some(member_key) = member_key else {
+        hide_underlay(state, "floating");
+        return;
+    };
+    let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
+        hide_underlay(state, "no-group");
+        return;
+    };
+    // Floats hold no tile group: the fill stays hidden on a focused float
+    // while the active border still marks it. Floating workspaces hold no
+    // tiled group either: every member frame stays native.
+    if engine_is_float(state, &loc.output, &loc.workspace, &window.token)
+        || !workspace_mode_tiled(state, &loc.output, &loc.workspace)
+    {
+        hide_underlay(state, "floating");
+        return;
+    }
+    let Some((domain, domain_key)) = workspace_domain_for(
+        &loc.output,
+        &loc.workspace,
+        areas,
+        state.inner_gap,
+        state.outer_gap,
+    ) else {
+        hide_underlay(state, "no-group");
+        return;
+    };
+    // Copies for the diagnostics payload: `domain` moves into the event below.
+    let domain_bounds = domain.bounds;
+    let domain_gap = domain.gap;
+    // Advisory minimums for the ActiveGroup projection: the same retained
+    // per-window hints the ordinary plan for this state used. Reads retained
+    // maps only (no native queries, no writes); unknown members resolve to
+    // no hints exactly like ordinary plans.
+    let hint_rows: Vec<(
+        String,
+        String,
+        String,
+        tiler_core::size_hints::WindowSizeHints,
+    )> = state
+        .member_tokens
+        .iter()
+        .filter_map(|(key, token)| {
+            let sibling = state.workspaces.member_loc(key)?;
+            if sibling.output != loc.output || sibling.workspace != loc.workspace {
+                return None;
+            }
+            let hints = state
+                .hint_logged
+                .get(token)
+                .copied()
+                .unwrap_or_else(tiler_core::size_hints::WindowSizeHints::none);
+            Some((
+                token.clone(),
+                sibling.output.clone(),
+                sibling.workspace.clone(),
+                hints,
+            ))
+        })
+        .collect();
+    let hint_members: Vec<crate::group_underlay::UnderlayHintMember<'_>> = hint_rows
+        .iter()
+        .map(
+            |(token, output, workspace, hints)| crate::group_underlay::UnderlayHintMember {
+                token,
+                output,
+                workspace,
+                hints: *hints,
+            },
+        )
+        .collect();
+    let mut event = tiler_core::boundary::CoreEvent {
+        owner: state.owner.clone(),
+        generation: state.generation.clone(),
+        correlation: state.correlation(),
+        revision: revision_for(state, &loc.output, &loc.workspace),
+        fingerprint: 0,
+        domain,
+        domain_key,
+        outer_gap: state.outer_gap,
+        focused_window: WindowId(window.token.clone()),
+        windows: crate::group_underlay::underlay_hint_windows(&hint_members),
+        directional: None,
+        directional_target_outer_gap: None,
+        target_domain: None,
+        target_windows: Vec::new(),
+        closed_windows: Vec::new(),
+        command: CoreCommand::ActiveGroup,
+    };
+    let found = match handle_engine_event(state, &mut event) {
+        CoreReply::ActiveGroup(found) => found,
+        CoreReply::NoGroup { reason, .. } => {
+            hide_underlay(state, underlay_no_group_reason(reason));
+            return;
+        }
+        _ => {
+            hide_underlay(state, "no-group");
+            return;
+        }
+    };
+    if underlay_eligible(
+        true,
+        true,
+        true,
+        window.facts.maximized,
+        window.facts.captionless_fullscreen,
+        false,
+    )
+    .is_err()
+    {
+        hide_underlay(state, "no-group");
+        return;
+    }
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    let Some((width_px, gap_px, _)) = scale_style(&state.border.style, dpi) else {
+        hide_underlay(state, "dpi-scale");
+        return;
+    };
+    let extension_logical = tiler_core::visual::group_underlay_effective_extension(
+        state.underlay.style.extension,
+        state.border.style.width,
+    );
+    let Some(extension_px) = scale_to_physical(extension_logical, dpi) else {
+        hide_underlay(state, "dpi-scale");
+        return;
+    };
+    let Some(outer) = underlay_outer_rect(found.bounds, gap_px, width_px, extension_px) else {
+        hide_underlay(state, "geometry");
+        return;
+    };
+    // Anchor beneath the lowest renderable member; the renderer's own border
+    // surface sorts into the same comparison renderer-side so the fill stays
+    // below it too. Member candidates stay identity-valid (still managed)
+    // and freshly renderable (visible, non-iconic, non-cloaked), each
+    // carrying its own lifetime identity for individual renderer-side
+    // validation; stale Engine members between reconciles fail closed to
+    // `anchor-missing`. The owner never pushes its possibly stale border
+    // HWND through the handoff.
+    let candidates: Vec<UnderlayCandidate> = found
+        .members
+        .iter()
+        .filter_map(|member| {
+            state
+                .snap_origins
+                .iter()
+                .find(|(_, origin)| origin.token == member.window.0)
+                .map(|(hwnd, _)| *hwnd)
+        })
+        .filter(|hwnd| state.managed.contains(hwnd) && underlay_anchor_renderable(*hwnd))
+        .filter_map(|hwnd| {
+            let key = state.member_tokens.keys().find(|key| key.hwnd == hwnd)?;
+            Some(UnderlayCandidate {
+                hwnd,
+                lifetime: WindowLifetime {
+                    pid: key.pid,
+                    creation: key.creation.clone(),
+                    member_tag: crate::product_hide::sys::read_member_tag(hwnd),
+                },
+            })
+        })
+        .collect();
+    let z_hwnds: Vec<u64> = candidates.iter().map(|candidate| candidate.hwnd).collect();
+    let Some(anchor) = lowest_in_z(&z_hwnds) else {
+        hide_underlay(state, "anchor-missing");
+        return;
+    };
+    let Some(anchor_lifetime) = candidates
+        .iter()
+        .find(|candidate| candidate.hwnd == anchor)
+        .map(|candidate| candidate.lifetime.clone())
+    else {
+        hide_underlay(state, "anchor-missing");
+        return;
+    };
+    let topmost =
+        unsafe { GetWindowLongW(anchor as isize as HWND, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0;
+    let color = (
+        state.underlay.style.alpha,
+        state.underlay.style.color.0,
+        state.underlay.style.color.1,
+        state.underlay.style.color.2,
+    );
+    let color_hex = crate::group_underlay::render_color_argb((
+        state.underlay.style.color,
+        state.underlay.style.alpha,
+    ));
+    // Bounded geometry observability only: the Engine union, immediate-parent
+    // group/leaf, member rects, DPI/pad inputs, and domain/revision ride the
+    // already-logged shown/redrew/moved lines. No new lines, no geometry or
+    // placement change; the change-gated signature below is untouched.
+    // Hoisted above the present so the bridged post can stash the same
+    // payload for its acknowledgement-driven log line.
+    let member_windows: Vec<String> = found
+        .members
+        .iter()
+        .map(|member| member.window.0.clone())
+        .collect();
+    let member_rects: Vec<Rect> = found.members.iter().map(|member| member.rect).collect();
+    let geometry_debug = underlay_geometry_debug(crate::group_underlay::UnderlayGeometryReport {
+        union_rect: found.bounds,
+        group: found.group.0.as_str(),
+        focused_leaf: found.focused_leaf.0.as_str(),
+        member_windows: &member_windows,
+        member_rects: &member_rects,
+        dpi,
+        gap_px,
+        width_px,
+        extension_px,
+        domain_bounds,
+        domain_gap,
+        base_revision: found.base_revision,
+    });
+    // Bridged present: post the owner-resolved union frame with the live
+    // member candidates the renderer revalidates individually and
+    // re-resolves to a fresh lowest-in-z anchor, plus the foreground
+    // identity and monitor fulls for the renderer-side switch/fullscreen
+    // fence. The applied outcome logs on the acknowledgement.
+    if state.render_bridge.is_some() {
+        let foreground = WindowLifetime {
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+            member_tag: crate::product_hide::sys::read_member_tag(window.hwnd),
+        };
+        post_underlay_frame(
+            state,
+            outer,
+            color,
+            &window.token,
+            topmost,
+            anchor,
+            anchor_lifetime,
+            candidates,
+            foreground,
+            monitor_fulls(areas),
+            geometry_debug,
+        );
+        return;
+    }
+    let outcome = state
+        .underlay_overlay
+        .show_fill_at(outer, color, &window.token, topmost, anchor);
+    match outcome {
+        OverlayOutcome::Hidden => {
+            let failure = format!(
+                "hidden:present-failed:{}",
+                state.underlay_overlay.last_error().unwrap_or("unknown")
+            );
+            let changed_failure = state.underlay_last.as_deref() != Some(failure.as_str());
+            if changed_failure {
+                state.underlay_last = Some(failure);
+            }
+            // Diagnostic key (no product effect): see the border branch above.
+            note_render_hidden(
+                state,
+                RenderCarrier::Underlay,
+                format!(
+                    "failure:{}",
+                    state.underlay_overlay.last_error().unwrap_or("unknown")
+                ),
+            );
+            if changed_failure || state.trace {
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": state.tick,
+                        "outcome": "hidden",
+                        "reason": "present-failed",
+                        "last_error": state.underlay_overlay.last_error(),
+                    }),
+                );
+            }
+        }
+        OverlayOutcome::Unchanged => {
+            let signature = format!(
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}",
+                window.token,
+                outer.x,
+                outer.y,
+                outer.w,
+                outer.h,
+                topmost,
+                color_hex,
+                state.underlay_overlay.snapshot()["dib_checksum"],
+            );
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            if state.trace && changed {
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "group-underlay",
+                        "tick": state.tick,
+                        "outcome": "unchanged",
+                        "target": window.token,
+                    }),
+                );
+            }
+        }
+        OverlayOutcome::Moved if state.trace => {
+            // Routine follows under the same target aggregate into the
+            // per-carrier ~1s window instead of logging per move.
+            let sample = same_thread_sample(
+                "moved",
+                window.token.clone(),
+                [outer.x, outer.y, outer.w, outer.h],
+                color_hex.clone(),
+                String::new(),
+            );
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Underlay,
+                window.token.as_str(),
+                Instant::now(),
+                true,
+                sample,
+            ) {
+                return;
+            }
+            let mut event = serde_json::json!({
+                    "event": "group-underlay",
+                    "tick": state.tick,
+                    "outcome": "moved",
+                    "target": window.token,
+                    "outer": [outer.x, outer.y, outer.w, outer.h],
+            });
+            if let Some(fields) = geometry_debug.as_object() {
+                for (key, value) in fields {
+                    event[key] = value.clone();
+                }
+            }
+            log_json_at(&state.log_path, event);
+        }
+        OverlayOutcome::Moved => {}
+        _ => {
+            let signature = format!(
+                "shown:{}:{}:{}:{}:{}:{}:{}:{}",
+                window.token,
+                outer.x,
+                outer.y,
+                outer.w,
+                outer.h,
+                topmost,
+                color_hex,
+                state.underlay_overlay.snapshot()["dib_checksum"],
+            );
+            let changed = state.underlay_last.as_deref() != Some(signature.as_str());
+            if changed {
+                state.underlay_last = Some(signature);
+            }
+            // Routine same-target repaints aggregate into the per-carrier ~1s
+            // window (shared decision: no duplicate line); transitions log
+            // immediately below.
+            let checksum_hex = state.underlay_overlay.snapshot()["dib_checksum"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            if render_same_thread_gate(
+                state,
+                RenderCarrier::Underlay,
+                window.token.as_str(),
+                Instant::now(),
+                changed || state.trace,
+                same_thread_sample(
+                    match outcome {
+                        OverlayOutcome::Shown => "shown",
+                        OverlayOutcome::Redrew => "redrew",
+                        _ => "shown",
+                    },
+                    window.token.clone(),
+                    [outer.x, outer.y, outer.w, outer.h],
+                    color_hex.clone(),
+                    checksum_hex,
+                ),
+            ) {
+                return;
+            }
+            if !(changed || state.trace) {
+                return;
+            }
+            let mut event = serde_json::json!({
+                    "event": "group-underlay",
+                    "tick": state.tick,
+                    "outcome": match outcome {
+                        OverlayOutcome::Shown => "shown",
+                        OverlayOutcome::Redrew => "redrew",
+                        _ => "shown",
+                    },
+                    "target": window.token,
+                    "outer": [outer.x, outer.y, outer.w, outer.h],
+                    "color": color_hex,
+                    "members": found.members.len(),
+                    "dib_checksum": state.underlay_overlay.snapshot()["dib_checksum"],
+            });
+            if let Some(fields) = geometry_debug.as_object() {
+                for (key, value) in fields {
+                    event[key] = value.clone();
+                }
+            }
+            log_json_at(&state.log_path, event);
+        }
+    }
+}

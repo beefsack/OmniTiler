@@ -542,9 +542,9 @@ decisions of 2026-09-24 are under
    names preserved. Original
   test counts preserved; upstream shared policy adds 11 tests, yielding
   2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
-   Production map rows 14-17 extracted: parent now 31,690 lines; all fourteen
+   Production map rows 14-18 extracted: parent now 29,158 lines; all eighteen
    children below 1,500 lines. Required gates preserve 2,106 / 0 / 1.
-   Next: focus/underlay/probes, then the
+   Next: fullscreen/admission, then the
    remaining production responsibilities in map order
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
