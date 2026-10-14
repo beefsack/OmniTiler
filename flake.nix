@@ -75,6 +75,7 @@
           ./crates/tiler-protocol
           ./crates/omnitiler
           ./crates/tiler-windows
+          ./crates/tiler-macos
         ];
       };
 

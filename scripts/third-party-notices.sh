@@ -41,7 +41,7 @@ ABOUT_TEMPLATE="$REPO_ROOT/about.hbs"
 
 SHIPPING_ROOTS="omnitiler tiler-kwin-effect-ffi"
 LINUX_TARGETS="x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
-WORKSPACE_MEMBERS="omnitiler tiler-core tiler-protocol tiler-kwin-effect-ffi tiler-windows"
+WORKSPACE_MEMBERS="omnitiler tiler-core tiler-protocol tiler-kwin-effect-ffi tiler-windows tiler-macos"
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/third-party-notices.XXXXXX")"
 trap 'rm -rf -- "$SCRATCH"' EXIT

@@ -95,7 +95,7 @@ NPM_VERSION="$(tagged_version kwin/package.json | node -e "let d='';process.stdi
   || die "tagged kwin/package.json has no usable version"
 [[ "$NPM_VERSION" == "$VERSION" ]] \
   || die "tagged kwin/package.json version $NPM_VERSION does not match tag $TAG"
-for member in tiler-core tiler-protocol omnitiler tiler-kwin-effect-ffi tiler-windows; do
+for member in tiler-core tiler-protocol omnitiler tiler-kwin-effect-ffi tiler-windows tiler-macos; do
   CRATE_VERSION="$(tagged_version "crates/$member/Cargo.toml" | grep -E '^version = "' | head -n 1 | sed -E 's/^version = "(.*)"$/\1/')"
   [[ "$CRATE_VERSION" == "$VERSION" ]] \
     || die "tagged crates/$member/Cargo.toml version '${CRATE_VERSION:-missing}' does not match tag $TAG"
