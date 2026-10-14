@@ -628,3 +628,17 @@ checks stopped. Accepted subcases and remaining gaps are qualified below.
   OmniTiler lifecycle are observations, not restoration failures. Restore
   unrelated settings and protected-window placement under the live procedure;
   do not recreate retired empty desktops merely to reverse normal lifecycle.
+
+## Integrated verification (2026-10-14)
+
+- After integrating concurrent Windows/macOS deliveries, settings-only native
+  build with warnings denied and CTest pass (26/26); KWin typecheck and full
+  suite pass (1535/1535); Rust workspace tests pass (1856), formatting and
+  all-target Clippy with warnings denied pass; diff whitespace checks pass.
+- Non-macOS lint integration required cfg-gating macOS-only helpers/imports
+  and constants. macOS validation order is preserved; no macOS live or host
+  build acceptance is inferred from Linux checks.
+- Latest KCM changes are build/test verified. Staging and live reopen remain
+  deferred: the staging recipe also replaces the effect payload, and the
+  loaded-library identity was not verified. Dual-output live inventory gaps
+  remain as qualified above.

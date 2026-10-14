@@ -33,9 +33,11 @@
 //! `sls_display_spaces`); elements are indexed within `len().min(...)`
 //! rather than materialized unbounded. No custom `unsafe impl Send/Sync` anywhere.
 
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicU32, Ordering},
     mpsc::SyncSender,
 };
 
@@ -108,6 +110,7 @@ impl EventCounter {
         self.hits.load(Ordering::SeqCst)
     }
 
+    #[cfg(any(test, target_os = "macos"))]
     fn bump(&self) {
         self.hits.fetch_add(1, Ordering::SeqCst);
     }

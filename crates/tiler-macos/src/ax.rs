@@ -142,6 +142,7 @@ pub fn enumerate_counts(max_windows: usize) -> Result<AxCounts, AxError> {
 /// AX handle lives and dies on the worker. Shared by the live collector and
 /// the scripted regression below so the bound is tested without live apps.
 #[derive(Debug)]
+#[cfg(any(test, target_os = "macos"))]
 struct EnumCount {
     windows: usize,
     failed: bool,
@@ -151,9 +152,11 @@ struct EnumCount {
 /// tables, so only the first `MAX_ENUM_WORKERS` PIDs (sorted for
 /// determinism) get a worker; the remainder is reported via `truncated`.
 /// No threadpool framework: plain `std::thread` spawns only.
+#[cfg(target_os = "macos")]
 const MAX_ENUM_WORKERS: usize = 64;
 
 /// Single shared collection slice for the whole aggregate (not per app).
+#[cfg(target_os = "macos")]
 const ENUM_AGGREGATE_SECS: u64 = 3;
 
 /// Aggregate per-app worker outcomes under ONE global finite deadline.
@@ -163,6 +166,7 @@ const ENUM_AGGREGATE_SECS: u64 = 3;
 /// parallel and self-terminate on their own finite messaging timeout; the
 /// receiver ends are simply dropped here. Pure over channels: scripted
 /// receivers exercise this with no apps, no AX, and no live state.
+#[cfg(any(test, target_os = "macos"))]
 fn aggregate_counts(
     receivers: Vec<std::sync::mpsc::Receiver<EnumCount>>,
     max_windows: usize,
@@ -307,6 +311,7 @@ pub fn observe_app(
     // foreign processes fail here, before any observer is created).
     let live_bundle = live_owned_bundle(pid)?;
     gate_owned_frame(owned, pid, &live_bundle)?;
+    #[cfg(target_os = "macos")]
     let pid_i32: i32 = pid
         .try_into()
         .map_err(|_| AxError::Ownership(format!("pid {pid} out of range")))?;
@@ -937,25 +942,32 @@ pub fn raise_owned(
 /// Write-boundary revalidations on the `set_frame_owned` worker path: 2 in
 /// `set_frame_on_worker` (before any mutation, before the transaction) plus
 /// 3 inside `run_frame_transaction` (pre-write, post-set, pre-restore).
+#[cfg(any(test, target_os = "macos"))]
 const FRAME_TX_REVALIDATIONS: u64 = 5;
 /// Each revalidation can run the AX-title fallback worker (bounded 8 s) when
 /// CG titles are withheld.
+#[cfg(any(test, target_os = "macos"))]
 const REVALIDATION_FALLBACK_SECS: u64 = 8;
 /// Every frame AX leg runs under the 2 s element messaging timeout (set on
 /// both the app and the owned window); a leg is at most 2 calls
 /// (position+size writes, or position/size reads).
+#[cfg(any(test, target_os = "macos"))]
 const FRAME_LEG_TIMEOUT_SECS: u64 = 2;
+#[cfg(any(test, target_os = "macos"))]
 const FRAME_LEG_CALLS: u64 = 2;
 /// Frame legs on the path: preimage get, attempted set, applied get,
 /// restore set, restore readback.
+#[cfg(any(test, target_os = "macos"))]
 const FRAME_LEGS: u64 = 5;
 /// Slack for snapshots, thread spawn, and channel handoff.
+#[cfg(any(test, target_os = "macos"))]
 const FRAME_OVERHEAD_SECS: u64 = 15;
 
 /// Conservative caller bound for `set_frame_owned`: 5×8 s revalidations +
 /// 5×(2×2 s) frame legs + 15 s overhead = 75 s. A caller timeout therefore
 /// means "outcome unknown, a restore may still be in flight" — never clean,
 /// never complete.
+#[cfg(any(test, target_os = "macos"))]
 const SET_FRAME_OUTER_SECS: u64 = FRAME_TX_REVALIDATIONS * REVALIDATION_FALLBACK_SECS
     + FRAME_LEGS * FRAME_LEG_CALLS * FRAME_LEG_TIMEOUT_SECS
     + FRAME_OVERHEAD_SECS;

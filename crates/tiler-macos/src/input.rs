@@ -100,6 +100,7 @@ pub struct TapGuard {
 }
 
 impl TapGuard {
+    #[cfg(target_os = "macos")]
     fn completed(report: crate::ffi::TapRunReport) -> Self {
         Self {
             report,
