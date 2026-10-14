@@ -293,16 +293,18 @@ Raw operational diagnostics remain outside repository records.
 
 This is an incomplete Phase 0 milestone, not release or live-control acceptance.
 
-1. **Exact next action — regular-app focus fixture:** use disposable TextEdit
-   with its pre-existing process/window state captured; first prove agreement
-   between NSWorkspace frontmost and AX focus, plus an independent restore to
-   the original frontmost app. Only then run per-event-gated Ctrl+h synthetic
-   Carbon delivery and exact tap suppression/passthrough/release tests. Preserve
-   the two failed Accessory-helper approaches below; do not repeat them. Complete
-   actual disabled-tap recovery and an independent hard lifetime ceiling. Read
-   and map enabled Mission Control Ctrl+arrow/digit bindings before collision
-   probes; registration success alone is not collision behavior. Physical
-   acceptance remains separate. Launch through LaunchServices; Input Monitoring
+1. **Exact next action — SLPS focus fixture:** after an unlocked graphical
+   session is available, rebuild/sign/verify and require LaunchServices
+   `ax_trusted:true`; establish agreement on the original frontmost app, then
+   run the pending `focus-session --seconds 30` fixture. Require an actual
+   original → target → original transfer using the SLPS route, with NSWorkspace,
+   AX PID/window and CG ownership agreement at each boundary, including after
+   helper exit. See the latest investigation below. Only then implement/run
+   per-event-gated Ctrl+h Carbon delivery, exact tap suppression, passthrough,
+   post-release delivery, actual disabled-tap recovery and an independent hard
+   lifetime ceiling. Read enabled Mission Control Ctrl+arrow/digit bindings
+   before collision probes; registration success alone is not collision
+   behavior. Physical acceptance remains separate. Input Monitoring is needed
    only if the selected mode proves it needs it.
 2. Space writes require a second disposable Space and independently demonstrated
    restoration surviving primary exit. The same-holder readback is **not** that
@@ -363,7 +365,7 @@ private identity join, bounded calls and readback-driven restoration. Hotkey and
 native Spaces architecture verdicts await their live legs; native Spaces-first
 is not yet established or rejected with SIP enabled.
 
-## Input registration milestone and focus-fixture blocker (2026-10-14)
+## Earlier input registration milestone (2026-10-14; focus blocker superseded below)
 
 | Capability | Verdict | Evidence and latency |
 | --- | --- | --- |
@@ -412,3 +414,73 @@ acceptance. Keep tier-2 policy unchanged. A scripting addition with reduced SIP
 would contradict that policy; parking remains an unselected alternative to
 surface only if safe native routes fail. Neither alternative is justified by
 the current fixture failure.
+
+## SLPS focus investigation and current input status (2026-10-14)
+
+The reusable focus implementation is **pending live acceptance**, not a selected
+Phase 1 primitive yet. It resolves Carbon `GetProcessForPID` and SkyLight
+`_SLPSSetFrontProcessWithOptions` / `SLPSPostEventRecordTo` behind the existing
+safe FFI boundary. The focus dispatch uses mode `0x200`, followed by the two
+`0xf8`-byte key-window records from
+[yabai's focus functions](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L1269-L1333)
+and [ABI declarations](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h).
+Unlike yabai's combined raise/focus function, this dispatch omits `AXRaise`.
+Yabai obtains PSNs through other SkyLight functions; `GetProcessForPID` is the
+probe's Carbon SDK lookup. No scripting addition or SIP change was used.
+
+| Capability | Current verdict | Evidence and latency |
+| --- | --- | --- |
+| SLPS focus on Accessory helper | Partial effect; **required agreement failed** | Dispatch status 0 and both event-record posts status 0; AX focused PID/WID joined the owned CG window, but NSWorkspace still reported the original app. Dispatch 11ms, AX/CG polling 6ms. This is not a valid input fixture |
+| Same-route original-app restoration | One earlier restore observed; latest fixture unproven | Ghostty NSWorkspace PID, AX PID/WID and CG join agreed after SLPS restore; dispatch 4ms, agreement polling 9ms. These are separate measurements, not an end-to-end latency distribution |
+| Regular-policy owned helper | Implemented; full transfer unproven | Helper can appear frontmost at spawn and owns additional CG app-chrome windows. Fixture now joins CG owner set to AX window IDs, captures original focus before spawn, and restores original before the measured target dispatch if spawn took focus |
+| Carbon delivery / exact tap suppression / passthrough / release delivery | Still unverified | No synthetic keys were posted in this investigation; earlier bounded registration/idle lifecycle evidence above is unchanged |
+| Actual disabled-tap recovery / independent hard lifetime | Still unverified | No tap installed in this investigation |
+| Enabled Mission Control binding mapping and collisions | Still pending | No shortcut settings changed; earlier registration-only observations do not settle enabled-binding behavior |
+| Native Spaces writes | Still untested | Readback remained one Space, current Space unchanged; no create, move, switch or destroy dispatched |
+
+The first Accessory-helper run failed the full agreement oracle. A provisional
+AX/CG-only target gate was rejected and removed; NSWorkspace agreement remains
+mandatory. Regular-policy fixture development then exposed extra CG windows and
+spawn-time focus. Early fixture failures stopped helpers without complete focus
+restoration; subsequent reads could not establish the original AX preimage.
+The pending fixture now attempts identity-checked same-route restoration on all
+post-spawn failures, retains failed restoration evidence, and checks agreement
+again **after** verified helper exit. No legacy activation/self-yield route was
+retried.
+
+The final diagnostic established a different baseline: **NSWorkspace and
+system-wide AX both reported `com.apple.loginwindow` frontmost**, a lock-screen
+context. Ghostty's per-app focused-window join returned status `-25201`; multiple
+CG windows meant a replacement WID could not be selected unambiguously. Recovery
+was refused before any dispatch, and live work stopped. This does not establish
+a persistent AX failure in an unlocked session. Unlocking and re-establishing the
+original focus baseline is the immediate prerequisite; native Spaces probes are
+not yet the next executable leg.
+
+The last diagnostic used the fixed persistent-signed bundle with
+`ax_trusted:true`, Secure Input Inactive and the existing designated requirement
+(identifier plus persistent certificate leaf hash); signing verification passed.
+Source basis: `d1007c5` plus the pending focus changes. The final **live** artifact
+is older than subsequent code-only review repairs; no live result is attributed
+to those repairs. Its signed executable SHA-256 values were:
+
+- `tiler-macos`: `19dacfcdce6846d90768c03407f61b52a983fce62aa736aed86238da849dae5f`
+- `tiler-macos-probe-target`: `22b931adfea5ab0e5893f21458ad2f0967ff35b71518eb296ad5ebd488c7e686`
+
+Raw scoped diagnostic evidence remains outside repository records.
+No probe/helper process or session record remained, and no tap/hotkey
+was installed. Space layout/current remained unchanged. Original Ghostty focus
+is **not** claimed restored at the final boundary: the desktop was locked.
+
+Independent code review checked the pinned SLPS ABI, event-record layout,
+identity/restore paths and unsafe isolation. Repairs removed the diagnostic
+recovery CLI, added detailed AX errors and finite messaging timeouts, post-stop
+focus readback, exact ordered per-display Space snapshots and failure on any
+owned AX-window join error. Dispatch refuses a loginwindow/unknown frontmost
+context; restore attempts retain distinct dispatch, skip and agreement causes.
+Latest code-only gates pass: **115 macOS unit + 9
+integration tests**, portable/macOS allowlist strict all-target clippy, formatting
+and diff checks. Unsafe blocks in `ffi.rs`: **49 → 54 (+5)**; no unsafe added
+elsewhere and no custom unsafe Send/Sync. Full-agreement focus and Phase 0 input
+acceptance remain incomplete. No durable focus-route decision is promoted from
+partial evidence.

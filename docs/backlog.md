@@ -3272,9 +3272,15 @@ decisions of 2026-09-24 are under
   bundle with stable designated requirement and Accessibility grant (via
   LaunchServices launch) verified; owned-window AX legs live-proven (identity
   join, observers, frame set/restore, focus/raise, stalled-app timeout);
-  Carbon registration and idle tap lifecycle work. Pending: focus-agreement
-  fixture, Ctrl-chord delivery/suppression/tap recovery, native Space
-  move/switch/create probes ([record](changes/macos-phase-0.md)). Readiness research
+  Carbon registration and idle tap lifecycle work. SLPS focus route implemented
+  pending acceptance: Accessory-helper AX/CG focus worked but NSWorkspace
+  disagreed; same-route original-app restore observed once. Regular-policy
+  full-agreement fixture awaits an unlocked baseline (final NSWorkspace/AX
+  readback identified loginwindow; recovery refused without dispatch). Next:
+  prove original → owned target → original agreement, then Ctrl-chord
+  delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
+  and enabled Mission Control collisions; native Space move/switch/create
+  probes follow ([record](changes/macos-phase-0.md)). Readiness research
   done (`f095042`): setup/TCC/signing runbook, sourced prior-art survey and
   tentative plan, which recommended public AX/AppKit. User direction
   (2026-10-03) supersedes that default: lower-level, lower-jank yabai-style
