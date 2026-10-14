@@ -33,7 +33,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 1 | `tests_directional_cross` | `directional_cross_adapter_tests` | 2,360 | Two production seams and shared fixture | Extracted; 2,333 lines |
 | 2 | `tests_pending_drop` | `pending_drop_tests` | 2,865 | Render/gesture types, queue/service and injectors | Extracted; 2,852 lines |
 | 3 | `tests_fixed_predicate` | `fixed_predicate_tests` | 2,659 | Hint context, predicate and fixture | Extracted; 2,652 lines |
-| 4 | `tests_d23_minimize` | `d23_minimize_adapter_tests` | 3,599 | Kept intact to preserve shared helpers and test namespace; design further split at whole-test boundaries | Extracted; 3,595 lines; subdivision remains |
+| 4 | `tests_d23_minimize`, `tests_d23_minimize_2` | `d23_minimize_adapter_tests` | 3,599 | Same-namespace `include!` preserves helpers and all 27 test names | Extracted and subdivided; 2,061 / 1,535 lines |
 | 5 | `tests_float_unfloat` | `float_unfloat_clear_tests` | 2,216 | Clear-effects trait and fixture | Extracted; 2,207 lines |
 | 6 | `tests_workspace_migrate` | `workspace_migrate_adapter_tests` | 2,054 | Engine event stamps, migration and injectors | Extracted; 2,047 lines |
 | 7 | `tests_output_send`, `tests_cross_drag` | Output-send and cross-drag adapter tests | 1,614 / 704 | Shared fixture; keep separate module names | Extracted; 1,606 / 699 lines |
@@ -78,14 +78,14 @@ Numbered production stems denote further whole-item subdivisions as needed.
   **26,288 lines**. No inline test modules remain. The production prefix before
   the original inline test section is byte-identical to baseline.
 - Completed phase-1 evidence: [record](../../changes/archive/windows-tiling-sys-split-phase1.md).
-- Next: design the D23 subdivision boundary while preserving test names and
-  namespace; then production orders 14-30. Start with shell/monitor/observe
+- Phase 2 subdivides D23 at a whole-test boundary with same-namespace `include!`:
+  2,061 / 1,535 lines, byte-identical moved bodies and all 27 names preserved.
+  All required gates pass with 2,106 / 0 / 1.
+- Next: production orders 14-30. Start with shell/monitor/observe
   leaves, then hints/seams/placement/minmax. Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
 - Production risk: moving a function into a child changes unqualified name
   resolution and sibling access. Confirm imports and minimal visibility rather
   than assuming private child items remain callable from the parent.
-- The oversized D23 test module needs a deliberate helper-sharing boundary;
-  retaining its existing module namespace avoids test renames. Its 27 tests
-  share 20 helper functions. The pure-move constraint takes priority over
-  meeting the soft cap immediately.
+- D23's 20 helper functions remain in the first file; the second file contributes
+  13 unchanged tests through `include!`, retaining the existing module namespace.

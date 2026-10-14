@@ -538,12 +538,14 @@ decisions of 2026-09-24 are under
   Windows phase 1: 14 pure-move extraction commits reduce `tiling_sys.rs`
   from 61,917 to 35,537 lines (-26,380, 42.6%). All 28 inline test modules
   now occupy separate child files totaling 26,288 lines; production unchanged.
-  D23 minimize remains 3,595 lines and needs further subdivision. Original
+   Phase 2 subdivides D23 minimize into 2,061 / 1,535 lines with all 27 test
+   names preserved. Original
   test counts preserved; upstream shared policy adds 11 tests, yielding
   2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
-  Next: D23 subdivision design, then production responsibilities in map order
+   Next: production responsibilities in map order, starting shell/monitor/observe
   ([split map](research/windows-port/tiling-sys-split-map.md),
-  [record](changes/archive/windows-tiling-sys-split-phase1.md)).
+   [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
+   [phase 2](changes/windows-tiling-sys-split-phase2.md)).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in
