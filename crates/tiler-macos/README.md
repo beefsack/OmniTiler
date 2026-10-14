@@ -185,8 +185,11 @@ mise exec -- just verify
 The script builds both binaries, assembles the `.app`, signs nested
 executables first and the bundle last, then runs `codesign --verify --deep
 --strict`, prints the designated requirement (`codesign -d -r -`), and
-reports a `spctl` diagnostic. A missing named identity in
-`security find-identity -v -p codesigning` is a hard error.
+reports a `spctl` diagnostic. It selects one exact-name match from the
+**Matching identities** section of `security find-identity -p codesigning`,
+regardless of trust, and signs by that identity's SHA-1. Zero or multiple
+matches are hard errors. Self-signed identities do not need **Always Trust**;
+private-key access authorization is separate.
 
 ## Live preflight / recovery
 

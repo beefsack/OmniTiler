@@ -31,7 +31,7 @@ behavior proof. Preserve pre-existing working-tree changes.
 ## Adopted decisions
 
 Recorded in `docs/decisions.md` and the plan's adopted/open table: all Rust,
-trusted bindings before tiny isolated unsafe; AppKit main/input/per-app AX/
+[Unsafe Code](../principles.md#unsafe-code); AppKit main/input/per-app AX/
 engine threads with channels; native Spaces first and yabai primary reference;
 configurable Meta defaulting to Ctrl; Apple Silicon only; persistent self-signed
 development identity; macOS 15 minimum. Homebrew's current Mac-only events put
@@ -74,7 +74,7 @@ window titles, display UUIDs, local paths, or raw input recorded here.
 | Carbon registration/delivery | Untested | Real bounded registration/handler path; neither live registration nor physical delivery attempted |
 | CGEventTap suppression / timeout-disable recovery | Untested | Real bounded tap, opt-in exact-chord suppression and re-enable path; pure matching tests do not establish physical input behavior |
 | Native Space switch / move / create / destroy | Unimplemented, untested | Mutating Space APIs not called; move command explicitly unsupported. This is not evidence of SIP rejecting an API |
-| Persistent signing / TCC rebuild survival | Blocked | `security find-identity -v -p codesigning`: zero valid identities; bundle verify fails closed on missing app |
+| Persistent signing / TCC rebuild survival | Signing works; grant survival pending | Superseded by follow-up below: strict verification and stable requirement across two clean rebuilds; Accessibility grant not yet present |
 | Cleanup | Clean | No probe/helper process remains; no tap/hotkey/window/Space mutation was run, so no restoration preimage was exercised |
 
 Read-only commands completed promptly (sub-second after build); no detailed
@@ -100,6 +100,40 @@ tools are unavailable locally; their CI gates remain pending. Notice shipping
 roots currently cover Linux products, not this development probe.
 
 ## Current milestone and evidence (2026-10-14)
+
+### Persistent signing follow-up
+
+Bounded acceptance: accept one exact-name code-signing identity regardless of
+trust, sign by its SHA-1, retain missing/ambiguous identity and bundle guards,
+and compare fixed bundle ID/designated requirement across two clean rebuilds.
+Verify both bundles strictly, run only the nonmutating bundled preflight, and
+repeat local formatting, strict clippy, tests and macOS allowlist build. Align
+the macOS unsafe decision references with the project principle. Accessibility
+grant survival and the remaining live capability legs are separate acceptance.
+
+Completed: the recipe scans all matching code-signing identities, ignoring the
+repeated valid-only subset, and signs by the unique exact-name match's SHA-1.
+Six mocked-identity runs of the actual script passed: untrusted, trusted/repeated,
+missing, substring-only, duplicate and missing-hash cases. Existing fixed-output,
+owned-marker and symlink guards remain. Actual assembly exposed two existing
+packaging failures: BSD `chmod` rejects `--`, and codesign rejects the marker
+directly under `Contents`. Removing that separator for fixed absolute paths and
+placing the marker under `Contents/Resources` resolved both.
+
+Two clean rebuilds (`cargo clean -p tiler-macos` before each `just app`), each
+followed by `just verify` and explicit `codesign --verify --strict`, passed.
+Both nested executables retain minos 15.0. Bundle ID
+`io.github.omnitiler.macos.probe` and the designated requirement were identical
+across builds; the requirement is the identifier plus the persistent certificate
+leaf hash (hash omitted here). The signer remained untrusted; no trust change
+was needed. `spctl` rejected the unnotarized development bundle as expected.
+
+Bundled `preflight` exited normally with `ax_trusted:false`,
+`post_event_access:false`, `mutates:false`, SLS symbols available and Secure Input
+Inactive. No probe remains running. This establishes persistent signed identity,
+not Accessibility consent or consent survival. Formatting, strict clippy,
+allowlist tests/build (`--all-targets` for clippy/build), shell syntax and diff
+checks pass. Unsafe policy references now link to the unchanged principle.
 
 ### Maintained bindings and recovery
 
@@ -144,7 +178,7 @@ roots currently cover Linux products, not this development probe.
   add fresh CG joins to frame boundaries, and retain cleanup/residue evidence
   on failed holder runs. Unknown wait/CG results never mean verified cleanup.
 
-### Signing attempt
+### Earlier signing attempt (superseded by persistent signing follow-up)
 
 System OpenSSL generated a disposable self-signed codeSigning-EKU identity;
 `security import` with codesign-only access succeeded. Certificate verification
@@ -154,9 +188,9 @@ the key-access authorization boundary. The imported identity and private-key
 material were removed; zero valid identities and unchanged trust settings were
 confirmed, with no timed-out codesign process remaining. No persistent signed
 bundle, designated-requirement comparison or TCC-rebuild-survival evidence
-exists. The bundle recipe retains its missing/ambiguous-signer refusal.
-Current `security find-identity -v -p codesigning` still reports zero valid
-identities; no further signing attempt or authentication flow was run.
+existed at that point. The bundle recipe retains its missing/ambiguous-signer
+refusal. The later persistent signing follow-up above supersedes this blocker;
+valid-only identity enumeration was not necessary for signing.
 
 ### Owned-helper fixture: blocker resolved
 
@@ -220,7 +254,7 @@ permission shortfall is not an OS Space-call failure or SIP rejection.
 | Switch/focus: Dock-swipe gesture fallback | Permission/recovery-blocked, untested | Post-event access false, one Space; no synthetic event or switch readback | None; yabai focus falls back after SA failure |
 | Same-display switch / cross-display swap | Source-only, untested | No switch executed; one display/Space; swap also needs owned-move recovery | Same-display switch uses SA; cross-display swap uses move routes |
 | Create/destroy: Mission Control UI | Permission-blocked, untested | AX trust false and post-event access false; no temporary Space or UI automation | None for UI; yabai create/destroy commands use SA |
-| AX / Carbon / intercepting tap | Blocked/untested | AX trust false; no persistent signed bundle; no hooks installed | Not applicable |
+| AX / Carbon / intercepting tap | Blocked/untested | AX trust false; no hooks installed; persistent signing now verified in follow-up above | Not applicable |
 | Cleanup | **Works for Child-held probes** | Exact child gone/reaped, records empty, no owned CG residue, layout/current identical | Not applicable |
 
 Source basis (local pinned-source inspection, not live efficacy):
@@ -259,24 +293,17 @@ Raw operational diagnostics remain outside repository records.
 
 This is an incomplete Phase 0 milestone, not release or live-control acceptance.
 
-1. **Exact next action — user setup:** provision **OmniTiler Mac Dev** in the
-   login keychain using Certificate Assistant (Self Signed Root, Code Signing),
-    set only Code Signing trust to Always Trust if required, and handle local
-    key-access authentication.
-   Follow `docs/macos-dev-environment.md`; require one valid exact-name identity.
-   Build with `mise exec -- just app 'OmniTiler Mac Dev'` and `just verify`, then
-   `mise exec -- cargo clean -p tiler-macos`, rebuild/verify, and compare signer
-   and `codesign -d -r - target/macos/OmniTilerProbe.app` across both builds.
-2. Add that fixed signed bundle under **System Settings → Privacy & Security →
+1. **Exact next action — Accessibility grant:** add the fixed signed bundle
+   `target/macos/OmniTilerProbe.app` under **System Settings → Privacy & Security →
    Accessibility**, enable it, and relaunch bundled `preflight`; require
    `ax_trusted:true` and test grant survival across a genuine rebuild. Input
    Monitoring only if the tap mode requires it. No terminal grant workaround.
-3. Verify the AX nonce-title fallback on the signed, trusted bundle, including
-   forged/stale nonce refusal. Then prove cross-command graceful stop and
+2. Verify the AX nonce-title fallback on the signed, Accessibility-enabled bundle,
+   including forged/stale nonce refusal. Then prove cross-command graceful stop and
    owned join/observer/frame/focus/timeout legs with exact recovery readbacks;
    raise requires an already-owned focus preimage. Carbon/tap legs need bounded
    release proof and user physical-delivery/suppression observations.
-4. Space writes require a second disposable Space and independently demonstrated
+3. Space writes require a second disposable Space and independently demonstrated
    restoration surviving primary exit. The same-holder readback is **not** that
    proof; `spaces-session` never dispatches a write, even with `--allow-untested`.
    Establish signed/trusted UI automation and separate restore first, then use

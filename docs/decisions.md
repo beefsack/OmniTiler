@@ -58,10 +58,9 @@ platform API behavior.
   plus private APIs with SIP left enabled; no Dock injection or reduced SIP.
   Re-evaluate deeper tiers only if tier 2 cannot solve a problem well.
 - macOS Phase 0 decisions (2026-10-14):
-  - **All Rust**, including UI. Prefer trusted, battle-hardened dependencies
-    (`objc2`, core-foundation family) before custom unsafe bindings. Any
-    unavoidable unsafe stays in one dedicated, minimal FFI module per crate;
-    forbid unsafe everywhere else under the existing guardrail below.
+  - **All Rust**, including UI. Dependency selection and any unsafe exception
+    follow [Unsafe Code](principles.md#unsafe-code); implementation enforcement
+    is recorded in the [Rust unsafe guardrail](#rust-unsafe-guardrail).
   - **Threading from day one:** main thread AppKit/UI only; dedicated input
     thread with minimal event-tap callbacks; one Accessibility thread per
     application; one engine thread owning core state; channels between them.
@@ -92,6 +91,9 @@ platform API behavior.
   - **Persistent self-signed development identity initially**, with stable
     bundle ID/path/designated requirement. No paid Apple Developer membership
     initially; release signing/notarization remains a separate decision.
+    The development recipe requires one exact-name code-signing identity and
+    signs by its SHA-1, regardless of certificate trust; see the
+    [setup procedure](macos-dev-environment.md#persistent-self-signed-development-identity).
   - **Owned probe helpers use simple child ownership:** retain the exact
     spawned Child, verify its PID, per-run pipe nonce, executable and fresh
     CG owner-PID/window association. No LaunchServices launch-date token or
@@ -251,12 +253,9 @@ platform API behavior.
 
 ### Rust unsafe guardrail
 
-- User rule 2026-10-13: Rust `unsafe` is permitted only at ABI/FFI boundaries,
-  kept as tiny as possible and isolated in one dedicated FFI module per crate.
-  Every other module and crate uses `#![forbid(unsafe_code)]`.
-- Refined by user 2026-10-14 as a [principle](principles.md#unsafe-code):
-  prefer a battle-hardened dependency exposing safe APIs, then no unsafe,
-  then a minimal module. Selected enforcement: workspace
+- Policy and preference order live in [Unsafe Code](principles.md#unsafe-code)
+  (2026-10-14), superseding the earlier ABI/FFI-only wording. Selected
+  enforcement: workspace
   `[workspace.lints.rust] unsafe_code = "forbid"`; FFI crates override to
   `deny` and opt in with `#![allow(unsafe_code)]` only on the approved module;
   CI rejects any other `allow(unsafe_code)`. `windows`/`windows-sys` choice

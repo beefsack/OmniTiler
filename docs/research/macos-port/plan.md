@@ -34,8 +34,8 @@ inference/plan, not source), UNKNOWN (not established).
   `tiler-core` Engine for layout policy; a Mac adapter owning AX
   observation/actuation, focus readback, visuals, menu/settings, and
   login/update lifecycle. No KWin D-Bus transplant, no universal IPC hop.
-- SELECTED (2026-10-14): all Rust, trusted bindings first (`objc2` and
-  core-foundation family); tiny isolated unsafe boundary only. Main thread
+- SELECTED (2026-10-14): all Rust; dependency selection and unsafe exceptions
+  follow [Unsafe Code](../../principles.md#unsafe-code). Main thread
   AppKit/UI, dedicated input, per-app AX, engine-owned state via channels.
   `tiler-protocol` only if external IPC is needed remains a proposal.
 - The higher-level route and any injection/reduced-SIP route remain
@@ -91,11 +91,13 @@ The [active change](../../changes/macos-phase-0.md) records the partial
 milestone and exact continuation. Read-only SLS enumeration returned a display,
 its Space list and matching current Space. Secure Input reported inactive.
 AX app enumeration worked, but window reads failed with trust false; no AX
-join/observer/frame/focus/timeout effect has been verified. Persistent signing
-is blocked on certificate provisioning; no signed bundle or rebuild-consent
-survival evidence exists. Carbon delivery and tap suppression/recovery are
-unverified. Window membership is implemented but not live-tested; Space
-move/switch/create/destroy probes remain unimplemented. No API failure is
+join/observer/frame/focus/timeout effect has been verified. Persistent untrusted
+self-signed signing now passes strict verification with an identical bundle ID
+and designated requirement across two clean rebuilds; Accessibility trust is
+false and grant survival remains unverified. Carbon delivery and tap
+suppression/recovery are unverified. Owned window membership is proven through
+the Child holder; direct Space move/restore is implemented but untested, while
+switch/create/destroy remain unsupported. No API failure is
 attributed to SIP from these results. Native/portable Cargo build/test/strict
 clippy and formatting pass; configured Linux/Windows CI results are pending.
 The unsafe module is isolated but still needs public-binding minimization.
@@ -912,7 +914,7 @@ elsewhere in this research do not override these selections.
 | Workspace implementation | **Adopted: native Spaces first** | yabai primary/general reference. Virtual/parking may later be a user setting alongside native; not initial scope |
 | Distribution | Notarized Developer ID DMG plus Homebrew cask first vs alternatives | DMG plus cask first; notarization is not Store approval; open |
 | Updates | Manual DMG upgrade first vs Sparkle later | Manual first; Sparkle only after safe-restore/update proof for hidden/stranded windows; open |
-| UI language / unsafe | **Adopted: all Rust** | Trusted battle-hardened bindings first; unavoidable unsafe isolated in one tiny dedicated FFI module per crate, forbidden everywhere else |
+| UI language / unsafe | **Adopted: all Rust** | [Unsafe Code](../../principles.md#unsafe-code); [enforcement](../../decisions.md#rust-unsafe-guardrail) |
 | Native settings takeover | Visible off/revert with preimages of owned changes only vs alternatives | Default pending; open |
 | Native vs project fullscreen | Preserve native fullscreen Spaces/games vs project slot restoration | Define against KDE intent after the capability spike; open |
 

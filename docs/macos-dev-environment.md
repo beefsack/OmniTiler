@@ -31,7 +31,7 @@
 | OS floor and Intel | **Adopted 2026-10-14:** macOS 15+, Apple Silicon only. | Separate floor-runtime validation remains required. |
 | Dev signer and release membership | **Adopted 2026-10-14:** persistent self-signed development identity; no paid membership initially. | Release Developer ID/notarization remains open; see section 5. |
 | mise as install route | Tool-agnostic installs now vs adopting mise later as the cross-platform route. | **Adopted:** root `mise.toml` manages Rust (via rustup), just, gh, rg, jq with OS-filtered entries (Linux ignores it); `yq` stays Windows-only and is not in the macOS inventory. Manual prerequisites stay manual: Xcode/CLT, host shell bootstrap, Git route per user choice. User runs `mise trust` / `mise install` from the repo root; gates use `mise exec -- cargo ...`. |
-| UI language | **Adopted 2026-10-14:** all Rust, including UI. | Trusted bindings first; minimal isolated unsafe FFI module, unsafe forbidden elsewhere. |
+| UI language | **Adopted 2026-10-14:** all Rust, including UI. | [Unsafe Code](principles.md#unsafe-code); [enforcement](decisions.md#rust-unsafe-guardrail). |
 
 ## Day-one setup, in order
 
@@ -164,11 +164,11 @@ mise exec -- cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-kwin
   profile preferred over cleartext password), `xcrun notarytool log`
   always gets checked, and `xcrun stapler staple` attaches the ticket.
 - For TCC dev, either an Apple Development identity or one persistent
-  local self-signed cert can stabilize the identity; both have limits
-  (self-signed trust is local-only). **O: S17; V: S18:** the local route uses
+  local self-signed cert can stabilize the identity; local signing does not
+  establish release-distribution trust. **O: S17; V: S18:** the local route uses
   Keychain Access > Certificate Assistant > Create a Certificate, with
   type Code Signing; retain that certificate/private key across builds.
-  Inspect available identities with `security find-identity -v -p codesigning`.
+  Inspect available identities with `security find-identity -p codesigning`.
   Sign nested executables first and the bundle last. The adopted probe bundle
   ID is `io.github.omnitiler.macos.probe`; the following procedure retains one
   self-signed identity across rebuilds.
@@ -183,11 +183,13 @@ account required):
 2. Name it **OmniTiler Mac Dev**, select **Self Signed Root** as Identity
    Type and **Code Signing** as Certificate Type. Create it in the login
    keychain, retaining its private key. Do not create a fresh identity per build.
-3. If the certificate is not a valid signing identity, open its **Get Info >
-   Trust**, set **Code Signing** to **Always Trust**, and leave unrelated
-   trust purposes at their defaults. Complete any authentication locally.
-4. Check `security find-identity -v -p codesigning`; it must list exactly
-   the intended persistent identity. Never put the private key/password in
+3. Trust changes, including **Always Trust**, are **not required**. An identity
+   marked `CSSMERR_TP_NOT_TRUSTED` can sign and produce a stable designated
+   requirement; leave trust settings at their defaults.
+4. Check `security find-identity -p codesigning`; its **Matching identities**
+   section must contain exactly one full-name match for the intended persistent
+   identity. The later **Valid identities only** section is a repeated trusted
+   subset, not an additional match. Never put the private key/password in
    source, scripts, logs, or repository files.
 5. From the repository root:
 
@@ -204,13 +206,13 @@ host shell utilities. It builds with `MACOSX_DEPLOYMENT_TARGET=15.0` and checks
 both Mach-O minimum-version load commands. Plain Cargo builds do not enforce
 that bundle deployment target. `spctl` rejection of an unnotarized local
 self-signed build is diagnostic, not a permission grant or reason to disable
-Gatekeeper. A CLI self-signed import succeeded, but certificate verification
-reported `CSSMERR_TP_NOT_TRUSTED`, and a disposable codesign operation timed
-out at key-access authorization. That identity/private key was removed;
-zero valid identities remain. Complete the manual trust steps above; if codesign
+Gatekeeper. The recipe accepts trusted and untrusted code-signing identities,
+requires one exact-name match, and signs by its resolved SHA-1. If codesign
 requests private-key access during the build, handle that specific key's
-authorization locally in the system dialog. Persistent signing and grant
-survival are still unverified. [Current evidence](changes/macos-phase-0.md).
+authorization locally in the system dialog; certificate trust is separate
+from private-key access. Compare the bundle ID and designated requirement
+across rebuilds, then verify Accessibility grant survival separately.
+[Current evidence](changes/macos-phase-0.md).
 
 ### 6. Permissions, TCC resets, and stable identity
 

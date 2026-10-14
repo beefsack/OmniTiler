@@ -28,7 +28,7 @@ CRATE_DIR="$REPO_ROOT/crates/tiler-macos"
 OUT="$REPO_ROOT/target/macos/OmniTilerProbe.app"
 TARGET_DIR="$REPO_ROOT/target"
 TARGET_MACOS_DIR="$REPO_ROOT/target/macos"
-MARKER_REL="Contents/.omnitiler-probe-marker"
+MARKER_REL="Contents/Resources/.omnitiler-probe-marker"
 BUNDLE_ID="io.github.omnitiler.macos.probe"
 DEPLOYMENT_TARGET="15.0"
 
@@ -136,12 +136,16 @@ fi
 # Exact identity match by full quoted name, signed by hash: collect every
 # `security find-identity` line whose full name equals the request exactly
 # (never a substring), require exactly one, then sign with its SHA-1 hash.
+# Trust is not required for a persistent self-signed dev identity. Without
+# -v, security lists all matches, then repeats trusted ones in a second section.
 # Zero matches fail closed; duplicates fail closed (ambiguous identity).
-identities="$(security find-identity -v -p codesigning)" \
+identities="$(security find-identity -p codesigning)" \
   || fail "security find-identity failed"
 match_count=0
 SIGN_HASH=""
 while IFS= read -r line; do
+  # Count only the first section, not the repeated valid-identity subset.
+  [[ "$line" =~ ^[[:space:]]*Valid\ identities\ only[[:space:]]*$ ]] && break
   name="$(printf '%s\n' "$line" | sed -n 's/^.*"\(.*\)".*$/\1/p')"
   if [[ -n "$name" && "$name" == "$IDENTITY" ]]; then
     hash="$(printf '%s\n' "$line" | grep -oE '[0-9A-Fa-f]{40}' | head -n 1 || true)"
@@ -188,7 +192,8 @@ done
 cp -f -- "$CRATE_DIR/Info.plist" "$OUT/Contents/Info.plist"
 cp -f -- "$BIN_DIR/tiler-macos" "$OUT/Contents/MacOS/tiler-macos"
 cp -f -- "$BIN_DIR/tiler-macos-probe-target" "$OUT/Contents/MacOS/tiler-macos-probe-target"
-chmod +x -- "$OUT/Contents/MacOS/tiler-macos" "$OUT/Contents/MacOS/tiler-macos-probe-target"
+# BSD chmod has no -- separator; these fixed absolute operands cannot be options.
+chmod +x "$OUT/Contents/MacOS/tiler-macos" "$OUT/Contents/MacOS/tiler-macos-probe-target"
 
 # Bundle ID guard: Info.plist must carry the fixed ID.
 grep -Fq "<string>$BUNDLE_ID</string>" "$OUT/Contents/Info.plist" \
