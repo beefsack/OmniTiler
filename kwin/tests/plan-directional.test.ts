@@ -972,6 +972,276 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         assertCorrelated(mocks, correlation, "arrived");
     });
 
+    it("tolerates a half-visible own mover at the first geometry fence (sole source)", () => {
+        // Live rightward sole-source R4 (2026-10-14): both setters applied,
+        // native arrival reconciled later, but the first geometry-scope
+        // re-observation saw an empty window set (fresh_len=0, flight_len=1)
+        // and settled stale-scope with no follow. Production scope
+        // collection matches windows by output plus desktop membership, so a
+        // half-placed own mover (output moved, membership lagging, or vice
+        // versa) belongs to neither scope and vanishes from the fresh set
+        // even though the dispatch contract tolerates source/half/target
+        // placement. The fence must tolerate exactly that own-relocation
+        // gap via native reads while still refusing unrelated drift.
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        // Production-faithful observation: the mover is listed only when its
+        // native placement sits wholly in one scope; a half placement drops
+        // it from both scope collections. The first post-membership
+        // observation lags one call (live KWin flush timing), later ones see
+        // the arrival.
+        let lagArmed = false;
+        const env = mocks.env as unknown as Record<string, unknown>;
+        const baseSetDesktops = mocks.env.setDesktops?.bind(mocks.env);
+        (env as { setDesktops: PlanAdapterEnv["setDesktops"] })["setDesktops"] = (mover, refs): boolean => {
+            const ok = baseSetDesktops?.(mover, refs) === true;
+            if (ok) {
+                lagArmed = true;
+            }
+            return ok;
+        };
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => {
+            const full = dynamicEmptyObserved(r, native);
+            if (!lagArmed) {
+                return { status: "ready", observed: full };
+            }
+            lagArmed = false;
+            return {
+                status: "ready",
+                observed: { ...full, windows: Object.freeze([]) },
+            };
+        };
+        mocks.observeImpl = (): PlanObserved | null => dynamicEmptyObserved(r, native);
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(emptyMoveReply(correlation));
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.equal(mocks.geometries.length, 1);
+        assert.equal(mocks.actives.length, 1);
+        assert.equal(mocks.actives[0], r.a);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assertNoWireProtocol(mocks);
+        assertCorrelated(mocks, correlation, "r4-transfer-started");
+        assertCorrelated(mocks, correlation, "r4-native-written");
+        assertCorrelated(mocks, correlation, "r4-followed");
+        assertCorrelated(mocks, correlation, "arrived");
+    });
+
+    it("still refuses unrelated drift when the mover is half-visible (sole source)", () => {
+        // Same half-visibility gap as above, but the target workspace also
+        // drifts mid-write: the fence must still refuse rather than let the
+        // mover-absence tolerance mask a real scope change.
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        let lagArmed = false;
+        const env = mocks.env as unknown as Record<string, unknown>;
+        const baseSetDesktops = mocks.env.setDesktops?.bind(mocks.env);
+        (env as { setDesktops: PlanAdapterEnv["setDesktops"] })["setDesktops"] = (mover, refs): boolean => {
+            const ok = baseSetDesktops?.(mover, refs) === true;
+            if (ok) {
+                lagArmed = true;
+            }
+            return ok;
+        };
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => {
+            const full = dynamicEmptyObserved(r, native);
+            if (!lagArmed) {
+                return { status: "ready", observed: full };
+            }
+            lagArmed = false;
+            // Half-dropped mover plus a drifted target workspace.
+            const domains = (full.domains ?? []) as unknown as Array<Record<string, unknown>>;
+            const drifted = Object.freeze([
+                Object.freeze({ ...(domains[0] as Record<string, unknown>) }),
+                Object.freeze({ ...(domains[1] as Record<string, unknown>), workspace: "ws-c" }),
+            ]);
+            return {
+                status: "ready",
+                observed: {
+                    ...full,
+                    domains: drifted as unknown as Exclude<typeof full.domains, undefined>,
+                    windows: Object.freeze([]),
+                },
+            };
+        };
+        mocks.observeImpl = (): PlanObserved | null => dynamicEmptyObserved(r, native);
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(emptyMoveReply(correlation));
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.equal(mocks.geometries.length, 0);
+        assert.equal(mocks.actives.length, 0);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=geometry-scope"),
+            ),
+        );
+        assertNoWireProtocol(mocks);
+    });
+
+    it("refuses a missing mover pre-transfer even when native still shows source (sole source)", () => {
+        // B1 narrowing: before any own relocation an absent mover is
+        // unrelated drift, never tolerated, even though native reads on the
+        // retained ref place it on the source. No setter may run.
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+            status: "ready",
+            observed: dynamicEmptyObserved(r, native),
+        });
+        mocks.observeImpl = (): PlanObserved | null => dynamicEmptyObserved(r, native);
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        // Drop the mover from re-observations once armed (reply-boundary
+        // re-observe stays full, the pre-transfer fence sees it missing);
+        // native keeps it source-placed (no setter runs to move it).
+        // Dispatch probes several directions, so arm only after dispatch.
+        let dropPhase = 0;
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => {
+            const full = dynamicEmptyObserved(r, native);
+            if (dropPhase === 0 || dropPhase === 1) {
+                if (dropPhase === 1) {
+                    dropPhase = 2;
+                }
+                return { status: "ready", observed: full };
+            }
+            return {
+                status: "ready",
+                observed: { ...full, windows: Object.freeze([]) },
+            };
+        };
+        dropPhase = 1;
+        mocks.callbacks[0]?.(emptyMoveReply(correlation));
+        assert.equal(native.sentTransfers.length, 0);
+        assert.equal(native.sentMemberships.length, 0);
+        assert.equal(mocks.geometries.length, 0);
+        assert.equal(mocks.actives.length, 0);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=pre-transfer-scope"),
+            ),
+        );
+        assertNoWireProtocol(mocks);
+    });
+
+    it("tolerates a half-visible own mover at the first geometry fence (occupied target)", () => {
+        // N>1 variant of the sole-source tolerance: the fresh set is
+        // exactly the flight set minus the mover, the non-mover stays
+        // exact, and native places the mover in scope.
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        let lagArmed = false;
+        const env = mocks.env as unknown as Record<string, unknown>;
+        const baseSetDesktops = mocks.env.setDesktops?.bind(mocks.env);
+        (env as { setDesktops: PlanAdapterEnv["setDesktops"] })["setDesktops"] = (mover, refs): boolean => {
+            const ok = baseSetDesktops?.(mover, refs) === true;
+            if (ok) {
+                lagArmed = true;
+            }
+            return ok;
+        };
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => {
+            const full = dynamicOccupiedObserved(r, native);
+            if (!lagArmed) {
+                return { status: "ready", observed: full };
+            }
+            lagArmed = false;
+            return {
+                status: "ready",
+                observed: {
+                    ...full,
+                    windows: Object.freeze(full.windows.filter((entry) => entry.id !== "win-a")),
+                },
+            };
+        };
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(crossMoveReply(correlation));
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.equal(mocks.geometries.length, 2);
+        assert.equal(mocks.actives.length, 1);
+        assert.equal(mocks.actives[0], r.a);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assertNoWireProtocol(mocks);
+        assertCorrelated(mocks, correlation, "r4-transfer-started");
+        assertCorrelated(mocks, correlation, "r4-native-written");
+        assertCorrelated(mocks, correlation, "r4-followed");
+        assertCorrelated(mocks, correlation, "arrived");
+    });
+
+    it("refuses a missing non-mover at the geometry fence (occupied target)", () => {
+        // Same minus-one shape, but the mover is present and a non-mover
+        // vanished: unrelated drift, never tolerated.
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        let lagArmed = false;
+        const env = mocks.env as unknown as Record<string, unknown>;
+        const baseSetDesktops = mocks.env.setDesktops?.bind(mocks.env);
+        (env as { setDesktops: PlanAdapterEnv["setDesktops"] })["setDesktops"] = (mover, refs): boolean => {
+            const ok = baseSetDesktops?.(mover, refs) === true;
+            if (ok) {
+                lagArmed = true;
+            }
+            return ok;
+        };
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => {
+            const full = dynamicOccupiedObserved(r, native);
+            if (!lagArmed) {
+                return { status: "ready", observed: full };
+            }
+            lagArmed = false;
+            return {
+                status: "ready",
+                observed: {
+                    ...full,
+                    windows: Object.freeze(full.windows.filter((entry) => entry.id !== "win-x")),
+                },
+            };
+        };
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(crossMoveReply(correlation));
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.equal(mocks.geometries.length, 0);
+        assert.equal(mocks.actives.length, 0);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=geometry-scope"),
+            ),
+        );
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-scope") && line.includes("subreason=nonmover-missing"),
+            ),
+        );
+        assertNoWireProtocol(mocks);
+    });
+
     it("writes plan-flagged overconstrained geometry at origin plus minimum on R4", () => {
         const r = refs();
         const { mocks, native } = r4Mocks(r);
@@ -1061,6 +1331,11 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         assert.equal(adapter.isR4InFlight, false);
         assert.equal(adapter.isInFlight, false);
         assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("wrong-output")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=arrival-signal-placement"),
+            ),
+        );
         assertNoWireProtocol(mocks);
     });
 
@@ -1148,6 +1423,11 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         assert.equal(adapter.isR4InFlight, false);
         assert.equal(adapter.isInFlight, false);
         assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=inter-setter"),
+            ),
+        );
         assertNoWireProtocol(mocks);
     });
 
@@ -1185,6 +1465,11 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         assert.equal(adapter.isR4InFlight, false);
         assert.equal(adapter.isInFlight, false);
         assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=geometry-scope"),
+            ),
+        );
         assertNoWireProtocol(mocks);
     });
 
@@ -1232,6 +1517,11 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         assert.equal(adapter.isR4InFlight, false);
         assert.equal(adapter.isInFlight, false);
         assert.ok(mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+        assert.ok(
+            mocks.logs.some(
+                (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=geometry-scope"),
+            ),
+        );
         assertNoWireProtocol(mocks);
     });
 
@@ -1844,6 +2134,11 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
             assert.equal(adapter.isR4InFlight, false);
             assert.equal(adapter.isInFlight, false);
             assert.ok(h.mocks.logs.some((line) => line.includes(correlation) && line.includes("stale-scope")));
+            assert.ok(
+                h.mocks.logs.some(
+                    (line) => line.includes(correlation) && line.includes("r4-fence") && line.includes("fence=inter-setter"),
+                ),
+            );
             assertNoWireProtocol(h.mocks);
             const before = h.mocks.dbusCalls.length;
             fireDebounce(h.mocks);

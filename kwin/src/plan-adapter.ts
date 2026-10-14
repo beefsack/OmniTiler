@@ -9936,10 +9936,12 @@ export class PlanAdapter {
         try {
             if (!this.r4FlightFencesHold(flightState, flight, session, r4)) {
                 const fenced = !isUniqueOwner(this.pinnedOwner) || !isGeneration(this.generation) ? "owner-loss" : "stale-scope";
+                this.r4FenceDiag(correlation, "pre-transfer-flight", fenced);
                 this.r4SettleTerminal(r4, fenced);
                 return;
             }
-            if (!this.r4FreshScopeAllowsMover(flightState, operation.window, source, target, false)) {
+            if (!this.r4FreshScopeAllowsMover(flightState, operation.window, source, target, false, moverRef, false)) {
+                this.r4FenceDiag(correlation, "pre-transfer-scope", "stale-scope");
                 this.r4SettleTerminal(r4, "stale-scope");
                 return;
             }
@@ -9956,6 +9958,7 @@ export class PlanAdapter {
             }
             if (!this.r4FlightFencesHold(flightState, flight, session, r4)) {
                 const fenced = !isUniqueOwner(this.pinnedOwner) || !isGeneration(this.generation) ? "owner-loss" : "stale-scope";
+                this.r4FenceDiag(correlation, "post-transfer-flight", fenced);
                 this.r4SettleTerminal(r4, fenced);
                 return;
             }
@@ -9971,6 +9974,7 @@ export class PlanAdapter {
             // valid here); geometry and arrival re-observe once both
             // setters have applied.
             if (!this.r4InterSetterFencesHold(flightState, r4)) {
+                this.r4FenceDiag(correlation, "inter-setter", "stale-scope");
                 this.r4SettleTerminal(r4, "stale-scope");
                 return;
             }
@@ -10012,10 +10016,12 @@ export class PlanAdapter {
             for (const entry of ordered) {
                 if (!this.r4FlightFencesHold(flightState, flight, session, r4)) {
                     const fenced = !isUniqueOwner(this.pinnedOwner) || !isGeneration(this.generation) ? "owner-loss" : "stale-scope";
+                    this.r4FenceDiag(correlation, "geometry-flight", fenced);
                     this.r4SettleTerminal(r4, fenced);
                     return;
                 }
-                if (!this.r4FreshScopeAllowsMover(flightState, operation.window, source, target, false)) {
+                if (!this.r4FreshScopeAllowsMover(flightState, operation.window, source, target, false, moverRef, true)) {
+                    this.r4FenceDiag(correlation, "geometry-scope", "stale-scope");
                     this.r4SettleTerminal(r4, "stale-scope");
                     return;
                 }
@@ -10056,7 +10062,9 @@ export class PlanAdapter {
         }
         const placement = this.r4PlacementDetail(r4);
         if (placement === "wrong-target" || placement === "unreadable") {
-            this.r4SettleTerminal(r4, placement === "wrong-target" ? "wrong-output" : "stale-scope");
+            const placed = placement === "wrong-target" ? "wrong-output" : "stale-scope";
+            this.r4FenceDiag(correlation, "arrival-placement", placed);
+            this.r4SettleTerminal(r4, placed);
             return;
         }
         this.diag(flightState.op, correlation, windowCount, "r4-arrival-waiting");
@@ -10934,13 +10942,21 @@ export class PlanAdapter {
     // Non-mover windows must retain exact output/workspace plus observed
     // native flags (fullscreen/maximized/floating/sticky) against the dispatch
     // snapshot. Missing mover, extra/missing ids, changed domains, changed
-    // non-mover flags, or an exceptional mover all fail.
+    // non-mover flags, or an exceptional mover all fail, except one
+    // post-setter exception: with `allowAbsentMover` true (geometry loop
+    // only, after both setters applied) a fresh set that is exactly the
+    // flight set minus the mover is tolerated when native reads on the
+    // retained ref still place the mover in scope. Pre-transfer
+    // (`allowAbsentMover` false) an absent mover always fails: no own
+    // relocation has happened yet, so absence is unrelated drift.
     private r4FreshScopeAllowsMover(
         flightState: PendingFlight,
         moverId: string,
         source: PlanDomain,
         target: PlanDomain,
         requireTarget: boolean,
+        moverRef: object,
+        allowAbsentMover: boolean,
     ): boolean {
         const direction = flightState.direction;
         if (!isDirection(direction)) {
@@ -10948,19 +10964,34 @@ export class PlanAdapter {
         }
         const fresh = this.r4RawFresh(direction, flightState.snapshot);
         if (fresh === null) {
+            this.r4ScopeSubreason(flightState.correlation, "raw-null", "");
             return false;
         }
         const flightSnapshot = flightState.snapshot;
+        if (!domainsEqual(fresh.domains, flightSnapshot.domains)) {
+            this.r4ScopeSubreason(flightState.correlation, "domains", "");
+            return false;
+        }
+        if (!sameDomainScalars(fresh, flightSnapshot)) {
+            this.r4ScopeSubreason(flightState.correlation, "scalars", "");
+            return false;
+        }
+        if (!sameDomainBounds(fresh, flightSnapshot)) {
+            this.r4ScopeSubreason(flightState.correlation, "bounds", "");
+            return false;
+        }
         if (
-            !domainsEqual(fresh.domains, flightSnapshot.domains) ||
-            !sameDomainScalars(fresh, flightSnapshot) ||
-            !sameDomainBounds(fresh, flightSnapshot)
+            fresh.windows.length !== flightSnapshot.windows.length &&
+            !(allowAbsentMover && fresh.windows.length + 1 === flightSnapshot.windows.length)
         ) {
+            this.r4ScopeSubreason(
+                flightState.correlation,
+                "window-count",
+                ` fresh_len=${String(fresh.windows.length)} flight_len=${String(flightSnapshot.windows.length)}`,
+            );
             return false;
         }
-        if (fresh.windows.length !== flightSnapshot.windows.length) {
-            return false;
-        }
+        const windowCountMatches = fresh.windows.length === flightSnapshot.windows.length;
         const flightById = new Map<string, PlanSnapshotWindow>();
         for (const entry of flightSnapshot.windows) {
             flightById.set(entry.id, entry);
@@ -10969,26 +11000,42 @@ export class PlanAdapter {
         for (const entry of fresh.windows) {
             const expected = flightById.get(entry.id);
             if (expected === undefined) {
+                this.r4ScopeSubreason(flightState.correlation, "unknown-id", "");
                 return false;
             }
             if (entry.id === moverId) {
                 moverFound = true;
                 if (entry.fullscreen || entry.maximized || entry.floating === true || entry.sticky === true) {
+                    this.r4ScopeSubreason(
+                        flightState.correlation,
+                        "mover-flags",
+                        ` fs=${entry.fullscreen === true ? "1" : "0"} mm=${entry.maximized === true ? "1" : "0"} fl=${entry.floating === true ? "1" : "0"} st=${entry.sticky === true ? "1" : "0"}`,
+                    );
                     return false;
                 }
                 if (requireTarget) {
                     if (entry.output !== target.output || entry.workspace !== target.workspace) {
+                        this.r4ScopeSubreason(flightState.correlation, "mover-placement", " mode=require-target");
                         return false;
                     }
                 } else {
                     const outputInScope = entry.output === source.output || entry.output === target.output;
                     const workspaceInScope = entry.workspace === source.workspace || entry.workspace === target.workspace;
                     if (!outputInScope || !workspaceInScope) {
+                        const outputBucket = entry.output === source.output ? "s" : entry.output === target.output ? "t" : "other";
+                        const workspaceBucket =
+                            entry.workspace === source.workspace ? "s" : entry.workspace === target.workspace ? "t" : "other";
+                        this.r4ScopeSubreason(
+                            flightState.correlation,
+                            "mover-placement",
+                            ` o=${outputBucket} w=${workspaceBucket}`,
+                        );
                         return false;
                     }
                 }
             } else {
                 if (entry.output !== expected.output || entry.workspace !== expected.workspace) {
+                    this.r4ScopeSubreason(flightState.correlation, "nonmover-placement", "");
                     return false;
                 }
                 if (
@@ -10997,11 +11044,117 @@ export class PlanAdapter {
                     (entry.floating === true) !== (expected.floating === true) ||
                     (entry.sticky === true) !== (expected.sticky === true)
                 ) {
+                    this.r4ScopeSubreason(flightState.correlation, "nonmover-flags", "");
                     return false;
                 }
             }
         }
-        return moverFound;
+        if (!moverFound) {
+            // Missing-mover exception, post-setter writes only: scope
+            // collection matches by output plus desktop membership, so a
+            // half-placed own mover (one write visible, the other lagging;
+            // precise KWin flush timing inferred, not proven) belongs to
+            // neither scope and vanishes from the fresh set. Tolerate
+            // exactly that gap when the fresh set is otherwise the flight
+            // set minus the mover and native reads on the retained ref
+            // still place the mover in scope. Before any own relocation
+            // (allowAbsentMover false) an absent mover is unrelated drift
+            // and always refuses, as does any other mismatch here.
+            if (
+                !allowAbsentMover ||
+                requireTarget ||
+                !this.r4AbsentMoverNativeInScope(flightSnapshot, fresh, moverId, moverRef, source, target)
+            ) {
+                this.r4ScopeSubreason(
+                    flightState.correlation,
+                    "mover-missing",
+                    ` fresh_len=${String(fresh.windows.length)}`,
+                );
+                return false;
+            }
+            return true;
+        }
+        if (!windowCountMatches) {
+            // Mover present, but a non-mover window is missing from the
+            // fresh set: unrelated drift, never tolerated.
+            this.r4ScopeSubreason(
+                flightState.correlation,
+                "nonmover-missing",
+                ` fresh_len=${String(fresh.windows.length)} flight_len=${String(flightSnapshot.windows.length)}`,
+            );
+            return false;
+        }
+        return true;
+    }
+
+    // Native retained-ref proof for a half-visible own mover (see above): the fresh
+    // set must be exactly the flight set minus the mover (same count minus
+    // one, every flight non-mover present; unknown ids and non-mover
+    // placement/flags are already refused by the caller loop), and native
+    // reads on the retained ref must place the mover in scope with a single
+    // desktop membership. Anything else fails.
+    private r4AbsentMoverNativeInScope(
+        flightSnapshot: PlanSnapshot,
+        fresh: PlanObserved,
+        moverId: string,
+        moverRef: object,
+        source: PlanDomain,
+        target: PlanDomain,
+    ): boolean {
+        if (fresh.windows.length + 1 !== flightSnapshot.windows.length) {
+            return false;
+        }
+        const freshIds = new Set<string>();
+        for (const entry of fresh.windows) {
+            freshIds.add(entry.id);
+        }
+        if (freshIds.has(moverId)) {
+            return false;
+        }
+        for (const entry of flightSnapshot.windows) {
+            if (entry.id === moverId) {
+                continue;
+            }
+            if (!freshIds.has(entry.id)) {
+                return false;
+            }
+        }
+        let output: string | null = null;
+        try {
+            output = this.env.readOutputName?.(moverRef) ?? null;
+        } catch (error) {
+            void error;
+            return false;
+        }
+        let ids: ReadonlyArray<string> | null = null;
+        try {
+            ids = this.env.readDesktopIds?.(moverRef) ?? null;
+        } catch (error) {
+            void error;
+            return false;
+        }
+        if (output === null || ids === null) {
+            return false;
+        }
+        if (output !== source.output && output !== target.output) {
+            return false;
+        }
+        if (ids.length !== 1) {
+            return false;
+        }
+        const workspace = ids[0] as string;
+        if (workspace !== source.workspace && workspace !== target.workspace) {
+            return false;
+        }
+        return true;
+    }
+
+    // Narrow subreason evidence for the R4 structural scope fence:
+    // diagnostic only, never changes control flow. One bounded line per
+    // rejection naming the first failing sub-comparison with structural
+    // counts/buckets only (no captions, rects, or raw output names).
+    private r4ScopeSubreason(correlation: string, subreason: string, detail: string): void {
+        this.logToken(`${LOG_PREFIX}:r4-scope correlation=${correlation} subreason=${subreason}${detail}`);
     }
 
     // Lag prewrite: shared destination projection plus the pointer
@@ -11435,7 +11588,9 @@ export class PlanAdapter {
         }
         const placement = this.r4PlacementDetail(r4);
         if (placement === "wrong-target" || placement === "unreadable") {
-            this.r4SettleTerminal(r4, placement === "wrong-target" ? "wrong-output" : "stale-scope");
+            const placed = placement === "wrong-target" ? "wrong-output" : "stale-scope";
+            this.r4FenceDiag(r4.correlation, "arrival-signal-placement", placed);
+            this.r4SettleTerminal(r4, placed);
         }
     }
 
@@ -11514,6 +11669,14 @@ export class PlanAdapter {
             return;
         }
         this.r4SettleTerminal(r4, "arrival-timeout");
+    }
+
+    // Narrow fence evidence for R4 terminal diagnosis: one bounded line
+    // naming the rejecting fence before settlement. Diagnostic only; never
+    // changes control flow. Lets live review distinguish scope drift from
+    // self-invalidation without inferring from the terminal outcome alone.
+    private r4FenceDiag(correlation: string, fence: string, outcome: string): void {
+        this.logToken(`${LOG_PREFIX}:r4-fence correlation=${correlation} fence=${fence} outcome=${outcome}`);
     }
 
     private r4SettleTerminal(r4: R4Flight, outcome: string): void {
