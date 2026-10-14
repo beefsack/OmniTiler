@@ -61,9 +61,11 @@ decisions of 2026-09-24 are under
   fields, types, defaults, validation) that each platform renders natively and
   persists, so KDE, Windows and macOS do not maintain separate dialogs.
   [Options and recommendation](research/shared-settings-schema.md) delivered
-  2026-10-15; decision pending user. Recommend KDE-only tabs independently
-  pre-0.1, shared Rust catalog with checked-in generated artifacts post-0.1;
-  route and timing remain user decisions.
+  2026-10-15. [KDE-only tabs delivered](changes/archive/kde-settings-tabs.md):
+  Tiling & Workspaces, Appearance, Shortcuts, Desktop Integration; settings
+  build/CTest and staged native rendering/switching pass. Grouping and pre-0.1
+  timing are tentative, user review pending. Recommend shared Rust catalog
+  with checked-in generated artifacts post-0.1; route/timing remain pending.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));

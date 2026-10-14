@@ -403,7 +403,7 @@ describe("native KCM static contract", () => {
         assert.doesNotMatch(unifiedUi, /engine authority[^.]*apply immediately/i);
         assert.doesNotMatch(unifiedUi, /engine authority[^.]*takes effect immediately/i);
         assert.doesNotMatch(unifiedUi, /tilerReloadButton|tilerReloadStatusLabel|Reload Tiler/);
-        assert.match(unifiedUi, /Tiling gaps and workspace mode are on this page\./);
+        assert.match(unifiedUi, /Tiling gaps and workspace mode are on the Tiling &amp; Workspaces tab\./);
         assert.doesNotMatch(unifiedUi, /unconsumed settings have no running effect/i);
         assert.match(unifiedUi, /workspace mode requires a session restart/i);
         assert.match(unifiedUi, /requires session restart/);

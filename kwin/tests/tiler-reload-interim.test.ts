@@ -255,7 +255,7 @@ describe("interim tiler reload contract", () => {
         assert.match(ui, /workspace mode requires a session restart/i);
         assert.doesNotMatch(ui, /unconsumed settings have no running effect/i);
         assert.match(ui, /Border changes apply immediately through the KWin effect reconfigure\./);
-        assert.match(ui, /Tiling gaps and workspace mode are on this page\./);
+        assert.match(ui, /Tiling gaps and workspace mode are on the Tiling &amp; Workspaces tab\./);
     });
 });
 

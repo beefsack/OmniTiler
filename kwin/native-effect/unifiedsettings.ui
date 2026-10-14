@@ -4,263 +4,565 @@
   <widget class="QWidget" name="UnifiedSettings">
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
-     <widget class="QGroupBox" name="borderSettings">
-     <property name="title">
-      <string>Active Window Border</string>
-     </property>
-     <layout class="QFormLayout" name="borderFormLayout">
-      <item row="0" column="0">
-        <widget class="QLabel" name="label_BorderColor">
-         <property name="buddy">
-          <cstring>kcfg_BorderColor</cstring>
-         </property>
-        <property name="text">
-         <string>Fallback border color:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="KColorButton" name="kcfg_BorderColor"/>
-      </item>
-      <item row="1" column="0">
-        <widget class="QLabel" name="label_BorderWidth">
-         <property name="buddy">
-          <cstring>kcfg_BorderWidth</cstring>
-         </property>
-        <property name="text">
-         <string>Border width:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QDoubleSpinBox" name="kcfg_BorderWidth">
-        <property name="suffix">
-         <string> px</string>
-        </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="maximum">
-         <double>32.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-        <widget class="QLabel" name="label_BorderRadius">
-         <property name="buddy">
-          <cstring>kcfg_BorderRadius</cstring>
-         </property>
-        <property name="text">
-         <string>Outline radius:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QDoubleSpinBox" name="kcfg_BorderRadius">
-        <property name="suffix">
-         <string> px</string>
-        </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="maximum">
-         <double>64.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-        <widget class="QLabel" name="label_BorderGap">
-         <property name="buddy">
-          <cstring>kcfg_BorderGap</cstring>
-         </property>
-        <property name="text">
-         <string>Gap from the window:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QDoubleSpinBox" name="kcfg_BorderGap">
-        <property name="suffix">
-         <string> px</string>
-        </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="maximum">
-         <double>64.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-        <item row="4" column="0" colspan="2">
-         <widget class="QCheckBox" name="kcfg_UseThemeColor">
-          <property name="text">
-           <string>Use theme highlight color when available</string>
+     <widget class="QTabWidget" name="settingsTabs">
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <widget class="QWidget" name="tilingTab">
+       <attribute name="title">
+        <string>Tiling &amp;&amp; Workspaces</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="tilingTabLayout">
+        <item>
+         <widget class="QGroupBox" name="scriptSettings">
+          <property name="title">
+           <string>OmniTiler</string>
           </property>
+          <layout class="QFormLayout" name="scriptFormLayout">
+           <item row="0" column="0">
+            <widget class="QLabel" name="label_workspaceMode">
+             <property name="buddy">
+              <cstring>workspaceModeCombo</cstring>
+             </property>
+            <property name="text">
+             <string>The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):</string>
+            </property>
+           </widget>
+          </item>
+            <item row="0" column="1">
+            <widget class="QComboBox" name="workspaceModeCombo"/>
+           </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="label_sameAxisMove">
+              <property name="buddy">
+               <cstring>sameAxisMoveCombo</cstring>
+              </property>
+             <property name="text">
+              <string>Same-axis move behavior:</string>
+             </property>
+            </widget>
+           </item>
+            <item row="1" column="1">
+            <widget class="QComboBox" name="sameAxisMoveCombo"/>
+           </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="label_fixedSizePredicate">
+              <property name="buddy">
+               <cstring>fixedSizePredicateCombo</cstring>
+              </property>
+             <property name="text">
+              <string>Fixed-size admission predicate:</string>
+             </property>
+            </widget>
+           </item>
+              <item row="2" column="1">
+              <widget class="QComboBox" name="fixedSizePredicateCombo"/>
+             </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_bornMaximized">
+                <property name="buddy">
+                 <cstring>bornMaximizedCombo</cstring>
+                </property>
+               <property name="text">
+                <string>Born-maximized admission behavior:</string>
+               </property>
+              </widget>
+             </item>
+               <item row="3" column="1">
+               <widget class="QComboBox" name="bornMaximizedCombo"/>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_migrationSourceRefill">
+                <property name="buddy">
+                 <cstring>migrationSourceRefillCombo</cstring>
+                </property>
+               <property name="text">
+                <string>Source workspace after migration:</string>
+               </property>
+              </widget>
+             </item>
+              <item row="4" column="1">
+              <widget class="QComboBox" name="migrationSourceRefillCombo"/>
+             </item>
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_innerGap">
+               <property name="buddy">
+                <cstring>innerGapSpinBox</cstring>
+               </property>
+              <property name="text">
+               <string>Gap between tiled windows:</string>
+              </property>
+             </widget>
+            </item>
+              <item row="5" column="1">
+              <widget class="QSpinBox" name="innerGapSpinBox">
+            <property name="minimum">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <number>64</number>
+            </property>
+            <property name="value">
+             <number>8</number>
+            </property>
+            <property name="suffix">
+             <string> px</string>
+            </property>
+           </widget>
+          </item>
+              <item row="6" column="0">
+               <widget class="QLabel" name="label_outerGap">
+               <property name="buddy">
+                <cstring>outerGapSpinBox</cstring>
+               </property>
+              <property name="text">
+               <string>Gap between tiled windows and the work area edge:</string>
+              </property>
+             </widget>
+            </item>
+              <item row="6" column="1">
+              <widget class="QSpinBox" name="outerGapSpinBox">
+            <property name="minimum">
+             <number>0</number>
+            </property>
+            <property name="maximum">
+             <number>64</number>
+            </property>
+            <property name="value">
+             <number>8</number>
+            </property>
+            <property name="suffix">
+             <string> px</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="appearanceTab">
+       <attribute name="title">
+        <string>Appearance</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="appearanceTabLayout">
+        <item>
+         <widget class="QGroupBox" name="borderSettings">
+         <property name="title">
+          <string>Active Window Border</string>
+         </property>
+         <layout class="QFormLayout" name="borderFormLayout">
+          <item row="0" column="0">
+            <widget class="QLabel" name="label_BorderColor">
+             <property name="buddy">
+              <cstring>kcfg_BorderColor</cstring>
+             </property>
+            <property name="text">
+             <string>Fallback border color:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="KColorButton" name="kcfg_BorderColor"/>
+          </item>
+          <item row="1" column="0">
+            <widget class="QLabel" name="label_BorderWidth">
+             <property name="buddy">
+              <cstring>kcfg_BorderWidth</cstring>
+             </property>
+            <property name="text">
+             <string>Border width:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="kcfg_BorderWidth">
+            <property name="suffix">
+             <string> px</string>
+            </property>
+            <property name="decimals">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <double>32.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+            <widget class="QLabel" name="label_BorderRadius">
+             <property name="buddy">
+              <cstring>kcfg_BorderRadius</cstring>
+             </property>
+            <property name="text">
+             <string>Outline radius:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="kcfg_BorderRadius">
+            <property name="suffix">
+             <string> px</string>
+            </property>
+            <property name="decimals">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <double>64.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+            <widget class="QLabel" name="label_BorderGap">
+             <property name="buddy">
+              <cstring>kcfg_BorderGap</cstring>
+             </property>
+            <property name="text">
+             <string>Gap from the window:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QDoubleSpinBox" name="kcfg_BorderGap">
+            <property name="suffix">
+             <string> px</string>
+            </property>
+            <property name="decimals">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <double>64.000000000000000</double>
+            </property>
+           </widget>
+          </item>
+            <item row="4" column="0" colspan="2">
+             <widget class="QCheckBox" name="kcfg_UseThemeColor">
+              <property name="text">
+               <string>Use theme highlight color when available</string>
+              </property>
+             </widget>
+            </item>
+           <item row="5" column="0">
+             <widget class="QLabel" name="label_DragPreviewColor">
+              <property name="buddy">
+               <cstring>kcfg_DragPreviewColor</cstring>
+              </property>
+             <property name="text">
+              <string>Drop-target preview color:</string>
+             </property>
+            </widget>
+           </item>
+           <item row="5" column="1">
+            <widget class="KColorButton" name="kcfg_DragPreviewColor">
+             <property name="alphaChannelEnabled">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+            <item row="6" column="0">
+             <widget class="QLabel" name="label_GroupUnderlayColor">
+              <property name="buddy">
+               <cstring>kcfg_GroupUnderlayColor</cstring>
+              </property>
+             <property name="text">
+              <string>Group underlay color:</string>
+             </property>
+            </widget>
+           </item>
+           <item row="6" column="1">
+            <widget class="KColorButton" name="kcfg_GroupUnderlayColor">
+             <property name="alphaChannelEnabled">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="0">
+             <widget class="QLabel" name="label_GroupUnderlayExtension">
+              <property name="buddy">
+               <cstring>kcfg_GroupUnderlayExtension</cstring>
+              </property>
+             <property name="text">
+              <string>Group underlay extension:</string>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="1">
+            <widget class="QDoubleSpinBox" name="kcfg_GroupUnderlayExtension">
+             <property name="suffix">
+              <string> px</string>
+             </property>
+             <property name="decimals">
+               <number>0</number>
+             </property>
+             <property name="minimum">
+               <double>-1.000000000000000</double>
+             </property>
+             <property name="maximum">
+              <double>32.000000000000000</double>
+             </property>
+             <property name="specialValueText">
+              <string>Match border width</string>
+             </property>
+            </widget>
+           </item>
+            <item row="8" column="0" colspan="2">
+            <widget class="QLabel" name="borderDescription">
+             <property name="text">
+                   <string>When enabled, the border uses the current theme highlight color when available and the configured color is the fallback. When disabled, the configured color is always used. Border changes apply immediately through the KWin effect reconfigure. Tiling gaps and workspace mode are on the Tiling &amp; Workspaces tab.</string>
+             </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+       </layout>
          </widget>
         </item>
-       <item row="5" column="0">
-         <widget class="QLabel" name="label_DragPreviewColor">
-          <property name="buddy">
-           <cstring>kcfg_DragPreviewColor</cstring>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="shortcutsTab">
+       <attribute name="title">
+        <string>Shortcuts</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="shortcutsTabLayout">
+        <item>
+         <widget class="QGroupBox" name="shortcutGroup">
+          <property name="title">
+           <string>Shortcuts</string>
           </property>
-         <property name="text">
-          <string>Drop-target preview color:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="5" column="1">
-        <widget class="KColorButton" name="kcfg_DragPreviewColor">
-         <property name="alphaChannelEnabled">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-        <item row="6" column="0">
-         <widget class="QLabel" name="label_GroupUnderlayColor">
-          <property name="buddy">
-           <cstring>kcfg_GroupUnderlayColor</cstring>
-          </property>
-         <property name="text">
-          <string>Group underlay color:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="6" column="1">
-        <widget class="KColorButton" name="kcfg_GroupUnderlayColor">
-         <property name="alphaChannelEnabled">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item row="7" column="0">
-         <widget class="QLabel" name="label_GroupUnderlayExtension">
-          <property name="buddy">
-           <cstring>kcfg_GroupUnderlayExtension</cstring>
-          </property>
-         <property name="text">
-          <string>Group underlay extension:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="7" column="1">
-        <widget class="QDoubleSpinBox" name="kcfg_GroupUnderlayExtension">
-         <property name="suffix">
-          <string> px</string>
-         </property>
-         <property name="decimals">
-           <number>0</number>
-         </property>
-         <property name="minimum">
-           <double>-1.000000000000000</double>
-         </property>
-         <property name="maximum">
-          <double>32.000000000000000</double>
-         </property>
-         <property name="specialValueText">
-          <string>Match border width</string>
-         </property>
-        </widget>
-       </item>
-        <item row="8" column="0" colspan="2">
-        <widget class="QLabel" name="borderDescription">
-         <property name="text">
-               <string>When enabled, the border uses the current theme highlight color when available and the configured color is the fallback. When disabled, the configured color is always used. Border changes apply immediately through the KWin effect reconfigure. Tiling gaps and workspace mode are on this page.</string>
-         </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-   </layout>
-     </widget>
-    </item>
-    <item>
-     <widget class="QGroupBox" name="shortcutGroup">
-      <property name="title">
-       <string>Shortcuts</string>
-      </property>
-      <layout class="QVBoxLayout" name="shortcutLayout">
-       <item>
-        <widget class="QLabel" name="shortcutStatusLabel">
-         <property name="text">
-          <string>Shortcut state unknown.</string>
-         </property>
-         <property name="wordWrap">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QLabel" name="shortcutErrorLabel">
-         <property name="text">
-          <string></string>
-         </property>
-         <property name="wordWrap">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-         <item>
-          <widget class="QLabel" name="shortcutConflictHintLabel">
-           <property name="text">
-            <string>Per-binding conflicts (checked = Keep, unchecked = Disable). Staged only until Apply Shortcuts.</string>
-           </property>
-           <property name="wordWrap">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QListWidget" name="shortcutConflictList">
-           <property name="minimumHeight">
-            <number>180</number>
-           </property>
-           <property name="alternatingRowColors">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <layout class="QHBoxLayout" name="shortcutPresetLayout">
+          <layout class="QVBoxLayout" name="shortcutLayout">
            <item>
-            <widget class="QPushButton" name="shortcutAuthenticButton">
+            <widget class="QLabel" name="shortcutStatusLabel">
              <property name="text">
-              <string>Authentic (use canonical)</string>
+              <string>Shortcut state unknown.</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
              </property>
             </widget>
            </item>
            <item>
-            <widget class="QPushButton" name="shortcutCompatibleButton">
+            <widget class="QLabel" name="shortcutErrorLabel">
              <property name="text">
-              <string>Compatible (disable conflicting)</string>
+              <string></string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+             <item>
+              <widget class="QLabel" name="shortcutConflictHintLabel">
+               <property name="text">
+                <string>Per-binding conflicts (checked = Keep, unchecked = Disable). Staged only until Apply Shortcuts.</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QListWidget" name="shortcutConflictList">
+               <property name="minimumHeight">
+                <number>180</number>
+               </property>
+               <property name="alternatingRowColors">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout" name="shortcutPresetLayout">
+               <item>
+                <widget class="QPushButton" name="shortcutAuthenticButton">
+                 <property name="text">
+                  <string>Authentic (use canonical)</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="shortcutCompatibleButton">
+                 <property name="text">
+                  <string>Compatible (disable conflicting)</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            <item>
+             <layout class="QHBoxLayout" name="shortcutButtonLayout">
+             <item>
+              <widget class="QPushButton" name="shortcutApplyButton">
+               <property name="text">
+                <string>Apply Shortcuts</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="shortcutRevertButton">
+               <property name="text">
+                <string>Revert Shortcuts</string>
+               </property>
+              </widget>
+             </item>
+             </layout>
+            </item>
+            <item>
+             <widget class="QLabel" name="shortcutDescription">
+              <property name="text">
+                 <string>The full project catalog (directional, toggle, and workspace bindings) lists each canonical chord with its current assignment and known/current holders; unavailable queries are reported honestly. Checked rows are kept at their current assignments, unchecked rows are disabled. Authentic stages canonical assignments for enabled bindings; Compatible resets to Keep then disables known-conflicting rows and current holder collisions without replacement chords. Settings Apply never changes shortcuts; Apply Shortcuts applies immediately without an extra confirmation. Disabling clears only the project's own assignment. Conflicts surface once in a modal dialog listing every holder with the exact keys removed and kept; Force Apply there revalidates and applies. Revert restores KDE defaults for cleared bindings.</string>
+              </property>
+             <property name="wordWrap">
+              <bool>true</bool>
              </property>
             </widget>
            </item>
           </layout>
-         </item>
-        <item>
-         <layout class="QHBoxLayout" name="shortcutButtonLayout">
-         <item>
-          <widget class="QPushButton" name="shortcutApplyButton">
-           <property name="text">
-            <string>Apply Shortcuts</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="shortcutRevertButton">
-           <property name="text">
-            <string>Revert Shortcuts</string>
-           </property>
-          </widget>
-         </item>
-         </layout>
+         </widget>
         </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="desktopTab">
+       <attribute name="title">
+        <string>Desktop Integration</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="desktopTabLayout">
         <item>
-         <widget class="QLabel" name="shortcutDescription">
-          <property name="text">
-             <string>The full project catalog (directional, toggle, and workspace bindings) lists each canonical chord with its current assignment and known/current holders; unavailable queries are reported honestly. Checked rows are kept at their current assignments, unchecked rows are disabled. Authentic stages canonical assignments for enabled bindings; Compatible resets to Keep then disables known-conflicting rows and current holder collisions without replacement chords. Settings Apply never changes shortcuts; Apply Shortcuts applies immediately without an extra confirmation. Disabling clears only the project's own assignment. Conflicts surface once in a modal dialog listing every holder with the exact keys removed and kept; Force Apply there revalidates and applies. Revert restores KDE defaults for cleared bindings.</string>
+         <widget class="QGroupBox" name="windowConflictGroup">
+          <property name="title">
+           <string>Window Edge Conflicts</string>
           </property>
+          <layout class="QVBoxLayout" name="windowConflictLayout">
+           <item>
+            <widget class="QLabel" name="windowConflictStatusLabel">
+             <property name="text">
+              <string>Window edge state unknown.</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="windowConflictErrorLabel">
+             <property name="text">
+              <string></string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="windowTilingRow">
+             <layout class="QHBoxLayout" name="windowTilingRowLayout">
+              <item>
+               <widget class="QLabel" name="windowTilingLabel">
+                <property name="text">
+                 <string>ElectricBorderTiling: current ?. Tiler needs off.</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="windowTilingFixButton">
+                <property name="text">
+                 <string>Fix</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="windowTilingRevertButton">
+                <property name="text">
+                 <string>Revert to KDE default</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="windowMaximizeRow">
+             <layout class="QHBoxLayout" name="windowMaximizeRowLayout">
+              <item>
+               <widget class="QLabel" name="windowMaximizeLabel">
+                <property name="text">
+                 <string>ElectricBorderMaximize: current ?. Tiler needs off.</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="windowMaximizeFixButton">
+                <property name="text">
+                 <string>Fix</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="windowMaximizeRevertButton">
+                <property name="text">
+                 <string>Revert to KDE default</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QWidget" name="windowBordersRow">
+             <layout class="QHBoxLayout" name="windowBordersRowLayout">
+              <item>
+               <widget class="QLabel" name="windowBordersLabel">
+                <property name="text">
+                 <string>ElectricBorders: current ?. Tiler needs 0.</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="windowBordersFixButton">
+                <property name="text">
+                 <string>Fix</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="scriptStatusGroup">
+      <property name="title">
+       <string>Status</string>
+      </property>
+      <layout class="QVBoxLayout" name="scriptStatusLayout">
+       <item>
+        <widget class="QLabel" name="scriptStatusLabel">
+         <property name="text">
+          <string>No pending script setting in this dialog.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="scriptStatusDescription">
+         <property name="text">
+          <string>Gap settings are saved to kwinrc. Saving changed gaps sends one typed KWin reconfigure request; the send is unconfirmed and never claims the running tiler applied the settings. Session restart is the guaranteed pickup mechanism for gaps and the startup setting. Workspace mode requires a session restart: it is consumed at startup.</string>
+         </property>
          <property name="wordWrap">
           <bool>true</bool>
          </property>
@@ -269,273 +571,6 @@
       </layout>
      </widget>
     </item>
-    <item>
-     <widget class="QGroupBox" name="scriptSettings">
-      <property name="title">
-       <string>OmniTiler</string>
-      </property>
-      <layout class="QFormLayout" name="scriptFormLayout">
-       <item row="0" column="0">
-        <widget class="QLabel" name="label_workspaceMode">
-         <property name="buddy">
-          <cstring>workspaceModeCombo</cstring>
-         </property>
-        <property name="text">
-         <string>The multi-output workspace model (requires session restart; per-output needs KWin 6.7+, 6.6 uses shared):</string>
-        </property>
-       </widget>
-      </item>
-        <item row="0" column="1">
-        <widget class="QComboBox" name="workspaceModeCombo"/>
-       </item>
-        <item row="1" column="0">
-         <widget class="QLabel" name="label_sameAxisMove">
-          <property name="buddy">
-           <cstring>sameAxisMoveCombo</cstring>
-          </property>
-         <property name="text">
-          <string>Same-axis move behavior:</string>
-         </property>
-        </widget>
-       </item>
-        <item row="1" column="1">
-        <widget class="QComboBox" name="sameAxisMoveCombo"/>
-       </item>
-        <item row="2" column="0">
-         <widget class="QLabel" name="label_fixedSizePredicate">
-          <property name="buddy">
-           <cstring>fixedSizePredicateCombo</cstring>
-          </property>
-         <property name="text">
-          <string>Fixed-size admission predicate:</string>
-         </property>
-        </widget>
-       </item>
-          <item row="2" column="1">
-          <widget class="QComboBox" name="fixedSizePredicateCombo"/>
-         </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="label_bornMaximized">
-            <property name="buddy">
-             <cstring>bornMaximizedCombo</cstring>
-            </property>
-           <property name="text">
-            <string>Born-maximized admission behavior:</string>
-           </property>
-          </widget>
-         </item>
-           <item row="3" column="1">
-           <widget class="QComboBox" name="bornMaximizedCombo"/>
-          </item>
-          <item row="4" column="0">
-           <widget class="QLabel" name="label_migrationSourceRefill">
-            <property name="buddy">
-             <cstring>migrationSourceRefillCombo</cstring>
-            </property>
-           <property name="text">
-            <string>Source workspace after migration:</string>
-           </property>
-          </widget>
-         </item>
-          <item row="4" column="1">
-          <widget class="QComboBox" name="migrationSourceRefillCombo"/>
-         </item>
-          <item row="5" column="0">
-           <widget class="QLabel" name="label_innerGap">
-           <property name="buddy">
-            <cstring>innerGapSpinBox</cstring>
-           </property>
-          <property name="text">
-           <string>Gap between tiled windows:</string>
-          </property>
-         </widget>
-        </item>
-          <item row="5" column="1">
-          <widget class="QSpinBox" name="innerGapSpinBox">
-        <property name="minimum">
-         <number>0</number>
-        </property>
-        <property name="maximum">
-         <number>64</number>
-        </property>
-        <property name="value">
-         <number>8</number>
-        </property>
-        <property name="suffix">
-         <string> px</string>
-        </property>
-       </widget>
-      </item>
-          <item row="6" column="0">
-           <widget class="QLabel" name="label_outerGap">
-           <property name="buddy">
-            <cstring>outerGapSpinBox</cstring>
-           </property>
-          <property name="text">
-           <string>Gap between tiled windows and the work area edge:</string>
-          </property>
-         </widget>
-        </item>
-          <item row="6" column="1">
-          <widget class="QSpinBox" name="outerGapSpinBox">
-        <property name="minimum">
-         <number>0</number>
-        </property>
-        <property name="maximum">
-         <number>64</number>
-        </property>
-        <property name="value">
-         <number>8</number>
-        </property>
-        <property name="suffix">
-         <string> px</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="scriptStatusGroup">
-     <property name="title">
-      <string>Status</string>
-     </property>
-     <layout class="QVBoxLayout" name="scriptStatusLayout">
-      <item>
-       <widget class="QLabel" name="scriptStatusLabel">
-        <property name="text">
-         <string>No pending script setting in this dialog.</string>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel" name="scriptStatusDescription">
-        <property name="text">
-         <string>Gap settings are saved to kwinrc. Saving changed gaps sends one typed KWin reconfigure request; the send is unconfirmed and never claims the running tiler applied the settings. Session restart is the guaranteed pickup mechanism for gaps and the startup setting. Workspace mode requires a session restart: it is consumed at startup.</string>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="windowConflictGroup">
-     <property name="title">
-      <string>Window Edge Conflicts</string>
-     </property>
-     <layout class="QVBoxLayout" name="windowConflictLayout">
-      <item>
-       <widget class="QLabel" name="windowConflictStatusLabel">
-        <property name="text">
-         <string>Window edge state unknown.</string>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel" name="windowConflictErrorLabel">
-        <property name="text">
-         <string></string>
-        </property>
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QWidget" name="windowTilingRow">
-        <layout class="QHBoxLayout" name="windowTilingRowLayout">
-         <item>
-          <widget class="QLabel" name="windowTilingLabel">
-           <property name="text">
-            <string>ElectricBorderTiling: current ?. Tiler needs off.</string>
-           </property>
-           <property name="wordWrap">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="windowTilingFixButton">
-           <property name="text">
-            <string>Fix</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="windowTilingRevertButton">
-           <property name="text">
-            <string>Revert to KDE default</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item>
-       <widget class="QWidget" name="windowMaximizeRow">
-        <layout class="QHBoxLayout" name="windowMaximizeRowLayout">
-         <item>
-          <widget class="QLabel" name="windowMaximizeLabel">
-           <property name="text">
-            <string>ElectricBorderMaximize: current ?. Tiler needs off.</string>
-           </property>
-           <property name="wordWrap">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="windowMaximizeFixButton">
-           <property name="text">
-            <string>Fix</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="windowMaximizeRevertButton">
-           <property name="text">
-            <string>Revert to KDE default</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-      <item>
-       <widget class="QWidget" name="windowBordersRow">
-        <layout class="QHBoxLayout" name="windowBordersRowLayout">
-         <item>
-          <widget class="QLabel" name="windowBordersLabel">
-           <property name="text">
-            <string>ElectricBorders: current ?. Tiler needs 0.</string>
-           </property>
-           <property name="wordWrap">
-            <bool>true</bool>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="windowBordersFixButton">
-           <property name="text">
-            <string>Fix</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
    </layout>
   </widget>
   <customwidgets>
