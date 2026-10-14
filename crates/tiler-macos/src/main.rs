@@ -81,6 +81,13 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // title auth inside; no hotkeys, taps, or Space writes.
             tiler_macos::ax_session::run_ax_session(seconds)
         }
+        Command::FocusSession { seconds } => {
+            // Bounded Child-holder SLPS focus session: original preimage
+            // with workspace+AX+CG agreement, SLPS focus with agreement,
+            // SAME-route restore with agreement. No activation API, taps,
+            // keys, SA, or Space writes.
+            tiler_macos::focus::run_focus_session(seconds)
+        }
         Command::AxSetFrame { pid, nonce, wid } => {
             // Same authenticated spawn record as stop (pid/nonce, expected
             // helper, live bundle-or-exe plus CURRENT live window nonce)

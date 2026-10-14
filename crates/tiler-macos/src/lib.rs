@@ -30,6 +30,7 @@ pub mod cli;
 pub mod config;
 pub mod engine;
 pub mod ffi;
+pub mod focus;
 pub mod input;
 pub mod input_match;
 pub mod ownership;

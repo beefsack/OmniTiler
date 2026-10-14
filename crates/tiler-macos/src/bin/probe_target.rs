@@ -11,7 +11,7 @@
 use std::io::Write;
 
 fn usage() -> &'static str {
-    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS]"
+    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy]"
 }
 
 fn main() {
@@ -33,6 +33,7 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let mut fixed_size = false;
     let mut defer_window_ms = 0u64;
     let mut close_window_ms = 0u64;
+    let mut regular_policy = false;
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -83,6 +84,9 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
                     .parse::<u64>()
                     .map_err(|_| (2, usage().to_owned()))?;
             }
+            "--regular-policy" => {
+                regular_policy = true;
+            }
             other => return Err((2, format!("unknown arg '{other}\n{usage}", usage = usage()))),
         }
         i += 1;
@@ -93,6 +97,7 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
             s.with_fixed_size(fixed_size)
                 .with_defer_window_ms(defer_window_ms)
                 .with_close_window_ms(close_window_ms)
+                .with_regular_policy(regular_policy)
         })
         .map_err(|e| (2, e))?;
     run_target(&spec).map_err(|e| (1, e))
@@ -121,6 +126,7 @@ fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), S
         spec.fixed_size,
         spec.defer_window_ms,
         spec.close_window_ms,
+        spec.regular_policy,
         &|| {
             println!("{}", serde_json::json!({"ready": true}));
             let _ = std::io::stdout().flush();

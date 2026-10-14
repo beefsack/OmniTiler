@@ -593,12 +593,23 @@ mod macos {
     /// Identity join: CG window ID for an AX window element (private SPI kept
     /// in `private_raw`; missing/failing join is `None`, never guessed).
     pub fn ax_window_id(element: &AxElement) -> Option<u32> {
+        ax_window_id_detailed(element).ok()
+    }
+
+    /// Identity join with cause: CG window ID for an AX window element.
+    /// `Err` names the `_AXUIElementGetWindow` status instead of `None`, so
+    /// callers report the real join failure rather than guessing wedged-OS.
+    pub fn ax_window_id_detailed(element: &AxElement) -> Result<u32, String> {
         let mut wid: u32 = 0;
         let ptr = CFRetained::as_ptr(&element.inner).as_ptr() as *const std::ffi::c_void;
         // SAFETY: live element from a checked constructor; valid out-pointer;
         // status gates the read.
         let err = unsafe { private_raw::_AXUIElementGetWindow(ptr, std::ptr::addr_of_mut!(wid)) };
-        if err == 0 { Some(wid) } else { None }
+        if err == 0 {
+            Ok(wid)
+        } else {
+            Err(format!("_AXUIElementGetWindow status {err}"))
+        }
     }
 
     /// Exact focus preimage: the currently focused application PID plus its
@@ -606,34 +617,86 @@ mod macos {
     /// not be proven (no consent or no focused window): callers must fail
     /// closed before changing focus rather than steal it blindly.
     pub fn ax_focused_preimage() -> Option<(i32, Option<u32>)> {
-        let system = AxElement::system_wide()?;
-        let app_value = system.copy_attribute("AXFocusedApplication").ok()?;
-        let app_inner: CFRetained<AXUIElement> = app_value.downcast().ok()?;
+        ax_focused_preimage_detailed().ok()
+    }
+
+    /// Detailed focus preimage with the real AX cause on every leg: each
+    /// failure names its `AXError` instead of collapsing to `None`, so
+    /// callers never interpret an unreadable preimage as a wedged OS. A
+    /// genuinely windowless frontmost (`kAXErrorNoValue` on
+    /// `AXFocusedWindow`, e.g. a launcher with no key window) is
+    /// `Ok((pid, None))` — the caller still fails closed, but with the
+    /// windowless cause named instead of a guess. Both the system-wide
+    /// element and the focused application get a finite messaging timeout
+    /// before any read (a hung app stalls at most one slice past it); a
+    /// timeout that refuses to set is itself an honest `Err`, never
+    /// silently ignored.
+    pub fn ax_focused_preimage_detailed() -> Result<(i32, Option<u32>), String> {
+        let system = AxElement::system_wide()
+            .ok_or_else(|| "system-wide AX element unavailable".to_owned())?;
+        let timeout_status = ax_set_messaging_timeout(&system, 2.0);
+        if timeout_status != 0 {
+            return Err(format!(
+                "system-wide AX messaging timeout unset: {}",
+                ax_error_name(timeout_status)
+            ));
+        }
+        let app_value = system
+            .copy_attribute("AXFocusedApplication")
+            .map_err(|code| format!("AXFocusedApplication unreadable: {}", ax_error_name(code)))?;
+        let app_inner: CFRetained<AXUIElement> = app_value
+            .downcast()
+            .map_err(|_| "AXFocusedApplication is not an AXUIElement".to_owned())?;
         let app = AxElement {
             inner: app_inner,
             _not_send: std::marker::PhantomData,
         };
+        let timeout_status = ax_set_messaging_timeout(&app, 2.0);
+        if timeout_status != 0 {
+            return Err(format!(
+                "focused application AX messaging timeout unset: {}",
+                ax_error_name(timeout_status)
+            ));
+        }
         let mut pid: libc::pid_t = 0;
         // SAFETY: live element; valid out-pointer; status gates the read.
         let err = unsafe {
             app.inner
                 .pid(NonNull::new(std::ptr::addr_of_mut!(pid)).expect("non-null"))
         };
-        if err.0 != 0 || pid <= 1 {
-            return None;
+        if err.0 != 0 {
+            return Err(format!(
+                "focused application pid unreadable: {}",
+                ax_error_name(err.0)
+            ));
         }
-        let wid = app
-            .copy_attribute("AXFocusedWindow")
-            .ok()
-            .and_then(|window_value| {
-                let window_inner: CFRetained<AXUIElement> = window_value.downcast().ok()?;
+        if pid <= 1 {
+            return Err(format!(
+                "focused application pid {pid} is reserved; refusing"
+            ));
+        }
+        match app.copy_attribute("AXFocusedWindow") {
+            Ok(window_value) => {
+                let window_inner: CFRetained<AXUIElement> = window_value
+                    .downcast()
+                    .map_err(|_| "AXFocusedWindow is not an AXUIElement".to_owned())?;
                 let window = AxElement {
                     inner: window_inner,
                     _not_send: std::marker::PhantomData,
                 };
-                ax_window_id(&window)
-            });
-        Some((pid as i32, wid))
+                match ax_window_id_detailed(&window) {
+                    Ok(wid) => Ok((pid as i32, Some(wid))),
+                    Err(e) => Err(format!("AXFocusedWindow join: {e}")),
+                }
+            }
+            // `kAXErrorNoValue` (-25210): frontmost has no focused window
+            // (windowless launcher/background). Named, still caller-fails-closed.
+            Err(-25210) => Ok((pid as i32, None)),
+            Err(code) => Err(format!(
+                "AXFocusedWindow unreadable: {}",
+                ax_error_name(code)
+            )),
+        }
     }
 
     /// Window frame in screen points.
@@ -1862,6 +1925,167 @@ mod macos {
         unsafe { libc::kill(pid, 15) == 0 }
     }
 
+    // -- Tier-2 SLPS focus route (yabai `window_manager_focus_window_with_raise`
+    // shape, minus AXRaise) --
+    //
+    // Source pins (local checkouts, no web fetch):
+    //   yabai `src/window_manager.c` (`window_manager_make_key_window`,
+    //   `window_manager_focus_window_with_raise`) + `src/window_manager.h`
+    //   (`kCPSUserGenerated 0x200`) + `src/misc/extern.h`
+    //   (`_SLPSSetFrontProcessWithOptions`, `SLPSPostEventRecordTo`,
+    //   plus yabai's own PSN sources `_SLPSGetFrontProcess` and
+    //   `SLSGetConnectionPSN` — yabai never calls `GetProcessForPID`).
+    // Dispatch order: `_SLPSSetFrontProcessWithOptions(psn, wid, 0x200)`
+    // then two `SLPSPostEventRecordTo(psn, bytes)` posts with the 0xf8-byte
+    // key-window record (`[0x04]=0xf8`, `[0x3a]=0x10`, wid at `0x3c`,
+    // `0xff` fill at `0x20..0x30`, `[0x08]=0x01` then `0x02`).
+    // PSNs here come from the Carbon SDK `GetProcessForPID(pid, psn)`
+    // (`HIServices/Processes.h`: `OSStatus`, `pid_t` first, PSN out-pointer
+    // second, deprecated since 10.9) — our choice, not yabai's. All three
+    // symbols resolve dynamically; a single missing symbol fails closed —
+    // never guessed, never SA-gated.
+    //
+    // Handle lifetimes: `dlopen` handles below are intentionally never
+    // `dlclose`d. The transmuted function pointers stay valid only while
+    // their library stays mapped, so each successful `dlopen` leaks its
+    // handle by design (process-lifetime retention, no close path).
+
+    /// `ProcessSerialNumber` bits (Carbon: two `UInt32`, high then low).
+    /// `#[repr(C)]` to match the FFI layout; plain data only, never a
+    /// pointer across the boundary.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SlpsPsn {
+        pub high: u32,
+        pub low: u32,
+    }
+
+    /// Compile-time guard that `SlpsPsn` still matches the two-`UInt32`
+    /// Carbon `ProcessSerialNumber` layout (8 bytes, no padding surprises).
+    const _: () = assert!(std::mem::size_of::<SlpsPsn>() == 8);
+
+    /// yabai `kCPSUserGenerated` (window_manager.h).
+    pub const SLPS_CPS_USER_GENERATED: u32 = 0x200;
+    /// Key-window event-record length (yabai `g_event_bytes` 0xf8).
+    pub const SLPS_EVENT_LEN: usize = 0xf8;
+
+    struct SlpsTable {
+        set_front: unsafe extern "C" fn(*const SlpsPsn, u32, u32) -> i32,
+        post_event: unsafe extern "C" fn(*const SlpsPsn, *const u8) -> i32,
+        for_pid: unsafe extern "C" fn(i32, *mut SlpsPsn) -> i32,
+    }
+
+    static SLPS_TABLE: OnceLock<Option<SlpsTable>> = OnceLock::new();
+
+    const SLPS_CANDIDATES: &[&[u8]] = &[
+        b"/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices\0",
+        b"/System/Library/Frameworks/CoreServices.framework/CoreServices\0",
+        b"/System/Library/Frameworks/Carbon.framework/Carbon\0",
+        b"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight\0",
+        b"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics\0",
+    ];
+
+    fn slps_resolve(name: &str) -> Option<*mut std::ffi::c_void> {
+        // SAFETY: `dlsym` lookups null-checked by the caller; no call made
+        // here. Candidate frameworks plus the default handle are probed in
+        // order; a missing library/symbol is a miss, never an error.
+        unsafe {
+            let cname = CString::new(name).expect("static");
+            let self_handle = libc::dlopen(std::ptr::null(), 0x1);
+            if !self_handle.is_null() {
+                let sym = libc::dlsym(self_handle, cname.as_ptr());
+                if !sym.is_null() {
+                    return Some(sym);
+                }
+            }
+            for path in SLPS_CANDIDATES {
+                let handle = libc::dlopen(path.as_ptr().cast(), 0x1);
+                if handle.is_null() {
+                    continue;
+                }
+                let sym = libc::dlsym(handle, cname.as_ptr());
+                if !sym.is_null() {
+                    return Some(sym);
+                }
+            }
+            None
+        }
+    }
+
+    fn slps_table() -> Option<&'static SlpsTable> {
+        SLPS_TABLE
+            .get_or_init(|| {
+                // SAFETY: every symbol null-checked before transmuting to its
+                // pinned yabai/Carbon signature; a single missing symbol fails
+                // the whole table closed.
+                unsafe {
+                    let set_front = slps_resolve("_SLPSSetFrontProcessWithOptions")?;
+                    let post_event = slps_resolve("SLPSPostEventRecordTo")?;
+                    let for_pid = slps_resolve("GetProcessForPID")?;
+                    Some(SlpsTable {
+                        set_front: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(*const SlpsPsn, u32, u32) -> i32,
+                        >(set_front),
+                        post_event: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(*const SlpsPsn, *const u8) -> i32,
+                        >(post_event),
+                        for_pid: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(i32, *mut SlpsPsn) -> i32,
+                        >(for_pid),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// Whether the full SLPS focus route resolved (all three symbols).
+    pub fn slps_available() -> bool {
+        slps_table().is_some()
+    }
+
+    /// PSN for a PID via Carbon `GetProcessForPID`. Reserved PIDs refused
+    /// before any FFI; nonzero OS status is `Err` with the code.
+    pub fn slps_psn_for_pid(pid: i32) -> Result<SlpsPsn, String> {
+        if pid <= 1 {
+            return Err(format!("refusing reserved pid {pid}"));
+        }
+        let table = slps_table().ok_or_else(|| "SLPS focus symbols unavailable".to_owned())?;
+        let mut psn = SlpsPsn { high: 0, low: 0 };
+        // SAFETY: resolved non-null symbol; valid out-pointer; status gates
+        // the read.
+        let status = unsafe { (table.for_pid)(pid, std::ptr::addr_of_mut!(psn)) };
+        if status == 0 {
+            Ok(psn)
+        } else {
+            Err(format!("GetProcessForPID pid {pid}: OS status {status}"))
+        }
+    }
+
+    /// `_SLPSSetFrontProcessWithOptions(psn, wid, mode)`. `Ok` means
+    /// dispatched (CGError 0) — focus arrival is async and MUST be verified
+    /// separately (workspace + AX readback). Nonzero CGError is `Err`.
+    pub fn slps_set_front(psn: &SlpsPsn, wid: u32, mode: u32) -> Result<(), i32> {
+        let table = slps_table().ok_or(-25200)?;
+        // SAFETY: resolved non-null symbol; `psn` is a live caller-owned
+        // value; wid/mode are plain data; status is the only effect read.
+        let status = unsafe { (table.set_front)(psn as *const SlpsPsn, wid, mode) };
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
+    /// `SLPSPostEventRecordTo(psn, bytes)`. The record must be exactly
+    /// [`SLPS_EVENT_LEN`] bytes (yabai 0xf8); anything else is refused before
+    /// any FFI. `Ok` means dispatched, never effected.
+    pub fn slps_post_event(psn: &SlpsPsn, bytes: &[u8; SLPS_EVENT_LEN]) -> Result<(), i32> {
+        let table = slps_table().ok_or(-25200)?;
+        // SAFETY: resolved non-null symbol; both pointers live for the call;
+        // status is the only effect read.
+        let status = unsafe { (table.post_event)(psn as *const SlpsPsn, bytes.as_ptr()) };
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
     // -- Owned probe window (AppKit boundary; main thread only) --
 
     /// Pump the current thread's runloop once, bounded, via the maintained
@@ -1909,10 +2133,21 @@ mod macos {
     /// past `ready` (owned teardown stimulus for the destroyed leg) while the
     /// process keeps running to its deadline.
     ///
-    /// No focus theft: the app uses the `Accessory` policy (no Dock icon,
-    /// never key) and the window is shown with `orderFront:` (never
-    /// `makeKeyAndOrderFront:`), so spawning the probe never steals keyboard
-    /// focus from the user's session.
+    /// No explicit activation at spawn: the window is shown with `orderFront:`
+    /// (never `makeKeyAndOrderFront:`) and the app never self-activates.
+    /// Regular-policy launch may nevertheless acquire focus, so its holder
+    /// captures the original preimage before spawning and restores it before
+    /// the measured focus transfer. The default `Accessory` policy (no Dock
+    /// icon) keeps background holders out of the Dock; the opt-in `regular_policy`
+    /// fixture runs as `Regular`, intending the window server to report the
+    /// helper as frontmost after an explicit SLPS focus dispatch
+    /// (`focus-session` only — no activation API, self-activation, taps, or
+    /// keys anywhere). Experimental, live unproven: whether full agreement
+    /// actually holds is measured by the session, never assumed here.
+    // Eight flat fixture params (one opt-in more than the lint threshold);
+    // bundling them into a struct would churn the stub + helper binary for
+    // no behavioral gain, so the lint is allowed here with this note.
+    #[allow(clippy::too_many_arguments)]
     pub fn run_owned_probe_window(
         seconds: u64,
         hung_ms: u64,
@@ -1920,6 +2155,7 @@ mod macos {
         fixed_size: bool,
         defer_window_ms: u64,
         close_window_ms: u64,
+        regular_policy: bool,
         ready: &dyn Fn(),
     ) -> Result<(), String> {
         use objc2::MainThreadMarker;
@@ -1933,7 +2169,11 @@ mod macos {
             .ok_or_else(|| "owned probe window must run on the main thread".to_owned())?;
         // SAFETY: fresh `alloc()` on the main thread; no pointers escape.
         let app = NSApplication::sharedApplication(mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        if regular_policy {
+            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        } else {
+            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        }
         // Complete the launch sequence without entering `run`: a bare
         // `sharedApplication` plus manual runloop pumping shows the window at
         // the window-server level (CG sees it) but never registers the app
@@ -2207,14 +2447,16 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, activate_app,
-    ax_focused_preimage, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
-    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
-    ax_set_size, ax_window_id, ax_window_title, bundle_id_for_pid, carbon_register,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
+    SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_observe_session, ax_raise,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id,
+    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
     cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
     process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
-    secure_input_known, sls_connection_available, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
+    secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
+    sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
+    sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -2318,8 +2560,16 @@ mod stub {
         None
     }
 
+    pub fn ax_window_id_detailed(_element: &AxElement) -> Result<u32, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn ax_focused_preimage() -> Option<(i32, Option<u32>)> {
         None
+    }
+
+    pub fn ax_focused_preimage_detailed() -> Result<(i32, Option<u32>), String> {
+        Err("macOS-only".to_owned())
     }
 
     pub fn ax_get_frame(_element: &AxElement) -> Result<AxFrame, i32> {
@@ -2446,22 +2696,53 @@ mod stub {
         _fixed_size: bool,
         _defer_window_ms: u64,
         _close_window_ms: u64,
+        _regular_policy: bool,
         _ready: &dyn Fn(),
     ) -> Result<(), String> {
         Err("owned probe window is macOS-only".to_owned())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SlpsPsn {
+        pub high: u32,
+        pub low: u32,
+    }
+
+    /// Same 8-byte layout guard as the macOS `SlpsPsn` above.
+    const _: () = assert!(std::mem::size_of::<SlpsPsn>() == 8);
+
+    pub const SLPS_CPS_USER_GENERATED: u32 = 0x200;
+    pub const SLPS_EVENT_LEN: usize = 0xf8;
+
+    pub fn slps_available() -> bool {
+        false
+    }
+
+    pub fn slps_psn_for_pid(_pid: i32) -> Result<SlpsPsn, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn slps_set_front(_psn: &SlpsPsn, _wid: u32, _mode: u32) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn slps_post_event(_psn: &SlpsPsn, _bytes: &[u8; SLPS_EVENT_LEN]) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SlsMoveSymbols, activate_app,
-    ax_focused_preimage, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
-    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
-    ax_set_size, ax_window_id, ax_window_title, bundle_id_for_pid, carbon_register,
+    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
+    SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_get_frame, ax_is_process_trusted, ax_observe_bounded, ax_observe_session, ax_raise,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_window_id,
+    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
     cg_post_event_access_known, cg_window_list_all, frontmost_app, process_executable_path,
     process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window, running_apps,
-    secure_input_known, sls_connection_available, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
+    secure_input_known, slps_available, slps_post_event, slps_psn_for_pid, slps_set_front,
+    sls_connection_available, sls_display_spaces, sls_main_connection_id, sls_move_symbols,
+    sls_move_windows_direct, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]

@@ -23,6 +23,9 @@ pub enum Command {
     AxSession {
         seconds: u64,
     },
+    FocusSession {
+        seconds: u64,
+    },
     AxSetFrame {
         pid: u32,
         nonce: String,
@@ -128,7 +131,13 @@ pub fn help_text() -> String {
             \x20 \x20 move/resize, owned self-activation, raise with readback,\n\
             \x20 \x20 frontmost restore, and a fixed-size partial-write leg;\n\
             \x20 \x20 no cross-command title auth inside)\n\
-           \x20 ax-set-frame --pid PID --nonce HEX --wid WID\n\
+            \x20 focus-session [--seconds N]\n\
+            \x20 \x20 (bounded Child-holder SLPS focus: original workspace+AX+CG\n\
+            \x20 \x20 preimage, SAME-route unfocus-first when spawn already\n\
+            \x20 \x20 focused (non-vacuous proof), SLPS focus to owned window\n\
+            \x20 \x20 with agreement, SAME-route restore with agreement;\n\
+            \x20 \x20 no activation API)\n\
+            \x20 ax-set-frame --pid PID --nonce HEX --wid WID\n\
            \x20 ax-raise --pid PID --nonce HEX --wid WID\n\
            \x20 \x20 (refuses when focus preimage is foreign; never steals focus)\n\
            \x20 input-register [--seconds N]  Carbon Ctrl chord, finite (max {max_tap}s)\n\
@@ -255,6 +264,22 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 j += 1;
             }
             Command::AxSession { seconds }
+        }
+        "focus-session" => {
+            let mut seconds = DEFAULT_PROBE_SECONDS;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    other => return Err(format!("focus-session: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::FocusSession { seconds }
         }
         "ax-set-frame" => {
             let (pid, nonce, wid) = parse_owned_wid(args, "ax-set-frame")?;
@@ -862,6 +887,21 @@ mod tests {
         let r = parse_args(&argv(&["ax-session", "--seconds", "20"])).unwrap();
         assert!(matches!(r.command, Command::AxSession { seconds: 20 }));
         assert!(parse_args(&argv(&["ax-session", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn focus_session_is_bounded_holder() {
+        let r = parse_args(&argv(&["focus-session"])).unwrap();
+        assert!(r.may_mutate);
+        assert!(matches!(
+            r.command,
+            Command::FocusSession {
+                seconds: DEFAULT_PROBE_SECONDS,
+            }
+        ));
+        let r = parse_args(&argv(&["focus-session", "--seconds", "20"])).unwrap();
+        assert!(matches!(r.command, Command::FocusSession { seconds: 20 }));
+        assert!(parse_args(&argv(&["focus-session", "--bogus"])).is_err());
     }
 
     #[test]

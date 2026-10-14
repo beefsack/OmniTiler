@@ -108,7 +108,23 @@ mise exec -- just launch -- --timeout 120 -- spaces-restore --pid PID --nonce HE
 mise exec -- just launch -- --timeout 45 -- probe-spawn --seconds 30
 mise exec -- just launch -- --timeout 120 -- spaces-session [--seconds N] [--allow-untested]
 mise exec -- just launch -- --timeout 120 -- ax-session --seconds 30
+mise exec -- just launch -- --timeout 120 -- focus-session --seconds 30
 ```
+
+`focus-session` is the Child-holder SLPS focus session over the opt-in
+regular-policy fixture: it captures the original workspace+AX+CG preimage
+with executable currency, unfocuses via the SAME route first when the spawn
+already holds agreement (non-vacuous proof), dispatches the yabai SLPS route
+(`_SLPSSetFrontProcessWithOptions` + two `SLPSPostEventRecordTo`
+key-window posts) to the owned window with workspace+AX+CG agreement, then
+restores the original via the SAME route with workspace+AX+CG agreement,
+per-display Space unchanged, and verified exact-Child cleanup. Every
+post-spawn failure attempts the SAME-route restore subject to original
+identity currency before cleanup, recording a structured restore attempt
+(dispatch/agreement outcomes with causes; null only when currency refusal
+meant nothing was attempted, with the reason recorded). No activation API,
+taps, keys, SA, or Space writes. The regular-policy fixture is experimental,
+live unproven: whether full agreement holds is measured, never assumed.
 
 `ax-session` is the Child-holder AX session: it proves focus restoration on
 a throwaway spawn first, then runs pre-window plus window-joined observers

@@ -418,7 +418,10 @@ the current fixture failure.
 ## SLPS focus investigation and current input status (2026-10-14)
 
 The reusable focus implementation is **pending live acceptance**, not a selected
-Phase 1 primitive yet. It resolves Carbon `GetProcessForPID` and SkyLight
+Phase 1 primitive yet. The probe-crate implementation includes the reusable
+dispatch module, bounded `focus-session` command and opt-in regular-policy
+helper; passing code gates and review do not establish live acceptance.
+It resolves Carbon `GetProcessForPID` and SkyLight
 `_SLPSSetFrontProcessWithOptions` / `SLPSPostEventRecordTo` behind the existing
 safe FFI boundary. The focus dispatch uses mode `0x200`, followed by the two
 `0xf8`-byte key-window records from

@@ -89,6 +89,16 @@ pub struct ProbeTargetSpec {
     /// holder stop. Default 0 (never self-closes); the session holder uses
     /// 9000. Clamped to 20000 in the helper.
     pub close_window_ms: u64,
+    /// Opt-in regular activation policy for the focus oracle fixture: the
+    /// helper runs as a regular app (Dock presence) instead of the default
+    /// accessory policy, INTENDING that the window server report it as
+    /// frontmost after the SLPS dispatch so the workspace+AX agreement oracle
+    /// can hold for the owned target. Experimental fixture, live unproven:
+    /// whether full agreement actually holds must be measured by
+    /// `focus-session`, never assumed. Default off (all other holders keep
+    /// accessory); enabled via `--regular-policy` (probe binary and
+    /// `focus-session` holder only).
+    pub regular_policy: bool,
 }
 
 impl ProbeTargetSpec {
@@ -115,6 +125,7 @@ impl ProbeTargetSpec {
             fixed_size: false,
             defer_window_ms: 0,
             close_window_ms: 0,
+            regular_policy: false,
         })
     }
 
@@ -139,6 +150,13 @@ impl ProbeTargetSpec {
         self
     }
 
+    /// Opt in to the regular activation policy (see field docs). Builder;
+    /// `focus-session` only.
+    pub fn with_regular_policy(mut self, regular: bool) -> Self {
+        self.regular_policy = regular;
+        self
+    }
+
     /// argv fragment for spawning the helper (no shell; exact args).
     pub fn argv(&self) -> Vec<String> {
         let mut args = vec![
@@ -159,6 +177,9 @@ impl ProbeTargetSpec {
         if self.close_window_ms > 0 {
             args.push("--close-window-ms".to_owned());
             args.push(self.close_window_ms.to_string());
+        }
+        if self.regular_policy {
+            args.push("--regular-policy".to_owned());
         }
         args
     }
@@ -247,6 +268,18 @@ mod tests {
             .position(|a| a == "--close-window-ms")
             .expect("flag present");
         assert_eq!(argv[flag + 1], "9000");
+    }
+
+    #[test]
+    fn regular_policy_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert!(!plain.regular_policy);
+        assert!(!plain.argv().contains(&"--regular-policy".to_owned()));
+        let regular = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_regular_policy(true);
+        assert!(regular.regular_policy);
+        assert!(regular.argv().contains(&"--regular-policy".to_owned()));
     }
 
     // Unix-only: reads `/dev/urandom`, which does not exist on Windows.
