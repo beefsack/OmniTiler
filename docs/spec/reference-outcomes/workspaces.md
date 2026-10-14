@@ -981,6 +981,12 @@ scoped agent-observed CLI/Settings outcomes 2026-10-11, base `553c65b` plus
 [record](../../changes/archive/windows-workspace-send-follow-stay.md).
 Physical shortcut containment and non-local/multi-output runtime remain
 pending in the [handoff](../../backlog.md).
+Item 12 stage A adds opt-in shared-core policy evidence on 2026-10-15:
+28 tests cover local/global-unique/shared history and rings, stable-ID
+invalidation, assignment, swap and migration plans, plus pure disconnect/
+re-prime primitives ([tests](../../../crates/tiler-core/tests/workspace_scope.rs),
+[record](../../changes/archive/windows-workspace-scope-policy.md)). This is
+not Windows owner adoption or full hotplug-journey evidence.
 
 ### R-WS-15: previous on L after a workspace change on R
 
@@ -1065,8 +1071,10 @@ pending in the [handoff](../../backlog.md).
   [Fixtures](../../../kwin/tests/workspace-previous-relative.test.ts).
 - Then Ours Windows: per-output pure isolation tested offline 2026-10-10
   (base `91db9d2` plus [record](../../changes/archive/windows-workspace-history-ring.md));
-  local single-display runtime wired. This two-output journey and non-local
-  modes remain pending; native outcome TBD (item 1.2).
+  local single-display runtime wired. Shared-core local/global-unique isolation
+  and single shared history tested offline 2026-10-15 ([tests](../../../crates/tiler-core/tests/workspace_scope.rs)).
+  This two-output owner journey and non-local modes remain pending; native
+  outcome TBD (item 1.2).
 - Variant hook: provisional/TBD (R-WS-08 history scope).
 
 ### R-WS-16: previous after the visited empty workspace is removed
@@ -1227,8 +1235,14 @@ pending in the [handoff](../../backlog.md).
   second toggle; pure disconnect/reconnect invalidation tested offline
   2026-10-10, base `91db9d2` plus
   [record](../../changes/archive/windows-workspace-history-ring.md).
-  Multi-output runtime parked; native journey TBD.
+  Mode-aware hotplug integration remains pending; native journey TBD.
 - Variant hook: provisional/TBD (R-WS-08 hotplug history).
+
+#### Shared-mode hotplug discriminator (2026-10-15)
+
+| Variant | Minimal action sequence | Selected Ours target / evidence | Unsupported outcomes |
+| --- | --- | --- | --- |
+| One shared scope versus displaced per-output projects | On L/R in shared mode, visit occupied WS1 -> WS2 -> WS3; keep the active window on R; disconnect R; invoke previous twice on L; reconnect R; invoke previous twice again. Record stable workspace IDs, shared order, contents, current views and each observed change | Tentative per [decisions](../../decisions.md#workspaces): mirror KDE's shared hotplug branch, with no project displacement or return mapping; one shared history/ring records actual observed changes only. KDE `reconcileOutputDisplacement` skips displacement for shared mode; Windows implementation pending. Reconnect never consults/restores history | Exact Tier 1/2 shared-model applicability, native evacuation/focus/frames, observed switch sequence and first/second toggle targets TBD for user testing; do not infer them from the local/global-unique R-WS-17 fixture |
 
 ### R-WS-18: relative next send fills the trailing empty
 

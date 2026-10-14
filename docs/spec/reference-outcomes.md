@@ -40,6 +40,10 @@ Variants of [R-OUT-05](reference-outcomes/multi-output.md#r-out-05-open-a-window
 | Shown secondary current outside its managed ring | Enable with distinct populated current views; send-next from primary, then focus B on secondary's pre-existing current and send-next | Twice refused `current-out-of-ring` / `target-unresolved` before commit; membership and views unchanged. Unassigned pre-existing desktops are mapped to primary, independently of native current views | Whether to seed a visible secondary current, resolve cross-scope, or retain refusal until a secondary ring is built TBD. No new scope policy selected; populated inverse ring-end/follow/stay matrix TBD |
 | Explicit move during output absence | Disable A's output; on survivor send A to another workspace; re-enable original output; record A and donor contents separately | A keeps its explicitly selected workspace, which returns to the re-enabled output; donor contents remain on the survivor ([record](../changes/kde-dual-output-live.md#further-native-outcomes-2026-10-14)) | Exact changed-donor return affinity and new-content variant TBD; retained A membership alone does not prove either |
 
+Shared-mode hotplug has a separate [minimal action-sequence discriminator](reference-outcomes/workspaces.md#shared-mode-hotplug-discriminator-2026-10-15):
+one shared history/ring without project displacement; unsupported reference and
+native outcomes remain TBD.
+
 ### KDE cross-output drag native-scope discriminator
 
 Variant of [R-MOU-03](reference-outcomes/mouse.md#r-mou-03-drag-across-outputs-and-onto-a-workspace-target).

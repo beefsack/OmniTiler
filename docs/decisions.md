@@ -535,6 +535,27 @@ platform API behavior.
 
 ## Workspaces
 
+- Tentative (autonomous 2026-10-15), pending user review: Windows item 12
+  stores `core.workspace.mode` in additive settings schema v1, using KDE's
+  `per-output-local` (default), `global-unique`, and `shared` tokens. Missing
+  values backfill local; invalid tokens refuse through existing validation.
+  Windows Settings exposes one three-choice workspace-scope selector.
+- Tentative (autonomous 2026-10-15), pending user review: workspace scope
+  saves immediately on Apply but is adopted only on owner restart. The running
+  owner retains its startup mode and reports restart-required drift, matching
+  KDE's `workspaceMode` handling. Owner adoption/reporting remains pending.
+- Tentative (autonomous 2026-10-15), pending user review: global-unique keeps
+  scoped numbering and KDE's visible-elsewhere swap rule, with no new
+  addressing. Local/global-unique retain per-output history/rings; shared
+  retains one history/ring per decisions 1.2/1.5 below.
+- Tentative (autonomous 2026-10-15), pending user review: shared-mode hotplug
+  mirrors KDE, without project displacement/return mapping. Windows hotplug
+  implementation remains pending. The [shared-mode discriminator](spec/reference-outcomes/workspaces.md#shared-mode-hotplug-discriminator-2026-10-15)
+  leaves unsupported reference and native outcomes TBD for user testing.
+- Item 12 pure scope policy and Windows mode schema/selector delivered offline
+  2026-10-15 ([record](changes/archive/windows-workspace-scope-policy.md));
+  runtime adoption and hotplug remain pending.
+
 - User decision 2026-10-12, D16 / REQ-WS-05 / R-WS-05, option (a): sending
   a floating window to another workspace keeps it floating on arrival and
   keeps its size; destination tiles are untouched. Applies to follow and stay,

@@ -244,6 +244,55 @@ fn default_migration_source_refill() -> String {
     MIGRATION_REFILL_LAST_REMAINING.to_owned()
 }
 
+/// Item 12 workspace scope mode wire values (shared core/KDE
+/// `workspace-native.ts` parity: `per-output-local` default, `global-unique`,
+/// `shared`). Exact tokens only: no aliases, no migration; unknown or
+/// mistyped values refuse through the existing invalid-file/last-good path.
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL: &str = "per-output-local";
+/// Item 12 global-unique alternative wire value.
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE: &str = "global-unique";
+/// Item 12 shared alternative wire value.
+pub const WORKSPACE_MODE_SHARED: &str = "shared";
+/// Functional label for the default.
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_LABEL: &str = "Per-output local";
+/// Functional label for the global-unique alternative.
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE_LABEL: &str = "Global unique";
+/// Functional label for the shared alternative.
+pub const WORKSPACE_MODE_SHARED_LABEL: &str = "Shared";
+/// Functional scope note for the default (no WM reference established).
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_TIP: &str = "Each output keeps its own set";
+/// Functional scope note for the global-unique alternative.
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE_TIP: &str = "Distinct sets with cross-output swap";
+/// Functional scope note for the shared alternative.
+pub const WORKSPACE_MODE_SHARED_TIP: &str = "One set shown across all outputs";
+
+/// Item 12 three-choice control rows: `(wire token, functional label, scope note)`.
+#[must_use]
+pub const fn workspace_mode_options() -> [(&'static str, &'static str, &'static str); 3] {
+    [
+        (
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL,
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL_LABEL,
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL_TIP,
+        ),
+        (
+            WORKSPACE_MODE_GLOBAL_UNIQUE,
+            WORKSPACE_MODE_GLOBAL_UNIQUE_LABEL,
+            WORKSPACE_MODE_GLOBAL_UNIQUE_TIP,
+        ),
+        (
+            WORKSPACE_MODE_SHARED,
+            WORKSPACE_MODE_SHARED_LABEL,
+            WORKSPACE_MODE_SHARED_TIP,
+        ),
+    ]
+}
+
+fn default_workspace_mode() -> String {
+    tiler_core::workspace_scope::mode_token(tiler_core::workspace_scope::DEFAULT_WORKSPACE_MODE)
+        .to_owned()
+}
+
 /// Core tiling/visual/takeover settings. All values are validated on load
 /// and on save; out-of-range values refuse instead of clamping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -496,16 +545,43 @@ impl Default for MouseSettings {
 /// initially true) seeds every newly created workspace; live edits affect
 /// only workspaces created after the edit. Per-workspace session overrides
 /// never persist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSettings {
     #[serde(default = "default_true")]
     pub default_tiled: bool,
+    /// Item 12 workspace scope mode. Additive schema-v1 field: a missing
+    /// value defaults to [`WORKSPACE_MODE_PER_OUTPUT_LOCAL`]; any other value
+    /// besides the three exact tokens refuses in [`validate_settings`].
+    /// Stage A persists the choice only; the running owner keeps its startup
+    /// scope until restart (stage B adopts and reports restart-required).
+    #[serde(default = "default_workspace_mode")]
+    pub mode: String,
 }
 
 impl Default for WorkspaceSettings {
     fn default() -> Self {
         Self {
             default_tiled: true,
+            mode: default_workspace_mode(),
+        }
+    }
+}
+
+impl WorkspaceSettings {
+    /// Typed item-12 scope mode for stage B startup adoption. Live settings
+    /// are always validated, so the fallback only covers hand-built defaults;
+    /// invalid files never become live (they keep last-good instead). The
+    /// explicit match never uses
+    /// [`tiler_core::workspace_scope::parse_workspace_mode`] (which silently
+    /// defaults unknown values); unknown saved values refuse in validation.
+    #[must_use]
+    pub fn mode_enum(&self) -> tiler_core::workspace_scope::WorkspaceMode {
+        match self.mode.as_str() {
+            s if s == WORKSPACE_MODE_GLOBAL_UNIQUE => {
+                tiler_core::workspace_scope::WorkspaceMode::GlobalUnique
+            }
+            s if s == WORKSPACE_MODE_SHARED => tiler_core::workspace_scope::WorkspaceMode::Shared,
+            _ => tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
         }
     }
 }
@@ -2378,6 +2454,15 @@ pub fn validate_settings(settings: &Settings) -> Result<(), SettingsError> {
                 .to_owned(),
         ));
     }
+    // Item 12: strict token check against the shared table (never
+    // `parse_workspace_mode`, which silently defaults unknown values).
+    if !tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS
+        .contains(&settings.core.workspace.mode.as_str())
+    {
+        return Err(SettingsError::Invalid(
+            "core.workspace.mode needs per-output-local|global-unique|shared".to_owned(),
+        ));
+    }
     validate_border(&settings.core.border)?;
     validate_underlay(&settings.core.underlay)?;
     validate_bindings(settings)?;
@@ -2986,6 +3071,14 @@ mod tests {
             settings.core.migration_source_refill_mode(),
             tiler_core::output_selection::MigrationSourceRefill::LastRemaining
         );
+        assert_eq!(
+            settings.core.workspace.mode,
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL
+        );
+        assert_eq!(
+            settings.core.workspace.mode_enum(),
+            tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal
+        );
         assert!(validate_settings(&settings).is_ok());
     }
 
@@ -3210,6 +3303,159 @@ mod tests {
             settings.core.migration_source_refill = MIGRATION_REFILL_MRU.to_owned();
             apply_preset(&mut settings, preset);
             assert_eq!(settings.core.migration_source_refill, MIGRATION_REFILL_MRU);
+            assert!(validate_settings(&settings).is_ok());
+        }
+    }
+
+    #[test]
+    fn workspace_mode_tokens_map_exactly_with_local_default() {
+        use tiler_core::workspace_scope::WorkspaceMode::{GlobalUnique, PerOutputLocal, Shared};
+        // Windows wire constants pin the shared tokens and default.
+        assert_eq!(
+            tiler_core::workspace_scope::mode_token(PerOutputLocal),
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL
+        );
+        assert_eq!(
+            tiler_core::workspace_scope::mode_token(GlobalUnique),
+            WORKSPACE_MODE_GLOBAL_UNIQUE
+        );
+        assert_eq!(
+            tiler_core::workspace_scope::mode_token(Shared),
+            WORKSPACE_MODE_SHARED
+        );
+        assert_eq!(
+            tiler_core::workspace_scope::DEFAULT_WORKSPACE_MODE,
+            PerOutputLocal
+        );
+        assert_eq!(
+            tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS,
+            [
+                WORKSPACE_MODE_PER_OUTPUT_LOCAL,
+                WORKSPACE_MODE_GLOBAL_UNIQUE,
+                WORKSPACE_MODE_SHARED
+            ]
+        );
+        let mut settings = Settings::default();
+        assert_eq!(settings.core.workspace.mode_enum(), PerOutputLocal);
+        settings.core.workspace.mode = WORKSPACE_MODE_GLOBAL_UNIQUE.to_owned();
+        assert_eq!(settings.core.workspace.mode_enum(), GlobalUnique);
+        assert!(validate_settings(&settings).is_ok());
+        settings.core.workspace.mode = WORKSPACE_MODE_SHARED.to_owned();
+        assert_eq!(settings.core.workspace.mode_enum(), Shared);
+        assert!(validate_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn workspace_mode_options_carry_functional_labels_and_scope_notes() {
+        assert_eq!(
+            workspace_mode_options(),
+            [
+                (
+                    WORKSPACE_MODE_PER_OUTPUT_LOCAL,
+                    "Per-output local",
+                    "Each output keeps its own set"
+                ),
+                (
+                    WORKSPACE_MODE_GLOBAL_UNIQUE,
+                    "Global unique",
+                    "Distinct sets with cross-output swap"
+                ),
+                (
+                    WORKSPACE_MODE_SHARED,
+                    "Shared",
+                    "One set shown across all outputs"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_mode_missing_key_backfills_local_default() {
+        // Additive schema-v1 field: older files without the key deserialize to
+        // the default and validate; explicit values round-trip unchanged.
+        let settings: Settings =
+            serde_json::from_str(r#"{"v":1,"core":{"workspace":{}}}"#).expect("missing key parses");
+        assert_eq!(
+            settings.core.workspace.mode,
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL
+        );
+        assert!(validate_settings(&settings).is_ok());
+        let settings: Settings =
+            serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("missing section parses");
+        assert_eq!(
+            settings.core.workspace.mode,
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL
+        );
+        assert!(validate_settings(&settings).is_ok());
+        for token in [
+            WORKSPACE_MODE_PER_OUTPUT_LOCAL,
+            WORKSPACE_MODE_GLOBAL_UNIQUE,
+            WORKSPACE_MODE_SHARED,
+        ] {
+            let doc = serde_json::json!({
+                "v": SETTINGS_SCHEMA_VERSION,
+                "revision": 1,
+                "core": {"workspace": {"mode": token}},
+                "bindings": {}
+            });
+            let settings: Settings =
+                serde_json::from_value(doc).expect("explicit token deserializes");
+            assert_eq!(settings.core.workspace.mode, token);
+            assert!(validate_settings(&settings).is_ok());
+            let round_tripped: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).expect("serializes"))
+                    .expect("round-trips");
+            assert_eq!(round_tripped, settings);
+        }
+    }
+
+    #[test]
+    fn workspace_mode_invalid_value_refuses() {
+        // Strict refusal: unknown tokens deserialize but never validate
+        // (last-good kept); the typed accessor fails closed to the default.
+        for bad in [
+            "",
+            "local",
+            "global",
+            "PER-OUTPUT-LOCAL",
+            "per_output_local",
+            "group-with-neighbor",
+        ] {
+            let mut settings = Settings::default();
+            settings.core.workspace.mode = bad.to_owned();
+            assert_eq!(
+                settings.core.workspace.mode_enum(),
+                tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
+                "{bad}"
+            );
+            assert!(
+                matches!(validate_settings(&settings), Err(SettingsError::Invalid(_))),
+                "{bad}"
+            );
+        }
+        // Non-string JSON shapes fail deserialization (malformed, never reach
+        // validation); unknown sibling fields keep existing behavior.
+        for raw in ["null", "0", "true"] {
+            let doc = serde_json::json!({
+                "v": SETTINGS_SCHEMA_VERSION,
+                "revision": 1,
+                "core": {"workspace": {"mode": serde_json::from_str::<serde_json::Value>(raw).expect("shape"), "extra_kept": 1}},
+                "bindings": {}
+            });
+            assert!(
+                serde_json::from_value::<Settings>(doc).is_err(),
+                "non-string shape refuses: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_mode_presets_leave_core_field_unchanged() {
+        for preset in [Preset::Authentic, Preset::Compatible] {
+            let mut settings = Settings::default();
+            settings.core.workspace.mode = WORKSPACE_MODE_SHARED.to_owned();
+            apply_preset(&mut settings, preset);
+            assert_eq!(settings.core.workspace.mode, WORKSPACE_MODE_SHARED);
             assert!(validate_settings(&settings).is_ok());
         }
     }

@@ -21,3 +21,4 @@ pub mod session;
 pub mod size_hints;
 pub mod visual;
 pub mod workspace;
+pub mod workspace_scope;

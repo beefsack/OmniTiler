@@ -2444,9 +2444,19 @@ decisions of 2026-09-24 are under
   - Item 12: non-local workspace modes parity (d). Decisions 1.2/1.5
     ([decisions](decisions.md#workspaces)): local and
     global-unique keep per-output history/rings, shared keeps one
-    history/ring. KDE mappings delivered offline; Windows local-only
-    today. Depends on handoff items 1/2 (history/ring + follow/stay) and
-    the parity-queue multi-output foundation; last.
+    history/ring. KDE mappings delivered offline; Windows runtime local-only
+    today. Stage A delivered offline 2026-10-15: opt-in shared-core scope,
+    mapping, history, ring, swap and migration plans; Windows schema-v1
+    `core.workspace.mode` backfill/validation and restart-required Settings
+    selector. Locked gates: 2,024 passed / 1 ignored; KDE planner fixture
+    build passed ([record](changes/archive/windows-workspace-scope-policy.md)).
+    Stage B pending: owner adoption, selection/send/foreground/CLI routing,
+    actual-transition observation and restart-required drift reporting.
+    Stage C pending: mode-aware hotplug/displacement/return and full R-WS-17
+    journeys; native multi-output evidence remains pending.
+    Prerequisites (handoff items 1/2, multi-output foundation, explicit output
+    sends and local whole-workspace migration) delivered.
+    - KDE: consume shared workspace-scope policy (optional, coordinate with KDE stream).
 
     #### Item 12 behavior and reference seams
 
@@ -2511,14 +2521,15 @@ decisions of 2026-09-24 are under
       output-focus-alone non-recording, cross-output previous and relative
       selection, >9/trailing wrap per scope. Port
       `kwin/tests/workspace-previous-relative.test.ts` case for case.
-    - Settings/input/catalog/presets: existing workspace shortcut rows
+    - Settings/input/catalog/presets: scope configuration is now selected
+      tentatively in [decisions](decisions.md#workspaces) and delivered in
+      stage A; live scope adoption is restart-required, pending stage B.
+      Existing workspace shortcut rows
       (`src/settings.rs:819-826`) and handoff items 1/2 supply the selected
       chords; `compatible_disabled_ids` :1528 remains their policy. Scope
-      configuration exposure/schema and live mode-change transition behavior
-      are not selected by the provision at `decisions.md:169`; resolve those
-      before adding controls. Existing `WorkspaceSettings` :250-263, UI
-      `src/settings_ui.rs:314/:394` and `src/tray.rs:179-275` are
-      tiled/floating controls, not scope.
+      configuration exposure is `core.workspace.mode`; the new three-choice
+      Settings selector is separate from per-workspace tiling and the tray's
+      tiled/floating action. Existing shortcuts/presets need no new rows.
     - [ ] Windows-only: owner selection/foreground/CLI producers, hotplug
       journeys, multi-output native evidence on a multi-output Windows setup.
     - User journey: two-output L/R with WS1/WS2 on L; L WS1->WS2, change
