@@ -54,6 +54,7 @@ mod inbox_sender;
 mod native;
 mod snapshot;
 
+#[cfg(windows)]
 pub(crate) use backoff::classify_input_wait;
 pub use backoff::{CONTENTION_RETRY, InputWaitReason, READY_WAIT, STOP_WAIT, install_backoff_secs};
 pub use channels::InputChannels;
