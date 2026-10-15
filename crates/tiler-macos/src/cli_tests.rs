@@ -25,6 +25,7 @@ fn help_and_check_never_mutate() {
         "preflight",
         "secure-input",
         "spaces-diagnose",
+        "mc-inspect",
     ] {
         let r = parse_args(&argv(&[cmd])).unwrap();
         assert!(!r.may_mutate, "{cmd} must not mutate");
@@ -578,6 +579,204 @@ fn probe_spawn_transient_fixtures_are_opt_in_ms() {
 }
 
 #[test]
+fn probe_spawn_space_join_is_explicit_opt_in() {
+    let r = parse_args(&argv(&["probe-spawn"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            space_join: false,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&["probe-spawn", "--space-join"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            space_join: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn owned_space_join_parses_without_wid_and_refuses_foreign_shape() {
+    // No --wid by shape: the helper acts solely on its own window.
+    let r = parse_args(&argv(&[
+        "owned-space-join",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(r.command, Command::OwnedSpaceJoin { pid: 9, .. }));
+    // Missing identity refuses; a --wid arm is not part of this command
+    // (foreign-window selection is refused by shape, never parsed).
+    assert!(parse_args(&argv(&["owned-space-join", "--pid", "9"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "owned-space-join",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn spaces_owned_recovery_parses_existing_sids_with_opt_in() {
+    // Both existing SIDs mandatory; budget defaults to the helper cap;
+    // explicit --allow-untested rides along for the runner gate.
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery {
+            original: 1,
+            temp: 66,
+            seconds: crate::config::MAX_PROBE_SECONDS,
+            allow_untested: true,
+            probe_direct: false,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--seconds",
+        "90",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery { seconds: 90, .. }
+    ));
+    // Missing SIDs refuse; unknown flags refuse.
+    assert!(parse_args(&argv(&["spaces-owned-recovery", "--original", "1"])).is_err());
+    assert!(parse_args(&argv(&["spaces-owned-recovery", "--temp", "66"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "spaces-owned-recovery",
+            "--original",
+            "1",
+            "--temp",
+            "66",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn spaces_owned_recovery_probe_direct_is_opt_in_only() {
+    // Default absent: the public O->T->O fixture is unchanged.
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery {
+            probe_direct: false,
+            ..
+        }
+    ));
+    // Explicit opt-in rides along; the runner gate additionally requires
+    // --allow-untested for the direct leg.
+    let r = parse_args(&argv(&[
+        "spaces-owned-recovery",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+        "--probe-direct",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesOwnedRecovery {
+            original: 1,
+            temp: 66,
+            probe_direct: true,
+            allow_untested: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn spaces_bindings_is_read_only_and_arg_free() {
+    // Read-only effective-table query: no SIDs, no opt-in, never mutating.
+    let r = parse_args(&argv(&["spaces-bindings"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(r.command, Command::SpacesBindings));
+    assert!(parse_args(&argv(&["spaces-bindings", "--bogus"])).is_err());
+}
+
+#[test]
+fn spaces_switch_probe_parses_existing_sids_with_opt_in() {
+    // Both existing SIDs mandatory (no Space is created); budget defaults
+    // to the helper cap; explicit --allow-untested rides along.
+    let r = parse_args(&argv(&[
+        "spaces-switch-probe",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesSwitchProbe {
+            original: 1,
+            temp: 66,
+            seconds: crate::config::MAX_PROBE_SECONDS,
+            allow_untested: true,
+        }
+    ));
+    // Missing SIDs or unknown flags refuse before any live touch.
+    assert!(parse_args(&argv(&["spaces-switch-probe", "--original", "1"])).is_err());
+    assert!(parse_args(&argv(&["spaces-switch-probe", "--temp", "66"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "spaces-switch-probe",
+            "--original",
+            "1",
+            "--temp",
+            "66",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
 fn owned_fullscreen_parses_with_exact_identity_and_single_arm() {
     for (flag, want) in [("--enter", true), ("--exit", false)] {
         let r = parse_args(&argv(&[
@@ -918,6 +1117,14 @@ fn space_write_modes_require_full_identity_and_may_mutate() {
             "--space",
             "5",
         ],
+        vec![
+            "spaces-owned-recovery",
+            "--original",
+            "1",
+            "--temp",
+            "66",
+            "--allow-untested",
+        ],
     ] {
         let r = parse_args(&argv(&args)).unwrap();
         assert!(r.may_mutate, "{args:?} is write-intent");
@@ -961,6 +1168,227 @@ fn space_write_modes_require_full_identity_and_may_mutate() {
             "9",
             "--nonce",
             "0123456789abcdef",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn mc_members_is_read_only_with_mandatory_space() {
+    // Read-only Space-members inspection: one mandatory --space SID, no
+    // writes on any path, unknown flags never parse.
+    let r = parse_args(&argv(&["mc-members", "--space", "66"])).unwrap();
+    assert_eq!(r.command, Command::McMembers { space: 66 });
+    assert!(!r.may_mutate, "mc-members must not mutate");
+    assert!(parse_args(&argv(&["mc-members"])).is_err());
+    assert!(parse_args(&argv(&["mc-members", "--space"])).is_err());
+    assert!(parse_args(&argv(&["mc-members", "--space", "66", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["mc-members", "--space", "nope"])).is_err());
+}
+
+#[test]
+fn mc_inspect_is_read_only_without_args() {
+    // Read-only Mission Control inspection: no launch, no writes, and no
+    // arguments accepted (any flag is a usage error, never a default).
+    let r = parse_args(&argv(&["mc-inspect"])).unwrap();
+    assert_eq!(r.command, Command::McInspect);
+    assert!(!r.may_mutate, "mc-inspect must not mutate");
+    assert!(parse_args(&argv(&["mc-inspect", "--seconds", "10"])).is_err());
+}
+
+#[test]
+fn mc_recover_needs_named_temp_and_original_but_may_mutate() {
+    // Bounded recovery: the adopted temp and the preimage original are
+    // both mandatory (never guessed); display/seconds default as in the
+    // lifecycle; --allow-untested rides the payload (the runner refuses
+    // without it — no default mutation). Never creates a Space.
+    let r = parse_args(&argv(&[
+        "mc-recover",
+        "--temp",
+        "66",
+        "--original",
+        "1",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::McRecover {
+            temp: 66,
+            original: 1,
+            seconds: 60,
+            display: 0,
+            allow_untested: true,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "mc-recover",
+        "--temp",
+        "66",
+        "--original",
+        "1",
+        "--seconds",
+        "75",
+        "--display",
+        "1",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::McRecover {
+            temp: 66,
+            original: 1,
+            seconds: 75,
+            display: 1,
+            allow_untested: true,
+        }
+    ));
+    // Temp and original are both mandatory; unknown flags never parse.
+    assert!(parse_args(&argv(&["mc-recover", "--temp", "66"])).is_err());
+    assert!(parse_args(&argv(&["mc-recover", "--original", "1"])).is_err());
+    assert!(parse_args(&argv(&["mc-recover"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "mc-recover",
+            "--temp",
+            "66",
+            "--original",
+            "1",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "mc-recover",
+            "--temp",
+            "66",
+            "--original",
+            "1",
+            "--display",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn mc_lifecycle_needs_no_identity_but_may_mutate() {
+    // Explicit temp-Space lifecycle: no probe-spawn identity involved (no
+    // window is ever targeted), but the command may mutate topology, so it
+    // is gated separately from inspect. Defaults select display 0 with the
+    // standard probe lifetime; --allow-untested rides the command payload
+    // (the runner refuses without it — no default mutation).
+    let r = parse_args(&argv(&["mc-lifecycle", "--allow-untested"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::McLifecycle {
+            seconds: 60,
+            display: 0,
+            allow_untested: true,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "mc-lifecycle",
+        "--seconds",
+        "75",
+        "--display",
+        "1",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::McLifecycle {
+            seconds: 75,
+            display: 1,
+            allow_untested: true,
+        }
+    ));
+    // Without the opt-in the parse still succeeds (the runner refuses with
+    // a named prerequisite); unknown flags never parse.
+    let r = parse_args(&argv(&["mc-lifecycle"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::McLifecycle {
+            allow_untested: false,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["mc-lifecycle", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["mc-lifecycle", "--display"])).is_err());
+}
+
+#[test]
+fn mc_restore_frontmost_couples_exact_target_and_may_mutate() {
+    // Guarded Ghostty-only restoration: PID, WID, and Space are all
+    // mandatory (never guessed); display defaults to 0. May mutate (one
+    // public activation), never a general window API.
+    let r = parse_args(&argv(&[
+        "mc-restore-frontmost",
+        "--pid",
+        "42",
+        "--wid",
+        "7",
+        "--space",
+        "10",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::McRestoreFrontmost {
+            pid: 42,
+            wid: 7,
+            space: 10,
+            display: 0,
+            allow_untested: true,
+        }
+    ));
+    // Without the opt-in the parse still succeeds (the runner refuses with
+    // a named prerequisite before any mutation); display defaults to 0.
+    let r = parse_args(&argv(&[
+        "mc-restore-frontmost",
+        "--pid",
+        "42",
+        "--wid",
+        "7",
+        "--space",
+        "10",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::McRestoreFrontmost {
+            allow_untested: false,
+            ..
+        }
+    ));
+    // A missing half never parses; unknown flags never parse.
+    assert!(parse_args(&argv(&["mc-restore-frontmost", "--pid", "42"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "mc-restore-frontmost",
+            "--pid",
+            "42",
+            "--wid",
+            "7",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "mc-restore-frontmost",
+            "--pid",
+            "42",
+            "--wid",
+            "7",
+            "--space",
+            "10",
+            "--bogus",
         ]))
         .is_err()
     );

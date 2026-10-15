@@ -1108,7 +1108,11 @@ fn set_fullscreen_on_worker(
     })?;
     let set_result = crate::ffi::ax_set_bool_attribute(window, "AXFullScreen", want);
     if let Err(code) = set_result {
-        const FALLBACK_CODES: [i32; 3] = [-25205, -25210, crate::ffi::AX_NOT_IMPLEMENTED];
+        const FALLBACK_CODES: [i32; 3] = [
+            crate::ffi::AX_ATTRIBUTE_UNSUPPORTED,
+            crate::ffi::AX_NO_VALUE,
+            crate::ffi::AX_NOT_IMPLEMENTED,
+        ];
         if FALLBACK_CODES.contains(&code) {
             crate::ffi::ax_set_bool_attribute(window, "AXFullscreen", want).map_err(
                 |fallback| {

@@ -258,7 +258,8 @@ readback equal to the target, never OS acceptance alone, and a missed
 readback re-raises only the owned preimage window. The probe window itself
 is `Accessory` + `orderFront:` (never key), so spawn steals no focus.
 `spaces-move` is a direct-`SLSMoveWindowsToManagedSpace` owned-move probe
-(UNTESTED live): it authenticates the full spawn record
+(experimental: one gated dispatch on an owned fixture observed no effect):
+it authenticates the full spawn record
 (pid/nonce/exe plus CURRENT live window nonce — never identity claims
 alone), joins the WID to the
 owned PID via CGWindowList with a live recheck (no AX), captures the
@@ -277,28 +278,109 @@ mutation (`SLSSpaceSetCompatID` mutates global Space metadata with only a
 setter covered, no exact preimage, and a yabai-colliding tag — reset to zero
 is not restoration); its symbols stay presence diagnostics only. The move
 never auto-restores — `spaces-restore` performs the inverse with the same
-full validation (usable after the mover exits, via the spawn record), so the
-independent restore path is proven on its own — but independent restore is
-NOT considered proven until a live test demonstrates it.
+full validation (usable after the mover exits, via the spawn record). The
+single-shot direct inverse is unverified; the separate public AppKit
+held-Child recovery (`spaces-owned-recovery` O->T->O) is proven per run.
 Source and destination must read back as user Spaces; unreadable Space type,
 unknown frontmost context and loginwindow fail closed before dispatch. A
 frontmost observation is not an atomic lock detector. Source and target must
 map unambiguously to the same display; cross-display recovery remains unproven.
 `spaces-switch`, `spaces-create` and `spaces-destroy` stay explicitly
-unsupported: their non-SA routes are unimplemented here with recovery unproven
-(see the [route survey and live plan](../../docs/research/macos-port/native-spaces-routes.md)) and the commands report the route instead of
-executing.
+unsupported single-shot commands: their non-SA single-shot routes are
+unimplemented here (see the [route survey](../../docs/research/macos-port/native-spaces-routes.md))
+and the commands report the route instead of executing — use the bounded
+gated probes below, which carry their own per-run readbacks.
 
-Native-Space write routes (source-only determination at pinned yabai
-`dd845723416f5fe92af49fad5ebab00369e07edd`; live effects UNTESTED; no SIP
+Native-Space write routes (source-derived surveyed route at pinned yabai
+`dd845723416f5fe92af49fad5ebab00369e07edd`, not a universal claim; no SIP
 rejection asserted without live evidence):
 
 | Operation | Tier-2 route | Scripting-addition only? |
 | --- | --- | --- |
-| Window move | Direct `SLSMoveWindowsToManagedSpace` only (UNTESTED, possibly ineffective on the macOS 15 floor); compat-ID fallback disabled (no exact restoration); bridged async op detected, never executed ([space_manager.c](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705), [extern.h](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h#L63-L63)) | No (SA attempt omitted) |
-| Switch vs focus | Yabai non-SA gesture fallback; AX Mission Control and enabled system chords are additional candidates | No; unimplemented here, recovery unproven |
-| Create / destroy | Yabai commands use SA; Hammerspoon uses non-SA AX Mission Control | Yabai yes; UI alternative no, unimplemented here |
+| Window move | Direct `SLSMoveWindowsToManagedSpace` only (experimental: one gated dispatch observed no-effect on an owned fixture, possibly ineffective on the macOS 15 floor; single-shot inverse unverified, separate public held-Child recovery proven); compat-ID fallback disabled (no exact restoration); bridged async op detected, never executed ([space_manager.c](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705), [extern.h](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/misc/extern.h#L63-L63)) | No (SA attempt omitted) |
+| Switch vs focus | Yabai non-SA gesture fallback; AX Mission Control and enabled system chords are additional candidates | No; single-shot unimplemented here — use `spaces-switch-probe` (gesture legs read back the current both ways; arrow session pair observed no effect) |
+| Create / destroy | Yabai commands use SA; Hammerspoon uses non-SA AX Mission Control | Yabai yes; AX MC create/goto/remove proven on one temporary same-display Space — the integrated `mc-lifecycle` run is NOT passed (first run failed on the immediate goto; only the separate corrected recovery+remove passed; see below) |
 | Reorder / Space-to-display move | Yabai SA internal Dock functions | Yes in surveyed yabai; no proven non-SA implementation |
+
+## Mission Control + Space switch/recovery probes (bounded, gated)
+
+`mc-inspect` is read-only (session lock, AX trust, Dock identity, MC-group
+presence, sanitized topology; no launch, no writes, no synthetic events).
+`mc-lifecycle [--seconds N] [--display INDEX] --allow-untested` is the
+bounded temporary-Space lifecycle: create exactly one Space on the display,
+go to it and back, remove ONLY the created Space. No window is ever targeted
+(no close/quit/minimize/hide/move/resize/Space-move of any window) and no
+synthetic event is posted on any path in the module.
+
+```zsh
+mise exec -- just launch -- mc-inspect
+mise exec -- just launch -- --timeout 120 -- mc-lifecycle --seconds 60 --display 0 --allow-untested
+mise exec -- just launch -- mc-members --space SID
+mise exec -- just launch -- spaces-bindings
+mise exec -- just launch -- --timeout 120 -- spaces-owned-recovery --original SID --temp SID --allow-untested [--probe-direct]
+mise exec -- just launch -- --timeout 120 -- spaces-switch-probe --original SID --temp SID --allow-untested
+mise exec -- just launch -- --timeout 120 -- mc-recover --temp SID --original SID --allow-untested
+mise exec -- just launch -- --timeout 120 -- mc-restore-frontmost --pid PID --wid WID --space SID --allow-untested
+```
+
+Route (Hammerspoon public-AX shape, private toggle replaced): the open/close
+toggle is the public `NSWorkspace.launchApplication("Mission Control")`
+(no Accessibility trust, no Automation consent, no events posted); traversal
+is direct per-app AX on the exact `com.apple.dock` PID (`mc` →
+`mc.display` joined by `AXDisplayID` via the AppKit display snapshot →
+`mc.spaces` → `mc.spaces.add` press to create, `mc.spaces.list[i]` press to
+go to a Space, `AXRemoveDesktop` to remove one), per
+([spaces.lua](https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L84-L152)).
+The AX legs still require observed Accessibility trust. Every action
+re-checks the `CGSessionCopyCurrentDictionary` unlocked verdict and AX trust
+immediately beforehand and re-joins SID/display/index fresh; the temp SID is
+adopted only through the exactly-one-new-SID gate (preexisting order and
+currents intact); removal runs only on a uniquely located, inactive,
+non-last temp, and ownership uncertainty blocks removal (residue plus
+preimages reported, never a blind delete). A bounded `caffeinate -d -t`
+Child rides the run and is reaped by exact handle on every path; currents
+restore ordered per display and the original frontmost bundle is read back
+(natural return evidence only — never repaired by focus writes here).
+Visual Mission Control transitions are unavoidable on this route; observing
+jank is user-owned.
+
+Gated companions: `mc-members --space SID` is read-only member inspection
+(every live member of the Space with PID/WID/bundle/layer/onscreen/bounds/
+membership plus focus-oracle legs and the Ghostty snapshot; IDs and geometry
+only); `spaces-bindings` is the read-only effective symbolic-hotkey table
+(chord + enabled, no symbolic IDs, plus Ctrl+Left/Right corroboration);
+`spaces-owned-recovery` is the bounded public O->T->O battery over two
+existing SIDs (exact membership plus exact frame restoration, helper stopped
+exactly; creates/destroys no Space, no SLS move, no synthetic posts;
+`--probe-direct` adds ONE gated direct-SLS move in a separate short-lived
+mover child with delayed readbacks plus independent public restore);
+`spaces-switch-probe` is the bounded same-display arrow-vs-gesture
+comparison over two existing SIDs (two owned helpers bracket enabled
+Ctrl+Right/Left posts and the yabai began/ended gesture pair; creates/
+destroys no Space, no SLS move, no tap input; observed standing: gesture
+legs read back the current both ways, the arrow session pair observed no
+effect); `mc-recover` adopts ONLY the
+exact ordered [original, temp] topology and removes ONLY that temp when the
+strict emptiness gate already proves clear (else parked, never clean);
+`mc-restore-frontmost` is a guarded Ghostty-only single app activation with
+current-Space guard plus full oracle agreement and stability readback.
+
+Evidence boundaries (all gated probes): per-run readbacks are the only
+effect evidence; switch `*-post` latencies cover owned-focus plus the
+synthetic post only (current-readback settle polling excluded, never
+end-to-end); the single-shot direct SLS move is experimental (observed
+no-effect on one owned fixture) with its single-shot inverse unverified —
+the separate public held-Child recovery is proven per run; AX Mission
+Control create/goto/remove is proven on one temporary same-display Space,
+but the integrated `mc-lifecycle` run is NOT passed (its first run failed
+on the immediate goto; only the separate corrected recovery+remove passed);
+the public `NSWorkspace` Mission Control close semantics were observed per
+run only — other apps and releases are not proven; no SIP rejection is
+asserted without live evidence; no product-workspace claim and no universal
+native window-move failure claim is made. Canonical live verdict:
+[docs/research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16](../../docs/research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16)
+plus the [Phase 0 record](../../docs/changes/macos-phase-0.md). This unit
+is offline verification only — no new live numbers.
 
 ## Signed app recipe (stable identity)
 
@@ -361,11 +443,17 @@ title, or content logs). Stop interception when Secure Input is active
   `core-graphics` binding); maintained-wrapper calls still
   need isolated `unsafe`; the wrapper/stub module is not yet tiny. See the active
   [Phase 0 record](../../docs/changes/macos-phase-0.md).
-- Owned Space move/restore: direct-only implementation, UNTESTED live
-  (source shape only, no live dispatch or readback evidence yet; independent
-  restore unproven until a live test; `--allow-untested` required per
-  invocation). Switch/create/destroy: explicitly unsupported (no safe native
-  recovery); the commands report the pinned route instead of executing.
+- Owned Space move/restore: direct-only implementation, experimental live
+  (one gated dispatch observed no-effect on an owned fixture with exact
+  readbacks; single-shot inverse unverified while the separate public
+  held-Child recovery is proven per run; `--allow-untested` required per
+  invocation). Single-shot switch/create/destroy: explicitly unsupported;
+  the single-shot commands report the pinned route instead of executing —
+  use the bounded gated probes (`spaces-switch-probe`,
+  `spaces-owned-recovery`, `mc-lifecycle`/`mc-recover`, `mc-members`,
+  `mc-restore-frontmost`, `spaces-bindings`), which carry their own
+  gates and per-run readbacks; they are not product workspaces and prove no
+  universal native-move outcome.
 - Nonces are OS-CSPRNG (`/dev/urandom`, std only, no new crate); spawn
   records live in a `0700` UID-owned session dir as `0600` `create_new`
   files with symlink/stale/replaced-identity refusal, and the recorded exe

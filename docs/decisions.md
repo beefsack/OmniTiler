@@ -170,6 +170,16 @@ platform API behavior.
   - **Continue native Spaces**, learning from yabai where possible: inherent
     virtual-workspace jank makes parking an unsuitable initial substitute.
     The selected Tier-2/SIP-enabled boundary is unchanged.
+  - **Tentative native-Space capability boundary, 2026-10-16:** keep workspace
+    actions out of the preview until ordinary-window transfer and its exact
+    inverse are verified. MC AX lifecycle/selection and same-display gesture
+    selection have owned-fixture evidence; the direct move had no effect, the
+    bridged dispatcher was absent, and compat metadata restoration remains
+    unresolved. These results establish neither a SIP cause nor universal native
+    impossibility. Public AppKit self-join is an owned-helper recovery fixture,
+    not foreign-window authority. Removal checks user-window emptiness with
+    narrowly evidenced compositor/chrome exclusions; unknown ownership blocks.
+    [Verdict and exact continuation](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16).
   - **Distribution: both DMG and Homebrew.** Release signing/notarization and
     updates retain their separately recorded open questions.
   - **Start with native macOS fullscreen**, revisiting only if it causes

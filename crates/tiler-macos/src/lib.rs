@@ -39,12 +39,20 @@ pub mod ffi;
 pub mod focus;
 pub mod focus_diagnose;
 pub mod focus_route;
+pub mod frontmost_restore;
 pub mod input;
 pub mod input_eligibility;
 pub mod input_match;
 pub mod input_policy;
 pub mod input_session;
 pub mod input_session_legs;
+pub mod mc_lifecycle;
+pub mod mc_members;
+pub mod mc_observe;
+pub mod mc_probe;
+#[cfg(test)]
+mod mc_probe_tests;
+pub mod mc_recover;
 pub mod native_facts;
 pub mod native_input;
 #[cfg(test)]
@@ -69,7 +77,15 @@ mod runtime_worker;
 pub mod scope;
 pub mod scope_inspect;
 pub mod session;
+pub mod space_direct_probe;
+pub mod space_join;
+pub mod space_recovery;
+pub mod space_switch_edges;
+pub mod space_switch_probe;
+#[cfg(test)]
+mod space_switch_probe_tests;
 pub mod spaces;
+pub mod symbolic_hotkeys;
 pub mod synth;
 pub mod tile;
 pub mod topology;

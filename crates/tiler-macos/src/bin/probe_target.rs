@@ -11,7 +11,7 @@
 use std::io::Write;
 
 fn usage() -> &'static str {
-    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy] [--transient-panel-ms MS] [--transient-sheet-ms MS]"
+    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join]"
 }
 
 fn main() {
@@ -36,6 +36,7 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let mut regular_policy = false;
     let mut transient_panel_ms = 0u64;
     let mut transient_sheet_ms = 0u64;
+    let mut space_join = false;
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -105,6 +106,9 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
                     .parse::<u64>()
                     .map_err(|_| (2, usage().to_owned()))?;
             }
+            "--space-join" => {
+                space_join = true;
+            }
             other => return Err((2, format!("unknown arg '{other}\n{usage}", usage = usage()))),
         }
         i += 1;
@@ -118,6 +122,7 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
                 .with_regular_policy(regular_policy)
                 .with_transient_panel_ms(transient_panel_ms)
                 .with_transient_sheet_ms(transient_sheet_ms)
+                .with_space_join(space_join)
         })
         .map_err(|e| (2, e))?;
     run_target(&spec).map_err(|e| (1, e))
@@ -160,6 +165,7 @@ fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), S
         spec.regular_policy,
         spec.transient_panel_ms,
         spec.transient_sheet_ms,
+        spec.space_join,
         &|| {
             println!("{}", serde_json::json!({"ready": true}));
             let _ = std::io::stdout().flush();

@@ -116,6 +116,13 @@ pub struct ProbeTargetSpec {
     /// WID) is observed natively, never invented. Enabled via
     /// `--transient-sheet-ms`.
     pub transient_sheet_ms: u64,
+    /// Owned public Space-join self-action poll: when true the helper polls
+    /// its per-run request file and, on a nonce-matching trigger, performs
+    /// ONLY the owned-window `MoveToActiveSpace` join (capture preimage, set
+    /// flag, `makeKeyAndOrderFront` + self-activate, exact restore, verify).
+    /// Default off; enabled via `--space-join` (probe binary and
+    /// `probe-spawn`). No foreign windows, no SLS, no synthetic events.
+    pub space_join: bool,
 }
 
 impl ProbeTargetSpec {
@@ -145,6 +152,7 @@ impl ProbeTargetSpec {
             regular_policy: false,
             transient_panel_ms: 0,
             transient_sheet_ms: 0,
+            space_join: false,
         })
     }
 
@@ -190,6 +198,13 @@ impl ProbeTargetSpec {
         self
     }
 
+    /// Opt in to the public Space-join self-action poll (see
+    /// [`space_join_request_path`]). Builder; holder-only fixture.
+    pub fn with_space_join(mut self, space_join: bool) -> Self {
+        self.space_join = space_join;
+        self
+    }
+
     /// argv fragment for spawning the helper (no shell; exact args).
     pub fn argv(&self) -> Vec<String> {
         let mut args = vec![
@@ -222,8 +237,99 @@ impl ProbeTargetSpec {
             args.push("--transient-sheet-ms".to_owned());
             args.push(self.transient_sheet_ms.to_string());
         }
+        if self.space_join {
+            args.push("--space-join".to_owned());
+        }
         args
     }
+}
+
+/// Per-run public Space-join trigger/result paths. Both live in the private
+/// session dir (`0700`, current UID) and carry the exact per-run nonce in the
+/// leaf name, so a trigger for one run never addresses another. The helper
+/// polls the request path only when spawned with `--space-join`; the
+/// controller writes it only after full spawn-record authentication
+/// (`load_verified_record`: pid/nonce, expected helper, live exe plus CURRENT
+/// live window nonce). Survives mover-process exit: any separately launched
+/// controller with the same pid/nonce record can trigger while the helper
+/// lives, and the primary holder never owns the trigger exclusively.
+pub fn space_join_request_path(nonce: &str) -> std::path::PathBuf {
+    session_dir().join(format!("space-join-{nonce}.request"))
+}
+
+/// Result path for the same nonce. Written atomically by the helper after
+/// the self-action (preimage, restored bits, verified flag); consumed
+/// (read + removed) by the controller so a second join with the same nonce
+/// never reads a stale result.
+pub fn space_join_result_path(nonce: &str) -> std::path::PathBuf {
+    session_dir().join(format!("space-join-{nonce}.result.json"))
+}
+
+/// Request body the controller writes: the per-run session nonce plus a
+/// fresh cryptographic per-request operation ID (both minted by the existing
+/// [`mint_nonce`] CSPRNG helper). Pure; the helper refuses any body whose
+/// nonce differs from its own, and the controller only accepts a result
+/// echoing both values back — so a stale result from an earlier action with
+/// the same session nonce can never authorize a later poll.
+pub fn space_join_request_body(nonce: &str, request_id: &str) -> Result<String, String> {
+    crate::ownership::validate_nonce(nonce)?;
+    crate::ownership::validate_nonce(request_id)?;
+    Ok(serde_json::json!({"nonce": nonce, "request_id": request_id}).to_string())
+}
+
+/// Parse and authenticate a request body against the helper's own session
+/// nonce. Returns the per-request operation ID only for an exact JSON match
+/// (`nonce` equals the helper's own, plus a valid `request_id`); anything
+/// else (foreign nonce, missing/invalid request ID, malformed JSON) is
+/// refused with no side effect — the caller must leave the file in place.
+pub fn space_join_request_auth(body: &str, own_nonce: &str) -> Result<String, String> {
+    crate::ownership::validate_nonce(own_nonce)?;
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "space-join request not JSON".to_owned())?;
+    let claimed = value
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "space-join request missing nonce".to_owned())?;
+    if claimed != own_nonce {
+        return Err("space-join request nonce mismatch; refusing".to_owned());
+    }
+    let request_id = value
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "space-join request missing request_id".to_owned())?;
+    crate::ownership::validate_nonce(request_id)
+        .map_err(|_| "space-join request request_id invalid; refusing".to_owned())?;
+    Ok(request_id.to_owned())
+}
+
+/// Helper self-action result, shared by the helper writer (`ffi`) and the
+/// controller reader (`space_join`): the session nonce plus the echoed
+/// per-request operation ID bind this result to exactly one trigger, so a
+/// survivor result file from an earlier action is never mistaken for a fresh
+/// one. Both sides serialize through this shape; never hand-rolled JSON.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpaceJoinResult {
+    pub nonce: String,
+    pub request_id: String,
+    pub preimage_bits: u64,
+    pub restored_bits: u64,
+    pub restored_verified: bool,
+}
+
+/// Pure collectionBehavior join math over raw bits (no AppKit touch):
+/// set the `MoveToActiveSpace` bit (`1<<1`, per AppKit `NSWindow.h` and the
+/// maintained `objc2-app-kit` `MoveToActiveSpace = 1<<1`) while preserving
+/// every other bit. Restoration is the exact preimage (see
+/// [`space_join_restored_ok`]).
+pub fn space_join_behavior_bits(preimage_bits: u64) -> u64 {
+    preimage_bits | (1u64 << 1)
+}
+
+/// Pure restoration verdict: the post-action behavior must equal the exact
+/// preimage (no masking, no zero-reset). A compat-style reset to zero is
+/// NOT restoration here.
+pub fn space_join_restored_ok(preimage_bits: u64, restored_bits: u64) -> bool {
+    preimage_bits == restored_bits
 }
 
 /// Generate a 32-hex-char nonce from the OS CSPRNG (Unix `/dev/urandom`,
@@ -345,6 +451,80 @@ mod tests {
             .position(|a| a == "--transient-sheet-ms")
             .expect("sheet flag present");
         assert_eq!(argv[sheet + 1], "5000");
+    }
+
+    #[test]
+    fn space_join_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert!(!plain.space_join);
+        assert!(!plain.argv().contains(&"--space-join".to_owned()));
+        let joined = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_space_join(true);
+        assert!(joined.space_join);
+        assert!(joined.argv().contains(&"--space-join".to_owned()));
+    }
+
+    #[test]
+    fn space_join_paths_carry_exact_nonce() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let req = space_join_request_path(nonce);
+        let res = space_join_result_path(nonce);
+        assert!(req.file_name().unwrap().to_string_lossy().contains(nonce));
+        assert!(res.file_name().unwrap().to_string_lossy().contains(nonce));
+        assert_ne!(req, res);
+        // Different nonces never collide.
+        assert_ne!(
+            space_join_request_path(nonce),
+            space_join_request_path("ffffffffffffffffffffffffffffffff")
+        );
+    }
+
+    #[test]
+    fn space_join_request_auth_accepts_only_exact_nonce() {
+        let own = "0123456789abcdef0123456789abcdef";
+        let req = "ffffffffffffffffffffffffffffffff";
+        let body = space_join_request_body(own, req).unwrap();
+        assert_eq!(space_join_request_auth(&body, own).unwrap(), req);
+        // Foreign nonce, malformed JSON, and missing/invalid fields refuse.
+        let foreign = space_join_request_body("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", req).unwrap();
+        assert!(space_join_request_auth(&foreign, own).is_err());
+        assert!(space_join_request_auth("not json", own).is_err());
+        assert!(space_join_request_auth("{}", own).is_err());
+        assert!(
+            space_join_request_auth(&serde_json::json!({"nonce": own}).to_string(), own).is_err()
+        );
+        assert!(space_join_request_body("short", req).is_err());
+        assert!(space_join_request_body(own, "short").is_err());
+    }
+
+    #[test]
+    fn space_join_result_round_trips_with_request_id() {
+        let result = SpaceJoinResult {
+            nonce: "0123456789abcdef0123456789abcdef".to_owned(),
+            request_id: "ffffffffffffffffffffffffffffffff".to_owned(),
+            preimage_bits: 4,
+            restored_bits: 4,
+            restored_verified: true,
+        };
+        let body = serde_json::to_string(&result).unwrap();
+        let back: SpaceJoinResult = serde_json::from_str(&body).unwrap();
+        assert_eq!(result, back);
+    }
+
+    #[test]
+    fn space_join_behavior_sets_only_the_move_bit_and_restores_exact() {
+        // MoveToActiveSpace is 1<<1 per AppKit NSWindow.h and objc2-app-kit.
+        assert_eq!(space_join_behavior_bits(0), 0b10);
+        // Other bits preserved (e.g. Managed 1<<2 stays, Default stays exact).
+        assert_eq!(space_join_behavior_bits(0b100), 0b110);
+        assert_eq!(space_join_behavior_bits(0b101), 0b111);
+        // Restoration is exact equality: a zero-reset is NOT restoration
+        // when the preimage was nonzero, and any drift fails.
+        assert!(space_join_restored_ok(4, 4));
+        assert!(space_join_restored_ok(0, 0));
+        assert!(!space_join_restored_ok(4, 0));
+        assert!(!space_join_restored_ok(4, 6));
     }
 
     // Unix-only: reads `/dev/urandom`, which does not exist on Windows.
@@ -562,7 +742,7 @@ pub struct SpawnRecord {
     pub helper_path: String,
 }
 
-fn session_dir() -> std::path::PathBuf {
+pub(crate) fn session_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("omnitiler-macos-probe")
 }
 
@@ -574,7 +754,7 @@ pub fn session_record_path(pid: u32) -> std::path::PathBuf {
 
 /// Ensure the private owned state dir: never a symlink, mode `0700`, owned
 /// by the current UID. Fails closed on any deviation.
-fn ensure_private_session_dir() -> Result<std::path::PathBuf, String> {
+pub(crate) fn ensure_private_session_dir() -> Result<std::path::PathBuf, String> {
     let dir = session_dir();
     match std::fs::symlink_metadata(&dir) {
         Ok(meta) => {

@@ -187,6 +187,19 @@ applications can clamp tiled slots; the earlier sheet/classification and
 multi-display/game discriminators remain open. This is a basic tiling preview,
 not feature-complete macOS delivery.
 
+### Native workspace status — 2026-10-16
+
+Workspace bindings are still unavailable in `just dev`: Ctrl+digits and
+workspace send/follow/stay actions are not enabled by the new capability probes.
+MC AX selection/create/remove and same-display gesture selection work on owned
+fixtures, but ordinary-window transfer has no accepted route yet. The direct
+move dispatched without effect; unavailable or ineligible alternatives are
+listed in the [native-Space verdict](../research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16).
+The preview still tiles each display's current user Space. Continue basic
+dogfooding with the existing commands and bindings above; standalone mutation
+probes in the crate README are diagnostics, not workspace product commands.
+Native Spaces remain the selected direction, with SIP enabled.
+
 ## Verification and publication
 
 - Final macOS tests: **445 passed**, zero failed/ignored; portable core,

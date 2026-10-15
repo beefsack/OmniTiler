@@ -50,8 +50,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::EngineMessage;
 
-/// AX error codes (`AXError.h`). Only named codes are reported by name;
-/// unknown codes surface numerically, never guessed.
+/// AX error codes (SDK `AXError.h`:
+/// `ApplicationServices/HIServices/AXError.h`, verified against the CLT
+/// header and the maintained `objc2-application-services::AXError`
+/// constants). Only named codes are reported by name; unknown codes surface
+/// numerically, never guessed. The numeric arms below stay literals so this
+/// function classifies identically on every platform (the `objc2` dependency
+/// is macOS-only); each arm is pinned to its maintained constant by
+/// `tests::ax_error_codes_bind_sdk_constants`.
 pub const AX_NOT_IMPLEMENTED: i32 = -25208;
 
 pub fn ax_error_name(code: i32) -> String {
@@ -67,9 +73,11 @@ pub fn ax_error_name(code: i32) -> String {
         -25207 => "kAXErrorNotificationUnsupported".to_owned(),
         -25208 => "kAXErrorNotImplemented".to_owned(),
         -25209 => "kAXErrorNotificationAlreadyRegistered".to_owned(),
-        -25210 => "kAXErrorNoValue".to_owned(),
-        -25211 => "kAXErrorParameterizedAttributeUnsupported".to_owned(),
-        -25212 => "kAXErrorNotEnoughPrecision".to_owned(),
+        -25210 => "kAXErrorNotificationNotRegistered".to_owned(),
+        -25211 => "kAXErrorAPIDisabled".to_owned(),
+        -25212 => "kAXErrorNoValue".to_owned(),
+        -25213 => "kAXErrorParameterizedAttributeUnsupported".to_owned(),
+        -25214 => "kAXErrorNotEnoughPrecision".to_owned(),
         other => format!("AXError {other}"),
     }
 }
@@ -543,6 +551,20 @@ pub struct SlsDisplay {
     pub current: Option<u64>,
 }
 
+/// One effective symbolic-hotkey entry from public Carbon
+/// `CopySymbolicHotKeys`: the effective chord (virtual keycode plus Carbon
+/// modifier bits, raw as reported) plus its enabled flag. Carries NO
+/// symbolic ID: the SDK documents no way to map an entry back to a
+/// preference-pane hotkey, so array index is never an ID. Callers match
+/// chords (with the automatic Fn bit stripped) and report corroboration,
+/// never attribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolicHotKeyEntry {
+    pub keycode: u32,
+    pub carbon_modifiers: u32,
+    pub enabled: bool,
+}
+
 /// Read-only Space type from `SLSSpaceGetType` (signature pinned against
 /// yabai `src/misc/extern.h`: `extern int SLSSpaceGetType(int cid,
 /// uint64_t sid)`; type ids pinned against yabai `src/space.c`
@@ -618,11 +640,22 @@ mod macos {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
-    use objc2_application_services::{AXObserver, AXUIElement, AXValue, AXValueType};
+    use objc2_application_services::{AXError, AXObserver, AXUIElement, AXValue, AXValueType};
     use objc2_core_foundation::{
         CFArray, CFDictionary, CFNumber, CFRetained, CFRunLoop, CFString, CFType, CGPoint, CGSize,
         kCFRunLoopDefaultMode,
     };
+
+    /// AX status codes bound to the maintained
+    /// `objc2-application-services::AXError` constants (SDK `AXError.h`
+    /// values; pinned by `tests::ax_error_codes_bind_sdk_constants`), never
+    /// hand-numbered. Match sites use these; the cross-platform
+    /// [`super::ax_error_name`] table keeps literals (the `objc2` dependency
+    /// is macOS-only) with each arm pinned by the same test.
+    pub const AX_FAILURE: i32 = AXError::Failure.0;
+    pub const AX_ILLEGAL_ARGUMENT: i32 = AXError::IllegalArgument.0;
+    pub const AX_ATTRIBUTE_UNSUPPORTED: i32 = AXError::AttributeUnsupported.0;
+    pub const AX_NO_VALUE: i32 = AXError::NoValue.0;
 
     // -- Sole residual hand declaration (genuinely uncovered private SPI) --
     //
@@ -1126,6 +1159,130 @@ mod macos {
         }
     }
 
+    // -- Read-only symbolic-hotkey effective table (public Carbon) --
+    //
+    // Exact signature from the CLT SDK
+    // (`Carbon.framework/.../HIToolbox/Headers/CarbonEvents.h`):
+    //   `extern OSStatus CopySymbolicHotKeys(CFArrayRef *outHotKeyArray)`.
+    // Per-entry keys are compile-time `CFSTR` literals
+    // (`"kHISymbolicHotKeyCode"`, `"kHISymbolicHotKeyModifiers"`,
+    // `"kHISymbolicHotKeyEnabled"`), built here with the maintained
+    // `CFString::from_str` (same content, no private symbol). The SDK
+    // documents "no way to determine which hotkey ... corresponds to a
+    // specific dictionary": entries carry chord + enabled only, never a
+    // symbolic ID, and array index is never an ID. Raw Carbon modifiers
+    // are returned unstripped; callers strip the automatic Fn bit
+    // (`1 << 17`, per Hammerspoon `extensions/hotkey/libhotkey.m`)
+    // at match time.
+
+    type CopySymbolicHotKeysFn = unsafe extern "C" fn(*mut RawRef) -> i32;
+
+    static SYMBOLIC_TABLE: OnceLock<Option<CopySymbolicHotKeysFn>> = OnceLock::new();
+
+    fn symbolic_table() -> Option<CopySymbolicHotKeysFn> {
+        *SYMBOLIC_TABLE.get_or_init(|| {
+            // SAFETY: symbol null-checked before transmuting to the exact
+            // SDK signature above; missing fails closed.
+            unsafe {
+                let handle = libc::dlopen(CARBON_PATH.as_ptr().cast(), 0x1);
+                if handle.is_null() {
+                    return None;
+                }
+                let name = CString::new("CopySymbolicHotKeys").expect("static");
+                let sym = libc::dlsym(handle, name.as_ptr());
+                if sym.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<
+                    *mut std::ffi::c_void,
+                    CopySymbolicHotKeysFn,
+                >(sym))
+            }
+        })
+    }
+
+    /// Read-only effective symbolic-hotkey table. Each entry is the
+    /// effective chord (virtual keycode, raw Carbon modifiers) plus its
+    /// enabled flag — never a symbolic ID. A missing symbol, OS error, or
+    /// malformed container is `Err`, never fabricated chords. At most 512
+    /// entries are materialized.
+    pub fn copy_symbolic_hotkeys() -> Result<Vec<super::SymbolicHotKeyEntry>, String> {
+        use objc2_core_foundation::CFDictionary as CFDictUntyped;
+        use objc2_core_foundation::CFDictionary;
+        use objc2_core_foundation::{CFArray, CFBoolean, CFNumber, CFString, CFType};
+        const MAX_ENTRIES: usize = 512;
+        let table = symbolic_table().ok_or_else(|| "CopySymbolicHotKeys unavailable".to_owned())?;
+        // SAFETY: resolved non-null symbol with the exact SDK signature;
+        // the out-pointer is a live stack local; a nonzero status returns
+        // `Err` with no use of the out value. Copy rule: success yields a
+        // +1 retained array, wrapped below.
+        let mut raw: RawRef = std::ptr::null_mut();
+        let status = unsafe { table(std::ptr::addr_of_mut!(raw)) };
+        if status != 0 {
+            return Err(format!("CopySymbolicHotKeys status {status}"));
+        }
+        if raw.is_null() {
+            return Err("CopySymbolicHotKeys returned null".to_owned());
+        }
+        let top: CFRetained<CFType> =
+            unsafe { CFRetained::from_raw(NonNull::new(raw as *mut CFType).expect("non-null")) };
+        let untyped: CFRetained<CFArray> = top
+            .downcast()
+            .map_err(|_| "CopySymbolicHotKeys returned a non-array container".to_owned())?;
+        // SAFETY: top-level kind verified by the downcast above; viewed as
+        // `CFArray<CFType>` (layouts identical; all elements CF objects).
+        let array: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(untyped) };
+        let code_key = CFString::from_str("kHISymbolicHotKeyCode");
+        let mods_key = CFString::from_str("kHISymbolicHotKeyModifiers");
+        let enabled_key = CFString::from_str("kHISymbolicHotKeyEnabled");
+        let mut out = Vec::new();
+        for i in 0..array.len().min(MAX_ENTRIES) {
+            let Some(item) = array.get(i) else { continue };
+            if item.downcast_ref::<CFDictUntyped>().is_none() {
+                continue;
+            }
+            // SAFETY: kind verified above; entries map `CFString` keys to
+            // `CFType` values (same cast as the SLS display parser).
+            let dict: CFRetained<CFDictionary<CFString, CFType>> =
+                unsafe { CFRetained::cast_unchecked(item.clone()) };
+            let (Some(code_val), Some(mods_val), Some(enabled_val)) = (
+                dict.get(&code_key),
+                dict.get(&mods_key),
+                dict.get(&enabled_key),
+            ) else {
+                continue;
+            };
+            let (Ok(code_num), Ok(mods_num), Ok(enabled_bool)) = (
+                code_val.downcast::<CFNumber>(),
+                mods_val.downcast::<CFNumber>(),
+                enabled_val.downcast::<CFBoolean>(),
+            ) else {
+                continue;
+            };
+            let (Some(code), Some(mods)) = (code_num.as_i64(), mods_num.as_i64()) else {
+                continue;
+            };
+            if code < 0 || mods < 0 {
+                continue;
+            }
+            out.push(super::SymbolicHotKeyEntry {
+                keycode: code as u32,
+                carbon_modifiers: mods as u32,
+                enabled: enabled_bool.as_bool(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// macOS major release via the maintained `objc2-foundation`
+    /// `NSProcessInfo` binding. `None` when unreadable (fail closed at the
+    /// version-coupled gate, never guessed).
+    pub fn macos_major() -> Option<u32> {
+        use objc2_foundation::NSProcessInfo;
+        let version = NSProcessInfo::processInfo().operatingSystemVersion();
+        u32::try_from(version.majorVersion).ok()
+    }
+
     // -- Typed AX surface (maintained `objc2` bindings) --
 
     /// Owned AX element handle. Constructible only through this module's
@@ -1325,9 +1482,9 @@ mod macos {
                     Err(e) => Err(format!("AXFocusedWindow join: {e}")),
                 }
             }
-            // `kAXErrorNoValue` (-25210): frontmost has no focused window
+            // `kAXErrorNoValue`: frontmost has no focused window
             // (windowless launcher/background). Named, still caller-fails-closed.
-            Err(-25210) => Ok((pid as i32, None)),
+            Err(AX_NO_VALUE) => Ok((pid as i32, None)),
             Err(code) => Err(format!(
                 "AXFocusedWindow unreadable: {}",
                 ax_error_name(code)
@@ -1579,7 +1736,7 @@ mod macos {
                     },
                 }
             }
-            Err(-25210) => super::AxSystemFocusLeg {
+            Err(AX_NO_VALUE) => super::AxSystemFocusLeg {
                 system_element: "ok".to_owned(),
                 system_timeout_status: Some(timeout_status),
                 system_timeout_name: Some(timeout_name),
@@ -1780,7 +1937,7 @@ mod macos {
     /// frame write, never treat the first leg's acceptance as success.
     pub fn ax_set_position(element: &AxElement, frame: &AxFrame) -> Result<(), i32> {
         if !frame.valid_for_set() {
-            return Err(-25201);
+            return Err(AX_ILLEGAL_ARGUMENT);
         }
         let pos_name = CFString::from_str("AXPosition");
         let point = CGPoint {
@@ -1795,7 +1952,7 @@ mod macos {
                 NonNull::new(std::ptr::addr_of!(point) as *mut std::ffi::c_void).expect("non-null"),
             )
         }
-        .ok_or(-25200)?;
+        .ok_or(AX_FAILURE)?;
         // SAFETY: live element/name/value in maintained wrappers; status is
         // the only effect read. `Deref` chains `&AXValue` to `&CFType`.
         let status = unsafe { element.inner.set_attribute_value(&pos_name, &pos_value) }.0;
@@ -1807,7 +1964,7 @@ mod macos {
     /// no-op — the caller must restore.
     pub fn ax_set_size(element: &AxElement, frame: &AxFrame) -> Result<(), i32> {
         if !frame.valid_for_set() {
-            return Err(-25201);
+            return Err(AX_ILLEGAL_ARGUMENT);
         }
         let size_name = CFString::from_str("AXSize");
         let size = CGSize {
@@ -1822,7 +1979,7 @@ mod macos {
                 NonNull::new(std::ptr::addr_of!(size) as *mut std::ffi::c_void).expect("non-null"),
             )
         }
-        .ok_or(-25200)?;
+        .ok_or(AX_FAILURE)?;
         // SAFETY: live element/name/value in maintained wrappers; status is
         // the only effect read.
         let status = unsafe { element.inner.set_attribute_value(&size_name, &size_value) }.0;
@@ -1889,6 +2046,107 @@ mod macos {
         // read. `Deref` chains `&AXUIElement` to `&CFType` (same chain the
         // position/size legs use for `&AXValue`).
         let status = unsafe { app.inner.set_attribute_value(&name, &window.inner) }.0;
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
+    // -- Mission Control AX traversal (public AX on the Dock, no synthetic
+    // input, no private SPI) --
+    //
+    // Shape pinned against the local Hammerspoon checkout
+    // (`extensions/spaces/spaces.lua`: Dock application element, then
+    // `AXIdentifier == "mc"` group, then `AXChildren` into `"mc.display"`
+    // (matched on `AXDisplayID`), then `"mc.spaces"`, then `"mc.spaces.add"`
+    // (`doAXPress`) or `"mc.spaces.list"[index]` (`AXPress` to go to a
+    // Space, `AXRemoveDesktop` to remove one)). Opens/closes ride the public
+    // `NSWorkspace` application toggle below, not Hammerspoon's private
+    // `CoreDockSendNotification("com.apple.expose.awake")` nor yabai's
+    // `CoreDockSendNotification(CFSTR("com.apple.expose.awake"), 0)`
+    // (`src/space_manager.c` `space_manager_toggle_mission_control`).
+    // Source: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L84-L152
+    // and https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L247-L251
+    // Every read below is bounded by the caller's per-element messaging
+    // timeout (set before traversal); a refused timeout stops the leg, never
+    // an unbounded walk. No titles, no content: identifiers and IDs only.
+
+    /// `AXChildren` of one AX element as owned handles. The top-level kind
+    /// is verified as `CFArray`; each entry is then checked-downcast from
+    /// `CFType` to `AXUIElement` individually — the private Dock AX tree is
+    /// never trusted element-wise, and a non-element entry fails the leg.
+    /// An over-long array fails too: callers must never index into a
+    /// silently truncated tree.
+    pub fn ax_children(element: &AxElement) -> Result<Vec<AxElement>, i32> {
+        const MAX_MC_CHILDREN: usize = 256;
+        let value = element.copy_attribute("AXChildren")?;
+        let untyped: CFRetained<CFArray> = value.downcast().map_err(|_| AX_NOT_IMPLEMENTED)?;
+        if untyped.len() > MAX_MC_CHILDREN {
+            return Err(AX_NOT_IMPLEMENTED);
+        }
+        // SAFETY: top-level kind verified as `CFArray` by the downcast
+        // above; viewed as `CFArray<CFType>` (every CF object is a `CFType`;
+        // layouts identical). Entries are checked-downcast below.
+        let array: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(untyped) };
+        let mut out = Vec::with_capacity(array.len());
+        for i in 0..array.len() {
+            let item = array.get(i).ok_or(AX_NOT_IMPLEMENTED)?;
+            let elem: CFRetained<AXUIElement> = item.downcast().map_err(|_| AX_NOT_IMPLEMENTED)?;
+            out.push(AxElement {
+                inner: elem,
+                _not_send: std::marker::PhantomData,
+            });
+        }
+        Ok(out)
+    }
+
+    /// `AXIdentifier` string of one AX element. `Ok(None)` is honest unknown
+    /// (missing/non-string/empty, or the element does not support the
+    /// attribute at all); `Err` is a real read failure. Missing means the
+    /// element carries no comparable identifier — callers scanning for one
+    /// skip it, never match on it.
+    pub fn ax_identifier(element: &AxElement) -> Result<Option<String>, i32> {
+        match element.copy_attribute("AXIdentifier") {
+            Err(AX_NO_VALUE) | Err(AX_ATTRIBUTE_UNSUPPORTED) => Ok(None),
+            Err(code) => Err(code),
+            Ok(value) => match value.downcast::<CFString>() {
+                Ok(s) => {
+                    let id = s.to_string();
+                    if id.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(id))
+                    }
+                }
+                Err(_) => Ok(None),
+            },
+        }
+    }
+
+    /// `AXDisplayID` numeric read (the `mc.display` match leg: compared
+    /// against the CG display ID joined via [`ns_display_snapshot`]).
+    /// `Ok(None)` is honest unknown (missing/non-numeric, or the element
+    /// does not support the attribute at all); `Err` is a real read failure.
+    pub fn ax_display_id(element: &AxElement) -> Result<Option<i64>, i32> {
+        match element.copy_attribute("AXDisplayID") {
+            Err(AX_NO_VALUE) | Err(AX_ATTRIBUTE_UNSUPPORTED) => Ok(None),
+            Err(code) => Err(code),
+            Ok(value) => match value.downcast::<CFNumber>() {
+                Ok(n) => Ok(n.as_i64()),
+                Err(_) => Ok(None),
+            },
+        }
+    }
+
+    /// One named AX action (`AXPress`, `AXRemoveDesktop`) on one already
+    /// joined element. The status is the only effect read: callers must read
+    /// back Mission Control presence/topology separately — an accepted status
+    /// is never state proof. Scoped to the Mission Control probe path
+    /// ([`crate::mc_probe`]), which joins every target through the Dock PID
+    /// plus fresh per-action SLS/AX joins; no other caller may adopt this
+    /// for foreign elements.
+    pub fn ax_perform_action(element: &AxElement, name: &str) -> Result<(), i32> {
+        let action = CFString::from_str(name);
+        // SAFETY: live element + action name in the maintained binding;
+        // status is the only effect read.
+        let status = unsafe { element.inner.perform_action(&action) }.0;
         if status == 0 { Ok(()) } else { Err(status) }
     }
 
@@ -3304,13 +3562,16 @@ mod macos {
     // The bridged async operation is likewise detected but NOT executed
     // (async ObjC API with no synchronous effect readback in surveyed
     // source). The sole callable write is direct
-    // `SLSMoveWindowsToManagedSpace`: source-derived, UNTESTED live, and
+    // `SLSMoveWindowsToManagedSpace`: source-derived surveyed route,
+    // experimental live (one gated dispatch on an owned fixture observed no
+    // effect; single-shot inverse unverified), and
     // bypassed upstream on macOS 12.7+/13.6+/14.5+/15+ via
     // `workspace_use_macos_space_workaround` (yabai `src/workspace.m`),
     // which forces the SA-first branch with the compat-ID fallback after SA
     // failure. It returns void: dispatch is never effect
     // evidence — callers must read back `SLSCopySpacesForWindows`
-    // membership afterwards. Live behavior of the path below is UNTESTED;
+    // membership afterwards. Live behavior of the path below is experimental
+    // (observed no-effect on one owned fixture);
     // dispatch plus readbacks are the evidence.
 
     struct SlsMoveTable {
@@ -3412,6 +3673,93 @@ mod macos {
             direct(cid, list_ptr, sid);
             Ok(())
         }
+    }
+
+    /// Bridged-route availability: the async dispatcher presence plus the
+    /// ObjC operation-class presence, diagnosed separately and never
+    /// dispatched here. `available` is true only when BOTH resolve; a newer
+    /// runtime may lack either, and an absent dispatcher is never called.
+    /// Pinned against yabai `src/space_manager.c`
+    /// `space_manager_move_window_list_to_space` (bridged first branch):
+    /// https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705
+    /// which resolves `SLSPerformAsynchronousBridgedWindowManagementOperation`
+    /// (bound in yabai `src/yabai.c`) and looks up ObjC class
+    /// `SLSBridgedMoveWindowsToManagedSpaceOperation` with selector
+    /// `initWithWindows:spaceID:`. Compat stays diagnostics-only elsewhere:
+    /// no exact compat-tag preimage exists (setter-only locally, yabai tag
+    /// collision), so no tag getter is added and compat is never a callable
+    /// write.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct SlsBridgedAvailability {
+        pub fn_present: bool,
+        pub class_present: bool,
+        pub available: bool,
+    }
+
+    /// Diagnose bridged availability without dispatching: dispatcher-symbol
+    /// presence from the move table plus a null-checked ObjC class lookup.
+    /// Never calls the dispatcher, never instantiates the operation.
+    pub fn sls_bridged_availability() -> SlsBridgedAvailability {
+        let fn_present = sls_move_table().map(|t| t.bridged_async).unwrap_or(false);
+        let class_present = bridged_operation_class_present();
+        SlsBridgedAvailability {
+            fn_present,
+            class_present,
+            available: fn_present && class_present,
+        }
+    }
+
+    /// Null-checked ObjC class lookup for the bridged move operation, cached.
+    /// Presence only: no selector is resolved and no instance is created.
+    fn bridged_operation_class_present() -> bool {
+        static PRESENT: OnceLock<bool> = OnceLock::new();
+        *PRESENT.get_or_init(|| {
+            // SAFETY: `objc_getClass` null-checked before transmuting to its
+            // documented signature; the returned class pointer is only
+            // null-checked, never dereferenced or messaged. Handles are
+            // intentionally never closed (process-lifetime retention).
+            unsafe {
+                let getter_name = CString::new("objc_getClass").expect("static");
+                let self_handle = libc::dlopen(std::ptr::null(), 0x1);
+                let mut getter: Option<
+                    unsafe extern "C" fn(*const std::ffi::c_char) -> *const std::ffi::c_void,
+                > = None;
+                if !self_handle.is_null() {
+                    let sym = libc::dlsym(self_handle, getter_name.as_ptr());
+                    if !sym.is_null() {
+                        getter = Some(std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(
+                                *const std::ffi::c_char,
+                            )
+                                -> *const std::ffi::c_void,
+                        >(sym));
+                    }
+                }
+                if getter.is_none() {
+                    const OBJC: &[u8] = b"/usr/lib/libobjc.A.dylib\0";
+                    let handle = libc::dlopen(OBJC.as_ptr().cast(), 0x1);
+                    if !handle.is_null() {
+                        let sym = libc::dlsym(handle, getter_name.as_ptr());
+                        if !sym.is_null() {
+                            getter = Some(std::mem::transmute::<
+                                *mut std::ffi::c_void,
+                                unsafe extern "C" fn(
+                                    *const std::ffi::c_char,
+                                )
+                                    -> *const std::ffi::c_void,
+                            >(sym));
+                        }
+                    }
+                }
+                let Some(get_class) = getter else {
+                    return false;
+                };
+                let class_name =
+                    CString::new("SLSBridgedMoveWindowsToManagedSpaceOperation").expect("static");
+                !get_class(class_name.as_ptr()).is_null()
+            }
+        })
     }
 
     // -- Process identity (live proof, not caller claims) --
@@ -3563,6 +3911,36 @@ mod macos {
             Some(app) => app.activateWithOptions(NSApplicationActivationOptions::empty()),
             None => false,
         }
+    }
+
+    /// Public Mission Control toggle via application launch (no synthetic
+    /// input, no AppleScript/System Events, no private Dock SPI). Launches
+    /// (or re-activates) the public `Mission Control` app through the
+    /// maintained `objc2-app-kit` `NSWorkspace::launchApplication:` binding;
+    /// the return only means the launch was sent — callers must read back
+    /// Mission Control AX-group presence afterwards, never claim toggle
+    /// state from this boolean alone. This replaces Hammerspoon's private
+    /// `_coreDesktopNotification("com.apple.expose.awake")` toggle
+    /// (`extensions/spaces/libspaces.m`) and yabai's
+    /// `CoreDockSendNotification(CFSTR("com.apple.expose.awake"), 0)`
+    /// (`src/space_manager.c`) with a public route: launching an app needs
+    /// no Accessibility trust and no Automation consent, while the AX
+    /// traversal/actions above still require trust (observed, never
+    /// prompted). Source: https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/libspaces.m#L241-L246
+    /// Live toggle semantics (launch opens; re-launch closes) are UNPROVEN
+    /// here: the close path re-reads presence and reports honestly.
+    #[allow(deprecated)]
+    pub fn mc_launch_toggle() -> bool {
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::NSString;
+        // `launchApplication:` is deprecated upstream in favor of the async
+        // `openApplicationAtURL:configuration:completionHandler:` route, which
+        // needs a runloop-held completion handler — unsuitable for this
+        // bounded probe. The sync launch is still public API (not SPI), so
+        // the deprecation is noted, not bypassed.
+        let workspace = NSWorkspace::sharedWorkspace();
+        let name = NSString::from_str("Mission Control");
+        workspace.launchApplication(&name)
     }
 
     /// Live executable path via maintained `libc::proc_pidpath`. Bounded buffer.
@@ -4323,6 +4701,119 @@ mod macos {
             .unwrap_or(KeyCounts::zero())
     }
 
+    /// One owned Space-join self-action poll. Returns a stdout marker when a
+    /// nonce-matching trigger was consumed (or `None` when no trigger is
+    /// present). Acts SOLELY on the passed owned `window` — never a caller
+    /// WID, never another process. Gates before any effect: the private
+    /// session dir must verify (UID/`0700`/non-symlink, same as the
+    /// controller side) and the window-server session must read unlocked
+    /// (`CGSessionCopyCurrentDictionary` legs via [`session_state`]) —
+    /// unknown/locked refuses with no effect and no consume. Steps: consume
+    /// the request file once (never replayed), capture the
+    /// `collectionBehavior` preimage, set `preimage | MoveToActiveSpace`,
+    /// `makeKeyAndOrderFront` + self-activate, pump bounded for the
+    /// window-server move, restore the exact preimage, verify, write the
+    /// atomic result file echoing `{session nonce, request_id}`. A forged
+    /// nonce body is ignored (left in place; the authenticated controller
+    /// times out rather than this helper acting on it).
+    fn poll_space_join_once(
+        window: &objc2_app_kit::NSWindow,
+        app: &objc2_app_kit::NSApplication,
+        own_nonce: &str,
+    ) -> Option<String> {
+        use objc2_app_kit::NSWindowCollectionBehavior;
+        // Same private-dir proof the controller holds before publishing: a
+        // deviant dir fails this poll closed (no act, no consume).
+        if crate::probe_target::ensure_private_session_dir().is_err() {
+            return None;
+        }
+        // Session-lock gate immediately before acting: unknown or locked
+        // refuses with no effect (never a blind activation under lock).
+        if !session_state().unlocked() {
+            return None;
+        }
+        let request = crate::probe_target::space_join_request_path(own_nonce);
+        // Bounded regular-file read: no symlinks, plain file only, 4 KiB
+        // cap (a mid-write partial body fails auth below and is left for a
+        // later poll — never consumed, never deleted).
+        let meta = std::fs::symlink_metadata(&request).ok()?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return None;
+        }
+        if meta.len() > 4096 {
+            return None;
+        }
+        let body = std::fs::read_to_string(&request).ok()?;
+        let request_id = match crate::probe_target::space_join_request_auth(&body, own_nonce) {
+            Ok(id) => id,
+            Err(_) => return None,
+        };
+        // Consume once before acting: a crash mid-action leaves no trigger
+        // to replay and no result; the controller reports unknown rather
+        // than this helper double-acting.
+        let _ = std::fs::remove_file(&request);
+        // SAFETY: live owned window + live app on the helper main thread,
+        // maintained `objc2-app-kit` wrappers only; no foreign pointers.
+        let preimage = window.collectionBehavior();
+        let pre_bits = preimage.bits() as u64;
+        let joined = preimage | NSWindowCollectionBehavior::MoveToActiveSpace;
+        window.setCollectionBehavior(joined);
+        window.makeKeyAndOrderFront(None);
+        app.activate();
+        objc2::rc::autoreleasepool(|_| {
+            drain_app_events(app);
+            pump_runloop_once(500);
+        });
+        window.setCollectionBehavior(preimage);
+        objc2::rc::autoreleasepool(|_| {
+            drain_app_events(app);
+            pump_runloop_once(200);
+        });
+        let restored_bits = window.collectionBehavior().bits() as u64;
+        let restored_ok = crate::probe_target::space_join_restored_ok(pre_bits, restored_bits);
+        let result = crate::probe_target::SpaceJoinResult {
+            nonce: own_nonce.to_owned(),
+            request_id,
+            preimage_bits: pre_bits,
+            restored_bits,
+            restored_verified: restored_ok,
+        };
+        let body = serde_json::to_string(&result).unwrap_or_default();
+        if !body.is_empty() {
+            // Unique temp per action (name carries nonce + request_id, both
+            // exactly run-owned): `create_new` never truncates a survivor,
+            // mode `0600` at creation, then atomic rename onto the result
+            // path — no predictable remove-then-write race.
+            let result_path = crate::probe_target::space_join_result_path(own_nonce);
+            let tmp = result_path.with_extension("tmp");
+            let _ = std::fs::remove_file(&tmp);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp)
+                {
+                    use std::io::Write;
+                    if file.write_all(body.as_bytes()).is_ok() && file.sync_all().is_ok() {
+                        let _ = std::fs::rename(&tmp, &result_path);
+                    } else {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                if std::fs::write(&tmp, &body).is_ok() {
+                    let _ = std::fs::rename(&tmp, &result_path);
+                }
+            }
+        }
+        Some(body)
+    }
+
     /// Owned probe window runner. Creates the window on the calling (main)
     /// thread with the given title (the caller's per-run nonce title),
     /// pumps the runloop until it is serviced, invokes `ready`, and
@@ -4347,7 +4838,7 @@ mod macos {
     /// user-visible app, not a background holder. Experimental, live
     /// unproven: whether full agreement actually holds is measured by the
     /// session, never assumed here.
-    // Ten flat fixture params (two opt-ins more than the lint threshold);
+    // Eleven flat fixture params (three opt-ins more than the lint threshold);
     // bundling them into a struct would churn the stub + helper binary for
     // no behavioral gain, so the lint is allowed here with this note.
     #[allow(clippy::too_many_arguments)]
@@ -4361,6 +4852,7 @@ mod macos {
         regular_policy: bool,
         transient_panel_ms: u64,
         transient_sheet_ms: u64,
+        space_join_poll: bool,
         ready: &dyn Fn(),
     ) -> Result<(), String> {
         use objc2::MainThreadMarker;
@@ -4542,7 +5034,38 @@ mod macos {
         // Counting rides the counted drain below, so delivery proof shares
         // the exact dispatch path (never a side channel).
         let mut last_snapshot = Instant::now();
+        // Public Space-join self-action poll (opt-in `--space-join` only):
+        // the helper acts SOLELY on its own window below — never a caller
+        // WID, never another process. Trigger is the per-run request file
+        // (exact nonce match); the controller authenticates via the spawn
+        // record before writing it, so this poll sees only owned triggers.
+        // Semantics note (verified against maintained `objc2-app-kit` 0.3 +
+        // AppKit `NSWindow.h`: `MoveToActiveSpace = 1<<1` with no
+        // follows-every-switch guarantee in the header): treat as
+        // move-on-activate (order-front + self-activate), never assume a
+        // passive follow; the membership effect is proven harness-side via
+        // SLS readback, never here.
+        let space_join_nonce: Option<String> = if space_join_poll {
+            title
+                .strip_prefix(crate::probe_target::PROBE_WINDOW_TITLE_PREFIX)
+                .map(|s| s.to_owned())
+                .filter(|n| crate::ownership::validate_nonce(n).is_ok())
+        } else {
+            None
+        };
+        let mut last_join_poll = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         while Instant::now() < deadline {
+            if let Some(own_nonce) = space_join_nonce.as_ref()
+                && last_join_poll.elapsed() >= Duration::from_millis(100)
+            {
+                last_join_poll = Instant::now();
+                if let Some(marker) = poll_space_join_once(&window, &app, own_nonce) {
+                    println!("{marker}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
+            }
             if !closed
                 && let Some(close_deadline) = close_at
                 && Instant::now() >= close_deadline
@@ -5380,8 +5903,8 @@ mod macos {
     /// (missing value or non-string); `Err` is a real read failure.
     pub fn ax_string_attribute(element: &AxElement, name: &str) -> Result<Option<String>, i32> {
         match element.copy_attribute(name) {
-            // `kAXErrorNoValue` (-25210): attribute present but valueless.
-            Err(-25210) => Ok(None),
+            // `kAXErrorNoValue`: attribute present but valueless.
+            Err(AX_NO_VALUE) => Ok(None),
             Err(code) => Err(code),
             Ok(value) => match value.downcast::<CFString>() {
                 Ok(s) => Ok(Some(s.to_string())),
@@ -5449,7 +5972,9 @@ mod macos {
         let value = match element.copy_attribute(name) {
             // NoValue / AttributeUnsupported / NotImplemented: no usable
             // bound here (the caller tries the next name or reports none).
-            Err(-25210) | Err(-25205) | Err(AX_NOT_IMPLEMENTED) => return Ok(None),
+            Err(AX_NO_VALUE) | Err(AX_ATTRIBUTE_UNSUPPORTED) | Err(AX_NOT_IMPLEMENTED) => {
+                return Ok(None);
+            }
             Err(code) => return Err(code),
             Ok(value) => value,
         };
@@ -5497,7 +6022,7 @@ mod macos {
     /// is `Err` (unknown), never a defaulted state.
     pub fn ax_fullscreen_state(element: &AxElement) -> Result<bool, i32> {
         match ax_bool_attribute(element, "AXFullScreen") {
-            Err(-25205) | Err(-25210) | Err(AX_NOT_IMPLEMENTED) => {
+            Err(AX_ATTRIBUTE_UNSUPPORTED) | Err(AX_NO_VALUE) | Err(AX_NOT_IMPLEMENTED) => {
                 ax_bool_attribute(element, "AXFullscreen")
             }
             other => other,
@@ -5978,27 +6503,30 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    AxElement, AxFrame, CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit,
-    CarbonHotkey, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts,
-    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
+    AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
+    CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit, CarbonHotkey, CgBounds,
+    CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts, NsAppIdentity, NsDisplay,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
     SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
     activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_direct_focused_read, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    carbon_register, carbon_register_set, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, drain_app_events, drain_app_events_counted,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
+    carbon_register_set, cg_display_uuid, cg_post_event_access_known, cg_window_list_all,
+    cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted,
     frontmost_app, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_connection_available, sls_display_rows, sls_display_spaces,
-    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
-    sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
+    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -6318,6 +6846,22 @@ mod stub {
         pub bridged_async: bool,
     }
 
+    /// Bridged-route availability off-macOS: never present, never dispatched.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct SlsBridgedAvailability {
+        pub fn_present: bool,
+        pub class_present: bool,
+        pub available: bool,
+    }
+
+    pub fn sls_bridged_availability() -> SlsBridgedAvailability {
+        SlsBridgedAvailability {
+            fn_present: false,
+            class_present: false,
+            available: false,
+        }
+    }
+
     pub fn cg_window_list_all() -> Result<Vec<CgWindow>, String> {
         Err("macOS-only".to_owned())
     }
@@ -6463,6 +7007,26 @@ mod stub {
         Err(AX_NOT_IMPLEMENTED)
     }
 
+    pub fn ax_children(_element: &AxElement) -> Result<Vec<AxElement>, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_identifier(_element: &AxElement) -> Result<Option<String>, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_display_id(_element: &AxElement) -> Result<Option<i64>, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_perform_action(_element: &AxElement, _name: &str) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn mc_launch_toggle() -> bool {
+        false
+    }
+
     pub fn ax_observe_bounded(
         _pid: i32,
         _timeout: Duration,
@@ -6562,6 +7126,14 @@ mod stub {
         Err("macOS-only".to_owned())
     }
 
+    pub fn copy_symbolic_hotkeys() -> Result<Vec<super::SymbolicHotKeyEntry>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn macos_major() -> Option<u32> {
+        None
+    }
+
     pub fn running_apps() -> Vec<(i32, String)> {
         Vec::new()
     }
@@ -6634,6 +7206,7 @@ mod stub {
         _regular_policy: bool,
         _transient_panel_ms: u64,
         _transient_sheet_ms: u64,
+        _space_join_poll: bool,
         _ready: &dyn Fn(),
     ) -> Result<(), String> {
         Err("owned probe window is macOS-only".to_owned())
@@ -6692,23 +7265,26 @@ pub use stub::{
     AxElement, AxFrame, CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit,
     CarbonHotkey, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts,
     NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
-    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_direct_focused_read, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_raise,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
+    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_identifier, ax_is_process_trusted, ax_is_size_settable,
+    ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
     ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
     ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
     carbon_register, carbon_register_set, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, frontmost_app, install_display_change_guard,
-    key_counts_snapshot, launch_date_for_pid, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]
@@ -6720,6 +7296,71 @@ mod tests {
         assert_eq!(ax_error_name(0), "kAXErrorSuccess");
         assert!(ax_error_name(-25204).contains("CannotComplete"));
         assert!(ax_error_name(99999).contains("99999"));
+    }
+
+    #[test]
+    fn ax_error_codes_bind_sdk_constants() {
+        // Every maintained `objc2-application-services::AXError` constant
+        // must equal its SDK `AXError.h` value, and `ax_error_name` must
+        // classify each one under its exact name. This pins the table
+        // against the historic shift that mislabeled actual `NoValue`
+        // (-25212) as `NotEnoughPrecision`: any drift fails here, never in
+        // a live traversal. The `objc2` binding is macOS-only, so the
+        // constant side is cfg-gated while the formatting side runs
+        // everywhere (stub reports must classify identically).
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_application_services::AXError;
+            assert_eq!(AXError::Success.0, 0);
+            assert_eq!(AXError::Failure.0, -25200);
+            assert_eq!(AXError::IllegalArgument.0, -25201);
+            assert_eq!(AXError::InvalidUIElement.0, -25202);
+            assert_eq!(AXError::InvalidUIElementObserver.0, -25203);
+            assert_eq!(AXError::CannotComplete.0, -25204);
+            assert_eq!(AXError::AttributeUnsupported.0, -25205);
+            assert_eq!(AXError::ActionUnsupported.0, -25206);
+            assert_eq!(AXError::NotificationUnsupported.0, -25207);
+            assert_eq!(AXError::NotImplemented.0, -25208);
+            assert_eq!(AXError::NotificationAlreadyRegistered.0, -25209);
+            assert_eq!(AXError::NotificationNotRegistered.0, -25210);
+            assert_eq!(AXError::APIDisabled.0, -25211);
+            assert_eq!(AXError::NoValue.0, -25212);
+            assert_eq!(AXError::ParameterizedAttributeUnsupported.0, -25213);
+            assert_eq!(AXError::NotEnoughPrecision.0, -25214);
+            // The match-site constants bind the same maintained values.
+            assert_eq!(super::AX_NO_VALUE, AXError::NoValue.0);
+            assert_eq!(
+                super::AX_ATTRIBUTE_UNSUPPORTED,
+                AXError::AttributeUnsupported.0
+            );
+            assert_eq!(super::AX_FAILURE, AXError::Failure.0);
+            assert_eq!(super::AX_ILLEGAL_ARGUMENT, AXError::IllegalArgument.0);
+            assert_eq!(super::AX_NOT_IMPLEMENTED, AXError::NotImplemented.0);
+        }
+        // Classification/formatting for the full table, all platforms.
+        for (code, name) in [
+            (0, "kAXErrorSuccess"),
+            (-25200, "kAXErrorFailure"),
+            (-25201, "kAXErrorIllegalArgument"),
+            (-25202, "kAXErrorInvalidUIElement"),
+            (-25203, "kAXErrorInvalidUIElementObserver"),
+            (-25204, "kAXErrorCannotComplete"),
+            (-25205, "kAXErrorAttributeUnsupported"),
+            (-25206, "kAXErrorActionUnsupported"),
+            (-25207, "kAXErrorNotificationUnsupported"),
+            (-25208, "kAXErrorNotImplemented"),
+            (-25209, "kAXErrorNotificationAlreadyRegistered"),
+            (-25210, "kAXErrorNotificationNotRegistered"),
+            (-25211, "kAXErrorAPIDisabled"),
+            (-25212, "kAXErrorNoValue"),
+            (-25213, "kAXErrorParameterizedAttributeUnsupported"),
+            (-25214, "kAXErrorNotEnoughPrecision"),
+        ] {
+            assert_eq!(ax_error_name(code), name, "code {code}");
+        }
+        // Unknown codes surface numerically, never guessed.
+        assert_eq!(ax_error_name(99999), "AXError 99999");
+        assert_eq!(ax_error_name(-25999), "AXError -25999");
     }
 
     #[test]

@@ -10,7 +10,8 @@
 //! symbol is `Unsupported`, never a guessed signature or injection. Reported
 //! data is IDs and counts only.
 //!
-//! Write route determination (source-only, live effects UNTESTED):
+//! Write route determination (source-derived surveyed route, experimental
+//! live standing — see below):
 //! - move: Tier-2 direct SLS routes exist in surveyed source (async bridged
 //!   op, direct `SLSMoveWindowsToManagedSpace`, compat-ID fallback); the
 //!   probe omits SA entirely and executes direct-only (compat disabled: no
@@ -18,18 +19,39 @@
 //!   capture, effect readback and a separate independent restore command.
 //!   Upstream bypasses the direct leg on macOS 12.7+/13.6+/14.5+/15+ via
 //!   `workspace_use_macos_space_workaround` (SA first, then compat-ID), so
-//!   the direct leg is source-derived and UNTESTED live. Target and preimage
+//!   the direct leg is source-derived and experimental live: one gated
+//!   dispatch on an owned fixture observed no effect. Target and preimage
 //!   are additionally gated to user Spaces (read-only `SLSSpaceGetType`):
 //!   fullscreen/system Spaces have no proven restore and fail closed.
-//! - switch/create/destroy/reorder/display-move: no implemented route with
-//!   proven recovery in surveyed source. Native legs need Dock injection
-//!   (scripting-addition); surveyed non-SA legs (synthetic gestures, AX
-//!   Mission Control automation, system-chord resolve-and-post) are
-//!   unimplemented here with recovery unproven (global synthetic input or
-//!   visible UI automation). These stay explicitly unsupported with the
-//!   route and reason reported instead of executed. Missing
-//!   implementation/recovery is never a SIP rejection: no SIP rejection is
-//!   asserted without live evidence.
+//! - switch/create/destroy/reorder/display-move as SINGLE-SHOT commands
+//!   (`spaces-switch`, `spaces-create`, `spaces-destroy`): no implemented
+//!   single-shot route in surveyed source. Native legs need Dock
+//!   injection (scripting-addition); surveyed non-SA legs (synthetic
+//!   gestures, AX Mission Control automation, system-chord resolve-and-post)
+//!   are unimplemented as single-shot commands here
+//!   (global synthetic input or visible UI automation). These single-shot
+//!   commands stay explicitly unsupported with the route and reason reported
+//!   instead of executed — use the bounded gated probes below, which carry
+//!   their own per-run readbacks. Missing implementation/recovery is never
+//!   a SIP rejection: no SIP rejection is asserted without live evidence.
+//!
+//! Bounded gated probe batteries exist SEPARATELY and are not single-shot
+//! execution: `spaces-switch-probe` (same-display arrow-vs-gesture
+//! comparison: gesture legs read back the current both ways, the arrow
+//! session pair observed no effect), `spaces-owned-recovery` (public O->T->O
+//! recovery through the held-Child AppKit self-action, proven per run,
+//! optional `--probe-direct` gated direct-SLS leg), `mc-lifecycle` /
+//! `mc-recover` (bounded temp-Space lifecycle/recovery: AX Mission Control
+//! create/goto/remove proven on one temporary same-display Space; the
+//! integrated `mc-lifecycle` run is NOT passed — its first run failed on the
+//! immediate goto, and only the separate corrected recovery+remove passed),
+//! `mc-members` / `mc-inspect` (read-only), `mc-restore-frontmost` (guarded
+//! Ghostty-only frontmost restoration), and `spaces-bindings` (read-only
+//! hotkey table). Their per-run readbacks are the only effect evidence. No
+//! product-workspace claim is made here, and no universal native window-move
+//! failure is asserted: the single-shot direct move is experimental
+//! (observed no-effect on one owned fixture) with its single-shot inverse
+//! unverified.
 
 use serde::{Deserialize, Serialize};
 
@@ -267,16 +289,36 @@ fn require_same_display(
     Ok(())
 }
 
-/// Pure lock/loginwindow gate for the Tier-2 move/restore path. An
-/// unreadable frontmost session (`None`: unknown lock state) and the
-/// loginwindow bundle (lock screen/login context) fail closed as `Blocked`
-/// before any write. Same refusal shape as the focus route's lockscreen
-/// firewall; no lockscreen recovery is attempted, and a missing guard is
-/// never a SIP rejection.
+/// Actual lock plus frontmost gate for the Tier-2 move/restore path. The
+/// window-server session verdict comes first, fresh from
+/// `CGSessionCopyCurrentDictionary` ([`crate::ffi::session_state`]): an
+/// unreadable session (`Unknown`) or a locked one (`Locked`) fails closed
+/// as `Blocked` before any write, regardless of what the frontmost heuristic
+/// says. The frontmost rules below are retained unchanged: an unreadable
+/// frontmost (`None`) and the loginwindow bundle (lock screen/login context)
+/// fail closed as `Blocked`. Same refusal shape as the focus route's
+/// lockscreen firewall; no lockscreen recovery is attempted, and a missing
+/// guard is never a SIP rejection.
 fn require_unlocked_session(
+    lock: crate::ffi::SessionLock,
     frontmost: Option<(i32, String)>,
     owned_pid: u32,
 ) -> Result<(), SpacesError> {
+    match lock {
+        crate::ffi::SessionLock::Unlocked => {}
+        crate::ffi::SessionLock::Locked => {
+            return Err(SpacesError::Blocked(
+                "window-server session is locked (CGSessionCopyCurrentDictionary); refusing without an unlocked desktop — this is not a SIP failure"
+                    .to_owned(),
+            ));
+        }
+        crate::ffi::SessionLock::Unknown => {
+            return Err(SpacesError::Blocked(
+                "window-server session lock state unreadable (unknown lock state); refusing without a proven session — this is not a SIP failure"
+                    .to_owned(),
+            ));
+        }
+    }
     match frontmost {
         None => Err(SpacesError::Blocked(
             "frontmost session unreadable (unknown lock state); refusing without a proven session — this is not a SIP failure"
@@ -317,12 +359,14 @@ fn move_owned_window_core(
         return Err(SpacesError::Ownership("refusing window id 0".to_owned()));
     }
     // Explicit prerequisite gate before any live touch: the direct route is
-    // source-derived and UNTESTED, and independent restore is unproven until
-    // a live test demonstrates it. A separate restore command existing is not
-    // proof; the operator must opt in per invocation.
+    // source-derived and experimental (one gated dispatch observed no
+    // effect), and the single-shot inverse is unverified — the separate
+    // public held-Child recovery is proven per run, never assumed. A
+    // separate restore command existing is not proof; the operator must opt
+    // in per invocation.
     if !allow_untested {
         return Err(SpacesError::Blocked(format!(
-            "{purpose} requires --allow-untested (direct SLS route UNTESTED live; independent restore unproven)"
+            "{purpose} requires --allow-untested (direct SLS route experimental, observed no-effect on one owned fixture; single-shot inverse unverified)"
         )));
     }
     // Full spawn-record proof at core entry (pid/nonce/exe plus CURRENT live
@@ -389,12 +433,18 @@ fn move_owned_window_core(
             "wid {wid} already on Space {target}; no-op {purpose} refused"
         )));
     }
-    // Session-state gate before any write (read-only frontmost query, no new
-    // private API): an unknown or loginwindow frontmost refuses here. Placed
+    // Session-state gate before any write: the fresh window-server lock
+    // verdict (`CGSessionCopyCurrentDictionary`) plus the read-only
+    // frontmost query (no new private API). An unknown/locked session or an
+    // unknown or loginwindow frontmost refuses here. Placed
     // after the ownership/topology refusals so those keep priority and stay
     // deterministic on every platform; this gate only fires once a session
     // is otherwise provable.
-    require_unlocked_session(crate::ffi::frontmost_app(), pid)?;
+    require_unlocked_session(
+        crate::ffi::session_state().lock,
+        crate::ffi::frontmost_app(),
+        pid,
+    )?;
     // Same-display gate on the live diagnosis snapshot: the initial plan
     // covers same-display recovery only, so a cross-display (or
     // ambiguously/unmapped) target fails closed before any write.
@@ -421,10 +471,14 @@ fn move_owned_window_core(
         crate::cg::CgError::Unsupported(r) => SpacesError::Unsupported(r),
     })?;
     // Recheck the session state immediately before the direct writer, after
-    // the fresh identity validation above: the frontmost session may have
-    // changed since the earlier gate. This narrows the race but is not an
-    // atomic lock detector — no atomicity is claimed.
-    require_unlocked_session(crate::ffi::frontmost_app(), pid)?;
+    // the fresh identity validation above: the lock/frontmost session may
+    // have changed since the earlier gate. This narrows the race but is not
+    // an atomic lock detector — no atomicity is claimed.
+    require_unlocked_session(
+        crate::ffi::session_state().lock,
+        crate::ffi::frontmost_app(),
+        pid,
+    )?;
     if let Err(e) = crate::ffi::sls_move_windows_direct(target, &[wid]) {
         return Err(SpacesError::Unsupported(e));
     }
@@ -492,7 +546,7 @@ fn untested() -> String {
     "none — source-only route determination, untested live".to_owned()
 }
 
-/// Native Space switch. Distinguish switch from focus (source-only):
+/// Native Space switch (single-shot). Distinguish switch from focus (source-only):
 /// `space_manager_switch_space` swaps windows cross-display via the window
 /// move route and is SA-only same-display, while `space_manager_focus_space`
 /// tries SA first and falls back to a synthesized Dock-swipe gesture path
@@ -500,54 +554,64 @@ fn untested() -> String {
 /// Surveyed non-SA alternatives are Hammerspoon's AX Mission Control
 /// `gotoSpace` (visible UI automation) and the enabled system Space-switch
 /// chords (resolve-and-post per Silica `118+space-1`, inherited by Amethyst).
-/// Every leg is unimplemented here with recovery unproven — the swap leg
-/// additionally inherits the move route's untested status — so switching
-/// stays unsupported with the route reported. Missing
-/// implementation/recovery is never a SIP rejection: no SIP rejection is
-/// asserted without live evidence.
+/// Every single-shot leg is unimplemented here — the
+/// swap leg additionally inherits the move route's experimental standing —
+/// so the single-shot switch stays unsupported with the route reported. The
+/// bounded `spaces-switch-probe` comparison exists separately with its own
+/// gates and per-run readbacks (gesture legs read back the current both
+/// ways; the arrow session pair observed no effect); it is not single-shot
+/// switch execution. Missing implementation is never a
+/// SIP rejection: no SIP rejection is asserted without live evidence.
 pub fn switch_space_status(space: u64) -> SpaceRouteStatus {
     SpaceRouteStatus {
         action: "switch".to_owned(),
         supported: false,
         route: format!(
-            "switch({space}): cross-display swaps windows via the move route, same-display is SA focus only; focus alternative is SA first else synthesized Dock-swipe gesture per index step (cursor warp + click on cross-display); surveyed non-SA alternatives are AX Mission Control gotoSpace and enabled system Space-switch chords (Silica 118+space-1 resolve-and-post, inherited by Amethyst), unimplemented here with recovery unproven"
+            "switch({space}): cross-display swaps windows via the move route, same-display is SA focus only; focus alternative is SA first else synthesized Dock-swipe gesture per index step (cursor warp + click on cross-display); surveyed non-SA alternatives are AX Mission Control gotoSpace and enabled system Space-switch chords (Silica 118+space-1 resolve-and-post, inherited by Amethyst), unimplemented as single-shot commands here (bounded spaces-switch-probe comparison exists separately: gesture legs read back the current both ways, the arrow session pair observed no effect)"
         ),
-        reason: "switch/focus legs need Dock injection (scripting-addition), global synthetic gestures with cursor warp/click, visible AX Mission Control automation, or posted system chords; no leg is implemented here and recovery is unproven, so this probe refuses rather than injects, synthesizes input, or automates UI — missing implementation/recovery, not a SIP rejection"
+        reason: "single-shot switch/focus legs need Dock injection (scripting-addition), global synthetic gestures with cursor warp/click, visible AX Mission Control automation, or posted system chords; no single-shot leg is implemented here, so this probe refuses rather than injects, synthesizes input, or automates UI — use the bounded spaces-switch-probe instead, which carries its own per-run readbacks; missing implementation, not a SIP rejection"
             .to_owned(),
         source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L927-L1035 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L754-L801 + https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SISystemWideElement.m#L29-L65".to_owned(),
         live_evidence: untested(),
     }
 }
 
-/// Native Space creation. No implemented route with proven recovery: the
-/// yabai path is scripting-addition-gated, and the only surveyed non-SA
-/// alternative is Hammerspoon's Mission Control + AX `addSpaceToScreen`
-/// (visible global UI automation, unimplemented here with recovery unproven).
+/// Native Space creation (single-shot). No implemented single-shot route
+/// here: the yabai path is scripting-addition-gated, and the only
+/// surveyed non-SA alternative is Hammerspoon's Mission Control + AX
+/// `addSpaceToScreen` (visible global UI automation, unimplemented as a
+/// single-shot command here). The bounded
+/// `mc-lifecycle` temp-Space battery exists separately with its own gates
+/// and per-run readbacks; it is not single-shot creation.
 pub fn create_space_status() -> SpaceRouteStatus {
     SpaceRouteStatus {
         action: "create".to_owned(),
         supported: false,
-        route: "yabai scripting_addition_create_space only (no direct SLS create in surveyed source); surveyed non-SA alternative is Hammerspoon Mission Control + AX addSpaceToScreen (visible UI automation, not implemented here)".to_owned(),
-        reason: "creation has no implemented route with proven recovery: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented here with recovery unproven — missing implementation/recovery, not a SIP rejection"
+        route: "yabai scripting_addition_create_space only (no direct SLS create in surveyed source); surveyed non-SA alternative is Hammerspoon Mission Control + AX addSpaceToScreen (visible UI automation, not implemented as a single-shot command here; the bounded mc-lifecycle battery covers the temp-Space create leg separately)".to_owned(),
+        reason: "single-shot creation has no implemented route here: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented single-shot here — use the bounded mc-lifecycle battery instead, which carries its own per-run readbacks; missing implementation, not a SIP rejection"
             .to_owned(),
         source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1062-L1072 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L689-L738".to_owned(),
         live_evidence: untested(),
     }
 }
 
-/// Native Space destruction. No implemented route with proven recovery: the
-/// yabai path is scripting-addition-gated (destroying the last user Space
-/// is additionally refused upstream), and the only surveyed non-SA
-/// alternative is Hammerspoon's Mission Control + AX `removeSpace`
-/// (visible global UI automation, unimplemented here with recovery unproven).
+/// Native Space destruction (single-shot). No implemented single-shot route
+/// here: the yabai path is scripting-addition-gated
+/// (destroying the last user Space is additionally refused upstream), and
+/// the only surveyed non-SA alternative is Hammerspoon's Mission Control +
+/// AX `removeSpace` (visible global UI automation, unimplemented as a
+/// single-shot command here). The bounded
+/// `mc-lifecycle` / `mc-recover` temp-Space removal legs exist separately
+/// with their own gates and per-run readbacks; they are not single-shot
+/// destruction.
 pub fn destroy_space_status(space: u64) -> SpaceRouteStatus {
     SpaceRouteStatus {
         action: "destroy".to_owned(),
         supported: false,
         route: format!(
-            "yabai scripting_addition_destroy_space({space}) only (no direct SLS destroy in surveyed source; last-user-Space destroy refused upstream); surveyed non-SA alternative is Hammerspoon Mission Control + AX removeSpace (visible UI automation, not implemented here)"
+            "yabai scripting_addition_destroy_space({space}) only (no direct SLS destroy in surveyed source; last-user-Space destroy refused upstream); surveyed non-SA alternative is Hammerspoon Mission Control + AX removeSpace (visible UI automation, not implemented as a single-shot command here; the bounded mc-lifecycle/mc-recover batteries cover temp removal separately)"
         ),
-        reason: "destruction has no implemented route with proven recovery: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented here with recovery unproven — missing implementation/recovery, not a SIP rejection; refuses rather than injects"
+        reason: "single-shot destruction has no implemented route here: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented single-shot here — use the bounded mc-lifecycle/mc-recover batteries instead, which carry their own per-run readbacks; missing implementation, not a SIP rejection; refuses rather than injects"
             .to_owned(),
         source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1037-L1060 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L821-L882".to_owned(),
         live_evidence: untested(),
@@ -696,27 +760,59 @@ mod tests {
 
     #[test]
     fn lock_gate_refuses_unknown_and_loginwindow_before_write() {
-        // Pure gate, no live write: `None` (unknown lock state) and the
-        // loginwindow bundle fail closed as `Blocked`, never a SIP claim.
-        let err = require_unlocked_session(None, 4242).unwrap_err();
+        use crate::ffi::SessionLock;
+        // Pure gate, no live write: the fresh window-server lock verdict
+        // leads — `Locked`/`Unknown` refuse even with a healthy frontmost —
+        // and the retained frontmost rules (`None`, loginwindow, incomplete)
+        // fail closed as `Blocked`, never a SIP claim.
+        for lock in [SessionLock::Locked, SessionLock::Unknown] {
+            let err =
+                require_unlocked_session(lock, Some((7, "com.apple.finder".to_owned())), 4242)
+                    .unwrap_err();
+            assert!(matches!(err, SpacesError::Blocked(_)));
+            assert!(err.to_string().contains("not a SIP failure"));
+        }
+        let err = require_unlocked_session(SessionLock::Unlocked, None, 4242).unwrap_err();
         assert!(matches!(err, SpacesError::Blocked(_)));
         assert!(err.to_string().contains("unknown lock state"));
         assert!(err.to_string().contains("not a SIP failure"));
 
-        let err = require_unlocked_session(Some((1, "com.apple.loginwindow".to_owned())), 4242)
-            .unwrap_err();
+        let err = require_unlocked_session(
+            SessionLock::Unlocked,
+            Some((1, "com.apple.loginwindow".to_owned())),
+            4242,
+        )
+        .unwrap_err();
         assert!(matches!(err, SpacesError::Blocked(_)));
         assert!(err.to_string().contains("loginwindow"));
 
         for frontmost in [(4343, String::new()), (0, "com.apple.finder".to_owned())] {
-            let err = require_unlocked_session(Some(frontmost), 4242).unwrap_err();
+            let err =
+                require_unlocked_session(SessionLock::Unlocked, Some(frontmost), 4242).unwrap_err();
             assert!(matches!(err, SpacesError::Blocked(_)));
             assert!(err.to_string().contains("identity incomplete"));
         }
 
-        assert!(require_unlocked_session(Some((4242, String::new())), 4242).is_ok());
-        assert!(require_unlocked_session(Some((4242, crate::BUNDLE_ID.to_owned())), 4242).is_ok());
-        assert!(require_unlocked_session(Some((7, "com.apple.finder".to_owned())), 4242).is_ok());
+        assert!(
+            require_unlocked_session(SessionLock::Unlocked, Some((4242, String::new())), 4242)
+                .is_ok()
+        );
+        assert!(
+            require_unlocked_session(
+                SessionLock::Unlocked,
+                Some((4242, crate::BUNDLE_ID.to_owned())),
+                4242
+            )
+            .is_ok()
+        );
+        assert!(
+            require_unlocked_session(
+                SessionLock::Unlocked,
+                Some((7, "com.apple.finder".to_owned())),
+                4242
+            )
+            .is_ok()
+        );
     }
 
     fn test_display(spaces: &[u64]) -> crate::ffi::SlsDisplay {

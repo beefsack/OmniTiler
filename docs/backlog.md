@@ -3464,7 +3464,21 @@ decisions of 2026-09-24 are under
   (distinct from the completed bounded matrix source-fill passes).
   [Evidence](changes/archive/prior-art-catalogue.md).
 - P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
-  sequencing of 2026-10-10. Documentation review and reference-source pins
+  sequencing. **Current 2026-10-16:** basic foreground dogfood preview delivered
+  ([guide](changes/macos-dogfood-preview.md)); native-Space capability comparison
+  complete for eligible same-display routes
+  ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
+  [record](changes/archive/macos-native-workspaces.md)). MC AX create/select/remove
+  and gesture select work on owned fixtures; direct SLS window move dispatched
+  without effect; bridged dispatcher absent; compat exact metadata restoration
+  and resolved digit/drag routes remain unavailable. Ordinary-window move/inverse
+  blocks the workspace MVP; native Spaces and tier 2 remain selected, no parking
+  substitute. Next: authoritative compat-tag preimage or an available bridged
+  dispatcher, then per-display workspace mapping/actions/layouts; effects follow.
+  Final temporary-Space removal and ordered topology/current restoration passed;
+  protected ordinary frames/memberships and foreground restored, no probe residue.
+  Earlier milestones below retain their original evidence scope. The kickoff
+  superseded the sequencing of 2026-10-10. Documentation review and reference-source pins
   done ([kickoff](changes/archive/macos-port-kickoff.md)); Phase 0 decisions
   recorded 2026-10-14 ([decisions](decisions.md)); probe crate, live-testing
   protocol, helper lifecycle and read-only Space membership delivered; signed
@@ -3502,12 +3516,13 @@ decisions of 2026-09-24 are under
     is `com.apple.calculator`; its hintless non-resizable window stays clamped
     within a larger tiled slot without a write storm. Scope/fullscreen input
     release is implemented with AX-owner-published facts and callback atomics.
-    Next: physical Carbon Ctrl-chord delivery and actual OS timeout-notification
-    recovery (explicit fresh tap re-arm and watchdog exit already pass), then
-    remove development-only scope/lifetime guards for ordinary dogfooding.
+     The foreground preview subsequently removed product scope/lifetime guards
+     and selected tap-only input. Physical Carbon delivery is diagnostic-only;
+     actual OS timeout-notification evidence remains open (explicit re-arm and
+     watchdog exit already pass).
     Hint-source/classification and physical multi-display/game checks remain;
-    native Space move/switch/create
-  probes follow ([record](changes/macos-phase-0.md)); offline
+    native Space move/switch/create probes subsequently ran as summarized above
+  ([record](changes/macos-phase-0.md)); offline
   [native-Spaces routes and recovery plan](research/macos-port/native-spaces-routes.md)
   now distinguish SIP-on bridged-move claims, blocked compat restoration,
   Mission Control alternatives and read-only hotkey mapping limits. Readiness research

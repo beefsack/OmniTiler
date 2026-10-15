@@ -54,6 +54,12 @@ These rows select no new native behavior.
 | User-input notification versus consent loss | Focus an owned target; explicitly disable the probe tap once; record the actual native notification, enabled readback and next exact/unmatched pairs | Native 2026-10-16: real UserInput notification, verified same-tap re-enable; exact pair suppressed in 49 ms, unmatched extra/plain pairs delivered. Enum name alone is not evidence of consent revocation; privacy/lock/eligibility gates still apply | Revoked-consent, actual Secure Input onset/return and lock-transition native outcomes TBD; this explicit fault does not establish those transitions |
 | Compatible exact arrow arms | With an owned target, compare physical Ctrl+arrow, Ctrl+Shift+arrow and Ctrl+Alt+arrow under both presets; record holder action and tiler action | Preview Compatible disables only established unshifted Ctrl+arrow conflicts; synthetic pairs reach the helper without Engine input, while shifted moves still work. Alt resize is a distinct full chord | Physical holder behavior for shifted/Alt arms TBD; absence of an established conflict is not a conflict-free claim |
 
+### macOS native workspace discriminator
+
+| Variant | Minimal action sequence | Observed evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Native transfer and per-Space layout return | Tile A/B on native Space O and C on T; send B to T with follow; return to O; repeat send-and-stay; revisit T | Owned-helper direct SLS dispatch left membership unchanged; public AppKit self-join proves fixture recovery only. Native selection and create/remove have separate current/membership readbacks ([verdict](../research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16)) | Ordinary-window transfer/inverse, retained independent layouts, follow/stay focus and off-current frame writes TBD; no macOS workspace bindings enabled |
+
 ### KDE directional transfer settlement discriminator
 
 | Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / next discriminator |

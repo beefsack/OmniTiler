@@ -4,9 +4,10 @@ Source survey, 2026-10-14. Policy: native Spaces first, yabai primary reference,
 tier 2, SIP enabled, no scripting addition (SA) or Dock injection; macOS 15
 floor. **Native window moves are not established impossible:** yabai 7.1.25
 claims SIP-on recovery, with a reported bridged-operation success on Tahoe.
-Enumeration/membership already have [owned-fixture evidence][phase0]; mutations
-remain untested here. High confidence in source routing, low confidence in
-release-family/per-app effects until readback and restoration pass.
+Enumeration/membership and bounded mutations now have
+[owned-fixture evidence][phase0]. The [live verdict below](#live-verdict-2026-10-16)
+establishes selection and lifecycle routes, but **no ordinary-window transfer
+route is yet accepted**. Source routing and observed effects remain separate.
 
 FACT = inspected pinned source; CLAIM = upstream report, not our experiment;
 EVIDENCE = our observed readback; UNKNOWN = not established. Source was read
@@ -23,20 +24,20 @@ AppleScript/System Events is an AX-automation wrapper, not another native API.
 
 | Operation | Candidate route / yabai SA routing (FACT) | SIP-on status, version caveat and evidence |
 | --- | --- | --- |
-| Window → Space, same display | Bridged `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` + `SLSPerformAsynchronousBridgedWindowManagementOperation`; **no SA**, yabai first branch [Y1] | CLAIM: [#2788][move-issue] reports 26.4/26.4.1 success without disabling SIP; 7.1.25 changelog says moves work again [Y3]. Not proof for 15 or every newer family. Prior probe found dispatcher symbol absent; no dispatch. |
-| Window → Space, same display | `SLSMoveWindowsToManagedSpace`; **no SA** on old direct branch [Y1] | FACT: yabai bypasses this branch on 12.7+, 13.6+, 14.5+, and every major ≥15 [Y2]; Hammerspoon independently changes route at 14.5 [H3]. Existing probe's direct call is a diagnostic experiment, not the source-recommended floor-15 route; it returns void. |
+| Window → Space, same display | Bridged `SLSBridgedMoveWindowsToManagedSpaceOperation.initWithWindows:spaceID:` + `SLSPerformAsynchronousBridgedWindowManagementOperation`; **no SA**, yabai first branch [Y1] | CLAIM: [#2788][move-issue] reports 26.4/26.4.1 success without disabling SIP; 7.1.25 changelog says moves work again [Y3]. Not proof for 15 or every newer family. EVIDENCE: dispatcher absent, class present; no dispatch. |
+| Window → Space, same display | `SLSMoveWindowsToManagedSpace`; **no SA** on old direct branch [Y1] | FACT: yabai bypasses this branch on 12.7+, 13.6+, 14.5+, and every major ≥15 [Y2]; Hammerspoon independently changes route at 14.5 [H3]. Diagnostic direct call is not the source-recommended floor-15 route; it returns void. EVIDENCE: one dispatch, membership unchanged through delayed readback; no rejection status. |
 | Window → Space, same display | Compat ID + `SLSSetWindowListWorkspace`; yabai **tries SA first**, then non-SA compat fallback [Y1]; Hammerspoon uses compat directly [H1] | FACT: set destination compat tag → set window workspace → reset tag to zero, without exact tag-preimage restoration or effect readback. These sources establish a workaround, not universal efficacy. The 7.1.25 recovery issue specifically identifies bridged operation; do not transfer that runtime claim to compat. Our setters remain disabled. |
 | Window → Space, other display | Same three move helpers; yabai send path passes destination SID [Y4] | FACT: no separate cross-display authority API in this send path. UNKNOWN: membership, geometry/display adoption and focus side effects. Same-display success is insufficient evidence. Requires later distinct owned-display leg. |
 | Window → Space, same/other display | SA client [Y15] → Dock payload `SLSMoveWindowsToManagedSpace` [Y12] | Excluded. Calling from Dock's connection is not evidence that an ordinary-process call is entitled to the same effect. |
 | Window → Space, same/other display | Silica/Amethyst titlebar mouse-down + posted system Space-switch chord + delayed mouse-up [A1] | FACT: non-SA synthetic drag, not direct AX Space setter; visible and timing-sensitive. Silica **enables a disabled shortcut** before posting [A2]; that settings write must be omitted. Disabled/missing target chord blocks this route. Cross-display Amethyst additionally adjusts the frame [A3]. |
 | Window → Space | `SLSProcessAssignToSpace` [Y6]; AX position/size, raise, app activation | Process assignment is process-wide, not a proven per-window move/inverse; do not substitute it. Plain AX frame/raise has no Space-assignment attribute in surveyed code. Mission Control window-thumbnail drag is a UI/manual candidate, not a surveyed low-level setter. |
 | Switch/focus Space | `SLSShowSpaces`/`SLSHideSpaces` + `SLSManagedDisplaySetCurrentSpace` and Dock state update, **inside SA** [Y5]; yabai focus tries SA first [Y7] | Excluded direct SA route. These calls alone outside Dock are not a proven activation route. `space_manager_switch_space` is a different operation: same-display SA focus, cross-display window-set swap [Y7], not an ordinary desktop selection. |
-| Switch/focus Space | Non-SA synthesized Dock-swipe; yabai fallback [Y7], rift directional implementation [R1] | CLAIM: yabai 7.1.19/20 SIP-on focus [Y3]. Cursor warp/click on yabai cross-display route expands scope. Rift has a separate ≥27 payload branch: source version coupling, not evidence of 27 acceptance. No switch executed here. |
-| Switch/focus Space | Hammerspoon Mission Control + AX `gotoSpace`/`AXPress`; System Events equivalent [H2] | FACT: public AX, no SA, visible transitions; index must be freshly joined to target SID. SIP not reduced by source. Runtime UI hierarchy, timing and readback UNKNOWN. |
-| Switch/focus Space | Synthetic enabled Ctrl+Left/Right or Desktop-N chord; Silica resolves symbolic ID `118+N−1` [A2] | No SA. Arrow route is relative and can traverse unrelated Spaces; digit route is index-bound. Eligibility requires current effective binding and fresh SID/index mapping. Silica's enable-if-disabled behavior is not adopted. No physical delivery/collision evidence from a settings read. |
+| Switch/focus Space | Non-SA synthesized Dock-swipe; yabai fallback [Y7], rift directional implementation [R1] | CLAIM: yabai 7.1.19/20 SIP-on focus [Y3]. EVIDENCE: same-display pair switched both ways; no warp/click. Cross-display route expands scope. Rift has a separate ≥27 payload branch: source version coupling, not evidence of 27 acceptance. |
+| Switch/focus Space | Hammerspoon Mission Control + AX `gotoSpace`/`AXPress`; System Events equivalent [H2] | FACT: public AX, no SA, visible UI; index must be freshly joined to target SID. EVIDENCE: exact same-display current-SID round trips through public-app toggle + Dock AX, without System Events. Visual animation/jank unobserved. |
+| Switch/focus Space | Synthetic enabled Ctrl+Left/Right or Desktop-N chord; Silica resolves symbolic ID `118+N−1` [A2] | No SA. Arrow route is relative; digit route is index-bound. EVIDENCE: corroborated enabled Ctrl+Right candidate had no effect after an exact-helper pair. Desktop-N unresolved, not posted. Silica's enable-if-disabled behavior is not adopted. No physical delivery/collision evidence implied. |
 | Create Space | Yabai `scripting_addition_create_space`: Dock `ManagedSpace` object + internal add function [Y5], [Y8], [Y11] | SA-only yabai command; excluded. No proven ordinary-process SkyLight equivalent in survey. |
-| Create Space | Hammerspoon Mission Control `mc.spaces.add` AXPress [H2]; System Events or physical + button | FACT: non-SA visible UI route. Candidate for one temporary user Space, with before/after ID-set difference, never a guessed desktop number. UI route untested here. |
-| Destroy Space | Yabai SA internal remove function [Y5], [Y8], [Y11]; Hammerspoon AX `AXRemoveDesktop` [H2]; physical thumbnail close button | Yabai command SA-only; AX alternative non-SA. Hammerspoon refuses active/last user Space. Remove only the independently identified created SID, inactive and empty of unrelated windows. UI route untested here. |
+| Create Space | Hammerspoon Mission Control `mc.spaces.add` AXPress [H2]; System Events or physical + button | FACT: non-SA visible UI route. EVIDENCE: one temporary user Space created by AX, exact ordered before/after difference, never a guessed desktop number. |
+| Destroy Space | Yabai SA internal remove function [Y5], [Y8], [Y11]; Hammerspoon AX `AXRemoveDesktop` [H2]; physical thumbnail close button | Yabai command SA-only; AX alternative non-SA. EVIDENCE: uniquely created inactive, user-window-empty SID removed once and exact original ordered topology/current restored. System backing chrome exclusions were identity-checked. |
 | Move Space between displays | Yabai SA internal move function + desktop-picture-manager bookkeeping [Y5], [Y9], [Y11] | SA-only in yabai; no surveyed non-SA implementation. Mission Control thumbnail drag is an unverified manual/UI candidate, not part of the initial probe. Keyboard/AX window focus does not move a Space. |
 | Focus window on another Space | Yabai default SLPS front-process/make-key + AXRaise [Y10], plus optional `SLSSpaceSetFrontPSN` and gesture event handling [Y13]; send-path interaction [Y4] | Default window focus **not SA** (SA focus in disabled branch). CLAIM: animation suppression 7.1.21–23 [Y3]. Cross-Space transfer/animation differs from same-Space focus; issue #2788 separately warns about send-and-follow interaction. Require Space-current + AX focused WID/PID + CG owner + NSWorkspace agreement, not status 0. |
 | Focus window on another Space | AXRaise + app activation, optionally followed by explicit UI/chord switch | No SA; OS/app settings can switch Spaces or bring other same-app windows forward. No general exact cross-Space result proved by surveyed source. Our latest SLPS fixture has incomplete full-agreement evidence [phase0]. |
@@ -57,11 +58,83 @@ AppleScript/System Events is an AX-automation wrapper, not another native API.
 
 The 14.5+/15 workaround is not a blanket private-API/SIP failure. Nor does
 upstream Tahoe success certify the 15 floor. Recheck each supported release
-family; keep floor and newer-family results separate. No parking implementation
-or SIP-policy change is selected by this survey. If safe native routes fail,
-return the verdict to the user: (a) retain tier 2 and bring virtual/parking
-forward (current recommendation), or (b) revisit SIP policy. Present evidence
-and confidence before choosing either.
+family; keep floor and newer-family results separate. The 2026-10-15 decision
+retains native Spaces and tier 2: an unresolved transfer route blocks the MVP;
+it does not select parking or a SIP-policy change.
+
+## Live verdict — 2026-10-16
+
+Physical native graphical-session evidence on a release newer than the macOS 15
+floor, SIP enabled, persistent signed bundle, observed Accessibility trust. One
+temporary user Space was created, identified by exact ordered per-display SID
+difference, used throughout the comparisons, and removed. All windows affected
+by move/focus/input experiments were disposable helpers. This is neither
+ordinary-app acceptance nor minimum-supported-release acceptance.
+
+**Phase 0 Spaces verdict: selection and create/remove are viable; general window
+transfer remains unresolved, so the workspace MVP is blocked.** The direct move
+had observed no effect; bridge dispatch was unavailable; other move candidates
+were ineligible or lacked exact restoration. This does **not** establish that
+all SIP-enabled native window moves are impossible, or that SIP caused any result.
+
+| Route | Observed result | Latency and rejection evidence |
+| --- | --- | --- |
+| MC AX create | Works: exactly one new user SID, preexisting order/current unchanged | 448 ms; AX action accepted and SID effect observed |
+| MC AX goto / return | Works: exact current-SID readbacks both ways; owned membership retained | Approximately 628–660 ms per leg, including MC traversal and settled readback; no explicit rejection |
+| MC AX remove | Works: created SID inactive, user-window-empty, then absent; original ordered layout/current restored | 515 ms; one remove dispatch, effect verified |
+| Public AppKit helper self-join | Works **only as an independent recovery fixture**: owned window `[O] → [T] → [O]`, exact frame and collection-behavior restoration | 112–317 ms self-action reports, followed by membership readbacks; no general foreign-window authority implied |
+| Direct `SLSMoveWindowsToManagedSpace` | **Observed no effect**: positively dispatched once; immediate and delayed membership stayed exactly `[O]`, current stayed O, frame unchanged | Mover child 180 ms; delayed observation 3,139 ms over a 3-second poll window. Void API, no rejection status; SIP cause UNKNOWN. No no-op inverse dispatched |
+| Bridged asynchronous move | Unavailable: operation class present, dispatcher function absent; no dispatch | N/A; symbol availability, **not rejection** |
+| Compat ID + workspace setter | Blocked: exact compat-tag preimage/readback/restore remains unproven; no setters called | N/A; safety prerequisite, **not rejection** |
+| Silica drag + Desktop-N chord | Ineligible: outbound and return Desktop-N bindings unresolved; private resolver header absent from surveyed source | N/A; no mouse-down, no shortcut enabling, **not rejection** |
+| Enabled Ctrl+Right switch candidate | **Observed no effect**: effective Carbon table corroborated the enabled chord; exact-helper down/up delivered, current stayed O; no inverse/retry | 164 ms **focus + posting only**, then bounded 3-second current poll; no authority error. Chord-to-action attribution remains unproved; not physical-input evidence |
+| Same-display yabai Dock-swipe | Works: began/ended pairs switched O→T and T→O, memberships unchanged, no warp/click | 15/131 ms **focus + posting only**; exact current effects within the 3-second polling window. End-to-end switch latency was not captured |
+| Desktop-N switch chord | Ineligible: no resolved enabled outbound/return binding; Carbon entries have no symbolic IDs | N/A; no post, **not rejection** |
+| Cross-display window/Space moves; cross-Space ordinary-app focus | Not tested by this single-display fixture | TBD; no non-SA Space-to-display route established |
+
+**Visual jank is unobserved for every route.** MC UI is necessarily exposed by
+the AX route; neither posted-event timing nor current-SID readback proves whether
+the desktop transition animated or looked smooth. Gesture payloads remain
+version-coupled; the comparison refuses the newer augmented-payload family.
+
+### Recovery, restoration and limitations
+
+- Independent public helper recovery passed before direct SLS dispatch, on the
+  same helper. The primary direct mover ran as a separate short-lived process
+  and exited while the exact helper Child remained held. Off-current title
+  withholding is handled by the documented Child/pipe-nonce/executable/CG join;
+  separate controllers without that Child still require current nonce proof.
+- The first integrated `mc-lifecycle` run incorrectly checked a Space switch
+  immediately. A later snapshot showed the asynchronous effect. Corrected
+  bounded **readback polling**, without redispatch, proved return; the corrected
+  integrated create/goto/remove command has not itself had a fresh full pass.
+- AX error decoding had omitted two SDK error constants, misnaming `NoValue`.
+  Maintained-binding regression coverage now pins the numeric/name mapping.
+- Removal initially parked on system backing windows. Fresh user-window
+  emptiness now records narrowly verified compositor and zero-area, offscreen,
+  all-user-Space accessibility chrome exclusions. A versioned WindowServer
+  executable alias is canonicalized to the same system file; unreadable or
+  different identity still blocks. Ordinary sticky windows and Ghostty block.
+- The switch comparison did not naturally restore foreground focus. A single
+  identity-verified public app activation restored the captured Ghostty target,
+  with full selected-oracle agreement and unchanged frame/membership; no
+  keystrokes, SLPS events, AXRaise or window setters targeted it. One offscreen,
+  non-Space Ghostty chrome surface self-resized during setup. Ordinary document
+  frames/memberships were unchanged; the chrome was not written back.
+- Final B2 equals B0 for ordered per-display SIDs/current, display topology,
+  separate-Spaces state and shortcut overrides. Temporary SID absent and with
+  no members; helpers/probes/taps/display-sleep assertions released and reaped;
+  Ghostty frontmost by the full focus oracle. No native preferences changed.
+
+### Exact continuation
+
+Find and review a **safe ordinary-window transfer candidate with exact inverse**:
+first investigate an authoritative compat-tag getter/preimage, or a release with
+the bridged dispatcher actually present. The drag alternative still needs
+resolved already-enabled Desktop-N bindings and independently recoverable input.
+Do not repeat the direct no-effect call without a changed hypothesis. Native
+per-display mapping, numbered/relative select and send/follow/stay, trailing
+creation and background-frame actuation remain pending that transfer gate.
 
 ## Read-only Mission Control binding map
 
@@ -95,7 +168,12 @@ observation and ID attribution must stay separate; unresolved Desktop-N
 bindings block the digit fallback, rather than triggering an enable/write.
 Settings reads are not delivery, interception, suppression or physical evidence.
 
-## Minimal live sequence (readiness plan, not completed evidence)
+## Minimal live sequence (initial readiness plan)
+
+The verdict above supersedes unimplemented/physical-only setup statements in
+this initial plan. Reviewed MC AX automation and public owned-helper self-join
+now provide the measured setup and independent restore paths. Preserve its
+identity, exact-readback and restoration requirements for subsequent experiments.
 
 Follow [live-macos-testing.md][live]. Use one identified disposable window and
 one newly created **user** Space on the same display; do not touch Ghostty or

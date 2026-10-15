@@ -175,16 +175,34 @@ impl OwnedPostTarget {
     }
 }
 
-/// Single shared guarded posting boundary: every actual CG post in this
-/// crate flows through here. Enforces, immediately BEFORE each OS post:
-/// the static [`validate_post_target`] floor, the protected/Ghostty bundle
-/// refusal over the FRESH live bundle, and the FRESH selected oracle
-/// ([`crate::focus::read_agreement`] naming exactly the target immediately
-/// before the post, `Main` fallback accepted when the oracle agrees). The
-/// target itself already carries fresh owned-session proof (held-Child
-/// recheck or spawn-record auth plus CG join at construction); this
-/// boundary re-reads the oracle plus bundle live and never trusts a stale
-/// caller claim.
+/// Shared per-post boundary gate: the static [`validate_post_target`]
+/// floor, the protected/Ghostty bundle refusal over the FRESH live bundle,
+/// and the FRESH selected oracle naming exactly `(pid, wid)`. Every actual
+/// CG post in this crate flows through here — the keyboard path via
+/// [`post_guarded`], and non-key synthetic posts (gesture pairs) call this
+/// directly before EACH post, so both paths enforce the identical refusal.
+pub(crate) fn boundary_gate(pid: u32, wid: u32) -> Result<(), String> {
+    validate_post_target(pid)?;
+    if wid == 0 {
+        return Err("refusing synthetic post to window id 0".to_owned());
+    }
+    // Fresh live bundle for the protected/Ghostty refusal (never a caller
+    // claim). Direct-spawn helpers have no bundle entry: fall back to the
+    // probe-bundle convention used by `live_owned_bundle` only when the PID
+    // is live, otherwise refuse unknown.
+    let bundle: Option<String> =
+        match crate::ffi::bundle_id_for_pid(pid as i32).filter(|b| !b.is_empty()) {
+            Some(bundle) => Some(bundle),
+            None if crate::ffi::process_exists(pid as i32) => Some(crate::BUNDLE_ID.to_owned()),
+            None => None,
+        };
+    let oracle_agrees = crate::focus::read_agreement(pid, wid).is_ok();
+    guarded_verdict(bundle.as_deref(), oracle_agrees)
+}
+
+/// Single shared guarded posting boundary: every actual CG key post in
+/// this crate flows through here. Enforces [`boundary_gate`] immediately
+/// BEFORE each OS post (see its docs for the exact re-reads).
 ///
 /// Sequential reads, honest TOCTOU: proof, bundle, oracle, and post are
 /// sequential live reads, not one atomic transaction. A PID reuse between
@@ -200,19 +218,7 @@ pub(crate) fn post_guarded(
     route: GuardedPostRoute,
 ) -> Result<PostedEvent, String> {
     let (pid, wid) = (target.pid, target.wid);
-    validate_post_target(pid)?;
-    // Fresh live bundle for the protected/Ghostty refusal (never a caller
-    // claim). Direct-spawn helpers have no bundle entry: fall back to the
-    // probe-bundle convention used by `live_owned_bundle` only when the PID
-    // is live, otherwise refuse unknown.
-    let bundle: Option<String> =
-        match crate::ffi::bundle_id_for_pid(pid as i32).filter(|b| !b.is_empty()) {
-            Some(bundle) => Some(bundle),
-            None if crate::ffi::process_exists(pid as i32) => Some(crate::BUNDLE_ID.to_owned()),
-            None => None,
-        };
-    let oracle_agrees = crate::focus::read_agreement(pid, wid).is_ok();
-    guarded_verdict(bundle.as_deref(), oracle_agrees)?;
+    boundary_gate(pid, wid)?;
     match route {
         GuardedPostRoute::Session => raw_post_key_event_to_session(pid, key_code, flags, down),
         GuardedPostRoute::Hid => raw_post_key_event_to_hid(pid, key_code, flags, down),

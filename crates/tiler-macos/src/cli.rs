@@ -106,6 +106,7 @@ pub enum Command {
         close_window_ms: u64,
         transient_panel_ms: u64,
         transient_sheet_ms: u64,
+        space_join: bool,
     },
     OwnedFrame {
         pid: u32,
@@ -134,9 +135,50 @@ pub enum Command {
         nonce: String,
         wid: u32,
     },
+    OwnedSpaceJoin {
+        pid: u32,
+        nonce: String,
+    },
+    SpacesOwnedRecovery {
+        original: u64,
+        temp: u64,
+        seconds: u64,
+        allow_untested: bool,
+        probe_direct: bool,
+    },
+    SpacesBindings,
+    SpacesSwitchProbe {
+        original: u64,
+        temp: u64,
+        seconds: u64,
+        allow_untested: bool,
+    },
     SpacesSession {
         seconds: u64,
         allow_untested: bool,
+    },
+    McInspect,
+    McLifecycle {
+        seconds: u64,
+        display: usize,
+        allow_untested: bool,
+    },
+    McRecover {
+        temp: u64,
+        original: u64,
+        seconds: u64,
+        display: usize,
+        allow_untested: bool,
+    },
+    McRestoreFrontmost {
+        pid: u32,
+        wid: u32,
+        space: u64,
+        display: usize,
+        allow_untested: bool,
+    },
+    McMembers {
+        space: u64,
     },
     ProbeStop {
         pid: u32,
@@ -255,21 +297,27 @@ pub fn help_text() -> String {
            \x20 \x20 DIR/outcome.json);\n\
            \x20 \x20 no native-setting writes on any path; stop leaves windows in\n\
            \x20 \x20 place, never restores)\n\
-           \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
-           \x20 \x20 (direct-SLS owned move with preimage + effect readback; UNTESTED live;\n\
-           \x20 \x20 explicit opt-in per invocation; never auto-restores — run spaces-restore\n\
-           \x20 \x20 separately to prove independent restore)\n\
+            \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
+            \x20 \x20 (direct-SLS owned move with preimage + effect readback; experimental:\n\
+            \x20 \x20 one gated dispatch observed no-effect on an owned fixture;\n\
+            \x20 \x20 explicit opt-in per invocation; never auto-restores — run spaces-restore\n\
+            \x20 \x20 separately; the single-shot inverse is unverified, the separate\n\
+            \x20 \x20 public held-Child recovery is proven per run)\n\
            \x20 spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
            \x20 \x20 (independent restore with the same identity validation; usable after mover exit)\n\
-           \x20 spaces-switch --pid PID --nonce HEX --space ID\n\
-           \x20 spaces-create --pid PID --nonce HEX\n\
-           \x20 spaces-destroy --pid PID --nonce HEX --space ID\n\
-           \x20 \x20 (explicitly unsupported: no implemented route with proven recovery;\n\
-           \x20 \x20 report the route, never execute — surveyed non-SA alternatives are\n\
-           \x20 \x20 visible AX Mission Control automation (create/remove/goto) and global\n\
-           \x20 \x20 synthetic gestures / drag+system-chord (switch/move); all unimplemented\n\
-           \x20 \x20 here with recovery unproven, never a SIP rejection)\n\
-              \x20 probe-spawn [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--regular-policy] [--close-window-ms MS] [--transient-panel-ms MS] [--transient-sheet-ms MS]\n\
+            \x20 spaces-switch --pid PID --nonce HEX --space ID\n\
+            \x20 spaces-create --pid PID --nonce HEX\n\
+            \x20 spaces-destroy --pid PID --nonce HEX --space ID\n\
+            \x20 \x20 (single-shot, explicitly unsupported: no implemented single-shot\n\
+            \x20 \x20 route here; report the route, never execute — surveyed non-SA\n\
+            \x20 \x20 single-shot alternatives are visible AX Mission Control\n\
+            \x20 \x20 automation (create/remove/goto) and global synthetic gestures /\n\
+            \x20 \x20 drag+system-chord (switch/move), unimplemented single-shot here,\n\
+            \x20 \x20 never a SIP rejection; use the bounded gated probes instead:\n\
+            \x20 \x20 spaces-switch-probe, spaces-owned-recovery,\n\
+            \x20 \x20 mc-lifecycle/mc-recover/mc-members/mc-restore-frontmost,\n\
+            \x20 \x20 spaces-bindings)\n\
+               \x20 probe-spawn [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--regular-policy] [--close-window-ms MS] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join]\n\
               \x20 \x20 (bounded owned holder: spawns one helper and holds its exact\n\
               \x20 \x20 Child to the deadline; --regular-policy prefers the dedicated\n\
               \x20 \x20 signed helper .app executable (tile-admittable helper bundle);\n\
@@ -294,13 +342,74 @@ pub fn help_text() -> String {
              \x20 \x20 float-g, grow-h/j/k/l, grow-left/right, shrink-h/j/k/l,\n\
              \x20 \x20 shrink-left/right, orientation-o; truthfully synthetic,\n\
              \x20 \x20 oracle-gated per edge, helper targets only, never Ghostty)\n\
-             \x20 owned-focus --pid PID --nonce HEX --wid WID\n\
-             \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
+              \x20 owned-focus --pid PID --nonce HEX --wid WID\n\
+              \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
+              \x20 owned-space-join --pid PID --nonce HEX\n\
+              \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
+              \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
+              \x20 \x20 with exact collectionBehavior restore; no WID, no SLS,\n\
+              \x20 \x20 no synthetic events; needs --space-join helper)\n\
+            \x20 spaces-owned-recovery --original SID --temp SID [--seconds N] --allow-untested [--probe-direct]\n\
+            \x20 \x20 (bounded owned public recovery battery, default 120s, minimum 60s:\n\
+            \x20 \x20 spawn one regular-policy helper, prove O->T->O with exact\n\
+            \x20 \x20 membership plus exact frame restoration, stop exactly that\n\
+            \x20 \x20 helper; creates/destroys no Space, attempts no SLS move,\n\
+            \x20 \x20 posts no synthetic events; explicit opt-in per invocation;\n\
+            \x20 \x20 --probe-direct additionally runs ONE gated direct-SLS move\n\
+            \x20 \x20 after O->T->O in a separate short-lived mover child with\n\
+            \x20 \x20 delayed readbacks plus independent public restore)\n\
+            \x20 spaces-bindings\n\
+            \x20 \x20 (read-only effective symbolic-hotkey table via public\n\
+            \x20 \x20 CopySymbolicHotKeys: chord + enabled entries with NO symbolic\n\
+            \x20 \x20 IDs (index is never an ID), plus Ctrl+Left/Right\n\
+            \x20 \x20 corroboration; no settings reads or writes)\n\
+            \x20 spaces-switch-probe --original SID --temp SID [--seconds N] --allow-untested\n\
+            \x20 \x20 (bounded same-display switch comparison, default 120s, minimum\n\
+            \x20 \x20 60s: two owned regular-policy helpers bracket arrow legs\n\
+            \x20 \x20 (enabled Ctrl+Right/Left down/up, exact-helper oracle per\n\
+            \x20 \x20 edge) and the yabai began/ended gesture pair (same display,\n\
+            \x20 \x20 no warp/click); creates/destroys no Space, performs no SLS\n\
+            \x20 \x20 move, posts no tap input; explicit opt-in per invocation)\n\
            \x20 spaces-session [--seconds N] [--allow-untested]\n\
            \x20 \x20 (single bounded Child-holder session: lifecycle proofs, CG identity,\n\
            \x20 \x20 membership/topology/permission readbacks; dispatches no Space writes;\n\
            \x20 \x20 never cross-command title auth)\n\
-            \x20 probe-stop --pid PID --nonce HEX (exact-identity stop only)\n",
+            \x20 mc-inspect\n\
+            \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
+            \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
+            \x20 \x20 traversal past presence, no writes, no synthetic events)\n\
+              \x20 mc-lifecycle [--seconds N] [--display INDEX] --allow-untested\n\
+              \x20 \x20 (bounded temp-Space lifecycle, default 60s, minimum 45s:\n\
+              \x20 \x20 create exactly one Space on the display, go to it and back,\n\
+              \x20 \x20 remove ONLY the created Space; public NSWorkspace toggle +\n\
+              \x20 \x20 public Dock AX, zero window writes, zero synthetic posts;\n\
+              \x20 \x20 explicit opt-in per invocation, no default mutation; experimental:\n\
+              \x20 \x20 the integrated run is NOT passed (first run failed on the\n\
+              \x20 \x20 immediate goto) — only the separate corrected recovery+remove\n\
+              \x20 \x20 passed)\n\
+             \x20 mc-recover --temp SID --original SID [--seconds N] [--display INDEX] --allow-untested\n\
+             \x20 \x20 (bounded recovery for one previously adopted temp: adopt ONLY\n\
+             \x20 \x20 the exact ordered [original, temp] topology on the display,\n\
+             \x20 \x20 go back to the original (settled readback, never a replay),\n\
+             \x20 \x20 verify the natural Ghostty return, enumerate temp residuals\n\
+             \x20 \x20 read-only, and remove ONLY that temp when the strict\n\
+             \x20 \x20 emptiness gate already proves clear (else parked, never\n\
+             \x20 \x20 clean); creates no Space; explicit opt-in per invocation)\n\
+             \x20 mc-members --space SID\n\
+             \x20 \x20 (read-only Space-members inspection: every live member of\n\
+             \x20 \x20 the Space, shell chrome included, with PID/WID/bundle/\n\
+             \x20 \x20 layer/onscreen/bounds/membership, plus the read-only\n\
+             \x20 \x20 focus-oracle legs and protected Ghostty snapshot; IDs and\n\
+             \x20 \x20 geometry only, never titles/content; no launch, no writes)\n\
+             \x20 mc-restore-frontmost --pid PID --wid WID --space SID [--display INDEX] --allow-untested\n\
+             \x20 \x20 (guarded Ghostty-only frontmost restoration: ONE public\n\
+             \x20 \x20 app activation of exactly the captured original PID/WID\n\
+             \x20 \x20 (live bundle must read com.mitchellh.ghostty), with a\n\
+             \x20 \x20 current-Space guard plus full selected-oracle agreement\n\
+             \x20 \x20 and geometry/membership/exe stability readback; no\n\
+             \x20 \x20 keystrokes, no window writes, no synthetic events;\n\
+             \x20 \x20 explicit opt-in per invocation)\n\
+             \x20 probe-stop --pid PID --nonce HEX (exact-identity stop only)\n",
         bundle = crate::BUNDLE_ID,
         max_tap = crate::config::MAX_TAP_SECONDS,
         max_probe = crate::config::MAX_PROBE_SECONDS,
@@ -809,6 +918,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut close_window_ms = 0u64;
             let mut transient_panel_ms = 0u64;
             let mut transient_sheet_ms = 0u64;
+            let mut space_join = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -854,6 +964,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                             "--transient-sheet-ms",
                         )?;
                     }
+                    "--space-join" => {
+                        space_join = true;
+                    }
                     other => return Err(format!("probe-spawn: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -867,6 +980,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 close_window_ms,
                 transient_panel_ms,
                 transient_sheet_ms,
+                space_join,
             }
         }
         "probe-stop" => {
@@ -1050,6 +1164,133 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let (pid, nonce, wid) = parse_owned_wid(args, "owned-focus")?;
             Command::OwnedFocus { pid, nonce, wid }
         }
+        "owned-space-join" => {
+            // No --wid: the helper acts solely on its own window; a caller
+            // WID would be foreign-window selection and is refused by shape.
+            let mut pid: Option<u32> = None;
+            let mut nonce: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--pid" => {
+                        j += 1;
+                        pid = Some(parse_u32(
+                            args.get(j).ok_or("--pid needs a value")?,
+                            "--pid",
+                        )?);
+                    }
+                    "--nonce" => {
+                        j += 1;
+                        nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+                    }
+                    other => return Err(format!("owned-space-join: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::OwnedSpaceJoin {
+                pid: pid.ok_or("owned-space-join needs --pid")?,
+                nonce: nonce.ok_or("owned-space-join needs --nonce")?,
+            }
+        }
+        "spaces-owned-recovery" => {
+            // Bounded owned public recovery battery over two EXISTING SIDs:
+            // never creates or destroys a Space. Both SIDs mandatory, budget
+            // default 120 s (helper lifetime cap), explicit --allow-untested
+            // opt-in per invocation (range/minimum enforced in the runner).
+            let mut original: Option<u64> = None;
+            let mut temp: Option<u64> = None;
+            let mut seconds = crate::config::MAX_PROBE_SECONDS;
+            let mut allow_untested = false;
+            let mut probe_direct = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--original" => {
+                        j += 1;
+                        original = Some(parse_u64(
+                            args.get(j).ok_or("--original needs a value")?,
+                            "--original",
+                        )?);
+                    }
+                    "--temp" => {
+                        j += 1;
+                        temp = Some(parse_u64(
+                            args.get(j).ok_or("--temp needs a value")?,
+                            "--temp",
+                        )?);
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    "--probe-direct" => {
+                        probe_direct = true;
+                    }
+                    other => return Err(format!("spaces-owned-recovery: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::SpacesOwnedRecovery {
+                original: original.ok_or("spaces-owned-recovery needs --original")?,
+                temp: temp.ok_or("spaces-owned-recovery needs --temp")?,
+                seconds,
+                allow_untested,
+                probe_direct,
+            }
+        }
+        "spaces-bindings" => {
+            if !args.is_empty() {
+                return Err(format!("spaces-bindings: unknown arg '{}'", args[0]));
+            }
+            Command::SpacesBindings
+        }
+        "spaces-switch-probe" => {
+            // Bounded switch comparison over two EXISTING SIDs: never
+            // creates or destroys a Space, performs no SLS move.
+            let mut original: Option<u64> = None;
+            let mut temp: Option<u64> = None;
+            let mut seconds = crate::config::MAX_PROBE_SECONDS;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--original" => {
+                        j += 1;
+                        original = Some(parse_u64(
+                            args.get(j).ok_or("--original needs a value")?,
+                            "--original",
+                        )?);
+                    }
+                    "--temp" => {
+                        j += 1;
+                        temp = Some(parse_u64(
+                            args.get(j).ok_or("--temp needs a value")?,
+                            "--temp",
+                        )?);
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("spaces-switch-probe: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::SpacesSwitchProbe {
+                original: original.ok_or("spaces-switch-probe needs --original")?,
+                temp: temp.ok_or("spaces-switch-probe needs --temp")?,
+                seconds,
+                allow_untested,
+            }
+        }
         "tile" => {
             // Tile session: explicit `--user-start` plus a product selection
             // are mandatory — either a non-empty `--scope` allowlist or
@@ -1153,6 +1394,184 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 allow_untested,
             }
         }
+        "mc-inspect" => {
+            // Read-only Mission Control inspection: no launch, no writes.
+            if !args.is_empty() {
+                return Err("usage: tiler-macos mc-inspect".to_owned());
+            }
+            Command::McInspect
+        }
+        "mc-lifecycle" => {
+            // Bounded temp-Space lifecycle: explicit --allow-untested opt-in
+            // per invocation (no default mutation); --display selects the
+            // SLS row index (default 0). The 60s default and 45s floor leave
+            // a 15s cleanup reserve inside the run budget.
+            let mut seconds = 60u64;
+            let mut display = 0usize;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u64(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("mc-lifecycle: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::McLifecycle {
+                seconds,
+                display,
+                allow_untested,
+            }
+        }
+        "mc-recover" => {
+            // Bounded recovery for one previously adopted temp: the caller
+            // names the adopted temp and the preimage original; the runner
+            // adopts ONLY the exact ordered [original, temp] topology on
+            // the display, goes back to the original, and removes ONLY that
+            // temp when the strict gates prove clear. Never creates a
+            // Space; explicit --allow-untested opt-in per invocation.
+            let mut temp: Option<u64> = None;
+            let mut original: Option<u64> = None;
+            let mut seconds = 60u64;
+            let mut display = 0usize;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--temp" => {
+                        j += 1;
+                        temp = Some(parse_u64(
+                            args.get(j).ok_or("--temp needs a value")?,
+                            "--temp",
+                        )?);
+                    }
+                    "--original" => {
+                        j += 1;
+                        original = Some(parse_u64(
+                            args.get(j).ok_or("--original needs a value")?,
+                            "--original",
+                        )?);
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u64(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("mc-recover: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::McRecover {
+                temp: temp.ok_or("mc-recover needs --temp")?,
+                original: original.ok_or("mc-recover needs --original")?,
+                seconds,
+                display,
+                allow_untested,
+            }
+        }
+        "mc-members" => {
+            // Read-only Space-members inspection: one mandatory --space
+            // SID; every live member reported with identity/geometry/
+            // membership, no writes on any path.
+            let mut space: Option<u64> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--space" => {
+                        j += 1;
+                        space = Some(parse_u64(
+                            args.get(j).ok_or("--space needs a value")?,
+                            "--space",
+                        )?);
+                    }
+                    other => return Err(format!("mc-members: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::McMembers {
+                space: space.ok_or("mc-members needs --space")?,
+            }
+        }
+        "mc-restore-frontmost" => {
+            // Guarded Ghostty-only frontmost restoration: the caller names
+            // the exact captured original (PID, WID, Space); the runner
+            // activates ONLY that PID when its live bundle reads exactly
+            // com.mitchellh.ghostty, the Space is current, and every
+            // post readback agrees. Never a general arbitrary-window API:
+            // non-Ghostty bundles always refuse, and only one public
+            // activation is ever sent (no keystrokes, no window writes).
+            let mut pid: Option<u32> = None;
+            let mut wid: Option<u32> = None;
+            let mut space: Option<u64> = None;
+            let mut display = 0usize;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--pid" => {
+                        j += 1;
+                        pid = Some(parse_u32(
+                            args.get(j).ok_or("--pid needs a value")?,
+                            "--pid",
+                        )?);
+                    }
+                    "--wid" => {
+                        j += 1;
+                        wid = Some(parse_u32(
+                            args.get(j).ok_or("--wid needs a value")?,
+                            "--wid",
+                        )?);
+                    }
+                    "--space" => {
+                        j += 1;
+                        space = Some(parse_u64(
+                            args.get(j).ok_or("--space needs a value")?,
+                            "--space",
+                        )?);
+                    }
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u64(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("mc-restore-frontmost: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::McRestoreFrontmost {
+                pid: pid.ok_or("mc-restore-frontmost needs --pid")?,
+                wid: wid.ok_or("mc-restore-frontmost needs --wid")?,
+                space: space.ok_or("mc-restore-frontmost needs --space")?,
+                display,
+                allow_untested,
+            }
+        }
         "scope-inspect" => {
             // Read-only scoped metadata for named apps: non-empty --scope
             // allowlist mandatory; no writes on any path.
@@ -1180,9 +1599,12 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::FocusDiagnose { .. }
             | Command::SecureInput
             | Command::SpacesDiagnose { .. }
+            | Command::SpacesBindings
             | Command::CgOwnedWindows { .. }
             | Command::OwnedFrame { .. }
             | Command::ScopeInspect { .. }
+            | Command::McInspect
+            | Command::McMembers { .. }
     );
     Ok(CliRequest {
         modifier,

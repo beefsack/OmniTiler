@@ -1,5 +1,38 @@
 # macOS Phase 0 — decisions and capability probes
 
+## Current Spaces verdict — 2026-10-16
+
+**Selection and Space lifecycle work; ordinary-window transfer is unresolved.
+The native workspace MVP remains blocked, without a SIP-causation or universal
+impossibility verdict.** Native Spaces and tier-2 policy remain selected.
+The [per-route verdict](../research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16)
+supersedes the historical mutation/permission blockers below; the
+[change record](archive/macos-native-workspaces.md) contains the delivered probe
+scope, verification and outstanding prerequisites.
+
+- Mission Control AX create 448 ms, goto/back approximately 628–660 ms,
+  remove 515 ms: current/membership effects and ordered restoration observed.
+- Public AppKit owned-helper self-join provided independent exact membership,
+  frame and collection-behavior restoration before the direct experiment.
+- Direct SLS move positively dispatched once: unchanged membership after the
+  3-second delayed-readback window; no explicit rejection, no causal SIP finding.
+  Bridge class present but dispatcher absent; compat setters stayed disabled;
+  unresolved Desktop-N chords blocked digit/drag comparisons.
+- Enabled Ctrl+Right candidate posted without a Space effect. Same-display
+  yabai Dock-swipe switched both ways with unchanged owned membership. Synthetic
+  focus/post times are not end-to-end transition latency; visual animation/jank
+  and physical shortcut delivery remain unobserved.
+- The sole created Space was removed, final ordered topology/current and
+  shortcut overrides matched baseline, ordinary protected-window frames and
+  memberships were unchanged, and full Ghostty foreground agreement held.
+  An offscreen non-Space app-chrome self-resize was retained as a separate
+  observation. Helpers/probes/taps/caffeinate children were gone/reaped.
+
+Next: establish a safe ordinary-window move/inverse (authoritative compat-tag
+preimage or an available bridged dispatcher), then implement native workspace
+mapping. No virtual-workspace implementation or SIP-policy change follows from
+these results. The broader Phase 0 input/physical/floor-release gaps remain open.
+
 ## Goal and acceptance
 
 Establish the macOS architecture decisions, live-testing/recovery protocol,

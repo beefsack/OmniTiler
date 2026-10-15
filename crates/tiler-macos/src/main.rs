@@ -284,7 +284,9 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             allow_untested,
         } => {
             // Direct-SLS owned move probe (compat disabled, SA omitted).
-            // UNTESTED live: the report separates void dispatch from the
+            // Experimental live (one gated dispatch observed no-effect on an
+            // owned fixture; single-shot inverse unverified): the report
+            // separates void dispatch from the
             // effect (exact-equality membership readback). Never
             // auto-restores: run spaces-restore separately so the independent
             // restore path is proven on its own (usable after this process
@@ -398,6 +400,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             close_window_ms,
             transient_panel_ms,
             transient_sheet_ms,
+            space_join,
         } => {
             let nonce = tiler_macos::probe_target::mint_nonce().map_err(|e| (1, e))?;
             let spec =
@@ -408,6 +411,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                             .with_close_window_ms(close_window_ms)
                             .with_transient_panel_ms(transient_panel_ms)
                             .with_transient_sheet_ms(transient_sheet_ms)
+                            .with_space_join(space_join)
                     })
                     .map_err(|e| (2, e))?;
             // Hold the helper stdout pipe open for the session lifetime: the
@@ -605,6 +609,60 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // SLPS focus dispatch to one exact owned window with agreement.
             tiler_macos::owned_control::run_owned_focus(pid, &nonce, wid, request.modifier)
         }
+        Command::OwnedSpaceJoin { pid, nonce } => {
+            // Public AppKit self-action: helper joins its OWN window to the
+            // current Space with exact collectionBehavior restore. No WID,
+            // no SLS, no synthetic events. Works after the mover exits via
+            // the spawn-record + live CG join (same as spaces-restore).
+            tiler_macos::space_join::run_owned_space_join(pid, &nonce)
+        }
+        Command::SpacesOwnedRecovery {
+            original,
+            temp,
+            seconds,
+            allow_untested,
+            probe_direct,
+        } => {
+            // Bounded owned public recovery battery over two existing SIDs:
+            // spawns one regular-policy helper, proves O->T->O with exact
+            // membership plus exact frame restoration, stops exactly that
+            // helper. Creates/destroys no Space, posts no synthetic events.
+            // `--probe-direct` additionally runs ONE gated direct-SLS move
+            // after O->T->O in a separate short-lived mover child with
+            // delayed readbacks plus independent public restore.
+            tiler_macos::space_recovery::run_spaces_owned_recovery(
+                original,
+                temp,
+                seconds,
+                allow_untested,
+                probe_direct,
+            )
+        }
+        Command::SpacesBindings => {
+            // Read-only effective symbolic-hotkey table: chord + enabled
+            // entries with NO symbolic IDs, plus Ctrl+Left/Right
+            // corroboration. No settings reads or writes on any path.
+            let report =
+                tiler_macos::symbolic_hotkeys::read_bindings().map_err(|e| (1, e.to_string()))?;
+            serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+        }
+        Command::SpacesSwitchProbe {
+            original,
+            temp,
+            seconds,
+            allow_untested,
+        } => {
+            // Bounded same-display switch comparison over two EXISTING
+            // SIDs: two owned regular-policy helpers bracket arrow legs
+            // and the yabai began/ended gesture pair. Creates/destroys no
+            // Space, performs no SLS move, posts no tap input.
+            tiler_macos::space_switch_probe::run_spaces_switch_probe(
+                original,
+                temp,
+                seconds,
+                allow_untested,
+            )
+        }
         Command::Tile {
             user_start,
             scopes,
@@ -682,6 +740,39 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             seconds,
             allow_untested,
         } => tiler_macos::session::run_spaces_session(seconds, allow_untested),
+        Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
+        Command::McLifecycle {
+            seconds,
+            display,
+            allow_untested,
+        } => tiler_macos::mc_lifecycle::run_mc_lifecycle(seconds, display, allow_untested),
+        Command::McRecover {
+            temp,
+            original,
+            seconds,
+            display,
+            allow_untested,
+        } => tiler_macos::mc_recover::run_mc_recover(
+            temp,
+            original,
+            seconds,
+            display,
+            allow_untested,
+        ),
+        Command::McMembers { space } => tiler_macos::mc_members::run_mc_members(space),
+        Command::McRestoreFrontmost {
+            pid,
+            wid,
+            space,
+            display,
+            allow_untested,
+        } => tiler_macos::frontmost_restore::run_mc_restore_frontmost(
+            pid,
+            wid,
+            space,
+            display,
+            allow_untested,
+        ),
         Command::ScopeInspect { scopes } => tiler_macos::scope_inspect::run_scope_inspect(scopes),
     }
 }
