@@ -56,20 +56,22 @@ outlines; confirm whole-item boundaries before each extraction.
 | 21 | `keyboard_tick`, `keyboard_directional`, `keyboard_overlays`, `keyboard_resize`, `chord_resolution`, `float_toggle`, `dispatch` | Keyboard tick, directional/maximize/fullscreen dispatch, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Three match-arm helpers replace the oversized function; loop continuation and effect fences preserved | Done; 217 / 1,288 / 641 / 296 / 213 / 1,132 / 1,377 lines |
 | 22 | `directional_resolution`, `directional_cross`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Done; 368 / 626 / 1,175 / 1,455 lines |
 | 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Extracted; 658 / 492 lines |
-| 24 | `workspace_mode`, `selection`, `sends` | Workspace mode/release/retry, select/send, trailing-spare/follow behavior | 2,300+ total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
-| 25 | `cli_resize`, `cli_workspace`, `workspace_navigation`, `workspace_send_tick`, `migration` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Pending |
-| 26 | `history`, `action_context`, `output_sync` | Maximized remapping, history/effects, monitor/output sync, maintenance | 1,200 total | Mode-aware scope children and retained output identity | Pending |
-| 27 | `windrag`, `pending_drop`, `gesture_tick` | Windrag transitions, pending-drop servicing, gesture tick | 2,000 total | Shared pending state and render bridge | Pending |
-| 28 | `settings` | Foreground/suspend reads, run configuration, live settings adoption/poll | 500 | Shared loop configuration | Pending |
-| 29 | `run_loop` | Main tile loop | 2,600 total | Entrypoint/state orchestration; one large function may remain oversized | Pending; late |
-| 30 | `commands`, `first_run`, `proof_commands`, `inspection` | Public CLI entrypoints, first-run configuration, proof loops, inventory/inspection and shutdown glue | 1,500+ total | Preserve external entrypoint paths via parent re-exports | Pending; last |
-| Follow-up | `observation` | Whole observation `TileLoop` impl and enumeration/cursor helpers | 400 total | Keep shared `TileLoop` state and crate-visible snapshot planner in `mod.rs` initially | Pending |
+| 24 | `workspace_mode`, `selection`, `sends`, `send_preflight`, `send_native`, `send_stay`, `send_follow` | Workspace mode/release/retry, select/send, trailing-spare/follow behavior | 2,300+ total | Existing scope children call parent seams; later extraction needs narrow re-exports | Done; 489 / 663 / 652 / 106 / 403 / 411 / 137 lines |
+| 25 | `cli_resize`, `cli_workspace`, `workspace_navigation`, `workspace_send_tick`, `migration`, `migration_run` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Done; 174 / 817 / 334 / 543 / 390 / 1,393 lines |
+| 26 | `history`, `action_context`, `output_sync` | Maximized remapping, history/effects, monitor/output sync, maintenance | 1,200 total | Mode-aware scope children and retained output identity | Done; 623 / 93 / 480 lines |
+| 27 | `windrag`, `pending_drop`, `gesture_tick` | Windrag transitions, pending-drop servicing, gesture tick | 2,000 total | Shared pending state and render bridge | Done; 356 / 776 / 920 lines |
+| 28 | `settings` | Foreground/suspend reads, run configuration, live settings adoption/poll | 500 | Shared loop configuration | Done; 549 lines |
+| 29 | `run_loop`, `run_loop_wait`, `run_loop_intake`, `run_loop_tick` | Main tile loop plus wait/intake/tick helpers (second approved refactor exception) | 2,600 total | Entrypoint/state orchestration; nested continues and per-turn guard preserved | Done; 1,060 / 141 / 766 / 764 lines; `mod.rs` 1,082 |
+| 30 | `commands`, `first_run`, `proof_commands`, `inspection` | Public CLI entrypoints, first-run configuration, proof loops, inventory/inspection and shutdown glue | 1,500+ total | Preserve external entrypoint paths via parent re-exports | Done; 472 / 261 / 336 / 452 lines |
+| Follow-up | `observation` | Whole observation `TileLoop` impl and enumeration/cursor helpers | 400 total | Keep shared `TileLoop` state and crate-visible snapshot planner in `mod.rs` initially | Done; 359 lines |
 | Follow-up | `keyboard_tick`, `keyboard_directional`, `keyboard_overlays` | Three large keyboard match arms extracted into responsibility-based helpers | 2,136 before split | Explicit behavior-preserving refactor exception, not a pure move | Done; 217 / 1,288 / 641 lines |
+| Follow-up | `tests_scope`, `tests_scope_send`, `tests_scope_hotplug` | Scope test filenames shortened via `#[path]`, module names unchanged | - | Preserve all qualified test paths | Done; 1,746 / 778 / 948 lines; all 46 qualified paths unchanged |
 
 ## Verification and handover
 
-- Whole-item extractions are pure moves. Keyboard match-arm extraction is the
-  explicit refactor exception: preserve event-loop continuation and body order.
+- Whole-item extractions are pure moves. Keyboard match-arm and run_tile_loop
+  helper extractions are the two explicit refactor exceptions: outer continues
+  become equivalent helper returns, preserving nested targets, order and RAII.
   Compare removed/added bodies, permitting necessary declarations/visibility,
   helper calls, arm-level continue-to-return changes, log-path borrowing and rustfmt.
 - Required gates: locked four-package build/test/strict all-target clippy,
@@ -135,11 +137,18 @@ outlines; confirm whole-item boundaries before each extraction.
   compares exactly apart from helper imports/calls. All required gates preserve
   **2,106 / 0 / 1**. The family now has **74 files**, all **41 production
   children** below the soft cap; only `mod.rs` (**15,735 lines**) remains oversized.
-- Next: pending rows 24-30 target the files above under `tiling_sys/`, starting
-  selection/sends. The whole observation `TileLoop` impl remains in `mod.rs`
-  for `tiling_sys/observation.rs` later.
-  Keep `TileLoop` state in the parent
-  initially and use narrow imports/re-exports for moved leaves.
+- Windows tiling_sys phase 2 complete. Rows 24-30 plus observation are
+  extracted with the sizes listed above; scope test files are renamed with all
+  46 qualified paths unchanged. `run_loop` helpers are the second approved
+  refactor exception after the keyboard arms: wait/intake/tick extraction
+  preserves nested `continue` targets and per-turn `OwnerWorkGuard` RAII, using
+  narrow parent imports and `cfg(test)`-gated test imports. Other moves are
+  pure whole-item moves. Independent review found no behavior, control-flow,
+  RAII or public-API regressions. Final family: 103 files including root
+  (71 production / 32 test), 68,882 total lines (production 39,118 / test
+  29,764); max production `cross_drag.rs` 1,455, max test
+  `tests_pending_drop.rs` 2,852; no production file over 1,500, no test file
+  over 3,000; `mod.rs` 1,082. Required gates pass with 2,106 / 0 / 1.
 - Production risk: moving a function into a child changes unqualified name
   resolution and sibling access. Confirm imports and minimal visibility rather
   than assuming private child items remain callable from the parent.

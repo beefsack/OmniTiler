@@ -6,9 +6,9 @@ Continue the [split map](../research/windows-port/tiling-sys-split-map.md)
 after phase 1: subdivide the D23 tests and extract production responsibilities
 in orders 14-30. Preserve behavior, test names and public entrypoint paths.
 Use whole-item moves, necessary visibility/imports/module declarations and
-rustfmt changes. The keyboard tick is the explicit exception: extract its
-three large match arms into helpers without changing behavior. Other oversized
-individual functions remain intact.
+rustfmt changes. Two explicit helper-extraction exceptions preserve behavior:
+keyboard-tick match arms and run_tile_loop wait/intake/tick responsibility
+helpers. Other oversized individual functions remain intact.
 Organize the existing family under `tiling_sys/mod.rs`, use role-based child
 names and replace the D23 textual include with a real test submodule.
 
@@ -109,13 +109,46 @@ names and replace the D23 textual include with a real test submodule.
   four-package build/test/strict all-target clippy, workspace fmt and diff
   checks pass: 2,106 passed / 0 failed / 1 ignored.
 
-## Remaining work
+- Workspace selection/sends: `workspace_mode` 489 / `selection` 663 / `sends`
+  652 / `send_preflight` 106 / `send_native` 403 / `send_stay` 411 /
+  `send_follow` 137 lines; parent 12,922. Polls/ticks/migration:
+  `cli_resize` 174 / `cli_workspace` 817 / `workspace_navigation` 334 /
+  `workspace_send_tick` 543 / `migration` 390 / `migration_run` 1,393 lines
+  (`migration_run` holds the cap); parent 9,299. History/context/output-sync:
+  623 / 93 / 480 lines; parent 8,122. Windrag/pending/gesture: 356 / 776 /
+  920 lines; parent 6,091. Settings: 549 lines; parent 5,552. Run loop pure
+  move: 2,628 lines; parent 2,928. Public commands: 472 / 261 / 336 / 452
+  lines; parent 1,431. Observation: 359 lines; parent 1,076. Scope filenames
+  shortened via `#[path]` (`tests_scope` 1,746 / `tests_scope_send` 778 /
+  `tests_scope_hotplug` 948); all 46 qualified test paths unchanged.
+  All bodies compare exactly apart from necessary visibility/imports, narrow
+  parent re-exports, `cfg(test)`-gated test imports and rustfmt signature
+  wrapping (row-24 pair, `capture_gesture_start`, `suspend_read`); the
+  keyboard-arm and run-loop helper refactors are separately approved.
+- Run-loop helpers (second approved refactor exception after the keyboard
+  arms): edge drain, snap/windrag intake and active tick move into
+  `run_loop_wait.rs` 141 / `run_loop_intake.rs` 766 / `run_loop_tick.rs` 764;
+  `run_loop.rs` is 1,060 lines and `mod.rs` is 1,082. Skeleton keeps
+  stop/deadline/wait/clock/guard/ack-only/teardown byte-exact; stop/deadline
+  and ack-only exits stay inline, idle/suspended/paused returns lead to the
+  same outer `continue`, and `Err` propagates through the closure into
+  unchanged teardown; all nested `continue`s
+  retain original targets and per-turn `OwnerWorkGuard` RAII stays in the
+  skeleton. Locked four-package build/test/strict all-target clippy, workspace
+  fmt and diff checks pass: 2,106 passed / 0 failed / 1 ignored. Independent
+  review found no behavior, control-flow, RAII or public-API regressions.
 
-Production map orders 24-30, starting with selection/sends;
-retain the whole observation `TileLoop` impl for later extraction. All remaining
-targets are listed under their new directory paths in the split map.
-The keyboard soft-cap exception is resolved; main loop and public commands
-remain for their planned late extractions.
+## Completion
+
+Windows `tiling_sys` phase 2 is complete. All map orders 14-30, the
+observation impl, the D23 `hidden` submodule, the scope filename cleanup and
+both approved helper extractions (keyboard arms, run-loop wait/intake/tick)
+are done. Final family: 103 files including root (71 production / 32 test),
+68,882 lines (production 39,118 / test 29,764); max production
+`cross_drag.rs` 1,455, max test `tests_pending_drop.rs` 2,852; no production
+file over 1,500, no test file over 3,000. The broader cross-platform
+module-size backlog (`workspace_owner.rs`, `snapkey.rs`, shared crates, KDE
+files) remains open.
 
 ## Commit records
 

@@ -527,8 +527,8 @@ decisions of 2026-09-24 are under
   Preserve safe input/render handoffs. [Rule](decisions.md#rust-unsafe-guardrail).
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
-  Behavior-preserving moves between feature deliveries, with a verified
-  keyboard match-arm extraction exception. Windows first:
+  Behavior-preserving moves between feature deliveries, with two verified
+  helper-extraction exceptions (keyboard match arms, run-loop wait/intake/tick). Windows first:
   `crates/tiler-windows/src/tiling_sys/`, then
   `workspace_owner.rs` (~12k) and `snapkey.rs` (~6.5k). Shared crates
   (`tiler-protocol` `planner_protocol.rs`, `tiler-core` `engine.rs` and
@@ -539,15 +539,15 @@ decisions of 2026-09-24 are under
   Windows phase 1: 14 pure-move extraction commits reduce `tiling_sys.rs`
   from 61,917 to 35,537 lines (-26,380, 42.6%). All 28 inline test modules
   now occupy separate child files totaling 26,288 lines; production unchanged.
-   Phase 2 rows 14-23 extracted; the 74-file family now lives under
-   `tiling_sys/` with `mod.rs` (15,735 lines), role-named production children
-   and `tests_*.rs` tests. D23 uses a real `hidden` submodule (2,062 / 1,537
-   lines), retaining all 27 test bodies. All 41 production children meet the
-   soft cap: `keyboard_tick.rs` is 217 lines after its three large arms move
-   into directional (1,288) and overlay (641) dispatch helpers. Required gates pass
-   with 2,106 passed / 0 failed / 1 ignored, unchanged from the current baseline.
-   Next: selection/sends, then remaining production map rows 24-30 and the
-   observation impl; main loop and public commands last
+  Windows `tiling_sys` phase 2 complete: rows 14-30 plus observation, D23
+  `hidden` submodule, scope filename cleanup and both approved helper
+  extractions (keyboard arms; run-loop wait/intake/tick) are done. Family: 103
+  files including root, `mod.rs` 1,082 lines; max production `cross_drag.rs`
+  1,455 and max test `tests_pending_drop.rs` 2,852, within caps. Scope tests
+  keep all 46 qualified paths via `#[path]`; moves preserve bodies apart from
+  necessary visibility/imports and rustfmt signature wraps. Gates green 2,106 /
+  0 / 1. Remaining module-size work is outside Windows `tiling_sys`:
+  `workspace_owner.rs`, `snapkey.rs`, shared crates and KDE files above
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
    [phase 2](changes/windows-tiling-sys-split-phase2.md)).
