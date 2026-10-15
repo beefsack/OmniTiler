@@ -189,6 +189,19 @@ separate reserved strip next to the taskbar, never literally embedded.
 | 4 | SetParent/embed/inject into taskbar windows | Inside, if space can be found | Unsupported version-coupled path; primary and secondary HWNDs can be targeted | Child may follow shell hiding, but independent game safety is unproven | Initial prototype not meaningful; maintenance unbounded | Breaks on servicing updates |
 | 5 | External bar via OmniTiler IPC (Zebar/YASB style) | Full, owned by other renderer | Separate top-level window, not a taskbar slot; YASB flags windows_app_bar / always_on_top / hide_on_fullscreen ([YASB config][yasb-config]), hide gated on always_on_top ([bar.py][yasb-barpy]); komorebi-bar inspected source: no fullscreen auto-hide | Depends on external bar config; unowned | ~200-500 IPC publisher + widget/provider extra | Install/support burden; version drift |
 
+### Product constraints (user-approved 2026-10-15)
+
+- Explorer injection/hooking (Windhawk-style, TaskbarWidgets-style XAML
+  hooks) is rejected, reconfirmed 2026-10-15 for shell stability, Windows
+  update breakage, AV/anti-cheat flags and security posture.
+- Win11 offers no supported reservation among taskbar app icons;
+  tray-icon placeholders are rejected (position not guaranteed, icons
+  hideable).
+- The pager is always anchored left of the system tray: it may overlap app
+  icons when full but never the tray, and never shrinks or hides due to
+  crowding. It is enabled by default with an opt-out setting; users avoiding
+  overlap use the tray number plus menu pager.
+
 ### Prior art (observed docs/source; gaps noted, not universal claims)
 
 | Project | Observed | Gaps / caveats |
@@ -198,6 +211,24 @@ separate reserved strip next to the taskbar, never literally embedded.
 | Windhawk ([taskbar styler][wh-styler]) | XAML/resource hooking into Explorer; [issue #876][wh-876] reports mods stopped after Mar-2026 KB5079473+KB5081277 with reinstall fixing it (cause undiagnosed, report only); [discussion #2374][wh-2374] notes debug symbols needed to locate hooks | Hook mechanism / breakage cause not proven here |
 | RoundedTB ([README][roundedtb]) | Geometry modification, not hosting; admits auto-hide flicker, dynamic size mismatch, and Win10 split mode only on primary taskbar | Illustrates layout fragility; no pager or game-safety contract |
 | YASB / Zebar / komorebi-bar | Separate-window bars, not taskbar slots; see option 5 | Fullscreen behavior per-bar config; komorebi-bar none found |
+
+### Reference implementations (read-only study, user records 2026-10-15)
+
+Next step is read-only study of the implementations below to answer the
+open hosting questions; this is study only, and the product path stays an
+explicit own implementation with no GPL or Anti-996 code copied. Open
+questions: taskbar-child versus topmost-overlay hosting and why spike 3
+failed (native `SetParent` error 87, direct child creation error 5);
+z-order above the app list; tray left-edge discovery on primary and
+secondary taskbars; Explorer restart, auto-hide, DPI and fullscreen behavior.
+
+| Upstream repo | Commit | License | Study note |
+| --- | --- | --- | --- |
+| [zhongyang219/TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) | 930f175 | Anti-996 License 1.0 | study only, no code reuse |
+| [mgvs/winstats](https://github.com/mgvs/winstats) | 9ba25e8 | MIT | Rust, Shell_TrayWnd child, per-pixel alpha |
+| [Radeyun/taskbar-player](https://github.com/Radeyun/taskbar-player) | 41d564a | MIT | UpdateLayeredWindow child + topmost fallback, SetWinEventHook |
+| [hypnguyen1209/taskbar-monitor](https://github.com/hypnguyen1209/taskbar-monitor) | 821d751 | GPL | study only; tray-edge discovery |
+| [mechanicwb2-hub/now-playing-taskbar-widget](https://github.com/mechanicwb2-hub/now-playing-taskbar-widget) | a60265e | MIT | external topmost overlay, multi-monitor/auto-hide/DPI |
 
 Owned UI still needs lifecycle handling: an overlay has to rediscover taskbar
 rectangles/visibility and avoid overlapping shell controls, with no reserved slot.

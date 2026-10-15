@@ -821,7 +821,15 @@ decisions of 2026-09-24 are under
     border and its app icon centred, the active workspace in an active
     colour. Pager is visualization plus click-to-switch; existing tray icon
     stays for settings/toggles. AppBar rejected (maximized-window interaction);
-    injection rejected. [Live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
+    Explorer injection/hooking (Windhawk-style, TaskbarWidgets-style XAML
+    hooks) rejected, reconfirmed 2026-10-15 for shell stability, Windows
+    update breakage, AV/anti-cheat flags and security posture. Win11 has no
+    supported reservation among taskbar app icons; tray-icon placeholders
+    rejected (position not guaranteed, icons hideable). Pager is always
+    anchored left of the system tray: it may overlap app icons when full but
+    never the tray, and never shrinks or hides due to crowding. Enabled by
+    default with an opt-out setting; users avoiding overlap use the tray
+    number plus menu pager. [Live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
     tray-adjacent moved less than the measured legacy app-list edge. [Live spike 2](research/windows-port/taskbar-workspace-indicator.md#live-spike-2)
     demonstrated manifested layered-GDI child pixels, injected cell clicks,
     one real app icon and borderless-helper occlusion; later parenting/pixel

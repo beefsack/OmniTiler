@@ -613,15 +613,25 @@ platform API behavior.
   - User 2026-10-15 approved as delivered (single-output native): tray
     workspace pager stopgap. The tray icon shows the focused-output active
     workspace number over the existing glyph with the warning badge
-    preserved; the existing menu gains one plain row per focused-output
-    workspace with the active row radio-checked; left-click and right-click
+    preserved; the existing menu gains one plain `Workspace N` row per
+    focused-output workspace in order, placed before Settings, with the
+    active row radio-checked; left-click and right-click
     keep opening the existing menu. No popup, no app icons, no urgency
     marks. The embedded in-taskbar visual pager stays separate research.
-  - User 2026-10-14 taskbar pager target: one Plasma-style numbered pager
-    inside each output's taskbar, showing only that output's workspaces and
-    miniature window rectangles/icons. Visualization plus click-to-switch;
+  - User 2026-10-14 taskbar pager target, reconfirmed 2026-10-15: one
+    Plasma-style numbered pager inside each output's taskbar, showing only
+    that output's workspaces and miniature window rectangles/icons. Visualization plus click-to-switch;
     the existing tray icon stays for settings/toggles. AppBar rejected because
-    reservation interacts with maximized windows; injection rejected.
+    reservation interacts with maximized windows; Explorer injection/hooking
+    (Windhawk-style, TaskbarWidgets-style XAML hooks) rejected and
+    reconfirmed 2026-10-15 for shell stability, Windows update breakage,
+    AV/anti-cheat flags and security posture. Win11 has no supported
+    reservation among taskbar app icons, and tray-icon placeholders are
+    rejected (position not guaranteed, icons hideable). The pager is always
+    anchored left of the system tray: it may overlap app icons when full but
+    never the tray, and never shrinks or hides due to crowding. It is enabled
+    by default with an opt-out setting; users avoiding overlap use the tray
+    number plus menu pager.
     Taskbar-child embedding remains an unselected feasibility candidate:
     [live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14)
     progressed from invisible plain GDI to visible manifested layered GDI,
@@ -644,21 +654,21 @@ platform API behavior.
 
 ## Workspaces
 
-- Tentative (autonomous 2026-10-15), pending user review: Windows item 12
+- User 2026-10-15 approved: Windows item 12
   stores `core.workspace.mode` in additive settings schema v1, using KDE's
   `per-output-local` (default), `global-unique`, and `shared` tokens. Missing
   values backfill local; invalid tokens refuse through existing validation.
   Windows Settings exposes one three-choice workspace-scope selector.
-- Tentative (autonomous 2026-10-15), pending user review: workspace scope
+- User 2026-10-15 approved: workspace scope
   saves immediately on Apply but is adopted only on owner restart. The running
   owner retains its startup mode and reports restart-required drift, matching
   KDE's `workspaceMode` handling. Windows owner adoption/reporting delivered
   2026-10-15, with single-output native CLI evidence.
-- Tentative (autonomous 2026-10-15), pending user review: global-unique keeps
+- User 2026-10-15 approved: global-unique keeps
   scoped numbering and KDE's visible-elsewhere swap rule, with no new
   addressing. Local/global-unique retain per-output history/rings; shared
   retains one history/ring per decisions 1.2/1.5 below.
-- Tentative (2026-10-15), pending user review: shared-mode hotplug
+- User 2026-10-15 approved: shared-mode hotplug
   mirrors KDE, without project displacement/return mapping. Windows hotplug
   integration delivered offline 2026-10-15
   ([record](changes/archive/windows-workspace-scope-hotplug.md)); disconnected
@@ -674,13 +684,16 @@ platform API behavior.
   ([record](changes/archive/windows-workspace-scope-hotplug.md)). Single-output
   native regression and clean stop/restore repeated successfully; physical
   two-output journeys remain pending.
-- Tentative (autonomous 2026-10-15), pending user review: Windows shared-mode
+- User 2026-10-15 approved: Windows shared-mode
   startup uses the first live output's active workspace in stable output-key
   order as the initial logical view, converges other output-bound domains,
   and primes one history without recording startup as a previous transition.
   Primary-output and focused-output alternatives have no established reference
   outcome; the [startup discriminator](spec/reference-outcomes.md#windows-shared-startup-discriminator)
   leaves them TBD for two-output user testing.
+- User 2026-10-15 approved: item 12 shared mode refuses whole-workspace
+  migration per D2 above (local/global-unique only), with a reason before
+  writes and no native settings mutation.
 
 - User decision 2026-10-12, D16 / REQ-WS-05 / R-WS-05, option (a): sending
   a floating window to another workspace keeps it floating on arrival and
