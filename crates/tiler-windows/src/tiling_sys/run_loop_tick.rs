@@ -42,6 +42,7 @@ pub(super) fn run_active_tick(
     output_events: Vec<QueuedWorkspaceOutputIntent>,
     migrate_events: Vec<QueuedWorkspaceMigrateIntent>,
     history_events: Vec<QueuedWorkspaceHistoryIntent>,
+    tray: &mut Option<crate::tray_sys::TrayOwner>,
 ) -> Result<TickFlow> {
     if slow {
         *slow_last = now;
@@ -306,6 +307,7 @@ pub(super) fn run_active_tick(
         // resize poll carries its own suspend fence and refuses the
         // same way.
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+        tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
         poll_resize_cli_request(state, me, dir, &fulls, areas);
         state.gesture_before.clear();
         state.active.clear();
@@ -638,6 +640,7 @@ pub(super) fn run_active_tick(
             // never strands behind idle.
             maintenance_quiet = true;
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+            tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
             poll_resize_cli_request(state, me, dir, &fulls, areas);
         } else {
             if !snap_events.is_empty() {
@@ -668,6 +671,7 @@ pub(super) fn run_active_tick(
                 workspace_history_tick(state, me, store, dir, &fulls, areas, history_events, None);
             }
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+            tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
         }
     } else {
         // A just-ended managed gesture settles before keyboard
@@ -729,6 +733,7 @@ pub(super) fn run_active_tick(
         }
         gesture_tick(state, me, &fulls, areas, &ended);
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+        tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
     }
     // Post-mutation border refresh: reconciliation may have moved the
     // target this tick, so re-read the fresh frame instead of leaving

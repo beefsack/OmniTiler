@@ -514,6 +514,12 @@ struct TileLoop {
     /// Cached output context for the next select. Updated on every switch
     /// and refreshed from pointer/foreground context when stale.
     active_output: String,
+    /// Last genuine focused output (foreground-monitor derived, never the
+    /// owned tray/menu window): preserved across the transient menu
+    /// foreground so the tray click point never becomes a focus change.
+    /// Updated only from a known real foreground monitor; `None` until the
+    /// first one resolves.
+    last_genuine_output: Option<String>,
     /// True only for the `workspace-proof` command: workspace hides are
     /// allowed, but solely for frozen-allowlist helpers verified fresh via
     /// `verify_proof_owned` before every write. Normal `tile` allows
@@ -822,9 +828,9 @@ mod scope_trailing;
 
 mod scope_hotplug;
 
-mod shell;
-
 mod monitors;
+mod shell;
+mod tray_select;
 
 mod observe;
 

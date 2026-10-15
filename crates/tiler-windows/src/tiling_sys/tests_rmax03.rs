@@ -67,6 +67,7 @@ pub(super) fn test_state() -> TileLoop {
         member_identity: std::collections::BTreeMap::new(),
         member_tags: std::collections::BTreeMap::new(),
         active_output: String::new(),
+        last_genuine_output: None,
         workspace_proof: false,
         maximize_admission_attempted: std::collections::HashSet::new(),
         born_keep_overlay: std::collections::BTreeSet::new(),

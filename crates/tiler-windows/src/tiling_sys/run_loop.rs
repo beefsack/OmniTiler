@@ -196,6 +196,7 @@ pub(super) fn run_tile_loop(
         member_identity: std::collections::BTreeMap::new(),
         member_tags: std::collections::BTreeMap::new(),
         active_output: String::new(),
+        last_genuine_output: None,
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),
         born_keep_overlay: BTreeSet::new(),
@@ -413,9 +414,12 @@ pub(super) fn run_tile_loop(
         };
         // Session-only workspace toggle: the menu carries its rendered
         // opaque scope, the owner loop drains it once on its pump via
-        // `take_toggle_request` and verifies it below. Default picks persist
+        // `take_toggle_request` and verifies it below. The pager select
+        // carries its rendered output+workspace the same way (drained once
+        // via `take_select_request` by the tick poll). Default picks persist
         // through the settings file (normal owner).
         let toggle = Arc::new(Mutex::new(None::<crate::tray::ToggleScope>));
+        let select = Arc::new(Mutex::new(None::<crate::tray_pager::SelectScope>));
         // Stop-aware menu tracking: the modal track blocks this loop's pump,
         // so the menu thread observes the exact-owner stop file itself on a
         // 50 ms window timer and cancels via `EndMenu`. Same file plus match
@@ -438,6 +442,7 @@ pub(super) fn run_tile_loop(
             &settings_status,
             Some(log_path.clone()),
             &toggle,
+            &select,
             state.settings_dir.clone(),
             menu_stop_poll,
         ) {
@@ -823,6 +828,7 @@ pub(super) fn run_tile_loop(
                 output_events,
                 migrate_events,
                 history_events,
+                &mut tray,
             )? {
                 TickFlow::Done => {}
                 TickFlow::Idle | TickFlow::Suspended | TickFlow::Paused => continue,

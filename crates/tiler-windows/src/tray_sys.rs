@@ -46,8 +46,9 @@ use windows_sys::core::GUID;
 use crate::tray::{
     FIRST_RUN_TITLE, TASKBAR_CREATED_MESSAGE, TRAY_CALLBACK_MESSAGE, TRAY_ICON_SIZE,
     TRAY_TOOLTIP_TITLE, TRAY_WINDOW_CLASS, ToggleScope, TrayIconState, WorkspaceMenu,
-    first_run_body, menu_items, status_line,
+    first_run_body, menu_items_with_pager, status_line,
 };
+use crate::tray_pager::SelectScope;
 
 type DynError = Box<dyn std::error::Error>;
 
@@ -168,6 +169,20 @@ struct Inner {
     /// Scoped workspace-toggle request (rendered output+workspace); the
     /// owner loop drains it once and refuses stale/mismatched scopes.
     toggle: Arc<Mutex<Option<ToggleScope>>>,
+    /// Scoped pager-select request (rendered output+workspace+ordinal); the
+    /// owner loop drains it once via `take_select_request` and selects that
+    /// exact workspace only when the rendered output is still focused and
+    /// the workspace is still live there.
+    select: Arc<Mutex<Option<SelectScope>>>,
+    /// Cached focused-output pager rows for the next menu open: the output
+    /// key, its workspace ids in order, and the active id. Refreshed by
+    /// `sync_pager`; no syscalls here.
+    pager_output: Option<String>,
+    pager_ids: Vec<String>,
+    pager_active: Option<String>,
+    /// Focused-output active 1-based ordinal rendered into the icon glyph
+    /// (`None` keeps the plain glyph). Refreshed by `sync`.
+    ordinal: Option<u32>,
     /// Settings directory for persisting the default choice (normal owner
     /// only; `None` leaves the default rows as no-ops with a log line).
     settings_dir: Option<std::path::PathBuf>,
@@ -291,9 +306,9 @@ const TRAY_MENU_STOP_POLL_MS: u32 = 50;
 
 fn show_menu(hwnd: HWND) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreatePopupMenu, DestroyMenu, GetCursorPos, KillTimer, MF_CHECKED, MF_DISABLED, MF_GRAYED,
-        MF_SEPARATOR, MF_STRING, PostMessageW, SetForegroundWindow, SetTimer, TPM_RETURNCMD,
-        TrackPopupMenu, WM_NULL,
+        CheckMenuRadioItem, CreatePopupMenu, DestroyMenu, GetCursorPos, KillTimer, MF_BYCOMMAND,
+        MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostMessageW,
+        SetForegroundWindow, SetTimer, TPM_RETURNCMD, TrackPopupMenu, WM_NULL,
     };
     let raw = inner_of(hwnd);
     if raw.is_null() {
@@ -308,13 +323,18 @@ fn show_menu(hwnd: HWND) {
     let cached_conflicts_empty = cached.conflict_empty;
     let cached_status = cached.status.clone();
     let cached_workspace = WorkspaceMenu::new(cached.workspace_current, cached.workspace_default);
+    let cached_pager_output = cached.pager_output.clone();
+    let cached_pager_ids = cached.pager_ids.clone();
+    let cached_pager_active = cached.pager_active.clone();
     let stop_poll = cached.stop_poll.clone();
     // Rebuild the visible menu from cached state: no syscalls here, so a
     // stale poll can never project a wrong conflict row or workspace check.
-    let items = menu_items(
+    let items = menu_items_with_pager(
         !cached_conflicts_empty,
         &status_line(&cached_status),
         cached_workspace,
+        &cached_pager_ids,
+        cached_pager_active.as_deref(),
     );
     let menu = unsafe { CreatePopupMenu() };
     if menu.is_null() {
@@ -344,9 +364,13 @@ fn show_menu(hwnd: HWND) {
         }
         // The disabled status row renders greyed; every other visible row is
         // a live command. The workspace checkbox and default choices render
-        // their truthful checked state.
+        // their truthful checked state; pager rows skip the check here and
+        // get the radio bullet below (`AppendMenuW` draws checks only).
+        let pager_row = *id >= crate::tray_pager::MENU_ID_WORKSPACE_FIRST
+            && (((*id - crate::tray_pager::MENU_ID_WORKSPACE_FIRST) as usize)
+                < cached_pager_ids.len());
         let mut flags = MF_STRING;
-        if *checked {
+        if *checked && !pager_row {
             flags |= MF_CHECKED;
         }
         if !enabled {
@@ -368,6 +392,25 @@ fn show_menu(hwnd: HWND) {
             DestroyMenu(menu);
         }
         return;
+    }
+    // Radio bullet for the active pager row over its id range, by command:
+    // every other check above is untouched. Skipped when the active id is
+    // unknown (rows stay unchecked, like the model).
+    if !cached_pager_ids.is_empty()
+        && let Some(active) = cached_pager_active
+            .as_deref()
+            .and_then(|active| cached_pager_ids.iter().position(|id| id == active))
+    {
+        let first = crate::tray_pager::MENU_ID_WORKSPACE_FIRST;
+        unsafe {
+            CheckMenuRadioItem(
+                menu,
+                first,
+                first + cached_pager_ids.len() as u32 - 1,
+                first + active as u32,
+                MF_BYCOMMAND,
+            );
+        }
     }
     unsafe {
         (&mut *raw).menu_tracking = true;
@@ -424,7 +467,12 @@ fn show_menu(hwnd: HWND) {
         || unsafe { (&*raw).stop.load(Ordering::SeqCst) };
     let toggle_available =
         unsafe { (&*raw).workspace_current.is_some() && (&*raw).workspace_scope.is_some() };
-    match crate::tray::resolve_menu_pick(picked, stop_during, toggle_available) {
+    match crate::tray::resolve_menu_pick_with_pager(
+        picked,
+        stop_during,
+        toggle_available,
+        cached_pager_ids.len(),
+    ) {
         crate::tray::MenuPickOutcome::SpawnSettings => {
             spawn_settings_detached();
         }
@@ -449,6 +497,23 @@ fn show_menu(hwnd: HWND) {
         crate::tray::MenuPickOutcome::PersistDefault { default_tiled } => {
             let inner = unsafe { &mut *raw };
             persist_default_choice(inner, default_tiled);
+        }
+        crate::tray::MenuPickOutcome::SelectWorkspace { index } => {
+            // Exact-workspace select: carry the rendered output, workspace
+            // id and ordinal to the owner loop, which drains it once on its
+            // pump and selects it only when the rendered output is still
+            // focused and the workspace is still live there (never here, so
+            // a stale menu can never select a wrong workspace).
+            if let (Some(output), Some(workspace)) =
+                (cached_pager_output, cached_pager_ids.get(index))
+            {
+                let inner = unsafe { &*raw };
+                *inner
+                    .select
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) =
+                    Some(SelectScope::new(&output, workspace, index as u32 + 1));
+            }
         }
         crate::tray::MenuPickOutcome::Noop => {}
     }
@@ -556,6 +621,7 @@ pub struct TrayOwner {
     hwnd: HWND,
     stop: Arc<AtomicBool>,
     toggle: Arc<Mutex<Option<ToggleScope>>>,
+    select: Arc<Mutex<Option<SelectScope>>>,
 }
 
 impl TrayOwner {
@@ -566,7 +632,9 @@ impl TrayOwner {
     /// bounded `tray-taskbar` line per Explorer restart, if any, plus the
     /// bounded `tray-default` lines for default picks. `toggle` carries the
     /// scoped workspace-toggle request to the owner loop (drained once via
-    /// `take_toggle_request`); `settings_dir` persists default picks
+    /// `take_toggle_request`); `select` carries the scoped pager-select
+    /// request (drained once via `take_select_request`); `settings_dir`
+    /// persists default picks
     /// (normal owner only). `stop_poll` is the graceful-stop predicate the
     /// menu-thread stop timer observes while modal tracking blocks the owner
     /// pump (`None` keeps legacy tracking).
@@ -575,6 +643,7 @@ impl TrayOwner {
         settings_status: &str,
         log_path: Option<std::path::PathBuf>,
         toggle: &Arc<Mutex<Option<ToggleScope>>>,
+        select: &Arc<Mutex<Option<SelectScope>>>,
         settings_dir: Option<std::path::PathBuf>,
         stop_poll: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     ) -> Result<Self, DynError> {
@@ -630,6 +699,11 @@ impl TrayOwner {
             workspace_scope: None,
             workspace_default: true,
             toggle: Arc::clone(toggle),
+            select: Arc::clone(select),
+            pager_output: None,
+            pager_ids: Vec::new(),
+            pager_active: None,
+            ordinal: None,
             settings_dir,
         });
         let raw = Box::into_raw(inner);
@@ -667,29 +741,55 @@ impl TrayOwner {
             hwnd,
             stop,
             toggle: Arc::clone(toggle),
+            select: Arc::clone(select),
         })
     }
 
-    /// Refresh the badge/tooltip from live owner state and retry a pending
-    /// add through the state gate. Change-gated: steady state issues no
-    /// syscalls, so the 100 ms pump costs nothing when nothing changed.
-    pub fn sync(&mut self, conflict_empty: bool, settings_status: &str) {
+    /// Refresh the badge/number/tooltip from live owner state and retry a
+    /// pending add through the state gate. Change-gated: steady state issues
+    /// no syscalls, so the 100 ms pump costs nothing when nothing changed.
+    /// `ordinal` is the focused-output active 1-based workspace number
+    /// (`None` keeps the plain glyph); a changed number rebuilds both glyph
+    /// variants with the warning badge preserved. A failed rebuild keeps the
+    /// old pair fail-closed and retries on the next change.
+    pub fn sync(&mut self, conflict_empty: bool, settings_status: &str, ordinal: Option<u32>) {
         let raw = inner_of(self.hwnd);
         if raw.is_null() {
             return;
         }
         let inner = unsafe { &mut *raw };
         let warning = !conflict_empty;
-        let changed = warning != inner.showing_warning || settings_status != inner.status;
+        let presentation_changed = warning != inner.showing_warning
+            || ordinal != inner.ordinal
+            || settings_status != inner.status;
         inner.conflict_empty = conflict_empty;
         inner.status = settings_status.to_owned();
-        if warning != inner.showing_warning {
-            inner.showing_warning = warning;
-            inner.sync_icon();
-        } else if inner.state.needs_add() {
+        if warning != inner.showing_warning || ordinal != inner.ordinal {
+            let normal = icon_from_bgra(&crate::tray::tray_icon_bgra_with_number(false, ordinal));
+            let warned = icon_from_bgra(&crate::tray::tray_icon_bgra_with_number(true, ordinal));
+            match (normal, warned) {
+                (Ok(normal), Ok(warned)) => {
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(inner.icon_normal);
+                        windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(
+                            inner.icon_warning,
+                        );
+                    }
+                    inner.icon_normal = normal;
+                    inner.icon_warning = warned;
+                    inner.showing_warning = warning;
+                    inner.ordinal = ordinal;
+                }
+                (Ok(icon), Err(_)) | (Err(_), Ok(icon)) => unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(icon);
+                },
+                (Err(_), Err(_)) => {}
+            }
+        }
+        if inner.state.needs_add() {
             inner.add();
-        } else if changed {
-            // Tooltip/status refresh rides one modify; icon swaps above.
+        } else if presentation_changed {
+            // Tooltip/status/number refresh rides one modify; icon swaps above.
             inner.sync_icon();
         }
     }
@@ -700,6 +800,14 @@ impl TrayOwner {
         self.stop.load(Ordering::SeqCst)
     }
 
+    /// Raw owner window value for exact owned-UI foreground comparison: the
+    /// per-pump focus computation treats this foreground as our own
+    /// transient menu, never as a genuine output focus change.
+    #[must_use]
+    pub fn hwnd_value(&self) -> u64 {
+        self.hwnd as usize as u64
+    }
+
     /// Drain one pending scoped workspace-toggle request (set by the menu,
     /// consumed once by the owner loop). Returns `None` when no pick waits.
     pub fn take_toggle_request(&self) -> Option<ToggleScope> {
@@ -707,6 +815,39 @@ impl TrayOwner {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .take()
+    }
+
+    /// True when a pager-select pick waits (non-draining peek so the pump
+    /// can wake for it before the dispatch site drains it once).
+    pub fn has_select_request(&self) -> bool {
+        self.select
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_some()
+    }
+
+    /// Drain one pending scoped pager-select request (set by the menu,
+    /// consumed once by the owner loop). Returns `None` when no pick waits.
+    pub fn take_select_request(&self) -> Option<SelectScope> {
+        self.select
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+    }
+
+    /// Refresh the cached pager section from live owner state: the focused
+    /// output key (`None` when unknown), its workspace ids in order, and the
+    /// active id. The next menu open renders exactly this; no syscalls here.
+    /// An empty id list omits the section.
+    pub fn sync_pager(&mut self, output: Option<String>, ids: Vec<String>, active: Option<String>) {
+        let raw = inner_of(self.hwnd);
+        if raw.is_null() {
+            return;
+        }
+        let inner = unsafe { &mut *raw };
+        inner.pager_output = output;
+        inner.pager_ids = ids;
+        inner.pager_active = active;
     }
 
     /// Refresh the cached workspace section from live owner state: the opaque
@@ -1156,7 +1297,7 @@ pub fn first_run_dialog(stop: impl Fn() -> bool) -> FirstRunOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tray::{MENU_ID_CONFLICT, MENU_ID_SETTINGS, MENU_ID_STATUS};
+    use crate::tray::{MENU_ID_CONFLICT, MENU_ID_SETTINGS, MENU_ID_STATUS, menu_items};
 
     #[test]
     fn tooltip_carries_status_and_conflict_suffix() {

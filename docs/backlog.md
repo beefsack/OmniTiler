@@ -816,6 +816,10 @@ decisions of 2026-09-24 are under
     and owner snapshot (per-output list/active id, saved rects/HWND identities,
     urgency). New `pager.rs`/`pager_sys.rs` estimate 800-1,400 Windows-specific
     LOC once hosting works (tests/shared core separate), not `tiling_sys.rs`.
+    Stopgap decided 2026-10-15: tray icon number plus in-menu workspace pager
+    ([record](changes/windows-tray-menu-pager.md)); no popup, no click
+    rebinding. The in-taskbar visual pager above remains separate research,
+    including the Win8+/PMv2 manifest question.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product

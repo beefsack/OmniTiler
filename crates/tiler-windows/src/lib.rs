@@ -23,6 +23,7 @@ pub mod tiling;
 #[cfg(windows)]
 pub mod tiling_sys;
 pub mod tray;
+pub mod tray_pager;
 #[cfg(windows)]
 pub mod tray_sys;
 pub mod win_mouse;

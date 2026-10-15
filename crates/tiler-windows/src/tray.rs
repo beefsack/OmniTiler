@@ -238,7 +238,25 @@ pub fn menu_items(
     status_line: &str,
     workspace: WorkspaceMenu,
 ) -> Vec<MenuItem> {
-    vec![
+    menu_items_with_pager(conflict_visible, status_line, workspace, &[], None)
+}
+
+/// Build the tray menu with the focused-output pager section: one plain row
+/// per workspace id in order, 1-based tentative `Workspace N` labels, with
+/// the active workspace radio-checked. The section sits after the
+/// toggle/default rows and before Settings; it is omitted entirely when
+/// `pager_ids` is empty (unknown focused output). Clicking a row selects
+/// that exact workspace through a scoped select request (stale renders
+/// refuse at dispatch, like the toggle fence).
+#[must_use]
+pub fn menu_items_with_pager(
+    conflict_visible: bool,
+    status_line: &str,
+    workspace: WorkspaceMenu,
+    pager_ids: &[String],
+    pager_active: Option<&str>,
+) -> Vec<MenuItem> {
+    let mut items = vec![
         MenuItem::Command {
             id: MENU_ID_CONFLICT,
             label: CONFLICT_LABEL.to_owned(),
@@ -275,22 +293,35 @@ pub fn menu_items(
             visible: true,
             checked: !workspace.default_tiled,
         },
-        MenuItem::Separator,
-        MenuItem::Command {
-            id: MENU_ID_SETTINGS,
-            label: SETTINGS_LABEL.to_owned(),
-            enabled: true,
-            visible: true,
-            checked: false,
-        },
-        MenuItem::Command {
-            id: MENU_ID_STOP,
-            label: STOP_LABEL.to_owned(),
-            enabled: true,
-            visible: true,
-            checked: false,
-        },
-    ]
+    ];
+    if !pager_ids.is_empty() {
+        items.push(MenuItem::Separator);
+        for (index, id) in pager_ids.iter().enumerate() {
+            items.push(MenuItem::Command {
+                id: crate::tray_pager::menu_id_for_index(index),
+                label: crate::tray_pager::pager_label(index as u32 + 1),
+                enabled: true,
+                visible: true,
+                checked: pager_active.is_some_and(|active| active == id),
+            });
+        }
+    }
+    items.push(MenuItem::Separator);
+    items.push(MenuItem::Command {
+        id: MENU_ID_SETTINGS,
+        label: SETTINGS_LABEL.to_owned(),
+        enabled: true,
+        visible: true,
+        checked: false,
+    });
+    items.push(MenuItem::Command {
+        id: MENU_ID_STOP,
+        label: STOP_LABEL.to_owned(),
+        enabled: true,
+        visible: true,
+        checked: false,
+    });
+    items
 }
 
 /// Disabled status-row text for the menu: enabled state plus the owner's
@@ -316,6 +347,8 @@ pub enum MenuPickOutcome {
     ToggleWorkspace,
     /// Persist the new-workspace default (never a session override).
     PersistDefault { default_tiled: bool },
+    /// Select one pager workspace row (0-based row in the rendered pager).
+    SelectWorkspace { index: usize },
     /// Dismissal, disabled status row, unknown id, or a pick discarded by a
     /// racing graceful stop: no spawn, no toggle, no write.
     Noop,
@@ -336,7 +369,28 @@ pub const fn resolve_menu_pick(
     stop_during: bool,
     toggle_available: bool,
 ) -> MenuPickOutcome {
+    resolve_menu_pick_with_pager(picked, stop_during, toggle_available, 0)
+}
+
+/// Pure post-tracking decision with the pager section: `pager_count` is the
+/// rendered pager row count. Pager rows resolve to `SelectWorkspace` by row;
+/// out-of-range ids stay noop, and a racing stop discards pager picks like
+/// every other pick except Stop itself.
+#[must_use]
+pub const fn resolve_menu_pick_with_pager(
+    picked: u32,
+    stop_during: bool,
+    toggle_available: bool,
+    pager_count: usize,
+) -> MenuPickOutcome {
     if stop_during && picked != MENU_ID_STOP {
+        return MenuPickOutcome::Noop;
+    }
+    if picked >= crate::tray_pager::MENU_ID_WORKSPACE_FIRST {
+        let index = (picked - crate::tray_pager::MENU_ID_WORKSPACE_FIRST) as usize;
+        if index < pager_count {
+            return MenuPickOutcome::SelectWorkspace { index };
+        }
         return MenuPickOutcome::Noop;
     }
     match picked {
@@ -535,6 +589,83 @@ pub fn tray_icon_bgra(warning: bool) -> Vec<u8> {
         for y in 29..=30 {
             for x in 27..=28 {
                 put(&mut pixels, x, y, WARN_INK);
+            }
+        }
+    }
+    pixels
+}
+
+/// Digit ink for the tray workspace number (white with a dark shadow), drawn
+/// over the hot top-left pane, clear of the bottom-right warning badge.
+const DIGIT_INK: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
+const DIGIT_SHADOW: [u8; 4] = [0x10, 0x10, 0x10, 0xFF];
+
+/// 3x5 micro font for `0..=9`: each row holds 3 bits (high bit left).
+const DIGIT_FONT: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+fn put_clipped(pixels: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
+    if x < 0 || y < 0 || x >= TRAY_ICON_SIZE as i32 || y >= TRAY_ICON_SIZE as i32 {
+        return;
+    }
+    put(pixels, x as usize, y as usize, color);
+}
+
+/// Render the tiling-identity glyph with the focused-output active 1-based
+/// ordinal overlaid (`None` keeps the plain glyph byte-for-byte). The
+/// warning badge is preserved underneath the number either way; app icons
+/// and urgency markers are deferred. Single digits render doubled in the
+/// hot pane; multi-digit ordinals render doubled from the left frame edge
+/// and clip at the icon bounds.
+#[must_use]
+pub fn tray_icon_bgra_with_number(warning: bool, ordinal: Option<u32>) -> Vec<u8> {
+    let mut pixels = tray_icon_bgra(warning);
+    let Some(ordinal) = ordinal else {
+        return pixels;
+    };
+    let text = ordinal.to_string();
+    // Doubled 3x5 cells with a 2px column gap: one cell is 6px wide.
+    let scale = 2;
+    let step = 3 * scale + 2;
+    let origin_x = if text.len() == 1 { 5 } else { 2 };
+    let origin_y = 3;
+    for (slot, byte) in text.bytes().enumerate() {
+        let Some(digit) = byte.checked_sub(b'0').filter(|d| *d < 10) else {
+            continue;
+        };
+        let glyph = DIGIT_FONT[digit as usize];
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..3 {
+                if bits & (1 << (2 - col)) == 0 {
+                    continue;
+                }
+                let base_x = origin_x + slot as i32 * step + col * scale;
+                let base_y = origin_y + row as i32 * scale;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        put_clipped(
+                            pixels.as_mut(),
+                            base_x + dx + 1,
+                            base_y + dy + 1,
+                            DIGIT_SHADOW,
+                        );
+                    }
+                }
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        put_clipped(pixels.as_mut(), base_x + dx, base_y + dy, DIGIT_INK);
+                    }
+                }
             }
         }
     }
@@ -1118,6 +1249,149 @@ mod tests {
         assert_eq!(pixel(&warning, 0, 0), ACCENT);
         assert_eq!(pixel(&warning, 5, 5), PANE_HOT);
         assert_ne!(pixel(&normal, 30, 30), WARN);
+    }
+
+    #[test]
+    fn pager_section_orders_rows_with_single_active_radio() {
+        let ids = vec!["ws-a".to_owned(), "ws-b".to_owned(), "ws-c".to_owned()];
+        let items = menu_items_with_pager(
+            false,
+            "Status: Enabled (saved:1)",
+            WorkspaceMenu::new(Some(true), true),
+            &ids,
+            Some("ws-b"),
+        );
+        // Visible command order: status, toggle, defaults, pager rows in
+        // workspace order, then Settings and Stop (conflict hidden here).
+        let mut order = Vec::new();
+        for item in &items {
+            if let MenuItem::Command {
+                id, visible: true, ..
+            } = item
+            {
+                order.push(*id);
+            }
+        }
+        assert_eq!(
+            order,
+            vec![
+                MENU_ID_STATUS,
+                MENU_ID_WORKSPACE_TOGGLE,
+                MENU_ID_DEFAULT_TILED,
+                MENU_ID_DEFAULT_FLOATING,
+                crate::tray_pager::MENU_ID_WORKSPACE_FIRST,
+                crate::tray_pager::MENU_ID_WORKSPACE_FIRST + 1,
+                crate::tray_pager::MENU_ID_WORKSPACE_FIRST + 2,
+                MENU_ID_SETTINGS,
+                MENU_ID_STOP,
+            ]
+        );
+        // Exactly the active row is checked, with tentative labels.
+        let mut checked_ids = Vec::new();
+        let mut labels = Vec::new();
+        for item in &items {
+            if let MenuItem::Command {
+                id,
+                checked: is_checked,
+                label,
+                ..
+            } = item
+                && *id >= crate::tray_pager::MENU_ID_WORKSPACE_FIRST
+            {
+                if *is_checked {
+                    checked_ids.push(*id);
+                }
+                labels.push(label.clone());
+            }
+        }
+        assert_eq!(
+            checked_ids,
+            vec![crate::tray_pager::MENU_ID_WORKSPACE_FIRST + 1]
+        );
+        assert_eq!(labels, vec!["Workspace 1", "Workspace 2", "Workspace 3"]);
+        // Empty pager omits the section without a stray separator: the
+        // legacy order is unchanged.
+        let legacy = menu_items(
+            false,
+            "Status: Enabled (saved:1)",
+            WorkspaceMenu::new(None, true),
+        );
+        let bare = menu_items_with_pager(
+            false,
+            "Status: Enabled (saved:1)",
+            WorkspaceMenu::new(None, true),
+            &[],
+            None,
+        );
+        assert_eq!(bare, legacy);
+    }
+
+    #[test]
+    fn pager_pick_resolves_by_row_with_stop_precedence() {
+        use MenuPickOutcome as O;
+        assert_eq!(
+            resolve_menu_pick_with_pager(
+                crate::tray_pager::MENU_ID_WORKSPACE_FIRST + 1,
+                false,
+                true,
+                3
+            ),
+            O::SelectWorkspace { index: 1 }
+        );
+        // Out-of-range pager ids and legacy ids behave as before.
+        assert_eq!(
+            resolve_menu_pick_with_pager(
+                crate::tray_pager::MENU_ID_WORKSPACE_FIRST + 3,
+                false,
+                true,
+                3
+            ),
+            O::Noop
+        );
+        assert_eq!(
+            resolve_menu_pick_with_pager(MENU_ID_SETTINGS, false, true, 3),
+            O::SpawnSettings
+        );
+        // A racing stop discards pager picks; Stop itself still stops.
+        assert_eq!(
+            resolve_menu_pick_with_pager(crate::tray_pager::MENU_ID_WORKSPACE_FIRST, true, true, 3),
+            O::Noop
+        );
+        assert_eq!(
+            resolve_menu_pick_with_pager(MENU_ID_STOP, true, true, 3),
+            O::RequestStop
+        );
+    }
+
+    #[test]
+    fn numbered_glyph_keeps_identity_and_warning() {
+        // No ordinal keeps the plain glyph byte-for-byte.
+        assert_eq!(
+            tray_icon_bgra_with_number(false, None),
+            tray_icon_bgra(false)
+        );
+        assert_eq!(tray_icon_bgra_with_number(true, None), tray_icon_bgra(true));
+        // Single and multi-digit ordinals paint digit ink and differ.
+        let one = tray_icon_bgra_with_number(false, Some(1));
+        let twelve = tray_icon_bgra_with_number(false, Some(12));
+        assert_ne!(one, tray_icon_bgra(false));
+        assert_ne!(twelve, one);
+        let inked = |pixels: &[u8]| {
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| **px == DIGIT_INK)
+                .count()
+        };
+        assert!(inked(&one) > 0);
+        assert!(inked(&twelve) > inked(&one));
+        // The warning badge survives underneath the number.
+        let warned = tray_icon_bgra_with_number(true, Some(3));
+        assert_eq!(pixel(&warned, 30, 30), WARN);
+        assert_eq!(pixel(&warned, 27, 25), WARN_INK);
+        assert_eq!(pixel(&warned, 0, 0), ACCENT);
+        assert_ne!(pixel(&warned, 30, 30), pixel(&one, 30, 30));
     }
 
     #[test]

@@ -162,7 +162,30 @@ pub(super) fn pump_intake(
             ),
             None => (true, "saved:unknown".to_owned()),
         };
-        tray.sync(conflict_empty, &settings_status);
+        // Focused-output pager: genuine focus (foreground, pointer, cache,
+        // ordering) supplies the listed output, its workspace order, the
+        // active id, and the 1-based tray number. The number follows
+        // workspace switches and output focus changes; the toggle scope
+        // below keeps its cached-output semantics untouched.
+        let owner = tray.hwnd_value();
+        let focused = tray_select::tray_focused_output(state, areas, owner);
+        let (pager_ids, pager_active) = match focused.as_deref() {
+            Some(output) => (
+                state.workspaces.workspace_ids(output),
+                state.workspaces.active_id(output),
+            ),
+            None => (Vec::new(), None),
+        };
+        let ordinal = focused
+            .as_deref()
+            .and_then(|output| crate::tray_pager::active_ordinal(&state.workspaces, output));
+        tray.sync(conflict_empty, &settings_status, ordinal);
+        tray.sync_pager(focused, pager_ids, pager_active);
+        // A waiting pager pick wakes the pump; the tick dispatch site
+        // drains it once (a gesture-held turn leaves it queued there).
+        if tray.has_select_request() {
+            woke = true;
+        }
         // Truthful workspace section: the opaque live scope plus its
         // tiled state and the persisted default. The next menu renders
         // exactly this; a toggle pick drains once below and flips the
