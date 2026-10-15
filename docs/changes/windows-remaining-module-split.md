@@ -114,18 +114,61 @@ Gates: locked four-package build (zero warnings), same-package
 tests, workspace fmt check, strict all-target clippy,
 `git diff --check`; suite 2,115 / 0 / 1.
 
+## Production split (row 24)
+
+`tiling/mod.rs` (3,929) becomes `mod.rs` (79) plus six role
+leaves, every production file under the 1,500-line soft cap. No
+behavior change: whole-item moves, 6/6 leaf bodies byte-identical
+(ordinal) to the staged parent slices with header-only
+`use super::*` per leaf. Zero visibility changes: all private
+helpers (`visible_bound`, `bounded_i32`, `pick_edge`, the
+border/underlay echo scanners) are used only inside their own
+leaf. All 138 `crate::tiling` paths preserved through explicit
+parent `pub use`; `tiling::tests` (6 tests) untouched.
+
+- `geometry.rs` 248: shipped gap consts, domain-bounds inset,
+  `FrameInsets`, outer-bound/size-hint normalization and
+  visible/min/max conversion, `overconstrained_effective`.
+- `classification.rs` 310: `TokenMap`, `ObservedTargetRef`,
+  `fingerprint`, `WindowFacts`/`SkipReason`, own-settings gate,
+  `classify`, overlay/float/sticky/orientation refusal predicates.
+- `float.rs` 706: `FloatFocusCandidate` selection, half-snap rect
+  plus constraints, maximize-clear/fullscreen/born-maximized
+  admission policy, sticky/float markers, retained rects,
+  restore-wake, `classify_focus`, `FullscreenToggle`,
+  stateless verdicts.
+- `reconcile.rs` 592: `ObservedTarget`/`AllowEntry` allowlist
+  parse/match/digest, `RefusedTracker`, readback outcomes,
+  drop-point/gesture classification, reconcile event builders.
+- `cli.rs` 1,429: capture/tile options, scope predicates, CLI
+  overrides, plus all four proof verifiers (tile, hide,
+  shortcut, workspace) with the shared echo scanners.
+- `workspace.rs` 629: children/inspect CLI surface,
+  workspace/resize actions/options/requests render/parse,
+  `is_borderless_fullscreen`, `tick_summary_signature`.
+- `mod.rs` 79: module docs, shared imports (consumed by the
+  leaves and `tests` via `super::*`), six `mod` decls,
+  explicit `pub use` re-exports, `#[cfg(test)] mod tests`.
+
+Row-22 check (before accepting): the staged parent is
+byte-identical to the base outside the single test-region hunk
+(the one apparent line-425 diff was a console-recoding artifact
+in the comparison pipeline; raw-byte comparison is clean), and
+`tests.rs` is the exact one-level dedent (294/294). Line counts
+here use raw-byte reads (`ReadAllLines` undercounts by ~158 on
+this file through the text pipeline).
+
+Gates: locked four-package build (zero warnings), same-package
+tests, workspace fmt check, strict all-target clippy,
+`git diff --check`; suite 2,115 / 0 / 1.
+
 ## Production map (next rows)
 
 Whole-item responsibility moves into directory modules with
 descriptive role names; visibility changes only as needed to compile.
 
 - `settings/mod.rs` DONE row 23 (see above).
-- `tiling/mod.rs` (3,929): geometry/bounds normalization plus
-  size-hint conversion; classification (`classify`,
-  `classify_focus`, allowlist/scope); float focus, half-snap,
-  fullscreen, gesture/drag, reconcile builders; CLI
-  parsers/verifiers per proof command plus workspace/resize
-  request render/parse.
+- `tiling/mod.rs` DONE row 24 (see above).
 - `input_pump/mod.rs` (1,816): backoff plus wait classification;
   inbox sender; input channels; snapshot helpers plus fake backend;
   `native` (backend trait, real hooks, wait/spawn, `PumpCore`,
