@@ -946,15 +946,15 @@ mod inspection;
 mod observation;
 
 #[cfg(test)]
-#[path = "tests_scope_tests.rs"]
+#[path = "tests_scope.rs"]
 mod tiling_sys_scope_tests;
 
 #[cfg(test)]
-#[path = "tests_scope_send_tests.rs"]
+#[path = "tests_scope_send.rs"]
 mod tiling_sys_scope_send_tests;
 
 #[cfg(test)]
-#[path = "tests_scope_hotplug_tests.rs"]
+#[path = "tests_scope_hotplug.rs"]
 mod tiling_sys_scope_hotplug_tests;
 
 #[cfg(test)]
