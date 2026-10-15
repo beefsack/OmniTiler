@@ -1,6 +1,6 @@
 # Windows remaining module split
 
-ACTIVE (row 22 done; production rows pending). Tests-first row of the
+ACTIVE (rows 22-25 done; render_pump production pending). Tests-first row of the
 remaining Windows top-level module-size split: extract every inline test
 module out of `settings.rs` (4,368 lines), `tiling.rs` (4,224),
 `input_pump.rs` (4,115) and `render_pump.rs` (3,203) into directory
@@ -169,10 +169,47 @@ descriptive role names; visibility changes only as needed to compile.
 
 - `settings/mod.rs` DONE row 23 (see above).
 - `tiling/mod.rs` DONE row 24 (see above).
-- `input_pump/mod.rs` (1,816): backoff plus wait classification;
-  inbox sender; input channels; snapshot helpers plus fake backend;
-  `native` (backend trait, real hooks, wait/spawn, `PumpCore`,
-  `run_pump`, re-exports).
+- `input_pump/mod.rs` DONE row 25 (see below).
 - `render_pump/mod.rs` (2,286): present types plus `Present` trait
   plus `RenderCore` plus fake present; `native` (channels, signals,
   lifecycle, handle, spawn, `run_renderer`, wait classification).
+
+## Production split (row 25)
+
+`input_pump/mod.rs` (1,816) becomes `mod.rs` (73) plus five role
+leaves plus a `native` directory module, every production file under
+the 1,500-line soft cap. No behavior change: whole-item moves, 5/5
+top-level leaf bodies byte-identical to the staged parent slices with
+header-only `use super::*`; `native/mod.rs` identical modulo the
+one-level dedent plus six rustfmt joins (three `install_keyboard`
+signatures, the spawn closure, `wait_ready`, the `None` wait arm;
+trailing-comma-only token delta). One necessary visibility widening:
+`InboxSender::invalidates` becomes `pub(super)` for the sibling
+`tests` module (2 sites); `core_tests` keeps native-private access as
+a child module. Zero `pub(super)` elsewhere, no `include!`. All
+`crate::input_pump` paths preserved through explicit parent `pub use`
+(`classify_input_wait` stays `pub(crate)`); `input_pump::tests`
+(19 tests) and `input_pump::native::core_tests` (35 tests) untouched.
+
+- `backoff.rs` 60: install-retry backoff plus ready/stop/contention
+  consts, `InputWaitReason`, wait classification.
+- `inbox_sender.rs` 278: safety cap plus `InboxSender`.
+- `channels.rs` 123: `InputChannels`, wake events plus notify.
+- `snapshot.rs` 64: snap-batch age plus shared-snapshot constructor.
+- `fake.rs` 74: scripted `FakeBackend`.
+- `native/mod.rs` 1,143: backend trait, real hooks, fake
+  `NativeHooks` impl, signals, `InputHandle` spawn/wait/stop, wait
+  fns, `PumpCore`, `run_pump`; `core_tests` resolves unchanged.
+- `mod.rs` 73: module docs, shared imports, seven `mod` decls,
+  explicit `pub use` re-exports, `#[cfg(test)] mod tests`.
+
+Gates: locked four-package build (zero warnings), same-package
+tests, workspace fmt check, strict all-target clippy,
+`git diff --check`; suite 2,115 / 0 / 1.
+
+Row-22 acceptance review: `tests.rs` 728/19, `core_tests.rs`
+1,568/35, zero `#[test]` in the parent, all qualified paths
+(`input_pump::tests`, `input_pump::native::core_tests`) unchanged in
+the suite output. No concrete issue: the inline-`mod native` child
+resolved correctly and now becomes an ordinary directory module with
+identical paths.
