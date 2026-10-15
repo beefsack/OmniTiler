@@ -75,7 +75,13 @@ decisions of 2026-09-24 are under
   The reply is the full desired window and workspace state, not a delta:
   each platform diffs it against its observed host state and applies the
   differences, so a dropped or failed update is corrected by the next reply
-  (user 2026-10-16).
+  (user 2026-10-16). Each full-state reply carries one monotonic state
+  revision under the core generation; a platform ignores a reply older than
+  the newest it has applied, and a generation change resets the ordering.
+  Existing ordering is partial: per-domain tiling `base_revision`,
+  owner/generation identity, request-side `StaleRevision` refusal and
+  per-correlation stale-reply handling in the KDE adapter; workspace
+  lifecycle state has no revision.
   Motivation: missed trailing-workspace creation/removal on individual event
   paths in KDE dynamic workspaces and Windows admission
   ([Windows record](changes/archive/windows-admission-trailing-workspace.md));
