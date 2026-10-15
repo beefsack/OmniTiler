@@ -71,7 +71,9 @@
   mutex before notification, avoiding a lost condition-variable wake.
 - All locked four-package build/test/strict all-target clippy, workspace format
   and diff checks passed: 2,158 passed, zero failed, one pre-existing ignored
-  (+13 icon tests). Portable cfg boundaries inspected; cross-platform CI pending.
+  (+13 icon tests). Portable cfg boundaries inspected. Cross-platform CI for
+  implementation `6d0c9f5` passed all eight jobs, including Windows, Rust and
+  macOS ([run](https://github.com/beefsack/OmniTiler/actions/runs/38816412355)).
 - Lifecycle/outcome logs contain only bounded source/result counts and retry
   reasons, never window titles, executable paths or other application content.
 - Implementation is ready for native appearance acceptance, not live-accepted.
