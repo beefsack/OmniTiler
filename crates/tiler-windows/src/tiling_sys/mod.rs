@@ -228,6 +228,9 @@ use self::rows::{
     remove_tile_override_mark_best_effort, retain_float_focus_validated,
 };
 use self::run_loop::run_tile_loop;
+use self::run_loop_intake::{Intake, pump_intake};
+use self::run_loop_tick::{TickFlow, run_active_tick};
+use self::run_loop_wait::drain_hook_edges;
 use self::selection::remember_select_departure;
 use self::selection::workspace_do_select;
 use self::send_follow::workspace_send_follow;
@@ -934,6 +937,9 @@ mod gesture_tick;
 mod settings;
 
 mod run_loop;
+mod run_loop_intake;
+mod run_loop_tick;
+mod run_loop_wait;
 
 mod commands;
 

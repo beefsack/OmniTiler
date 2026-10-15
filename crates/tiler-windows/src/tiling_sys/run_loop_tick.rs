@@ -1,0 +1,764 @@
+use super::*;
+
+use super::owner_work::OwnerWorkGuard;
+
+// Active-tick phases for the tile loop: slow poll, CLI wakes, the idle gate,
+// suspend/resume, gesture settle and dispatch, plus the end-of-turn commit.
+// Outer-loop `continue`s become `TickFlow` returns; nested loop control flow
+// below is untouched.
+pub(super) enum TickFlow {
+    Idle,
+    Suspended,
+    Paused,
+    Done,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_active_tick(
+    state: &mut TileLoop,
+    me: &ProcessIdentity,
+    dir: &Path,
+    store: &LedgerStore,
+    areas: &mut Vec<MonitorArea>,
+    monitor: &mut MonitorArea,
+    monitor_count: &mut usize,
+    slow_last: &mut Instant,
+    now: Instant,
+    slow: bool,
+    mut woke: bool,
+    log_path: &Path,
+    owner_work: &mut OwnerWorkGuard<'_>,
+    ow_counts: &OwnerWaitCounts,
+    snap_want: bool,
+    snap_primed: &mut bool,
+    snap_retry_at: &mut Option<Instant>,
+    ow_batch_total: u64,
+    ow_wakes: u64,
+    ow_starts: u64,
+    ow_ends: u64,
+    snap_events: Vec<QueuedSnapEvent>,
+    workspace_events: Vec<crate::snapkey::QueuedWorkspaceIntent>,
+    send_events: Vec<QueuedWorkspaceSendIntent>,
+    output_events: Vec<QueuedWorkspaceOutputIntent>,
+    migrate_events: Vec<QueuedWorkspaceMigrateIntent>,
+    history_events: Vec<QueuedWorkspaceHistoryIntent>,
+) -> Result<TickFlow> {
+    if slow {
+        *slow_last = now;
+        let fresh = all_monitors()?;
+        let devices: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
+        let fresh_devices: Vec<String> = fresh.iter().map(|a| a.device.clone()).collect();
+        let geometry_changed = fresh.len() != *monitor_count
+            || fresh_devices != devices
+            || fresh.iter().any(|a| {
+                areas
+                    .iter()
+                    .find(|b| b.device == a.device)
+                    .is_none_or(|b| b.work != a.work || b.full != a.full)
+            });
+        if geometry_changed {
+            *areas = fresh;
+            *monitor = areas[0].clone();
+            *monitor_count = areas.len();
+            // Arrival/removal relocates whole-workspace Engine
+            // sessions; bounds-only changes reproject retained
+            // sessions without touching topology.
+            sync_monitor_outputs(state, areas);
+            for output in state.workspaces.output_keys() {
+                let Some(active) = state.workspaces.active_id(&output) else {
+                    continue;
+                };
+                if let Some((_, key)) =
+                    workspace_domain_for(&output, &active, areas, state.inner_gap, state.outer_gap)
+                    && let Some(area) = areas.iter().find(|a| a.device == output)
+                    && let Some(bounds) = tiling_domain_bounds_with(area.work, state.outer_gap)
+                {
+                    state.engine.reproject_retained(&key, bounds);
+                }
+            }
+            log_json_at(log_path, serde_json::json!({"event":"work-area-changed"}));
+            *snap_retry_at = None;
+            // A changed work area is a meaningful retry point for a
+            // degraded Snap setup; quiet when the effect holds.
+            if snap_want && !state.suspended {
+                snap_resume(dir, me, store);
+                *snap_primed = true;
+            }
+            woke = true;
+        }
+        // Trace-only pump-wait summary at the existing slow cadence:
+        // one cumulative line per slow tick, no new timer or events.
+        // Reads only (diag snapshot plus renderer atomics/ack seq);
+        // never arms owner work and never signals a pump wake, so the
+        // summary cannot induce a wake. Owner counts cover outer
+        // product waits only (focus/proof nested waits excluded by
+        // construction); ack-only turns counted in `owner_ack_only`
+        // return before this block, so this line rides full turns.
+        // Input `turns` counts completed iterations and equals
+        // `input_waits`; stop before the wait increments neither;
+        // `*_timeout` fields count genuine `WAIT_TIMEOUT` (258)
+        // expiries only while `*_failed` counts `WAIT_FAILED` /
+        // unrecognized codes separately (a failed wait returns
+        // immediately; not proven delayed). Reason splits count native
+        // wait returns only, never context switches; render acks ride
+        // `render_acks` (`ack_seq`), never the wait counts. The input
+        // struct arrives under one diag-slot lock (one coherent
+        // snapshot); the renderer tuple is four independent atomic
+        // loads, so a concurrent bump can skew the sum by one, and
+        // cross-pump coherence is not claimed. Idle diffs take
+        // start/end lines from one traced run; stop short-circuits
+        // (owner return, input early return, renderer counted stop
+        // wait) are the only lifecycle exclusions.
+        if state.trace {
+            let (in_turns, in_waits, in_work, in_msg, in_timeout, in_failed) =
+                match state.input_bridge.as_ref() {
+                    Some(bridge) => {
+                        let diag = bridge.channels.diag.snapshot();
+                        (
+                            diag.turns,
+                            diag.waits,
+                            diag.wait_work,
+                            diag.wait_msg,
+                            diag.wait_timeout,
+                            diag.wait_failed,
+                        )
+                    }
+                    None => (0, 0, 0, 0, 0, 0),
+                };
+            let (re_waits, re_work, re_msg, re_timeout, re_failed, re_acks) =
+                match state.render_bridge.as_ref() {
+                    Some(bridge) => {
+                        let (waits, work, msg, timeout, failed) = bridge.channels.wait_counts();
+                        (waits, work, msg, timeout, failed, bridge.channels.ack_seq())
+                    }
+                    None => (0, 0, 0, 0, 0, 0),
+                };
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "pump-waits",
+                    "owner_waits": ow_counts.waits,
+                    "owner_ack_only": ow_counts.ack_only,
+                    "owner_input": ow_counts.input,
+                    "owner_ack": ow_counts.ack,
+                    "owner_msg": ow_counts.msg,
+                    "owner_timeout": ow_counts.timeout,
+                    "owner_failed": ow_counts.failed,
+                    "input_turns": in_turns,
+                    "input_waits": in_waits,
+                    "input_work": in_work,
+                    "input_msg": in_msg,
+                    "input_timeout": in_timeout,
+                    "input_failed": in_failed,
+                    "render_waits": re_waits,
+                    "render_work": re_work,
+                    "render_msg": re_msg,
+                    "render_timeout": re_timeout,
+                    "render_failed": re_failed,
+                    "render_acks": re_acks,
+                    "scope": "outer-only-plus-native-waits",
+                    "excludes": "focus-proof-nested-waits,stop-short-circuit",
+                }),
+            );
+        }
+    }
+    // Exact-owner out-of-hook select wakes the loop even with no other
+    // event; the poll itself consumes once and dispatches through the
+    // existing resolver. Checked before the idle skip so a pending
+    // request never waits for an unrelated wake.
+    if dir.join(WORKSPACE_REQUEST_FILE).exists() || dir.join(RESIZE_REQUEST_FILE).exists() {
+        woke = true;
+    }
+    // Bare-chord edge wake: GetAsyncKeyState levels are sampled here,
+    // before the idle skip, so a Win+Shift press/release with no
+    // WinEvent wakes the visual refresh on the 100ms pump cadence
+    // instead of waiting for the 2s slow poll. Steady hold stays
+    // quiet; the suspend/fullscreen path below still gates the
+    // refresh, and tiling reconciliation keeps its normal pacing
+    // (only transition ticks reconcile). No hook, no new framework.
+    {
+        let (win_held, shift_held) = chord_held_now();
+        let chord = tiler_core::visual::group_underlay_chord_held(win_held, shift_held);
+        if state.underlay_chord_last != chord {
+            state.underlay_chord_last = chord;
+            woke = true;
+        }
+    }
+    // Armed restore demands a reconcile once observed; the wake
+    // survives pending dispatches and gesture/suspend pauses and is
+    // consumed only by a gated reconcile below, on expiry, or on loss.
+    if state.restore_wake.is_some() {
+        let (expired, lost, done) =
+            restore_wake_probe(state, state.restore_wake.as_ref().expect("armed"), now);
+        let (keep, demand) = crate::tiling::restore_wake_step(true, expired, lost, done, false);
+        if demand {
+            woke = true;
+        }
+        if !keep {
+            state.restore_wake = None;
+        }
+    }
+    // An open managed gesture wakes the 100ms pump for the
+    // drop-preview track: pointer moves coalesce into one Engine
+    // preview sample per tick on both the native frame-following
+    // and the stationary Win+Left producers. The refresh itself
+    // gates resize/unknown/invalid holds; the wake only needs START
+    // capture.
+    if !woke
+        && state
+            .active
+            .iter()
+            .any(|hwnd| state.managed.contains(hwnd) && state.gesture_before.contains_key(hwnd))
+    {
+        woke = true;
+    }
+    // Trace-only owner-work gate: quiet short-poll iterations drop the
+    // disabled guard silently above via `continue`. Active wakes arm
+    // the single sample; RAII then records suspend/held/error exits.
+    // Due window summaries also flush on the idle path below (no new
+    // wake: the check rides this existing turn, and quiet windows
+    // with no activity emit nothing).
+    if state.trace && (woke || slow) {
+        let gesture_held = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
+        owner_work.arm(ow_batch_total, ow_wakes, ow_starts, ow_ends, gesture_held);
+    }
+    // Per-turn maintenance-quiet flag for the trailing health
+    // flush at the end of the turn (set on the quiet branch).
+    let mut maintenance_quiet = false;
+    if state.trace && !(woke || slow) {
+        owner_work.finish_turn(false);
+    }
+    if !(woke || slow) {
+        return Ok(TickFlow::Idle);
+    }
+    let fulls = monitor_fulls(areas);
+    if suspend_read(state, me, &fulls).veto.block {
+        if !state.suspended {
+            state.suspended = true;
+            state.snap_advance = None;
+            log_json_at(
+                log_path,
+                serde_json::json!({"event":"suspend","cause":"fullscreen-foreground"}),
+            );
+            if snap_want {
+                snap_suspend(dir, me, store);
+            }
+        } else {
+            state.snap_advance = None;
+        }
+        if !snap_events.is_empty() {
+            keyboard_tick(state, me, &fulls, areas, snap_events, Some("suspended"));
+        }
+        if !workspace_events.is_empty() {
+            workspace_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                workspace_events,
+                Some("suspended"),
+            );
+        }
+        if !send_events.is_empty() {
+            workspace_relative_send_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                send_events,
+                Some("suspended"),
+            );
+        }
+        if !output_events.is_empty() {
+            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("suspended"));
+        }
+        if !migrate_events.is_empty() {
+            workspace_migrate_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                migrate_events,
+                Some("suspended"),
+            );
+        }
+        if !history_events.is_empty() {
+            workspace_history_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                history_events,
+                Some("suspended"),
+            );
+        }
+        // Out-of-hook select observes the same suspension: consumed
+        // once with a suspended outcome, never applied while a
+        // fullscreen foreground holds the session. The test-needed
+        // resize poll carries its own suspend fence and refuses the
+        // same way.
+        poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+        poll_resize_cli_request(state, me, dir, &fulls, areas);
+        state.gesture_before.clear();
+        state.active.clear();
+        state.move_kind.clear();
+        state.esc_latched.clear();
+        state.gesture_esc_seq.clear();
+        state.gesture_end_seq.clear();
+        state.gesture_end_cursor.clear();
+        state.gesture_start_key.clear();
+        state.gesture_start_tag.clear();
+        state.gesture_producer.clear();
+        state.windrag_start_cursor.clear();
+        state.windrag_bound.clear();
+        state.preview_bound.clear();
+        state.preview_dead.clear();
+        state.gesture_preview_start.clear();
+        state.gesture_start_cursor.clear();
+        // A stale Esc edge must not leak into the next gesture.
+        // Routes through the input bridge on the product path
+        // (ordered FIFO with snapshots; held pairs keep their stored
+        // verdicts until hook release) and clears the process-global
+        // edge flags in pump order via the ClearEsc apply; direct
+        // sys calls on proof paths. Atomic sequencing guarantees a
+        // pre-gesture edge never cancels a later gesture.
+        offer_input_control(state, InboxItem::ClearEsc);
+        // A suspended session disarms the project hold with no
+        // replay; the consumed click already passed, so no half
+        // gesture can strand later.
+        offer_input_control(state, InboxItem::ClearWindrag);
+        hide_border(state, "suspended");
+        hide_underlay(state, "suspended");
+        hide_preview(state, "suspended");
+        // Suspended turns still commit their owner sample (the
+        // guard would otherwise record it silently on drop with
+        // no summary flush); then the disarmed guard drops.
+        if state.trace {
+            owner_work.finish_turn(false);
+        }
+        return Ok(TickFlow::Suspended);
+    }
+    if state.suspended {
+        state.suspended = false;
+        log_json_at(log_path, serde_json::json!({"event":"resume"}));
+        // A fresh foreground may accept the hook now: retry soon.
+        *snap_retry_at = None;
+        // Fresh Snap preimage when the setting drifted during
+        // suspension (or setup degraded earlier); quiet when the
+        // effect is still ours. This is also the deferred initial
+        // effect when the run started suspended.
+        if snap_want {
+            snap_resume(dir, me, store);
+            *snap_primed = true;
+        }
+    } else if snap_want && !*snap_primed {
+        // Deferred initial effect: the run started active but setup
+        // no longer disables. Drive once on the first active tick.
+        snap_resume(dir, me, store);
+        *snap_primed = true;
+    }
+    // Border follows the live foreground on every active wake,
+    // including managed gestures that pause tiling below: the refresh
+    // reads one fresh frame and never waits for reconciliation.
+    refresh_border_timed(state, me, &fulls, owner_work);
+    // The group fill follows on the same wake: chord/move trigger over
+    // the Engine-projected source union, same freshness contract.
+    refresh_group_underlay(state, me, &fulls, areas);
+    // Only gestures on managed windows pause tiling; unrelated
+    // windows never stall the loop.
+    let ended: Vec<u64> = state
+        .gesture_before
+        .keys()
+        .copied()
+        .filter(|hwnd| state.managed.contains(hwnd) && !state.active.contains(hwnd))
+        .collect();
+    // Drop pre-gesture state for windows that left management.
+    state
+        .gesture_before
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_end_cursor
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_start_key
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_start_tag
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_esc_seq
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_end_seq
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_producer
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .windrag_start_cursor
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .windrag_bound
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .preview_bound
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .preview_dead
+        .retain(|hwnd| state.managed.contains(hwnd));
+    state
+        .gesture_preview_start
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state
+        .gesture_start_cursor
+        .retain(|hwnd, _| state.managed.contains(hwnd));
+    state.active.retain(|hwnd| state.managed.contains(hwnd));
+    // Sequence-bound Esc latch, drained once per pump after event and
+    // suspend handling. Still-held gestures compare the live counter
+    // against START. Just-ended gestures compare the END-callback
+    // snapshot against START instead: a physical Esc that lands after
+    // the END but before this drain must never cancel the completed
+    // drop, while a fast cancel tap arriving with the END batch still
+    // latches. Only edges newer than the START snapshot latch, so
+    // pre-gesture taps never cancel. Fast taps arrive via the prompt
+    // callback, never via level polling. Injected Esc never sets the
+    // native edge (product hook filters injected keys), so synthetic
+    // title-bar proof paths keep their no-change restore without
+    // claiming an explicit cancel; the project windrag edge below is
+    // the one deliberate injected exception (the stationary hold has
+    // no native modal loop to cancel it).
+    {
+        // Product path consumes the process-global edges published
+        // directly in hook callbacks (no pump-forwarding delay can
+        // hide an Esc landing just before a WinEvent END); sequences
+        // come from the global atomic clocks sampled directly, never
+        // a delayed batch. Cancellation still requires a newer
+        // sequence than START, so stale flags never cancel.
+        let (esc_hit, now_seq, windrag_hit, windrag_now) = if state.input_bridge.is_some() {
+            (
+                crate::input_handoff::global_esc_edge()
+                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+                crate::snapkey::sys::shared_esc_seq(),
+                crate::input_handoff::global_windrag_esc_edge()
+                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+                crate::snapkey::sys::shared_windrag_esc_seq(),
+            )
+        } else {
+            (
+                crate::snapkey::sys::take_esc_edge(),
+                crate::snapkey::sys::esc_seq(),
+                crate::snapkey::sys::take_windrag_esc_edge(),
+                crate::snapkey::sys::windrag_esc_seq(),
+            )
+        };
+        if esc_hit {
+            for hwnd in state.active.iter() {
+                if !state.managed.contains(hwnd) {
+                    continue;
+                }
+                let start_seq = state.gesture_esc_seq.get(hwnd).copied().unwrap_or(0);
+                if esc_edge_cancels(start_seq, now_seq) {
+                    state.esc_latched.insert(*hwnd);
+                }
+            }
+            for hwnd in ended.iter() {
+                if !state.managed.contains(hwnd) {
+                    continue;
+                }
+                // END-bound: absent snapshots never latch (fail
+                // closed to no-cancel; settle classifies from
+                // geometry, which a real cancel restored natively).
+                let (Some(start_seq), Some(end_seq)) = (
+                    state.gesture_esc_seq.get(hwnd).copied(),
+                    state.gesture_end_seq.get(hwnd).copied(),
+                ) else {
+                    continue;
+                };
+                if esc_edge_cancels(start_seq, end_seq) {
+                    state.esc_latched.insert(*hwnd);
+                }
+            }
+        }
+        // Project-gesture cancel edge (physical or injected Esc):
+        // latches open windrag gestures only, with the same
+        // START/END sequence ordering. Never admits a command;
+        // settle reports the explicit `gesture-cancelled-esc`.
+        if windrag_hit {
+            let now_seq = windrag_now;
+            for hwnd in state.active.iter() {
+                if !state.managed.contains(hwnd) {
+                    continue;
+                }
+                if state.gesture_producer.get(hwnd).copied() != Some("windrag") {
+                    continue;
+                }
+                let start_seq = state.gesture_esc_seq.get(hwnd).copied().unwrap_or(0);
+                if esc_edge_cancels(start_seq, now_seq) {
+                    state.esc_latched.insert(*hwnd);
+                }
+            }
+            for hwnd in ended.iter() {
+                if !state.managed.contains(hwnd) {
+                    continue;
+                }
+                if state.gesture_producer.get(hwnd).copied() != Some("windrag") {
+                    continue;
+                }
+                let (Some(start_seq), Some(end_seq)) = (
+                    state.gesture_esc_seq.get(hwnd).copied(),
+                    state.gesture_end_seq.get(hwnd).copied(),
+                ) else {
+                    continue;
+                };
+                if esc_edge_cancels(start_seq, end_seq) {
+                    state.esc_latched.insert(*hwnd);
+                }
+            }
+        }
+    }
+    // Logical cancel hides the preview IMMEDIATELY on latch, never
+    // waiting for mouse-up (the stationary gesture has no native
+    // modal loop to end it; the native loop ends on its own).
+    for hwnd in state.esc_latched.iter().copied().collect::<Vec<_>>() {
+        if state.preview_bound.remove(&hwnd).is_some()
+            || render_carrier_visible(state, RenderCarrier::Preview)
+        {
+            hide_preview(state, "esc-cancelled");
+        }
+        state.preview_dead.remove(&hwnd);
+        state.gesture_preview_start.remove(&hwnd);
+        state.gesture_start_cursor.remove(&hwnd);
+    }
+    let paused = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
+    if paused {
+        // A managed gesture holds the loop and invalidates any
+        // own-focus chain; keyboard intents of this batch are stale
+        // and drop safely.
+        state.snap_advance = None;
+        if !snap_events.is_empty() {
+            keyboard_tick(state, me, &fulls, areas, snap_events, Some("gesture"));
+        }
+        if !workspace_events.is_empty() {
+            workspace_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                workspace_events,
+                Some("gesture"),
+            );
+        }
+        if !send_events.is_empty() {
+            workspace_relative_send_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                send_events,
+                Some("gesture"),
+            );
+        }
+        if !output_events.is_empty() {
+            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("gesture"));
+        }
+        if !migrate_events.is_empty() {
+            workspace_migrate_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                migrate_events,
+                Some("gesture"),
+            );
+        }
+        if !history_events.is_empty() {
+            workspace_history_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                history_events,
+                Some("gesture"),
+            );
+        }
+        // Drop-preview track on the 100ms pump while held: fresh
+        // observation plus the shared Engine resolver per moved
+        // pointer, on both producers. No focus, no geometry writes.
+        refresh_drag_preview(state, me, &fulls, areas);
+        // Due routine-frame summaries flush on this existing turn so
+        // per-move preview aggregates never strand behind the hold.
+        {
+            let now = Instant::now();
+            let lines = state.render_frames.take_due(now);
+            for line in lines {
+                log_json_at(log_path, line);
+            }
+        }
+        return Ok(TickFlow::Paused);
+    }
+    if ended.is_empty() {
+        if snap_events.is_empty()
+            && workspace_events.is_empty()
+            && send_events.is_empty()
+            && output_events.is_empty()
+            && migrate_events.is_empty()
+            && history_events.is_empty()
+        {
+            reconcile_tick(state, me, &fulls, areas);
+            if state.restore_wake.is_some() {
+                let (expired, lost, done) = restore_wake_probe(
+                    state,
+                    state.restore_wake.as_ref().expect("armed"),
+                    Instant::now(),
+                );
+                let (keep, _) = crate::tiling::restore_wake_step(true, expired, lost, done, true);
+                if !keep {
+                    state.restore_wake = None;
+                }
+            }
+            workspace_maintenance(state, me, store, dir, &fulls, areas);
+            // Quiet-turn maintenance arms the trailing health
+            // flush at the end of the turn so pending activity
+            // never strands behind idle.
+            maintenance_quiet = true;
+            poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+            poll_resize_cli_request(state, me, dir, &fulls, areas);
+        } else {
+            if !snap_events.is_empty() {
+                keyboard_tick(state, me, &fulls, areas, snap_events, None);
+            }
+            if !workspace_events.is_empty() {
+                workspace_tick(state, me, store, dir, &fulls, areas, workspace_events, None);
+            }
+            if !send_events.is_empty() {
+                workspace_relative_send_tick(
+                    state,
+                    me,
+                    store,
+                    dir,
+                    &fulls,
+                    areas,
+                    send_events,
+                    None,
+                );
+            }
+            if !output_events.is_empty() {
+                workspace_output_send_tick(state, me, &fulls, areas, output_events, None);
+            }
+            if !migrate_events.is_empty() {
+                workspace_migrate_tick(state, me, store, dir, &fulls, areas, migrate_events, None);
+            }
+            if !history_events.is_empty() {
+                workspace_history_tick(state, me, store, dir, &fulls, areas, history_events, None);
+            }
+            poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+        }
+    } else {
+        // A just-ended managed gesture settles before keyboard
+        // continuation resumes.
+        state.snap_advance = None;
+        if !snap_events.is_empty() {
+            keyboard_tick(state, me, &fulls, areas, snap_events, Some("gesture"));
+        }
+        if !workspace_events.is_empty() {
+            workspace_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                workspace_events,
+                Some("gesture"),
+            );
+        }
+        if !send_events.is_empty() {
+            workspace_relative_send_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                send_events,
+                Some("gesture"),
+            );
+        }
+        if !output_events.is_empty() {
+            workspace_output_send_tick(state, me, &fulls, areas, output_events, Some("gesture"));
+        }
+        if !migrate_events.is_empty() {
+            workspace_migrate_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                migrate_events,
+                Some("gesture"),
+            );
+        }
+        if !history_events.is_empty() {
+            workspace_history_tick(
+                state,
+                me,
+                store,
+                dir,
+                &fulls,
+                areas,
+                history_events,
+                Some("gesture"),
+            );
+        }
+        gesture_tick(state, me, &fulls, areas, &ended);
+        poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
+    }
+    // Post-mutation border refresh: reconciliation may have moved the
+    // target this tick, so re-read the fresh frame instead of leaving
+    // the pre-reconcile geometry stale until the next wake. Own
+    // overlay events are filtered above, so no feedback loop.
+    refresh_border_timed(state, me, &fulls, owner_work);
+    // Same for the group fill: a moved target may have joined another
+    // group, so the projected union re-resolves instead of lingering.
+    refresh_group_underlay(state, me, &fulls, areas);
+    // End-of-turn health commit: records the armed owner sample
+    // (pre-log exclusive span, including this turn's refreshes)
+    // and flushes due summaries, plus trailing activity on
+    // maintenance-quiet turns. The guard then drops disarmed.
+    if state.trace {
+        owner_work.finish_turn(maintenance_quiet);
+    }
+    // Routine-frame summaries flush on this existing turn (no new
+    // wake): due windows always, trailing activity on
+    // maintenance-quiet turns. Runs in both trace and production
+    // modes so aggregated geometry churn never strands.
+    {
+        let now = Instant::now();
+        let lines = if maintenance_quiet {
+            state.render_frames.take_trailing(now)
+        } else {
+            state.render_frames.take_due(now)
+        };
+        for line in lines {
+            log_json_at(log_path, line);
+        }
+    }
+    Ok(TickFlow::Done)
+}
