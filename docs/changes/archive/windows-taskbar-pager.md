@@ -1,5 +1,8 @@
 # Windows taskbar workspace pager
 
+Primary bottom-taskbar MVP delivered and natively verified, 2026-10-16.
+Cross-platform CI passed all eight jobs for implementation commit `6662e1e`.
+
 ## Goal and acceptance
 
 Deliver a product-integrated, default-enabled graphical pager immediately left
@@ -65,7 +68,9 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
   leaving restored it. Graceful and exact-owner emergency stop, independent
   restore, clean ledger, no pager/test-app residue and unchanged saved settings
   were verified. No actual Explorer restart or physical game result is claimed.
-- Cross-platform CI is pending publication. After that, archive this record.
+- Cross-platform CI passed all eight jobs, including Windows, Rust and macOS
+  build/test/fmt/strict-clippy checks
+  ([run](https://github.com/beefsack/OmniTiler/actions/runs/38752037556)).
 - Secondary tray anchors and non-bottom taskbars safely refuse unknown
   geometry. Physical multi-output, game, real Explorer-restart, auto-hide and
   display-reconfiguration checks remain pending. Icons are omitted.
@@ -85,3 +90,16 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
   span) safely refuses; wrapping/another treatment needs product review. This
   is distinct from app-icon crowding, which never changes pager layout.
 - Initial repository state was clean.
+
+## Remaining validation and scope
+
+- Next product work: inspect secondary tray boundaries on a physical
+  multi-output setup, then implement a proven anchor rather than a guessed
+  clock width. Current secondary refusal is an implementation gap, not a
+  completed multi-output pager.
+- Actual Explorer restart, DPI/auto-hide reconfiguration, physical mouse and
+  games/anti-cheat need separately scoped native validation. The existing
+  synthetic/managed-fullscreen evidence is not a substitute.
+- Live opt-out requires an isolated settings route or a deliberate saved
+  setting change. Icons, accessibility/theme/cost measurement and infeasible
+  whole-strip overcapacity treatment remain open.

@@ -839,7 +839,7 @@ decisions of 2026-09-24 are under
     fullscreen/elevation hiding are implemented. Owned-window native captures,
     two-way pager selection, create/send/close refresh, managed-fullscreen
     hide/return, synthetic TaskbarCreated and exact cleanup passed
-    ([record](changes/windows-taskbar-pager.md),
+    ([record](changes/archive/windows-taskbar-pager.md),
     [research](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
     Remaining: secondary taskbar tray anchors and physical multi-output;
     actual Explorer restart; physical mouse/game/anti-cheat acceptance;

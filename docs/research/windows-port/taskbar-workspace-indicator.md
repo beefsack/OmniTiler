@@ -662,7 +662,7 @@ counts exceeding the entire available strip width; accessibility/theme/cost
 measurement. Live opt-out was not attempted against shared saved settings;
 schema, hot-apply and queued-click refusal have offline coverage. Icons are
 omitted, not represented by generic substitutes. See the
-[implementation record](../../changes/windows-taskbar-pager.md).
+[implementation record](../../changes/archive/windows-taskbar-pager.md).
 
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4

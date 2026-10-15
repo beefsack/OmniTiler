@@ -72,7 +72,7 @@ native outcomes remain TBD.
 
 | Variant | Minimal action sequence | Ours outcome / evidence | Unsupported outcome |
 | --- | --- | --- | --- |
-| Rendered-output click versus focus | Focus output A; click workspace N on output B's pager | Tentative 2026-10-16: select the exact rendered output/workspace identity, not A or a recomputed ordinal; portable fence coverage. Native one-output message-driven selection passed ([record](../changes/windows-taskbar-pager.md)) | Secondary tray anchor, physical two-output click/focus and reference outcomes TBD |
+| Rendered-output click versus focus | Focus output A; click workspace N on output B's pager | Tentative 2026-10-16: select the exact rendered output/workspace identity, not A or a recomputed ordinal; portable fence coverage. Native one-output message-driven selection passed ([record](../changes/archive/windows-taskbar-pager.md)) | Secondary tray anchor, physical two-output click/focus and reference outcomes TBD |
 | Queued click across suppression | Queue a pager click; disable the pager or enter managed fullscreen before dispatch; resume | Drop the queued click, keep the current workspace; shared visibility/dispatch gates and regression tests. Managed-fullscreen hide/return passed natively, without a queued-click race | Physical race timing and real-game outcomes TBD; no replay is selected |
 | Strip wider than entire tray-left span | Keep adding workspaces until fixed DPI-scaled cells exceed the entire tray-left taskbar span | Current geometry refuses and logs rather than overlapping the tray; ordinary app-button crowding does not affect placement | Wrapping/other overcapacity treatment TBD for user review; this is not acceptance of hiding due to app-icon crowding |
 
