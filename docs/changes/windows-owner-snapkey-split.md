@@ -102,3 +102,48 @@ Leaves use `use super::*` per the `tiling_sys` precedent except the
 import-free `foreground` and `markers`. Gates: locked four-package build,
 same-package tests, workspace fmt check, strict all-target clippy,
 `git diff --check`; suite 2,115 / 0 / 1.
+
+## Production split (row 20)
+
+Snapkey production follows the same pattern: `snapkey.rs` (6,081 lines)
+becomes `snapkey/mod.rs` plus eight role leaves, every production file
+under the 1,500-line soft cap. No behavior change: whole-item moves, all
+leaf bodies byte-identical to the staged parent slices except four
+rustfmt reflows (three `repeat_live` signatures widened by the added
+`pub(super)` prefix, `push_g` split the same way, two `sys` joins from
+the one-level dedent). Public `crate::snapkey` paths preserved through
+explicit parent re-exports; test module identities unchanged
+(`snapkey::shift_sync_tests`, `snapkey::sys::sys_tests`, etc., 20/20
+unit tests pass).
+
+- `chords.rs` 827: `KeyboardConfig`, all VK constants, proof marker and
+  queue caps, `SnapOp`/`ResizeMode`/`ChordAction` vocabulary, pinned
+  routes, catalog/predicate/repeat-live/collision helpers.
+- `intents.rs` 496: `SnapCounts`, workspace/launch intent types,
+  `Classified` plus impl, `MaskTrigger`, `SnapClassify` state struct,
+  `GArm`.
+- `classifier.rs` 784: `impl SnapClassify` core (config gates, routing,
+  pins, modifiers, `held_shape`, Win/mask tracking) plus the `push`
+  dispatcher head.
+- `push_select.rs` 685: `push_owned` plus directional/resize/history/
+  digit arms.
+- `push_command.rs` 1,002: relative-send/output/migrate arms, mode
+  toggles (maximize, orientation, tiling, fullscreen, G arms), launch.
+- `queue.rs` 603: `QueuedMask`/`SnapOrigin`/verdicts, all queued
+  intents/events, `SnapQueue`, `classify_and_queue`, mask reserve/stamp.
+- `diag.rs` 426: marked/mod/callback diagnostic buffers and evidence.
+- `sys/mod.rs` 1,262: the inline `pub mod sys` dedented one level;
+  `mod sys_tests` resolves unchanged.
+- `mod.rs` 81: module docs, `Direction` import, nine `mod` decls,
+  explicit `pub use` re-exports (`pub(crate)` for `catalog_index`),
+  three `#[path]` test decls shortened to the new directory.
+- Visibility: 52 `SnapClassify` fields, `PinnedRoute` fields, shared
+  helpers, 11 cross-file methods (`push_owned`, nine `push_command`
+  arms, `win_up_needs_mask`), and `MarkedDiagBuf::back_mut` widened to
+  `pub(super)` only; leaves import sibling-private names through
+  explicit `super::chords`/`super::intents` lists. No function exceeds
+  1,500 lines (largest is `llproc` at ~531), so no helper extraction
+  was needed.
+
+Gates: locked four-package build, same-package tests, workspace fmt
+check, strict all-target clippy, `git diff --check`; suite 2,115 / 0 / 1.
