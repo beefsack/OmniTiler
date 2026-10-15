@@ -138,7 +138,11 @@ delivery and timeout-notification recovery retain their pending classifications.
 - Final locked macOS tests: **406 pass**, no failures/ignored tests, doc tests
   complete. Portable core/protocol/effect-FFI/macOS allowlist tests and strict
   all-target clippy (`-D warnings`), workspace fmt, shell syntax and diff checks
-  pass. Hosted CI has not evaluated this working tree.
+  pass. The first [publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38720616433)
+  passed macOS but exposed missing macOS-only guards and Carbon stub exports
+  in Linux/Windows builds. Those portability gaps are corrected without
+  changing native behavior; cross-platform results are attached to the
+  corrective publication.
 - Final `just app 'OmniTiler Mac Dev'` and `just verify` pass for both bundles,
   including strict signature and macOS 15.0 load commands. Development
   Gatekeeper rejection remains a diagnostic; no security policy was changed.

@@ -62,8 +62,10 @@ use crate::ffi::AxFrame;
 use crate::focus_route::FocusRoute;
 use crate::native_facts::{NativeAppFacts, NativeReadOutcome};
 use crate::runtime_backend::{AxBackend, AxBackendFactory};
+#[cfg(target_os = "macos")]
+use crate::runtime_types::NativeContext;
 use crate::runtime_types::{
-    AxCompletion, FocusCommand, FrameCommand, NativeContext, ObservedWindow, ScopedBackendSnapshot,
+    AxCompletion, FocusCommand, FrameCommand, ObservedWindow, ScopedBackendSnapshot,
     ScopedWindowMeta,
 };
 use crate::scope::{AppScope, ProcessIdentity, is_ghostty_bundle};
@@ -685,11 +687,16 @@ impl AxBackendFactory for ScopedAxFactory {
 /// backends fail every scoped call closed instead of actuating blind.
 pub struct ScopedAxBackend {
     pid: u32,
+    // Portable construction retains these for the macOS effect path; offmac
+    // they are write-only (no live reads), so silence dead_code there only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     scope: AppScope,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     identity: ProcessIdentity,
     hook: Option<crate::runtime_backend::EffectHook>,
     /// Shared eligibility facts: this owner publishes ONLY `pid` from
     /// snapshot data already read below. `None` disables publishing.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     facts: Option<Arc<crate::input_eligibility::EligibilityFactsStore>>,
     #[cfg(target_os = "macos")]
     observer: Option<crate::ffi::Phase1Observer>,

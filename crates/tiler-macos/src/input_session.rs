@@ -487,14 +487,23 @@ pub(crate) fn latest_helper_counts(
 /// the runloop in bounded slices): Carbon dispatches and workspace reads
 /// need a serviced main thread. No windows, no activation, no focus effect.
 pub(crate) fn pump_main() {
-    use objc2::MainThreadMarker;
-    if let Some(mtm) = MainThreadMarker::new() {
-        objc2::rc::autoreleasepool(|_| {
-            let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
-            crate::ffi::drain_app_events(&app);
-            crate::ffi::pump_runloop_once(POLL_SLICE_MS);
-        });
-    } else {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        if let Some(mtm) = MainThreadMarker::new() {
+            objc2::rc::autoreleasepool(|_| {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                crate::ffi::drain_app_events(&app);
+                crate::ffi::pump_runloop_once(POLL_SLICE_MS);
+            });
+        } else {
+            std::thread::sleep(Duration::from_millis(POLL_SLICE_MS));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No AppKit here: bounded park only, same slice as the macOS pump.
+        crate::ffi::pump_runloop_once(POLL_SLICE_MS);
         std::thread::sleep(Duration::from_millis(POLL_SLICE_MS));
     }
 }

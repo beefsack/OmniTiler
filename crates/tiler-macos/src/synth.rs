@@ -25,6 +25,7 @@
 //! fresh selected-oracle agreement plus the Ghostty/protected refusal
 //! immediately before EACH OS post.
 
+#[cfg(target_os = "macos")]
 use std::time::Instant;
 
 /// One posted synthetic key event: target, chord class, edge, and the
@@ -246,7 +247,7 @@ fn raw_post_key_event_to_session(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (key_code, flags, down);
+        let _ = (pid, key_code, flags, down);
         Err("synthetic key posts are macOS-only".to_owned())
     }
 }
@@ -278,7 +279,7 @@ fn raw_post_key_event_to_hid(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (key_code, flags, down);
+        let _ = (pid, key_code, flags, down);
         Err("synthetic key posts are macOS-only".to_owned())
     }
 }

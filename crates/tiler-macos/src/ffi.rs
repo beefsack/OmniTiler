@@ -39,9 +39,11 @@
 
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::AtomicU64;
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU32, Ordering},
     mpsc::SyncSender,
 };
 
@@ -5953,6 +5955,7 @@ mod stub {
     }
 
     pub struct CarbonChordReport {
+        pub set: CarbonChordSet,
         pub statuses: Vec<CarbonChordStatus>,
     }
 
@@ -6583,15 +6586,16 @@ pub use stub::{
     ax_observe_session, ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute,
     ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size,
     ax_string_attribute, ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    bundle_id_for_pid, carbon_register, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, frontmost_app, install_display_change_guard,
-    key_counts_snapshot, launch_date_for_pid, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
+    bundle_id_for_pid, carbon_register, carbon_register_set, cg_display_uuid,
+    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, frontmost_app,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
+    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_connection_available, sls_display_rows, sls_display_spaces,
+    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
+    sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]

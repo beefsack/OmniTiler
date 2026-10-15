@@ -29,6 +29,7 @@
 //! and stamped at send time, so a hung app can never stall the controller.
 //! The process may exit unclean with diagnostics rather than hang.
 
+#[cfg(target_os = "macos")]
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
