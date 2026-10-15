@@ -12,6 +12,8 @@ use crate::input_eligibility::EligibilityCache;
 use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
 use crate::native_input::*;
 use crate::runtime::{InputDirection, InputSemanticAction};
+#[cfg(not(target_os = "macos"))]
+use crate::runtime_backend::InputSourceFactory;
 use crate::scope::AppScope;
 
 fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool) -> TapTuning {
@@ -449,7 +451,9 @@ fn carbon_failed_recovery_ends_truthfully() {
         .unwrap_or_else(|poison| poison.into_inner())
         .clone();
     assert!(
-        refusal.is_some_and(|reason| reason.contains("refused")),
+        refusal
+            .as_ref()
+            .is_some_and(|reason| reason.contains("refused")),
         "unrecoverable re-registration refuses truthfully: {refusal:?}"
     );
 }

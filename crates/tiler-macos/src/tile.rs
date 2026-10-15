@@ -168,6 +168,7 @@ pub struct TileOutcome {
 }
 
 impl TileOutcome {
+    #[cfg(any(target_os = "macos", test))]
     fn refused(request: &TileRequest, reason: String) -> Self {
         Self {
             outcome: "refused".to_owned(),
