@@ -107,11 +107,21 @@ mod tests {
 
     #[test]
     fn stop_watcher_expires_without_controller_pumping() {
-        let dir = std::env::temp_dir().join(format!(
-            "omnitiler-watchdog-{}-{}",
+        // Test-only temporary identity: portable uniqueness from time, PID,
+        // and an atomic counter. This is not a live process nonce, so it
+        // must not use the product CSPRNG (`mint_nonce` fails closed where
+        // `/dev/urandom` is absent, e.g. Windows).
+        static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = format!(
+            "{}-{}-{}",
             std::process::id(),
-            crate::probe_target::mint_nonce().expect("nonce")
-        ));
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+            TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let dir = std::env::temp_dir().join(format!("omnitiler-watchdog-{unique}"));
         std::fs::create_dir(&dir).expect("temporary directory");
         let stop = dir.join("stop-requested");
         let (tx, rx) = std::sync::mpsc::channel();

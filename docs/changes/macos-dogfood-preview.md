@@ -209,7 +209,14 @@ not feature-complete macOS delivery.
   remains diagnostic; no security-policy changes were made.
 - Source publication: `c4b181f`, rebased cleanly over concurrent platform work.
   [Hosted publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38771300462)
-  covers all platforms; final results are checked before handoff.
+  passed macOS but exposed two fixture portability gaps: the watchdog test used
+  a Unix-only cryptographic nonce helper for a temporary directory, and the
+  launcher mock renamed a Nix multicall applet's executable name. The fixtures
+  now use portable temporary uniqueness and a tagged shell owner respectively.
+  The offline fixture's earlier pattern-based cleanup was also replaced with a
+  per-run spawned-PID/start-identity manifest and exact child reaping. The 96
+  launcher checks and watchdog tests pass after correction; final hosted results
+  are checked before handoff.
 
 ## Remaining
 

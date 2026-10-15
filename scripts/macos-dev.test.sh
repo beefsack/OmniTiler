@@ -4,8 +4,10 @@
 # The mock opener below simulates LaunchServices plus a tile owner that
 # speaks the exact-run protocol: per-run directory, `tilestarted` nonce
 # binding, `stop-requested` observation, and `outcome.json` publication.
-# Owner processes are `exec -a` argv[0] values matching the wrapper's
-# executable pattern. Covers: shell syntax, flag validation and assembly,
+# Owner processes are bash fixtures whose full command line carries a tag
+# matching the wrapper's executable pattern (argument, never argv[0]:
+# renaming a Nix multicall applet argv[0] fails with `unknown program`).
+# Covers: shell syntax, flag validation and assembly,
 # concurrent refusal without cross-talk, unrelated-process immunity,
 # interruption after-ready / during-startup / before-open-return, stale
 # and reused-PID takeover, nonzero terminal JSON with quiet stderr, normal
@@ -29,16 +31,45 @@ mkdir -p "$TMPDIR"
 BASE="$WORK/state"
 OUTPUT="$WORK/output.log"
 MOCK="$WORK/mock-open.sh"
+MANIFEST="$WORK/owner-manifest"
+: >"$MANIFEST"
 PASS=0
 FAIL=0
 EXIT=0
 
 COMMON_ENV="OMNITILER_DEV_STATE_BASE=$BASE OMNITILER_DEV_STARTUP_GRACE=10 OMNITILER_DEV_STOP_WAIT=8"
 
+record_owner() {
+  # record_owner <pid> <tag>: append this WORK run's exact fixture
+  # identity (PID plus `ps` start time) to the manifest for fallback
+  # cleanup. Never authorizes a bare PID: cleanup re-verifies both.
+  local pid="$1" tag="$2" start=""
+  start="$(ps -o lstart= -p "$pid" 2>/dev/null | head -1 || true)"
+  printf '%s|%s|%s\n' "$pid" "$start" "$tag" >>"$MANIFEST" 2>/dev/null || true
+}
+
 cleanup() {
-  # Never leave mocked sleeps behind even on harness failure. Exact
-  # pattern only; the harness shell itself never matches it.
-  pkill -f "OmniTilerProbe\.app/Contents/MacOS/tiler-macos-mock" 2>/dev/null || true
+  # Fallback only: per-leg code owns its exact kill/wait. Here send TERM
+  # solely to manifest-recorded PIDs whose start identity still matches
+  # AND whose current command line still carries the recorded fixture
+  # tag — never a pattern scan, never a bare PID. Then reap whatever of
+  # them are direct children (non-children fail silently, reaped by init).
+  if [[ -f "$MANIFEST" ]]; then
+    local pid="" start="" tag="" now="" cmd=""
+    while IFS='|' read -r pid start tag; do
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      [[ -n "$start" && -n "$tag" ]] || continue
+      now="$(ps -o lstart= -p "$pid" 2>/dev/null | head -1 || true)"
+      [[ -n "$now" && "$now" == "$start" ]] || continue
+      cmd="$(ps -o command= -p "$pid" 2>/dev/null | head -1 || true)"
+      case "$cmd" in *"$tag"*) ;; *) continue ;; esac
+      kill -TERM "$pid" 2>/dev/null || true
+    done <"$MANIFEST"
+    while IFS='|' read -r pid _ _; do
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      wait "$pid" 2>/dev/null || true
+    done <"$MANIFEST"
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -56,7 +87,7 @@ run_dev() {
   shift 2
   set +e
   # shellcheck disable=SC2086
-  env $COMMON_ENV OMNITILER_DEV_MOCK_OPEN="$MOCK" MOCK_MARKER="$WORK/mock-invoked" MOCK_BEHAVIOR="${MOCK_BEHAVIOR:-success}" MOCK_ARGS="${MOCK_ARGS:-}" \
+  env $COMMON_ENV OMNITILER_DEV_MOCK_OPEN="$MOCK" MOCK_MARKER="$WORK/mock-invoked" MOCK_BEHAVIOR="${MOCK_BEHAVIOR:-success}" MOCK_ARGS="${MOCK_ARGS:-}" MOCK_MANIFEST="$MANIFEST" \
     bash "$DEV" "$@" >"$OUTPUT" 2>&1
   EXIT=$?
   set -e
@@ -76,9 +107,10 @@ run_dev_bg() {
   shift
   set +e
   # shellcheck disable=SC2086
-  env $COMMON_ENV OMNITILER_DEV_MOCK_OPEN="$MOCK" MOCK_MARKER="$WORK/mock-invoked" MOCK_BEHAVIOR="${MOCK_BEHAVIOR:-success}" \
+  env $COMMON_ENV OMNITILER_DEV_MOCK_OPEN="$MOCK" MOCK_MARKER="$WORK/mock-invoked" MOCK_BEHAVIOR="${MOCK_BEHAVIOR:-success}" MOCK_MANIFEST="$MANIFEST" \
     bash "$DEV" "$@" >"$OUTPUT.$label" 2>&1 &
   BG_PID=$!
+  record_owner "$BG_PID" "macos-dev.sh"
   set -e
 }
 
@@ -110,6 +142,26 @@ current_run_dir() {
   if [[ -f "$BASE/lock/run" ]]; then
     cat -- "$BASE/lock/run" 2>/dev/null || true
   fi
+}
+
+MOCK_TAG="OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock"
+FOREIGN_TAG="plain-sleep-no-pattern"
+
+spawn_tagged_owner() {
+  # spawn_tagged_owner <out-var> <tag>: start a bash owner whose full
+  # command line carries <tag> as an argument (never argv[0], so Nix
+  # multicall applets keep working). Sets <out-var> to the exact child
+  # PID and records PID + start identity in this WORK run's manifest;
+  # the caller owns kill/wait. The bash wrapper forwards TERM/INT to
+  # its single sleep child and its trailing `wait`s reap that exact
+  # child, so `kill <pid>` plus `wait <pid>` leaves no orphan
+  # grandchildren. Last command is `wait`, never `exec`, so no
+  # last-command replacement hides the wrapper.
+  local __out="$1" __tag="$2" __pid=""
+  bash -c 'child=""; on_term(){ if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || true; fi; }; trap on_term TERM INT; sleep 60 & child=$!; wait "$child" 2>/dev/null; wait "$child" 2>/dev/null || true' "$__tag" &
+  __pid=$!
+  printf -v "$__out" '%s' "$__pid"
+  record_owner "$__pid" "$__tag"
 }
 
 cat >"$MOCK" <<'MOCK_EOF'
@@ -152,6 +204,21 @@ serve_stop() {
   complete '{"outcome":"stopped","seconds":0,"mode":"unscoped","shutdown_outcome":"Clean","shutdown_clean":true}'
 }
 
+spawn_owner() {
+  # Bash owner carrying the wrapper's executable pattern in its command
+  # line (argument, never argv[0]; Nix multicall-safe). Sets SLEEP_PID
+  # to the exact owner PID and records PID + start identity in this
+  # WORK run's manifest (via $MOCK_MANIFEST). The TERM/INT trap kills
+  # the single sleep child and the trailing `wait`s reap exactly it:
+  # no orphan grandchildren. Last command is `wait`, never `exec`.
+  bash -c 'child=""; on_term(){ if [[ -n "$child" ]]; then kill "$child" 2>/dev/null || true; fi; }; trap on_term TERM INT; sleep 60 & child=$!; wait "$child" 2>/dev/null; wait "$child" 2>/dev/null || true' "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" &
+  SLEEP_PID=$!
+  if [[ -n "${MOCK_MANIFEST:-}" ]]; then
+    OWNER_START="$(ps -o lstart= -p "$SLEEP_PID" 2>/dev/null | head -1 || true)"
+    printf '%s|%s|%s\n' "$SLEEP_PID" "$OWNER_START" "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" >>"$MOCK_MANIFEST" 2>/dev/null || true
+  fi
+}
+
 case "${MOCK_BEHAVIOR:-success}" in
   success)
     printf '%s\n' "{\"tilestarted\":true,\"pid\":$$,\"runid\":\"$RUN_ID\"}" >>"$OUT"
@@ -182,8 +249,7 @@ case "${MOCK_BEHAVIOR:-success}" in
     if [[ -z "$RUN_DIR" ]]; then
       exit 2
     fi
-    exec -a "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" sleep 60 &
-    SLEEP_PID=$!
+    spawn_owner
     printf '%s\n' "{\"tilestarted\":true,\"pid\":$SLEEP_PID,\"runid\":\"$RUN_ID\"}" >>"$OUT"
     ( while [[ ! -f "$RUN_DIR/stop-requested" ]]; do sleep 0.1; done
       sleep 2 ) &
@@ -203,8 +269,7 @@ case "${MOCK_BEHAVIOR:-success}" in
     if [[ -z "$RUN_DIR" ]]; then
       exit 2
     fi
-    exec -a "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" sleep 60 &
-    SLEEP_PID=$!
+    spawn_owner
     printf '%s\n' "{\"tilestarted\":true,\"pid\":$SLEEP_PID,\"runid\":\"$RUN_ID\"}" >>"$OUT"
     # Owner agent: like `open`, the opener itself returns at once; the
     # agent below observes the exact run's stop file in the background.
@@ -225,8 +290,7 @@ case "${MOCK_BEHAVIOR:-success}" in
         complete '{"outcome":"stopped","shutdown_outcome":"not-started","shutdown_clean":true}'
         exit 0
       fi
-      exec -a "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" sleep 60 &
-      SLEEP_PID=$!
+      spawn_owner
       printf '%s\n' "{\"tilestarted\":true,\"pid\":$SLEEP_PID,\"runid\":\"$RUN_ID\"}" >>"$OUT"
       serve_stop 40
       kill "$SLEEP_PID" 2>/dev/null || true
@@ -330,8 +394,7 @@ else
 fi
 
 # ---- Part 3: unrelated processes are never adopted ----------------------------
-(exec -a "OmniTilerProbe.app/Contents/MacOS/tiler-macos-mock" sleep 60) &
-LONER=$!
+spawn_tagged_owner LONER "$MOCK_TAG"
 MOCK_BEHAVIOR=success run_dev 0 "unrelated ignored"
 if pid_alive "$LONER"; then
   pass
@@ -367,7 +430,20 @@ if [[ -n "$(current_run_dir)" ]]; then
 else
   pass
 fi
-if pgrep -f "OmniTilerProbe\.app/Contents/MacOS/tiler-macos-mock" >/dev/null 2>&1; then
+# No pattern scan: resolve the exact owner PID this leg published, then
+# verify it is gone — a live PID counts only if its start identity still
+# matches this WORK run's manifest record (never a bare-PID verdict).
+B_OWNER_PID="$(grep -F '"tilestarted"' "$OUTPUT.B" 2>/dev/null | tail -1 | jq -r '.pid // empty' 2>/dev/null || true)"
+B_OWNER_LEFT=0
+if [[ -n "${B_OWNER_PID:-}" ]] && pid_alive "$B_OWNER_PID"; then
+  B_NOW="$(ps -o lstart= -p "$B_OWNER_PID" 2>/dev/null | head -1 || true)"
+  B_CMD="$(ps -o command= -p "$B_OWNER_PID" 2>/dev/null | head -1 || true)"
+  B_WAS="$(grep -F -- "${B_OWNER_PID}|" "$MANIFEST" 2>/dev/null | tail -1 || true)"
+  if [[ "$B_WAS" == *"|${B_NOW}|"* && "$B_CMD" == *"$MOCK_TAG"* ]]; then
+    B_OWNER_LEFT=1
+  fi
+fi
+if [[ "$B_OWNER_LEFT" -eq 1 ]]; then
   fail "after-ready interruption" "mock owner left running"
 else
   pass
@@ -559,8 +635,7 @@ assert_contains "$OUTPUT" "no live owner" "stale stop reported"
 # Foreign live process recorded under a run: the executable no longer
 # matches, so the state is ambiguous — --stop refuses without touching
 # anything (never signals unknowns).
-(exec -a "plain-sleep-no-pattern" sleep 60) &
-FOREIGN=$!
+spawn_tagged_owner FOREIGN "$FOREIGN_TAG"
 FOREIGN_START="$(ps -o lstart= -p "$FOREIGN" | head -1)"
 FOREIGN_RUN="$BASE/runs/run.foreign-fixture"
 mkdir -p "$FOREIGN_RUN"
@@ -638,7 +713,8 @@ else
   MOCK_BEHAVIOR=success run_dev 1 "live overlap refused"
   assert_contains "$OUTPUT" "already live" "second launch refused while live"
   # Cleanup: the mock sleep is an exact spawned PID (verified identity);
-  # terminate only it, then free the gate for later legs.
+  # terminate only it, then free the gate for later legs. The EXIT trap
+  # manifest is the only fallback (exact PID + start identity, no scan).
   E_OWNER_PID="$(grep -F '"tilestarted"' "$OUTPUT.E" 2>/dev/null | tail -1 | jq -r '.pid // empty' 2>/dev/null || true)"
   if [[ -n "${E_OWNER_PID:-}" ]]; then
     kill "$E_OWNER_PID" 2>/dev/null || true
@@ -647,7 +723,6 @@ else
   set +e
   wait "$E_PID" 2>/dev/null || true
   set -e
-  pkill -f "OmniTilerProbe\.app/Contents/MacOS/tiler-macos-mock" 2>/dev/null || true
   rm -f "$BASE/lock/run"
   rmdir "$BASE/lock" 2>/dev/null || true
   if [[ -n "$E_RUN" ]]; then
