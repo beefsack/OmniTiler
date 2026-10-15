@@ -6,8 +6,8 @@
 //! foreign windows):
 //! - [`run_owned_focus`]: SLPS focus dispatch to one exact owned window
 //!   with selected-oracle agreement readback.
-//! - [`run_owned_post`]: ONE semantic tile chord (focus/move/float only —
-//!   no arbitrary key logging) posted through the native session stream
+//! - [`run_owned_post`]: ONE semantic tile chord (focus/move/float/grow/
+//!   shrink/orientation only — no arbitrary key logging) posted through the native session stream
 //!   ([`crate::synth`], truthfully synthetic, never physical), with the
 //!   selected oracle naming the exact intended owned target immediately
 //!   before EACH edge. Never a Ghostty (or any foreign) event target.
@@ -29,38 +29,55 @@ use serde::Serialize;
 
 use crate::config::ProbeModifier;
 
-/// One semantic chord: catalogue key code plus the Shift (move) arm.
+/// One semantic chord: catalogue key code plus the Shift (move/shrink)
+/// and Alt (grow/shrink) arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemanticChord {
     pub key_code: u32,
     pub shift: bool,
+    pub alt: bool,
     pub action: &'static str,
 }
 
-/// Resolve a semantic chord name to its key code + Shift arm. Exactly the
-/// tile catalogue's letter/arrow focus arms, Shift move arms, and the `G`
-/// float toggle — nothing else (Up/Down arrows are excluded: no user-owned
-/// overview restore path exists). Pure; unit-tested.
+/// Resolve a semantic chord name to its key code + Shift/Alt arms. Exactly
+/// the tile catalogue's letter/arrow focus arms, Shift move arms, Alt grow
+/// arms, Alt+Shift shrink arms, the `G` float toggle and the `O`
+/// orientation toggle — nothing else (Up/Down arrows are excluded: no
+/// user-owned overview restore path exists). Pure; unit-tested.
 pub fn resolve_chord(name: &str) -> Option<SemanticChord> {
-    let (key_code, shift, action) = match name {
-        "focus-h" => (0x04, false, "focus"),
-        "focus-j" => (0x26, false, "focus"),
-        "focus-k" => (0x28, false, "focus"),
-        "focus-l" => (0x25, false, "focus"),
-        "focus-left" => (0x7B, false, "focus"),
-        "focus-right" => (0x7C, false, "focus"),
-        "move-h" => (0x04, true, "move"),
-        "move-j" => (0x26, true, "move"),
-        "move-k" => (0x28, true, "move"),
-        "move-l" => (0x25, true, "move"),
-        "move-left" => (0x7B, true, "move"),
-        "move-right" => (0x7C, true, "move"),
-        "float-g" => (0x05, false, "float"),
+    let (key_code, shift, alt, action) = match name {
+        "focus-h" => (0x04, false, false, "focus"),
+        "focus-j" => (0x26, false, false, "focus"),
+        "focus-k" => (0x28, false, false, "focus"),
+        "focus-l" => (0x25, false, false, "focus"),
+        "focus-left" => (0x7B, false, false, "focus"),
+        "focus-right" => (0x7C, false, false, "focus"),
+        "move-h" => (0x04, true, false, "move"),
+        "move-j" => (0x26, true, false, "move"),
+        "move-k" => (0x28, true, false, "move"),
+        "move-l" => (0x25, true, false, "move"),
+        "move-left" => (0x7B, true, false, "move"),
+        "move-right" => (0x7C, true, false, "move"),
+        "float-g" => (0x05, false, false, "float"),
+        "grow-h" => (0x04, false, true, "grow"),
+        "grow-j" => (0x26, false, true, "grow"),
+        "grow-k" => (0x28, false, true, "grow"),
+        "grow-l" => (0x25, false, true, "grow"),
+        "grow-left" => (0x7B, false, true, "grow"),
+        "grow-right" => (0x7C, false, true, "grow"),
+        "shrink-h" => (0x04, true, true, "shrink"),
+        "shrink-j" => (0x26, true, true, "shrink"),
+        "shrink-k" => (0x28, true, true, "shrink"),
+        "shrink-l" => (0x25, true, true, "shrink"),
+        "shrink-left" => (0x7B, true, true, "shrink"),
+        "shrink-right" => (0x7C, true, true, "shrink"),
+        "orientation-o" => (0x1F, false, false, "orientation"),
         _ => return None,
     };
     Some(SemanticChord {
         key_code,
         shift,
+        alt,
         action,
     })
 }
@@ -82,6 +99,19 @@ pub fn chord_names() -> &'static [&'static str] {
         "move-left",
         "move-right",
         "float-g",
+        "grow-h",
+        "grow-j",
+        "grow-k",
+        "grow-l",
+        "grow-left",
+        "grow-right",
+        "shrink-h",
+        "shrink-j",
+        "shrink-k",
+        "shrink-l",
+        "shrink-left",
+        "shrink-right",
+        "orientation-o",
     ]
 }
 
@@ -262,6 +292,9 @@ pub fn run_owned_post(
     if chord.shift {
         want_flags |= crate::native_input::CG_SHIFT_BIT;
     }
+    if chord.alt {
+        want_flags |= crate::native_input::CG_ALT_BIT;
+    }
     // Down edge: fresh owned proof (spawn-record auth plus CG join, no
     // caller-typed WID) plus the boundary's fresh oracle plus Ghostty
     // refusal immediately before the post.
@@ -326,8 +359,9 @@ mod tests {
 
     #[test]
     fn chords_cover_focus_move_float_without_arrows_up_down() {
-        assert_eq!(chord_names().len(), 13);
-        // Letters on both arms plus Left/Right on both arms plus G.
+        assert_eq!(chord_names().len(), 26);
+        // Letters on focus/move/grow/shrink arms plus Left/Right on each
+        // arm plus G plus O.
         for name in [
             "focus-h",
             "focus-j",
@@ -342,6 +376,19 @@ mod tests {
             "move-left",
             "move-right",
             "float-g",
+            "grow-h",
+            "grow-j",
+            "grow-k",
+            "grow-l",
+            "grow-left",
+            "grow-right",
+            "shrink-h",
+            "shrink-j",
+            "shrink-k",
+            "shrink-l",
+            "shrink-left",
+            "shrink-right",
+            "orientation-o",
         ] {
             assert!(resolve_chord(name).is_some(), "{name}");
         }
@@ -353,19 +400,35 @@ mod tests {
             "focus-up",
             "focus-down",
             "move-up",
+            "grow-up",
+            "shrink-up",
             "h",
             "ctrl-h",
         ] {
             assert!(resolve_chord(name).is_none(), "{name}");
         }
-        // Shift arm mapping: move chords carry shift, focus/float do not.
+        // Shift/Alt arm mapping: move chords carry shift, focus/float do
+        // not; grow chords carry alt without shift, shrink chords carry
+        // both; orientation carries neither.
         assert!(!resolve_chord("focus-h").unwrap().shift);
+        assert!(!resolve_chord("focus-h").unwrap().alt);
         assert!(resolve_chord("move-h").unwrap().shift);
+        assert!(!resolve_chord("move-h").unwrap().alt);
         assert!(!resolve_chord("float-g").unwrap().shift);
+        assert!(!resolve_chord("float-g").unwrap().alt);
+        assert!(!resolve_chord("grow-h").unwrap().shift);
+        assert!(resolve_chord("grow-h").unwrap().alt);
+        assert!(resolve_chord("shrink-h").unwrap().shift);
+        assert!(resolve_chord("shrink-h").unwrap().alt);
+        assert!(!resolve_chord("orientation-o").unwrap().shift);
+        assert!(!resolve_chord("orientation-o").unwrap().alt);
         assert_eq!(resolve_chord("focus-h").unwrap().key_code, 0x04);
         assert_eq!(resolve_chord("float-g").unwrap().key_code, 0x05);
+        assert_eq!(resolve_chord("orientation-o").unwrap().key_code, 0x1F);
         assert_eq!(resolve_chord("focus-left").unwrap().key_code, 0x7B);
         assert_eq!(resolve_chord("focus-right").unwrap().key_code, 0x7C);
+        assert_eq!(resolve_chord("grow-left").unwrap().key_code, 0x7B);
+        assert_eq!(resolve_chord("shrink-right").unwrap().key_code, 0x7C);
     }
 
     #[test]

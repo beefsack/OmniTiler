@@ -593,16 +593,19 @@ impl Runtime {
                 crate::runtime_types::TileBinding {
                     key_code: config.focus_key,
                     shift: false,
+                    alt: false,
                     action: crate::runtime_types::InputSemanticAction::FocusStep { direction },
                 },
                 crate::runtime_types::TileBinding {
                     key_code: config.move_key,
                     shift: false,
+                    alt: false,
                     action: crate::runtime_types::InputSemanticAction::MoveStep { direction },
                 },
                 crate::runtime_types::TileBinding {
                     key_code: config.float_key,
                     shift: false,
+                    alt: false,
                     action: crate::runtime_types::InputSemanticAction::ToggleFloat,
                 },
             ]

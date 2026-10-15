@@ -2,19 +2,36 @@
 
 //! Scoped-tile native input: exact-chord catalogue plus owned sources.
 //!
-//! The catalogue mirrors the Windows `FOCUS_MOVE_ROWS` rows (read-only
-//! reference: letters plus separate arrow rows, Shift selecting the move
-//! arm) with the Ctrl role filled by the configured [`ProbeModifier`]
-//! (default Ctrl; pass `--ctrl meta` for the Cmd chord space) and the float
-//! toggle on `G` (Windows `Win+G` / KDE `Meta+G` parity):
+//! The catalogue mirrors the Windows `FOCUS_MOVE_ROWS` + `RESIZE_ROWS` rows
+//! (read-only reference: letters plus separate arrow rows, Shift selecting
+//! the move arm, Alt selecting the resize arm) with the Ctrl role filled by
+//! the configured [`ProbeModifier`] (default Ctrl; pass `--ctrl meta` for
+//! the Cmd chord space), the float toggle on `G` (Windows `Win+G` / KDE
+//! `Meta+G` parity), and the parent orientation toggle on `O` (Windows
+//! `Win+O` / KDE `Meta+O` parity):
 //!
 //! - focus: `<Mod>+H/J/K/L` and `<Mod>+arrows` (8 chords);
 //! - move: `<Mod>+Shift+H/J/K/L` and `<Mod>+Shift+arrows` (8 chords);
-//! - float: `<Mod>+G` (1 chord).
+//! - float: `<Mod>+G` (1 chord);
+//! - grow: `<Mod>+Alt+H/J/K/L` and `<Mod>+Alt+arrows` (8 chords, outwards);
+//! - shrink: `<Mod>+Alt+Shift+H/J/K/L` and `<Mod>+Alt+Shift+arrows`
+//!   (8 chords, inwards);
+//! - orientation: `<Mod>+O` (1 chord).
 //!
 //! Matching is exact everywhere (extra modifiers fail; Caps/Fn bits sit
 //! outside the mask per the existing matcher contract). Key codes are Mac
 //! virtual keycodes (`CGKeyCode` space).
+//!
+//! This catalogue is macOS-local glue over the shared core commands (it
+//! mirrors the Windows/KDE defaults chord-for-chord but lives here because
+//! no shared pure catalogue exists in `tiler-core` — the Windows
+//! `binding_catalog` and the KDE `planShortcutCatalog` are each local too).
+//! Digits, workspace selects/sends, maximize, fullscreen, sticky, and
+//! workspace-tiling toggles stay unbound: digits/workspace rows need managed
+//! workspaces (later work), and maximize/fullscreen/sticky need native
+//! state writes with no core command behind them (left for a native-state
+//! unit; fullscreen windows stay untouched by ordinary tiling per the
+//! selected product rule).
 //!
 //! Sources are continuous and owned: the input owner creates, drives, and
 //! destroys its guard on its own thread; callbacks stay minimal
@@ -42,42 +59,46 @@ use std::sync::{
 use std::time::Instant;
 
 use crate::config::ProbeModifier;
+use crate::dev_selection::TileScope;
 use crate::ffi::{
     CarbonChordSet, CarbonChordStatus, CarbonHit, TapChordSpec, TapHit, TapPump, TapSource,
 };
 use crate::input::{carbon_mod_bits, cg_flag_bits};
 use crate::input_eligibility::{EligibilityCache, EligibilityFactsStore};
 use crate::input_match::TapKeyKind;
+use crate::input_policy::{
+    DisableAction, DisableKind, disable_action, unnotified_disable_action,
+    unverified_reenable_action,
+};
+/// Mac virtual keycodes live in [`crate::input_policy`] (single home for the
+/// product input-policy slice); re-exported here so the catalogue, matcher
+/// tables and existing tests keep resolving through this module.
+pub use crate::input_policy::{
+    KEY_DOWN, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_O, KEY_RIGHT, KEY_UP,
+};
 use crate::runtime::{InputDirection, InputSemanticAction};
 use crate::runtime_backend::{InputSource, InputSourceFactory, RawKeyEvent};
 use crate::runtime_types::TileBinding;
-use crate::scope::AppScope;
-
-/// Mac virtual keycodes for the catalogue (`CGKeyCode` space, US layout
-/// positions for letters).
-pub const KEY_H: u32 = 0x04;
-pub const KEY_J: u32 = 0x26;
-pub const KEY_K: u32 = 0x28;
-pub const KEY_L: u32 = 0x25;
-pub const KEY_G: u32 = 0x05;
-pub const KEY_LEFT: u32 = 0x7B;
-pub const KEY_RIGHT: u32 = 0x7C;
-pub const KEY_DOWN: u32 = 0x7D;
-pub const KEY_UP: u32 = 0x7E;
 
 /// Carbon modifier bit for Shift (`Events.h`: shiftKey 512).
 pub const CARBON_SHIFT_BIT: u32 = 512;
+/// Carbon modifier bit for Alt/Option (`Events.h`: optionKey 2048).
+pub const CARBON_ALT_BIT: u32 = 2048;
 /// `CGEventFlags` Shift bit (matches [`cg_flag_bits`] mask space).
 pub const CG_SHIFT_BIT: u64 = 0x0002_0000;
+/// `CGEventFlags` Alternate bit (matches [`cg_flag_bits`] mask space).
+pub const CG_ALT_BIT: u64 = 0x0008_0000;
 
 /// The scoped-tile chord catalogue: 8 focus chords, 8 move
-/// chords (Shift arm), and the float toggle. The Ctrl-role modifier applies
-/// at tuning time ([`tap_specs_for`], [`carbon_mods_for`]), so the table
-/// itself is modifier-free. Duplicate-free by construction; validated by
+/// chords (Shift arm), 8 grow chords (Alt arm, outwards), 8 shrink chords
+/// (Alt+Shift arm, inwards), the float toggle, and the orientation toggle.
+/// The Ctrl-role modifier applies at tuning time ([`tap_specs_for`],
+/// [`carbon_mods_for`]), so the table itself is modifier-free.
+/// Duplicate-free by construction; validated by
 /// [`RuntimeConfig::validate`].
 #[must_use]
 pub fn tile_catalogue() -> Vec<TileBinding> {
-    let mut out = Vec::with_capacity(17);
+    let mut out = Vec::with_capacity(34);
     let focus = [
         (KEY_H, InputDirection::Left),
         (KEY_J, InputDirection::Down),
@@ -92,6 +113,7 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
         out.push(TileBinding {
             key_code,
             shift: false,
+            alt: false,
             action: InputSemanticAction::FocusStep { direction },
         });
     }
@@ -99,26 +121,58 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
         out.push(TileBinding {
             key_code,
             shift: true,
+            alt: false,
             action: InputSemanticAction::MoveStep { direction },
+        });
+    }
+    for (key_code, direction) in focus {
+        out.push(TileBinding {
+            key_code,
+            shift: false,
+            alt: true,
+            action: InputSemanticAction::ResizeStep {
+                direction,
+                mode: tiler_core::contract::ResizeMode::Outwards,
+            },
+        });
+    }
+    for (key_code, direction) in focus {
+        out.push(TileBinding {
+            key_code,
+            shift: true,
+            alt: true,
+            action: InputSemanticAction::ResizeStep {
+                direction,
+                mode: tiler_core::contract::ResizeMode::Inwards,
+            },
         });
     }
     out.push(TileBinding {
         key_code: KEY_G,
         shift: false,
+        alt: false,
         action: InputSemanticAction::ToggleFloat,
+    });
+    out.push(TileBinding {
+        key_code: KEY_O,
+        shift: false,
+        alt: false,
+        action: InputSemanticAction::ToggleOrientation,
     });
     out
 }
 
 /// Carbon modifier bits for one catalogue chord: the Ctrl-role modifier
-/// plus Shift for the move arm.
+/// plus Shift for the move/shrink arms plus Alt for the resize arms.
 #[must_use]
-pub fn carbon_mods_for(modifier: ProbeModifier, shift: bool) -> u32 {
-    carbon_mod_bits(modifier) | if shift { CARBON_SHIFT_BIT } else { 0 }
+pub fn carbon_mods_for(modifier: ProbeModifier, shift: bool, alt: bool) -> u32 {
+    carbon_mod_bits(modifier)
+        | if shift { CARBON_SHIFT_BIT } else { 0 }
+        | if alt { CARBON_ALT_BIT } else { 0 }
 }
 
 /// Tap specs for one catalogue: exact `(want, mask)` per chord with the
-/// Shift arm folded into `want` under the same mask.
+/// Shift and Alt arms folded into `want` under the same mask.
 #[must_use]
 pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<TapChordSpec> {
     bindings
@@ -127,6 +181,9 @@ pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<T
             let (mut want_flags, flags_mask) = cg_flag_bits(modifier);
             if binding.shift {
                 want_flags |= CG_SHIFT_BIT;
+            }
+            if binding.alt {
+                want_flags |= CG_ALT_BIT;
             }
             TapChordSpec {
                 want_flags,
@@ -228,7 +285,7 @@ fn creation_gate() -> Result<(), String> {
 /// callback enforces the [`crate::input_eligibility::STALE_AFTER`] bound
 /// lock-free. Returns the fresh verdict.
 pub fn attest_tile_eligibility(
-    scope: &AppScope,
+    scope: &TileScope,
     cache: &EligibilityCache,
     store: Option<&Arc<EligibilityFactsStore>>,
     allow_fullscreen: bool,
@@ -258,7 +315,7 @@ pub fn attest_tile_eligibility(
 /// Secure Input, workspace frontmost, SLPS front, exact scope, plus one
 /// plain store read. No AX, no SLS, no logging anywhere on this path.
 fn attest_live(
-    scope: &AppScope,
+    scope: &TileScope,
     store: Option<&Arc<EligibilityFactsStore>>,
     allow_fullscreen: bool,
     now_ms: u64,
@@ -330,10 +387,11 @@ pub struct CarbonTileFactory {
     /// installed by this factory bumps the same counter, so the session
     /// reads total Carbon dispatches (not just the latest set's).
     deliveries: Arc<crate::ffi::EventCounter>,
-    /// Exact bundle allowlist for scoped eligibility (empty = disabled =
-    /// never eligible until a scope is set). Normal tile sets this from
-    /// the request; the fixture uses an explicit unrestricted test gate.
-    scope: AppScope,
+    /// Product selection for eligibility (scoped allowlist or unscoped
+    /// ordinary apps; disabled = never eligible until set). Normal tile
+    /// sets this from the request; the fixture uses an explicit
+    /// unrestricted test gate.
+    scope: TileScope,
     /// Lock-free cached eligibility (starts ineligible until attested;
     /// fixture unrestricted gate starts eligible with per-edge oracle).
     eligibility: Arc<EligibilityCache>,
@@ -360,16 +418,16 @@ impl CarbonTileFactory {
             refusal: Arc::new(Mutex::new(None)),
             gated_ms: Arc::new(AtomicU64::new(0)),
             deliveries: Arc::new(crate::ffi::EventCounter::new()),
-            scope: AppScope::disabled(),
+            scope: TileScope::scoped_disabled(),
             eligibility: Arc::new(EligibilityCache::new_scoped()),
             facts: None,
         })
     }
 
-    /// Set the exact bundle allowlist for scoped eligibility (normal tile
-    /// path; scoped by default once set, ineligible until attested facts).
+    /// Set the product selection for eligibility (normal tile path;
+    /// ineligible until attested facts).
     #[must_use]
-    pub fn with_scope(mut self, scope: AppScope) -> Self {
+    pub fn with_scope(mut self, scope: TileScope) -> Self {
         self.scope = scope;
         self
     }
@@ -444,7 +502,7 @@ impl InputSourceFactory for CarbonTileFactory {
             .map(|binding| {
                 (
                     binding.key_code,
-                    carbon_mods_for(self.modifier, binding.shift),
+                    carbon_mods_for(self.modifier, binding.shift, binding.alt),
                 )
             })
             .collect();
@@ -465,8 +523,8 @@ impl InputSourceFactory for CarbonTileFactory {
         // The OS matched the registered modifier combo to fire; the flags
         // below replay that combo so the input owner re-checks the exact
         // chord before forwarding (defense in depth). The table keys the
-        // FULL pair (key code plus Carbon modifiers): focus and move arms
-        // share key codes, so a key-code-only lookup would replay the
+        // FULL pair (key code plus Carbon modifiers): focus/move/grow/shrink
+        // arms share key codes, so a key-code-only lookup would replay the
         // focus flags for a Shift move hit.
         let (want, _) = cg_flag_bits(self.modifier);
         let flags_of: Vec<(u32, u32, u64)> = self
@@ -475,8 +533,9 @@ impl InputSourceFactory for CarbonTileFactory {
             .map(|binding| {
                 (
                     binding.key_code,
-                    carbon_mods_for(self.modifier, binding.shift),
-                    want | if binding.shift { CG_SHIFT_BIT } else { 0 },
+                    carbon_mods_for(self.modifier, binding.shift, binding.alt),
+                    want | if binding.shift { CG_SHIFT_BIT } else { 0 }
+                        | if binding.alt { CG_ALT_BIT } else { 0 },
                 )
             })
             .collect();
@@ -512,7 +571,7 @@ pub(crate) struct CarbonTileSource {
     pub(crate) statuses: Arc<Mutex<Vec<CarbonChordStatus>>>,
     pub(crate) refusal: Arc<Mutex<Option<String>>>,
     pub(crate) gated_ms: Arc<AtomicU64>,
-    pub(crate) scope: AppScope,
+    pub(crate) scope: TileScope,
     pub(crate) eligibility: Arc<EligibilityCache>,
     pub(crate) facts: Option<Arc<EligibilityFactsStore>>,
     pub(crate) last_attest: Option<Instant>,
@@ -636,12 +695,14 @@ impl InputSource for CarbonTileSource {
 /// Continuous tap input factory over the tile catalogue (explicit opt-in
 /// only). Exact-chord KeyDown/KeyUp pairs suppress; everything unmatched
 /// passes. Secure Input / lock gating releases interception while gated
-/// and resumes narrowly when the ordinary unlocked state returns; a user
-/// disable records a truthful refusal (never a silent success). Scoped
-/// eligibility gates BEFORE suppression (callback Keep/noForward while
-/// ineligible); the owner recreates its guard on return to eligible to avoid
-/// a user-disabled sticky cycle (genuine user disables still refuse and are
-/// never auto-overridden).
+/// and resumes narrowly when the ordinary unlocked state returns; every
+/// observed disable (timeout notification, user-input notification, or an
+/// enabled readback that disagrees with a Held pump turn) is a logged
+/// recoverable state — the same tap re-enables when it verifies, otherwise
+/// a fresh tap installs over the same chords — and only a hard creation
+/// denial refuses. Scoped eligibility gates BEFORE suppression (callback
+/// Keep/noForward while ineligible); the owner recreates its guard on
+/// return to eligible to avoid a user-disabled sticky cycle.
 pub struct TapTileFactory {
     modifier: ProbeModifier,
     bindings: Vec<TileBinding>,
@@ -655,7 +716,9 @@ pub struct TapTileFactory {
     stall_once_ms: u64,
     /// Latest tap counters published by the live source (per pump slice
     /// plus a final write on drop): matched/suppressed/deliveries plus
-    /// timeout re-enables. Read after the owner joins for terminal evidence,
+    /// timeout re-enables, user-input notifications, and
+    /// enabled-readback-only recoveries, all carried across fresh-guard
+    /// recreations. Read after the owner joins for terminal evidence,
     /// or mid-run for the fault-injection leg.
     report: Arc<Mutex<crate::ffi::TapSourceReport>>,
     /// Fixture-only DIRECT disable hold (false = off): while set, the input
@@ -678,13 +741,25 @@ pub struct TapTileFactory {
     /// [`TapTileFactory::request_rearm`]; the tile controller never sets it
     /// (production behavior unchanged: the flag stays false).
     rearm_requested: Arc<AtomicBool>,
+    /// Fixture-only one-shot disable-once fault (false = idle): while set,
+    /// the input owner disables the tap directly ONCE
+    /// (`CGEventTapEnable(false)`) WITHOUT setting the DIRECT hold and
+    /// WITHOUT assuming which notification the OS emits for a self-disable
+    /// (measured live: a UserInput notification with a verified same-tap
+    /// re-enable) — then keeps pumping so the tap recovers automatically and
+    /// the leg reports the ACTUAL kind (user-input vs unnotified
+    /// enabled-readback counters, never a timeout claim without the actual
+    /// counter). Set only by the `input-session --disable-once` leg via
+    /// [`TapTileFactory::request_disable_once`]; the tile controller never
+    /// sets it (production behavior unchanged: the flag stays false).
+    disable_once_fault: Arc<AtomicBool>,
     /// Fresh-source epoch: bumped once per completed EXPLICIT re-arm on the
     /// owner thread. The `--direct-rearm` leg gates its new-generation proof
     /// on this increment plus a fresh `==true` state readback.
     rearm_epoch: Arc<AtomicU64>,
-    /// Exact bundle allowlist for scoped eligibility (empty = disabled =
-    /// never eligible until a scope is set).
-    scope: AppScope,
+    /// Product selection for eligibility (scoped allowlist or unscoped
+    /// ordinary apps; disabled = never eligible until set).
+    scope: TileScope,
     /// Lock-free cached eligibility (starts ineligible until attested;
     /// fixture unrestricted gate starts eligible with per-edge oracle).
     eligibility: Arc<EligibilityCache>,
@@ -715,21 +790,24 @@ impl TapTileFactory {
                 suppressed: 0,
                 deliveries: 0,
                 reenables_after_timeout: 0,
+                user_disables: 0,
+                unnotified_disables: 0,
             })),
             direct_hold: Arc::new(AtomicBool::new(false)),
             direct_enabled: Arc::new(AtomicU64::new(2)),
             rearm_requested: Arc::new(AtomicBool::new(false)),
             rearm_epoch: Arc::new(AtomicU64::new(0)),
-            scope: AppScope::disabled(),
+            disable_once_fault: Arc::new(AtomicBool::new(false)),
+            scope: TileScope::scoped_disabled(),
             eligibility: Arc::new(EligibilityCache::new_scoped()),
             facts: None,
         })
     }
 
-    /// Set the exact bundle allowlist for scoped eligibility (normal tile
-    /// path; scoped by default once set, ineligible until attested facts).
+    /// Set the product selection for eligibility (normal tile path;
+    /// ineligible until attested facts).
     #[must_use]
-    pub fn with_scope(mut self, scope: AppScope) -> Self {
+    pub fn with_scope(mut self, scope: TileScope) -> Self {
         self.scope = scope;
         self
     }
@@ -764,6 +842,16 @@ impl TapTileFactory {
         self
     }
 
+    /// Probe-only stall seam state: true only after [`TapTileFactory::with_stall_once`].
+    /// The product tile construction never calls that builder, so a
+    /// production factory always reads false here (pinned by test).
+    /// Test-only: production code paths never branch on the stall seam.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn stall_armed(&self) -> bool {
+        self.stall_once_ms > 0
+    }
+
     /// Fixture-only DIRECT disable hold control (see field docs): `true`
     /// parks the tap directly OS-disabled on the owner thread, `false`
     /// resumes the standard source pump with a single direct re-enable on
@@ -776,11 +864,20 @@ impl TapTileFactory {
     /// Fixture-only EXPLICIT re-arm request (see field docs): the owner drops
     /// its old tap guard without a same-tap re-enable and installs a FRESH
     /// source on the same thread, then clears the hold and bumps the epoch.
-    /// `input-session --direct-rearm` only; never production tile. A genuine
-    /// user-disable refusal is never masked: the owner records it and the leg
-    /// fails closed.
+    /// `input-session --direct-rearm` only; never production tile. A hard
+    /// creation-denial refusal is never masked: the owner records it and the
+    /// leg fails closed.
     pub fn request_rearm(&self) {
         self.rearm_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// Fixture-only one-shot disable-once fault (see field docs): the owner
+    /// disables the tap directly once without a fixture hold and without
+    /// assuming the OS notification kind, so the leg reports the actual
+    /// recovery kind. `input-session --disable-once` only; never production
+    /// tile.
+    pub fn request_disable_once(&self) {
+        self.disable_once_fault.store(true, Ordering::SeqCst);
     }
 
     /// Fresh-source epoch (see field docs): 0 until the first completed
@@ -853,10 +950,19 @@ impl InputSourceFactory for TapTileFactory {
             refusal: Arc::clone(&self.refusal),
             gated_ms: Arc::clone(&self.gated_ms),
             report: Arc::clone(&self.report),
+            carried: crate::ffi::TapSourceReport {
+                matched: 0,
+                suppressed: 0,
+                deliveries: 0,
+                reenables_after_timeout: 0,
+                user_disables: 0,
+                unnotified_disables: 0,
+            },
             direct_hold: Arc::clone(&self.direct_hold),
             direct_enabled: Arc::clone(&self.direct_enabled),
             rearm_requested: Arc::clone(&self.rearm_requested),
             rearm_epoch: Arc::clone(&self.rearm_epoch),
+            disable_once_fault: Arc::clone(&self.disable_once_fault),
             holding_direct: false,
             scope: self.scope.clone(),
             eligibility: Arc::clone(&self.eligibility),
@@ -880,26 +986,69 @@ struct TapTileSource {
     refusal: Arc<Mutex<Option<String>>>,
     gated_ms: Arc<AtomicU64>,
     report: Arc<Mutex<crate::ffi::TapSourceReport>>,
+    /// Cumulative counters from retired guards: each fresh-guard install
+    /// folds the old guard's final snapshot in here, so every published
+    /// report is cumulative across recreations (kinds stay distinct — a
+    /// readback-only recovery never lands in the timeout count). The final
+    /// outcome after the latest stop rides the same slot.
+    carried: crate::ffi::TapSourceReport,
     direct_hold: Arc<AtomicBool>,
     direct_enabled: Arc<AtomicU64>,
     rearm_requested: Arc<AtomicBool>,
     rearm_epoch: Arc<AtomicU64>,
+    disable_once_fault: Arc<AtomicBool>,
     holding_direct: bool,
-    scope: AppScope,
+    scope: TileScope,
     eligibility: Arc<EligibilityCache>,
     facts: Option<Arc<EligibilityFactsStore>>,
     last_attest: Option<Instant>,
     /// True while the last attest read ineligible (interception released via
     /// callback Keep). On return to eligible the owner drops the old guard
     /// and installs a FRESH scoped source on this same thread (new epoch)
-    /// to avoid a user-disabled sticky cycle; a genuine user-disable refusal
-    /// is never masked and fails closed instead.
+    /// to avoid a disabled sticky cycle; a recorded hard refusal is never
+    /// masked and fails closed instead.
     was_ineligible: bool,
+}
+
+/// Pure cumulative tap report: fold one retired guard's final snapshot into
+/// the running total (saturating per field). Fresh guards start their own
+/// counters at zero, so without this fold every recreation would reset the
+/// terminal evidence; with it the published report stays cumulative across
+/// recoveries while the timeout / user-input / readback-only kinds stay
+/// distinct. No desktop effect.
+#[must_use]
+pub(crate) fn accumulate_tap_report(
+    total: crate::ffi::TapSourceReport,
+    add: crate::ffi::TapSourceReport,
+) -> crate::ffi::TapSourceReport {
+    crate::ffi::TapSourceReport {
+        matched: total.matched.saturating_add(add.matched),
+        suppressed: total.suppressed.saturating_add(add.suppressed),
+        deliveries: total.deliveries.saturating_add(add.deliveries),
+        reenables_after_timeout: total
+            .reenables_after_timeout
+            .saturating_add(add.reenables_after_timeout),
+        user_disables: total.user_disables.saturating_add(add.user_disables),
+        unnotified_disables: total
+            .unnotified_disables
+            .saturating_add(add.unnotified_disables),
+    }
+}
+
+/// Pure explicit-fixture-hold predicate: true while the input owner is
+/// deliberately parking the tap directly OS-disabled for observation
+/// (`direct_hold` set) or is finishing the hold-to-release transition
+/// (`holding_direct`). The production health check bypasses recovery only
+/// here — production code never sets either flag, so the bypass is
+/// structurally fixture-only. No desktop effect.
+#[must_use]
+pub(crate) const fn fixture_hold_active(direct_hold: bool, holding_direct: bool) -> bool {
+    direct_hold || holding_direct
 }
 
 impl TapTileSource {
     fn publish_report(&self) {
-        let snapshot = self.tap.report();
+        let snapshot = accumulate_tap_report(self.carried, self.tap.report());
         *self
             .report
             .lock()
@@ -919,12 +1068,33 @@ impl TapTileSource {
             .unwrap_or_else(|poison| poison.into_inner()) = Some(reason);
     }
 
+    /// Swap in a freshly installed guard on this same owner thread: fold the
+    /// retired guard's final snapshot into the cumulative counters FIRST
+    /// (terminal evidence survives the recreation with kinds intact), then
+    /// replace the guard and channel, bump the eligibility epoch, and
+    /// republish. Shared by every fresh-guard install (scope return,
+    /// timeout recovery, explicit re-arm) so no path resets the counters.
+    fn swap_fresh_guard(&mut self, new_tap: TapSource, rx: mpsc::Receiver<TapHit>) {
+        // Bounded overlap: the fresh guard installs before the old guard
+        // drops; no synthetic posts flow during the window (callers gate
+        // posts on the epoch/readback), so no chord is observed twice and
+        // no hit is claimed from the transition itself.
+        self.carried = accumulate_tap_report(self.carried, self.tap.report());
+        let old = std::mem::replace(&mut self.tap, new_tap);
+        self.rx = rx;
+        drop(old);
+        self.holding_direct = false;
+        self.eligibility.bump_epoch();
+        self.publish_report();
+        self.publish_direct_enabled();
+    }
+
     /// EXPLICIT fresh re-arm when requested (owner thread only): drops the old
     /// tap guard WITHOUT a same-tap re-enable and installs a FRESH `TapSource`
     /// over the same chord specs (same placement, `HeadInsertEventTap`,
     /// session tap, exact suppression armed), then clears the DIRECT hold and
     /// bumps the epoch. Returns `Ok(true)` once per completed re-arm.
-    /// A recreation refusal (e.g. a genuine user disable) is recorded
+    /// A recreation refusal (for example revoked consent) is recorded
     /// truthfully and returns `Err` — never masked, never a fake callback.
     fn maybe_rearm(&mut self) -> Result<bool, String> {
         if !self.rearm_requested.swap(false, Ordering::SeqCst) {
@@ -940,30 +1110,72 @@ impl TapTileSource {
                     return Err(cause);
                 }
             };
-        // Bounded overlap: the fresh guard installs before the old guard
-        // drops; no synthetic posts flow during the re-arm window (the main
-        // waits for the epoch bump before posting), so no chord is observed
-        // twice and no hit is claimed from the transition itself.
-        let old = std::mem::replace(&mut self.tap, new_tap);
-        self.rx = rx;
-        drop(old);
-        self.holding_direct = false;
+        self.swap_fresh_guard(new_tap, rx);
         self.direct_hold.store(false, Ordering::SeqCst);
         self.rearm_epoch.fetch_add(1, Ordering::SeqCst);
-        self.eligibility.bump_epoch();
-        self.publish_report();
-        self.publish_direct_enabled();
         Ok(true)
+    }
+
+    /// Install a FRESH scoped source on this same owner thread (same chords,
+    /// same placement, same eligibility cache), dropping the old guard
+    /// WITHOUT a same-tap re-enable. A recreation refusal (for example
+    /// revoked Accessibility consent) returns `Err` — never masked, never a
+    /// fake callback. Shared by scope-return and disable recovery; callers
+    /// add their own refusal context.
+    fn install_fresh_scoped(&mut self) -> Result<(), crate::ffi::TapSetupError> {
+        let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
+        let new_tap =
+            TapSource::create_scoped(&self.specs, true, &tx, Arc::clone(&self.eligibility))?;
+        self.swap_fresh_guard(new_tap, rx);
+        Ok(())
+    }
+
+    /// Owner-side recovery for one disabled tap (timeout notification with
+    /// an unverified re-enable already consumed by the pump, a user-input
+    /// notification, or an enabled readback that disagrees with a Held pump
+    /// turn): re-enable the SAME tap only with an enabled readback, else
+    /// install a FRESH scoped source over the same chords and eligibility on
+    /// this same owner thread (never a second same-tap enable, never a new
+    /// owner or channel). `origin` names the kind for the log line
+    /// (timeout vs user-input vs enabled-readback-only); `unnotified`
+    /// counts the recovery under `unnotified_disables` instead of the
+    /// timeout count. Lock / Secure Input / eligibility gates are consulted
+    /// by the caller BEFORE this runs: while blocked the caller parks
+    /// released and retries later, so this never overrides trust or
+    /// privacy gates. A fresh-creation denial fails closed with `Err` (the
+    /// caller records the refusal and ends truthfully).
+    fn recover_disabled(&mut self, origin: &'static str, unnotified: bool) -> Result<(), String> {
+        if self.tap.reenable_same_tap_verified() {
+            if unnotified {
+                self.tap.note_unnotified_disabled();
+            }
+            self.publish_report();
+            self.publish_direct_enabled();
+            let counts = accumulate_tap_report(self.carried, self.tap.report());
+            eprintln!(
+                "tiler-macos tile-tap: disabled by {origin}; same-tap re-enable verified (reenables_after_timeout={} user_disables={} unnotified_disables={})",
+                counts.reenables_after_timeout, counts.user_disables, counts.unnotified_disables,
+            );
+            return Ok(());
+        }
+        self.install_fresh_scoped()
+            .map_err(|cause| format!("{origin} recovery re-arm refused: {cause}"))?;
+        let counts = accumulate_tap_report(self.carried, self.tap.report());
+        eprintln!(
+            "tiler-macos tile-tap: {origin} re-enable unverified; fresh tap installed (reenables_after_timeout={} user_disables={} unnotified_disables={})",
+            counts.reenables_after_timeout, counts.user_disables, counts.unnotified_disables,
+        );
+        Ok(())
     }
 
     /// Scoped return-to-eligible fresh guard (owner thread only): after an
     /// out-of-scope/fullscreen/wrong-Space interval the old guard drops
     /// WITHOUT a same-tap re-enable and a FRESH scoped source installs on
     /// this same thread (same chords, same placement, same eligibility
-    /// cache), with the eligibility epoch bumped. A genuine user-disable
-    /// refusal is never masked: when a refusal is already recorded this
-    /// returns `Err` and the run fails closed instead of auto-overriding
-    /// user intent.
+    /// cache), with the eligibility epoch bumped. A recorded hard refusal
+    /// (for example a denied recreation) is never masked: when a refusal is
+    /// already recorded this returns `Err` and the run fails closed instead
+    /// of auto-overriding it.
     fn recreate_on_scope_return(&mut self) -> Result<(), String> {
         if self
             .refusal
@@ -971,26 +1183,13 @@ impl TapTileSource {
             .unwrap_or_else(|poison| poison.into_inner())
             .is_some()
         {
-            return Err("tap disabled by user input; refusing (no auto-override)".to_owned());
+            return Err("tap recreation refused earlier; refusing (no auto-override)".to_owned());
         }
-        let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
-        let new_tap =
-            match TapSource::create_scoped(&self.specs, true, &tx, Arc::clone(&self.eligibility)) {
-                Ok(tap) => tap,
-                Err(reason) => {
-                    let cause = format!("scope-return re-arm refused: {reason}");
-                    self.note_refusal(cause.clone());
-                    return Err(cause);
-                }
-            };
-        let old = std::mem::replace(&mut self.tap, new_tap);
-        self.rx = rx;
-        drop(old);
-        self.holding_direct = false;
-        self.eligibility.bump_epoch();
-        self.publish_report();
-        self.publish_direct_enabled();
-        Ok(())
+        self.install_fresh_scoped().map_err(|reason| {
+            let cause = format!("scope-return re-arm refused: {reason}");
+            self.note_refusal(cause.clone());
+            cause
+        })
     }
 }
 
@@ -1018,6 +1217,17 @@ impl InputSource for TapTileSource {
                 Ok(false) => {}
                 Ok(true) => continue,
                 Err(_) => return None,
+            }
+            // Fixture-only one-shot disable-once fault (`--disable-once`
+            // only; the flag stays false in every production run, so
+            // production behavior below is unchanged): disable the tap
+            // directly ONCE with no fixture hold, then keep pumping so the
+            // tap recovers automatically through whichever path the OS takes
+            // (notification or readback-only); the leg reports the actual
+            // kind from the counters.
+            if self.disable_once_fault.swap(false, Ordering::SeqCst) {
+                self.tap.set_tap_direct_enabled(false);
+                self.publish_direct_enabled();
             }
             // Fixture-only DIRECT disable hold (input-session
             // `--direct-disable-hold-ms` only; the flag stays false in every
@@ -1054,8 +1264,8 @@ impl InputSource for TapTileSource {
             // fullscreen/wrong-Space callbacks Keep/noForward via the cached
             // atomic (no suppress, no forward). The owner parks gated here;
             // on return to eligible it drops the old guard and installs a
-            // FRESH scoped source (new epoch) to avoid a user-disabled sticky
-            // cycle. A genuine user disable still refuses and is never
+            // FRESH scoped source (new epoch) to avoid a disabled sticky
+            // cycle. A recorded hard refusal still fails closed and is never
             // auto-overridden. No AX runs on this thread: per-app facts
             // arrive via the shared store from each AX owner's already-read
             // snapshots.
@@ -1082,16 +1292,130 @@ impl InputSource for TapTileSource {
             }
             self.tap.set_enabled(true);
             match self.tap.pump(20) {
-                TapPump::UserDisabled => {
-                    *self
-                        .refusal
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) =
-                        Some("tap disabled by user input; refusing".to_owned());
-                    self.publish_report();
-                    return None;
+                TapPump::Held => {
+                    // Production owner-side health on every bounded pump
+                    // turn: the OS can leave a tap directly disabled with NO
+                    // notification (measured live: disable_kind=0 with
+                    // reenables=0, later tap_is_enabled=false with frozen
+                    // counters — `pump` then returns Held forever). A Held
+                    // turn that is not actually enabled recovers here with
+                    // its own unnotified-disabled counter (never the timeout
+                    // count), except under the EXPLICIT fixture hold, which
+                    // owns its deliberate disabled observation and release
+                    // (production never sets it, so the bypass is
+                    // structurally fixture-only).
+                    let held = fixture_hold_active(
+                        self.direct_hold.load(Ordering::SeqCst),
+                        self.holding_direct,
+                    );
+                    match unnotified_disable_action(self.tap.is_tap_direct_enabled(), held) {
+                        None => {}
+                        Some(DisableAction::ReenableSameTap) => {
+                            if let Err(reason) =
+                                self.recover_disabled("enabled-readback-only", true)
+                            {
+                                self.note_refusal(reason);
+                                self.publish_report();
+                                eprintln!(
+                                    "tiler-macos tile-tap: enabled-readback-only recovery refused; ending truthfully"
+                                );
+                                return None;
+                            }
+                            continue;
+                        }
+                        Some(_) => {
+                            unreachable!("readback-only recovery re-enables the same tap first")
+                        }
+                    }
                 }
-                TapPump::Held => {}
+                TapPump::TimeoutRecovered => {
+                    // Same-tap re-enable verified by the pump (counted in
+                    // the report). Static tokens and counts only.
+                    let counts = accumulate_tap_report(self.carried, self.tap.report());
+                    eprintln!(
+                        "tiler-macos tile-tap: disabled by timeout; same-tap re-enable verified (reenables_after_timeout={} user_disables={} unnotified_disables={})",
+                        counts.reenables_after_timeout,
+                        counts.user_disables,
+                        counts.unnotified_disables,
+                    );
+                }
+                TapPump::NeedsRecreate => {
+                    // The same-tap re-enable did not verify: install a FRESH
+                    // tap over the same chords on this same owner thread
+                    // (never a second same-tap enable). A recreation refusal
+                    // fails closed with the refusal.
+                    match unverified_reenable_action() {
+                        DisableAction::RecreateFresh => {}
+                        DisableAction::ReenableSameTap | DisableAction::RefuseUserDisabled => {
+                            unreachable!("timeout recovery never re-enables twice or refuses")
+                        }
+                    }
+                    if let Err(reason) = self
+                        .install_fresh_scoped()
+                        .map_err(|cause| format!("timeout recovery re-arm refused: {cause}"))
+                    {
+                        self.note_refusal(reason);
+                        self.publish_report();
+                        eprintln!(
+                            "tiler-macos tile-tap: timeout recovery refused; ending truthfully"
+                        );
+                        return None;
+                    }
+                    let counts = accumulate_tap_report(self.carried, self.tap.report());
+                    eprintln!(
+                        "tiler-macos tile-tap: timeout re-enable unverified; fresh tap installed (reenables_after_timeout={} user_disables={} unnotified_disables={})",
+                        counts.reenables_after_timeout,
+                        counts.user_disables,
+                        counts.unnotified_disables,
+                    );
+                    continue;
+                }
+                TapPump::UserDisabled => {
+                    // Logged recoverable state, never terminal by name
+                    // alone: the notification name never proves consent
+                    // revocation (the surveyed skhd tap-disabled restart
+                    // re-enables both kinds). The lock / Secure Input /
+                    // eligibility gates still release interception while
+                    // blocked — while gated the owner parks released and
+                    // retries later, so recovery never overrides trust or
+                    // privacy gates. When eligible the same tap re-enables
+                    // with a readback, else a fresh tap installs over the
+                    // same chords; only a hard creation denial refuses.
+                    match disable_action(DisableKind::UserInput) {
+                        DisableAction::ReenableSameTap => {}
+                        DisableAction::RecreateFresh | DisableAction::RefuseUserDisabled => {
+                            unreachable!("user-input notification recovers via same-tap re-enable")
+                        }
+                    }
+                    if live_gate().is_some() {
+                        self.tap.set_enabled(false);
+                        std::thread::park_timeout(std::time::Duration::from_millis(50));
+                        self.gated_ms.fetch_add(50, Ordering::SeqCst);
+                        continue;
+                    }
+                    if !attest_tile_eligibility(
+                        &self.scope,
+                        &self.eligibility,
+                        self.facts.as_ref(),
+                        false,
+                        &mut self.last_attest,
+                    ) {
+                        self.tap.set_enabled(false);
+                        std::thread::park_timeout(std::time::Duration::from_millis(50));
+                        self.gated_ms.fetch_add(50, Ordering::SeqCst);
+                        self.was_ineligible = true;
+                        continue;
+                    }
+                    if let Err(reason) = self.recover_disabled("user-input", false) {
+                        self.note_refusal(reason);
+                        self.publish_report();
+                        eprintln!(
+                            "tiler-macos tile-tap: user-input recovery refused; ending truthfully"
+                        );
+                        return None;
+                    }
+                    continue;
+                }
             }
             // Publish per slice so the fault-injection leg observes the
             // timeout re-enable mid-run (terminal evidence lands on drop).

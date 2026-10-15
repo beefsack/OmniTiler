@@ -35,6 +35,11 @@ pub(crate) struct KnownState {
     pub exception: bool,
     pub automatic: bool,
     pub slot: bool,
+    /// Session holds a floating placement for this window (intentional
+    /// ToggleFloat or lifecycle-admitted float). Born-fullscreen holds and
+    /// fresh-admitted floats carry no placement — this is what lets the
+    /// wire echo tell a user float (persist) from a hold exit (tile).
+    pub placed: bool,
 }
 
 impl KnownState {
@@ -51,6 +56,7 @@ impl KnownState {
             exception: session.is_exception(id),
             automatic: session.is_automatic_fixed_float(id),
             slot: session.minimized_slot(id).is_some(),
+            placed: session.floating_geometry(id).is_some(),
         }
     }
 
@@ -81,6 +87,13 @@ impl KnownState {
 ///   (floating + fixed_auto, membership only, no writes). Ordinary pins
 ///   stay plain; retained automatics re-assert across hint loss (D2);
 ///   classified floats never gain provenance (intentional/transient).
+/// - Retained intentional (non-automatic) floats with a session placement
+///   re-assert across observations: macOS has no AX-level float state, so
+///   without this echo the next converge would read the floated window as
+///   tiled and revert the exception (KWin/Windows parity, where the
+///   compositor reports the float natively). Placement-less holds (born
+///   fullscreen, fresh-admitted floats) still report truthfully, so hold
+///   exits tile. Never gains provenance.
 #[must_use]
 pub(crate) fn normalize_wire_flags(
     floating_cls: bool,
@@ -93,6 +106,9 @@ pub(crate) fn normalize_wire_flags(
         return (true, false);
     }
     if known.exception && !known.automatic && fullscreen && !floating_cls {
+        return (true, false);
+    }
+    if known.exception && !known.automatic && !fullscreen && !floating_cls && known.placed {
         return (true, false);
     }
     if known.exception && known.automatic && !fullscreen {
@@ -142,6 +158,68 @@ pub(crate) struct RetainedCore {
     /// domain's events. Sessions advance independently per domain; a single
     /// shared cursor would misreport every domain but one.
     pub(crate) domain_revisions: BTreeMap<DomainKey, u64>,
+    /// Keyboard-resize repeat cursor (Windows `ResizeRepeat` parity,
+    /// macOS-local): the press index for the next resize dispatch. Key-up
+    /// never resets it — like KDE/Windows, only a focused-window, direction,
+    /// or mode mismatch restarts the shared 12/14/16/18/20px schedule (see
+    /// [`resize_repeat_next`]). No fingerprint input, matching the Windows
+    /// rows (an own-write fingerprint reset would restart the mandated
+    /// schedule after the first press; external drift fails closed at the
+    /// Engine and the next press restarts).
+    pub(crate) resize_repeat: Option<ResizeRepeat>,
+}
+
+/// Exact KDE `requestResize` / Windows `ResizeRepeat` repeat tracker
+/// (portable pure step, macOS-local copy — no shared helper exists in
+/// `tiler-core`, and the Windows rows are local too): the press index for
+/// one keyboard-resize dispatch plus the stored repeat state for the next
+/// press. Continues only when the focused window, direction, and mode all
+/// match the stored press; any focus/direction/mode change restarts at 0.
+/// Wire tokens throughout (`left`/`right`/`up`/`down`,
+/// `outwards`/`inwards`) so the engine dispatcher shares this exact rule
+/// with no duplication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResizeRepeat {
+    pub focused: String,
+    pub direction: String,
+    pub mode: String,
+    pub next: u32,
+}
+
+/// Next keyboard-resize press index plus the stored state for the following
+/// press. See [`ResizeRepeat`] for the exact continuation rule.
+#[must_use]
+pub(crate) fn resize_repeat_next(
+    prev: Option<ResizeRepeat>,
+    focused: &str,
+    direction: &str,
+    mode: &str,
+) -> (u32, ResizeRepeat) {
+    if let Some(state) = prev
+        && state.focused == focused
+        && state.direction == direction
+        && state.mode == mode
+    {
+        let index = state.next;
+        return (
+            index,
+            ResizeRepeat {
+                focused: state.focused,
+                direction: state.direction,
+                mode: state.mode,
+                next: index.saturating_add(1),
+            },
+        );
+    }
+    (
+        0,
+        ResizeRepeat {
+            focused: focused.to_owned(),
+            direction: direction.to_owned(),
+            mode: mode.to_owned(),
+            next: 1,
+        },
+    )
 }
 
 /// Clear observed focus when it points into `pid` (authoritative loss:
@@ -602,6 +680,17 @@ mod tests {
             exception,
             automatic,
             slot: false,
+            placed: false,
+        }
+    }
+
+    fn placed(member: bool, exception: bool, automatic: bool) -> KnownState {
+        KnownState {
+            member,
+            exception,
+            automatic,
+            slot: false,
+            placed: true,
         }
     }
 
@@ -725,6 +814,109 @@ mod tests {
             ),
             (false, false)
         );
+    }
+
+    #[test]
+    fn wire_flags_retain_intentional_floats_across_observations() {
+        // Live defect (scoped float never stuck): macOS has no AX-level
+        // float state, so a session-floated window still classifies as
+        // non-floating. Without this echo the next converge reads it as
+        // tiled and reverts the exception (~90 ms live: one sibling
+        // expansion frame, then reconcile back to halves). A retained
+        // intentional (non-automatic, non-fullscreen) exception WITH a
+        // session placement must re-assert floating on the wire — without
+        // automatic provenance, even across fixed-hint sightings. A
+        // placement-less hold (born fullscreen exit, fresh-admitted float)
+        // still reports truthfully so the hold exit tiles.
+        let plain = WindowSizeHints::none();
+        let intentional = placed(false, true, false);
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                plain,
+                &intentional,
+                FixedSizePredicate::BothAxes
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                fixed(),
+                &intentional,
+                FixedSizePredicate::BothAxes
+            ),
+            (true, false),
+            "fixed hints never promote an intentional float to automatic"
+        );
+        // Placement-less intentional-shaped exceptions (hold exits) tile.
+        let hold_exit = known(false, true, false);
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                plain,
+                &hold_exit,
+                FixedSizePredicate::BothAxes
+            ),
+            (false, false)
+        );
+        // Classified float state still rides truthfully for unknowns, and
+        // ordinary retained tiles stay plain.
+        let unknown = KnownState::default();
+        assert_eq!(
+            normalize_wire_flags(true, false, plain, &unknown, FixedSizePredicate::BothAxes),
+            (true, false)
+        );
+        assert_eq!(
+            normalize_wire_flags(
+                false,
+                false,
+                plain,
+                &known(true, false, false),
+                FixedSizePredicate::BothAxes
+            ),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn resize_repeat_continues_only_on_focus_direction_mode_match() {
+        // Exact Windows `resize_repeat_next` parity: first press is index
+        // 0 (the shared 12px step), continuation bumps the stored next,
+        // and any focus/direction/mode change restarts at 0.
+        let (first, state) = resize_repeat_next(None, "1001_1", "right", "outwards");
+        assert_eq!(first, 0);
+        assert_eq!(state.next, 1);
+        let (second, state) = resize_repeat_next(Some(state), "1001_1", "right", "outwards");
+        assert_eq!(second, 1);
+        assert_eq!(state.next, 2);
+        // Mismatches restart; key-up never enters (no reset input here).
+        for (focused, direction, mode) in [
+            ("1001_2", "right", "outwards"),
+            ("1001_1", "left", "outwards"),
+            ("1001_1", "right", "inwards"),
+        ] {
+            let (index, next) = resize_repeat_next(Some(state.clone()), focused, direction, mode);
+            assert_eq!(index, 0, "{focused}/{direction}/{mode} restarts");
+            assert_eq!(next.next, 1);
+        }
+        // Saturation: the index never wraps on long holds (the core caps
+        // the pixel step at 20px downstream).
+        let mut state = ResizeRepeat {
+            focused: "1001_1".to_owned(),
+            direction: "right".to_owned(),
+            mode: "outwards".to_owned(),
+            next: u32::MAX,
+        };
+        let (index, next) = resize_repeat_next(Some(state.clone()), "1001_1", "right", "outwards");
+        assert_eq!(index, u32::MAX);
+        assert_eq!(next.next, u32::MAX);
+        state.next = 41;
+        let (index, _) = resize_repeat_next(Some(state), "1001_1", "right", "outwards");
+        assert_eq!(index, 41);
     }
 
     #[test]

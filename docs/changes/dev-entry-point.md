@@ -1,5 +1,9 @@
 # Cross-platform foreground development entry point
 
+The macOS stub described in this record is superseded by the
+[macOS dogfood preview](macos-dogfood-preview.md), including build, foreground
+streaming and exact-run graceful stop. Other platform evidence remains here.
+
 ## Goal and acceptance
 
 - User decision 2026-10-13: `just dev [verbose|trace]` is the foreground

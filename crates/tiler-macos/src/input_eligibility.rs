@@ -28,9 +28,10 @@
 //!   Keeps/noForwards while ineligible.
 //! - The Carbon owner releases its whole registration while ineligible and
 //!   re-arms on return; the tap owner drops its old guard and installs a
-//!   FRESH guard on return to eligible (new epoch) to avoid a user-disabled
-//!   sticky cycle. A genuine user disable still records a truthful refusal
-//!   and is never auto-overridden.
+//!   FRESH guard on return to eligible (new epoch) to avoid a disabled
+//!   sticky cycle. A recorded hard creation denial still fails closed and
+//!   is never auto-overridden; transient disable notifications recover
+//!   (see [`crate::input_policy`]).
 //! - Scoped sources start ineligible until attested facts. The
 //!   `input-session` fixture uses an explicit unrestricted test gate for its
 //!   known post targets (strict per-edge oracle still enforced in

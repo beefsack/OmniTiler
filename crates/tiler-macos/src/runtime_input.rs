@@ -21,13 +21,16 @@ use crate::runtime_thread::{EngineJob, Inbox};
 use crate::runtime_types::{InputSemanticAction, TileBinding};
 
 /// Exact-match tuning for one catalogue chord: the Ctrl-role modifier bit
-/// plus the Shift arm when set, under the same mask (Caps/Fn bits stay
-/// outside the mask, so they neither match nor break a chord — the existing
-/// matcher contract).
+/// plus the Shift arm and the Alt (resize) arm when set, under the same
+/// mask (Caps/Fn bits stay outside the mask, so they neither match nor
+/// break a chord — the existing matcher contract).
 fn tuning_for_binding(modifier: crate::config::ProbeModifier, binding: &TileBinding) -> TapTuning {
     let (mut want_flags, flags_mask) = cg_flag_bits(modifier);
     if binding.shift {
         want_flags |= 0x0002_0000; // Shift bit in `CGEventFlags` space.
+    }
+    if binding.alt {
+        want_flags |= 0x0008_0000; // Alternate bit in `CGEventFlags` space.
     }
     TapTuning {
         want_flags,
@@ -67,6 +70,17 @@ pub(crate) fn input_main_bound(
         .iter()
         .map(|binding| (tuning_for_binding(modifier, binding), binding.action))
         .collect();
+    // Orientation toggle hold: one toggle per discrete press (Windows
+    // R-LAY-01 parity — held auto-repeat downs consume without dispatch,
+    // release/repress toggles again). The hold tracks the physical `O` key:
+    // any key-up on the orientation key code releases it, so a chord broken
+    // by an early modifier release can never wedge the next press. Focus,
+    // move, float, and resize chords repeat while held (existing behavior;
+    // resize advances its press-index schedule per down). Product tile arms
+    // tap/off sources, which deliver both edges; a downs-only source would
+    // hold after its first orientation press (documented, never a product
+    // path — the tile offers tap/off only).
+    let mut orientation_held = false;
     // The source is destroyed here on thread exit.
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -83,13 +97,18 @@ pub(crate) fn input_main_bound(
             emit(&shared, 0, 0, 0, "input", "eos-unexpected", 0);
             break;
         };
-        // Forward semantic actions only on key down with an exact chord
-        // match. Key-up, inexact modifiers (including extras), and unrelated
-        // keys are ignored; the core is never consulted here.
+        // A key-up on the orientation key releases the held press (any
+        // flags: the physical key came up). Key-ups never forward.
         if event.kind != TapKeyKind::KeyDown {
+            if event.key_code == crate::input_policy::KEY_O {
+                orientation_held = false;
+            }
             lock_shared(&shared).diagnostics.input_ignored += 1;
             continue;
         }
+        // Forward semantic actions only on key down with an exact chord
+        // match. Key-up, inexact modifiers (including extras), and unrelated
+        // keys are ignored; the core is never consulted here.
         // First exact match wins (the config validator forbids duplicate
         // chords, so at most one arm matches).
         let mut action = None;
@@ -113,6 +132,13 @@ pub(crate) fn input_main_bound(
             lock_shared(&shared).diagnostics.input_ignored += 1;
             continue;
         };
+        if matches!(action, InputSemanticAction::ToggleOrientation) {
+            if orientation_held {
+                lock_shared(&shared).diagnostics.input_ignored += 1;
+                continue;
+            }
+            orientation_held = true;
+        }
         if !inbox.try_send_data(EngineJob::InputAction { action }) {
             lock_shared(&shared).diagnostics.data_dropped_full += 1;
         }

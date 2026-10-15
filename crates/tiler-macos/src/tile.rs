@@ -1,14 +1,28 @@
 #![forbid(unsafe_code)]
 
-//! Scoped-tile development entry point (`tile --user-start ...`).
+//! Tile development entry point (`tile --user-start ...`).
 //!
-//! A bounded, explicitly scoped, finite-lifetime tile session over named
-//! everyday apps (e.g. TextEdit/Calculator class): the main (AppKit) thread
+//! Two product modes share one controller:
+//!
+//! - Scoped (bounded): an explicit non-empty bundle allowlist. Ghostty (any
+//!   case/variant) never validates and never actuates in scoped mode. The
+//!   signed bundled helper admits under an explicit helper-bundle scope
+//!   (fixture exception).
+//! - Unscoped (user dogfood): every ordinary app on each display's current
+//!   user Space, minus both own bundles and optional exact bundle-ID
+//!   exclusions. Ghostty is an ordinary product candidate here. An
+//!   unscoped run with `--seconds 0` is unbounded (runs until the owner
+//!   exits or a stop is published to its run directory); scoped runs stay
+//!   finite with a hard watchdog.
+//!
+//! An explicitly started tile session over everyday apps (e.g.
+//! TextEdit/Calculator class): the main (AppKit) thread
 //! owns topology snapshots and lifecycle discovery, one dedicated input
-//! thread owns its Carbon/tap guard, one per-app AX owner observes and
+//! thread owns its tap guard, one per-app AX owner observes and
 //! actuates under pre-effect fences, and one engine thread plans. No
 //! additive core API: input resolves to the existing `Focus`/`Move`/
-//! `ToggleFloat` commands, effects ride the existing scoped backend.
+//! `Resize`/`ToggleFloat`/`ToggleOrientation` commands, effects ride the
+//! existing scoped backend.
 //!
 //! Safety contract: explicit `--user-start` plus a non-empty bundle
 //! allowlist are mandatory. Ghostty (any case/variant), the own bundle,
@@ -35,6 +49,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{MAX_PROBE_SECONDS, ProbeModifier};
+use crate::dev_selection::{TileScope, launchable as selection_launchable};
+use crate::input_policy::InputPreset;
 use crate::scope::AppScope;
 
 /// Default tile lifetime (seconds): finite and well under the probe max.
@@ -42,16 +58,16 @@ pub const DEFAULT_TILE_SECONDS: u64 = 30;
 /// Tile lifetime bound (seconds): the configured probe max.
 pub const MAX_TILE_SECONDS: u64 = MAX_PROBE_SECONDS;
 
-/// Which input route the tile run arms. Exactly one arms per run: Carbon
-/// discrete hotkeys by default, the event tap only under the explicit tap
-/// flag, off parks. No auto fallback between them.
+/// Which input route the tile run arms. The event tap is the primary (and
+/// now sole product) route with exact-chord pair suppression; off parks.
+/// No auto fallback between them. Carbon stays available only as a probe
+/// (`input-register`, `input-session --route carbon`), never as a product
+/// selection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TileInput {
-    /// Discrete Carbon hotkeys, one exact chord each (default).
+    /// Continuous event tap with exact-chord pair suppression (default).
     #[default]
-    Carbon,
-    /// Continuous event tap with exact-chord pair suppression (explicit).
     Tap,
     /// No interception: open-loop on AX observations.
     Off,
@@ -60,11 +76,10 @@ pub enum TileInput {
 impl TileInput {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
-            "carbon" => Ok(Self::Carbon),
             "tap" => Ok(Self::Tap),
             "off" => Ok(Self::Off),
             other => Err(format!(
-                "unknown --input '{other}' (expected carbon|tap|off)"
+                "unknown --input '{other}' (expected tap|off; carbon is probe-only: input-register, input-session --route carbon)"
             )),
         }
     }
@@ -72,15 +87,56 @@ impl TileInput {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Carbon => "carbon",
             Self::Tap => "tap",
             Self::Off => "off",
         }
     }
 }
 
-/// Validated tile request: explicit user start plus a non-empty scope plus
-/// a finite lifetime. Construction never touches the OS.
+/// Foreground log verbosity for a tile run: the structured stderr log lines
+/// are the existing runtime events (static tokens plus counters only, never
+/// user content). Normal emits lifecycle/recovery lines only; verbose adds
+/// a periodic counter heartbeat; trace shortens the heartbeat cadence and
+/// adds input forward/ignore counters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TileLogLevel {
+    /// Lifecycle and recovery lines only (default).
+    #[default]
+    Normal,
+    /// Plus a periodic counter heartbeat (~10 s).
+    Verbose,
+    /// Faster heartbeat (~2 s) plus input forward/ignore counters.
+    Trace,
+}
+
+impl TileLogLevel {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.to_ascii_lowercase().as_str() {
+            "normal" => Ok(Self::Normal),
+            "verbose" => Ok(Self::Verbose),
+            "trace" => Ok(Self::Trace),
+            other => Err(format!(
+                "unknown --log '{other}' (expected normal|verbose|trace)"
+            )),
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Verbose => "verbose",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+/// Validated tile request: explicit user start plus a product selection
+/// (scoped non-empty allowlist, or unscoped ordinary apps) plus a lifetime.
+/// Construction never touches the OS. Unscoped `--seconds 0` means
+/// unbounded (owner exit or exact-PID stop ends the run); scoped runs are
+/// always bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileRequest {
     pub user_start: bool,
@@ -88,6 +144,20 @@ pub struct TileRequest {
     pub seconds: u64,
     pub input: TileInput,
     pub modifier: ProbeModifier,
+    pub preset: InputPreset,
+    /// Unscoped product mode (ordinary apps minus own bundles/exclusions).
+    /// Without it the run is scoped (explicit allowlist, Ghostty refused).
+    pub unscoped: bool,
+    /// Exact bundle-ID exclusions (unscoped only).
+    pub excluded: Vec<String>,
+    /// Foreground log verbosity.
+    pub log: TileLogLevel,
+    /// Exact-run directory for graceful lifecycle (created by the
+    /// foreground launcher and passed here): the owner polls
+    /// `<dir>/stop-requested` every cadence and publishes its terminal
+    /// outcome JSON to `<dir>/outcome.json`. `None` keeps the plain
+    /// bounded behavior with stdout as the only outcome channel.
+    pub run_dir: Option<String>,
 }
 
 impl TileRequest {
@@ -95,20 +165,70 @@ impl TileRequest {
         if !self.user_start {
             return Err("tile requires explicit --user-start".to_owned());
         }
-        if self.scopes.is_empty() {
-            return Err("tile requires at least one --scope BUNDLE".to_owned());
+        if self.unscoped {
+            if !self.scopes.is_empty() {
+                return Err(
+                    "tile: --scope and --unscoped are mutually exclusive (drop --unscoped for the allowlist mode)"
+                        .to_owned(),
+                );
+            }
+            if self.seconds > MAX_TILE_SECONDS {
+                return Err(format!(
+                    "seconds must be 0..={MAX_TILE_SECONDS} (0 = unbounded), got {}",
+                    self.seconds
+                ));
+            }
+        } else {
+            if self.scopes.is_empty() {
+                return Err("tile requires at least one --scope BUNDLE".to_owned());
+            }
+            if self.seconds == 0 || self.seconds > MAX_TILE_SECONDS {
+                return Err(format!(
+                    "seconds must be 1..={MAX_TILE_SECONDS}, got {}",
+                    self.seconds
+                ));
+            }
+            if !self.excluded.is_empty() {
+                return Err("tile: --exclude needs --unscoped".to_owned());
+            }
         }
-        if self.seconds == 0 || self.seconds > MAX_TILE_SECONDS {
-            return Err(format!(
-                "seconds must be 1..={MAX_TILE_SECONDS}, got {}",
-                self.seconds
-            ));
+        if let Some(dir) = &self.run_dir
+            && dir.is_empty()
+        {
+            return Err("tile: --run-dir must not be empty".to_owned());
         }
-        AppScope {
-            allowed: self.scopes.clone(),
+        self.selection().validate()?;
+        // Defensive: a preset must never arm an empty chord set (Compatible
+        // only removes known-conflicting arrows, so this is unreachable
+        // today, but an empty tap would silently intercept nothing).
+        if crate::input_policy::effective_bindings(
+            self.preset,
+            self.modifier,
+            &crate::native_input::tile_catalogue(),
+        )
+        .is_empty()
+        {
+            return Err("preset disables every chord; refusing an empty tap".to_owned());
         }
-        .validate()?;
         Ok(())
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> TileScope {
+        if self.unscoped {
+            TileScope::Unscoped {
+                excluded: self.excluded.clone(),
+            }
+        } else {
+            TileScope::Scoped(self.scope())
+        }
+    }
+
+    /// True for an unbounded product run (unscoped `--seconds 0`): no
+    /// deadline and no hard watchdog; owner exit or exact-PID stop ends it.
+    #[must_use]
+    pub const fn is_unbounded(&self) -> bool {
+        self.unscoped && self.seconds == 0
     }
 
     #[must_use]
@@ -119,18 +239,15 @@ impl TileRequest {
     }
 }
 
-/// Whether a discovered (pid, bundle) may be launched: exact allowlist
-/// membership at the effect gate (Ghostty, own bundle, protected
-/// terminals, and unknown bundles never pass), never the process itself.
+/// Whether a discovered (pid, bundle) may be launched under a scoped
+/// allowlist: exact membership at the effect gate (Ghostty, own bundle,
+/// protected terminals, and unknown bundles never pass), never the process
+/// itself. Unscoped discovery uses
+/// [`crate::dev_selection::launchable`] instead (same PID/bundle hygiene,
+/// ordinary apps including Ghostty admitted).
 #[must_use]
 pub fn launchable(scope: &AppScope, pid: u32, bundle: &str) -> bool {
-    if pid <= 1 || pid == std::process::id() {
-        return false;
-    }
-    if bundle.is_empty() {
-        return false;
-    }
-    scope.allows_effect(Some(bundle))
+    selection_launchable(&TileScope::Scoped(scope.clone()), pid, bundle)
 }
 
 /// Terminal JSON outcome: honest counters and outcome vs live evidence.
@@ -140,9 +257,19 @@ pub fn launchable(scope: &AppScope, pid: u32, bundle: &str) -> bool {
 pub struct TileOutcome {
     pub outcome: String,
     pub seconds: u64,
+    /// Product mode: `scoped` (explicit allowlist, Ghostty refused) or
+    /// `unscoped` (ordinary apps, Ghostty an ordinary candidate).
+    pub mode: String,
+    /// True for an unbounded product run (no deadline, no hard watchdog).
+    pub unbounded: bool,
     pub input: TileInput,
     pub modifier: String,
+    pub preset: String,
+    /// Armed chord count under the selected preset (Compatible < catalogue).
+    pub active_chords: usize,
     pub scopes: Vec<String>,
+    /// Exact bundle-ID exclusions (unscoped only).
+    pub excluded: Vec<String>,
     pub launched: u64,
     pub launch_refused: u64,
     pub terminated: u64,
@@ -156,9 +283,19 @@ pub struct TileOutcome {
     pub gated_ms: u64,
     pub input_refusal: Option<String>,
     pub carbon_statuses: Vec<crate::ffi::CarbonChordStatus>,
+    /// Latest continuous-tap counters (`None` for the off route): timeout
+    /// re-enables, user-input notifications, and enabled-readback-only
+    /// recoveries are first-class terminal evidence (cumulative across
+    /// fresh-guard recreations).
+    pub tap_report: Option<crate::ffi::TapSourceReport>,
     pub shutdown_outcome: String,
     pub shutdown_joined: usize,
     pub shutdown_retained: usize,
+    /// True only when the run reached a verified terminal state with a
+    /// clean bounded shutdown (no refusal, no retained workers). The
+    /// foreground launcher parses this alongside `outcome`: stderr log
+    /// lines never decide success.
+    pub shutdown_clean: bool,
     pub input_forwarded: u64,
     pub input_ignored: u64,
     pub input_refused_no_focus: u64,
@@ -173,9 +310,14 @@ impl TileOutcome {
         Self {
             outcome: "refused".to_owned(),
             seconds: request.seconds,
+            mode: mode_str(request.unscoped).to_owned(),
+            unbounded: request.is_unbounded(),
             input: request.input,
             modifier: request.modifier.as_str().to_owned(),
+            preset: request.preset.as_str().to_owned(),
+            active_chords: 0,
             scopes: request.scopes.clone(),
+            excluded: request.excluded.clone(),
             launched: 0,
             launch_refused: 0,
             terminated: 0,
@@ -189,9 +331,11 @@ impl TileOutcome {
             gated_ms: 0,
             input_refusal: Some(reason),
             carbon_statuses: Vec::new(),
+            tap_report: None,
             shutdown_outcome: "not-started".to_owned(),
             shutdown_joined: 0,
             shutdown_retained: 0,
+            shutdown_clean: false,
             input_forwarded: 0,
             input_ignored: 0,
             input_refused_no_focus: 0,
@@ -202,17 +346,63 @@ impl TileOutcome {
     }
 }
 
+/// Heartbeat stride in main-loop cadences (250 ms each): verbose every
+/// ~10 s, trace every ~2 s. `None` disables the heartbeat (normal).
+#[must_use]
+pub const fn heartbeat_stride(log: TileLogLevel) -> Option<u64> {
+    match log {
+        TileLogLevel::Normal => None,
+        TileLogLevel::Verbose => Some(40),
+        TileLogLevel::Trace => Some(8),
+    }
+}
+
+/// Product-mode token for terminal JSON (`scoped` vs `unscoped`).
+#[must_use]
+pub const fn mode_str(unscoped: bool) -> &'static str {
+    if unscoped { "unscoped" } else { "scoped" }
+}
+
+/// Best-effort terminal outcome persistence for exact-run lifecycle:
+/// writes the terminal JSON body to `<run_dir>/outcome.json` when a run
+/// directory was passed. Std-only, never fails the run (stdout stays the
+/// primary outcome channel; a missing/unwritable directory simply skips).
+/// The write is atomic (temporary file plus rename) so an observer that
+/// sees the path always reads the complete body.
+pub fn write_run_outcome(run_dir: &Option<String>, body: &str) {
+    let Some(dir) = run_dir else { return };
+    if dir.is_empty() {
+        return;
+    }
+    let dir = std::path::Path::new(dir);
+    let tmp = dir.join(".outcome.json.tmp");
+    if std::fs::write(&tmp, body).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, dir.join("outcome.json"));
+}
+
 /// Portable entry: validates, then runs the native controller (macOS-only).
 /// Exit codes: 2 usage/validation, 1 runtime refusal or failure.
+/// Terminal JSON bodies (both success and refusal) persist to the run
+/// directory's `outcome.json` when `--run-dir` was passed, so an exact-run
+/// launcher observes completion without process attribution.
 pub fn run_tile(request: TileRequest) -> Result<String, (i32, String)> {
     request.validate().map_err(|reason| (2, reason))?;
+    let run_dir = request.run_dir.clone();
     #[cfg(target_os = "macos")]
     {
-        native::run(request)
+        let result = native::run(request);
+        match &result {
+            Ok(body) => write_run_outcome(&run_dir, body),
+            Err((_, body)) => write_run_outcome(&run_dir, body),
+        }
+        result
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = request;
+        let _ = run_dir;
         Err((1, "tile is macOS-only".to_owned()))
     }
 }
@@ -223,9 +413,8 @@ mod native {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use crate::native_input::{
-        CarbonTileFactory, OffTileFactory, TapTileFactory, interception_gate, tile_catalogue,
-    };
+    use crate::input_policy::effective_bindings;
+    use crate::native_input::{OffTileFactory, TapTileFactory, interception_gate, tile_catalogue};
     use crate::native_tile_backend::ScopedAxFactory;
     use crate::runtime::{FocusEvidence, Runtime, RuntimeConfig, TopologyMode, WorkerReadiness};
     use crate::runtime_backend::InputSourceFactory;
@@ -241,6 +430,11 @@ mod native {
     /// thread would otherwise overrun the tile lifetime silently); the
     /// watchdog is the hard lifetime.
     const WATCHDOG_GRACE: Duration = Duration::from_secs(30);
+    /// Modest grace past the bounded shutdown for the stop-file deadline
+    /// watcher on unbounded runs: after a stop is observed the controller
+    /// gets `SHUTDOWN_BOUND` plus this grace, then a dirty forced exit if
+    /// wedged. No finite lifetime on a normal (unstopped) dogfood run.
+    const STOP_WATCHDOG_GRACE: Duration = Duration::from_secs(10);
 
     /// Pure watchdog limit: finite startup plus soft run lifetime plus
     /// bounded teardown plus finite grace. Unit-tested; the live watchdog
@@ -252,6 +446,13 @@ mod native {
         grace: Duration,
     ) -> Duration {
         startup + Duration::from_secs(seconds) + teardown + grace
+    }
+
+    /// Pure stop-file deadline: bounded teardown plus modest grace. The
+    /// live stop watcher below sleeps to exactly this; unit-tested, never
+    /// effectful.
+    fn stop_limit(teardown: Duration, grace: Duration) -> Duration {
+        teardown + grace
     }
 
     use crate::watchdog::Watchdog;
@@ -268,6 +469,15 @@ mod native {
         let rows = crate::ffi::sls_display_rows().map_err(|e| format!("space rows: {e}"))?;
         let separate = crate::ffi::ns_separate_spaces();
         Ok(build_snapshot(&ns, &rows, separate))
+    }
+
+    /// True when the launcher published a stop for this exact run: the
+    /// `<run_dir>/stop-requested` file exists. Std-only polling (one stat
+    /// per main-loop cadence); `None` run dirs never stop this way.
+    fn stop_requested(run_dir: &Option<String>) -> bool {
+        run_dir.as_ref().is_some_and(|dir| {
+            !dir.is_empty() && std::path::Path::new(dir).join("stop-requested").exists()
+        })
     }
 
     /// Publish the eligibility current context from a snapshot the main
@@ -335,6 +545,15 @@ mod native {
             }
             Some(_) => {}
         }
+        // Exact-run directory (foreground graceful lifecycle): it must
+        // exist when passed — the launcher always creates it, so a missing
+        // directory is a usage error, never a silent stdout-only run.
+        if let Some(dir) = &request.run_dir
+            && !dir.is_empty()
+            && !std::path::Path::new(dir).is_dir()
+        {
+            return Err((2, format!("tile: --run-dir is not a directory: '{dir}'")));
+        }
         // Accessory, no activation UI: `finishLaunching` publishes the
         // app without entering `run`; the bounded manual pump below keeps
         // lifetime control. Never steals focus, never opens windows.
@@ -342,8 +561,12 @@ mod native {
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         app.finishLaunching();
 
-        let scope = request.scope();
-        let catalogue = tile_catalogue();
+        let selection = request.selection();
+        // Effective chord set under the selected preset: Authentic arms the
+        // whole supported catalogue, Compatible leaves known conflicting
+        // chords to macOS (unarmed, passing through natively).
+        let catalogue = effective_bindings(request.preset, request.modifier, &tile_catalogue());
+        let active_chords = catalogue.len();
         // Shared per-PID eligibility facts: each per-app AX owner publishes
         // only its own PID from snapshot data it already read; the input
         // owner consults plain snapshots (no AX crosses threads). Built
@@ -354,23 +577,14 @@ mod native {
         // sources start ineligible until attested scope/foreground/Space/
         // showstate facts (no global interception while out-of-scope).
         enum InputGuard {
-            Carbon(Arc<CarbonTileFactory>),
             Tap(Arc<TapTileFactory>),
             Off(Arc<OffTileFactory>),
         }
         let input: InputGuard = match request.input {
-            TileInput::Carbon => InputGuard::Carbon(Arc::new(
-                CarbonTileFactory::new(request.modifier, catalogue.clone())
-                    .map(|f| {
-                        f.with_scope(scope.clone())
-                            .with_facts_store(Arc::clone(&facts_store))
-                    })
-                    .map_err(|reason| (2, reason))?,
-            )),
             TileInput::Tap => InputGuard::Tap(Arc::new(
                 TapTileFactory::new(request.modifier, catalogue.clone())
                     .map(|f| {
-                        f.with_scope(scope.clone())
+                        f.with_scope(selection.clone())
                             .with_facts_store(Arc::clone(&facts_store))
                     })
                     .map_err(|reason| (2, reason))?,
@@ -378,29 +592,62 @@ mod native {
             TileInput::Off => InputGuard::Off(Arc::new(OffTileFactory)),
         };
         let input_factory: Arc<dyn InputSourceFactory> = match &input {
-            InputGuard::Carbon(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
             InputGuard::Tap(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
             InputGuard::Off(factory) => Arc::clone(factory) as Arc<dyn InputSourceFactory>,
         };
         let config = RuntimeConfig {
             topology_mode: TopologyMode::Native,
-            allowed_bundles: request.scopes.clone(),
+            // Scoped runs carry the explicit allowlist; unscoped runs
+            // enforce ordinary-app selection in the factories/discovery
+            // instead (an empty allowlist disables scope enforcement, which
+            // is exactly the unscoped product rule).
+            allowed_bundles: if request.unscoped {
+                Vec::new()
+            } else {
+                request.scopes.clone()
+            },
             modifier: request.modifier,
             tile_bindings: Some(catalogue),
             ..RuntimeConfig::default()
         };
         config.validate().map_err(|reason| (2, reason))?;
-        // Hard lifetime armed BEFORE any runtime/input effect: finite
-        // startup plus soft run lifetime plus bounded teardown plus finite
-        // grace, then a dirty forced exit. `Drop` disarms as a backstop so
-        // early errors never leave a delayed forced exit behind.
-        let mut watchdog = Watchdog::arm(watchdog_limit(
-            config.startup_ready_timeout,
-            request.seconds,
-            SHUTDOWN_BOUND,
-            WATCHDOG_GRACE,
-        ))
-        .map_err(|reason| (1, reason))?;
+        // Hard lifetime for BOUNDED runs, armed BEFORE any runtime/input
+        // effect: finite startup plus soft run lifetime plus bounded
+        // teardown plus finite grace, then a dirty forced exit. `Drop`
+        // disarms as a backstop so early errors never leave a delayed
+        // forced exit behind. Unbounded product runs (unscoped `--seconds
+        // 0`) arm no watchdog: owner exit or exact-PID stop ends them.
+        let unbounded = request.is_unbounded();
+        let mut watchdog = if unbounded {
+            None
+        } else {
+            Some(
+                Watchdog::arm(watchdog_limit(
+                    config.startup_ready_timeout,
+                    request.seconds,
+                    SHUTDOWN_BOUND,
+                    WATCHDOG_GRACE,
+                ))
+                .map_err(|reason| (1, reason))?,
+            )
+        };
+        // Observe stop independently from startup and all main-thread native
+        // reads; a wedged controller must not postpone the stop deadline.
+        let mut stop_watchdog = if unbounded {
+            request
+                .run_dir
+                .as_ref()
+                .map(|dir| {
+                    Watchdog::arm_on_stop(
+                        std::path::Path::new(dir).join("stop-requested"),
+                        stop_limit(SHUTDOWN_BOUND, STOP_WATCHDOG_GRACE),
+                    )
+                })
+                .transpose()
+                .map_err(|reason| (1, reason))?
+        } else {
+            None
+        };
         // Started marker for the fixture harness: exact tiler PID plus a
         // per-run ID on stdout BEFORE any runtime/input effect, so an
         // independent controller can bind (pid + start/exe) and address
@@ -408,24 +655,59 @@ mod native {
         // IDs only. A nonce failure never fails the run (falls back to a
         // pid-anchored ID); the PID itself is the identity, the run ID only
         // disambiguates relaunches in one harness log.
+        //
+        // Exact-run lifecycle: when the launcher passed `--run-dir`, the
+        // run ID is the launcher's per-run nonce from `<dir>/run-id`
+        // (binding this output to that exact run); otherwise a fresh nonce
+        // is minted as before.
         {
-            let runid = crate::probe_target::mint_nonce()
-                .unwrap_or_else(|_| format!("run-{}-{}", std::process::id(), request.seconds));
+            let runid = request
+                .run_dir
+                .as_ref()
+                .and_then(|dir| {
+                    std::fs::read_to_string(std::path::Path::new(dir).join("run-id"))
+                        .ok()
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                })
+                .unwrap_or_else(|| {
+                    crate::probe_target::mint_nonce().unwrap_or_else(|_| {
+                        format!("run-{}-{}", std::process::id(), request.seconds)
+                    })
+                });
             println!(
                 "{}",
                 serde_json::json!({
                     "tilestarted": true,
                     "pid": std::process::id(),
                     "runid": runid,
+                    "mode": mode_str(request.unscoped),
+                    "unbounded": unbounded,
                 })
             );
             use std::io::Write as _;
             let _ = std::io::stdout().flush();
         }
+        // A stop published before startup still stops exactly this run
+        // (before any input/AX effect): no runtime starts, the stopped
+        // outcome publishes like any other terminal state.
+        if stop_requested(&request.run_dir) {
+            let mut outcome = TileOutcome::refused(&request, "stop requested".to_owned());
+            outcome.outcome = "stopped".to_owned();
+            outcome.shutdown_outcome = "not-started".to_owned();
+            outcome.shutdown_clean = true;
+            let body = serde_json::to_string(&outcome).map_err(|e| (1, e.to_string()))?;
+            super::write_run_outcome(&request.run_dir, &body);
+            return Err((1, body));
+        }
         let ax_factory = Arc::new(
-            ScopedAxFactory::new(scope.clone())
-                .map(|f| f.with_facts_store(Arc::clone(&facts_store)))
-                .map_err(|reason| (2, reason))?,
+            if request.unscoped {
+                ScopedAxFactory::unscoped(request.excluded.clone())
+            } else {
+                ScopedAxFactory::new(request.scope())
+            }
+            .map(|f| f.with_facts_store(Arc::clone(&facts_store)))
+            .map_err(|reason| (2, reason))?,
         );
         let handle = Runtime::start(config, ax_factory, input_factory).map_err(|failure| {
             (
@@ -444,7 +726,15 @@ mod native {
             .map_err(|reason| (1, format!("display guard refused: {reason}")))?;
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
-        let deadline = Instant::now() + Duration::from_secs(request.seconds);
+        // Bounded runs end at the soft deadline (the watchdog above is the
+        // hard lifetime); unbounded product runs loop until owner exit or
+        // exact-PID stop.
+        let deadline = if unbounded {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_secs(request.seconds))
+        };
+        let mut cadence_count = 0u64;
         let mut last_cadence = Instant::now()
             .checked_sub(CADENCE)
             .unwrap_or_else(Instant::now);
@@ -457,6 +747,10 @@ mod native {
         let mut lock_stops = 0u64;
         let mut secure_active_seen = 0u64;
         let mut early_refusal: Option<String> = None;
+        // Graceful exact-run stop: published by the launcher into this
+        // run's directory, observed here, then the existing bounded
+        // shutdown runs (never a signal kill).
+        let mut stopped = false;
 
         // Initial snapshot before any discovery: scoped observations fence
         // without a published context, so publish first. A failed read
@@ -479,7 +773,7 @@ mod native {
             }
         }
 
-        while Instant::now() < deadline {
+        while deadline.is_none_or(|d| Instant::now() < d) {
             // Bounded main-thread pump: service application events plus the
             // runloop without entering `run`. No windows open here.
             objc2::rc::autoreleasepool(|_| {
@@ -490,6 +784,39 @@ mod native {
                 continue;
             }
             last_cadence = Instant::now();
+            cadence_count += 1;
+            // Foreground verbosity: lifecycle/recovery lines always stream;
+            // verbose adds a counter heartbeat, trace shortens it and adds
+            // input forward/ignore counters. Static tokens plus numbers
+            // only — never titles, bundles, or paths.
+            if let Some(stride) = heartbeat_stride(request.log)
+                && cadence_count.is_multiple_of(stride)
+            {
+                if request.log == TileLogLevel::Trace {
+                    let diagnostics = handle.diagnostics();
+                    eprintln!(
+                        "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} topo_failures={} lock_stops={} secure_seen={} input_fwd={} input_ignored={}",
+                        mode_str(request.unscoped),
+                        launched,
+                        terminated,
+                        topology_updates,
+                        topology_failures,
+                        lock_stops,
+                        secure_active_seen,
+                        diagnostics.input_forwarded,
+                        diagnostics.input_ignored,
+                    );
+                } else {
+                    eprintln!(
+                        "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} lock_stops={}",
+                        mode_str(request.unscoped),
+                        launched,
+                        terminated,
+                        topology_updates,
+                        lock_stops,
+                    );
+                }
+            }
 
             // Input refusal (tap user-disable) ends the run truthfully:
             // never a silent success.
@@ -497,6 +824,13 @@ mod native {
                 && let Some(reason) = factory.refusal()
             {
                 early_refusal = Some(reason);
+                break;
+            }
+
+            // Exact-run stop: break out to the existing bounded shutdown
+            // below, which publishes the stopped terminal outcome.
+            if stop_requested(&request.run_dir) {
+                stopped = true;
                 break;
             }
 
@@ -588,7 +922,7 @@ mod native {
                     continue;
                 }
                 let pid = pid_i32 as u32;
-                if !launchable(&scope, pid, &bundle) {
+                if !selection_launchable(&selection, pid, &bundle) {
                     continue;
                 }
                 live.insert(pid);
@@ -637,39 +971,56 @@ mod native {
                 WorkerReadiness::Pending | WorkerReadiness::UnknownPid => {}
             }
         }
-        let (gated_ms, input_refusal, carbon_statuses) = match &input {
-            InputGuard::Carbon(factory) => (
-                factory.gated_ms(),
-                early_refusal.clone().or_else(|| factory.refusal()),
-                factory.statuses(),
-            ),
+        let (gated_ms, input_refusal, carbon_statuses, tap_report) = match &input {
             InputGuard::Tap(factory) => (
                 factory.gated_ms(),
                 early_refusal.clone().or_else(|| factory.refusal()),
                 Vec::new(),
+                Some(factory.latest_report()),
             ),
-            InputGuard::Off(_) => (0, early_refusal.clone(), Vec::new()),
+            InputGuard::Off(_) => (0, early_refusal.clone(), Vec::new(), None),
         };
         // Bounded shutdown independent of blocked AX: only proven exits
         // join; the rest retain for reap. Windows stay in place — nothing
-        // restores geometry on any path.
+        // restores geometry on any path. The independent stop-file watcher
+        // was installed before runtime startup; normal disarm is one slice.
         let report = handle.shutdown(SHUTDOWN_BOUND);
         let diagnostics = handle.diagnostics();
-        // The hard lifetime is met: cancel the watchdog before reporting.
-        watchdog.disarm();
-        let outcome = if early_refusal.is_some() || input_refusal.is_some() {
+        // The hard lifetime is met on bounded runs: cancel the watchdog
+        // before reporting (unbounded runs armed none). The stop-file
+        // watcher disarms here on the normal path; its forced exit only
+        // fires when shutdown wedges past the bound plus grace (honest
+        // dirty exit, never a success claim).
+        if let Some(watchdog) = stop_watchdog.as_mut() {
+            watchdog.disarm();
+        }
+        if let Some(watchdog) = watchdog.as_mut() {
+            watchdog.disarm();
+        }
+        let outcome = if stopped {
+            "stopped"
+        } else if early_refusal.is_some() || input_refusal.is_some() {
             "input-refused"
         } else if report.outcome == crate::runtime::ShutdownOutcome::Clean {
             "completed"
         } else {
             "unclean-shutdown"
         };
+        // Verified clean only with a clean bounded shutdown and no
+        // refusal: the launcher parses this (never stderr volume).
+        let shutdown_clean =
+            report.outcome == crate::runtime::ShutdownOutcome::Clean && input_refusal.is_none();
         let body = TileOutcome {
             outcome: outcome.to_owned(),
             seconds: request.seconds,
+            mode: mode_str(request.unscoped).to_owned(),
+            unbounded,
             input: request.input,
             modifier: request.modifier.as_str().to_owned(),
+            preset: request.preset.as_str().to_owned(),
+            active_chords,
             scopes: request.scopes.clone(),
+            excluded: request.excluded.clone(),
             launched,
             launch_refused,
             terminated,
@@ -683,9 +1034,11 @@ mod native {
             gated_ms,
             input_refusal,
             carbon_statuses,
+            tap_report,
             shutdown_outcome: format!("{:?}", report.outcome),
             shutdown_joined: report.joined,
             shutdown_retained: report.retained,
+            shutdown_clean,
             input_forwarded: diagnostics.input_forwarded,
             input_ignored: diagnostics.input_ignored,
             input_refused_no_focus: diagnostics.input_refused_no_focus,
@@ -732,6 +1085,18 @@ mod native {
         }
 
         #[test]
+        fn stop_limit_is_teardown_plus_modest_grace() {
+            assert_eq!(
+                stop_limit(SHUTDOWN_BOUND, STOP_WATCHDOG_GRACE),
+                SHUTDOWN_BOUND + STOP_WATCHDOG_GRACE
+            );
+            assert_eq!(
+                stop_limit(Duration::from_secs(5), Duration::from_secs(10)),
+                Duration::from_secs(15)
+            );
+        }
+
+        #[test]
         fn disarm_cancels_before_the_limit() {
             // Armed long, disarmed at once: the waiter returns without
             // exiting (join proves the thread is gone; the test process
@@ -761,19 +1126,55 @@ mod tests {
             user_start: true,
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
             seconds: 30,
-            input: TileInput::Carbon,
+            input: TileInput::Tap,
             modifier: ProbeModifier::Meta,
+            preset: InputPreset::Authentic,
+            unscoped: false,
+            excluded: Vec::new(),
+            log: TileLogLevel::Normal,
+            run_dir: None,
+        }
+    }
+
+    fn unscoped_request(seconds: u64, excluded: &[&str]) -> TileRequest {
+        TileRequest {
+            user_start: true,
+            scopes: Vec::new(),
+            seconds,
+            input: TileInput::Tap,
+            modifier: ProbeModifier::Ctrl,
+            preset: InputPreset::Authentic,
+            unscoped: true,
+            excluded: excluded.iter().map(|s| s.to_string()).collect(),
+            log: TileLogLevel::Normal,
+            run_dir: None,
         }
     }
 
     #[test]
+    fn log_level_parses_and_defaults_to_normal() {
+        assert_eq!(TileLogLevel::parse("normal"), Ok(TileLogLevel::Normal));
+        assert_eq!(TileLogLevel::parse("Verbose"), Ok(TileLogLevel::Verbose));
+        assert_eq!(TileLogLevel::parse("TRACE"), Ok(TileLogLevel::Trace));
+        assert!(TileLogLevel::parse("debug").is_err());
+        assert_eq!(TileLogLevel::default(), TileLogLevel::Normal);
+        assert_eq!(TileLogLevel::Trace.as_str(), "trace");
+        // Heartbeat strides: normal off, verbose ~10 s, trace ~2 s.
+        assert_eq!(heartbeat_stride(TileLogLevel::Normal), None);
+        assert_eq!(heartbeat_stride(TileLogLevel::Verbose), Some(40));
+        assert_eq!(heartbeat_stride(TileLogLevel::Trace), Some(8));
+    }
+
+    #[test]
     fn input_mode_parses_exactly() {
-        assert_eq!(TileInput::parse("carbon"), Ok(TileInput::Carbon));
         assert_eq!(TileInput::parse("tap"), Ok(TileInput::Tap));
         assert_eq!(TileInput::parse("off"), Ok(TileInput::Off));
         assert!(TileInput::parse("auto").is_err());
         assert!(TileInput::parse("").is_err());
-        assert_eq!(TileInput::default(), TileInput::Carbon);
+        // Carbon is probe-only now (input-register, input-session
+        // --route carbon), never a product tile selection.
+        assert!(TileInput::parse("carbon").is_err());
+        assert_eq!(TileInput::default(), TileInput::Tap);
     }
 
     #[test]
@@ -811,6 +1212,92 @@ mod tests {
         ] {
             assert!(request(&[scope]).validate().is_err(), "{scope}");
         }
+    }
+
+    #[test]
+    fn unscoped_validates_without_scope_and_admits_ghostty_shape() {
+        // No allowlist needed; Ghostty-shaped scopes are meaningless here
+        // (unscoped admits Ghostty by rule) and --scope is refused.
+        let r = unscoped_request(30, &[]);
+        assert!(r.validate().is_ok());
+        assert!(!r.is_unbounded());
+        assert_eq!(r.selection(), TileScope::Unscoped { excluded: vec![] });
+        // --scope with --unscoped refuses (scoped stays allowlist-only).
+        let mut both = unscoped_request(30, &[]);
+        both.scopes = vec!["com.apple.TextEdit".to_owned()];
+        assert!(both.validate().is_err());
+        // --exclude without --unscoped refuses.
+        let mut excluded_scoped = request(&["com.apple.TextEdit"]);
+        excluded_scoped.excluded = vec!["com.example.skip".to_owned()];
+        assert!(excluded_scoped.validate().is_err());
+        // Unscoped exclusions validate; empty entries refuse.
+        assert!(
+            unscoped_request(30, &["com.example.skip"])
+                .validate()
+                .is_ok()
+        );
+        let mut empty_exclusion = unscoped_request(30, &[]);
+        empty_exclusion.excluded = vec![String::new()];
+        assert!(empty_exclusion.validate().is_err());
+        // Unscoped lifetimes: 0 means unbounded, over-max refuses.
+        assert!(unscoped_request(0, &[]).validate().is_ok());
+        assert!(unscoped_request(0, &[]).is_unbounded());
+        let mut over = unscoped_request(MAX_TILE_SECONDS + 1, &[]);
+        assert!(over.validate().is_err());
+        over.seconds = MAX_TILE_SECONDS;
+        assert!(over.validate().is_ok());
+        assert!(!over.is_unbounded());
+        // Scoped stays finite: 0 refuses there.
+        let mut scoped_zero = request(&["com.apple.TextEdit"]);
+        scoped_zero.seconds = 0;
+        assert!(scoped_zero.validate().is_err());
+    }
+
+    #[test]
+    fn unscoped_outcome_carries_mode_and_exclusions() {
+        let outcome = TileOutcome::refused(
+            &unscoped_request(0, &["com.example.skip"]),
+            "locked".to_owned(),
+        );
+        assert_eq!(outcome.mode, "unscoped");
+        assert!(outcome.unbounded);
+        assert_eq!(outcome.excluded, vec!["com.example.skip"]);
+        let scoped = TileOutcome::refused(&request(&["com.apple.TextEdit"]), "locked".to_owned());
+        assert_eq!(scoped.mode, "scoped");
+        assert!(!scoped.unbounded);
+        assert!(scoped.excluded.is_empty());
+        // Refusals are never clean; the clean flag serializes for the
+        // launcher to parse (stderr volume never decides).
+        assert!(!outcome.shutdown_clean);
+        let body = serde_json::to_string(&outcome).unwrap();
+        assert!(body.contains("\"shutdown_clean\":false"));
+    }
+
+    #[test]
+    fn run_dir_validates_and_persists_terminal_outcomes() {
+        // Empty run dirs refuse at validation.
+        let mut r = unscoped_request(30, &[]);
+        r.run_dir = Some(String::new());
+        assert!(r.validate().is_err());
+        // A present directory round-trips the terminal body; absent dirs
+        // and `None` never fail.
+        let dir = std::env::temp_dir().join(format!("omnitiler-test-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("fixture dir");
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut r = unscoped_request(30, &[]);
+        r.run_dir = Some(dir_str.clone());
+        assert!(r.validate().is_ok());
+        let body = serde_json::to_string(&TileOutcome::refused(&r, "locked".to_owned())).unwrap();
+        write_run_outcome(&r.run_dir, &body);
+        let read_back = std::fs::read_to_string(dir.join("outcome.json")).expect("outcome written");
+        assert_eq!(read_back, body);
+        std::fs::remove_dir_all(&dir).expect("fixture cleanup");
+        // Missing directories skip silently (stdout stays primary).
+        write_run_outcome(
+            &Some("/nonexistent-omnitiler-run-dir-xyz".to_owned()),
+            &body,
+        );
+        write_run_outcome(&None, &body);
     }
 
     #[test]

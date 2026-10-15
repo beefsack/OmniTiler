@@ -16,9 +16,12 @@
 //!   [`crate::input_match::decide_tap_event`]): unrelated keys, inexact
 //!   modifiers, lone ups, and `FlagsChanged` still `Keep`.
 //! - Every tap has its own finite max duration ([`crate::config`] bound)
-//!   with RAII teardown; timeout-disable re-enables once, notifies the
+//!   with RAII teardown; a timeout-disable re-enables once, notifies the
 //!   engine exactly once (informational, not recovery evidence), then stops
-//!   on a second disable. Secure Input `Active` refuses interception;
+//!   on a second disable, while a user-disable never re-enables and stops
+//!   the probe run truthfully instead (bounded-probe semantics only — the
+//!   continuous tile owner recovers both kinds, see
+//!   [`crate::input_policy`]). Secure Input `Active` refuses interception;
 //!   `Unknown` proceeds but is reported as unknown (missing symbol is not
 //!   inactivity).
 

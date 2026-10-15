@@ -161,6 +161,20 @@ fn input_session_needs_an_explicit_route() {
         "input-session",
         "--route",
         "tap",
+        "--disable-once",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            disable_once: true,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
         "--seconds",
         "4",
         "--watchdog-only",
@@ -634,14 +648,15 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
         Command::Tile {
             user_start: true,
             seconds: 30,
-            input: TileInput::Carbon,
+            input: TileInput::Tap,
+            preset: crate::input_policy::InputPreset::Authentic,
             ..
         }
     ));
     if let Command::Tile { scopes, .. } = r.command {
         assert_eq!(scopes, vec!["com.apple.TextEdit", "com.apple.Calculator"]);
     }
-    // Defaults: carbon route, 30 s.
+    // Defaults: tap route, authentic preset, 30 s.
     let r = parse_args(&argv(&[
         "tile",
         "--user-start",
@@ -653,27 +668,12 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
         r.command,
         Command::Tile {
             seconds: DEFAULT_TILE_SECONDS,
-            input: TileInput::Carbon,
-            ..
-        }
-    ));
-    // Explicit tap/off routes only (never auto).
-    let r = parse_args(&argv(&[
-        "tile",
-        "--user-start",
-        "--scope",
-        "com.apple.TextEdit",
-        "--input",
-        "tap",
-    ]))
-    .unwrap();
-    assert!(matches!(
-        r.command,
-        Command::Tile {
             input: TileInput::Tap,
+            preset: crate::input_policy::InputPreset::Authentic,
             ..
         }
     ));
+    // Explicit off route only (never auto, never carbon: probe-only).
     let r = parse_args(&argv(&[
         "tile",
         "--user-start",
@@ -690,6 +690,40 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
             ..
         }
     ));
+    // Explicit tap parses (the default, spelled out).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--input",
+        "tap",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            input: TileInput::Tap,
+            ..
+        }
+    ));
+    // Compatible preset selects conflict passthrough.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--preset",
+        "compatible",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            preset: crate::input_policy::InputPreset::Compatible,
+            ..
+        }
+    ));
     assert!(
         parse_args(&argv(&[
             "tile",
@@ -698,6 +732,29 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
             "x",
             "--input",
             "auto"
+        ]))
+        .is_err()
+    );
+    // Carbon is probe-only (input-register, input-session --route carbon).
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "x",
+            "--input",
+            "carbon"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "x",
+            "--preset",
+            "keep"
         ]))
         .is_err()
     );
@@ -722,6 +779,97 @@ fn tile_never_implies_scope_or_start() {
     // Unknown flags refuse at parse time.
     assert!(parse_args(&argv(&["tile", "--user-start", "--scope", "x", "--bogus"])).is_err());
     assert!(parse_args(&argv(&["tile", "--scope"])).is_err());
+}
+
+#[test]
+fn tile_unscoped_flags_and_override_explicitness() {
+    // Unscoped product mode with repeatable exclusions and log verbosity.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--exclude",
+        "com.example.a",
+        "--exclude",
+        "com.example.b",
+        "--log",
+        "verbose",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            user_start: true,
+            unscoped: true,
+            log: crate::tile::TileLogLevel::Verbose,
+            preset: crate::input_policy::InputPreset::Authentic,
+            ..
+        }
+    ));
+    if let Command::Tile {
+        excluded,
+        preset_explicit,
+        ..
+    } = r.command
+    {
+        assert_eq!(excluded, vec!["com.example.a", "com.example.b"]);
+        assert!(!preset_explicit);
+    }
+    assert!(!r.modifier_explicit);
+    // Explicit --preset and --ctrl ride along for settings-file override.
+    let r = parse_args(&argv(&[
+        "--ctrl",
+        "meta",
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--preset",
+        "compatible",
+    ]))
+    .unwrap();
+    assert!(r.modifier_explicit);
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            preset: crate::input_policy::InputPreset::Compatible,
+            preset_explicit: true,
+            ..
+        }
+    ));
+    // Defaults carry no explicitness (settings file applies).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    assert!(!r.modifier_explicit);
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            preset_explicit: false,
+            unscoped: false,
+            log: crate::tile::TileLogLevel::Normal,
+            ..
+        }
+    ));
+    // Exact-run directory opts into graceful lifecycle.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--run-dir",
+        "/tmp/run-1",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            unscoped: true,
+            run_dir: Some(_),
+            ..
+        }
+    ));
+    if let Command::Tile { run_dir, .. } = r.command {
+        assert_eq!(run_dir.as_deref(), Some("/tmp/run-1"));
+    }
+    assert!(parse_args(&argv(&["tile", "--user-start", "--run-dir"])).is_err());
 }
 
 #[test]

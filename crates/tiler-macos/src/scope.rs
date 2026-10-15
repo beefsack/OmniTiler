@@ -169,6 +169,28 @@ impl ProcessIdentity {
         exe: &str,
         start_token: &str,
     ) -> Result<Self, String> {
+        Self::bind_inner(pid, bundle, exe, start_token, false)
+    }
+
+    /// Unscoped product binding: identical lifetime checks to [`bind`], but
+    /// Ghostty binds as an ordinary candidate (only the scoped allowlist
+    /// mode refuses it). Scoped callers must keep using [`bind`].
+    pub fn bind_unscoped(
+        pid: u32,
+        bundle: Option<&str>,
+        exe: &str,
+        start_token: &str,
+    ) -> Result<Self, String> {
+        Self::bind_inner(pid, bundle, exe, start_token, true)
+    }
+
+    fn bind_inner(
+        pid: u32,
+        bundle: Option<&str>,
+        exe: &str,
+        start_token: &str,
+        ghostty_ok: bool,
+    ) -> Result<Self, String> {
         if pid <= 1 {
             return Err(format!("refusing identity for reserved pid {pid}"));
         }
@@ -178,7 +200,8 @@ impl ProcessIdentity {
         if start_token.is_empty() {
             return Err("refusing identity without a start token".to_owned());
         }
-        if let Some(id) = bundle
+        if !ghostty_ok
+            && let Some(id) = bundle
             && is_ghostty_bundle(id)
         {
             return Err("refusing Ghostty identity".to_owned());
@@ -201,6 +224,30 @@ impl ProcessIdentity {
         live_exe: &str,
         live_start: &str,
     ) -> Result<(), String> {
+        self.revalidate_inner(live_pid, live_bundle, live_exe, live_start, false)
+    }
+
+    /// Unscoped product revalidation: identical drift checks to
+    /// [`revalidate`], but Ghostty passes as an ordinary candidate.
+    /// Scoped callers must keep using [`revalidate`].
+    pub fn revalidate_unscoped(
+        &self,
+        live_pid: u32,
+        live_bundle: Option<&str>,
+        live_exe: &str,
+        live_start: &str,
+    ) -> Result<(), String> {
+        self.revalidate_inner(live_pid, live_bundle, live_exe, live_start, true)
+    }
+
+    fn revalidate_inner(
+        &self,
+        live_pid: u32,
+        live_bundle: Option<&str>,
+        live_exe: &str,
+        live_start: &str,
+        ghostty_ok: bool,
+    ) -> Result<(), String> {
         if live_pid != self.pid {
             return Err(format!(
                 "identity pid drift (bound {}, live {live_pid}); refusing",
@@ -216,7 +263,8 @@ impl ProcessIdentity {
         if self.start_token != live_start {
             return Err("identity start-token drift (possible PID reuse); refusing".to_owned());
         }
-        if let Some(id) = live_bundle
+        if !ghostty_ok
+            && let Some(id) = live_bundle
             && is_ghostty_bundle(id)
         {
             return Err("refusing Ghostty identity at the effect boundary".to_owned());
@@ -367,5 +415,47 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn unscoped_binding_admits_ghostty_with_identical_lifetime_checks() {
+        // Scoped entry points refuse Ghostty (pinned).
+        assert!(
+            ProcessIdentity::bind(4242, Some("com.mitchellh.ghostty"), "/x", "launch-1").is_err()
+        );
+        // Unscoped product entry admits Ghostty as an ordinary candidate.
+        let identity =
+            ProcessIdentity::bind_unscoped(4242, Some("com.mitchellh.ghostty"), "/x", "launch-1")
+                .expect("ghostty binds unscoped");
+        assert!(
+            identity
+                .revalidate_unscoped(4242, Some("com.mitchellh.ghostty"), "/x", "launch-1")
+                .is_ok()
+        );
+        // ...and still refuses every drift exactly like the scoped path.
+        assert!(
+            identity
+                .revalidate_unscoped(4243, Some("com.mitchellh.ghostty"), "/x", "launch-1")
+                .is_err()
+        );
+        assert!(
+            identity
+                .revalidate_unscoped(4242, Some("com.example.other"), "/x", "launch-1")
+                .is_err()
+        );
+        assert!(
+            identity
+                .revalidate_unscoped(4242, Some("com.mitchellh.ghostty"), "/y", "launch-1")
+                .is_err()
+        );
+        assert!(
+            identity
+                .revalidate_unscoped(4242, Some("com.mitchellh.ghostty"), "/x", "launch-2")
+                .is_err()
+        );
+        // Reserved PIDs and missing exe/start refuse on both paths.
+        assert!(ProcessIdentity::bind_unscoped(1, Some("com.example.app"), "/x", "s").is_err());
+        assert!(ProcessIdentity::bind_unscoped(4242, Some("com.example.app"), "", "s").is_err());
+        assert!(ProcessIdentity::bind_unscoped(4242, Some("com.example.app"), "/x", "").is_err());
     }
 }

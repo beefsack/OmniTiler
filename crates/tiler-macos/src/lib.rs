@@ -33,6 +33,7 @@ pub mod cli;
 #[cfg(test)]
 mod cli_tests;
 pub mod config;
+pub mod dev_selection;
 pub mod engine;
 pub mod ffi;
 pub mod focus;
@@ -41,6 +42,7 @@ pub mod focus_route;
 pub mod input;
 pub mod input_eligibility;
 pub mod input_match;
+pub mod input_policy;
 pub mod input_session;
 pub mod input_session_legs;
 pub mod native_facts;

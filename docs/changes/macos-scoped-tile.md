@@ -1,5 +1,9 @@
 # macOS scoped tile development mode
 
+The [basic dogfood preview](macos-dogfood-preview.md) supersedes this milestone's
+product input defaults, catalogue, disable policy and scope/lifetime prerequisites.
+Its live evidence and original limitations below remain historical evidence.
+
 ## Goal and status
 
 Deliver a bounded `tile --user-start --scope BUNDLE` preview over each display's

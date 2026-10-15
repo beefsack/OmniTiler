@@ -379,6 +379,24 @@ pub enum InputSemanticAction {
     /// engine-side to the existing [`tiler_core::boundary::CoreCommand::ToggleFloat`]
     /// with no explicit rect. No additive core API.
     ToggleFloat,
+    /// Keyboard resize step for the observed-focus window, resolved
+    /// engine-side to the existing
+    /// [`tiler_core::boundary::CoreCommand::Resize`] with the shared
+    /// [`tiler_core::cosmic_v1::keyboard_step_px`] schedule (12px first
+    /// press, then 14/16/18/20 capped) and the exact Windows/KDE repeat rule
+    /// (continue only on focused-window/direction/mode match, else restart).
+    /// `Outwards` grows the focused node, `Inwards` shrinks it. The
+    /// `press_index` is tracked macOS-side per repeat rule; the core owns
+    /// the pixel step. No additive core API.
+    ResizeStep {
+        direction: InputDirection,
+        mode: tiler_core::contract::ResizeMode,
+    },
+    /// Parent split-orientation toggle for the observed-focus window,
+    /// resolved engine-side to the existing
+    /// [`tiler_core::boundary::CoreCommand::ToggleOrientation`]. No additive
+    /// core API.
+    ToggleOrientation,
 }
 
 /// Typed frame command to one app worker. `generation` fences PID reuse:
@@ -475,12 +493,21 @@ pub fn parse_window_id(value: &str) -> Option<(u32, u32)> {
 /// alongside the Ctrl-role modifier, resolving to one semantic action.
 /// Matching is exact (see [`crate::input::cg_flag_bits`]): extra modifiers
 /// beyond the named set fail the match. `shift` selects the move arm (the
-/// Windows `FOCUS_MOVE_ROWS` Shifted shape, read-only reference); focus and
-/// float chords carry no Shift.
+/// Windows `FOCUS_MOVE_ROWS` Shifted shape, read-only reference); focus,
+/// float, and orientation chords carry neither arm.
+/// `alt` selects the resize arm (Windows `Win+Alt` grow / `Win+Shift+Alt`
+/// shrink parity, read-only reference): grow chords carry Alt without Shift,
+/// shrink chords carry Alt with Shift. The Alt bit sits inside the same
+/// exact-match mask, so `Ctrl+H` (focus) and `Ctrl+Alt+H` (grow) are
+/// distinct effective chords — never blanket keycode assumptions. Alt-as-Meta
+/// collapses the resize arm onto focus/move (same effective chord), so the
+/// validator below refuses that Meta for the full catalogue, exactly like
+/// the pre-existing Shift-as-Meta collapse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileBinding {
     pub key_code: u32,
     pub shift: bool,
+    pub alt: bool,
     pub action: InputSemanticAction,
 }
 
@@ -609,11 +636,16 @@ impl RuntimeConfig {
                         crate::native_input::CG_SHIFT_BIT
                     } else {
                         0
+                    }
+                    | if binding.alt {
+                        crate::native_input::CG_ALT_BIT
+                    } else {
+                        0
                     };
                 if !seen.insert((binding.key_code, flags)) {
                     return Err(format!(
-                        "tile_bindings duplicates effective chord key {} shift={}",
-                        binding.key_code, binding.shift
+                        "tile_bindings duplicates effective chord key {} shift={} alt={}",
+                        binding.key_code, binding.shift, binding.alt
                     ));
                 }
             }

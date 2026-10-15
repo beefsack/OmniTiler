@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use tiler_macos::dev_selection::TileScope;
 use tiler_macos::ffi::AxFrame;
 use tiler_macos::focus_route::FocusRoute;
 use tiler_macos::native_tile_backend::{
@@ -182,10 +183,10 @@ impl AxSetter for FakeSetter {
     }
 }
 
-fn scope() -> AppScope {
-    AppScope {
+fn scope() -> TileScope {
+    TileScope::Scoped(AppScope {
         allowed: vec!["com.example.app".to_owned()],
-    }
+    })
 }
 
 fn identity() -> ProcessIdentity {
@@ -285,9 +286,9 @@ fn out_of_scope_never_writes() {
 fn ghostty_refused_at_effect_boundary_even_when_listed() {
     // Validation should already refuse this scope, but the boundary
     // refuses anyway (defense in depth).
-    let scope = AppScope {
+    let scope = TileScope::Scoped(AppScope {
         allowed: vec!["com.mitchellh.ghostty".to_owned()],
-    };
+    });
     let identity =
         ProcessIdentity::bind(4242, Some("com.example.app"), "/exe", "launch-1").expect("bind");
     let mut gates = FakeGates::healthy(11, 9);
@@ -825,9 +826,9 @@ fn bundled_helper_bundle_admits_with_explicit_scope() {
     // The signed bundled helper (stable helper bundle ID, LaunchServices
     // entry plus launch date) binds under an explicit helper-bundle scope:
     // bundle plus executable plus start token, all revalidated exactly.
-    let helper_scope = AppScope {
+    let helper_scope = TileScope::Scoped(AppScope {
         allowed: vec![tiler_macos::HELPER_BUNDLE_ID.to_owned()],
-    };
+    });
     assert!(helper_scope.allows_effect(Some(tiler_macos::HELPER_BUNDLE_ID)));
     let identity = validate_identity_triple(
         &helper_scope,
@@ -873,4 +874,66 @@ fn session_safety_refuses_secure_lock_and_unknown() {
     assert!(session_safe_verdict(Some(false), None, SessionLock::Unlocked).is_err());
     assert!(session_safe_verdict(Some(false), ordinary(), SessionLock::Locked).is_err());
     assert!(session_safe_verdict(Some(false), ordinary(), SessionLock::Unknown).is_err());
+}
+
+#[test]
+fn unscoped_effect_boundary_parity_with_scoped() {
+    // Parity: Ghostty binds and passes the effect fence unscoped (ordinary
+    // product candidate) while the scoped selection refuses it at admission;
+    // own bundles, exclusions, and unknown bundles refuse in both modes.
+    let unscoped = TileScope::Unscoped { excluded: vec![] };
+    let ghostty = validate_identity_triple(
+        &unscoped,
+        4242,
+        Some("com.mitchellh.ghostty"),
+        Some("/Applications/Ghostty.app/Contents/MacOS/ghostty"),
+        Some("launch-1"),
+    )
+    .expect("Ghostty binds unscoped");
+    let mut gates = FakeGates::healthy(11, 9);
+    gates.bundle = Some("com.mitchellh.ghostty".to_owned());
+    assert!(
+        fence_scoped_focus(&unscoped, &ghostty, &gates, 4242, 7, 9).is_ok(),
+        "Ghostty passes the unscoped effect fence"
+    );
+    assert!(
+        validate_identity_triple(
+            &scope(),
+            4242,
+            Some("com.mitchellh.ghostty"),
+            Some("/Applications/Ghostty.app/Contents/MacOS/ghostty"),
+            Some("launch-1"),
+        )
+        .is_err(),
+        "Ghostty refused at scoped admission"
+    );
+    // Own bundles refuse unscoped at admission (helper and probe alike).
+    for own in [tiler_macos::BUNDLE_ID, tiler_macos::HELPER_BUNDLE_ID] {
+        assert!(
+            validate_identity_triple(&unscoped, 4242, Some(own), Some("/x"), Some("launch-1"))
+                .is_err(),
+            "{own}"
+        );
+    }
+    // Exact exclusions refuse unscoped at admission; unknown refuses both.
+    let excluded = TileScope::Unscoped {
+        excluded: vec!["com.example.skip".to_owned()],
+    };
+    assert!(
+        validate_identity_triple(
+            &excluded,
+            4242,
+            Some("com.example.skip"),
+            Some("/x"),
+            Some("launch-1")
+        )
+        .is_err()
+    );
+    assert!(validate_identity_triple(&unscoped, 4242, None, Some("/x"), Some("launch-1")).is_err());
+    // An unscoped factory constructs over valid exclusions and still
+    // refuses a dead PID before any AX element exists (same shape as the
+    // scoped factory test above).
+    let factory = ScopedAxFactory::unscoped(vec!["com.example.skip".to_owned()])
+        .expect("unscoped selection validates");
+    assert!(factory.create(424242).is_err());
 }

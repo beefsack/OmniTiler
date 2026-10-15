@@ -582,6 +582,11 @@ pub struct TapRunReport {
     pub deliveries: u32,
     pub reenabled_after_timeout_disable: bool,
     pub stopped_on_second_disable: bool,
+    /// Count of observed `TapDisabledByTimeout` notifications this run.
+    pub timeout_disables: u32,
+    /// True once a `TapDisabledByUserInput` notification ends the run. A
+    /// user disable is never re-enabled: the run stops truthfully instead.
+    pub user_disabled: bool,
     /// Whether this run armed exact-chord suppression (`--suppress`).
     pub suppress_armed: bool,
     pub requested_secs: u64,
@@ -4630,7 +4635,13 @@ mod macos {
         matched: AtomicU32,
         suppressed: AtomicU32,
         deliveries: AtomicU32,
-        disabled: AtomicBool,
+        /// Observed `TapDisabledByTimeout` (re-enable once, then stop on a
+        /// second one). Tracked separately from user disables: a user
+        /// disable is never re-enabled.
+        timeout_disabled: AtomicBool,
+        /// Observed `TapDisabledByUserInput` (never re-enabled; the run
+        /// stops truthfully instead).
+        user_disabled: AtomicBool,
         down_pending: AtomicBool,
         disable_notified: AtomicBool,
     }
@@ -4641,9 +4652,13 @@ mod macos {
     /// else only counted as deliveries. Armed (`--suppress`): exact-chord
     /// `KeyDown`/`KeyUp` pairs return `Drop` (see
     /// [`crate::input_match::decide_tap_event`]); unrelated keys, inexact
-    /// modifiers, lone ups, and `FlagsChanged` always `Keep`. Timeout-disable
-    /// re-enables once and notifies the engine exactly once (informational:
-    /// a disable is not recovery evidence); a second disable stops the run.
+    /// modifiers, lone ups, and `FlagsChanged` always `Keep`. A
+    /// timeout-disable re-enables once and notifies the engine exactly once
+    /// (informational: a disable is not recovery evidence); a second
+    /// timeout-disable stops the run. A user-disable never re-enables: the
+    /// run stops truthfully with `user_disabled` set instead (bounded-probe
+    /// semantics only — the continuous tile owner recovers both kinds, see
+    /// [`crate::input_policy`]).
     /// Drop of the tap invalidates it (RAII).
     pub fn run_event_tap_bounded(
         want_flags: u64,
@@ -4671,7 +4686,8 @@ mod macos {
             matched: AtomicU32::new(0),
             suppressed: AtomicU32::new(0),
             deliveries: AtomicU32::new(0),
-            disabled: AtomicBool::new(false),
+            timeout_disabled: AtomicBool::new(false),
+            user_disabled: AtomicBool::new(false),
             down_pending: AtomicBool::new(false),
             disable_notified: AtomicBool::new(false),
         });
@@ -4687,11 +4703,15 @@ mod macos {
             ],
             move |_proxy, etype, event| {
                 // `CGEventType` has no `PartialEq`; compare discriminants.
+                // The two disable kinds stay distinct: a timeout may
+                // re-enable once, a user disable never does.
                 let kind = etype as u32;
-                if kind == CGEventType::TapDisabledByTimeout as u32
-                    || kind == CGEventType::TapDisabledByUserInput as u32
-                {
-                    callback_shared.disabled.store(true, Ordering::SeqCst);
+                if kind == CGEventType::TapDisabledByTimeout as u32 {
+                    callback_shared.timeout_disabled.store(true, Ordering::SeqCst);
+                    return CallbackResult::Keep;
+                }
+                if kind == CGEventType::TapDisabledByUserInput as u32 {
+                    callback_shared.user_disabled.store(true, Ordering::SeqCst);
                     return CallbackResult::Keep;
                 }
                 let tap_kind = if kind == CGEventType::KeyDown as u32 {
@@ -4751,11 +4771,24 @@ mod macos {
         let deadline = start + Duration::from_secs(seconds.max(1));
         let mut reenabled = false;
         let mut second_disable = false;
+        let mut timeout_disables = 0u32;
         while Instant::now() < deadline {
             unsafe {
                 CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, Duration::from_millis(250), false);
             }
-            if shared.disabled.load(Ordering::SeqCst) {
+            // A user disable ends the run truthfully: never re-enabled,
+            // never overridden — even after an earlier timeout recovery.
+            if shared.user_disabled.load(Ordering::SeqCst) {
+                if !shared.disable_notified.swap(true, Ordering::SeqCst) {
+                    let _ = shared.tx.try_send(EngineMessage::TapDisabled);
+                }
+                eprintln!(
+                    "tiler-macos input-tap: disabled by user input; refusing without re-enable"
+                );
+                break;
+            }
+            if shared.timeout_disabled.load(Ordering::SeqCst) {
+                timeout_disables += 1;
                 // Notify the engine at most once per run. A disable is
                 // lifecycle information only, never recovery evidence.
                 if !shared.disable_notified.swap(true, Ordering::SeqCst) {
@@ -4763,8 +4796,11 @@ mod macos {
                 }
                 if !reenabled {
                     tap.enable();
-                    shared.disabled.store(false, Ordering::SeqCst);
+                    shared.timeout_disabled.store(false, Ordering::SeqCst);
                     reenabled = true;
+                    eprintln!(
+                        "tiler-macos input-tap: disabled by timeout; same-tap re-enabled (timeout_disables={timeout_disables})"
+                    );
                 } else {
                     second_disable = true;
                     break;
@@ -4781,6 +4817,8 @@ mod macos {
             deliveries: shared.deliveries.load(Ordering::SeqCst),
             reenabled_after_timeout_disable: reenabled,
             stopped_on_second_disable: second_disable,
+            timeout_disables,
+            user_disabled: shared.user_disabled.load(Ordering::SeqCst),
             suppress_armed: shared.suppress_armed,
             requested_secs: seconds,
             elapsed_secs: start.elapsed().as_secs(),
@@ -4797,9 +4835,13 @@ mod macos {
     // (exact chord only, extras fail; repeats forward as repeated KeyDown
     // matches; modifier release clears pending; Caps/Fn bits sit outside
     // the mask so they neither match nor break). Timeout disables re-enable
-    // inside `pump` (recovery, counted); a user disable surfaces as
-    // [`TapPump::UserDisabled`] so the caller refuses truthfully instead of
-    // claiming success. The callback stays minimal (exact compare,
+    // on the same tap inside `pump` and verify before counting (an
+    // unverified re-enable surfaces as [`TapPump::NeedsRecreate`] so the
+    // caller installs a fresh tap); a user disable surfaces as
+    // [`TapPump::UserDisabled`] so the caller releases interception while
+    // gated and resumes or recreates when eligible (a logged recoverable
+    // state; only a hard creation denial refuses). The callback stays
+    // minimal (exact compare,
     // non-blocking forward of exact matches only, atomics) and never
     // touches the core, AX, logging, or blocking calls.
 
@@ -4828,21 +4870,49 @@ mod macos {
     /// Health of one bounded tap pump slice.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum TapPump {
-        /// Slice pumped; interception still held (timeout disables re-enable
-        /// inside the pump, counted in the report).
+        /// Slice pumped; interception still held (no disable observed, or a
+        /// timeout disable re-enabled and verified inside the pump, counted
+        /// in the report).
         Held,
-        /// The user disabled the tap: interception is released and the
-        /// caller must refuse truthfully, never claim success.
+        /// Slice pumped; a timeout disable was re-enabled on the same tap
+        /// and verified (`CGEventTapIsEnabled` true), counted in the report.
+        /// The owner logs the recovery.
+        TimeoutRecovered,
+        /// Slice pumped; a timeout disable was re-enabled on the same tap
+        /// but did NOT verify (`CGEventTapIsEnabled` still false). The
+        /// owner must install a fresh tap (never a second same-tap
+        /// enable); a fresh creation refusal fails closed.
+        NeedsRecreate,
+        /// The tap was disabled by user input / Secure Input: the owner
+        /// releases interception while gated and resumes or recreates when
+        /// eligible (a logged recoverable state — the notification name
+        /// alone never proves consent revocation, and the surveyed skhd
+        /// tap-disabled restart re-enables both kinds). Only a hard
+        /// creation denial refuses.
         UserDisabled,
     }
 
     /// Counters for one continuous tap source (terminal-JSON evidence).
+    /// Counters are per-guard: the owner carries them across fresh-guard
+    /// recreations so terminal evidence is cumulative, never reset by a
+    /// recovery. Kinds stay distinct: timeout recoveries count only in
+    /// `reenables_after_timeout`, user-input notifications only in
+    /// `user_disables`, and enabled-readback-only recoveries (directly
+    /// disabled with no OS notification) only in `unnotified_disables`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct TapSourceReport {
         pub matched: u32,
         pub suppressed: u32,
         pub deliveries: u32,
         pub reenables_after_timeout: u32,
+        /// Observed `TapDisabledByUserInput` notifications (each one is a
+        /// logged recoverable state, released while gated and resumed or
+        /// recreated when eligible; never terminal by name alone).
+        pub user_disables: u32,
+        /// Owner-side enabled-readback-only recoveries: bounded pump turns
+        /// that reported no OS notification yet read directly disabled
+        /// (`CGEventTapIsEnabled` false). Never counted as a timeout.
+        pub unnotified_disables: u32,
     }
 
     struct TapMultiShared {
@@ -4858,6 +4928,15 @@ mod macos {
         /// Per-chord KeyDown pending bit (chord count capped at 64).
         pending: AtomicU64,
         reenables: AtomicU32,
+        /// Observed user-disable notifications (terminal evidence; each one
+        /// is a logged recoverable state for the owner, never terminal by
+        /// name alone).
+        user_disables: AtomicU32,
+        /// Owner-side enabled-readback-only observations, recorded via
+        /// [`TapSource::note_unnotified_disabled`]: bounded pump turns with
+        /// no OS notification that still read directly disabled. Counted
+        /// here, never as a timeout.
+        unnotified: AtomicU32,
         /// Gate released (lock screen, Secure Input, unknown session): the
         /// callback passes everything untouched while set, so interception
         /// is released without destroying the tap; clearing resumes
@@ -5006,6 +5085,8 @@ mod macos {
                 disable_kind: AtomicU32::new(0),
                 pending: AtomicU64::new(0),
                 reenables: AtomicU32::new(0),
+                user_disables: AtomicU32::new(0),
+                unnotified: AtomicU32::new(0),
                 gated: AtomicBool::new(false),
                 scoped_eligibility,
                 stall_once_ms: AtomicU64::new(stall_once_ms),
@@ -5148,8 +5229,13 @@ mod macos {
         }
 
         /// Pump one bounded runloop slice (at most ~250 ms). A timeout
-        /// disable re-enables here (recovery, counted); a user disable
-        /// returns [`TapPump::UserDisabled`] for a truthful refusal.
+        /// disable re-enables on the same tap and verifies
+        /// (`CGEventTapIsEnabled`): verified recoveries return
+        /// [`TapPump::TimeoutRecovered`] (counted); an unverified re-enable
+        /// returns [`TapPump::NeedsRecreate`] so the owner installs a fresh
+        /// tap instead of enabling the same tap twice. A user disable
+        /// returns [`TapPump::UserDisabled`] (counted); the owner releases
+        /// interception while gated and resumes or recreates when eligible.
         pub fn pump(&mut self, millis: u64) -> TapPump {
             use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
             use std::time::Duration;
@@ -5166,10 +5252,17 @@ mod macos {
                 0 => TapPump::Held,
                 1 => {
                     self.tap.enable();
-                    self.shared.reenables.fetch_add(1, Ordering::SeqCst);
-                    TapPump::Held
+                    if self.is_tap_direct_enabled() {
+                        self.shared.reenables.fetch_add(1, Ordering::SeqCst);
+                        TapPump::TimeoutRecovered
+                    } else {
+                        TapPump::NeedsRecreate
+                    }
                 }
-                _ => TapPump::UserDisabled,
+                _ => {
+                    self.shared.user_disables.fetch_add(1, Ordering::SeqCst);
+                    TapPump::UserDisabled
+                }
             }
         }
 
@@ -5198,11 +5291,32 @@ mod macos {
         /// Actual OS tap-state readback (maintained
         /// `CGEvent::tap_is_enabled`): `false`
         /// after a DIRECT disable, `true` after recovery. The DIRECT legs
-        /// gate on this reading (never on a callback atomic alone).
+        /// gate on this reading (never on a callback atomic alone), and the
+        /// production owner health-checks it on every bounded pump turn that
+        /// reports no OS notification.
         #[must_use]
         pub fn is_tap_direct_enabled(&self) -> bool {
             // SAFETY: same live-port borrow as above; read-only, no writes.
             objc2_core_graphics::CGEvent::tap_is_enabled(tap_port(&self.tap))
+        }
+
+        /// Re-enable the SAME tap and verify with an enabled readback
+        /// (maintained bindings only, no hand-written FFI): true only when
+        /// the tap reads enabled afterwards. The owner calls this for
+        /// notification and readback-only recoveries; a false return means
+        /// the owner must install a fresh tap instead (never a second
+        /// same-tap enable).
+        pub fn reenable_same_tap_verified(&self) -> bool {
+            self.tap.enable();
+            self.is_tap_direct_enabled()
+        }
+
+        /// Record one owner-side enabled-readback-only observation (bounded
+        /// pump turn with no OS notification that still read directly
+        /// disabled). Counted separately from timeouts; the owner carries
+        /// the count across fresh-guard recreations.
+        pub fn note_unnotified_disabled(&self) {
+            self.shared.unnotified.fetch_add(1, Ordering::SeqCst);
         }
 
         #[must_use]
@@ -5212,6 +5326,8 @@ mod macos {
                 suppressed: self.shared.suppressed.load(Ordering::SeqCst),
                 deliveries: self.shared.deliveries.load(Ordering::SeqCst),
                 reenables_after_timeout: self.shared.reenables.load(Ordering::SeqCst),
+                user_disables: self.shared.user_disables.load(Ordering::SeqCst),
+                unnotified_disables: self.shared.unnotified.load(Ordering::SeqCst),
             }
         }
     }
@@ -5989,6 +6105,8 @@ mod stub {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum TapPump {
         Held,
+        TimeoutRecovered,
+        NeedsRecreate,
         UserDisabled,
     }
 
@@ -5998,6 +6116,8 @@ mod stub {
         pub suppressed: u32,
         pub deliveries: u32,
         pub reenables_after_timeout: u32,
+        pub user_disables: u32,
+        pub unnotified_disables: u32,
     }
 
     pub struct TapSource {
@@ -6051,6 +6171,16 @@ mod stub {
             false
         }
 
+        /// Fail-closed stub: no live tap exists off-macOS, so a same-tap
+        /// re-enable can never verify here.
+        pub fn reenable_same_tap_verified(&self) -> bool {
+            false
+        }
+
+        /// Fail-closed stub: no live tap exists off-macOS; the count has
+        /// nowhere to land.
+        pub fn note_unnotified_disabled(&self) {}
+
         #[must_use]
         pub fn report(&self) -> TapSourceReport {
             TapSourceReport {
@@ -6058,6 +6188,8 @@ mod stub {
                 suppressed: 0,
                 deliveries: 0,
                 reenables_after_timeout: 0,
+                user_disables: 0,
+                unnotified_disables: 0,
             }
         }
     }

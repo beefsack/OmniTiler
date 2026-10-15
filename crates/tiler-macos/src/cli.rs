@@ -56,6 +56,7 @@ pub enum Command {
         stall_once_ms: u64,
         direct_disable_hold_ms: u64,
         direct_rearm: bool,
+        disable_once: bool,
         watchdog_only: bool,
     },
     SecureInput,
@@ -146,6 +147,19 @@ pub enum Command {
         scopes: Vec<String>,
         seconds: u64,
         input: TileInput,
+        preset: crate::input_policy::InputPreset,
+        /// True only when `--preset` was passed (settings file otherwise).
+        preset_explicit: bool,
+        /// Unscoped product mode (ordinary apps; `--scope` refused).
+        unscoped: bool,
+        /// Exact bundle-ID exclusions (unscoped only, repeatable).
+        excluded: Vec<String>,
+        /// Foreground log verbosity.
+        log: crate::tile::TileLogLevel,
+        /// Exact-run directory for graceful lifecycle (created by the
+        /// foreground launcher): the owner polls `<dir>/stop-requested`
+        /// and publishes its terminal outcome to `<dir>/outcome.json`.
+        run_dir: Option<String>,
     },
     ScopeInspect {
         scopes: Vec<String>,
@@ -155,6 +169,9 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliRequest {
     pub modifier: ProbeModifier,
+    /// True only when `--ctrl`/`--modifier`/`--meta` was passed explicitly
+    /// (the settings file supplies the modifier otherwise).
+    pub modifier_explicit: bool,
     pub command: Command,
     /// True only for modes that may touch UI/taps/AX/Space writes.
     pub may_mutate: bool,
@@ -203,7 +220,7 @@ pub fn help_text() -> String {
             \x20 input-tap [--seconds N] [--suppress]  CGEventTap Ctrl-chord, finite RAII (max {max_tap}s)\n\
             \x20 \x20 (default observe-only, Keep always; --suppress arms exact-chord\n\
             \x20 \x20 KeyDown/KeyUp pair suppression only, unrelated keys always pass)\n\
-             \x20 input-session --route carbon|tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--direct-disable-hold-ms MS] [--direct-rearm] [--watchdog-only]\n\
+             \x20 input-session --route carbon|tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--direct-disable-hold-ms MS] [--direct-rearm] [--disable-once] [--watchdog-only]\n\
              \x20 \x20 (bounded owned input fixture over the REAL native tile source:\n\
              \x20 \x20 dedicated owner thread, owned helper window, synthetic CG posts\n\
              \x20 \x20 with per-post oracle proof, helper delivery counters; --stall-once-ms\n\
@@ -212,15 +229,32 @@ pub fn help_text() -> String {
              \x20 \x20 passthrough plus recovery proof (actual CGEventTapIsEnabled readbacks);\n\
              \x20 \x20 --direct-rearm is tap-only and re-arms EXPLICITLY after an intentional\n\
              \x20 \x20 own-fault DIRECT disable (old guard drops, FRESH source on the same owner);\n\
+             \x20 \x20 --disable-once is tap-only and disables the tap directly once with\n\
+             \x20 \x20 no fixture hold and no assumed notification kind, then reports the\n\
+             \x20 \x20 ACTUAL recovery kind from the counters (user-input vs\n\
+             \x20 \x20 unnotified-enabled-readback; never a timeout claim without the\n\
+             \x20 \x20 actual timeout counter) and re-proves exact suppression;\n\
             \x20 \x20 --watchdog-only is tap-only 2..=5s with no helper/posts: arms the tap,\n\
             \x20 \x20 parks past the hard watchdog, dirty exit is the evidence; input LIVE only,\n\
             \x20 \x20 no tiling, no frame writes)\n\
-           \x20 tile --user-start --scope BUNDLE [--scope BUNDLE ...] [--seconds N] [--input carbon|tap|off]\n\
-           \x20 \x20 (bounded scoped tile session over named apps: explicit --user-start\n\
-           \x20 \x20 plus a non-empty scope are mandatory, Ghostty/own/unknown bundles\n\
-           \x20 \x20 never write, finite lifetime 1..={max_probe}s (default {default_tile}s),\n\
-           \x20 \x20 discrete Carbon hotkeys by default, tap only with --input tap,\n\
-           \x20 \x20 off parks; stop leaves windows in place, never restores)\n\
+           \x20 tile --user-start (--scope BUNDLE [--scope BUNDLE ...] | --unscoped [--exclude BUNDLE ...]) [--seconds N] [--input tap|off] [--preset authentic|compatible] [--log normal|verbose|trace] [--ctrl meta|ctrl|alt|shift]\n\
+           \x20 \x20 (tile session: explicit --user-start plus a product selection are\n\
+           \x20 \x20 mandatory — either a non-empty scoped allowlist (Ghostty/own/\n\
+           \x20 \x20 unknown bundles never write) or --unscoped for ordinary apps on\n\
+           \x20 \x20 each display's current Space (Ghostty an ordinary candidate;\n\
+           \x20 \x20 own bundles plus --exclude stay out). Scoped lifetimes are\n\
+           \x20 \x20 finite 1..={max_probe}s (default {default_tile}s); unscoped\n\
+           \x20 \x20 --seconds 0 runs unbounded until owner exit or exact-PID stop.\n\
+           \x20 \x20 event tap by default, off parks (carbon is probe-only:\n\
+           \x20 \x20 input-register, input-session --route carbon); authentic consumes\n\
+            \x20 \x20 the exact supported chords while running, compatible leaves known\n\
+            \x20 \x20 conflicting chords (unshifted Ctrl+arrows under the Ctrl meta) to macOS;\n\
+           \x20 \x20 modifier/preset/exclusions resolve CLI-over-settings-file;\n\
+           \x20 \x20 --run-dir DIR opts into exact-run lifecycle (stop file\n\
+           \x20 \x20 polled every cadence, terminal outcome published to\n\
+           \x20 \x20 DIR/outcome.json);\n\
+           \x20 \x20 no native-setting writes on any path; stop leaves windows in\n\
+           \x20 \x20 place, never restores)\n\
            \x20 spaces-move --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
            \x20 \x20 (direct-SLS owned move with preimage + effect readback; UNTESTED live;\n\
            \x20 \x20 explicit opt-in per invocation; never auto-restores — run spaces-restore\n\
@@ -257,8 +291,9 @@ pub fn help_text() -> String {
              \x20 owned-post --pid PID --nonce HEX --chord NAME\n\
              \x20 \x20 (ONE semantic tile chord through the native session stream:\n\
              \x20 \x20 focus-h/j/k/l, focus-left/right, move-h/j/k/l, move-left/right,\n\
-             \x20 \x20 float-g; truthfully synthetic, oracle-gated per edge, helper\n\
-             \x20 \x20 targets only, never Ghostty)\n\
+             \x20 \x20 float-g, grow-h/j/k/l, grow-left/right, shrink-h/j/k/l,\n\
+             \x20 \x20 shrink-left/right, orientation-o; truthfully synthetic,\n\
+             \x20 \x20 oracle-gated per edge, helper targets only, never Ghostty)\n\
              \x20 owned-focus --pid PID --nonce HEX --wid WID\n\
              \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
            \x20 spaces-session [--seconds N] [--allow-untested]\n\
@@ -293,6 +328,7 @@ fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
 /// Pure argv parser (argv[0] = program name). No I/O, no UI, no hooks.
 pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
     let mut modifier = ProbeModifier::Ctrl;
+    let mut modifier_explicit = false;
     let mut rest: Vec<String> = Vec::new();
     let mut i = 1;
     while i < argv.len() {
@@ -300,15 +336,19 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             "--ctrl" | "--modifier" | "--meta" => {
                 let v = take_value(argv, &mut i, "--ctrl")?;
                 modifier = ProbeModifier::parse(&v)?;
+                modifier_explicit = true;
             }
             other if other.starts_with("--ctrl=") => {
                 modifier = ProbeModifier::parse(other.trim_start_matches("--ctrl="))?;
+                modifier_explicit = true;
             }
             other if other.starts_with("--meta=") => {
                 modifier = ProbeModifier::parse(other.trim_start_matches("--meta="))?;
+                modifier_explicit = true;
             }
             other if other.starts_with("--modifier=") => {
                 modifier = ProbeModifier::parse(other.trim_start_matches("--modifier="))?;
+                modifier_explicit = true;
             }
             _ => rest.push(argv[i].clone()),
         }
@@ -318,6 +358,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         None => {
             return Ok(CliRequest {
                 modifier,
+                modifier_explicit,
                 command: Command::Preflight,
                 may_mutate: false,
             });
@@ -459,6 +500,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             // --direct-rearm is tap-only (EXPLICIT fresh re-arm after an
             // intentional own-fault DIRECT disable: old guard drops without a
             // same-tap re-enable, fresh source installs on the same owner),
+            // --disable-once is tap-only (one-shot directly-disabled fault
+            // with no fixture hold and no assumed notification kind; the leg
+            // reports the actual recovery kind from the counters),
             // --watchdog-only is tap-only 2..=5s with no helper/posts
             // (the dirty watchdog exit is the evidence).
             // --post-route session|hid selects the CG producer tap
@@ -470,6 +514,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut stall_once_ms = 0u64;
             let mut direct_disable_hold_ms = 0u64;
             let mut direct_rearm = false;
+            let mut disable_once = false;
             let mut watchdog_only = false;
             let mut j = 0;
             while j < args.len() {
@@ -512,6 +557,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--direct-rearm" => {
                         direct_rearm = true;
                     }
+                    "--disable-once" => {
+                        disable_once = true;
+                    }
                     other => return Err(format!("input-session: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -523,6 +571,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 stall_once_ms,
                 direct_disable_hold_ms,
                 direct_rearm,
+                disable_once,
                 watchdog_only,
             }
         }
@@ -1002,13 +1051,25 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             Command::OwnedFocus { pid, nonce, wid }
         }
         "tile" => {
-            // Scoped tile session: explicit `--user-start` plus a non-empty
-            // `--scope` allowlist are mandatory (no implicit scope or start);
-            // the lifetime is finite and bounded, the input route explicit.
+            // Tile session: explicit `--user-start` plus a product selection
+            // are mandatory — either a non-empty `--scope` allowlist or
+            // `--unscoped` (mutually exclusive). The tap is the product
+            // input route, and the preset selects Authentic (consume exact
+            // supported chords) or Compatible (leave known conflicts to
+            // macOS). Modifier/preset resolve CLI-over-settings-file in
+            // `main` (explicitness rides along); exclusions are CLI or file.
+            // Scoped lifetimes stay finite; unscoped `--seconds 0` runs
+            // unbounded. No native-setting writes on any path.
             let mut user_start = false;
             let mut scopes: Vec<String> = Vec::new();
             let mut seconds = DEFAULT_TILE_SECONDS;
             let mut input = TileInput::default();
+            let mut preset = crate::input_policy::InputPreset::default();
+            let mut preset_explicit = false;
+            let mut unscoped = false;
+            let mut excluded: Vec<String> = Vec::new();
+            let mut log = crate::tile::TileLogLevel::default();
+            let mut run_dir: Option<String> = None;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1019,6 +1080,13 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         j += 1;
                         scopes.push(args.get(j).ok_or("--scope needs a value")?.clone());
                     }
+                    "--unscoped" => {
+                        unscoped = true;
+                    }
+                    "--exclude" => {
+                        j += 1;
+                        excluded.push(args.get(j).ok_or("--exclude needs a value")?.clone());
+                    }
                     "--seconds" => {
                         j += 1;
                         seconds =
@@ -1027,6 +1095,23 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--input" => {
                         j += 1;
                         input = TileInput::parse(args.get(j).ok_or("--input needs a value")?)?;
+                    }
+                    "--preset" => {
+                        j += 1;
+                        preset = crate::input_policy::InputPreset::parse(
+                            args.get(j).ok_or("--preset needs a value")?,
+                        )?;
+                        preset_explicit = true;
+                    }
+                    "--log" => {
+                        j += 1;
+                        log = crate::tile::TileLogLevel::parse(
+                            args.get(j).ok_or("--log needs a value")?,
+                        )?;
+                    }
+                    "--run-dir" => {
+                        j += 1;
+                        run_dir = Some(args.get(j).ok_or("--run-dir needs a value")?.clone());
                     }
                     other => return Err(format!("tile: unknown arg '{other}'")),
                 }
@@ -1037,6 +1122,12 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 scopes,
                 seconds,
                 input,
+                preset,
+                preset_explicit,
+                unscoped,
+                excluded,
+                log,
+                run_dir,
             }
         }
         "spaces-session" => {
@@ -1095,6 +1186,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
     );
     Ok(CliRequest {
         modifier,
+        modifier_explicit,
         command,
         may_mutate,
     })

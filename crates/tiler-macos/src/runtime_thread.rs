@@ -368,7 +368,7 @@ impl FocusSlot {
 
 pub(crate) use crate::runtime_core::{
     RetainedApp, RetainedCore, build_event, build_native_event, clear_focus_into,
-    domain_member_apps, forget_app_members, native_domain_views, skeleton_key,
+    domain_member_apps, forget_app_members, native_domain_views, resize_repeat_next, skeleton_key,
 };
 use crate::runtime_native::{
     handle_scoped_observation, plan_native_observation, reply_base_revision,
@@ -778,12 +778,43 @@ fn process_job(
                     },
                     "move",
                 ),
+                InputSemanticAction::ResizeStep { direction, mode } => {
+                    // Exact Windows/KDE repeat rule: the press index
+                    // continues only on a focused-window/direction/mode
+                    // match, restarts otherwise — before the Engine
+                    // dispatch. The core owns the pixel step
+                    // (12/14/16/18/20px capped); refusals (edge no-op,
+                    // float/overlay subject) settle with no writes and the
+                    // next press restarts or continues per this same rule.
+                    let (press_index, repeat) = resize_repeat_next(
+                        retained.resize_repeat.clone(),
+                        &window.0,
+                        direction.as_str(),
+                        mode.as_str(),
+                    );
+                    retained.resize_repeat = Some(repeat);
+                    (
+                        CoreCommand::Resize {
+                            window: window.0.clone(),
+                            direction: direction.as_str().to_owned(),
+                            mode: mode.as_str().to_owned(),
+                            press_index,
+                        },
+                        "resize",
+                    )
+                }
                 InputSemanticAction::ToggleFloat => (
                     CoreCommand::ToggleFloat {
                         window: window.0.clone(),
                         float_rect: None,
                     },
                     "toggle-float",
+                ),
+                InputSemanticAction::ToggleOrientation => (
+                    CoreCommand::ToggleOrientation {
+                        window: window.0.clone(),
+                    },
+                    "toggle-orientation",
                 ),
             };
             lock_shared(shared).diagnostics.input_forwarded += 1;
@@ -1042,6 +1073,19 @@ pub(crate) fn collect_reply(reply: &CoreReply, out: &mut MergedPlan) {
                 .map(|g| (g.window.0.clone(), g.rect))
                 .collect();
             focus_to = Some(plan.to_window.clone());
+        }
+        CoreReply::Resize(plan) => {
+            // Keyboard resize reflows exactly the two adjacent shares and
+            // retains focus exactly, so the plan carries geometry plus
+            // revision with no focus target (unlike moves, nothing
+            // dispatches native focus downstream of a resize).
+            revision = Some(plan.base_revision);
+            geometry = plan
+                .geometry
+                .iter()
+                .filter(|g| !g.client_clamped)
+                .map(|g| (g.window.0.clone(), g.rect))
+                .collect();
         }
         _ => {}
     }

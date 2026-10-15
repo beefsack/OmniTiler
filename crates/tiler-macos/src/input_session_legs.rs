@@ -140,6 +140,8 @@ pub(crate) fn post_stall_leg(
             suppressed: 0,
             deliveries: 0,
             reenables_after_timeout: 0,
+            user_disables: 0,
+            unnotified_disables: 0,
         });
     let before = poll_helper_counts(lines, Duration::from_millis(1200))
         .ok_or_else(|| format!("{NAME}: no helper key-count snapshot before post"))?;
@@ -171,6 +173,8 @@ pub(crate) fn post_stall_leg(
             suppressed: 0,
             deliveries: 0,
             reenables_after_timeout: 0,
+            user_disables: 0,
+            unnotified_disables: 0,
         });
     let want_bucket = bucket_index(meta.want_flags);
     let extra_bucket = bucket_index(meta.want_flags | extra_flag_for(meta.modifier));
@@ -298,8 +302,9 @@ pub(crate) fn await_direct_enabled(
 /// the exact chord while the tap sits DIRECTLY OS-disabled, with the hold
 /// covering ONLY the post edges (about the requested hold milliseconds):
 /// helper snapshots and the absence proof run OUTSIDE the hold, so a long
-/// direct-disable never invites the OS user-disable response (measured live:
-/// a ~4s hold drew `TapDisabledByUserInput` and killed the owner). Steps:
+/// direct-disable never lingers (measured live: a ~4s hold drew
+/// `TapDisabledByUserInput`, now a logged recovery instead of an owner
+/// exit). Steps:
 /// snapshot before (tap enabled), hold, await the actual `==false`
 /// readback, oracle-gated down/up edges, extend the hold to the requested
 /// span, release, await the actual `==true` readback, gate owner liveness
@@ -341,8 +346,8 @@ pub(crate) fn post_direct_disabled_leg(
     let hold_ms = hold_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let recovered = await_direct_enabled(factory, Some(true), "direct-recovery")
         .map_err(|cause| format!("{NAME}: {cause}"))?;
-    // Owner-liveness gate BEFORE the absence proof: a refusal here means
-    // the OS answered the DIRECT cycle with a user-disable (fail with the
+    // Owner-liveness gate BEFORE the absence proof: a recorded refusal here
+    // means a hard creation denial answered the DIRECT cycle (fail with the
     // refusal, never a bare disconnect later); a disconnected channel
     // means the owner is already gone.
     if let Some(refusal) = factory.refusal() {
@@ -472,10 +477,10 @@ pub(crate) fn post_disabled_passthrough_held(
         std::thread::sleep(target - elapsed);
     }
     let hold_ms = hold_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    // Owner-liveness gate BEFORE the absence proof: a refusal here means the
-    // OS answered the DIRECT disable with a user-disable (fail with the
-    // refusal, clear the hold, never a bare disconnect later); a disconnected
-    // channel means the owner is already gone.
+    // Owner-liveness gate BEFORE the absence proof: a recorded refusal here
+    // means a hard creation denial answered the DIRECT disable (fail with
+    // the refusal, clear the hold, never a bare disconnect later); a
+    // disconnected channel means the owner is already gone.
     if let Some(refusal) = factory.refusal() {
         factory.set_direct_hold(false);
         return Err(format!(
@@ -657,7 +662,7 @@ pub(crate) fn run_post_legs(
     let extra = want | extra_flag_for(request.modifier);
     let h_index = tile_catalogue()
         .iter()
-        .position(|b| b.key_code == KEY_H && !b.shift)
+        .position(|b| b.key_code == KEY_H && !b.shift && !b.alt)
         .ok_or_else(|| {
             (
                 "catalogue".to_owned(),
@@ -672,6 +677,8 @@ pub(crate) fn run_post_legs(
                 suppressed: 0,
                 deliveries: 0,
                 reenables_after_timeout: 0,
+                user_disables: 0,
+                unnotified_disables: 0,
             })
     };
 
@@ -804,8 +811,9 @@ pub(crate) fn run_post_legs(
     // DIRECTLY OS-disabled for ONLY the post edges (about the requested
     // hold milliseconds) while the main posts the exact chord; snapshots
     // and the absence proof run outside the hold so a long direct-disable
-    // never invites the OS user-disable response (measured live: a ~4s
-    // hold drew `TapDisabledByUserInput` and killed the owner). The
+    // never lingers (measured live: a ~4s hold drew
+    // `TapDisabledByUserInput`, now a logged recovery instead of an owner
+    // exit). The
     // disable readback (`CGEventTapIsEnabled==false`), the helper
     // passthrough (+1/+1 in the exact bucket), the recovery readback
     // (`==true`), and the re-proved suppression after it are all gated
@@ -911,8 +919,8 @@ pub(crate) fn run_post_legs(
     // and tap placement on the SAME owner thread (epoch bump plus fresh
     // `==true` readback), and the exact chord must suppress again on the new
     // generation (owner match plus helper absence plus fresh tap counters).
-    // A genuine user-disable refusal fails closed at any step (never masked,
-    // never auto re-enabled). Labeled DIRECT-REARM throughout.
+    // A hard creation-denial refusal fails closed at any step (never masked).
+    // Labeled DIRECT-REARM throughout.
     if request.direct_rearm {
         const REARM_HOLD_MS: u64 = 300;
         let factory = tap_factory.ok_or_else(|| {
@@ -1034,6 +1042,163 @@ pub(crate) fn run_post_legs(
         legs.push(recovery);
     }
 
+    // DISABLE-ONCE recovery leg (tap + `--disable-once` only, never
+    // combined with the stall/hold/re-arm legs above): after the
+    // exact-suppression proof above, the owner disables the tap directly
+    // ONCE with no fixture hold, then keeps pumping so the tap recovers
+    // automatically. The leg assumes NOTHING about which notification the OS
+    // emits for a self-disable (measured live: a UserInput notification with
+    // a verified same-tap re-enable): it reports the ACTUAL kind from the
+    // counters — `user-input` when `user_disables` rises with an enabled
+    // readback, `unnotified-enabled-readback` when only `unnotified_disables`
+    // rises with an enabled readback — then requires the exact chord to
+    // suppress again on the recovered tap (owner match plus helper absence
+    // plus fresh tap counters). A timeout-count rise fails at any point
+    // (never a timeout claim without the actual counter); a refusal fails
+    // closed. Labeled DISABLE-ONCE throughout with the actual kind named.
+    if request.disable_once {
+        let factory = tap_factory.ok_or_else(|| {
+            (
+                "disable-once".to_owned(),
+                "DISABLE-ONCE fault needs the tap factory".to_owned(),
+            )
+        })?;
+        let baseline = await_direct_enabled(factory, Some(true), "disable-once-baseline")
+            .map_err(|cause| ("disable-once-baseline".to_owned(), cause))?;
+        let _ = baseline;
+        let counts_before = tap_counts();
+        factory.request_disable_once();
+        // Await the automated recovery in EITHER observed shape: bounded 5 s
+        // poll for a user-input or unnotified counter increment plus an
+        // enabled readback. The first shape observed names the actual kind.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (kind, _) = loop {
+            let now = tap_counts();
+            if let Some(refusal) = factory.refusal() {
+                return fail(
+                    "disable-once-recovery",
+                    format!("owner refused during DISABLE-ONCE fault ({refusal})"),
+                );
+            }
+            let timeout_delta = now
+                .reenables_after_timeout
+                .saturating_sub(counts_before.reenables_after_timeout);
+            if timeout_delta > 0 {
+                return fail(
+                    "disable-once-recovery",
+                    format!(
+                        "DISABLE-ONCE fault drew a timeout count (reenables_after_timeout +{timeout_delta}); refusing a timeout claim without a stall cause"
+                    ),
+                );
+            }
+            let user_delta = now
+                .user_disables
+                .saturating_sub(counts_before.user_disables);
+            let unnotified_delta = now
+                .unnotified_disables
+                .saturating_sub(counts_before.unnotified_disables);
+            let direct = factory.latest_direct_enabled();
+            let mut kinds = Vec::new();
+            if unnotified_delta >= 1 && direct == Some(true) {
+                kinds.push("unnotified-enabled-readback");
+            }
+            if user_delta >= 1 && direct == Some(true) {
+                kinds.push("user-input");
+            }
+            if !kinds.is_empty() {
+                break (kinds.join("+"), now);
+            }
+            if Instant::now() >= deadline {
+                return fail(
+                    "disable-once-recovery",
+                    format!(
+                        "automated recovery unobserved (user +{user_delta}, unnotified +{unnotified_delta}, direct={direct:?}, timeout +{timeout_delta})"
+                    ),
+                );
+            }
+            pump_main();
+        };
+        if let Some(refusal) = factory.refusal() {
+            return fail(
+                "disable-once-recovery",
+                format!("owner refused after DISABLE-ONCE recovery ({refusal})"),
+            );
+        }
+        // Post-recovery the exact chord must suppress again (owner match
+        // plus helper absence), proving interception holds after the
+        // automated recovery of the ACTUAL kind.
+        let tap_before_recovery = tap_counts();
+        let mut recovery = post_chord_leg(
+            child,
+            meta,
+            lines,
+            hits,
+            "disable-once-recovery-exact",
+            KEY_H,
+            want,
+            Some(h_index),
+            true,
+        )
+        .map_err(|e| ("disable-once-recovery-exact".to_owned(), e))?;
+        recovery.direct_enabled_before = Some(true);
+        recovery.direct_enabled_after = factory.latest_direct_enabled();
+        if recovery.helper_exact_delta != (0, 0) {
+            return fail(
+                "disable-once-recovery-exact",
+                format!(
+                    "DISABLE-ONCE post-recovery suppression lost (helper exact {:?})",
+                    recovery.helper_exact_delta
+                ),
+            );
+        }
+        let after = tap_counts();
+        if after.matched.saturating_sub(tap_before_recovery.matched) < 2
+            || after
+                .suppressed
+                .saturating_sub(tap_before_recovery.suppressed)
+                < 2
+        {
+            return fail(
+                "disable-once-recovery-exact",
+                format!(
+                    "DISABLE-ONCE recovery tap counters too low (matched +{}, suppressed +{})",
+                    after.matched.saturating_sub(tap_before_recovery.matched),
+                    after
+                        .suppressed
+                        .saturating_sub(tap_before_recovery.suppressed)
+                ),
+            );
+        }
+        // End to end the leg must never draw a timeout count (kind stays
+        // whatever the counters actually reported above).
+        let timeout_delta = after
+            .reenables_after_timeout
+            .saturating_sub(counts_before.reenables_after_timeout);
+        if timeout_delta > 0 {
+            return fail(
+                "disable-once-recovery-exact",
+                format!(
+                    "DISABLE-ONCE leg drew a timeout count (reenables_after_timeout +{timeout_delta}); refusing"
+                ),
+            );
+        }
+        recovery.verdict = format!(
+            "DISABLE-ONCE-recovered-suppressed kind={kind} direct==true user+{} unnotified+{} tap matched+{} suppressed+{} latency_ms={}",
+            after
+                .user_disables
+                .saturating_sub(counts_before.user_disables),
+            after
+                .unnotified_disables
+                .saturating_sub(counts_before.unnotified_disables),
+            after.matched.saturating_sub(tap_before_recovery.matched),
+            after
+                .suppressed
+                .saturating_sub(tap_before_recovery.suppressed),
+            recovery.owner_latency_ms.unwrap_or(u64::MAX)
+        );
+        legs.push(recovery);
+    }
+
     // Extra-modifier variant: no owner hit on either route, helper
     // passthrough (+1/+1 in the extra bucket, exact bucket untouched).
     let mut extra_leg = post_chord_leg(
@@ -1085,7 +1250,7 @@ pub(crate) fn run_post_legs(
         for (name, code) in [("arrow-left", 0x7Bu32), ("arrow-right", 0x7Cu32)] {
             let index = tile_catalogue()
                 .iter()
-                .position(|b| b.key_code == code && !b.shift)
+                .position(|b| b.key_code == code && !b.shift && !b.alt)
                 .ok_or_else(|| {
                     (
                         "catalogue".to_owned(),
@@ -1155,6 +1320,11 @@ pub(crate) fn arrow_observations(
                             } else {
                                 0
                             }
+                            + if binding.alt {
+                                crate::native_input::CARBON_ALT_BIT
+                            } else {
+                                0
+                            }
             })
             .map(|s| s.os_status);
         let tap_observed = legs
@@ -1167,6 +1337,7 @@ pub(crate) fn arrow_observations(
         out.push(ArrowStatus {
             key_code: binding.key_code,
             shift: binding.shift,
+            alt: binding.alt,
             carbon_os_status,
             tap_observed,
         });
@@ -1195,6 +1366,7 @@ mod tests {
             stall_once_ms: 0,
             direct_disable_hold_ms: 0,
             direct_rearm: false,
+            disable_once: false,
             watchdog_only: false,
             modifier: ProbeModifier::Ctrl,
         }
@@ -1305,7 +1477,7 @@ mod tests {
     #[test]
     fn validation_bounds_direct_rearm() {
         // DIRECT-REARM is tap-only and never combined with the other fault
-        // legs (stall, hold, watchdog-only).
+        // legs (stall, hold, disable-once, watchdog-only).
         let mut r = request(InputSessionRoute::Carbon);
         r.direct_rearm = true;
         assert!(r.validate().is_err());
@@ -1319,6 +1491,40 @@ mod tests {
         let mut r = request(InputSessionRoute::Tap);
         r.direct_rearm = true;
         r.direct_disable_hold_ms = 300;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.direct_rearm = true;
+        r.disable_once = true;
+        assert!(r.validate().is_err());
+    }
+
+    #[test]
+    fn validation_bounds_disable_once() {
+        // DISABLE-ONCE is tap-only and never combined with the other fault
+        // legs (stall, hold, re-arm, watchdog-only). The leg reports the
+        // actual OS recovery kind; validation only fences the combination.
+        let mut r = request(InputSessionRoute::Carbon);
+        r.disable_once = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.disable_once = true;
+        assert!(r.validate().is_ok());
+        let mut r = request(InputSessionRoute::Tap);
+        r.disable_once = true;
+        r.stall_once_ms = 500;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.disable_once = true;
+        r.direct_disable_hold_ms = 300;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.disable_once = true;
+        r.direct_rearm = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.watchdog_only = true;
+        r.seconds = 4;
+        r.disable_once = true;
         assert!(r.validate().is_err());
     }
 
@@ -1335,9 +1541,9 @@ mod tests {
 
     #[test]
     fn extra_flag_breaks_exact_but_stays_masked() {
-        // The extra bit fails EVERY catalogue chord (focus and Shift move
-        // arms alike) for every Ctrl role, and sits inside the mask (so it
-        // is an *extra*, never ignored noise).
+        // The extra bit fails EVERY catalogue chord (focus, Shift move, Alt
+        // grow, and Alt+Shift shrink arms alike) for every Ctrl role, and
+        // sits inside the mask (so it is an *extra*, never ignored noise).
         for modifier in [
             ProbeModifier::Meta,
             ProbeModifier::Ctrl,
@@ -1349,7 +1555,7 @@ mod tests {
             assert_eq!(extra & mask, extra);
             assert_eq!(extra & want, 0);
             for binding in tile_catalogue() {
-                let tuning = tuning_for(modifier, binding.key_code, binding.shift);
+                let tuning = tuning_for(modifier, binding.key_code, binding.shift, binding.alt);
                 let mut pending = false;
                 assert!(
                     !decide_tap_event(
@@ -1361,13 +1567,14 @@ mod tests {
                         &mut pending,
                     )
                     .matched,
-                    "{modifier:?} extra must fail chord {} shift={}",
+                    "{modifier:?} extra must fail chord {} shift={} alt={}",
                     binding.key_code,
-                    binding.shift
+                    binding.shift,
+                    binding.alt
                 );
             }
             // ...while the bare chord still matches its own arm.
-            let tuning = tuning_for(modifier, KEY_H, false);
+            let tuning = tuning_for(modifier, KEY_H, false, false);
             let mut pending = false;
             assert!(
                 decide_tap_event(
@@ -1385,10 +1592,13 @@ mod tests {
 
     #[test]
     fn owner_tuning_mirror_matches_catalogue_exactly() {
-        // The owner-side mirror keys the full (code, shift-arm) pair like
-        // the production source: focus and move arms never alias.
-        let focus = tuning_for(ProbeModifier::Ctrl, KEY_H, false);
-        let moved = tuning_for(ProbeModifier::Ctrl, KEY_H, true);
+        // The owner-side mirror keys the full (code, shift-arm, alt-arm)
+        // pair like the production source: focus, move, grow, and shrink
+        // arms never alias.
+        let focus = tuning_for(ProbeModifier::Ctrl, KEY_H, false, false);
+        let moved = tuning_for(ProbeModifier::Ctrl, KEY_H, true, false);
+        let grown = tuning_for(ProbeModifier::Ctrl, KEY_H, false, true);
+        let shrunk = tuning_for(ProbeModifier::Ctrl, KEY_H, true, true);
         let (want, _) = cg_flag_bits(ProbeModifier::Ctrl);
         let matched = |flags: u64, tuning: TapTuning| {
             let mut pending = false;
@@ -1402,10 +1612,23 @@ mod tests {
             )
             .matched
         };
+        const ALT: u64 = 0x0008_0000;
         assert!(matched(want, focus));
         assert!(!matched(want, moved));
+        assert!(!matched(want, grown));
+        assert!(!matched(want, shrunk));
         assert!(matched(want | CG_SHIFT_BIT, moved));
         assert!(!matched(want | CG_SHIFT_BIT, focus));
+        assert!(!matched(want | CG_SHIFT_BIT, grown));
+        assert!(matched(want | ALT, grown));
+        assert!(!matched(want | ALT, focus));
+        assert!(!matched(want | ALT, moved));
+        assert!(!matched(want | ALT, shrunk), "shrink needs Shift too");
+        assert!(matched(want | ALT | CG_SHIFT_BIT, shrunk));
+        assert!(
+            !matched(want | ALT | CG_SHIFT_BIT, moved),
+            "Alt replay must fail the move chord"
+        );
     }
 
     #[test]
@@ -1413,7 +1636,7 @@ mod tests {
         let catalogue = tile_catalogue();
         let index = catalogue
             .iter()
-            .position(|b| b.key_code == KEY_H && !b.shift)
+            .position(|b| b.key_code == KEY_H && !b.shift && !b.alt)
             .expect("focus Ctrl+h in catalogue");
         assert!(matches!(
             catalogue[index].action,
@@ -1429,14 +1652,19 @@ mod tests {
     }
 
     #[test]
-    fn arrows_cover_both_arms() {
-        // Observation rows exist for all four arrows on both arms (4 arrows
-        // x focus/move = 8 rows).
+    fn arrows_cover_all_arms() {
+        // Observation rows exist for all four arrows on all four
+        // directional arms (4 arrows x focus/move/grow/shrink = 16 rows).
         let rows = arrow_observations(request(InputSessionRoute::Carbon), &[], &[]);
-        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.len(), 16);
         for code in [0x7Bu32, 0x7Cu32, 0x7Du32, 0x7Eu32] {
-            assert!(rows.iter().any(|r| r.key_code == code && !r.shift));
-            assert!(rows.iter().any(|r| r.key_code == code && r.shift));
+            assert!(
+                rows.iter()
+                    .any(|r| r.key_code == code && !r.shift && !r.alt)
+            );
+            assert!(rows.iter().any(|r| r.key_code == code && r.shift && !r.alt));
+            assert!(rows.iter().any(|r| r.key_code == code && !r.shift && r.alt));
+            assert!(rows.iter().any(|r| r.key_code == code && r.shift && r.alt));
         }
     }
 }

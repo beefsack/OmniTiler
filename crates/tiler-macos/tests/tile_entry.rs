@@ -1,11 +1,13 @@
 //! Scoped-tile entry tests (offline, portable).
 //!
 //! Fakes drive the runtime through the tile catalogue surface: exact
-//! matcher/action forwarding per arm (focus/move/float with directions,
-//! Shift-arm gating, extras and key-ups ignored), CLI/request safety
-//! (explicit start, non-empty scope, Ghostty, finite lifetime), and
-//! catalogue config validation. No live AX, no taps, no Carbon, no Spaces,
-//! no desktop effects — the built tile is never launched here.
+//! matcher/action forwarding per arm (focus/move/grow/shrink/float/
+//! orientation with directions, Shift/Alt-arm gating, extras and key-ups
+//! ignored), resize sizing-step and repeat geometry outcomes, orientation
+//! one-per-press geometry outcomes, CLI/request safety (explicit start,
+//! non-empty scope, Ghostty, finite lifetime), and catalogue config
+//! validation. No live AX, no taps, no Carbon, no Spaces, no desktop
+//! effects — the built tile is never launched here.
 
 use std::sync::{
     Arc, Mutex,
@@ -26,7 +28,7 @@ use tiler_macos::runtime::{
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
 };
-use tiler_macos::tile::{TileInput, TileRequest};
+use tiler_macos::tile::{TileInput, TileLogLevel, TileRequest};
 
 const APP: u32 = 1001;
 const FLUSH: Duration = Duration::from_secs(5);
@@ -304,6 +306,12 @@ fn tile_request(words: &[&str]) -> TileRequest {
         scopes,
         seconds,
         input,
+        preset,
+        preset_explicit: _,
+        unscoped,
+        excluded,
+        log,
+        run_dir,
     } = parsed.command
     else {
         panic!("expected tile, got {:?}", parsed.command);
@@ -313,7 +321,12 @@ fn tile_request(words: &[&str]) -> TileRequest {
         scopes,
         seconds,
         input,
+        preset,
         modifier: parsed.modifier,
+        unscoped,
+        excluded,
+        log,
+        run_dir,
     }
 }
 
@@ -394,6 +407,76 @@ fn tile_cli_safety_end_to_end() {
     assert!(request.validate().is_ok());
 }
 
+#[test]
+fn tile_cli_unscoped_end_to_end() {
+    // Unscoped product mode: no allowlist, exact exclusions, unbounded
+    // opt-in via --seconds 0, foreground verbosity via --log.
+    let request = tile_request(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--seconds",
+        "0",
+        "--exclude",
+        "com.example.skip",
+        "--log",
+        "trace",
+    ]);
+    assert!(request.unscoped);
+    assert!(request.is_unbounded());
+    assert_eq!(request.log, TileLogLevel::Trace);
+    assert_eq!(request.excluded, vec!["com.example.skip"]);
+    assert!(request.validate().is_ok());
+    // Bounded unscoped also validates (finite dogfood slices).
+    let request = tile_request(&["tile", "--user-start", "--unscoped", "--seconds", "30"]);
+    assert!(request.validate().is_ok());
+    assert!(!request.is_unbounded());
+    // --scope with --unscoped parses but never validates (scoped stays
+    // allowlist-only); --exclude without --unscoped never validates either.
+    assert!(
+        tile_request(&[
+            "tile",
+            "--user-start",
+            "--unscoped",
+            "--scope",
+            "com.apple.TextEdit",
+        ])
+        .validate()
+        .is_err()
+    );
+    assert!(
+        tile_request(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "com.apple.TextEdit",
+            "--exclude",
+            "com.example.skip",
+        ])
+        .validate()
+        .is_err()
+    );
+    // Ghostty needs no scope unscoped (ordinary candidate by rule), while
+    // scoped Ghostty never validates.
+    assert!(
+        tile_request(&["tile", "--user-start", "--unscoped"])
+            .validate()
+            .is_ok()
+    );
+    // Unknown --log refuses at parse time; --exclude needs a value.
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--unscoped",
+            "--log",
+            "debug"
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["tile", "--user-start", "--exclude"])).is_err());
+}
+
 // -- Catalogue config validation ----------------------------------------------
 
 #[test]
@@ -403,7 +486,7 @@ fn catalogue_config_validates() {
         ..RuntimeConfig::default()
     };
     assert!(good.validate().is_ok());
-    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(17));
+    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(34));
 
     // Shift-as-Meta collapses the focus/move arms to the same native chord.
     // Refuse it before registering rather than silently choosing focus.
@@ -413,7 +496,16 @@ fn catalogue_config_validates() {
         ..RuntimeConfig::default()
     };
     assert!(collapsed.validate().is_err());
-    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta, ProbeModifier::Alt] {
+    // Alt-as-Meta collapses the Alt (resize) arm onto focus/move the same
+    // way (grow `Alt+Alt+H` lands on focus `Alt+H`). Only Ctrl (default)
+    // and Meta (Cmd) carry the full catalogue distinctly.
+    let alt_collapsed = RuntimeConfig {
+        modifier: ProbeModifier::Alt,
+        tile_bindings: Some(tile_catalogue()),
+        ..RuntimeConfig::default()
+    };
+    assert!(alt_collapsed.validate().is_err());
+    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
         assert!(
             RuntimeConfig {
                 modifier,
@@ -431,11 +523,12 @@ fn catalogue_config_validates() {
     };
     assert!(empty.validate().is_err());
 
-    // Duplicate (key, shift) refuses.
+    // Duplicate (key, shift, alt) refuses.
     let mut duplicated = tile_catalogue();
     duplicated.push(tiler_macos::runtime::TileBinding {
         key_code: 0x04,
         shift: false,
+        alt: false,
         action: tiler_macos::runtime::InputSemanticAction::FocusStep {
             direction: InputDirection::Left,
         },
@@ -454,4 +547,174 @@ fn catalogue_config_validates() {
         ..RuntimeConfig::default()
     };
     assert!(bad_key.validate().is_err());
+}
+
+// -- Resize and orientation forwarding ---------------------------------------
+
+const ALT: u64 = 0x0008_0000;
+const CMD: u64 = 0x0010_0000;
+/// `O` keycode: the parent orientation toggle.
+const KEY_O: u32 = 0x1F;
+
+fn desired_width(handle: &RuntimeHandle, window: &str) -> Option<i32> {
+    handle
+        .last_desired_geometry()
+        .iter()
+        .find(|frame| frame.window == window)
+        .map(|frame| frame.w)
+}
+
+fn desired_snapshot(handle: &RuntimeHandle) -> Vec<(String, i32, i32, i32, i32)> {
+    let mut frames: Vec<(String, i32, i32, i32, i32)> = handle
+        .last_desired_geometry()
+        .iter()
+        .map(|frame| (frame.window.clone(), frame.x, frame.y, frame.w, frame.h))
+        .collect();
+    frames.sort();
+    frames
+}
+
+#[test]
+fn catalogue_resize_arms_are_exact() {
+    // All four directional arms on one key forward; the same key with an
+    // extra masked modifier, with no base modifier, or bare matches
+    // nothing. `Ctrl+H` (focus) and `Ctrl+Alt+H` (grow) are distinct
+    // effective chords, never blanket keycode assumptions.
+    const CTRL: u64 = 0x0004_0000;
+    const SHIFT: u64 = 0x0002_0000;
+    let fixture = start_catalogue();
+    let generation = fixture.handle.launch_app(APP).expect("launch");
+    observe_focused(&fixture.handle, generation, 1);
+
+    let mut forwarded = fixture.handle.diagnostics().input_forwarded;
+    // Focus, move, grow, shrink on H: one forward each, serialized.
+    for flags in [CTRL, CTRL | SHIFT, CTRL | ALT, CTRL | ALT | SHIFT] {
+        send_key(&fixture, flags, 0x04);
+        forwarded = wait_forwarded(&fixture.handle, forwarded);
+    }
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(reply_count(&fixture.handle, "focus-") >= 1);
+    assert!(reply_count(&fixture.handle, "move-") >= 1);
+    assert!(reply_count(&fixture.handle, "resize-") >= 1);
+
+    // Inexact variants never forward: extra Cmd on any arm, bare Alt+H
+    // (no Ctrl role), plain H, and Alt+Shift+H without Ctrl.
+    let ignored_baseline = fixture.handle.diagnostics().input_ignored;
+    send_key(&fixture, CTRL | CMD, 0x04);
+    send_key(&fixture, CTRL | ALT | CMD, 0x04);
+    send_key(&fixture, CTRL | SHIFT | ALT | CMD, 0x04);
+    send_key(&fixture, ALT, 0x04);
+    send_key(&fixture, ALT | SHIFT, 0x04);
+    send_key(&fixture, 0, 0x04);
+    assert!(fixture.handle.flush(FLUSH));
+    std::thread::sleep(Duration::from_millis(100));
+    let diagnostics = fixture.handle.diagnostics();
+    assert_eq!(diagnostics.input_forwarded, forwarded);
+    assert!(
+        diagnostics.input_ignored >= ignored_baseline + 6,
+        "all six must ignore: {diagnostics:?}"
+    );
+
+    let report = fixture.handle.shutdown(Duration::from_secs(5));
+    assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");
+}
+
+#[test]
+fn catalogue_resize_grow_shrink_moves_frames_by_shared_steps() {
+    // Geometry outcomes, not implementation mirrors: grow-left widens the
+    // focused tile along its interior boundary, a held repeat grows it
+    // further (press-index schedule advances), and shrink-left narrows it
+    // again (mode change restarts the shared 12px first-press schedule).
+    // The admitted skeleton layout parks the focused tile top-right, so the
+    // interior edge is its left one (grow-right would be the outward
+    // work-area-edge no-op, refused with no writes per R-RSZ-02).
+    const CTRL: u64 = 0x0004_0000;
+    const SHIFT: u64 = 0x0002_0000;
+    let fixture = start_catalogue();
+    let generation = fixture.handle.launch_app(APP).expect("launch");
+    observe_focused(&fixture.handle, generation, 1);
+    assert!(fixture.handle.flush(FLUSH));
+
+    let w0 = desired_width(&fixture.handle, "1001_1").expect("planned frame for 1001_1");
+
+    // Grow left (H): first press plans and widens by the shared 12px step.
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL | ALT, 0x04);
+    wait_forwarded(&fixture.handle, baseline);
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(reply_count(&fixture.handle, "resize-") >= 1);
+    let w1 = desired_width(&fixture.handle, "1001_1").expect("frame after grow");
+    assert_eq!(w1, w0 + 12, "first grow press moves the shared 12px step");
+
+    // Held repeat: the schedule advances (second press is the 14px step).
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL | ALT, 0x04);
+    wait_forwarded(&fixture.handle, baseline);
+    assert!(fixture.handle.flush(FLUSH));
+    let w2 = desired_width(&fixture.handle, "1001_1").expect("frame after repeat");
+    assert_eq!(w2, w1 + 14, "held repeat advances to the shared 14px step");
+
+    // Shrink left (same edge, inwards): mode change restarts the schedule
+    // at 12px, narrowing back toward the start.
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL | ALT | SHIFT, 0x04);
+    wait_forwarded(&fixture.handle, baseline);
+    assert!(fixture.handle.flush(FLUSH));
+    let w3 = desired_width(&fixture.handle, "1001_1").expect("frame after shrink");
+    assert_eq!(w3, w2 - 12, "mode change restarts the shared schedule");
+
+    let report = fixture.handle.shutdown(Duration::from_secs(5));
+    assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");
+}
+
+#[test]
+fn catalogue_orientation_toggles_once_per_press_with_frame_change() {
+    // The orientation toggle reflows planned frames, and a held repeat
+    // consumes without dispatch until the `O` key comes back up
+    // (Windows R-LAY-01 one-per-press parity).
+    const CTRL: u64 = 0x0004_0000;
+    let fixture = start_catalogue();
+    let generation = fixture.handle.launch_app(APP).expect("launch");
+    observe_focused(&fixture.handle, generation, 1);
+    assert!(fixture.handle.flush(FLUSH));
+    let before = desired_snapshot(&fixture.handle);
+    assert!(!before.is_empty());
+
+    // First discrete press toggles and reflows frames.
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_O);
+    wait_forwarded(&fixture.handle, baseline);
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(reply_count(&fixture.handle, "toggle-orientation-") >= 1);
+    let toggled = desired_snapshot(&fixture.handle);
+    assert_ne!(toggled, before, "orientation toggle must reflow frames");
+
+    // Held repeat (no key-up between downs): consumed, never dispatched.
+    let ignored_baseline = fixture.handle.diagnostics().input_ignored;
+    let toggles = reply_count(&fixture.handle, "toggle-orientation-");
+    send_key(&fixture, CTRL, KEY_O);
+    assert!(fixture.handle.flush(FLUSH));
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fixture.handle.diagnostics().input_forwarded, baseline + 1);
+    assert!(
+        fixture.handle.diagnostics().input_ignored > ignored_baseline,
+        "held repeat must ignore"
+    );
+    assert_eq!(
+        reply_count(&fixture.handle, "toggle-orientation-"),
+        toggles,
+        "held repeat must not dispatch"
+    );
+
+    // Release then repress: toggles again.
+    send_key_up(&fixture, CTRL, KEY_O);
+    assert!(fixture.handle.flush(FLUSH));
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_O);
+    wait_forwarded(&fixture.handle, baseline);
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(reply_count(&fixture.handle, "toggle-orientation-") > toggles);
+
+    let report = fixture.handle.shutdown(Duration::from_secs(5));
+    assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");
 }

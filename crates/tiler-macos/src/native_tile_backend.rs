@@ -19,9 +19,11 @@
 //! 1. Revalidate the bound [`crate::scope::ProcessIdentity`] (bundle plus
 //!    executable plus launch date: PID reuse cannot authorize a new
 //!    process; a missing launch date refuses outright).
-//! 2. Revalidate the scope allowlist at the effect boundary (Ghostty and the
-//!    own bundle never authorize, even when listed; unknown bundles never
-//!    authorize). Direct-spawn probe-target helpers carry no LaunchServices
+//! 2. Revalidate the product selection at the effect boundary (scoped:
+//!    Ghostty and the own bundle never authorize, even when listed;
+//!    unscoped: both own bundles and exact exclusions never authorize while
+//!    Ghostty authorizes as an ordinary candidate; unknown bundles never
+//!    authorize in either mode). Direct-spawn probe-target helpers carry no LaunchServices
 //!    bundle entry and therefore cannot bind here; the signed bundled helper
 //!    (stable helper bundle ID, LaunchServices entry plus launch date) binds
 //!    under an explicit helper-bundle scope.
@@ -58,6 +60,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 
+use crate::dev_selection::TileScope;
 use crate::ffi::AxFrame;
 use crate::focus_route::FocusRoute;
 use crate::native_facts::{NativeAppFacts, NativeReadOutcome};
@@ -196,7 +199,7 @@ pub fn session_safe_verdict(
 /// this function; show state is NOT consulted here (geometry and focus add
 /// their own gates below).
 fn fence_membership(
-    scope: &AppScope,
+    scope: &TileScope,
     identity: &ProcessIdentity,
     gates: &dyn TileGates,
     pid: u32,
@@ -229,6 +232,9 @@ fn fence_membership(
             Some(id) if id == crate::BUNDLE_ID => {
                 "refusing own bundle at the effect boundary".to_owned()
             }
+            Some(id) if TileScope::is_product_bundle(&id) => {
+                "refusing own helper bundle at the effect boundary".to_owned()
+            }
             Some(_) => "out of scope: refusing write".to_owned(),
             None => "unknown bundle: refusing write".to_owned(),
         });
@@ -253,7 +259,7 @@ fn fence_membership(
 /// writes (omission, never destruction; no hides, no restyling, no Space
 /// writes, no geometry restoration on stop/crash).
 pub fn fence_scoped_effect(
-    scope: &AppScope,
+    scope: &TileScope,
     identity: &ProcessIdentity,
     gates: &dyn TileGates,
     pid: u32,
@@ -282,7 +288,7 @@ pub fn fence_scoped_effect(
 /// Per-leg readbacks preserve exactly what landed for re-observation.
 #[allow(clippy::too_many_arguments)]
 pub fn apply_scoped_frame(
-    scope: &AppScope,
+    scope: &TileScope,
     identity: &ProcessIdentity,
     gates: &dyn TileGates,
     setter: &mut dyn AxSetter,
@@ -403,7 +409,7 @@ pub fn apply_scoped_frame(
 /// agreement oracle can never confirm it — so the fence withholds rather
 /// than dispatch blind). Unknown/out-of-scope never dispatches.
 pub fn fence_scoped_focus(
-    scope: &AppScope,
+    scope: &TileScope,
     identity: &ProcessIdentity,
     gates: &dyn TileGates,
     pid: u32,
@@ -428,14 +434,16 @@ pub fn route_display_domain(
 }
 
 /// Validate one live identity triple for backend admission (pure): PID
-/// range, scope allowlist at the boundary (Ghostty, own bundle, protected
-/// terminals, and unknown bundles refuse even when listed), and launch
-/// currency. A missing launch date refuses outright — an executable-only
+/// range, selection at the boundary, and launch currency. Scoped mode
+/// refuses Ghostty, the own bundle, protected terminals, and unknown
+/// bundles even when listed; unscoped mode refuses both own bundles, exact
+/// exclusions, and unknown bundles while admitting Ghostty as an ordinary
+/// candidate. A missing launch date refuses outright — an executable-only
 /// fallback cannot distinguish PID reuse (same binary, new process), so it
 /// must never authorize. Returns the bound lifetime (bundle plus
 /// executable plus start token) that every effect revalidates exactly.
 pub fn validate_identity_triple(
-    scope: &AppScope,
+    scope: &TileScope,
     pid: u32,
     bundle: Option<&str>,
     exe: Option<&str>,
@@ -452,6 +460,12 @@ pub fn validate_identity_triple(
         Some(id) if id == crate::BUNDLE_ID => {
             return Err("refusing own-bundle identity".to_owned());
         }
+        Some(id) if TileScope::is_product_bundle(id) => {
+            return Err(
+                "refusing own helper-bundle identity (unscoped product run; scoped fixtures list it explicitly)"
+                    .to_owned(),
+            );
+        }
         Some(_) => return Err("out of scope: refusing owner".to_owned()),
         None => return Err("unknown bundle: refusing owner".to_owned()),
     }
@@ -462,7 +476,14 @@ pub fn validate_identity_triple(
     let Some(start) = launch_date.filter(|s| !s.is_empty()) else {
         return Err("refusing identity without a launch date (no PID-reuse protection)".to_owned());
     };
-    ProcessIdentity::bind(pid, bundle, exe, start)
+    // Unscoped product mode binds Ghostty as an ordinary candidate (only
+    // the scoped mode refuses it); every other lifetime check
+    // is identical, and scoped keeps the refusing bind.
+    if scope.is_unscoped() {
+        ProcessIdentity::bind_unscoped(pid, bundle, exe, start)
+    } else {
+        ProcessIdentity::bind(pid, bundle, exe, start)
+    }
 }
 
 /// Build one scoped snapshot from a complete native read (pure over
@@ -615,15 +636,17 @@ pub fn scoped_backstop_due(
     }
 }
 
-/// Scoped per-app AX backend factory: validates the scope allowlist at
-/// construction AND binds the launch lifetime at backend creation. Unknown,
-/// out-of-scope, Ghostty, own-bundle, and launch-date-less owners never
-/// construct a writer. Created backends run on the owning per-app AX
+/// Per-app AX backend factory over one product selection: validates the
+/// selection at construction AND binds the launch lifetime at backend
+/// creation. Unknown, out-of-selection, launch-date-less owners, and (in
+/// scoped mode) Ghostty never construct a writer; unscoped mode additionally
+/// refuses both own bundles plus exact exclusions while admitting Ghostty as
+/// an ordinary candidate. Created backends run on the owning per-app AX
 /// thread (see [`crate::runtime`]); every `AxElement` is constructed, used,
 /// and dropped there.
 #[derive(Debug, Clone)]
 pub struct ScopedAxFactory {
-    scope: AppScope,
+    scope: TileScope,
     /// Shared per-PID eligibility facts: each created backend publishes only
     /// its own bound PID from snapshot data it already read. `None` keeps
     /// the factory observation-only (existing fixtures/tests).
@@ -632,8 +655,24 @@ pub struct ScopedAxFactory {
 
 impl ScopedAxFactory {
     pub fn new(scope: AppScope) -> Result<Self, String> {
-        scope.validate()?;
-        Ok(Self { scope, facts: None })
+        let selection = TileScope::Scoped(scope);
+        selection.validate()?;
+        Ok(Self {
+            scope: selection,
+            facts: None,
+        })
+    }
+
+    /// Unscoped product factory: all ordinary apps minus own bundles and
+    /// the exact exclusions (Ghostty stays an ordinary candidate; only the
+    /// scoped constructor refuses it).
+    pub fn unscoped(excluded: Vec<String>) -> Result<Self, String> {
+        let selection = TileScope::Unscoped { excluded };
+        selection.validate()?;
+        Ok(Self {
+            scope: selection,
+            facts: None,
+        })
     }
 
     /// Share the eligibility facts store: created backends publish their
@@ -649,7 +688,7 @@ impl ScopedAxFactory {
     }
 
     #[must_use]
-    pub fn scope(&self) -> &AppScope {
+    pub fn scope(&self) -> &TileScope {
         &self.scope
     }
 }
@@ -690,7 +729,7 @@ pub struct ScopedAxBackend {
     // Portable construction retains these for the macOS effect path; offmac
     // they are write-only (no live reads), so silence dead_code there only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    scope: AppScope,
+    scope: TileScope,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     identity: ProcessIdentity,
     hook: Option<crate::runtime_backend::EffectHook>,
@@ -717,7 +756,7 @@ pub struct ScopedAxBackend {
 impl ScopedAxBackend {
     fn bind(
         pid: u32,
-        scope: AppScope,
+        scope: TileScope,
         identity: ProcessIdentity,
         facts: Option<Arc<crate::input_eligibility::EligibilityFactsStore>>,
     ) -> Self {
@@ -792,6 +831,7 @@ impl AxBackend for ScopedAxBackend {
                 &hook,
                 cmd.domain.clone(),
                 Some(taken),
+                self.scope.is_unscoped(),
             );
             let mut setter = native::NativeSetter::new(self.pid, cmd.wid);
             let (completion, _) = apply_scoped_frame(
@@ -1116,7 +1156,15 @@ mod native {
                     reason: "topology revision drift; superseded".to_owned(),
                 };
             }
-            let gates = NativeGates::for_op(self.pid, cmd.wid, &self.identity, &hook, None, None);
+            let gates = NativeGates::for_op(
+                self.pid,
+                cmd.wid,
+                &self.identity,
+                &hook,
+                None,
+                None,
+                self.scope.is_unscoped(),
+            );
             if let Err(reason) = fence_scoped_focus(
                 &self.scope,
                 &self.identity,
@@ -1193,6 +1241,9 @@ mod native {
         hook: crate::runtime_backend::EffectHook,
         target: Option<tiler_core::session::DomainKey>,
         taken: Option<u64>,
+        /// Product mode for identity revalidation: unscoped admits
+        /// Ghostty as an ordinary candidate (scoped keeps refusing).
+        unscoped: bool,
     }
 
     impl NativeGates {
@@ -1203,6 +1254,7 @@ mod native {
             hook: &crate::runtime_backend::EffectHook,
             target: Option<tiler_core::session::DomainKey>,
             taken: Option<u64>,
+            unscoped: bool,
         ) -> Self {
             Self {
                 pid,
@@ -1211,6 +1263,7 @@ mod native {
                 hook: hook.clone(),
                 target,
                 taken,
+                unscoped,
             }
         }
 
@@ -1241,10 +1294,17 @@ mod native {
                 return Err("identity launch date unreadable; refusing".to_owned());
             }
             // No bundle/exe/path values cross into the reason: PID numbers
-            // and static tokens only.
-            self.identity
-                .revalidate(self.pid, bundle, exe, start)
-                .map_err(|_| "identity drift (possible PID reuse); refusing".to_owned())
+            // and static tokens only. Unscoped product gates admit Ghostty
+            // as an ordinary candidate; scoped gates keep refusing it.
+            if self.unscoped {
+                self.identity
+                    .revalidate_unscoped(self.pid, bundle, exe, start)
+                    .map_err(|_| "identity drift (possible PID reuse); refusing".to_owned())
+            } else {
+                self.identity
+                    .revalidate(self.pid, bundle, exe, start)
+                    .map_err(|_| "identity drift (possible PID reuse); refusing".to_owned())
+            }
         }
 
         fn scope_bundle(&self) -> Option<String> {

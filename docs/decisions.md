@@ -19,6 +19,15 @@ Historical implementation detail is recoverable in Git history.
   The prior non-tiling ten-minute Windows loop is `lifecycle-smoke`.
 - Unsupported platforms fail explicitly rather than starting a partial loop.
   [Implementation and acceptance](changes/dev-entry-point.md).
+- **Tentative macOS preview, 2026-10-16:** `just dev [verbose|trace]`
+  builds the current signed development bundle, launches through LaunchServices,
+  and streams foreground logs with paths at start/end. Bare `dev` runs until
+  stopped over ordinary apps on each display's current user Space. Ctrl+C or
+  `just dev-stop` requests bounded teardown through an exact-run control directory;
+  a clean owner result, not process termination or stderr silence, proves stop.
+  Scoped finite runs remain available for focused verification. Managed Spaces,
+  borders and other effects are later work.
+  [Preview guide and evidence](changes/macos-dogfood-preview.md).
 - User 2026-10-14: Windows `just dev` user-accepted (including tray Stop and
   whole-desktop use); further issues become new backlog items.
 - User 2026-10-14: agent-owned identity-tagged `tiler-test-window.exe` is the
@@ -209,9 +218,27 @@ platform API behavior.
     domain, never fullscreen/hidden/minimized or unknown/stale state. AX
     owners publish per-PID plain facts; input attests at 250 ms and callbacks
     read an atomic gate (500 ms deadline, app-fact TTL about 2 s). Out-of-scope
-    input releases native registrations/guards. Genuine user-disable remains
-    refused; an explicit recovery request may install a fresh same-chord tap.
+    input releases native registrations/guards. The 2026-10-16 recovery rule
+    below supersedes terminal refusal based solely on a user-input notification.
     This does not replace physical-input or game acceptance.
+  - **Tentative preview input route, 2026-10-16:** the CGEventTap is the
+    primary and sole product hotkey route; Carbon remains only as a discrete
+    registration/delivery diagnostic. Both native disable notifications are
+    logged and recover through verified same-tap re-enable or fresh same-chord
+    creation. An enabled-state health check on existing input pump turns
+    separately detects disabled taps without a notification; this never counts
+    as a timeout. Lock, Secure Input, scope and foreground eligibility still
+    precede interception. Actual user-input notification/recovery and continued
+    suppression are live-proven; actual OS timeout-notification recovery remains
+    pending a physical-input discriminator.
+  - **Tentative preview configuration, 2026-10-16:** startup reads validated
+    JSON from the per-user `Library/Application Support/OmniTiler/settings.json`.
+    Explicit CLI Meta/preset/exclusion fields override file values. Ctrl is
+    default Meta; Command is supported; Alt/Shift-as-Meta refuse effective-chord
+    collisions with the basic action arms. Optional exact bundle-ID exclusions
+    apply only unscoped. Own probe/helper bundles are excluded unscoped; ordinary
+    terminals remain ordinary product candidates. Scoped allowlists retain
+    their protected-terminal fence and explicit helper-fixture exception.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring
@@ -1375,8 +1402,19 @@ platform API behavior.
   with tiling WMs such as COSMIC/Hyprland, override OS bindings). The preset
   choice may be offered on first run. Applies to KDE, Windows and macOS.
   macOS Authentic takes window-management conflicts and native settings where
-  safe and nonbreaking, with Revert (user 2026-10-15); scoped tile development
-  mode currently only reports per-chord registration conflicts.
+  safe and nonbreaking, with Revert (user 2026-10-15).
+- **Tentative macOS preview presets, 2026-10-16:** Authentic is default and
+  consumes the preview's exact supported chords while eligible; Compatible
+  leaves the established unshifted Ctrl+arrow conflicts to macOS. Shift move
+  and Alt resize arms are distinct chords without an established native holder,
+  not a conflict-free claim. The platform-local catalogue mirrors KDE/Windows
+  focus/move, float, directional grow/shrink and orientation defaults and uses
+  existing shared core commands (34 Authentic / 30 Compatible chords with Ctrl).
+  No portable shortcut catalogue currently exists. Unsupported workspace/digit
+  and native-state actions are unbound. No persistent symbolic-hotkey writes
+  are needed: stopping releases ownership without a preferences preimage or
+  Revert write. A concrete need for settings mutation still requires owned
+  preimages and Revert. [Guide and evidence](changes/macos-dogfood-preview.md).
 - Windows input and Snap (user 2026-10-01): `WH_KEYBOARD_LL` with `vkE8`
   menu-mask at Win key-up while Win held, consuming only approved catalog
   chords; `RegisterHotKey` rejected after all four chords returned 1409

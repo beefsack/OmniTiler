@@ -7,19 +7,23 @@ use std::sync::{
 };
 
 use crate::config::ProbeModifier;
+use crate::dev_selection::TileScope;
 use crate::input::cg_flag_bits;
 use crate::input_eligibility::EligibilityCache;
 use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
+use crate::input_policy::{DisableAction, unnotified_disable_action};
 use crate::native_input::*;
 use crate::runtime::{InputDirection, InputSemanticAction};
 #[cfg(not(target_os = "macos"))]
 use crate::runtime_backend::InputSourceFactory;
-use crate::scope::AppScope;
 
-fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool) -> TapTuning {
+fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool, alt: bool) -> TapTuning {
     let (mut want, mask) = cg_flag_bits(modifier);
     if shift {
         want |= CG_SHIFT_BIT;
+    }
+    if alt {
+        want |= CG_ALT_BIT;
     }
     TapTuning {
         want_flags: want,
@@ -29,9 +33,9 @@ fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool) -> TapTuning 
 }
 
 #[test]
-fn catalogue_is_exactly_focus_move_float() {
+fn catalogue_is_exactly_focus_move_resize_float_orientation() {
     let catalogue = tile_catalogue();
-    assert_eq!(catalogue.len(), 17);
+    assert_eq!(catalogue.len(), 34);
     let focus: Vec<_> = catalogue
         .iter()
         .filter(|b| matches!(b.action, InputSemanticAction::FocusStep { .. }))
@@ -40,59 +44,137 @@ fn catalogue_is_exactly_focus_move_float() {
         .iter()
         .filter(|b| matches!(b.action, InputSemanticAction::MoveStep { .. }))
         .collect();
+    let grows: Vec<_> = catalogue
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.action,
+                InputSemanticAction::ResizeStep { mode, .. }
+                    if mode == tiler_core::contract::ResizeMode::Outwards
+            )
+        })
+        .collect();
+    let shrinks: Vec<_> = catalogue
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.action,
+                InputSemanticAction::ResizeStep { mode, .. }
+                    if mode == tiler_core::contract::ResizeMode::Inwards
+            )
+        })
+        .collect();
     let floats: Vec<_> = catalogue
         .iter()
         .filter(|b| matches!(b.action, InputSemanticAction::ToggleFloat))
         .collect();
+    let orientations: Vec<_> = catalogue
+        .iter()
+        .filter(|b| matches!(b.action, InputSemanticAction::ToggleOrientation))
+        .collect();
     assert_eq!(focus.len(), 8);
     assert_eq!(moves.len(), 8);
+    assert_eq!(grows.len(), 8);
+    assert_eq!(shrinks.len(), 8);
     assert_eq!(floats.len(), 1);
-    // Focus chords carry no Shift; the move arm always does; float is
-    // bare `G`.
-    assert!(focus.iter().all(|b| !b.shift));
-    assert!(moves.iter().all(|b| b.shift));
+    assert_eq!(orientations.len(), 1);
+    // Focus chords carry neither arm; move carries Shift; grow carries Alt;
+    // shrink carries both; float and orientation are bare.
+    assert!(focus.iter().all(|b| !b.shift && !b.alt));
+    assert!(moves.iter().all(|b| b.shift && !b.alt));
+    assert!(grows.iter().all(|b| !b.shift && b.alt));
+    assert!(shrinks.iter().all(|b| b.shift && b.alt));
     assert_eq!(floats[0].key_code, KEY_G);
-    assert!(!floats[0].shift);
-    // Exact key set: HJKL plus four arrows on both arms.
-    let mut keys: Vec<(u32, bool)> = catalogue.iter().map(|b| (b.key_code, b.shift)).collect();
+    assert!(!floats[0].shift && !floats[0].alt);
+    assert_eq!(orientations[0].key_code, KEY_O);
+    assert!(!orientations[0].shift && !orientations[0].alt);
+    // Exact chord set: HJKL plus four arrows on all four arms, plus G/O.
+    let mut keys: Vec<(u32, bool, bool)> = catalogue
+        .iter()
+        .map(|b| (b.key_code, b.shift, b.alt))
+        .collect();
     keys.sort_unstable();
     keys.dedup();
-    assert_eq!(keys.len(), 17, "catalogue chords must be unique");
+    assert_eq!(keys.len(), 34, "catalogue chords must be unique");
     for key in [
         KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_DOWN, KEY_UP, KEY_RIGHT,
     ] {
-        assert!(catalogue.iter().any(|b| b.key_code == key && !b.shift));
-        assert!(catalogue.iter().any(|b| b.key_code == key && b.shift));
+        assert!(
+            catalogue
+                .iter()
+                .any(|b| b.key_code == key && !b.shift && !b.alt)
+        );
+        assert!(
+            catalogue
+                .iter()
+                .any(|b| b.key_code == key && b.shift && !b.alt)
+        );
+        assert!(
+            catalogue
+                .iter()
+                .any(|b| b.key_code == key && !b.shift && b.alt)
+        );
+        assert!(
+            catalogue
+                .iter()
+                .any(|b| b.key_code == key && b.shift && b.alt)
+        );
     }
-    // Directions: H/Left, J/Down, K/Up, L/Right on both arms.
-    let dir_of = |key: u32, shift: bool| {
+    // Directions: H/Left, J/Down, K/Up, L/Right on all four arms.
+    let dir_of = |key: u32, shift: bool, alt: bool| {
         catalogue
             .iter()
-            .find(|b| b.key_code == key && b.shift == shift)
+            .find(|b| b.key_code == key && b.shift == shift && b.alt == alt)
             .map(|b| match b.action {
                 InputSemanticAction::FocusStep { direction }
-                | InputSemanticAction::MoveStep { direction } => direction,
-                InputSemanticAction::ToggleFloat => InputDirection::Left,
+                | InputSemanticAction::MoveStep { direction }
+                | InputSemanticAction::ResizeStep { direction, .. } => direction,
+                InputSemanticAction::ToggleFloat | InputSemanticAction::ToggleOrientation => {
+                    InputDirection::Left
+                }
             })
     };
-    assert_eq!(dir_of(KEY_H, false), Some(InputDirection::Left));
-    assert_eq!(dir_of(KEY_J, false), Some(InputDirection::Down));
-    assert_eq!(dir_of(KEY_K, false), Some(InputDirection::Up));
-    assert_eq!(dir_of(KEY_L, false), Some(InputDirection::Right));
-    assert_eq!(dir_of(KEY_LEFT, true), Some(InputDirection::Left));
-    assert_eq!(dir_of(KEY_DOWN, true), Some(InputDirection::Down));
-    assert_eq!(dir_of(KEY_UP, true), Some(InputDirection::Up));
-    assert_eq!(dir_of(KEY_RIGHT, true), Some(InputDirection::Right));
+    assert_eq!(dir_of(KEY_H, false, false), Some(InputDirection::Left));
+    assert_eq!(dir_of(KEY_J, false, false), Some(InputDirection::Down));
+    assert_eq!(dir_of(KEY_K, false, false), Some(InputDirection::Up));
+    assert_eq!(dir_of(KEY_L, false, false), Some(InputDirection::Right));
+    assert_eq!(dir_of(KEY_LEFT, true, false), Some(InputDirection::Left));
+    assert_eq!(dir_of(KEY_DOWN, true, false), Some(InputDirection::Down));
+    assert_eq!(dir_of(KEY_UP, true, false), Some(InputDirection::Up));
+    assert_eq!(dir_of(KEY_RIGHT, true, false), Some(InputDirection::Right));
+    assert_eq!(dir_of(KEY_H, false, true), Some(InputDirection::Left));
+    assert_eq!(dir_of(KEY_L, true, true), Some(InputDirection::Right));
+    assert_eq!(dir_of(KEY_UP, false, true), Some(InputDirection::Up));
 }
 
 #[test]
-fn carbon_mods_cover_ctrl_role_plus_shift_arm() {
-    assert_eq!(carbon_mods_for(ProbeModifier::Meta, false), 256);
-    assert_eq!(carbon_mods_for(ProbeModifier::Meta, true), 256 + 512);
-    assert_eq!(carbon_mods_for(ProbeModifier::Ctrl, false), 4096);
-    assert_eq!(carbon_mods_for(ProbeModifier::Ctrl, true), 4096 + 512);
-    assert_eq!(carbon_mods_for(ProbeModifier::Alt, false), 2048);
-    assert_eq!(carbon_mods_for(ProbeModifier::Shift, false), 512);
+fn carbon_mods_cover_ctrl_role_plus_shift_and_alt_arms() {
+    assert_eq!(carbon_mods_for(ProbeModifier::Meta, false, false), 256);
+    assert_eq!(carbon_mods_for(ProbeModifier::Meta, true, false), 256 + 512);
+    assert_eq!(
+        carbon_mods_for(ProbeModifier::Meta, false, true),
+        256 + 2048
+    );
+    assert_eq!(
+        carbon_mods_for(ProbeModifier::Meta, true, true),
+        256 + 512 + 2048
+    );
+    assert_eq!(carbon_mods_for(ProbeModifier::Ctrl, false, false), 4096);
+    assert_eq!(
+        carbon_mods_for(ProbeModifier::Ctrl, true, false),
+        4096 + 512
+    );
+    // Windows parity: grow is Win+Alt (here Ctrl+Alt), shrink adds Shift.
+    assert_eq!(
+        carbon_mods_for(ProbeModifier::Ctrl, false, true),
+        4096 + 2048
+    );
+    assert_eq!(
+        carbon_mods_for(ProbeModifier::Ctrl, true, true),
+        4096 + 512 + 2048
+    );
+    assert_eq!(carbon_mods_for(ProbeModifier::Alt, false, false), 2048);
+    assert_eq!(carbon_mods_for(ProbeModifier::Shift, false, false), 512);
 }
 
 #[test]
@@ -100,7 +182,7 @@ fn exact_match_rejects_extras_but_ignores_caps_fn() {
     // Meta+H focus chord: exact bits match; any extra *masked* modifier
     // (Shift/Ctrl/Alt) fails; Caps/Fn sit outside the mask per the
     // existing matcher contract and neither match nor break.
-    let tuning = tuning_for(ProbeModifier::Meta, KEY_H, false);
+    let tuning = tuning_for(ProbeModifier::Meta, KEY_H, false, false);
     let exact = |flags: u64| {
         let mut pending = false;
         decide_tap_event(
@@ -116,16 +198,18 @@ fn exact_match_rejects_extras_but_ignores_caps_fn() {
     const META: u64 = 0x0010_0000;
     const SHIFT: u64 = 0x0002_0000;
     const CTRL: u64 = 0x0004_0000;
+    const ALT: u64 = 0x0008_0000;
     const CAPS: u64 = 0x0001_0000;
     const FN: u64 = 0x0080_0000;
     assert!(exact(META));
     assert!(!exact(META | SHIFT), "extra Shift must fail a focus chord");
     assert!(!exact(META | CTRL));
+    assert!(!exact(META | ALT), "Alt selects the grow arm, never focus");
     assert!(!exact(0), "bare key must fail");
     assert!(exact(META | CAPS), "Caps sits outside the mask");
     assert!(exact(META | FN), "Fn sits outside the mask");
     // Move arm needs exactly Mod+Shift.
-    let move_tuning = tuning_for(ProbeModifier::Meta, KEY_H, true);
+    let move_tuning = tuning_for(ProbeModifier::Meta, KEY_H, true, false);
     let moved = |flags: u64| {
         let mut pending = false;
         decide_tap_event(
@@ -141,6 +225,44 @@ fn exact_match_rejects_extras_but_ignores_caps_fn() {
     assert!(moved(META | SHIFT));
     assert!(!moved(META), "move needs its Shift arm");
     assert!(!moved(META | SHIFT | CTRL), "extra Ctrl must fail");
+    assert!(!moved(META | SHIFT | ALT), "Alt selects shrink, never move");
+    // Grow arm needs exactly Mod+Alt; shrink needs Mod+Alt+Shift.
+    let grow_tuning = tuning_for(ProbeModifier::Meta, KEY_H, false, true);
+    let grown = |flags: u64| {
+        let mut pending = false;
+        decide_tap_event(
+            TapKeyKind::KeyDown,
+            flags,
+            i64::from(KEY_H),
+            grow_tuning,
+            true,
+            &mut pending,
+        )
+        .matched
+    };
+    assert!(grown(META | ALT));
+    assert!(!grown(META), "grow needs its Alt arm");
+    assert!(
+        !grown(META | ALT | SHIFT),
+        "Shift selects shrink, never grow"
+    );
+    assert!(!grown(META | SHIFT), "Shift alone never grows");
+    let shrink_tuning = tuning_for(ProbeModifier::Meta, KEY_H, true, true);
+    let shrunk = |flags: u64| {
+        let mut pending = false;
+        decide_tap_event(
+            TapKeyKind::KeyDown,
+            flags,
+            i64::from(KEY_H),
+            shrink_tuning,
+            true,
+            &mut pending,
+        )
+        .matched
+    };
+    assert!(shrunk(META | ALT | SHIFT));
+    assert!(!shrunk(META | ALT), "shrink needs Shift too");
+    assert!(!shrunk(META | SHIFT), "shrink needs Alt too");
 }
 
 #[test]
@@ -148,7 +270,7 @@ fn paired_suppression_repeats_and_release() {
     // Armed tap over one spec: exact down suppresses and pends, a
     // repeat down still forwards (matched), the paired up suppresses, a
     // lone up never suppresses, and a modifier release clears pending.
-    let tuning = tuning_for(ProbeModifier::Meta, KEY_H, false);
+    let tuning = tuning_for(ProbeModifier::Meta, KEY_H, false, false);
     const META: u64 = 0x0010_0000;
     let mut pending = false;
     let down = decide_tap_event(
@@ -287,18 +409,19 @@ fn carbon_hit_conversion_distinguishes_shift_arm() {
         .map(|binding| {
             (
                 binding.key_code,
-                carbon_mods_for(modifier, binding.shift),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 },
+                carbon_mods_for(modifier, binding.shift, binding.alt),
+                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
+                    | if binding.alt { CG_ALT_BIT } else { 0 },
             )
         })
         .collect();
     let focus_hit = CarbonHit {
         key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, false),
+        carbon_modifiers: carbon_mods_for(modifier, false, false),
     };
     let move_hit = CarbonHit {
         key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, true),
+        carbon_modifiers: carbon_mods_for(modifier, true, false),
     };
     let focus_flags = carbon_flags_for_hit(&table, &focus_hit);
     let move_flags = carbon_flags_for_hit(&table, &move_hit);
@@ -310,8 +433,10 @@ fn carbon_hit_conversion_distinguishes_shift_arm() {
     assert_eq!(move_flags & CG_SHIFT_BIT, CG_SHIFT_BIT);
     // End to end through the exact matcher: the move replay matches the
     // move tuning and fails the focus tuning, and vice versa.
-    let focus_tuning = tuning_for(modifier, KEY_H, false);
-    let move_tuning = tuning_for(modifier, KEY_H, true);
+    let focus_tuning = tuning_for(modifier, KEY_H, false, false);
+    let move_tuning = tuning_for(modifier, KEY_H, true, false);
+    let grow_tuning = tuning_for(modifier, KEY_H, false, true);
+    let shrink_tuning = tuning_for(modifier, KEY_H, true, true);
     let matched = |flags: u64, tuning: TapTuning| {
         let mut pending = false;
         decide_tap_event(
@@ -331,6 +456,28 @@ fn carbon_hit_conversion_distinguishes_shift_arm() {
         !matched(move_flags, focus_tuning),
         "Shift replay must fail the focus chord"
     );
+    // The Alt arms ride the same full-pair table: a grow replay matches
+    // only the grow tuning, a shrink replay only the shrink tuning.
+    let grow_hit = CarbonHit {
+        key_code: KEY_H,
+        carbon_modifiers: carbon_mods_for(modifier, false, true),
+    };
+    let shrink_hit = CarbonHit {
+        key_code: KEY_H,
+        carbon_modifiers: carbon_mods_for(modifier, true, true),
+    };
+    let grow_flags = carbon_flags_for_hit(&table, &grow_hit);
+    let shrink_flags = carbon_flags_for_hit(&table, &shrink_hit);
+    assert_ne!(grow_flags, focus_flags);
+    assert_ne!(shrink_flags, move_flags);
+    assert!(matched(grow_flags, grow_tuning));
+    assert!(!matched(grow_flags, focus_tuning));
+    assert!(!matched(grow_flags, move_tuning));
+    assert!(!matched(grow_flags, shrink_tuning));
+    assert!(matched(shrink_flags, shrink_tuning));
+    assert!(!matched(shrink_flags, grow_tuning));
+    assert!(!matched(shrink_flags, move_tuning));
+    assert!(!matched(shrink_flags, focus_tuning));
     // Unknown pairs replay 0: no exact chord matches downstream, so the
     // hit is ignored — never guessed into a chord.
     let unknown = CarbonHit {
@@ -354,15 +501,21 @@ fn carbon_gated_loop_parks_without_dirty_end() {
     let (want, _) = cg_flag_bits(modifier);
     let chords: Vec<(u32, u32)> = catalogue
         .iter()
-        .map(|binding| (binding.key_code, carbon_mods_for(modifier, binding.shift)))
+        .map(|binding| {
+            (
+                binding.key_code,
+                carbon_mods_for(modifier, binding.shift, binding.alt),
+            )
+        })
         .collect();
     let flags_of: Vec<(u32, u32, u64)> = catalogue
         .iter()
         .map(|binding| {
             (
                 binding.key_code,
-                carbon_mods_for(modifier, binding.shift),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 },
+                carbon_mods_for(modifier, binding.shift, binding.alt),
+                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
+                    | if binding.alt { CG_ALT_BIT } else { 0 },
             )
         })
         .collect();
@@ -376,7 +529,7 @@ fn carbon_gated_loop_parks_without_dirty_end() {
         statuses: Arc::new(Mutex::new(Vec::new())),
         refusal: Arc::new(Mutex::new(None)),
         gated_ms: Arc::new(AtomicU64::new(0)),
-        scope: AppScope::disabled(),
+        scope: TileScope::scoped_disabled(),
         eligibility: Arc::new(EligibilityCache::new_unrestricted_test_gate()),
         facts: None,
         last_attest: None,
@@ -416,15 +569,21 @@ fn carbon_failed_recovery_ends_truthfully() {
     let (want, _) = cg_flag_bits(modifier);
     let chords: Vec<(u32, u32)> = catalogue
         .iter()
-        .map(|binding| (binding.key_code, carbon_mods_for(modifier, binding.shift)))
+        .map(|binding| {
+            (
+                binding.key_code,
+                carbon_mods_for(modifier, binding.shift, binding.alt),
+            )
+        })
         .collect();
     let flags_of: Vec<(u32, u32, u64)> = catalogue
         .iter()
         .map(|binding| {
             (
                 binding.key_code,
-                carbon_mods_for(modifier, binding.shift),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 },
+                carbon_mods_for(modifier, binding.shift, binding.alt),
+                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
+                    | if binding.alt { CG_ALT_BIT } else { 0 },
             )
         })
         .collect();
@@ -438,7 +597,7 @@ fn carbon_failed_recovery_ends_truthfully() {
         statuses: Arc::new(Mutex::new(Vec::new())),
         refusal: Arc::new(Mutex::new(None)),
         gated_ms: Arc::new(AtomicU64::new(0)),
-        scope: AppScope::disabled(),
+        scope: TileScope::scoped_disabled(),
         eligibility: Arc::new(EligibilityCache::new_unrestricted_test_gate()),
         facts: None,
         last_attest: None,
@@ -456,6 +615,31 @@ fn carbon_failed_recovery_ends_truthfully() {
             .is_some_and(|reason| reason.contains("refused")),
         "unrecoverable re-registration refuses truthfully: {refusal:?}"
     );
+}
+
+#[test]
+fn stall_seam_is_probe_only_never_product() {
+    // The deliberate callback-stall seam exists ONLY for the
+    // `input-session --stall-once-ms` fault-injection leg. The exact
+    // production tile construction (scope + facts store, no unrestricted
+    // gate, no stall builder) always reads disarmed; only the explicit
+    // probe builder arms it. Tile/dev code paths never call
+    // `with_stall_once` (only `input_session` does).
+    use crate::input_eligibility::EligibilityFactsStore;
+    let production = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
+        .unwrap()
+        .with_scope(TileScope::Scoped(crate::scope::AppScope {
+            allowed: vec!["com.apple.TextEdit".to_owned()],
+        }))
+        .with_facts_store(Arc::new(EligibilityFactsStore::new()));
+    assert!(!production.stall_armed());
+    let probe = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
+        .unwrap()
+        .with_stall_once(1200);
+    assert!(probe.stall_armed());
+    // A zero stall never arms either (default factory state).
+    let plain = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue()).unwrap();
+    assert!(!plain.stall_armed());
 }
 
 #[test]
@@ -505,9 +689,9 @@ fn scoped_sources_start_ineligible_until_attested() {
     assert!(!tap.eligibility().is_eligible());
     let scoped = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
         .unwrap()
-        .with_scope(crate::scope::AppScope {
+        .with_scope(TileScope::Scoped(crate::scope::AppScope {
             allowed: vec!["com.apple.TextEdit".to_owned()],
-        });
+        }));
     assert!(!scoped.eligibility().is_eligible());
     // Fixture unrestricted gate: starts eligible (per-edge oracle still
     // enforced for posts; suppression bypass is explicit).
@@ -540,4 +724,124 @@ fn carbon_releases_registration_while_gated() {
     cache.publish(true, 4242);
     assert!(cache.is_eligible());
     assert!(cache.epoch() > epoch);
+}
+
+#[test]
+fn held_turn_health_recovers_unnotified_disable_outside_the_fixture_hold() {
+    // Simulates the owner's decision on a bounded pump turn that reported
+    // Held (no OS notification): enabled reads healthy, a directly-disabled
+    // read without the fixture hold recovers via same-tap re-enable (never
+    // the timeout count), and the explicit fixture hold bypasses recovery
+    // while its deliberate disabled observation or release transition runs.
+    let decide = |direct_enabled: bool, direct_hold: bool, holding_direct: bool| {
+        if fixture_hold_active(direct_hold, holding_direct) {
+            return None;
+        }
+        unnotified_disable_action(direct_enabled, false)
+    };
+    assert_eq!(decide(true, false, false), None);
+    assert_eq!(
+        decide(false, false, false),
+        Some(DisableAction::ReenableSameTap)
+    );
+    // Explicit direct-disable-hold observation: bypassed.
+    assert_eq!(decide(false, true, false), None);
+    // Hold-to-release transition (single fixture re-enable owns it):
+    // bypassed even after the flag clears mid-turn.
+    assert_eq!(decide(false, false, true), None);
+    assert_eq!(decide(true, true, false), None);
+}
+
+#[test]
+fn fixture_hold_bypass_is_structural_never_product() {
+    // The bypass predicate is a pure OR over the two fixture flags, and the
+    // production tile construction leaves both clear (the only setters are
+    // the fixture-only `set_direct_hold` / re-arm legs, which production
+    // never calls).
+    assert!(fixture_hold_active(true, false));
+    assert!(fixture_hold_active(false, true));
+    assert!(fixture_hold_active(true, true));
+    assert!(!fixture_hold_active(false, false));
+    let production = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue()).unwrap();
+    assert_eq!(production.latest_direct_enabled(), None);
+    assert_eq!(production.rearm_epoch(), 0);
+}
+
+#[test]
+fn tap_reports_accumulate_across_fresh_guard_recreations() {
+    // Fresh guards restart their own counters at zero; the owner folds each
+    // retired guard's snapshot into the cumulative total, so terminal
+    // evidence survives recreations with the timeout / user-input /
+    // readback-only kinds kept distinct (a readback-only recovery never
+    // lands in the timeout count).
+    use crate::ffi::TapSourceReport;
+    let zero = TapSourceReport {
+        matched: 0,
+        suppressed: 0,
+        deliveries: 0,
+        reenables_after_timeout: 0,
+        user_disables: 0,
+        unnotified_disables: 0,
+    };
+    let first = TapSourceReport {
+        matched: 2,
+        suppressed: 2,
+        deliveries: 9,
+        reenables_after_timeout: 1,
+        user_disables: 1,
+        unnotified_disables: 0,
+    };
+    let total = accumulate_tap_report(zero, first);
+    assert_eq!(total, first);
+    let second = TapSourceReport {
+        matched: 2,
+        suppressed: 2,
+        deliveries: 4,
+        reenables_after_timeout: 0,
+        user_disables: 0,
+        unnotified_disables: 1,
+    };
+    let total = accumulate_tap_report(total, second);
+    assert_eq!(
+        total,
+        TapSourceReport {
+            matched: 4,
+            suppressed: 4,
+            deliveries: 13,
+            reenables_after_timeout: 1,
+            user_disables: 1,
+            unnotified_disables: 1,
+        }
+    );
+    // Saturation, never wrap: a hot guard cannot roll the terminal counts.
+    let hot = TapSourceReport {
+        matched: u32::MAX,
+        suppressed: u32::MAX,
+        deliveries: u32::MAX,
+        reenables_after_timeout: u32::MAX,
+        user_disables: u32::MAX,
+        unnotified_disables: u32::MAX,
+    };
+    let total = accumulate_tap_report(total, hot);
+    assert_eq!(total, hot);
+}
+
+#[test]
+fn fresh_guard_reinstall_reuses_the_exact_same_chords() {
+    // The owner recreates over the same chord specs it installed with
+    // (same modifier, same bindings, same placement): the spec table is a
+    // pure function of that pair, so a reinstall replays it exactly.
+    let catalogue = tile_catalogue();
+    let first = tap_specs_for(ProbeModifier::Ctrl, &catalogue);
+    let replay = tap_specs_for(ProbeModifier::Ctrl, &catalogue);
+    assert_eq!(first, replay);
+    assert_eq!(first.len(), 34);
+    // Compatible keeps the shifted move arrows armed (30 chords): a product
+    // recreation under Compatible replays that same reduced set.
+    use crate::input_policy::{InputPreset, effective_bindings};
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &catalogue);
+    assert_eq!(compatible.len(), 30);
+    let replay = tap_specs_for(ProbeModifier::Ctrl, &compatible);
+    assert_eq!(replay.len(), 30);
+    assert_eq!(tap_specs_for(ProbeModifier::Ctrl, &compatible), replay);
 }

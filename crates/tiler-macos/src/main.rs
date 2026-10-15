@@ -207,6 +207,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             stall_once_ms,
             direct_disable_hold_ms,
             direct_rearm,
+            disable_once,
             watchdog_only,
         } => {
             // Bounded owned input fixture over the REAL native tile source
@@ -222,6 +223,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 stall_once_ms,
                 direct_disable_hold_ms,
                 direct_rearm,
+                disable_once,
                 watchdog_only,
                 modifier: request.modifier,
             };
@@ -608,19 +610,73 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             scopes,
             seconds,
             input,
+            preset,
+            preset_explicit,
+            unscoped,
+            excluded,
+            log,
+            run_dir,
         } => {
-            // Scoped tile session: explicit start + scope validated inside;
-            // bounded lifetime, one input route, LaunchServices launch via
-            // the `just tile` recipe. Shutdown is bounded and windows stay
-            // in place (never restored).
+            // Tile session: explicit start + product selection validated
+            // inside; tap product route, Authentic/Compatible preset.
+            // Modifier/preset resolve CLI-over-settings-file (an explicitly
+            // passed CLI flag wins, else the tentative user settings file,
+            // else the built-in default); file exclusions apply to unscoped
+            // runs only. A malformed file fails closed (never a silent
+            // fallback). Every terminal result also persists to the run
+            // directory's `outcome.json` when `--run-dir` was passed, so an
+            // exact-run launcher observes completion without process
+            // attribution. LaunchServices launch via the `just tile` /
+            // `just dev` recipes. Shutdown is bounded and windows stay in
+            // place (never restored).
+            let write_refused = |reason: &str| {
+                let body = serde_json::json!({
+                    "outcome": "refused",
+                    "reason": reason,
+                })
+                .to_string();
+                tiler_macos::tile::write_run_outcome(&run_dir, &body);
+            };
+            let (file, _) = tiler_macos::dev_selection::load_settings().map_err(|reason| {
+                write_refused(&reason);
+                (2, reason)
+            })?;
+            let resolved = tiler_macos::dev_selection::resolve_dev_config(
+                unscoped,
+                request.modifier,
+                request.modifier_explicit,
+                preset,
+                preset_explicit,
+                &excluded,
+                &file,
+            )
+            .map_err(|reason| {
+                write_refused(&reason);
+                (2, reason)
+            })?;
             let request = tiler_macos::tile::TileRequest {
                 user_start,
                 scopes,
                 seconds,
                 input,
-                modifier: request.modifier,
+                preset: resolved.preset,
+                modifier: resolved.modifier,
+                unscoped,
+                excluded: resolved.excluded,
+                log,
+                run_dir: run_dir.clone(),
             };
-            tiler_macos::tile::run_tile(request)
+            tiler_macos::tile::run_tile(request).map_err(|(code, body)| {
+                // Validation refusals carry plain text (not JSON): persist
+                // the refused envelope so the run directory still observes
+                // a terminal state. Native terminal JSON bodies persist
+                // inside `run_tile` already; rewriting the identical body
+                // here is idempotent.
+                if code == 2 {
+                    write_refused(&body);
+                }
+                (code, body)
+            })
         }
         Command::SpacesSession {
             seconds,

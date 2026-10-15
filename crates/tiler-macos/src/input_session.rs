@@ -48,10 +48,19 @@
 //!   re-proves exact suppression on the new generation (owner match plus
 //!   helper absence plus fresh tap counters). Labeled DIRECT-REARM
 //!   throughout (never the OS-timeout notification path, never a same-tap
-//!   re-enable claim). A genuine user-disable refusal fails closed with the
-//!   refusal (never masked, never auto re-enabled).
+//!   re-enable claim). A hard creation-denial refusal fails closed with the
+//!   refusal (never masked).
+//! - `--disable-once` (tap only): one-shot disable-once fault with no
+//!   fixture hold and no assumed notification kind. The owner disables the
+//!   tap directly once while it keeps pumping; the tap recovers automatically
+//!   through whichever path the OS takes (measured live: a UserInput
+//!   notification with a verified same-tap re-enable), then the main
+//!   re-proves exact suppression. The leg reports the ACTUAL kind from the
+//!   counters (`user-input` vs `unnotified-enabled-readback`) and never a
+//!   timeout claim without the actual timeout counter. Labeled DISABLE-ONCE
+//!   throughout with the actual kind named (never an explicit re-arm claim).
 //! - `--watchdog-only` (tap only, 2..=5s): no helper, no posts, no completed
-//!   JSON. The probe arms the REAL tap owner over the exact 17-chord
+//!   JSON. The probe arms the REAL tap owner over the exact 34-chord
 //!   catalogue, emits a `watchdog_ready` binding (PID plus run ID), parks
 //!   the main past the shared hard watchdog, and the watchdog forces the
 //!   dirty process exit. The parent harness holds the owned helper
@@ -103,6 +112,10 @@ pub(crate) const KEY_H: u32 = 0x04;
 pub(crate) const CG_SHIFT_BIT: u64 = 0x0002_0000;
 /// `CGEventFlags` Control bit (used only when the Ctrl role is Shift).
 pub(crate) const CG_CTRL_BIT: u64 = 0x0004_0000;
+/// `CGEventFlags` Alternate bit (same mask space as [`cg_flag_bits`]).
+pub(crate) const CG_ALT_BIT: u64 = 0x0008_0000;
+/// `CGEventFlags` Command bit (extra-modifier probe under the Ctrl role).
+pub(crate) const CG_CMD_BIT: u64 = 0x0010_0000;
 /// Device-independent modifier mask (Shift|Ctrl|Alt|Cmd, same space as
 /// [`cg_flag_bits`]).
 pub(crate) const MOD_MASK: u64 = 0x001E_0000;
@@ -166,6 +179,7 @@ pub struct InputSessionRequest {
     pub stall_once_ms: u64,
     pub direct_disable_hold_ms: u64,
     pub direct_rearm: bool,
+    pub disable_once: bool,
     pub watchdog_only: bool,
     pub modifier: ProbeModifier,
 }
@@ -196,6 +210,9 @@ impl InputSessionRequest {
             }
             if self.direct_rearm {
                 return Err("watchdog-only takes no --direct-rearm (separate fault leg)".to_owned());
+            }
+            if self.disable_once {
+                return Err("watchdog-only takes no --disable-once (separate fault leg)".to_owned());
             }
             return Ok(());
         }
@@ -250,6 +267,29 @@ impl InputSessionRequest {
                 );
             }
         }
+        if self.disable_once {
+            if self.route != InputSessionRoute::Tap {
+                return Err("disable-once is tap-only (carbon has no tap)".to_owned());
+            }
+            if self.stall_once_ms > 0 {
+                return Err(
+                    "disable-once and stall-once are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+            if self.direct_disable_hold_ms > 0 {
+                return Err(
+                    "disable-once and direct-disable-hold are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+            if self.direct_rearm {
+                return Err(
+                    "disable-once and direct-rearm are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -262,11 +302,20 @@ pub fn bucket_index(flags: u64) -> usize {
 }
 
 /// Exact-match tuning mirror for one catalogue chord (same construction as
-/// the input owner: Ctrl-role bit plus the Shift arm under the same mask).
-pub(crate) fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool) -> TapTuning {
+/// the input owner: Ctrl-role bit plus the Shift arm plus the Alt resize
+/// arm under the same mask).
+pub(crate) fn tuning_for(
+    modifier: ProbeModifier,
+    key_code: u32,
+    shift: bool,
+    alt: bool,
+) -> TapTuning {
     let (mut want_flags, flags_mask) = cg_flag_bits(modifier);
     if shift {
         want_flags |= CG_SHIFT_BIT;
+    }
+    if alt {
+        want_flags |= CG_ALT_BIT;
     }
     TapTuning {
         want_flags,
@@ -276,19 +325,27 @@ pub(crate) fn tuning_for(modifier: ProbeModifier, key_code: u32, shift: bool) ->
 }
 
 /// An extra masked modifier bit matched by NO catalogue chord (fails
-/// exact match on both the focus arm and the Shift move arm by
-/// construction): Alt, unless the Ctrl role itself is Alt (then Control).
-/// Pure; unit-tested. (Shift would alias the move arm for the default Ctrl
-/// role — measured live: the tap correctly matched index 8 — so Shift is
-/// never the extra.)
+/// exact match on every arm — focus, Shift move, Alt grow, Alt+Shift
+/// shrink — by construction; pure, unit-tested). The Alt resize arm now
+/// owns the Alt bit, so the extra rides Command under the Ctrl role and
+/// Control everywhere else (each masked, each outside every armed chord for
+/// its role; Shift would alias the move arm for the default Ctrl role —
+/// measured live: the tap correctly matched index 8 — so Shift is never
+/// the extra):
+/// - Ctrl role: Cmd (`Ctrl+Cmd+H` matches nothing — Ctrl, Ctrl+Shift,
+///   Ctrl+Alt, and Ctrl+Alt+Shift on H are all live chords);
+/// - Meta role: Ctrl (`Cmd+Ctrl+H` matches nothing);
+/// - Alt role: Ctrl (`Alt+Ctrl+H` matches nothing — the Alt-role resize
+///   arm collapses onto focus/move, refused at validation);
+/// - Shift role: Ctrl (`Shift+Ctrl+H` matches nothing — the Shift role is
+///   refused at validation like before).
 #[must_use]
 pub fn extra_flag_for(modifier: ProbeModifier) -> u64 {
     let (want, _) = cg_flag_bits(modifier);
-    const CG_ALT_BIT: u64 = 0x0008_0000;
-    if want == CG_ALT_BIT {
-        CG_CTRL_BIT
+    if want == CG_CTRL_BIT {
+        CG_CMD_BIT
     } else {
-        CG_ALT_BIT
+        CG_CTRL_BIT
     }
 }
 
@@ -354,7 +411,12 @@ fn owner_main(
     let tunings: Vec<(TapTuning, usize)> = catalogue
         .iter()
         .enumerate()
-        .map(|(index, binding)| (tuning_for(modifier, binding.key_code, binding.shift), index))
+        .map(|(index, binding)| {
+            (
+                tuning_for(modifier, binding.key_code, binding.shift, binding.alt),
+                index,
+            )
+        })
         .collect();
     let mut done = OwnerDone {
         unexpected_eos: 0,
@@ -540,6 +602,7 @@ pub(crate) struct PostLeg {
 pub(crate) struct ArrowStatus {
     pub(crate) key_code: u32,
     pub(crate) shift: bool,
+    pub(crate) alt: bool,
     pub(crate) carbon_os_status: Option<i32>,
     pub(crate) tap_observed: Option<String>,
 }
@@ -567,6 +630,7 @@ struct InputSessionReport {
     stall_once_ms: u64,
     direct_disable_hold_ms: u64,
     direct_rearm: bool,
+    disable_once: bool,
     rearm_epoch: u64,
     watchdog_only: bool,
     arrows: Vec<ArrowStatus>,
@@ -585,7 +649,7 @@ struct InputSessionReport {
 
 /// Watchdog-only hard-exit probe (tap only, 2..=5s, fixture-only): no helper,
 /// no posts, no completed JSON. Arms the REAL tap owner over the exact
-/// 17-chord catalogue, emits a `watchdog_ready` binding (PID plus run ID plus
+/// 34-chord catalogue, emits a `watchdog_ready` binding (PID plus run ID plus
 /// executable) on stdout, parks the main past the shared hard watchdog, and
 /// the watchdog forces the dirty process exit (`Process::exit(1)` with the
 /// `hard lifetime exceeded` stderr line). The parent harness holds the owned
@@ -635,10 +699,10 @@ fn run_watchdog_only_session(request: InputSessionRequest) -> Result<String, (i3
     // only on the early-error returns below.
     let mut watchdog =
         Watchdog::arm(Duration::from_secs(request.seconds)).map_err(|reason| (1, reason))?;
-    // Exact 17-chord catalogue over the REAL tap source on a dedicated owner
+    // Exact 34-chord catalogue over the REAL tap source on a dedicated owner
     // thread (same owner body as the full session; no posts flow here).
     let catalogue = tile_catalogue();
-    debug_assert_eq!(catalogue.len(), 17);
+    debug_assert_eq!(catalogue.len(), 34);
     let factory = Arc::new(
         TapTileFactory::new(request.modifier, catalogue)
             .map_err(|e| err_json("input-factory", e))?,
@@ -712,7 +776,7 @@ fn run_watchdog_only_session(request: InputSessionRequest) -> Result<String, (i3
             "runid": runid,
             "exe": exe,
             "route": "tap",
-            "catalogue_chords": 17,
+            "catalogue_chords": 34,
             "watchdog_secs": request.seconds,
         })
     );
@@ -1157,7 +1221,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": stage, "error": cause, "legs": legs, "readiness": readiness, "helper_last": helper_last, "owner_done": {"matched": owner_done.matched, "ignored": owner_done.ignored, "unexpected_eos": owner_done.unexpected_eos, "joined": owner_joined}, "tap_report": tap_factory.as_ref().map(|f| f.latest_report()), "tap_refusal": tap_factory.as_ref().and_then(|f| f.refusal()), "tap_direct_enabled": tap_factory.as_ref().and_then(|f| f.latest_direct_enabled()), "rearm_epoch": tap_factory.as_ref().map(|f| f.rearm_epoch()), "direct_rearm": request.direct_rearm, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": stage, "error": cause, "legs": legs, "readiness": readiness, "helper_last": helper_last, "owner_done": {"matched": owner_done.matched, "ignored": owner_done.ignored, "unexpected_eos": owner_done.unexpected_eos, "joined": owner_joined}, "tap_report": tap_factory.as_ref().map(|f| f.latest_report()), "tap_refusal": tap_factory.as_ref().and_then(|f| f.refusal()), "tap_direct_enabled": tap_factory.as_ref().and_then(|f| f.latest_direct_enabled()), "rearm_epoch": tap_factory.as_ref().map(|f| f.rearm_epoch()), "direct_rearm": request.direct_rearm, "disable_once": request.disable_once, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
 
@@ -1262,6 +1326,8 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
                         suppressed: 0,
                         deliveries: 0,
                         reenables_after_timeout: 0,
+                        user_disables: 0,
+                        unnotified_disables: 0,
                     },
                     factory.gated_ms(),
                     factory.refusal(),
@@ -1307,6 +1373,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
         stall_once_ms: request.stall_once_ms,
         direct_disable_hold_ms: request.direct_disable_hold_ms,
         direct_rearm: request.direct_rearm,
+        disable_once: request.disable_once,
         rearm_epoch: tap_factory.as_ref().map(|f| f.rearm_epoch()).unwrap_or(0),
         watchdog_only: request.watchdog_only,
         arrows,
@@ -1378,6 +1445,11 @@ fn transient_arrow_statuses(modifier: ProbeModifier) -> Vec<CarbonChordStatus> {
                 crate::input::carbon_mod_bits(modifier)
                     + if b.shift {
                         crate::native_input::CARBON_SHIFT_BIT
+                    } else {
+                        0
+                    }
+                    + if b.alt {
+                        crate::native_input::CARBON_ALT_BIT
                     } else {
                         0
                     },

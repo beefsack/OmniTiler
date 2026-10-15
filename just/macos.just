@@ -66,6 +66,31 @@ app identity:
 verify:
     bash scripts/macos-app.sh --verify
 
-# Unsupported dev loop: fails closed on macOS Phase 0.
-dev mode="":
-    @echo "error: just dev: macOS full-solution loop is not implemented (use: just preflight)" >&2 && exit 1
+# Foreground dogfood session: unscoped ordinary-app tiling by default
+# (Ghostty is an ordinary candidate there; scoped `--scope` verification
+# stays available for bounded checks).
+# Unified dev entry: builds the current signed bundle first via the
+# existing persistent-identity route (`scripts/macos-app.sh`), then
+# launches it. The build must complete before launch (never a stale binary
+# silently); `--stop` never rebuilds. Identity is the fixed configured
+# default `OmniTiler Mac Dev` unless `OMNITILER_DEV_IDENTITY` overrides it.
+# No installs, no TCC resets.
+# Examples:
+#   just dev
+#   just dev verbose --exclude com.example.Skip
+#   just dev trace --scope com.apple.TextEdit --seconds 30
+dev *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for a in "$@"; do
+      if [ "$a" = "--stop" ] || [ "$a" = "stop" ]; then
+        exec bash scripts/macos-dev.sh "$@"
+      fi
+    done
+    : "${OMNITILER_DEV_IDENTITY:=OmniTiler Mac Dev}"
+    bash scripts/macos-app.sh --identity "$OMNITILER_DEV_IDENTITY"
+    exec bash scripts/macos-dev.sh "$@"
+
+# Exact-owner stop from a second terminal (never broad kills).
+dev-stop:
+    bash scripts/macos-dev.sh --stop
