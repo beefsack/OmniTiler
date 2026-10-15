@@ -72,6 +72,10 @@ decisions of 2026-09-24 are under
   both window/tiling state and workspace state (workspaces to create or
   remove, including the trailing empty workspace). Platforms apply the reply
   instead of separately deciding when to run workspace lifecycle policy.
+  The reply is the full desired window and workspace state, not a delta:
+  each platform diffs it against its observed host state and applies the
+  differences, so a dropped or failed update is corrected by the next reply
+  (user 2026-10-16).
   Motivation: missed trailing-workspace creation/removal on individual event
   paths in KDE dynamic workspaces and Windows admission
   ([Windows record](changes/archive/windows-admission-trailing-workspace.md));
