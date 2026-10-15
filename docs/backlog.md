@@ -66,6 +66,40 @@ decisions of 2026-09-24 are under
   build/CTest and staged native rendering/switching pass. Grouping and pre-0.1
   timing are tentative, user review pending. Recommend shared Rust catalog
   with checked-in generated artifacts post-0.1; route/timing remain pending.
+- P1 | Core update replies carry workspace state | User 2026-10-16: every
+  change a platform reports to the core (window created/closed, workspace
+  switch, send, output change) returns everything the platform must apply,
+  both window/tiling state and workspace state (workspaces to create or
+  remove, including the trailing empty workspace). Platforms apply the reply
+  instead of separately deciding when to run workspace lifecycle policy.
+  Motivation: missed trailing-workspace creation/removal on individual event
+  paths in KDE dynamic workspaces and Windows admission
+  ([Windows record](changes/archive/windows-admission-trailing-workspace.md));
+  the core already owns the planning (`plan_trailing`, `resolve_trailing`,
+  `scoped_trailing_facts`). Breaking changes to the core/platform interface
+  are accepted pre-0.1; the core change adds follow-up items for each platform
+  not migrated in the same change. Repeated replies must not churn
+  workspaces.
+- P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
+  direction, after [incident diagnosis and options](changes/windows-gaming-coexistence.md):
+  Compatible preset rebinds the tiler actions on these chords to unused
+  combinations; Authentic keeps the authentic chords and reports Xbox mode
+  and Game Bar as configuration conflicts in the warning/action-required
+  system, recommending disabling Xbox mode and removing Game Bar, with a
+  per-conflict resolve action only where research shows it is safe and
+  reversible (official setting, per-user registry value, or standard
+  uninstall). Compatible alternate rule: first try the authentic chord plus
+  Ctrl (Ctrl+Win+G does not open Game Bar), used only when Windows does not
+  already use the result (for example Ctrl+Win+Left/Right/D are virtual
+  desktop chords); otherwise another sensible unused chord. Game Bar's
+  shortcut settings only add shortcuts; PowerToys Keyboard Manager remapping
+  did not suppress them (user tests 2026-10-16). Research resolve actions and
+  proposed Compatible chords for user review before implementation.
+- P3 | Windows visibility diagnostics | Normal logs lack per-window
+  reveal/hide results, visibility/cloak transitions, exception reasons and
+  timing, which left the Xbox-mode incident's hidden window and later
+  exception unexplained ([diagnosis](changes/windows-gaming-coexistence.md)).
+  Add bounded normal-level diagnostics before another incident repro.
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
