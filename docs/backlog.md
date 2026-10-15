@@ -82,6 +82,30 @@ decisions of 2026-09-24 are under
   owner/generation identity, request-side `StaleRevision` refusal and
   per-correlation stale-reply handling in the KDE adapter; workspace
   lifecycle state has no revision.
+  The reply structure must be extensible so the core can later return more
+  optional presentation state for platforms to apply, for example active
+  border, drop-target overlay and group underlay geometry, as more shared
+  logic moves into the core (user 2026-10-16).
+  Gaps requiring investigation before design:
+  - Input staleness: a newer reply can still predate the platform's latest
+    report (for example a user drag) and revert it; replies should identify
+    the platform report they are based on.
+  - Lost reports: full-state replies do not repair a dropped platform report;
+    consider full observed-state reports, at least periodically and after
+    anomalies.
+  - Intent versus state: focus, raise and stacking must not be re-applied on
+    every diff or they fight user actions; they need one-shot semantics.
+  - Host refusal: fixed-size windows, minimum sizes and host rounding can make
+    desired state unreachable; define tolerance, backoff and constraint
+    feedback so diffs do not churn.
+  - Unmanaged windows: full state must mark floating, excluded and game
+    windows as untouched.
+  - Workspace removal: platforms remove only workspaces they observe empty
+    (KDE desktop removal moves windows).
+  - Generation bootstrap: after a core restart the platform sends a full
+    snapshot first; an empty initial state is never applied as removal.
+  - Reply size: the current 64 KiB `PLAN_MAX_REPLY_BYTES` bound may not hold
+    full state with hundreds of windows.
   Motivation: missed trailing-workspace creation/removal on individual event
   paths in KDE dynamic workspaces and Windows admission
   ([Windows record](changes/archive/windows-admission-trailing-workspace.md));
