@@ -1,3 +1,5 @@
+use super::*;
+
 #[test]
 fn hidden_minimize_after_hide_releases_then_rejoins() {
     // `HiddenRecord.iconic` freezes at hide time, but a hidden window can

@@ -2058,4 +2058,5 @@ fn production_tick_journey_minimize_restore_close_fanout_with_hidden() {
     clear_pending_seams();
 }
 
-include!("tests_d23_minimize_2.rs");
+#[path = "tests_d23_minimize_hidden.rs"]
+mod hidden;
