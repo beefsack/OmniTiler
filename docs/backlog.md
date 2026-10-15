@@ -887,8 +887,12 @@ decisions of 2026-09-24 are under
     actual Explorer restart; physical mouse/game/anti-cheat acceptance;
     DPI/auto-hide reconfiguration; non-bottom taskbars; whole-strip workspace
     overcapacity; accessibility/theme/cost checks. Live opt-out remains
-    untested against shared settings (offline covered). Icons omitted;
-    urgency acquisition remains separate. Secondary/non-bottom/invalid
+    untested against shared settings (offline covered). Miniature icons are now
+    implemented through asynchronous window/class/executable lookup, with
+    DPI-aware sizing and omission when missing or too small; native appearance,
+    resource stability and exact packaged-app artwork remain pending
+    ([active record](changes/windows-taskbar-pager-icons.md)). Urgency
+    acquisition remains separate. Secondary/non-bottom/invalid
     geometry currently refuses safely and logs, never guesses a tray edge.
     Stopgap delivered 2026-10-15: tray icon number plus in-menu workspace pager
     with single-output native acceptance

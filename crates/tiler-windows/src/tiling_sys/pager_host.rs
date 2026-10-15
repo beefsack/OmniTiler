@@ -1,15 +1,24 @@
 use super::*;
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use crate::pager::{
     OutputGeometry, OutputPager, PagerGate, TaskbarFacts, match_bars_to_outputs, pager_suppression,
     verify_output_scoped_select,
 };
+use crate::pager_icons::IconImage;
+use crate::workspace::WindowKey;
 
 /// Slow secondary-taskbar enumeration cadence (the primary bar is re-read
 /// every pump; secondaries only feed refusal logging, never positions).
 const PAGER_REVALIDATE_SECS: u64 = 5;
 /// Owner-creation retry when overlay registration fails (capped, forever).
 const PAGER_CREATE_RETRY_SECS: u64 = 5;
+/// Icon worker spawn retry (capped, forever): a failed spawn retries here,
+/// never busy every pump; the pager simply stays icon-less meanwhile.
+const PAGER_ICON_RETRY_BASE_SECS: u64 = 5;
+const PAGER_ICON_RETRY_CAP_SECS: u64 = 60;
 
 /// Fullscreen covering shared by the visibility sync and the click-dispatch
 /// poll: the raw suspend veto plus the managed-overlay exception, so both
@@ -118,6 +127,12 @@ pub(super) fn sync_taskbar_pager(
         // Suppression drops queued clicks: a click rendered under an old
         // gate must never replay on a later safe turn.
         let dropped = drop_pager_clicks(state);
+        // Suppression also clears queued icon work and stops future
+        // requests: an already-started lookup may finish, but its retired
+        // generation prevents accepting the result after suppression.
+        if let Some(service) = state.pager_icon_service.as_ref() {
+            service.clear();
+        }
         if let Some(overlays) = state.pager_overlays.as_mut() {
             overlays.hide_all();
         }
@@ -173,6 +188,10 @@ pub(super) fn sync_taskbar_pager(
         .chain(state.pager_secondaries.iter().cloned())
         .collect();
     let mut pagers: Vec<OutputPager> = Vec::new();
+    // Artwork snapshot for this pump: prune the cache and drain finished
+    // worker lookups first, then frame from cache hits. Paint never touches
+    // foreign windows or waits.
+    let icons = drain_icon_cache(state, now, log_path);
     for (geo_index, bar_index) in match_bars_to_outputs(&geos, &bars) {
         let area = &areas[geo_index];
         let bar: TaskbarFacts = bars[bar_index];
@@ -182,6 +201,7 @@ pub(super) fn sync_taskbar_pager(
             &state.member_tokens,
             &state.member_rects,
             &state.float_rects,
+            &icons,
             &area.device,
             area.full,
             &bar,
@@ -228,12 +248,145 @@ pub(super) fn sync_taskbar_pager(
         }
     }
     state.pager_served = pagers.iter().map(|pager| pager.output.clone()).collect();
+    // Queue lookups only for served miniatures that can actually draw an
+    // icon: artwork nobody can see is never loaded.
+    request_drawable_icons(state, &pagers, now);
     if let Some(overlays) = state.pager_overlays.as_mut() {
         overlays.sync(&pagers, now);
         pager_has_pending(state)
     } else {
         false
     }
+}
+
+/// Spawn (or spawn-retry) the single icon worker on the safe path. A failed
+/// spawn logs once per backoff step and retries on a capped cadence, never
+/// busy every pump.
+fn ensure_icon_service(state: &mut TileLoop, log_path: &Path, now: Instant) {
+    if state.pager_icon_service.is_some() {
+        return;
+    }
+    if state.pager_icon_retry_at.is_some_and(|at| now < at) {
+        return;
+    }
+    match crate::pager_icons_sys::PagerIconService::try_new() {
+        Some(service) => {
+            state.pager_icon_service = Some(service);
+            state.pager_icon_retry_at = None;
+            state.pager_icon_failures = 0;
+        }
+        None => {
+            state.pager_icon_failures = state.pager_icon_failures.saturating_add(1);
+            let backoff = (PAGER_ICON_RETRY_BASE_SECS << state.pager_icon_failures.min(4))
+                .min(PAGER_ICON_RETRY_CAP_SECS);
+            state.pager_icon_retry_at = Some(now + Duration::from_secs(backoff));
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "pager-icons",
+                    "outcome": "worker-spawn-failed",
+                    "retry_secs": backoff,
+                }),
+            );
+        }
+    }
+}
+
+/// Pump the icon cache: prune to live membership, drain finished worker
+/// lookups into the cache with one bounded outcome line per active batch,
+/// and return current artwork hits for the frame. Never queries or waits
+/// on foreign windows.
+fn drain_icon_cache(
+    state: &mut TileLoop,
+    now: Instant,
+    log_path: &Path,
+) -> HashMap<WindowKey, Arc<IconImage>> {
+    let mut keys: Vec<WindowKey> = Vec::new();
+    for output in state.workspaces.output_keys() {
+        for id in state.workspaces.workspace_ids(&output) {
+            keys.extend(state.workspaces.workspace_members(&output, &id));
+        }
+    }
+    let live: HashSet<WindowKey> = keys.iter().cloned().collect();
+    state.pager_icon_cache.prune(&live);
+    ensure_icon_service(state, log_path, now);
+    if let Some(service) = state.pager_icon_service.as_ref() {
+        let mut hits = 0u64;
+        let mut misses = 0u64;
+        let mut window = 0u64;
+        let mut class = 0u64;
+        let mut exe = 0u64;
+        let mut refused = 0u64;
+        for result in service.drain() {
+            if result.image.is_some() {
+                hits += 1;
+                match result.source {
+                    crate::pager_icons::IconSource::Window => window += 1,
+                    crate::pager_icons::IconSource::Class => class += 1,
+                    crate::pager_icons::IconSource::Exe => exe += 1,
+                    _ => {}
+                }
+            } else {
+                misses += 1;
+                if result.source == crate::pager_icons::IconSource::Refused {
+                    refused += 1;
+                }
+            }
+            // Late results for departed keys never enter the cache.
+            if live.contains(&result.key) {
+                state.pager_icon_cache.insert(result.key, result.image, now);
+            }
+        }
+        if hits + misses > 0 {
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "pager-icons",
+                    "outcome": "results",
+                    "hits": hits,
+                    "misses": misses,
+                    "window": window,
+                    "class": class,
+                    "exe": exe,
+                    "refused": refused,
+                }),
+            );
+        }
+    }
+    let mut artwork = HashMap::new();
+    for key in &keys {
+        if let Some(image) = state.pager_icon_cache.get(key) {
+            artwork.insert(key.clone(), image);
+        }
+    }
+    artwork
+}
+
+/// Queue lookups only for served miniatures that fit a legible icon, and
+/// prune queued requests that are no longer drawable. The cache still
+/// prunes against all live keys; artwork nobody can see is simply never
+/// loaded.
+fn request_drawable_icons(state: &mut TileLoop, pagers: &[OutputPager], now: Instant) {
+    let mut drawable = HashSet::new();
+    for pager in pagers {
+        for cell in &pager.cells {
+            for (mini, key) in cell.minis.iter().zip(cell.mini_keys.iter()) {
+                if crate::pager_icons::icon_rect_for_mini(*mini, pager.dpi).is_some() {
+                    drawable.insert(key.clone());
+                }
+            }
+        }
+    }
+    let Some(service) = state.pager_icon_service.as_ref() else {
+        return;
+    };
+    service.prune_pending(&drawable);
+    let requests = state.pager_icon_cache.requests(
+        drawable.iter().cloned(),
+        now,
+        crate::pager_icons::MAX_ICON_REQUESTS,
+    );
+    service.request(requests);
 }
 
 fn areas_fingerprint(areas: &[MonitorArea]) -> u64 {

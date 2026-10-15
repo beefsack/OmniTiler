@@ -669,7 +669,11 @@ platform API behavior.
     icon/menu stays. Primary tray geometry is read every pump, with DPI-scaled
     cells/fonts, ongoing shell rediscovery/retry and safe topmost reassertion.
     Suppression also drops queued clicks, including managed fullscreen.
-    Icons are omitted in this MVP. Secondary tray anchors and non-bottom
+    Icons were omitted in the MVP. The 2026-10-16 icon extension adds centred
+    obtainable window/class/executable artwork asynchronously, omitting missing
+    or too-small icons without changing pager geometry. Exact packaged-app
+    artwork and native appearance acceptance remain pending
+    ([record](changes/windows-taskbar-pager-icons.md)). Secondary tray anchors and non-bottom
     taskbars refuse unknown geometry rather than guessing; physical
     multi-output, games, actual Explorer restart, DPI/auto-hide changes and
     physically over-wide workspace strips remain open, not accepted evidence.

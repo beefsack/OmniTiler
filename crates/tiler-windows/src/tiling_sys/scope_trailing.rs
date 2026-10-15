@@ -1728,6 +1728,7 @@ mod tests {
                 &state.member_tokens,
                 &state.member_rects,
                 &state.float_rects,
+                &std::collections::HashMap::new(),
                 "mon-a",
                 BOUNDS,
                 &taskbar,

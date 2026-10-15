@@ -552,6 +552,16 @@ struct TileLoop {
     /// tile-slot/float snapshots in the portable resolver). Rebuilt per pass,
     /// so stale entries never survive their observation.
     pager_live: HashMap<crate::workspace::WindowKey, Rect>,
+    /// Identity-keyed pager icon cache (worker-owned artwork bytes). Pruned
+    /// to live membership every pump; never queried or waited on in the
+    /// tile loop or the painter.
+    pager_icon_cache: crate::pager_icons::PagerIconCache,
+    /// Single background icon lookup worker plus its bounded queues. Created
+    /// lazily on the first safe pump; detached teardown (never joined).
+    pager_icon_service: Option<crate::pager_icons_sys::PagerIconService>,
+    /// Icon worker spawn retry gate (capped backoff, forever).
+    pager_icon_retry_at: Option<Instant>,
+    pager_icon_failures: u32,
     /// Last pager suppression outcome (`None` while showing): change-only
     /// `pager-suppress` logging.
     pager_suppress_last: Option<String>,

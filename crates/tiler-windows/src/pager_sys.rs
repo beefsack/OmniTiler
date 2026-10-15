@@ -38,6 +38,7 @@ use tiler_core::geometry::Rect;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 
 use crate::pager::{OutputPager, TaskbarFacts, TaskbarKind, cell_at};
+use crate::pager_icons::{IconImage, icon_rect_for_mini};
 use crate::tray_pager::SelectScope;
 
 type DynError = Box<dyn std::error::Error>;
@@ -98,6 +99,11 @@ struct WindowState {
     cells: Vec<Rect>,
     active: usize,
     minis: Vec<Vec<Rect>>,
+    /// Owned artwork bytes parallel to `minis` (flattened by the worker, so
+    /// paint only copies). `Arc` keeps per-pump frame stores cheap.
+    icons: Vec<Vec<Option<Arc<IconImage>>>>,
+    /// Overlay DPI the frame was laid out for (icon sizing).
+    dpi: u32,
     font: windows_sys::Win32::Graphics::Gdi::HFONT,
     queue: Arc<Mutex<Vec<SelectScope>>>,
 }
@@ -109,6 +115,48 @@ fn window_state_of(hwnd: HWND) -> *mut WindowState {
 
 fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
+}
+
+/// Blit one worker-flattened icon into its centered slot. The buffer is
+/// opaque by construction, so `SRCCOPY` is exact: no alpha channel travels
+/// the paint path and the overlay stays a plain opaque GDI surface.
+fn paint_icon(hdc: windows_sys::Win32::Graphics::Gdi::HDC, dest: RECT, image: &IconImage) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, StretchDIBits,
+    };
+    const SRCCOPY: u32 = 0x00CC0020;
+    if !image.is_valid() {
+        return;
+    }
+    let w = dest.right - dest.left;
+    let h = dest.bottom - dest.top;
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = image.width as i32;
+    bmi.bmiHeader.biHeight = -(image.height as i32);
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    unsafe {
+        StretchDIBits(
+            hdc,
+            dest.left,
+            dest.top,
+            w,
+            h,
+            0,
+            0,
+            image.width as i32,
+            image.height as i32,
+            image.bgra.as_ptr().cast(),
+            &bmi,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+    }
 }
 
 fn paint_frame(hwnd: HWND, state: &WindowState) {
@@ -144,8 +192,19 @@ fn paint_frame(hwnd: HWND, state: &WindowState) {
                 DeleteObject(brush as _);
             }
         }
-        // Miniature lighter window rectangles from the real workspace rects.
-        for mini in state.minis.get(index).cloned().unwrap_or_default() {
+        // Miniature lighter window rectangles from the real workspace rects,
+        // each with its centered application icon when artwork landed.
+        let empty_icons: Vec<Option<Arc<IconImage>>> = Vec::new();
+        let cell_icons = state.icons.get(index).unwrap_or(&empty_icons);
+        for (pos, mini) in state
+            .minis
+            .get(index)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            let mini = *mini;
             let local_mini = RECT {
                 left: mini.x - origin_x,
                 top: mini.y - cell.y,
@@ -171,6 +230,22 @@ fn paint_frame(hwnd: HWND, state: &WindowState) {
                     SelectObject(hdc, old);
                     DeleteObject(pen as _);
                 }
+            }
+            // Owned artwork blits opaquely into the centered slot (omitted
+            // when the miniature cannot fit a legible icon).
+            if let Some(image) = cell_icons.get(pos).and_then(|slot| slot.as_ref())
+                && let Some(slot) = icon_rect_for_mini(mini, state.dpi)
+            {
+                paint_icon(
+                    hdc,
+                    RECT {
+                        left: slot.x - origin_x,
+                        top: slot.y - cell.y,
+                        right: slot.x - origin_x + slot.w,
+                        bottom: slot.y - cell.y + slot.h,
+                    },
+                    image,
+                );
             }
         }
         // Light 1px cell border.
@@ -707,6 +782,12 @@ impl PagerOverlays {
             cells: pager.cells.iter().map(|cell| cell.rect).collect(),
             active: pager.active_index,
             minis: pager.cells.iter().map(|cell| cell.minis.clone()).collect(),
+            icons: pager
+                .cells
+                .iter()
+                .map(|cell| cell.mini_icons.clone())
+                .collect(),
+            dpi: pager.dpi,
             font: pager_font(pager.dpi),
             queue: Arc::clone(&self.queue),
         });
@@ -728,8 +809,15 @@ impl PagerOverlays {
             )
         };
         if hwnd.is_null() {
+            // Creation failed: the frame box owns a live HFONT here (it is
+            // normally freed in `detach_and_destroy`), so release it before
+            // dropping the box. No `Drop` on `WindowState` exists precisely
+            // to avoid double-freeing fonts of successfully created windows.
             unsafe {
-                drop(Box::from_raw(raw));
+                let state = Box::from_raw(raw);
+                if !state.font.is_null() {
+                    windows_sys::Win32::Graphics::Gdi::DeleteObject(state.font as _);
+                }
             }
             return None;
         }
@@ -747,11 +835,19 @@ impl PagerOverlays {
         let state = unsafe { &mut *raw };
         let cells: Vec<Rect> = pager.cells.iter().map(|cell| cell.rect).collect();
         let minis: Vec<Vec<Rect>> = pager.cells.iter().map(|cell| cell.minis.clone()).collect();
+        // `Arc` equality short-circuits on pointer identity, so steady-state
+        // artwork costs one pointer compare per miniature, not a byte walk.
+        let icons: Vec<Vec<Option<Arc<IconImage>>>> = pager
+            .cells
+            .iter()
+            .map(|cell| cell.mini_icons.clone())
+            .collect();
         if state.ids == pager.ids
             && state.output == pager.output
             && state.cells == cells
             && state.active == pager.active_index
             && state.minis == minis
+            && state.icons == icons
         {
             return false;
         }
@@ -760,6 +856,7 @@ impl PagerOverlays {
         state.cells = cells;
         state.active = pager.active_index;
         state.minis = minis;
+        state.icons = icons;
         true
     }
 

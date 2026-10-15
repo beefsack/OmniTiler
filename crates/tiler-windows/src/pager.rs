@@ -12,7 +12,11 @@
 //! output-scoped select fence. Native effects (overlay windows, Explorer
 //! rediscovery, `TaskbarCreated` retry, z-order reassert, painting, click
 //! capture) live in `crate::pager_sys` (`cfg(windows)` only); the loop host
-//! (`crate::tiling_sys::pager_host`) wires the two. Icons are omitted.
+//! (`crate::tiling_sys::pager_host`) wires the two. Miniature icons arrive as
+//! worker-owned opaque pixel buffers (see [`crate::pager_icons`]): each
+//! miniature carries its full window identity plus optional artwork, and the
+//! repaint hash covers both, so artwork changes repaint without touching
+//! geometry, labels, selection, or safety gates.
 //!
 //! Safety contract (see `pager_suppression` and `strip_for_taskbar`):
 //! - The overlay may overlap applications but NEVER the tray: the strip is
@@ -143,14 +147,18 @@ impl PagerRefusal {
     }
 }
 
-/// One painted cell: its rect, active flag, 1-based ordinal, and the window
-/// miniatures already scaled into cell coordinates.
+/// One painted cell: its rect, active flag, 1-based ordinal, the window
+/// miniatures already scaled into cell coordinates, and per-miniature icon
+/// state parallel to `minis`: the full window identity plus optional owned
+/// artwork. Missing artwork is `None` and leaves the rectangle unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagerCell {
     pub rect: Rect,
     pub active: bool,
     pub ordinal: u32,
     pub minis: Vec<Rect>,
+    pub mini_keys: Vec<crate::workspace::WindowKey>,
+    pub mini_icons: Vec<Option<std::sync::Arc<crate::pager_icons::IconImage>>>,
 }
 
 /// One output's strip: the strip rect plus its cells in workspace order
@@ -359,7 +367,9 @@ pub fn resolve_member_rect(
 /// Build one output's pager frame: the strip plus one cell per workspace in
 /// order with one miniature per actual managed window (no cap: every member
 /// renders; ordinary crowding only adds miniatures, never changes cells).
-/// Returns the refusal when the strip cannot anchor safely.
+/// `icons` maps full member identities to worker-owned artwork; members
+/// without artwork render the plain rectangle. Returns the refusal when the
+/// strip cannot anchor safely.
 #[allow(clippy::too_many_arguments)]
 pub fn build_output_pager(
     spaces: &crate::workspace::ManagedWorkspaces,
@@ -367,6 +377,7 @@ pub fn build_output_pager(
     member_tokens: &BTreeMap<crate::workspace::WindowKey, String>,
     member_rects: &HashMap<String, Rect>,
     float_rects: &HashMap<String, Rect>,
+    icons: &HashMap<crate::workspace::WindowKey, std::sync::Arc<crate::pager_icons::IconImage>>,
     output: &str,
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
@@ -383,11 +394,15 @@ pub fn build_output_pager(
     for (index, cell_rect) in cell_rects.into_iter().enumerate() {
         let workspace = &ids[index];
         let mut minis = Vec::new();
+        let mut mini_keys = Vec::new();
+        let mut mini_icons = Vec::new();
         for key in spaces.workspace_members(output, workspace) {
             if let Some(rect) =
                 resolve_member_rect(&key, live, member_tokens, member_rects, float_rects)
             {
                 minis.push(miniature(cell_rect, monitor_full, rect, taskbar.dpi));
+                mini_icons.push(icons.get(&key).cloned());
+                mini_keys.push(key);
             }
         }
         cells.push(PagerCell {
@@ -395,6 +410,8 @@ pub fn build_output_pager(
             active: index == active_index,
             ordinal: index as u32 + 1,
             minis,
+            mini_keys,
+            mini_icons,
         });
     }
     Ok(OutputPager {
@@ -442,6 +459,12 @@ pub fn snapshot_hash(pagers: &[OutputPager]) -> u64 {
                 mix(mini.y as u64);
                 mix(mini.w as u64);
                 mix(mini.h as u64);
+            }
+            // Window identity per miniature (full key, never HWND alone) plus
+            // artwork presence: icon arrival/refresh repaints without moving
+            // any pixel of geometry.
+            for (key, icon) in cell.mini_keys.iter().zip(cell.mini_icons.iter()) {
+                crate::pager_icons::mix_mini_icon(&mut mix, key, icon.as_deref());
             }
         }
         mix(0xff);
@@ -813,6 +836,7 @@ mod tests {
             &tokens,
             &rects,
             &rects,
+            &HashMap::new(),
             "mon-a",
             full(),
             &bottom_bar(),
@@ -824,6 +848,7 @@ mod tests {
             &tokens,
             &rects,
             &rects,
+            &HashMap::new(),
             "mon-a",
             full(),
             &bottom_bar(),
@@ -840,6 +865,7 @@ mod tests {
             &tokens,
             &rects,
             &rects,
+            &HashMap::new(),
             "mon-a",
             full(),
             &bottom_bar(),
@@ -868,6 +894,7 @@ mod tests {
                 &spaces_with_output(),
                 &HashMap::new(),
                 &BTreeMap::new(),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 "mon-a",
@@ -993,6 +1020,7 @@ mod tests {
             &tokens,
             &slots,
             &HashMap::new(),
+            &HashMap::new(),
             "mon-a",
             full(),
             &bottom_bar(),
@@ -1003,6 +1031,93 @@ mod tests {
         let rendered: usize = pager.cells.iter().map(|cell| cell.minis.len()).sum();
         assert_eq!(rendered, 24);
         assert_eq!(pager.cells.len(), spaces.workspace_ids("mon-a").len());
+        // Icon lanes stay parallel to the miniatures (no artwork staged).
+        for cell in &pager.cells {
+            assert_eq!(cell.mini_keys.len(), cell.minis.len());
+            assert_eq!(cell.mini_icons.len(), cell.minis.len());
+            assert!(cell.mini_icons.iter().all(Option::is_none));
+        }
+    }
+
+    #[test]
+    fn icons_attach_by_identity_and_repaint() {
+        use crate::pager_icons::{IconImage, mix_mini_icon};
+        use crate::workspace::WindowKey;
+        use std::sync::Arc;
+        let mut spaces = spaces_with_output();
+        let active = spaces.active_id("mon-a").expect("active");
+        let key = WindowKey {
+            hwnd: 21,
+            pid: 7,
+            creation: "icon-1".to_owned(),
+        };
+        assert!(spaces.assign(key.clone(), "mon-a", &active, false));
+        let mut tokens = BTreeMap::new();
+        tokens.insert(key.clone(), "tok-icon".to_owned());
+        let mut slots = HashMap::new();
+        slots.insert(
+            "tok-icon".to_owned(),
+            Rect {
+                x: 0,
+                y: 0,
+                w: 960,
+                h: 540,
+            },
+        );
+        let plain = build_output_pager(
+            &spaces,
+            &HashMap::new(),
+            &tokens,
+            &slots,
+            &HashMap::new(),
+            &HashMap::new(),
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        let mut artwork = HashMap::new();
+        artwork.insert(
+            key.clone(),
+            Arc::new(IconImage::new(32, 32, vec![9; 32 * 32 * 4])),
+        );
+        let iconic = build_output_pager(
+            &spaces,
+            &HashMap::new(),
+            &tokens,
+            &slots,
+            &HashMap::new(),
+            &artwork,
+            "mon-a",
+            full(),
+            &bottom_bar(),
+        )
+        .expect("fits");
+        // Geometry identical; identity attached; artwork arrival repaints.
+        assert_eq!(
+            plain.cells[0].minis, iconic.cells[0].minis,
+            "artwork never moves geometry"
+        );
+        assert_eq!(iconic.cells[0].mini_keys, vec![key.clone()]);
+        assert_ne!(
+            snapshot_hash(&[plain]),
+            snapshot_hash(&[iconic]),
+            "artwork arrival must repaint"
+        );
+        // A recycled HWND (same number, new creation) is a different mini.
+        let mut mixed = Vec::new();
+        mix_mini_icon(
+            &mut |w| mixed.push(w),
+            &WindowKey {
+                hwnd: 21,
+                pid: 7,
+                creation: "icon-2".to_owned(),
+            },
+            None,
+        );
+        let mut original = Vec::new();
+        mix_mini_icon(&mut |w| original.push(w), &key, None);
+        assert_ne!(mixed, original);
     }
 
     #[test]

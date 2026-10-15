@@ -11,6 +11,9 @@ pub mod mouse_snap;
 #[cfg(windows)]
 pub mod native;
 pub mod pager;
+pub mod pager_icons;
+#[cfg(windows)]
+pub mod pager_icons_sys;
 #[cfg(windows)]
 pub mod pager_sys;
 pub mod product_hide;

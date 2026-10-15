@@ -253,7 +253,7 @@ not be reused. These are implementation obligations, not validated recovery clai
   small windows share a cell. Hidden workspaces use stored rects, not
   live minimized/offscreen rects.
 - Candidate icon chain per window HWND (research-only; fallback is caller-owned):
-  1. WM_GETICON (ICON_SMALL, then ICON_BIG) via SendMessageTimeout with
+   1. WM_GETICON (ICON_SMALL2, ICON_SMALL, then ICON_BIG) via SendMessageTimeout with
      SMTO_ABORTIFHUNG and short timeout; plain SendMessage can block on
      hung windows ([WM_GETICON][wm-geticon],
      [SendMessageTimeout][sendtimeout]).
@@ -660,9 +660,40 @@ acceptance; DPI/auto-hide setting changes; secondary taskbar anchor discovery
 and physical multi-output checks; non-bottom taskbars; very large workspace
 counts exceeding the entire available strip width; accessibility/theme/cost
 measurement. Live opt-out was not attempted against shared saved settings;
-schema, hot-apply and queued-click refusal have offline coverage. Icons are
-omitted, not represented by generic substitutes. See the
+schema, hot-apply and queued-click refusal have offline coverage. The MVP
+omitted icons rather than using generic substitutes. See the
 [implementation record](../../changes/archive/windows-taskbar-pager.md).
+
+### Miniature icon implementation 2026-10-16
+
+- The product painter is opaque GDI, not the earlier layered child prototype.
+  A dedicated worker draws copied/owned HICONs onto a gray-backed top-down
+  32-bit DIB with DrawIconEx, flattens alpha to opaque BGRA, and releases native
+  handles. WM_PAINT only StretchDIBits-copies shared bytes. Premultiplied alpha
+  for UpdateLayeredWindow is not needed by this unchanged hosting path.
+- Classic chain: WM_GETICON SMALL2/SMALL/BIG through 50 ms
+  SendMessageTimeout/SMTO_ABORTIFHUNG calls, class small/big icons, then
+  ExtractIconExW on the verified owning executable. Borrowed handles are copied,
+  never destroyed directly. No shell extension/COM image lookup was added.
+- A process-held HWND/pid/creation check surrounds lookup. Cache entries prune
+  with membership, hits refresh after 10 seconds, misses after 5 seconds. Only
+  sufficiently large served miniatures enqueue work; bounded queues deduplicate
+  in-flight requests, idle workers sleep, and suppression rejects old results.
+- Icon sizing caps at 16 logical px and omits below 8 logical px, preserving a
+  1px border plus 1px padding per side. Unavailable icons leave the rectangle
+  unchanged. DPI-aware placement stretches a cached 32px raster; higher scales
+  can upscale. Existing workspace labels remain painted last.
+- Packaged apps can work through obtainable window/class icons. Exact
+  ApplicationFrameHost child/AUMID/AppsFolder artwork is still unresolved;
+  host exe fallback is omitted rather than mislabelled as the real app icon.
+- ExtractIconExW is not timeout-bounded and can stall the single artwork worker;
+  it cannot block tiling/painting or shutdown. Same-process HWND reuse remains
+  limited by the existing process-lifetime key. Visual alpha edges, resource
+  stability, hung-client and icon-change behavior still require native evidence.
+- Locked native gates passed: 2,158 tests passed, zero failed, one ignored,
+  including 13 new icon tests; build/fmt/strict clippy/diff check passed. This is
+  offline evidence only. See the active
+  [icon record and acceptance plan](../../changes/windows-taskbar-pager-icons.md).
 
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4
