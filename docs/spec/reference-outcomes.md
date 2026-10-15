@@ -21,6 +21,13 @@ trivially different start state.
 | --- | --- | --- | --- |
 | Owned fullscreen across Xbox entry/return | Tile A/B; fullscreen A once; if Xbox mode opens, return through Task View; inspect A before selecting another workspace; then separately round-trip workspaces and exit project fullscreen | User incident: fullscreen consumed; zero eligible observations; generic fullscreen suspension/resume flaps; later workspace hide of origin; return `ok` with no focus; later project-fullscreen exit; gestures refused as floating/exception. [Diagnosis](../changes/windows-gaming-coexistence.md#incident-diagnosis-and-prevention-options-2026-10-16) distinguishes log facts from OS attribution | Exact hide/cloak/reveal and exception/mode transitions TBD; inspect owned claims, visible/cloaked/fullscreen facts and exception lane at each boundary. No heuristic Xbox detector, automatic exception clear or new shortcut policy selected |
 
+### Windows Xbox shortcut configuration discriminators
+
+| Variant | Minimal action sequence | Established evidence | Unsupported outcome / next discriminator |
+| --- | --- | --- | --- |
+| Ctrl-first Compatible alternates | With Xbox mode enabled and Game Bar retained, physically press Ctrl+Win+G and Ctrl+Win+F11; after implementation repeat with an ordinary tiled target under Compatible | User verified Ctrl+Win+G does not open Game Bar; neither candidate matches the current default catalog or reviewed Windows shortcut lists. [Proposal](../research/windows-port/xbox-shortcut-conflicts.md) | Ctrl+Win+F11 Xbox nonactivation, actual float/fullscreen routing, holds/releases and plain Win TBD; no implementation or physical acceptance inferred |
+| Authentic configuration remedies | Outside a game/capture, user disables Xbox mode in official Settings; separately, only if explicitly opted in after Store publisher/reinstall and app-data-loss checks, uninstalls Game Bar through Windows; check each original chord, then restore the chosen configuration | Official disable UI, Settings URIs and per-user package removal APIs documented; shortcut outcome not guaranteed | Xbox enabled-state automatic query, Win+F11/Win+G nonactivation or activation prompts after remedy, capture/reinstall recovery and warning-clear/acknowledgment semantics TBD; no silent mutation or direct-removal policy selected |
+
 ### macOS classification discriminators
 
 Variants of R-SPC-01/04 and R-MNZ-01; typed-fact evidence plus explicitly

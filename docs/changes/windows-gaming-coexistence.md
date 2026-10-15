@@ -1,5 +1,27 @@
 # Windows gaming coexistence
 
+## Shortcut-conflict proposal delivered (2026-10-16)
+
+- [Research and proposal](../research/windows-port/xbox-shortcut-conflicts.md)
+  records the approved Compatible rebind / Authentic configuration-conflict
+  direction and Ctrl-first rule, current code bindings, alternate collision
+  audit, Microsoft detection/navigation contracts, resolve-action risks and
+  estimated implementation slices. No runtime behavior changed.
+- Proposed float/fullscreen alternates are Ctrl+Win+G / Ctrl+Win+F11; F11
+  physical nonactivation remains TBD. Game Bar current-user package presence
+  has supported query APIs, but no supported Xbox enabled-state getter was
+  established. Recommend official Settings navigation first, not direct
+  registry writes or uninstall; detailed choices await review.
+- Acceptance: source/catalog and Microsoft-reference review; conservative
+  unknown-state semantics and minimal physical discriminators documented.
+  Independent review checked navigation, package scope, registry boundaries and
+  uninstall recovery; managed app-data loss and development-only preservation
+  limits are explicit. Decisions/backlog link the proposal. Earlier
+  no-replacement/no-selected-path options below are historical and superseded
+  by the approved 2026-10-16 direction, not by implementation. The wider
+  containment/runtime-detection
+  work remains open, so this record stays active.
+
 ## Incident diagnosis and prevention options (2026-10-16)
 
 ### Scope and result

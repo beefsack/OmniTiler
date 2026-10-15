@@ -1448,6 +1448,7 @@ platform API behavior.
   without publishing settings and proceeds through ordinary teardown.
   Delivered offline with an exact owned, cancellable native dialog
   ([record](changes/archive/windows-first-run-stop.md)); physical check pending.
+  Current implementation (superseded direction for G/F11 below):
   Compatible resets to the default catalog then disables the
   OS-conflicting physical chords, including Win+G/F11, inventing no
   replacements. Per-binding Keep/Disable/Rebind with separate directional
@@ -1465,6 +1466,26 @@ platform API behavior.
   unverified; Compatible disables known conflicts only, with no conflict-free
   claim. Test-needed exact-owner `resize --direction DIR --mode MODE` control
   is also tentative; it uses production fences, not injected-hook bypass.
+- Windows Xbox shortcut direction (user-approved 2026-10-16; not yet
+  implemented): Compatible rebinds the tiler actions on Win+G and Win+F11
+  to unused combinations rather than disabling them. General Compatible
+  alternate rule: first try the authentic chord plus Ctrl, only when
+  Windows does not already use the result; Ctrl+Win+Left/Right/D are
+  virtual-desktop counterexamples. Otherwise choose another sensible unused
+  chord. The user verified Ctrl+Win+G does not open Game Bar.
+  Authentic keeps the authentic chords and detects Xbox mode/full-screen
+  experience and Game Bar as configuration conflicts in the existing
+  warning/action-required surfaces, recommending disabling Xbox mode and
+  removing Game Bar. Prefer per-conflict (or all) resolve actions only where
+  safe and reversible through an official setting, per-user value or standard
+  uninstall/official Settings flow. Game safety and users' capture/recording
+  needs win; no silent OS changes. Game Bar's own shortcut editor only adds
+  shortcuts; PowerToys remapping did not suppress them (user tests).
+  [Research/proposal](research/windows-port/xbox-shortcut-conflicts.md)
+  proposes Ctrl+Win+G / Ctrl+Win+F11, supported Settings links and package
+  presence facts, with Xbox enabled-state detection still unresolved.
+  Exact chords, unknown-state handling, registry/uninstall automation and
+  resolve UX are not selected by this record; review before implementation.
 - KDE staged controls (user 2026-10-08): the unified Settings page stages
   Keep/Disable and Authentic/Compatible choices (see the shortcut catalog in
   `kwin/native-effect/shortcutreconciler.cpp`: `shortcutProjectCatalog` and

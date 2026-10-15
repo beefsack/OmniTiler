@@ -129,6 +129,13 @@ decisions of 2026-09-24 are under
   shortcut settings only add shortcuts; PowerToys Keyboard Manager remapping
   did not suppress them (user tests 2026-10-16). Research resolve actions and
   proposed Compatible chords for user review before implementation.
+  [Research and proposal](research/windows-port/xbox-shortcut-conflicts.md)
+  delivered 2026-10-16: float `Ctrl+Win+G`, fullscreen `Ctrl+Win+F11`
+  proposed, no default-catalog or documented Windows-list collision found;
+  Ctrl+Win+F11 Xbox nonactivation pending. Recommend official Settings
+  navigation and current-user package-presence query; documented Xbox
+  enabled-state getter not established. Registry writes/direct uninstall not selected; exact
+  alternates, unknown-state warning semantics and resolve UX await review.
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later
