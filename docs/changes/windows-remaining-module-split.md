@@ -213,3 +213,54 @@ Row-22 acceptance review: `tests.rs` 728/19, `core_tests.rs`
 the suite output. No concrete issue: the inline-`mod native` child
 resolved correctly and now becomes an ordinary directory module with
 identical paths.
+
+## Production split (row 26)
+
+`render_pump/mod.rs` (2,286) becomes `mod.rs` (64) plus three role
+leaves plus a `native` directory module, every production file under
+the 1,500-line soft cap. No behavior change: whole-item moves,
+`present`/`fake` bodies byte-identical to the staged parent slices
+with header-only `use super::*`; `render_core` identical modulo the
+one necessary visibility widening below; `native/mod.rs` identical
+modulo the one-level dedent plus seven rustfmt joins (four
+use/signature joins, the `resolve_anchor` filter closure, the spawn
+closure, the `pump_messages` import list; whitespace-only token
+delta, 9 insertions / 27 deletions). One necessary visibility
+widening: `hide_backoff` becomes `pub(super)` for the sibling
+`tests` module (2 sites, via a `#[cfg(test)]`-gated parent import so
+production builds stay warning-free); `tag_proven`/`span_us_since`
+stay file-local. Zero `pub(crate)`, no `include!`. All
+`crate::render_pump` paths preserved through explicit parent `pub
+use` (`native` stays a `pub mod` directory module, so
+`render_pump::native::{RenderFailEvent, RenderHandle, RenderSignals}`
+resolve unchanged); `render_pump::tests` (28 tests) and
+`render_pump::native::native_tests` (3 tests) untouched.
+
+- `present.rs` 136: `PresentOutcome` plus impl, `FreshQuery`,
+  `ResolvedAnchor` plus impl, the `Present` seam trait.
+- `render_core.rs` 652: `RenderCore` plus impl (step/hide/ack,
+  border/underlay/preview presents, snapshot sync) plus
+  `hide_backoff`/`tag_proven`/`span_us_since`.
+- `fake.rs` 309: scripted `FakePresent` plus impl and its `Present`
+  impl (real portable painters for checksums).
+- `native/mod.rs` 1,118: `NativePresent` backend plus probes,
+  `Present` impl, `RenderFailEvent`/`RenderSignals`, wake helpers,
+  `RenderHandle` spawn/wait/stop, `RenderWait` classification,
+  `pump_messages`, `run_renderer`; `native_tests` resolves unchanged.
+- `mod.rs` 64: module docs, shared imports (consumed by the leaves
+  and `tests` via `super::*`), readiness/stop/finish consts, five
+  `mod` decls, explicit `pub use` re-exports, `#[cfg(test)] mod
+  tests`.
+
+Gates: locked four-package build (zero warnings), same-package
+tests, workspace fmt check, strict all-target clippy,
+`git diff --check`; suite 2,115 / 0 / 1.
+
+Row-22 acceptance review: `tests.rs` 822/28, `native_tests.rs`
+88/3, zero `#[test]` in the parent, both qualified paths
+(`render_pump::tests`, `render_pump::native::native_tests`)
+unchanged in the suite output. Proofs re-ran raw-byte in this row:
+parent byte-exact outside the two test regions plus the `mod`
+declarations; `tests.rs` exact modulo one rustfmt signature join
+(`underlay_frame`); `native_tests.rs` byte-exact. No concrete
+issue.
