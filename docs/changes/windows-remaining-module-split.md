@@ -71,16 +71,55 @@ file-backed module, keeping module paths identical.
   largest test ~208). No helper-extraction row is needed; later rows
   are whole-item moves only.
 
+## Production split (row 23)
+
+`settings/mod.rs` (3,032) becomes `mod.rs` (86) plus eight role
+leaves, every production file under the 1,500-line soft cap. No
+behavior change: whole-item moves, 8/8 leaf bodies byte-identical to
+the staged parent slices modulo one rustfmt blank-line join at the
+`effective` excision junction (the shared snapkey import stays in
+`mod.rs`) and the header-only `use super::*` per leaf (`chords` is
+import-free, matching the owner/snapkey precedent). Zero visibility
+changes: no `pub(super)`/`pub(crate)` added, all struct fields were
+already `pub`, all cross-file names resolve through the parent
+re-exports. All 113 `crate::settings` paths preserved through
+explicit parent `pub use`; `settings::tests` (33 tests) untouched.
+
+- `schema.rs` 604: schema consts, `SettingsError`, option
+  vocabularies plus accessors, `CoreSettings`/`BorderSettings`/
+  `UnderlaySettings`/`KeyboardSettings`/`MouseSettings`/
+  `WorkspaceSettings`, `BindingState`/`BindingSetting`/`Settings`
+  plus serde defaults.
+- `chords.rs` 166: `Chord`, VK constants, `vk_for_key_name`,
+  parse/render/lock-chord.
+- `catalog.rs` 1,374: binding family/history/op/toggle/launch
+  vocabulary, `BindingDef`, row tables plus builders,
+  conflict/advisory and arm helpers.
+- `effective.rs` 226: `EffectiveBinding`, `effective_bindings`,
+  `build_remap`, `build_disabled`.
+- `validation.rs` 248: `gap_valid`, `validate_settings` plus
+  border/underlay/binding validators.
+- `presets.rs` 130: `Preset`, `apply_preset`,
+  `compatible_disabled_ids`.
+- `persistence.rs` 188: file path, validated load, `LoadOutcome`,
+  atomic save, `LiveSettings`/`PollOutcome`/`poll_for_change`.
+- `tile_bridge.rs` 66: `tile_options_from_settings`,
+  `retained_gaps_match`.
+- `mod.rs` 86: module docs, shared imports (incl. the snapkey
+  remap/disable import both `effective` and `tests` consume via
+  `super::*`), eight `mod` decls, explicit `pub use` re-exports,
+  `#[cfg(test)] mod tests`.
+
+Gates: locked four-package build (zero warnings), same-package
+tests, workspace fmt check, strict all-target clippy,
+`git diff --check`; suite 2,115 / 0 / 1.
+
 ## Production map (next rows)
 
 Whole-item responsibility moves into directory modules with
 descriptive role names; visibility changes only as needed to compile.
 
-- `settings/mod.rs` (3,032): schema structs plus defaults;
-  chord grammar (`Chord`, parse/render/vk lookup, lock predicate);
-  binding vocabulary plus catalog builders; effective
-  bindings/remap/disabled builders; validation; presets; file
-  persistence plus live poll; tile-options bridge.
+- `settings/mod.rs` DONE row 23 (see above).
 - `tiling/mod.rs` (3,929): geometry/bounds normalization plus
   size-hint conversion; classification (`classify`,
   `classify_focus`, allowlist/scope); float focus, half-snap,
