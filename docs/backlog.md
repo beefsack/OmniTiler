@@ -829,27 +829,29 @@ decisions of 2026-09-24 are under
     anchored left of the system tray: it may overlap app icons when full but
     never the tray, and never shrinks or hides due to crowding. Enabled by
     default with an opt-out setting; users avoiding overlap use the tray
-    number plus menu pager. [Live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14):
-    tray-adjacent moved less than the measured legacy app-list edge. [Live spike 2](research/windows-port/taskbar-workspace-indicator.md#live-spike-2)
-    demonstrated manifested layered-GDI child pixels, injected cell clicks,
-    one real app icon and borderless-helper occlusion; later parenting/pixel
-    checks did not reproduce the result. [Live spike 3](research/windows-port/taskbar-workspace-indicator.md#live-spike-3):
-    0/10 fresh-process host passes (raw `SetParent` error 87, direct child creation
-    error 5); corrected layered pixel control passed, but matched PMv2 contexts
-    and child-style-before-parent still failed. Root cause unknown; BLOCKED on
-    repeatability, no product host selected. Exact prototype cleanup verified;
-    two-icon/Calculator, Start/app-button clicks, sustained churn/redraw,
-    fullscreen/cost revalidation and product recovery remain open, alongside
-    secondary taskbars, real app-content bounds, auto-hide, alignment, DPI changes
-    and game safety. Product needs an embedded Win8+ compatibility/PMv2 manifest
-    and owner snapshot (per-output list/active id, saved rects/HWND identities,
-    urgency). New `pager.rs`/`pager_sys.rs` estimate 800-1,400 Windows-specific
-    LOC once hosting works (tests/shared core separate), not `tiling_sys.rs`.
+    number plus menu pager. MVP delivered 2026-10-16 on the primary bottom
+    taskbar: numbered active/empty cells, real scaled window miniatures,
+    click-to-switch and live refresh. Tentative external nonactivating
+    topmost-overlay route bypasses unresolved child-parenting failures;
+    no injection, AppBar, placeholder icons or child manifest dependency.
+    Default-on Settings opt-out, fresh tray-left geometry, DPI-scaled cells
+    and fonts, retry/TaskbarCreated recovery, safe topmost reassert and
+    fullscreen/elevation hiding are implemented. Owned-window native captures,
+    two-way pager selection, create/send/close refresh, managed-fullscreen
+    hide/return, synthetic TaskbarCreated and exact cleanup passed
+    ([record](changes/windows-taskbar-pager.md),
+    [research](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
+    Remaining: secondary taskbar tray anchors and physical multi-output;
+    actual Explorer restart; physical mouse/game/anti-cheat acceptance;
+    DPI/auto-hide reconfiguration; non-bottom taskbars; whole-strip workspace
+    overcapacity; accessibility/theme/cost checks. Live opt-out remains
+    untested against shared settings (offline covered). Icons omitted;
+    urgency acquisition remains separate. Secondary/non-bottom/invalid
+    geometry currently refuses safely and logs, never guesses a tray edge.
     Stopgap delivered 2026-10-15: tray icon number plus in-menu workspace pager
     with single-output native acceptance
     ([record](changes/archive/windows-tray-menu-pager.md)); no popup, no click
-    rebinding. The in-taskbar visual pager above remains separate research,
-    including the Win8+/PMv2 manifest question.
+    rebinding. The visual pager now complements this stopgap.
   - D27 5a (user 2026-10-14): hidden-window urgency marks its workspace urgent
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product

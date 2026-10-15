@@ -632,10 +632,20 @@ platform API behavior.
     never the tray, and never shrinks or hides due to crowding. It is enabled
     by default with an opt-out setting; users avoiding overlap use the tray
     number plus menu pager.
-    Taskbar-child embedding remains an unselected feasibility candidate:
-    [live spikes](research/windows-port/taskbar-workspace-indicator.md#live-spike-2026-10-14)
-    progressed from invisible plain GDI to visible manifested layered GDI,
-    but repeatability and remaining interaction/recovery checks are unresolved.
+    Tentative implementation 2026-10-16: external nonactivating topmost
+    tool-window overlay over the taskbar, not an Explorer child. Native
+    product rendering, click-to-switch, live window/workspace refresh and
+    managed-fullscreen hide/return passed on one output. Child-parenting
+    failures remain unexplained but no longer block this route
+    ([evidence](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
+    Default-on `core.taskbar_pager` hot-applies through Settings; the tray
+    icon/menu stays. Primary tray geometry is read every pump, with DPI-scaled
+    cells/fonts, ongoing shell rediscovery/retry and safe topmost reassertion.
+    Suppression also drops queued clicks, including managed fullscreen.
+    Icons are omitted in this MVP. Secondary tray anchors and non-bottom
+    taskbars refuse unknown geometry rather than guessing; physical
+    multi-output, games, actual Explorer restart, DPI/auto-hide changes and
+    physically over-wide workspace strips remain open, not accepted evidence.
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,

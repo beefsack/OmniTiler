@@ -141,6 +141,12 @@ pub(super) fn run_tile_loop(
         .as_ref()
         .map(|live| crate::settings::build_disabled(&live.settings))
         .unwrap_or_default();
+    // Taskbar pager starts from the last-good saved opt-out (default on);
+    // live edits hot-apply later through the settings lane.
+    let startup_pager = settings_live
+        .as_ref()
+        .map(|live| live.settings.core.taskbar_pager)
+        .unwrap_or(true);
     let mut state = TileLoop {
         engine: Engine::new(),
         owner: owner.clone(),
@@ -197,6 +203,18 @@ pub(super) fn run_tile_loop(
         member_tags: std::collections::BTreeMap::new(),
         active_output: String::new(),
         last_genuine_output: None,
+        taskbar_pager: startup_pager,
+        pager_overlays: None,
+        pager_clicks: Arc::new(Mutex::new(Vec::new())),
+        pager_served: Vec::new(),
+        pager_retry_at: None,
+        pager_revalidate_at: Instant::now(),
+        pager_areas_fp: 0,
+        pager_primary: None,
+        pager_secondaries: Vec::new(),
+        pager_live: HashMap::new(),
+        pager_suppress_last: None,
+        pager_refusals: HashMap::new(),
         workspace_proof: false,
         maximize_admission_attempted: HashSet::new(),
         born_keep_overlay: BTreeSet::new(),

@@ -1,6 +1,7 @@
 use super::*;
 
 use super::owner_work::OwnerWorkGuard;
+use super::pager_host::poll_pager_select;
 
 // Active-tick phases for the tile loop: slow poll, CLI wakes, the idle gate,
 // suspend/resume, gesture settle and dispatch, plus the end-of-turn commit.
@@ -308,6 +309,7 @@ pub(super) fn run_active_tick(
         // same way.
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
         tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
+        poll_pager_select(state, me, store, dir, &fulls, areas);
         poll_resize_cli_request(state, me, dir, &fulls, areas);
         state.gesture_before.clear();
         state.active.clear();
@@ -641,6 +643,7 @@ pub(super) fn run_active_tick(
             maintenance_quiet = true;
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
+            poll_pager_select(state, me, store, dir, &fulls, areas);
             poll_resize_cli_request(state, me, dir, &fulls, areas);
         } else {
             if !snap_events.is_empty() {
@@ -672,6 +675,7 @@ pub(super) fn run_active_tick(
             }
             poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
             tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
+            poll_pager_select(state, me, store, dir, &fulls, areas);
         }
     } else {
         // A just-ended managed gesture settles before keyboard
@@ -734,6 +738,7 @@ pub(super) fn run_active_tick(
         gesture_tick(state, me, &fulls, areas, &ended);
         poll_workspace_cli_request(state, me, store, dir, &fulls, areas);
         tray_select::poll_tray_select(state, me, store, dir, &fulls, areas, tray);
+        poll_pager_select(state, me, store, dir, &fulls, areas);
     }
     // Post-mutation border refresh: reconciliation may have moved the
     // target this tick, so re-read the fresh frame instead of leaving

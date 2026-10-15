@@ -1,6 +1,7 @@
 use super::*;
 
 use super::directional_resolution::output_for_rect;
+use super::pager_host::dispatch_verified_select;
 
 // Focused-output pager select (tray stopgap, decided 2026-10-15): one
 // drained pager pick selects that exact workspace through the existing
@@ -128,92 +129,7 @@ pub(super) fn poll_tray_select(
     }
     let output = request.output.clone();
     let target = request.workspace.clone();
-    state.workspaces.ensure_output(&output);
-    let mut skipped: Vec<(String, String)> = Vec::new();
-    let mut retained: Vec<RetainedRow> = Vec::new();
-    let Some(mut observed) = state.observe(me, fulls, &mut skipped, &mut retained) else {
-        log_json_at(
-            &state.log_path,
-            workspace_log(state, tick, "select", index, "tray", "observation-failed"),
-        );
-        return;
-    };
-    publish_managed(state, me, &observed, &retained);
-    ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
-    clear_maximize_at_admission(state, me, &retained);
-    workspace_close_cleanup(state);
-    let ctx = ActionCtx {
-        correlation: format!("act-{tick}"),
-        tick,
-        queued_at: start,
-        start,
-    };
-    // REQ-WS-09 departure memory for the tray path: the live foreground
-    // resolves through the same `snap_origins` map the hook binds chords
-    // against (never a carried HWND).
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
-    if let Some(source_id) = state.workspaces.active_id(&output)
-        && let Some(origin) = state.snap_origins.get(&foreground_hwnd).cloned()
-        && !origin.token.is_empty()
-        && let Some(token) = remember_select_departure(
-            state,
-            &origin,
-            &output,
-            &source_id,
-            foreground_hwnd,
-            &observed,
-            &retained,
-        )
-    {
-        log_json_at(
-            &state.log_path.clone(),
-            serde_json::json!({"event":"select-departure","correlation":ctx.correlation,"window":token}),
-        );
-    }
-    let effect = workspace_do_select(
-        state,
-        me,
-        store,
-        dir,
-        fulls,
-        areas,
-        &mut observed,
-        &output,
-        &target,
-        &ctx,
-        None,
-        false,
-        false,
-    );
-    log_json_at(
-        &state.log_path,
-        workspace_log(state, tick, "select", index, "tray", effect.outcome),
-    );
-    log_workspace_action(
-        state,
-        &state.log_path.clone(),
-        &ActionLine {
-            ctx: &ctx,
-            op: "select",
-            index,
-            edge: "tray",
-            outcome: effect.outcome,
-            focus: effect.focus,
-            timings: &ActionTimings {
-                transition_ms: effect.transition_ms,
-                observation_ms: effect.observation_ms,
-                source_plan_ms: 0,
-                target_plan_ms: effect.plan_ms,
-                source_geometry_ms: 0,
-                target_geometry_ms: effect.geometry_ms,
-                hide_ms: effect.hide_ms,
-                reveal_ms: effect.reveal_ms,
-                focus_ms: effect.focus_ms,
-            },
-            source_workspace: &effect.source_workspace,
-            target_workspace: &effect.target_workspace,
-            source: None,
-            target: effect.geometry.as_ref(),
-        },
+    dispatch_verified_select(
+        state, me, store, dir, fulls, areas, &output, &target, index, tick, start, "tray",
     );
 }

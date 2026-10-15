@@ -520,6 +520,44 @@ struct TileLoop {
     /// Updated only from a known real foreground monitor; `None` until the
     /// first one resolves.
     last_genuine_output: Option<String>,
+    /// Taskbar pager opt-out (settings `core.taskbar_pager`, default on).
+    /// Live edits hot-apply through the settings lane; proof owners never
+    /// page regardless.
+    taskbar_pager: bool,
+    /// Live overlay owner (normal owner only). Created lazily on the first
+    /// safe pump; RAII teardown covers every exit path.
+    pager_overlays: Option<crate::pager_sys::PagerOverlays>,
+    /// Loop-owned pager click queue: overlay windows push here, the tick
+    /// dispatch drains once. Owned here (not by the overlays) so suppression
+    /// drops queued clicks even with no windows present, and tests can stage
+    /// clicks with no native windows at all.
+    pager_clicks: Arc<Mutex<Vec<crate::tray_pager::SelectScope>>>,
+    /// Outputs with a currently served strip (last safe present): clicks
+    /// naming any other output refuse as not-served, never dispatched.
+    pager_served: Vec<String>,
+    /// Owner-registration retry gate for the pager overlays (capped, forever).
+    pager_retry_at: Option<Instant>,
+    /// Slow secondary-taskbar enumeration deadline plus the last topology
+    /// fingerprint. The primary bar is re-read every pump; secondaries only
+    /// here (they only feed refusal logging, never positions).
+    pager_revalidate_at: Instant,
+    pager_areas_fp: u64,
+    /// Cached primary taskbar facts from the last pump (fresh, <=100ms) and
+    /// cached secondaries from the last slow revalidate.
+    pager_primary: Option<crate::pager::TaskbarFacts>,
+    pager_secondaries: Vec<crate::pager::TaskbarFacts>,
+    /// Live identity-verified pager frames per managed member key, refreshed
+    /// on every observation alongside `overlay_now` (visible members plus
+    /// retained fresh frames; hidden members fall back to their saved
+    /// tile-slot/float snapshots in the portable resolver). Rebuilt per pass,
+    /// so stale entries never survive their observation.
+    pager_live: HashMap<crate::workspace::WindowKey, Rect>,
+    /// Last pager suppression outcome (`None` while showing): change-only
+    /// `pager-suppress` logging.
+    pager_suppress_last: Option<String>,
+    /// Last per-output pager refusal reason by device key: change-only
+    /// `pager-refused` logging, never guessed positions.
+    pager_refusals: HashMap<String, String>,
     /// True only for the `workspace-proof` command: workspace hides are
     /// allowed, but solely for frozen-allowlist helpers verified fresh via
     /// `verify_proof_owned` before every write. Normal `tile` allows
@@ -921,6 +959,8 @@ mod history;
 mod action_context;
 
 mod output_sync;
+
+mod pager_host;
 
 mod cli_resize;
 

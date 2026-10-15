@@ -43,6 +43,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_taskbar_pager() -> bool {
+    true
+}
+
 /// Closed store error vocabulary. `Invalid` carries the bounded reason; the
 /// file bytes are never modified on any error path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +312,11 @@ pub struct CoreSettings {
     pub mouse: MouseSettings,
     #[serde(default)]
     pub workspace: WorkspaceSettings,
+    /// Taskbar pager (per-output workspace strip overlaid in the taskbar).
+    /// Additive schema-v1 field: missing defaults on; the Settings window
+    /// surfaces the opt-out and live edits hot-apply.
+    #[serde(default = "default_taskbar_pager")]
+    pub taskbar_pager: bool,
 }
 
 fn default_inner_gap() -> i32 {
@@ -332,6 +341,7 @@ impl Default for CoreSettings {
             keyboard: KeyboardSettings::default(),
             mouse: MouseSettings::default(),
             workspace: WorkspaceSettings::default(),
+            taskbar_pager: default_taskbar_pager(),
         }
     }
 }

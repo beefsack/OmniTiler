@@ -10,6 +10,9 @@ pub mod model;
 pub mod mouse_snap;
 #[cfg(windows)]
 pub mod native;
+pub mod pager;
+#[cfg(windows)]
+pub mod pager_sys;
 pub mod product_hide;
 pub mod render_handoff;
 pub mod render_pump;

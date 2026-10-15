@@ -19,6 +19,7 @@ fn defaults_match_kde_parity() {
     assert!(!settings.core.keyboard.allow_win_l);
     assert!(settings.core.mouse.snap_prevention);
     assert!(settings.core.workspace.default_tiled);
+    assert!(settings.core.taskbar_pager);
     assert_eq!(settings.core.same_axis_move, SAME_AXIS_MOVE_GROUP);
     assert_eq!(
         settings.core.same_axis_move_mode(),
@@ -48,6 +49,32 @@ fn defaults_match_kde_parity() {
         tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal
     );
     assert!(validate_settings(&settings).is_ok());
+}
+
+#[test]
+fn taskbar_pager_defaults_on_backfills_and_persists_opt_out() {
+    // Additive schema-v1 field: older files without the key deserialize on
+    // and validate; an explicit false round-trips (the opt-out persists).
+    assert!(Settings::default().core.taskbar_pager);
+    let settings: Settings =
+        serde_json::from_str(r#"{"v":1,"core":{}}"#).expect("missing key parses");
+    assert!(settings.core.taskbar_pager);
+    assert!(validate_settings(&settings).is_ok());
+    assert!(crate::pager::pager_enabled(&settings));
+    let doc = serde_json::json!({
+        "v": SETTINGS_SCHEMA_VERSION,
+        "revision": 1,
+        "core": {"taskbar_pager": false},
+        "bindings": {}
+    });
+    let settings: Settings = serde_json::from_value(doc).expect("explicit false deserializes");
+    assert!(!settings.core.taskbar_pager);
+    assert!(validate_settings(&settings).is_ok());
+    assert!(!crate::pager::pager_enabled(&settings));
+    let round_tripped: Settings =
+        serde_json::from_str(&serde_json::to_string(&settings).expect("serializes"))
+            .expect("round-trips");
+    assert_eq!(round_tripped, settings);
 }
 
 #[test]

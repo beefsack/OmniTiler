@@ -89,6 +89,8 @@ pub const ID_MIGRATION_REFILL_MRU: u32 = 140;
 pub const ID_WORKSPACE_MODE_LOCAL: u32 = 141;
 pub const ID_WORKSPACE_MODE_GLOBAL: u32 = 142;
 pub const ID_WORKSPACE_MODE_SHARED: u32 = 143;
+/// Taskbar pager opt-out checkbox (default on).
+pub const ID_TASKBAR_PAGER: u32 = 144;
 
 const ESCAPE_VK: usize = 0x1B;
 
@@ -551,6 +553,7 @@ fn refresh_all(app: &App) {
     set_checked(app.ctl(ID_ALLOW_WIN_L), core.keyboard.allow_win_l);
     set_checked(app.ctl(ID_DEFAULT_TILED), core.workspace.default_tiled);
     set_checked(app.ctl(ID_DEFAULT_FLOATING), !core.workspace.default_tiled);
+    set_checked(app.ctl(ID_TASKBAR_PAGER), core.taskbar_pager);
     // R-MOV-03 two-choice control: functional labels only; the WM
     // reference lives in the native radio tooltips, not in visible text.
     let swap = same_axis_swap_selected(&app.work);
@@ -658,6 +661,9 @@ fn collect_draft(app: &mut App) -> Result<Settings, String> {
     // New-workspace default radios: exactly one is checked after any load;
     // a checked Floating wins, otherwise the default stays tiled.
     draft.core.workspace.default_tiled = !checked(app.ctl(ID_DEFAULT_FLOATING));
+    // Taskbar pager opt-out (default on): the checkbox stages the bool
+    // directly; hot-applies on the next owner pump.
+    draft.core.taskbar_pager = checked(app.ctl(ID_TASKBAR_PAGER));
     // R-MOV-03: the swap radio stages the exact swap token, otherwise the
     // exact group token; only these two values can reach validation.
     apply_same_axis_selection(&mut draft, checked(app.ctl(ID_SAME_AXIS_SWAP)));
@@ -1269,7 +1275,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
 
     let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     let client_w = px(924, dpi);
-    let client_h = px(1076, dpi);
+    let client_h = px(1088, dpi);
     let mut rect = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
@@ -1377,7 +1383,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_PRESET_AUTHENTIC, class: "BUTTON", text: "Authentic".to_owned(), x: 632, y: 162, w: 132, h: 28, style: push | tab },
         Ctl { id: ID_PRESET_COMPATIBLE, class: "BUTTON", text: "Compatible".to_owned(), x: 772, y: 162, w: 132, h: 28, style: push | tab },
         Ctl { id: ID_PRESET_EXPLAIN, class: "STATIC", text: "Authentic restores KDE defaults for every binding (Win+L opt-in preserved). Compatible disables known OS-conflicting chords only (including Win+Ctrl+Left/Right); every other chord is kept, including ones with unknown Windows ownership (letter moves, sticky, Win+Ctrl+Tab/letters/Up/Down, relative-send follows, keyboard resize Alt chords). Kept does not mean conflict-free. Stay rows and workspace-migration rows stay unbound under both presets. No replacement defaults are invented; manual rebind stays available.".to_owned(), x: 632, y: 196, w: 272, h: 174, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "New workspaces".to_owned(), x: 10, y: 388, w: 904, h: 88, style: group },
+        Ctl { id: 0, class: "BUTTON", text: "New workspaces".to_owned(), x: 10, y: 388, w: 904, h: 100, style: group },
         Ctl { id: ID_DEFAULT_TILED, class: "BUTTON", text: "Tiled".to_owned(), x: 20, y: 410, w: 140, h: 24, style: radio_first | tab },
         Ctl { id: ID_DEFAULT_FLOATING, class: "BUTTON", text: "Floating".to_owned(), x: 170, y: 410, w: 140, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "New workspaces start tiled or floating. Applies to workspaces created after Apply; existing workspaces keep their session tiling. Only the default is saved.".to_owned(), x: 320, y: 408, w: 584, h: 30, style: label },
@@ -1385,34 +1391,35 @@ pub fn cmd_settings() -> Result<String, DynError> {
         Ctl { id: ID_WORKSPACE_MODE_GLOBAL, class: "BUTTON", text: "Global unique".to_owned(), x: 200, y: 442, w: 160, h: 24, style: radio | tab },
         Ctl { id: ID_WORKSPACE_MODE_SHARED, class: "BUTTON", text: "Shared".to_owned(), x: 370, y: 442, w: 100, h: 24, style: radio | tab },
         Ctl { id: 0, class: "STATIC", text: "Scope (restart required): saved immediately; the running owner keeps its startup scope until restart.".to_owned(), x: 480, y: 440, w: 424, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Same-axis move".to_owned(), x: 10, y: 484, w: 904, h: 56, style: group },
-        Ctl { id: ID_SAME_AXIS_GROUP, class: "BUTTON", text: "Group with neighbor".to_owned(), x: 20, y: 506, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_SAME_AXIS_SWAP, class: "BUTTON", text: "Swap with neighbor".to_owned(), x: 230, y: 506, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Same-axis moves apply to subsequent moves only; existing trees keep their layout until the next move.".to_owned(), x: 440, y: 504, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Born maximized".to_owned(), x: 10, y: 548, w: 904, h: 56, style: group },
-        Ctl { id: ID_BORN_MAX_TILE, class: "BUTTON", text: "Tile on launch".to_owned(), x: 20, y: 570, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_BORN_MAX_OVERLAY, class: "BUTTON", text: "Keep maximized overlay".to_owned(), x: 230, y: 570, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Born-maximized admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 568, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Fixed-size admission".to_owned(), x: 10, y: 612, w: 904, h: 56, style: group },
-        Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 634, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 634, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 632, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Source workspace after migration".to_owned(), x: 10, y: 676, w: 904, h: 56, style: group },
-        Ctl { id: ID_MIGRATION_REFILL_LAST, class: "BUTTON", text: "Last remaining workspace".to_owned(), x: 20, y: 698, w: 210, h: 24, style: radio_first | tab },
-        Ctl { id: ID_MIGRATION_REFILL_MRU, class: "BUTTON", text: "Most recently used workspace".to_owned(), x: 240, y: 698, w: 220, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Source refill applies to subsequent migrations only; migrated workspaces keep their state.".to_owned(), x: 470, y: 696, w: 434, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (103 rows)".to_owned(), x: 10, y: 740, w: 904, h: 268, style: group },
-        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 762, w: 540, h: 230, style: list_style | tab },
-        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 762, w: 324, h: 100, style: info_style },
-        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 866, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 866, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 898, w: 150, h: 24, style: edit_style | tab },
-        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 896, w: 120, h: 26, style: push | tab },
-        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, workspace migration Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 926, w: 324, h: 74, style: label },
-        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 1016, w: 540, h: 60, style: label },
-        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 1016, w: 100, h: 30, style: defpush | tab },
-        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 1016, w: 100, h: 30, style: push | tab },
-        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 1016, w: 100, h: 30, style: push | tab },
+        Ctl { id: ID_TASKBAR_PAGER, class: "BUTTON", text: "Taskbar pager (per-output workspace strip, default on)".to_owned(), x: 20, y: 468, w: 560, h: 20, style: check | tab },
+        Ctl { id: 0, class: "BUTTON", text: "Same-axis move".to_owned(), x: 10, y: 496, w: 904, h: 56, style: group },
+        Ctl { id: ID_SAME_AXIS_GROUP, class: "BUTTON", text: "Group with neighbor".to_owned(), x: 20, y: 518, w: 200, h: 24, style: radio_first | tab },
+        Ctl { id: ID_SAME_AXIS_SWAP, class: "BUTTON", text: "Swap with neighbor".to_owned(), x: 230, y: 518, w: 200, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Same-axis moves apply to subsequent moves only; existing trees keep their layout until the next move.".to_owned(), x: 440, y: 516, w: 464, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Born maximized".to_owned(), x: 10, y: 560, w: 904, h: 56, style: group },
+        Ctl { id: ID_BORN_MAX_TILE, class: "BUTTON", text: "Tile on launch".to_owned(), x: 20, y: 582, w: 200, h: 24, style: radio_first | tab },
+        Ctl { id: ID_BORN_MAX_OVERLAY, class: "BUTTON", text: "Keep maximized overlay".to_owned(), x: 230, y: 582, w: 200, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Born-maximized admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 580, w: 464, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Fixed-size admission".to_owned(), x: 10, y: 624, w: 904, h: 56, style: group },
+        Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 646, w: 200, h: 24, style: radio_first | tab },
+        Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 646, w: 200, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 644, w: 464, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Source workspace after migration".to_owned(), x: 10, y: 688, w: 904, h: 56, style: group },
+        Ctl { id: ID_MIGRATION_REFILL_LAST, class: "BUTTON", text: "Last remaining workspace".to_owned(), x: 20, y: 710, w: 210, h: 24, style: radio_first | tab },
+        Ctl { id: ID_MIGRATION_REFILL_MRU, class: "BUTTON", text: "Most recently used workspace".to_owned(), x: 240, y: 710, w: 220, h: 24, style: radio | tab },
+        Ctl { id: 0, class: "STATIC", text: "Source refill applies to subsequent migrations only; migrated workspaces keep their state.".to_owned(), x: 470, y: 708, w: 434, h: 30, style: label },
+        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (103 rows)".to_owned(), x: 10, y: 752, w: 904, h: 268, style: group },
+        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 774, w: 540, h: 230, style: list_style | tab },
+        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 774, w: 324, h: 100, style: info_style },
+        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 878, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 878, w: 100, h: 26, style: push | tab },
+        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 910, w: 150, h: 24, style: edit_style | tab },
+        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 908, w: 120, h: 26, style: push | tab },
+        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, workspace migration Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 938, w: 324, h: 74, style: label },
+        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 1028, w: 540, h: 60, style: label },
+        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 1028, w: 100, h: 30, style: defpush | tab },
+        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 1028, w: 100, h: 30, style: push | tab },
+        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 1028, w: 100, h: 30, style: push | tab },
     ];
     // Group/label/statics carry id 0 and skip automation lookup. Groupboxes
     // are pinned behind every sibling (see below); their handles ride here.
@@ -1821,12 +1828,12 @@ mod tests {
 
     #[test]
     fn dialog_fits_1380_work_area_at_dpi120() {
-        // Lowest control edge is the status line (y1016 h60); it must sit
-        // inside the 1076-high client area, which itself must fit a
-        // 1380-high work area at DPI 120 (px(1076, 120) == 1345, leaving room
+        // Lowest control edge is the status line (y1028 h60); it must sit
+        // inside the 1088-high client area, which itself must fit a
+        // 1380-high work area at DPI 120 (px(1088, 120) == 1360, leaving room
         // for the non-client frame on top).
-        assert_eq!(super::px(1076, 120), 1345);
-        assert!(super::px(1016 + 60, 120) <= super::px(1076, 120));
-        assert!(super::px(1076, 120) <= 1380);
+        assert_eq!(super::px(1088, 120), 1360);
+        assert!(super::px(1028 + 60, 120) <= super::px(1088, 120));
+        assert!(super::px(1088, 120) <= 1380);
     }
 }

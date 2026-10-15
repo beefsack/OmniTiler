@@ -2,7 +2,9 @@
 
 Initial research checked 2026-10-14; no production code or host settings changed.
 Later product decisions and [live evidence](#live-spike-2026-10-14) supersede
-the initial tray+popup/AppBar recommendations below.
+the initial tray+popup/AppBar recommendations below. The
+[product overlay](#product-overlay-2026-10-16) now supersedes the child-host
+implementation blocker; child-parenting failures themselves remain unexplained.
 
 ## Local baseline
 
@@ -480,6 +482,9 @@ one scaled-DPI primary output, ordinary integrity, no secondary taskbar.
 
 ### Live spike 3
 
+Historical child-host blocker; the external product overlay below does not
+depend on resolving it.
+
 **No-go for product implementation: 0/10 fresh-process taskbar-host passes;
 the native failure is attributed, but its root cause remains unknown.** Checked
 2026-10-15 on physical Windows 11, ordinary medium integrity, at the existing
@@ -594,6 +599,70 @@ or servicing-change cause is established.
   `4b62e63178f552f5b2add68ed6151bbb5c3b27915921d7e6e1edc93b12f058d7`.
   Raw source, per-cycle JSON, composed captures and independent cleanup checks
   remain in temporary evidence outside the repository. No product code changed.
+
+## Product overlay 2026-10-16
+
+Tentative implementation choice: external, process-owned
+`WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE` popup, positioned over
+the taskbar with GDI painting. No Explorer parenting, injection, AppBar,
+placeholder icons or shell mutation. Unlike the child-layered candidate, this
+route needs no Windows-8 child-window compatibility manifest; runtime PMv2 is
+verified before geometry and window creation.
+
+- A bounded overlay-only probe passed native active/empty/border pixel samples,
+  hit testing, unchanged foreground, tray exclusion and exact destruction.
+  An initial capture failed because of virtualized coordinates; repeating in
+  physical PMv2 coordinates passed. `SRCCOPY | CAPTUREBLT` remains required.
+- Production modules are `pager.rs` (portable layout/snapshot/gates),
+  `pager_sys.rs` (native window/GDI lifecycle) and `tiling_sys/pager_host.rs`
+  (owner integration). Workspace selection reuses the existing resolver.
+  All workspace cells and managed window miniatures render without a window
+  count cap; actual observed frames take precedence over stored hidden frames.
+- The primary `TrayNotifyWnd` left edge, taskbar visibility/geometry and DPI
+  are read every pump, not cached for seconds. Cells end two physical pixels
+  left of the tray; app-button crowding never changes the layout. Invalid,
+  off-screen or physically insufficient strip geometry refuses with a log.
+- Settings exposes default-on `core.taskbar_pager`, hot-applied. Cell geometry
+  and fonts scale with DPI; display/settings/DPI broadcasts immediately hide
+  stale pixels before fresh layout. Fullscreen, managed fullscreen, elevated
+  foreground and unreadable safety facts hide the pager and drop queued clicks.
+- Shell discovery/retry is ongoing, with `TaskbarCreated` handling and periodic
+  safe topmost reassertion. Missing Explorer does not permanently disable it.
+  Secondary bars are discovered but refuse `secondary-tray-unproven`: no
+  clock/tray boundary is guessed. Non-bottom taskbars also refuse.
+
+### Product live evidence
+
+Single-output Windows 11, ordinary medium integrity and fractional scaling;
+owned Notepad/Paint windows only, keyboard takeover and Mouse Snap prevention
+disabled. Executable/hash/process identities and scoped baseline/cleanup were
+bound in temporary evidence; no unrelated windows or saved settings changed.
+
+- Captures proved numbered active/empty cells, lighter miniatures and light
+  one-pixel borders, exact tray-left gap and nonactivating tool-window styles.
+- Messages to the owned pager switched both ways through `edge:pager`; native
+  status, hide/reveal and active-colour changes agreed. This proves the window
+  message/dispatch path, not physical mouse delivery.
+- Creating, sending and closing owned windows changed miniature geometry and
+  workspace count live; hidden-workspace cells retained miniatures. Interior
+  pixel samples agreed with independently read real window rectangles.
+- A sustained check across the topmost-reassert interval retained identical
+  pixels/geometry. An owned-window `TaskbarCreated` message retained the pager;
+  Explorer itself was not restarted.
+- Managed fullscreen hid the pager; leaving restored it. Graceful stop and
+  exact-owner emergency stop left no pager, and independent restoration and
+  owned-app cleanup left a clean ledger; saved settings remained unchanged.
+- Locked native gates: 2,134 passed, zero failed, one pre-existing ignored;
+  build, fmt, strict scoped all-target clippy and diff check passed.
+
+Still pending: actual Explorer restart; physical mouse/game/anti-cheat
+acceptance; DPI/auto-hide setting changes; secondary taskbar anchor discovery
+and physical multi-output checks; non-bottom taskbars; very large workspace
+counts exceeding the entire available strip width; accessibility/theme/cost
+measurement. Live opt-out was not attempted against shared saved settings;
+schema, hot-apply and queued-click refusal have offline coverage. Icons are
+omitted, not represented by generic substitutes. See the
+[implementation record](../../changes/windows-taskbar-pager.md).
 
 [taskbar-ext]: https://learn.microsoft.com/en-us/windows/win32/shell/taskbar-extensions
 [win11-specs]: https://www.microsoft.com/en-us/windows/windows-11-specifications#table4

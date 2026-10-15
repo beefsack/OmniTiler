@@ -1,6 +1,7 @@
 use super::*;
 
 use super::owner_work::OwnerWorkGuard;
+use super::pager_host::sync_taskbar_pager;
 use windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
 
 // Per-turn input intake for the tile loop: input-pump maintenance, snap hook
@@ -240,6 +241,14 @@ pub(super) fn pump_intake(
                 );
             }
         }
+    }
+    // Taskbar pager (normal owner only; proof owners stay deterministic
+    // with no overlays): per-output strips sync on this same pump, so frames
+    // stay live on the ~100ms cadence with change-gated repaints and no hook
+    // work. A waiting click wakes the pump; the tick dispatch drains it once
+    // (a gesture-held turn leaves it queued there).
+    if !proof && sync_taskbar_pager(state, me, fulls, areas, log_path, now) {
+        woke = true;
     }
     // Shortcut-handling gate for the callback: fresh downs consume
     // iff takeover holds with this gate active (the eventual Xbox

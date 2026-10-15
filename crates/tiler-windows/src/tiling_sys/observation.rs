@@ -132,6 +132,7 @@ impl TileLoop {
             // the fixture seam instead of native queries.
             self.refresh_hidden_iconic();
             retained.extend(retained_injected);
+            self.record_pager_live(&observed, retained);
             let _ = (me, fulls);
             return Some(observed);
         }
@@ -346,7 +347,38 @@ impl TileLoop {
             .collect();
         self.overlay_now
             .retain(|token, _| live_tokens.contains(token));
+        self.record_pager_live(&out, retained);
         Some(out)
+    }
+
+    /// Refresh the taskbar-pager live frames: fresh identity-verified frames
+    /// for live managed members (observed `visible` frames plus retained
+    /// fresh frames for kept maximized/fullscreen overlays and born holds).
+    /// Rebuilt per pass and gated on live membership, so recycled identities
+    /// and closed windows never linger; hidden members are absent here by
+    /// construction and resolve through their saved tile-slot/float
+    /// snapshots in the portable resolver. Read-only: never touches windows
+    /// and never mutates the tiling `member_rects`/`float_rects` tables.
+    fn record_pager_live(&mut self, observed: &[ObservedWindow], retained: &[RetainedRow]) {
+        let mut live: HashMap<crate::workspace::WindowKey, Rect> = HashMap::new();
+        for window in observed {
+            let key = crate::workspace::WindowKey {
+                hwnd: window.hwnd,
+                pid: window.identity.pid,
+                creation: window.identity.process_creation.clone(),
+            };
+            if self.workspaces.member_loc(&key).is_some() {
+                live.insert(key, window.visible);
+            }
+        }
+        for row in retained {
+            if let Some(rect) = row.rect
+                && self.workspaces.member_loc(&row.key).is_some()
+            {
+                live.entry(row.key.clone()).or_insert(rect);
+            }
+        }
+        self.pager_live = live;
     }
 
     pub(super) fn focused_token(&self, observed: &[ObservedWindow]) -> Option<WindowId> {

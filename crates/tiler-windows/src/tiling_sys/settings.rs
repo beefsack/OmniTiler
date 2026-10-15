@@ -452,6 +452,13 @@ pub(super) fn apply_live_settings(
         changed = true;
     }
     let revision = settings.revision;
+    // Taskbar pager opt-out (default on): hot-applies like the border and
+    // underlay flags; the next pump shows or hides the strips.
+    if settings.core.taskbar_pager != state.taskbar_pager {
+        state.taskbar_pager = settings.core.taskbar_pager;
+        lanes.push("taskbar-pager");
+        changed = true;
+    }
     // R-MOV-03: the same-axis mode adopts here with no lane and no rebuild:
     // assigning `live.settings` below is enough, since `keyboard_tick` reads
     // the mode per move. A change to only this field returns false, so no
