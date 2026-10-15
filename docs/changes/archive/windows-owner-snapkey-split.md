@@ -1,6 +1,6 @@
-# Windows owner/snapkey test split
+# Windows owner/snapkey split
 
-ACTIVE. Tests-first row of the `workspace_owner`/`snapkey` module-size split:
+COMPLETE (archived 2026-10-15). All three rows done. Tests-first row of the `workspace_owner`/`snapkey` module-size split:
 extract every inline test module into responsibility-named files. No production
 code moves in this row.
 
@@ -14,10 +14,10 @@ all inline tests out, split by role so every resulting test file stays under
 
 ## Scope / non-goals
 
-- In scope: move `workspace_owner` `tests` (7,917 lines) into six role files
-  under `workspace_owner/`, move `fixed_admission_tests` (2,836 lines) into one
+- In scope: move `workspace_owner` `tests` (7,930 lines) into six role files
+  under `workspace_owner/`, move `fixed_admission_tests` (2,810 lines) into one
   file, move snapkey `shift_sync_tests`, `windrag_mask_tests`, `history_tests`
-  (473 lines combined) plus nested `sys::sys_tests` (219 lines) under
+  (464 lines combined) plus nested `sys::sys_tests` (219 lines) under
   `snapkey/`; keep production `.rs` files in place with `#[cfg(test)]`
   `#[path = ...]` declarations; one shared-helper umbrella (`tests` keeps the
   five helpers used across roles).
@@ -32,7 +32,7 @@ all inline tests out, split by role so every resulting test file stays under
 ## Acceptance
 
 - Every test file is at most 3,000 physical lines (largest is
-  `tests_fixed_admission.rs` at 2,836).
+  `tests_fixed_admission.rs` at 2,810).
 - Test count preserved: 125 `#[test]` in the owner family, 20 in snapkey.
 - Required gates pass with the suite baseline 2,115 passed / 0 failed /
   1 ignored.
@@ -53,12 +53,12 @@ all inline tests out, split by role so every resulting test file stays under
 - Extraction proofs: 5/5 byte-exact moves (snapkey mods, fixed admission),
   7/7 reversal proofs (six role splits plus the shared-helper umbrella),
   `#[test]` counts 125/125 owner and 20/20 snapkey.
-- File sizes (physical / nonblank / tests): toggle 1,336/1,318/13, send
-  1,910/1,880/27, hints-markers 1,323/1,305/17, send-follow 1,216/1,196/15,
-  float-send 1,280/1,268/7, layout 719/689/7, fixed-admission 2,811/2,746/39;
-  umbrella `tests.rs` 153/141/0; shift-sync 81/76/3, windrag-mask 81/74/5,
-  history 305/294/6, sys 220/212/6. Parents: `workspace_owner.rs`
-  1,802/1,726/0, `snapkey.rs` 6,082/5,844/0.
+- File sizes (physical / nonblank / tests): toggle 1,335/1,318/13, send
+  1,909/1,880/27, hints-markers 1,322/1,305/17, send-follow 1,215/1,196/15,
+  float-send 1,279/1,268/7, layout 718/689/7, fixed-admission 2,810/2,746/39;
+  umbrella `tests.rs` 152/141/0; shift-sync 80/76/3, windrag-mask 80/74/5,
+  history 304/294/6, sys 219/212/6. Parents: `workspace_owner.rs`
+  1,801/1,726/0, `snapkey.rs` 6,081/5,844/0.
 - Section-local fixtures moved with their sole users after the first cut
   (`seed_send_domains`/`send_through_engine`/`snapshot_window` into
   send-follow, `seed_d16_float_domains`/`d16_eligible` into float-send); the
@@ -147,3 +147,34 @@ unit tests pass).
 
 Gates: locked four-package build, same-package tests, workspace fmt
 check, strict all-target clippy, `git diff --check`; suite 2,115 / 0 / 1.
+
+## Completion (2026-10-15)
+
+Rows 18-20 complete; this record is archived and the backlog Module size
+section points here. Final layout remeasured 2026-10-15 under one convention:
+physical means lines counted with blanks included, nonblank means lines with
+non-blank content. The earlier row-18 report counted every physical size 1
+high; the numbers in this record are the corrected values. Row-18 parents
+verified from the row-19/20 patch deletion hunks at 1,801 / 1,726 and
+6,081 / 5,844 (physical / nonblank).
+
+Owner family (physical / nonblank / test attributes): production mod 73 / 66,
+sends 467 / 448, migration 309 / 300, directional 397 / 382, markers 135 / 129,
+foreground 144 / 140, rows 178 / 170, identity 142 / 135; tests umbrella
+152 / 141 / 0, toggle 1,335 / 1,318 / 13, send 1,909 / 1,880 / 27,
+hints-markers 1,322 / 1,305 / 17, send-follow 1,215 / 1,196 / 15, float-send
+1,279 / 1,268 / 7, layout 718 / 689 / 7, fixed-admission 2,810 / 2,746 / 39;
+125 tests total. Snapkey family: production mod 81 / 75, chords 827 / 771,
+intents 496 / 471, classifier 784 / 761, push_select 685 / 681, push_command
+1,002 / 992, queue 603 / 569, diag 426 / 387, sys 1,262 / 1,221; tests
+shift-sync 80 / 76 / 3, windrag-mask 80 / 74 / 5, history 304 / 294 / 6, sys
+219 / 212 / 6; 20 tests total. Max production file 1,262, max test file
+2,810: every file within the soft caps.
+
+Independent read-only review PASSed the moves: owner 79 production spans
+matched, tests 125/125 owner and 20/20 snapkey, all code equivalent modulo
+allowed visibility/imports/rustfmt; all 93 external references resolved.
+Final gates on the finished tree: locked four-package build, same-package
+tests (2,115 passed / 0 failed / 1 ignored), workspace fmt check, strict
+all-target clippy with -D warnings, and git diff check. Full rows 01-21
+replay verified against the staged tree.

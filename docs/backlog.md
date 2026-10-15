@@ -546,11 +546,22 @@ decisions of 2026-09-24 are under
   1,455 and max test `tests_pending_drop.rs` 2,852, within caps. Scope tests
   keep all 46 qualified paths via `#[path]`; moves preserve bodies apart from
   necessary visibility/imports and rustfmt signature wraps. Gates green 2,106 /
-  0 / 1. Remaining module-size work is outside Windows `tiling_sys`:
-  `workspace_owner.rs`, `snapkey.rs`, shared crates and KDE files above
+  0 / 1.
+  Windows owner/snapkey split complete 2026-10-15: tests-first row plus one
+  production row per file move both families into role files, every file
+  within caps (owner max production 467, max test 2,810; snapkey max
+  production 1,262, max test 304). Sizes are physical lines including blanks
+  (nonblank alongside in the record). Gates green 2,115 / 0 / 1.
+  Remaining module-size work: Windows top-level settings.rs (4,368),
+  tiling.rs (4,224), input_pump.rs (4,115) and render_pump.rs (3,203) physical
+  lines; no standalone test file exceeds 3,000 in Windows/core, but core
+  engine.rs (8,491) and session.rs (7,239) still carry large inline test
+  modules as the next test-extraction candidates. Shared crates and KDE files
+  above still split with their work streams; no further plan.
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
-   [phase 2](changes/windows-tiling-sys-split-phase2.md)).
+   [phase 2](changes/windows-tiling-sys-split-phase2.md),
+   [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md)).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in

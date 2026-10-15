@@ -154,3 +154,33 @@ outlines; confirm whole-item boundaries before each extraction.
   than assuming private child items remain callable from the parent.
 - D23's 20 helper functions remain in `tests_d23_minimize.rs`; its child
   `tests_d23_minimize_hidden.rs` imports them through `use super::*;`.
+
+## workspace_owner / snapkey split (rows 18-20)
+
+Follow-on to the tiling_sys family above, same soft caps (about 1,500
+production lines or 3,000 test lines per file). Sizes below use one stable
+convention: physical lines counted with blank lines included, nonblank lines
+with only whitespace-free content (re-measured 2026-10-15; the earlier row-18
+report counted every test physical size 1 high).
+
+Row 18 moves every inline test module into role files; no production moves.
+Owner tests keep one shared-helper umbrella plus six role files; snapkey
+keeps three role files plus the nested sys tests. Qualified paths gain one
+role segment under the owner tests umbrella only; snapkey paths unchanged.
+
+Owner tests (physical / nonblank / test count): toggle 1,335 / 1,318 / 13,
+send 1,909 / 1,880 / 27, hints-markers 1,322 / 1,305 / 17, send-follow
+1,215 / 1,196 / 15, float-send 1,279 / 1,268 / 7, layout 718 / 689 / 7,
+fixed-admission 2,810 / 2,746 / 39, umbrella 152 / 141 / 0; 125 tests total.
+Snapkey tests: shift-sync 80 / 76 / 3, windrag-mask 80 / 74 / 5, history
+304 / 294 / 6, sys 219 / 212 / 6; 20 tests total.
+
+Row 19 moves owner production into seven role leaves behind a 73-line mod.rs
+(physical): sends 467, migration 309, directional 397, markers 135,
+foreground 144, rows 178, identity 142. Row 20 moves snapkey production into
+eight role leaves behind an 81-line mod.rs (physical): chords 827, intents
+496, classifier 784, push_select 685, push_command 1,002, queue 603, diag
+426, sys 1,262. All leaf bodies are whole-item moves; public crate paths are
+preserved through parent re-exports. Max production file 1,262, max test
+file 2,810: every file within caps. Required gates pass with 2,115 / 0 / 1.
+Full layout and evidence: [owner/snapkey record](../../changes/archive/windows-owner-snapkey-split.md).
