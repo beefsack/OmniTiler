@@ -15,6 +15,12 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### Windows Xbox return discriminator
+
+| Variant | Minimal action sequence | Observed evidence | Unsupported outcome / next discriminator |
+| --- | --- | --- | --- |
+| Owned fullscreen across Xbox entry/return | Tile A/B; fullscreen A once; if Xbox mode opens, return through Task View; inspect A before selecting another workspace; then separately round-trip workspaces and exit project fullscreen | User incident: fullscreen consumed; zero eligible observations; generic fullscreen suspension/resume flaps; later workspace hide of origin; return `ok` with no focus; later project-fullscreen exit; gestures refused as floating/exception. [Diagnosis](../changes/windows-gaming-coexistence.md#incident-diagnosis-and-prevention-options-2026-10-16) distinguishes log facts from OS attribution | Exact hide/cloak/reveal and exception/mode transitions TBD; inspect owned claims, visible/cloaked/fullscreen facts and exception lane at each boundary. No heuristic Xbox detector, automatic exception clear or new shortcut policy selected |
+
 ### macOS classification discriminators
 
 Variants of R-SPC-01/04 and R-MNZ-01; typed-fact evidence plus explicitly

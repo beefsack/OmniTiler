@@ -772,6 +772,14 @@ decisions of 2026-09-24 are under
     fullscreen/exit press also raised the Xbox full screen experience prompt.
     Known parked containment issue confirmed; user wants a fix eventually.
     Remains parked in gaming coexistence, with no new containment work.
+  - 2026-10-16 incident: consumed fullscreen, generic fullscreen suspension,
+    later terminal workspace hide and floating/exception refusal confirmed;
+    invisibility/exception origin unresolved in normal logs. No runtime fix
+    selected. [Diagnosis and prevention options](changes/windows-gaming-coexistence.md#incident-diagnosis-and-prevention-options-2026-10-16):
+    recommend user-chosen fullscreen/float rebinds for conflict avoidance;
+    Xbox-mode-off targets F11 only, GameDVR capture policy is not a Win+G
+    suppression guarantee. Exact-chord containment remains open; bounded
+    visibility/reveal/exception diagnostics needed before another recovery repro.
   - M16 gaming-cost measurement: compare the existing 100 ms pump's
     incremental CPU, frame-time and input cost against a without-tiler game
     baseline, including suspended work/effects. Cost remains unmeasured;

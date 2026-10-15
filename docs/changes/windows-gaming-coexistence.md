@@ -1,5 +1,163 @@
 # Windows gaming coexistence
 
+## Incident diagnosis and prevention options (2026-10-16)
+
+### Scope and result
+
+- Diagnose the reported Xbox-mode entry after fullscreen, invisible terminal
+  on return, and temporary loss of tiling; reassess shortcut prevention without
+  selecting new product behavior. Existing containment and documented-signal
+  detection blockers remain open. No runtime correction is justified by this
+  evidence alone.
+- Evidence: supplied normal product log, 655 JSON lines, `trace:false`, plus
+  current source and Microsoft references below. Line numbers below identify
+  that supplied log, not repository files. `w19` is the fullscreen origin,
+  identified as the terminal by the user's report, not by logged app content.
+  No wall-clock timestamps delimit the incident; ticks establish order, not
+  elapsed time. The user's physical report establishes Xbox entry/return;
+  the log has no Xbox-mode identity signal.
+- Acceptance for this investigation: distinguish observed actions from causes,
+  identify missing discriminating evidence, compare prevention choices with
+  existing shortcut and gaming decisions, and leave unproven outcomes TBD.
+
+### Part A: reconstructed timeline
+
+| Log lines / tick | Observed fact | Interpretation / limit |
+| --- | --- | --- |
+| 439-448 / 289-292 | `w19` maximizes, restores, then is eligible for reconcile | Ordinary operation before the incident |
+| 449-455 / 295-296 | Consumed fullscreen down, `outcome:fullscreen`; border hidden for fullscreen; pager `suspended-fullscreen`; reconcile `windows:0`; taskbar still reported visible | Project fullscreen succeeded; pager suppression is intended. `windows:0` is zero eligible observations, not zero tracked windows |
+| 456-481 / 298-354 | Repeated zero-eligible reconciles; fullscreen mask reports `mask-ok` | No geometry applied; mask insertion does not prove OS shortcut suppression |
+| 482-504 / 355-371 | Foreground eligibility changes: no-target/fullscreen, pager elevated-foreground, one border `cloaked` reason at 368 | These are foreground/effect facts, not terminal visibility or Xbox identity. The cloaked foreground is not identified |
+| 505-555 / 371-389 | Four `suspend cause:fullscreen-foreground` / `resume` pairs; overlays hidden; work-area change at line 530 | Generic fullscreen safety veto actively interrupts tiling. Not a documented Xbox-mode transition signal |
+| 566-579 / 396-422 | One eligible `w78`, one placement applied; focus-mismatch rejection; zero eligible observations again; second work-area change at 577 | Intermittent visibility/eligibility and focus disturbance. No logged cause or old/new work-area rectangles |
+| 580-595 / 425-428 | Select ws1 -> ws7 explicitly hides `w19` and `w78`; return ws7 -> ws1 reports `ok`, `no-focus`, aggregate reveal timing | Product workspace hide of the terminal is proven here, after the earlier zero-eligible interval. No per-window reveal outcome is logged |
+| 596-606 / 434-445 | Zero eligible observations continue; later a min-hint change names `w19` | Cannot distinguish retained fullscreen, invisibility, cloak, or another classification exclusion from normal summaries |
+| 607-618 / 454-465 | Consumed fullscreen down restores `w19`; eligible count becomes one, placements remain zero; pager briefly suppresses again then shows | Project-owned fullscreen persisted until this later toggle, after the workspace round trip. OS desktop return did not itself clear that marker |
+| 623-637 / 473-474 | `w19` gestures refused as floating twice | Predicate is Engine exception OR floating workspace, not proof of an explicit float toggle or native window style. There is no float-toggle row explaining its origin |
+| 646-655 | Clean input/render stop; four product-hide claims revealed, no residue | Recovery bookkeeping survived. This does not prove visibility throughout the return interval |
+
+- High confidence: project fullscreen succeeded; the generic fullscreen guard
+  suspended tiling four times; a later workspace select used product `SW_HIDE`
+  on the terminal; project fullscreen only exited at tick 454; subsequent drag
+  handling refused it through the floating/exception gate.
+- Moderate confidence: the reported Xbox transition explains the unstable
+  foreground and work-area signals. Microsoft documents one-window/fullscreen
+  presentation and changed window-control behavior in Xbox mode. These symptoms
+  are consistent, not a mode detector or proof of the exact OS mechanism.
+- Unresolved: what first made the terminal invisible, whether its workspace
+  reveal was followed by OS hiding/cloak or retained-fullscreen exclusion, and
+  which exception/mode transition prevented later tiling. The explicit hide at
+  tick 425 cannot explain the earlier zero-eligible interval by itself.
+  No output-topology, session or desktop transition is established or excluded
+  by this log. Work-area change is not proof of display reconfiguration.
+- No logged evidence establishes a retry/backoff stall. Suspension demonstrably
+  stalls active tiling during the four guard intervals; zero eligible windows
+  and the later exception/mode refusal account for additional non-placement,
+  but their underlying state transitions remain unknown.
+
+### Source checks and observability gaps
+
+- `tiling_sys/geometry.rs`: tick `windows` is `observed.len()`;
+  `observe.rs` rejects invisible windows before classification;
+  `observation.rs` retains tracked/hidden membership separately. A zero count
+  cannot establish hidden, closed, floated, or lost windows.
+- `tiling_sys/run_loop_tick.rs`: fullscreen veto skips active work and hides
+  effects; resume clears the suspension and retry latch. `focus.rs` probes the
+  foreground for border eligibility. Its `cloaked` reason does not name `w19`.
+- `tiling_sys/selection.rs`: per-window hides are logged; successful and retired
+  reveal branches are not. `product_hide.rs` uses owned, identity-fenced
+  `SW_HIDE`/reveal claims, not an Xbox-specific DWM cloak operation. `ok` on
+  return is aggregate success, not proof of subsequent compositor visibility.
+- `tiling_sys/keyboard_overlays.rs` / `fullscreen.rs`: fullscreen enter/exit
+  owns styles/frame state; exiting invokes reconcile. No mode-aware reset is
+  implemented. `gesture_tick.rs` / `admission.rs`: floating refusal includes
+  Engine exceptions, including born-fullscreen holds, or workspace mode.
+  It does not distinguish their origins in the emitted row.
+- Normal logs should reconstruct state transitions without requiring trace:
+  bounded correlated reveal/readback outcomes per token; visibility/cloak and
+  exception-lane changes with reasons; suspend/resume foreground safety facts
+  using opaque identity; old/new output/work-area geometry; and enough
+  focus/domain context to explain mismatch. Missing elapsed timestamps also
+  prevent measuring the reported delay. These are follow-up diagnostics, not
+  implemented changes or permission to collect titles/app content.
+
+### Evidence needed before a correction
+
+- Minimal discriminator recorded in
+  [reference outcomes](../spec/reference-outcomes.md#windows-xbox-return-discriminator).
+  Preserve an ordinary tiled origin and sibling, record baseline membership,
+  then one physical fullscreen press; stop further gaming input on Xbox entry.
+  Record entry and desktop-return times; use Task View's documented desktop
+  return rather than another intercepted fullscreen chord. Observe the origin
+  before any workspace select, then distinguish a workspace round trip and an
+  explicit project-fullscreen exit as separate actions, if recovery is safe.
+- Existing trace adds hook edge verdict/timing, observation/skip and placement
+  detail; it does not supply all missing state transitions above. First design
+  the bounded normal-log diagnostics or a read-only snapshot of visibility,
+  cloak, owned hide claims, fullscreen marker, exception lane and workspace mode
+  at each boundary. A trace-only repeat without those facts may remain ambiguous.
+- No small decided-behavior fix is evident. Do not weaken fullscreen safety,
+  invent Xbox heuristics, clear exceptions blindly, or rewrite hook threading
+  based on this log. Native recovery and exact cause remain unaccepted.
+
+### Part B: current Windows behavior and options
+
+- Microsoft [KB5070297][xbox-mode], re-read 2026-10-16, documents Xbox mode on
+  supported Windows 11 24H2+ installations/markets. Win+F11 enters/exits the
+  full screen experience **when enabled**. This is distinct from Game Bar:
+  Win+G opens Game Bar, whose Settings can in turn enter/exit Xbox mode.
+  Desktop PCs expose Settings > Gaming > Xbox mode > Enable Xbox mode;
+  handhelds use Choose home app, where None turns it off. Startup and Task View
+  visibility options are not the same as disabling the mode.
+- Current default classifier routes F11 to fullscreen and G to float (Shift+G
+  sticky). With takeover and shortcut handling enabled, owned physical chords
+  consume independently of foreground/action eligibility, and consumed holds
+  stay consumed through release. `snapkey/sys/mod.rs` returns nonzero for a
+  consume verdict and uses the E8 Win-release mask. No Xbox-aware exemption
+  exists; action safety checks do not release Win+G to games automatically.
+- Compatible disables conflicting physical bindings, including G/F11, with no
+  replacement. Keep/Disable/Rebind are existing settings; Authentic remains the
+  selected default. The recorded user decision explicitly treats an owned
+  Win+G in a game as a tiler command, while disclosing incomplete containment.
+- [LL-hook documentation][ll-hook] permits nonzero suppression of the remaining
+  chain/target, but gives no shell-gaming ordering guarantee; timeout can silently
+  remove the hook. Microsoft's [game shortcut sample][game-shortcut-hook] says
+  swallowing Win does not block Game Bar hotkeys. That sample does not swallow
+  G/F11, so it is not proof that all chord interception is impossible. Existing
+  consumed-F11 plus visible-prompt evidence still rules out claiming success.
+
+| Option | Effectiveness / official support | Reversal, gaming impact and posture | Fit with decisions |
+| --- | --- | --- | --- |
+| Keep/improve LL swallowing | Already implemented; does not reliably contain observed F11. No documented fix for both gaming shortcuts established. A dedicated thread is recommended for callback latency, not a proven gaming bypass fix | Setting is reversible; hook loss remains possible; anti-cheat acceptance unknown. No registry needed | Existing mechanism allowed; redesign requires separate evidence and choice |
+| User turns Xbox mode off | Official feature setting targets F11's mode entry, not Win+G Game Bar. Physical suppression of prompts still needs verification | Reversible by user; removes Xbox mode availability but leaves Game Bar. No project registry writes | Previously proposed opt-in; not a selected product default |
+| Game Bar Settings / Captures switches; `AppCaptureEnabled`, `GameDVR_Enabled` recipes | Recording/controller-open controls are not established Win+G keyboard-dispatch controls. No official current Win11 key contract or suppression guarantee established for these recipes | User-scope changes can still disrupt captures; restoring requires exact prior values, including absent keys. Do not silently write them | Not an approved project workaround |
+| GameDVR `AllowGameDVR=0` policy | Official [ApplicationManagement policy][gamedvr-policy] disables Recording/Broadcasting, not a documented Win+G/F11 dispatch guarantee. Docs list Pro/Enterprise/Education/IoT and also say policy enforced only in Windows 10 desktop; do not promise Win11 enforcement | Device policy affects users/capture, requires management/admin authority; restore original configured/unconfigured state. No basis to apply it here | Official policy existence does not authorize writes or satisfy the shortcut outcome |
+| Remove/disable Game Bar package | No demonstrated supported shortcut-suppression guarantee; missing package may leave activation prompts. Not a narrow chord control | Removes gaming UI/capture access; reinstall/update behavior needs verification; broad external mutation | Poor fit with preserving gamers' access; not recommended |
+| Rebind fullscreen AND float, or choose Compatible/disable | Avoids accidental double action by not using G/F11 for tiler commands. Does NOT stop an intentional Win+G/F11 from invoking Windows | Fully reversible tiler settings; gamers retain OS chords; no policy/admin change. Compatible loses default conflicting tiler chords until rebound | Existing approved conflict model; no new default or replacement chosen |
+| Tolerate and recover | Prevents neither shortcut. Automatic Xbox pause/recovery still blocked on documented signal; generic fullscreen guard is not enough | Preserves OS gaming features but accepts interruption and unresolved recovery defect; no registry change | Honest parked limitation, not acceptance of this incident |
+
+- Recommendation for approval: use the existing per-binding rebind route for
+  **both** fullscreen and float, leaving Windows gaming chords available. This
+  avoids the incident during routine tiler actions without globally disabling
+  gamers' features or claiming stronger LL suppression. It is conflict
+  avoidance, not literal suppression of the original physical chords; replacement
+  chords/default changes need the user's choice. Compatible is a broader existing
+  opt-in if losing other conflicting bindings is acceptable.
+- If retaining authentic F11 is essential, separately evaluate the official
+  user-owned Xbox-mode-off setting. It addresses only F11, not G. No reviewed
+  option guarantees suppression of both original chords while preserving them
+  as tiler bindings and preserving Game Bar in games. That stronger requirement
+  remains a containment research/release blocker, not solved by capture policies.
+- Next product choice: keep authentic chords and accept/research the limitation,
+  approve conflict avoidance/replacements, or opt into disabling an OS gaming
+  feature. No new behavior, registry/policy ownership, default, or alternate
+  Game Bar launch surface is selected by this investigation.
+- Verification: documentation/source and official-page review only; no runtime
+  changes. Existing runtime gates are not new evidence of Xbox recovery or
+  shortcut containment. This active record remains open.
+
+[gamedvr-policy]: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-applicationmanagement#allowgamedvr
+
 ## PARKED: bounded install-order continuation (2026-10-03)
 
 - Part (a) remains unaccepted. No official-API correction was established;
