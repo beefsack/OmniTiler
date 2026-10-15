@@ -15,14 +15,19 @@
 //! fresh SID join, which is safe.
 
 use crate::mc_probe::{
-    ActionBudget, DOCK_BUNDLE_ID, FocusLegs, GhosttyWindow, LegLatency, MC_ACTION_PRESS,
-    MC_ACTION_REMOVE_DESKTOP, MC_ACTION_TIMEOUT_MS, MC_AX_TIMEOUT_SECS, MC_CLEANUP_RESERVE_SECS,
-    MC_EFFECT_SETTLE_MS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_ROOT, MC_ID_SPACES,
-    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, MC_STABILIZE_MS, McAction, McError, McErrorReport,
-    McFailEvidence, McInspectReport, McLayout, McLifecycleReport, TopologySnapshot, error_json,
-    focus_restored, removal_eligibility, require_ax_trust, require_dock_bundle,
-    require_unlocked_session, validate_create_effect, validate_goto_effect,
-    validate_removal_effect,
+    ActionBudget, FocusLegs, GhosttyWindow, LegLatency, MC_CLEANUP_RESERVE_SECS,
+    MC_EFFECT_SETTLE_MS, McAction, McError, McErrorReport, McFailEvidence, McInspectReport,
+    McLayout, McLifecycleReport, TopologySnapshot, error_json, focus_restored, removal_eligibility,
+    require_dock_bundle, validate_create_effect, validate_goto_effect, validate_removal_effect,
+};
+// macOS-only live dispatch names (used via `live` on macOS; off-mac the stub
+// never touches them, so gate them to keep strict Clippy clean).
+#[cfg(target_os = "macos")]
+use crate::mc_probe::{
+    DOCK_BUNDLE_ID, MC_ACTION_PRESS, MC_ACTION_REMOVE_DESKTOP, MC_ACTION_TIMEOUT_MS,
+    MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_ROOT, MC_ID_SPACES,
+    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, MC_STABILIZE_MS, require_ax_trust,
+    require_unlocked_session,
 };
 // Read-only observation helpers live in `mc_observe`; re-exported here so
 // existing `mc_lifecycle::…` paths keep working with no interface change.
@@ -32,6 +37,8 @@ pub(crate) use crate::mc_observe::{
 
 /// Budget spend for one dispatch: main-phase legs spend inside the work
 /// window; cleanup legs spend inside the reserve up to the deadline.
+/// macOS-only live helper (called only from the macOS `live` module).
+#[cfg(target_os = "macos")]
 fn spend_leg(budget: &mut ActionBudget, cleanup: bool, what: &str) -> Result<(), McError> {
     if cleanup {
         budget.spend_cleanup(what)
@@ -607,7 +614,8 @@ pub(crate) mod live {
         }
 
         pub fn stop(&mut self) -> bool {
-            false
+            self.reaped = false;
+            self.reaped
         }
     }
 
@@ -623,10 +631,14 @@ pub(crate) mod live {
         unsupported("Mission Control lifecycle")
     }
 
+    // Live-only helpers (called only from the macOS `live` module); off-mac
+    // the stub is never invoked, so silence dead_code there only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn poll_group(_want: bool) -> Result<bool, McError> {
         unsupported("Mission Control lifecycle")
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn mc_open() -> Result<bool, McError> {
         unsupported("Mission Control lifecycle")
     }

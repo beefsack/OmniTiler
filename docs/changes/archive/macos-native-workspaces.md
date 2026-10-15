@@ -97,7 +97,11 @@ the full selected oracle.
   Main SHA-256: `912034319b50208ff9f89f1264539a263727d44fd9fd5925b39a1ac2ca4bbd09`;
   helper-bundle SHA-256:
   `218ee4ac6866479a3051fc1be3f70651ea258830ede8241eba9d29abc13d022a`.
-- Publication and hosted CI: pending final publication check.
+- Source publication: `c3dba6c`. Initial hosted CI passed macOS and all non-Rust
+  jobs, but Linux/Windows strict clippy caught macOS-only imports/helpers in
+  portable stubs. Scoped cfg/lint corrections preserve refusal behavior; the
+  portable/macOS allowlist tests, strict clippy and formatting pass afterward.
+  Final hosted publication check pending.
 
 ## Parked and exact next action
 

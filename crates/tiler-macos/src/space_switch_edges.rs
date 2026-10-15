@@ -112,6 +112,9 @@ impl PendingRelease {
 /// Outcome of one down/up (or began/ended) pair: both edges posted, the
 /// second edge refused after the first posted (pending release), or the
 /// first edge refused (nothing posted).
+/// `Paired`/`Pending` are constructed only on macOS (off-mac stubs always
+/// refuse), so silence dead_code there only; matching still observes them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) enum PairOutcome {
     Paired,
     Pending {
