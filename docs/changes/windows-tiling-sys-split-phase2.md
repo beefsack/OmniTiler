@@ -7,6 +7,8 @@ after phase 1: subdivide the D23 tests and extract production responsibilities
 in orders 14-30. Preserve behavior, test names and public entrypoint paths.
 Only whole-item moves, necessary visibility/imports/module declarations and
 rustfmt changes are allowed. Oversized individual functions remain intact.
+Organize the existing family under `tiling_sys/mod.rs`, use role-based child
+names and replace the D23 textual include with a real test submodule.
 
 ## Approach and acceptance
 
@@ -78,10 +80,23 @@ rustfmt changes are allowed. Oversized individual functions remain intact.
   lines. Bodies compare exactly after removing necessary visibility/imports,
   with no formatter deviations. Required gates pass: 2,106 / 0 / 1.
 
+- Layout: all 72 files now live under `tiling_sys/`; `mod.rs` has 15,731
+  lines. Positional production filenames have role names; tests use `tests_*`.
+  Only module paths/imports and two proof-script source paths change.
+  `keyboard_tick.rs` remains byte-identical (2,138 lines, one 2,136-line
+  function); extracting its internals is pending a decision.
+- D23: real `hidden` child replaces `include!`, using parent-private helpers
+  without visibility changes. Files have 2,062 / 1,537 lines; all 27 test bodies
+  remain unchanged, with 13 qualified test paths gaining `hidden::`.
+  Locked four-package build/test/clippy, workspace fmt and diff checks pass
+  after both structural steps: 2,106 passed / 0 failed / 1 ignored.
+
 ## Remaining work
 
 Production map orders 24-30, starting with selection/sends;
-retain the whole observation `TileLoop` impl for later extraction.
+retain the whole observation `TileLoop` impl for later extraction. All remaining
+targets are listed under their new directory paths in the split map.
+The oversized single `keyboard_tick` function is pending an extraction decision.
 
 ## Commit records
 

@@ -528,7 +528,7 @@ decisions of 2026-09-24 are under
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
   Behavior-preserving moves only, between feature deliveries. Windows first:
-  `crates/tiler-windows/src/tiling_sys.rs`, then
+  `crates/tiler-windows/src/tiling_sys/`, then
   `workspace_owner.rs` (~12k) and `snapkey.rs` (~6.5k). Shared crates
   (`tiler-protocol` `planner_protocol.rs`, `tiler-core` `engine.rs` and
   `session.rs`) and KDE files
@@ -538,15 +538,15 @@ decisions of 2026-09-24 are under
   Windows phase 1: 14 pure-move extraction commits reduce `tiling_sys.rs`
   from 61,917 to 35,537 lines (-26,380, 42.6%). All 28 inline test modules
   now occupy separate child files totaling 26,288 lines; production unchanged.
-   Phase 2 subdivides D23 minimize into 2,061 / 1,535 lines with all 27 test
-   names preserved. Original
-  test counts preserved; upstream shared policy adds 11 tests, yielding
-  2,106 passed / 0 failed / 1 ignored after rebase. Required gates pass.
-   Production map rows 14-23 extracted: parent now 15,782 lines; 34 of 35 new
-   production children below 1,500 lines. The 2,138-line keyboard child keeps
-   one oversized function intact. Required gates preserve 2,106 / 0 / 1.
-   Next: selection/sends, then the
-   remaining production responsibilities in map order
+   Phase 2 rows 14-23 extracted; the 72-file family now lives under
+   `tiling_sys/` with `mod.rs` (15,731 lines), role-named production children
+   and `tests_*.rs` tests. D23 uses a real `hidden` submodule (2,062 / 1,537
+   lines), retaining all 27 test bodies. All 39 production children meet the
+   soft cap except `keyboard_tick.rs` (2,138 lines): its single 2,136-line
+   function remains intact, extraction decision pending. Required gates pass
+   with 2,106 passed / 0 failed / 1 ignored, unchanged from the current baseline.
+   Next: selection/sends, then remaining production map rows 24-30 and the
+   observation impl; main loop and public commands last
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
    [phase 2](changes/windows-tiling-sys-split-phase2.md)).

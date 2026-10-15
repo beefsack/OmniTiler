@@ -12,28 +12,31 @@ production lines or 3,000 test lines per file, split by responsibility.
   **35,447 lines** include production, imports, declarations and separators,
   364 lines of top-level test-only helpers, and smaller test-only branches
   inside production functions. Production is therefore approximately 35k lines.
-- Reuse existing `tiling_sys_scope_*.rs` path-included child modules. Preserve
+- Reuse existing `tiling_sys/scope_*.rs` child modules. Preserve
   each test module's name and declaration position; unwrap its body into the
   new file. Existing `super::` access then needs no visibility changes.
 - Table sizes are baseline estimates including inline wrappers; extracted
   file sizes can differ through wrapper removal and `cargo fmt`.
 - Grouped rows mean multiple files, preserving each child module's name and
-  level. Do not nest existing tests under a new umbrella module.
+  level, except D23's explicit `hidden` child described below. Do not add
+  umbrella test modules.
 - Production boundaries below are responsibility outlines, not cut lines.
   Confirm whole-item boundaries and dependencies before each move. A large
   single function must not be divided by changing its logic.
 
 ## Ordered extraction map
 
-All target stems below are sibling `.rs` files prefixed `tiling_sys_`.
-Numbered production stems denote further whole-item subdivisions as needed.
+All target stems below are `.rs` files under
+`crates/tiler-windows/src/tiling_sys/`; the module root is `mod.rs`.
+Tests consistently use `tests_*.rs`. Remaining targets are responsibility
+outlines; confirm whole-item boundaries before each extraction.
 
 | Order | Target stem(s) | Contents | Approx lines | Dependencies / risks | Status |
 | --- | --- | --- | ---: | --- | --- |
 | 1 | `tests_directional_cross` | `directional_cross_adapter_tests` | 2,360 | Two production seams and shared fixture | Extracted; 2,333 lines |
 | 2 | `tests_pending_drop` | `pending_drop_tests` | 2,865 | Render/gesture types, queue/service and injectors | Extracted; 2,852 lines |
 | 3 | `tests_fixed_predicate` | `fixed_predicate_tests` | 2,659 | Hint context, predicate and fixture | Extracted; 2,652 lines |
-| 4 | `tests_d23_minimize`, `tests_d23_minimize_2` | `d23_minimize_adapter_tests` | 3,599 | Same-namespace `include!` preserves helpers and all 27 test names | Extracted and subdivided; 2,061 / 1,535 lines |
+| 4 | `tests_d23_minimize`, `tests_d23_minimize_hidden` | `d23_minimize_adapter_tests`, nested `hidden` tests | 3,599 | Child imports parent helpers; all 27 test bodies retained | Done; 2,062 / 1,537 lines, no `include!` |
 | 5 | `tests_float_unfloat` | `float_unfloat_clear_tests` | 2,216 | Clear-effects trait and fixture | Extracted; 2,207 lines |
 | 6 | `tests_workspace_migrate` | `workspace_migrate_adapter_tests` | 2,054 | Engine event stamps, migration and injectors | Extracted; 2,047 lines |
 | 7 | `tests_output_send`, `tests_cross_drag` | Output-send and cross-drag adapter tests | 1,614 / 704 | Shared fixture; keep separate module names | Extracted; 1,606 / 699 lines |
@@ -46,20 +49,22 @@ Numbered production stems denote further whole-item subdivisions as needed.
 | 14 | `shell`, `monitors`, `observe` | Shell constants/filters, monitor areas, hook queue/wake, observation/identity | 200 / 250 / 250 | Shared types; monitor/input coupling | Extracted; 69 / 106 / 511 lines |
 | 15 | `hints`, `pending_seams`, `placement`, `minmax` | Hint types, test injectors/live seams, placement translation, hint acquisition | 1,100 total | cfg branches travel with their items; avoid overlapping ownership | Extracted; 138 / 495 / 177 / 314 lines |
 | 16 | `trace`, `owner_work`, `preview`, `input` | JSON/border trace glue, work guard, preview bounds, input bridge/snapshot | 1,200 total | Shared `TileLoop` fields and crate-visible snapshot planner stay in parent | Extracted; 93 / 250 / 139 / 248 lines |
-| 17 | `render_1`, `_2`, `retained` | Render bridge/carriers/acks/health, hidden/closed/retained records | 1,800 total | Native/render coupling and shared fields | Extracted; 469 / 966 / 41 lines |
-| 18 | `focus`, `underlay_1`, `_2`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Observation `TileLoop` impl stays intact in parent for later extraction | Extracted; 609 / 705 / 1,002 / 251 lines |
+| 17 | `render_bridge`, `render_ack`, `retained` | Render bridge/carriers/acks/health, hidden/closed/retained records | 1,800 total | Native/render coupling and shared fields | Done; 469 / 966 / 41 lines |
+| 18 | `focus`, `group_underlay`, `drag_preview`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Observation `TileLoop` impl stays intact in parent for later extraction | Done; 609 / 705 / 1,002 / 251 lines |
 | 19 | `fullscreen`, `admission` | Fullscreen metadata/holds/exit, admission/float gates, event stamps | 600 / 900 | Ownership and engine seams | Extracted; 645 / 848 lines |
 | 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Extracted; 906 / 289 / 529 / 391 lines |
-| 21 | `keyboard_1`, `_2`, `chords_1`, `_2`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | `keyboard_tick` stays intact: 2,138-line child exceeds soft cap | Extracted; 2,138 / 296 / 213 / 1,132 / 1,377 lines |
-| 22 | `directional_1`, `_2`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Extracted; 368 / 626 / 1,175 / 1,455 lines |
+| 21 | `keyboard_tick`, `keyboard_resize`, `chord_resolution`, `float_toggle`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Single 2,136-line `keyboard_tick` remains oversized; extraction decision pending | Done; 2,138 / 296 / 213 / 1,132 / 1,377 lines |
+| 22 | `directional_resolution`, `directional_cross`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Done; 368 / 626 / 1,175 / 1,455 lines |
 | 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Extracted; 658 / 492 lines |
-| 24 | `selection`, `sends` | Workspace select/send, trailing-spare/follow behavior | 2,300 total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
-| 25 | `cli_poll_1`, `_2`, `workspace_tick_1`, `_2`, `migration` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Pending |
+| 24 | `workspace_mode`, `selection`, `sends` | Workspace mode/release/retry, select/send, trailing-spare/follow behavior | 2,300+ total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
+| 25 | `cli_resize`, `cli_workspace`, `workspace_navigation`, `workspace_send_tick`, `migration` | CLI command polls, workspace/send/migrate ticks and migration execution | 4,100 total | Shared loop state; preserve command ordering | Pending |
 | 26 | `history`, `action_context`, `output_sync` | Maximized remapping, history/effects, monitor/output sync, maintenance | 1,200 total | Mode-aware scope children and retained output identity | Pending |
 | 27 | `windrag`, `pending_drop`, `gesture_tick` | Windrag transitions, pending-drop servicing, gesture tick | 2,000 total | Shared pending state and render bridge | Pending |
 | 28 | `settings` | Foreground/suspend reads, run configuration, live settings adoption/poll | 500 | Shared loop configuration | Pending |
-| 29 | `run_1`, `_2` | Main tile loop | 2,600 total | Entrypoint/state orchestration; one large function may remain oversized | Pending; late |
-| 30 | `commands_1`, `_2` | Public CLI entrypoints, inventory/inspection and shutdown glue | 1,500 total | Preserve external entrypoint paths via parent re-exports | Pending; last |
+| 29 | `run_loop` | Main tile loop | 2,600 total | Entrypoint/state orchestration; one large function may remain oversized | Pending; late |
+| 30 | `commands`, `first_run`, `proof_commands`, `inspection` | Public CLI entrypoints, first-run configuration, proof loops, inventory/inspection and shutdown glue | 1,500+ total | Preserve external entrypoint paths via parent re-exports | Pending; last |
+| Follow-up | `observation` | Whole observation `TileLoop` impl and enumeration/cursor helpers | 400 total | Keep shared `TileLoop` state and crate-visible snapshot planner in `mod.rs` initially | Pending |
+| Follow-up | `keyboard_tick` | Oversized single function | 2,136 | Splitting requires function extraction, not whole-item moves | Pending decision |
 
 ## Verification and handover
 
@@ -78,7 +83,7 @@ Numbered production stems denote further whole-item subdivisions as needed.
   **26,288 lines**. No inline test modules remain. The production prefix before
   the original inline test section is byte-identical to baseline.
 - Completed phase-1 evidence: [record](../../changes/archive/windows-tiling-sys-split-phase1.md).
-- Phase 2 subdivides D23 at a whole-test boundary with same-namespace `include!`:
+- Phase 2 initially subdivided D23 at a whole-test boundary with same-namespace `include!`:
   2,061 / 1,535 lines, byte-identical moved bodies and all 27 names preserved.
   All required gates pass with 2,106 / 0 / 1.
 - Row 14 extracts shell/monitor/observe leaves; parent becomes **34,884 lines**.
@@ -109,15 +114,25 @@ Numbered production stems denote further whole-item subdivisions as needed.
 - Row 22 extracts directional/output-send/cross-drag; parent becomes **16,917 lines**.
   Bodies compare exactly after removing visibility/import changes. All four
   children meet the soft cap; required gates pass with 2,106 / 0 / 1.
-- Row 23 extracts restart/assignments; parent now **15,782 lines**. Bodies
+- Row 23 extracts restart/assignments; parent becomes **15,782 lines**. Bodies
   compare exactly after removing visibility/import changes, with no formatter
   deviations. Required gates pass with 2,106 / 0 / 1.
-- Next: production orders 24-30, starting selection/sends. The whole
-  observation `TileLoop` impl remains in the parent for later extraction.
+- Directory layout: all 72 files moved under `tiling_sys/`; `mod.rs` now
+  has **15,731 lines** after module/import spelling changes. The 39 production
+  children use role names; all meet the soft cap except `keyboard_tick.rs`
+  (**2,138 lines**, one **2,136-line function**), pending an extraction decision.
+  The two proof scripts' source-hash paths follow the root move.
+- D23 now uses a real `hidden` test submodule: **2,062 / 1,537 lines**.
+  All 27 test bodies are unchanged; 13 qualified test paths gain `hidden::`.
+  Descendant access retains private helpers without visibility changes.
+  Required gates pass with **2,106 / 0 / 1** after both structural steps.
+- Next: pending rows 24-30 target the files above under `tiling_sys/`, starting
+  selection/sends. The whole observation `TileLoop` impl remains in `mod.rs`
+  for `tiling_sys/observation.rs` later.
   Keep `TileLoop` state in the parent
   initially and use narrow imports/re-exports for moved leaves.
 - Production risk: moving a function into a child changes unqualified name
   resolution and sibling access. Confirm imports and minimal visibility rather
   than assuming private child items remain callable from the parent.
-- D23's 20 helper functions remain in the first file; the second file contributes
-  13 unchanged tests through `include!`, retaining the existing module namespace.
+- D23's 20 helper functions remain in `tests_d23_minimize.rs`; its child
+  `tests_d23_minimize_hidden.rs` imports them through `use super::*;`.
