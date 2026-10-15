@@ -447,16 +447,23 @@ else
 fi
 assert_contains "$OUTPUT.D" "interrupted" "pre-launch interruption reported"
 if [[ -n "$(current_run_dir)" ]]; then
-  fail "pre-launch interruption" "lock must release (nothing runs)"
-else
   pass
+else
+  fail "pre-launch interruption" "an attempted launch without readiness must retain ownership"
 fi
 D_RUN="$(grep "run directory:" "$OUTPUT.D" | head -1 | sed 's/.*run directory: //')"
-if [[ -n "$D_RUN" && -e "$D_RUN" ]]; then
-  fail "pre-launch interruption" "never-started run directory must be removed (no orphan): $D_RUN"
-else
+if [[ -n "$D_RUN" && -f "$D_RUN/stop-requested" ]]; then
   pass
+else
+  fail "pre-launch interruption" "uncertain launch must retain its stop request"
 fi
+MOCK_BEHAVIOR=success run_dev 1 "uncertain launch refuses overlap"
+assert_contains "$OUTPUT" "STARTING" "missing readiness never proves owner absence"
+# The mock launch child has exited and creates no owner; only the fixture can
+# prove that fact independently, so clear its retained control state here.
+rm -f -- "$BASE/lock/run"
+rmdir -- "$BASE/lock"
+rm -rf -- "$D_RUN"
 
 # ---- Part 7: stale lock takeover ----------------------------------------------
 STALE_RUN="$BASE/runs/run.stale-fixture"

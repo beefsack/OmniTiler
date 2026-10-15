@@ -452,6 +452,7 @@ TILE_ARGS+=("--run-dir" "$RUN_DIR")
 # normal bounded shutdown; nothing is ever signalled.
 INTERRUPTED=0
 OPEN_DONE=0
+LAUNCH_ATTEMPTED=0
 on_signal() {
   INTERRUPTED=1
   if [[ -d "$RUN_DIR" ]]; then
@@ -566,6 +567,14 @@ echo "dev: log paths:"
 echo "dev:   stdout: $OUT"
 echo "dev:   stderr: $ERR"
 
+if [[ "$INTERRUPTED" -ne 0 ]]; then
+  echo "dev interrupted: stopped before launch; no owner started" >&2
+  echo "dev: end paths: stdout=$OUT stderr=$ERR"
+  lock_release_if_ours "$RUN_DIR" || true
+  drop_own_run_dir
+  exit 130
+fi
+LAUNCH_ATTEMPTED=1
 if [[ -n "$MOCK_OPEN" ]]; then
   OMNITILER_DEV_RUN_ID="$RUN_ID" OMNITILER_DEV_RUN_DIR="$RUN_DIR" \
     "$MOCK_OPEN" "$OUT" "$ERR" -- tile "${TILE_ARGS[@]}" \
@@ -691,8 +700,7 @@ done
 # Post-stop bounded wait: after an interruption the owner needs a finite
 # window to publish its terminal outcome; absence afterwards is a dirty
 # report, never a kill (there is no signal path in this launcher). An
-# interruption that landed before the launch call returned waits for
-# nothing: nothing could have started.
+# launch attempt may have started an owner even before readiness is visible.
 if [[ "$BREAK" == "interrupted" && "$OPEN_DONE" -eq 1 ]] && ! terminal_outcome_ready; then
   deadline=$((SECONDS + STOP_WAIT))
   while [[ $SECONDS -lt $deadline ]]; do
@@ -701,6 +709,7 @@ if [[ "$BREAK" == "interrupted" && "$OPEN_DONE" -eq 1 ]] && ! terminal_outcome_r
       BREAK="terminal"
       break
     fi
+    observe_tilestarted || true
     sleep 0.2
   done
 fi
@@ -764,10 +773,8 @@ case "$BREAK" in
     ;;
   interrupted)
     report_paths
-    if [[ ! -f "$RUN_DIR/owner.json" && ! -f "$RUN_DIR/outcome.json" && -z "$OUTCOME" ]]; then
-      # Nothing started and nothing terminal was ever published (e.g. the
-      # launch call itself stalled): clear the never-started run (no
-      # orphaned pre-launch directory) and release the lock.
+    if [[ "$LAUNCH_ATTEMPTED" -eq 0 ]]; then
+      # Only a launch never attempted proves no owner could have started.
       echo "error: dev interrupted: launch never produced an owner or outcome (no owner started; own run cleared)" >&2
       release_lock
       rm -rf -- "$RUN_DIR"

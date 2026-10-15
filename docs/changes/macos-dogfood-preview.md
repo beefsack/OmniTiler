@@ -192,9 +192,11 @@ not feature-complete macOS delivery.
 - Final macOS tests: **445 passed**, zero failed/ignored; portable core,
   protocol and effect-FFI tests pass. Strict all-target clippy with `-D warnings`,
   workspace format, just format, shell syntax and whitespace checks pass.
-- Foreground shell harness: **94 checks pass**, including startup/interruption,
+- Foreground shell harness: **96 checks pass**, including startup/interruption,
   malformed/dirty outcomes, concurrent runs, stale/reused identities, contained
-  control paths, log streaming and exact ownership clearing.
+  control paths, log streaming and exact ownership clearing. An attempted launch
+  with no readiness/outcome retains its stop request and ownership: missing
+  readiness alone cannot prove that no process started.
 - Final signed-bundle build and strict verification pass for both bundles,
   including macOS 15 deployment load commands and the persistent certificate
   requirement. Probe SHA-256:
@@ -205,12 +207,14 @@ not feature-complete macOS delivery.
   `io.github.omnitiler.macos.probe.helper`, with certificate leaf
   `040f96377aaf110a77905d453bb76681e7133319`. Development Gatekeeper assessment
   remains diagnostic; no security-policy changes were made.
-- Hosted CI is pending publication.
+- Source publication: `c4b181f`, rebased cleanly over concurrent platform work.
+  [Hosted publication CI](https://github.com/beefsack/OmniTiler/actions/runs/38771300462)
+  covers all platforms; final results are checked before handoff.
 
 ## Remaining
 
-Publication gates are pending. Actual OS timeout-notification recovery needs a
-bounded physical-input discriminator; the synthetic stall modes must not be
+Actual OS timeout-notification recovery needs a bounded physical-input
+discriminator; the synthetic stall modes must not be
 reported as a timeout pass. Physical Carbon delivery remains unproven and is no
 longer a product-route prerequisite. The next product acceptance journey is
 unscoped user dogfooding with `mise exec -- just dev trace`. This record remains
