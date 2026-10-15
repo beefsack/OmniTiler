@@ -215,8 +215,14 @@ not feature-complete macOS delivery.
   now use portable temporary uniqueness and a tagged shell owner respectively.
   The offline fixture's earlier pattern-based cleanup was also replaced with a
   per-run spawned-PID/start-identity manifest and exact child reaping. The 96
-  launcher checks and watchdog tests pass after correction; final hosted results
-  are checked before handoff.
+  launcher checks and watchdog tests pass after correction.
+- **Hosted CI green at `53a3273`:**
+  [run 38774526403](https://github.com/beefsack/OmniTiler/actions/runs/38774526403)
+  passed all eight jobs: macOS, Windows, Rust workspace, shell, KWin, native,
+  licenses and notices. `13a8e32` hardened interrupted-start ownership;
+  `53a3273` repaired the two portability fixtures. No shared core changes were
+  required. The basic preview is ready for unscoped user dogfooding; the actual
+  timeout-notification evidence below remains open.
 
 ## Remaining
 
