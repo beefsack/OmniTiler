@@ -11,7 +11,7 @@
 use std::io::Write;
 
 fn usage() -> &'static str {
-    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy]"
+    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy] [--transient-panel-ms MS] [--transient-sheet-ms MS]"
 }
 
 fn main() {
@@ -34,6 +34,8 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let mut defer_window_ms = 0u64;
     let mut close_window_ms = 0u64;
     let mut regular_policy = false;
+    let mut transient_panel_ms = 0u64;
+    let mut transient_sheet_ms = 0u64;
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -87,6 +89,22 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
             "--regular-policy" => {
                 regular_policy = true;
             }
+            "--transient-panel-ms" => {
+                i += 1;
+                transient_panel_ms = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<u64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+            }
+            "--transient-sheet-ms" => {
+                i += 1;
+                transient_sheet_ms = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<u64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+            }
             other => return Err((2, format!("unknown arg '{other}\n{usage}", usage = usage()))),
         }
         i += 1;
@@ -98,16 +116,29 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
                 .with_defer_window_ms(defer_window_ms)
                 .with_close_window_ms(close_window_ms)
                 .with_regular_policy(regular_policy)
+                .with_transient_panel_ms(transient_panel_ms)
+                .with_transient_sheet_ms(transient_sheet_ms)
         })
         .map_err(|e| (2, e))?;
     run_target(&spec).map_err(|e| (1, e))
 }
 
 fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), String> {
+    // Bundled helpers (running inside the signed helper `.app`) report the
+    // stable helper bundle and run with regular activation; direct-spawn
+    // helpers report the probe bundle and keep the flag-driven policy. The
+    // own-bundle read is main-thread AppKit here (this process's main).
+    let own_bundle =
+        tiler_macos::ffi::own_bundle_id().unwrap_or_else(|| tiler_macos::BUNDLE_ID.to_owned());
+    let bundled = own_bundle == tiler_macos::HELPER_BUNDLE_ID;
+    let mut spec = spec.clone();
+    if bundled {
+        spec = spec.with_regular_policy(true);
+    }
     println!(
         "{}",
         serde_json::json!({
-            "bundle": tiler_macos::BUNDLE_ID,
+            "bundle": own_bundle,
             "pid": std::process::id(),
             "nonce": spec.nonce,
         })
@@ -127,6 +158,8 @@ fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), S
         spec.defer_window_ms,
         spec.close_window_ms,
         spec.regular_policy,
+        spec.transient_panel_ms,
+        spec.transient_sheet_ms,
         &|| {
             println!("{}", serde_json::json!({"ready": true}));
             let _ = std::io::stdout().flush();

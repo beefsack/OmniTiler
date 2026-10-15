@@ -1531,11 +1531,14 @@ mod tests {
     #[test]
     fn session_notification_sets_cover_the_acceptance_legs() {
         // The registered sets must include the app-level created/moved/
-        // resized/focused notifications plus the window-level
-        // moved/resized/destroyed companions — exactly the acceptance legs.
+        // resized/focused/main notifications plus the window-level
+        // moved/resized/destroyed/minimized/deminimized companions —
+        // exactly the acceptance legs (minimize/close reflow needs the
+        // window-level minimize/deminimize/destroyed watches).
         for name in [
             "AXWindowCreated",
             "AXFocusedWindowChanged",
+            "AXMainWindowChanged",
             "AXWindowMoved",
             "AXWindowResized",
         ] {
@@ -1544,7 +1547,13 @@ mod tests {
                 "{name} must be app-observed"
             );
         }
-        for name in ["AXMoved", "AXResized", "AXUIElementDestroyed"] {
+        for name in [
+            "AXMoved",
+            "AXResized",
+            "AXUIElementDestroyed",
+            "AXWindowMiniaturized",
+            "AXWindowDeminiaturized",
+        ] {
             assert!(
                 crate::ffi::AX_SESSION_WINDOW_NOTIFICATIONS.contains(&name),
                 "{name} must be window-observed"

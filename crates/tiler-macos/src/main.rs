@@ -81,12 +81,23 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // title auth inside; no hotkeys, taps, or Space writes.
             tiler_macos::ax_session::run_ax_session(seconds)
         }
-        Command::FocusSession { seconds } => {
+        Command::FocusSession { seconds, appkit } => {
             // Bounded Child-holder SLPS focus session: original preimage
             // with workspace+AX+CG agreement, SLPS focus with agreement,
             // SAME-route restore with agreement. No activation API, taps,
-            // keys, SA, or Space writes.
-            tiler_macos::focus::run_focus_session(seconds)
+            // keys, SA, or Space writes. Default raw init; --appkit opts
+            // into the Accessory lifecycle for discrimination.
+            tiler_macos::focus::run_focus_session(seconds, appkit)
+        }
+        Command::FocusDiagnose { fallback, appkit } => {
+            // Read-only focus-oracle diagnosis: workspace frontmost
+            // before/after plus the system-wide AX leg beside the
+            // independent direct per-application leg with a title-free CG
+            // join. IDs/counts/statuses only; no dispatch, no activation,
+            // no taps, no Space writes, no attribute writes. Default raw
+            // systemwide+direct legs only; --fallback opts into the
+            // experimental unproven evidence, --appkit into Accessory init.
+            tiler_macos::focus_diagnose::diagnose_focus(fallback, appkit)
         }
         Command::AxSetFrame { pid, nonce, wid } => {
             // Same authenticated spawn record as stop (pid/nonce, expected
@@ -188,6 +199,33 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 },
             })
             .to_string())
+        }
+        Command::InputSession {
+            seconds,
+            route,
+            post_route,
+            stall_once_ms,
+            direct_disable_hold_ms,
+            direct_rearm,
+            watchdog_only,
+        } => {
+            // Bounded owned input fixture over the REAL native tile source
+            // (input LIVE only: no tiling, no frame writes). LaunchServices
+            // launch via the `just launch` recipe; the holder validates
+            // oracle + ownership before every synthetic post. The
+            // `--watchdog-only` fault mode arms the tap with no helper/posts
+            // and parks past the hard watchdog (dirty exit is the evidence).
+            let request = tiler_macos::input_session::InputSessionRequest {
+                seconds,
+                route,
+                post_route,
+                stall_once_ms,
+                direct_disable_hold_ms,
+                direct_rearm,
+                watchdog_only,
+                modifier: request.modifier,
+            };
+            tiler_macos::input_session::run_input_session(request)
         }
         Command::SecureInput => {
             let status = tiler_macos::input::secure_input();
@@ -354,21 +392,86 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             slow_ms,
             seconds,
             fixed_size,
+            regular_policy,
+            close_window_ms,
+            transient_panel_ms,
+            transient_sheet_ms,
         } => {
             let nonce = tiler_macos::probe_target::mint_nonce().map_err(|e| (1, e))?;
             let spec =
                 tiler_macos::probe_target::ProbeTargetSpec::new(&nonce, hung_ms, slow_ms, seconds)
-                    .map(|s| s.with_fixed_size(fixed_size))
+                    .map(|s| {
+                        s.with_fixed_size(fixed_size)
+                            .with_regular_policy(regular_policy)
+                            .with_close_window_ms(close_window_ms)
+                            .with_transient_panel_ms(transient_panel_ms)
+                            .with_transient_sheet_ms(transient_sheet_ms)
+                    })
                     .map_err(|e| (2, e))?;
-            let mut session = tiler_macos::probe_target::spawn_verified(&spec)
+            // Hold the helper stdout pipe open for the session lifetime: the
+            // helper prints periodic snapshots, and a closed read end would
+            // SIGPIPE-kill it right after `ready` (observed live). The drain
+            // thread discards lines; identity already came from the
+            // handshake below.
+            let mut raw = tiler_macos::probe_target::start_helper_process(&spec)
                 .map_err(|e| (1, format!("spawn failed: {e}")))?;
+            let bundle = tiler_macos::probe_target::await_handshake(&mut raw, &spec)
+                .map_err(|e| (1, format!("spawn failed: {e}")))?;
+            if let Err(e) =
+                tiler_macos::probe_target::record_spawn(raw.pid, &spec, &raw.helper_path)
+            {
+                let _ = raw.child.kill();
+                let _ = raw.child.wait();
+                return Err((1, format!("spawn failed: {e}")));
+            }
+            // Drain the helper stdout pipe for the session lifetime (moves
+            // only the lines channel); the Child and its identity move into
+            // the session next. Every helper line is forwarded verbatim to
+            // this holder's own stdout (flushed): the downstream key-count
+            // snapshots and first-party close markers are the harness's
+            // delivery/close evidence, read from the LaunchServices output
+            // file — discarding them would blind the fixture AND let the
+            // pipe back up. Only JSON the helper itself printed ever passes
+            // through here; the holder adds its own ready/final lines.
+            let tiler_macos::probe_target::UnreadySpawn {
+                child,
+                pid: helper_pid,
+                helper_path: helper_canonical,
+                lines,
+                line_drops: _,
+            } = raw;
+            std::thread::Builder::new()
+                .name("probe-drain".to_owned())
+                .spawn(move || {
+                    use std::io::Write as _;
+                    // Fallible forward: a closed holder stdout (EPIPE) must
+                    // never panic-kill the drain (which would SIGPIPE-kill
+                    // the helper). Keep draining after a closed stdout so
+                    // the helper pipe never backs up; Child cleanup stays
+                    // with the exact-Child session below on every path.
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    while let Ok(line) = lines.recv() {
+                        let _ = writeln!(out, "{line}");
+                        let _ = out.flush();
+                    }
+                })
+                .map_err(|e| (1, format!("spawn failed: drain spawn: {e}")))?;
+            let mut session = tiler_macos::probe_target::SpawnSession {
+                child,
+                pid: helper_pid,
+                nonce: spec.nonce.clone(),
+                helper_path: helper_canonical,
+                bundle,
+            };
             // Expose the ready identity while the owned child is alive so
             // bounded companion commands can authenticate the same session.
+            // The bundle is the handshake-verified one (probe or helper).
             println!(
                 "{}",
                 serde_json::json!({
                     "ready": true,
-                    "bundle": tiler_macos::BUNDLE_ID,
+                    "bundle": session.bundle,
                     "pid": session.pid,
                     "nonce": session.nonce,
                 })
@@ -433,7 +536,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 ));
             }
             Ok(serde_json::json!({
-                "bundle": tiler_macos::BUNDLE_ID,
+                "bundle": session.bundle,
                 "pid": session.pid,
                 "nonce": session.nonce,
                 "exited_early": exited_early,
@@ -449,16 +552,93 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             })
             .to_string())
         }
+        Command::OwnedFrame { pid, nonce, wid } => {
+            // Read-only owned window state (AX + CG frames, minimized,
+            // fullscreen, role). No writes on any path.
+            let owned = tiler_macos::ax::authorize_owned_action(pid, &nonce)
+                .map_err(|e| (2, e.to_string()))?;
+            let report = tiler_macos::ax::read_window_owned(&owned, pid, wid).map_err(|e| {
+                (
+                    1,
+                    serde_json::json!({"stage": "owned-frame", "error": e.to_string()}).to_string(),
+                )
+            })?;
+            serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+        }
+        Command::OwnedMinimize {
+            pid,
+            nonce,
+            wid,
+            minimize,
+        } => {
+            // Explicit owned minimize/restore with preimage + readback.
+            let owned = tiler_macos::ax::authorize_owned_action(pid, &nonce)
+                .map_err(|e| (2, e.to_string()))?;
+            let report =
+                tiler_macos::ax::set_minimized_owned(&owned, pid, wid, minimize).map_err(|e| {
+                    (
+                        1,
+                        serde_json::json!({"stage": "owned-minimize", "error": e.to_string()})
+                            .to_string(),
+                    )
+                })?;
+            serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+        }
+        Command::OwnedFullscreen {
+            pid,
+            nonce,
+            wid,
+            fullscreen,
+        } => {
+            // Fixture-only owned native-fullscreen enter/exit with preimage
+            // + readback. Helper preflight only, never a shipped feature.
+            tiler_macos::owned_control::run_owned_fullscreen(pid, &nonce, wid, fullscreen)
+        }
+        Command::OwnedPost { pid, nonce, chord } => {
+            // ONE semantic tile chord through the native session stream
+            // (truthfully synthetic, oracle-gated per edge).
+            tiler_macos::owned_control::run_owned_post(pid, &nonce, &chord, request.modifier)
+        }
+        Command::OwnedFocus { pid, nonce, wid } => {
+            // SLPS focus dispatch to one exact owned window with agreement.
+            tiler_macos::owned_control::run_owned_focus(pid, &nonce, wid, request.modifier)
+        }
+        Command::Tile {
+            user_start,
+            scopes,
+            seconds,
+            input,
+        } => {
+            // Scoped tile session: explicit start + scope validated inside;
+            // bounded lifetime, one input route, LaunchServices launch via
+            // the `just tile` recipe. Shutdown is bounded and windows stay
+            // in place (never restored).
+            let request = tiler_macos::tile::TileRequest {
+                user_start,
+                scopes,
+                seconds,
+                input,
+                modifier: request.modifier,
+            };
+            tiler_macos::tile::run_tile(request)
+        }
         Command::SpacesSession {
             seconds,
             allow_untested,
         } => tiler_macos::session::run_spaces_session(seconds, allow_untested),
+        Command::ScopeInspect { scopes } => tiler_macos::scope_inspect::run_scope_inspect(scopes),
     }
 }
 
 fn preflight() -> Result<String, (i32, String)> {
     let arch = std::env::consts::ARCH;
     let arch_ok = arch == tiler_macos::SUPPORTED_ARCH;
+    // Read-only legs for the live session check: the actual window-server
+    // session verdict plus the workspace frontmost, so each live leg is
+    // inspectable without touching UI, taps, AX, or Space moves.
+    let session = tiler_macos::ffi::session_state();
+    let frontmost = tiler_macos::ffi::frontmost_app()
+        .map(|(pid, bundle)| serde_json::json!({"pid": pid, "bundle": bundle}));
     let report = serde_json::json!({
         "bundle": tiler_macos::BUNDLE_ID,
         "arch": arch,
@@ -467,6 +647,8 @@ fn preflight() -> Result<String, (i32, String)> {
         "min_macos_major": tiler_macos::MIN_MACOS_MAJOR,
         "sls_symbols": tiler_macos::ffi::sls_connection_available(),
         "secure_input": format!("{:?}", tiler_macos::input::secure_input()),
+        "session": session,
+        "frontmost": frontmost,
         "ax_trusted": tiler_macos::ffi::ax_is_process_trusted(),
         "post_event_access": tiler_macos::ffi::cg_post_event_access_known(),
         "mutates": false,

@@ -1,0 +1,819 @@
+#![cfg(test)]
+//! Mechanical split of `cli.rs` cfg tests (no behavior change).
+use crate::cli::*;
+use crate::config::{DEFAULT_PROBE_SECONDS, ProbeModifier};
+use crate::tile::{DEFAULT_TILE_SECONDS, TileInput};
+
+fn argv(words: &[&str]) -> Vec<String> {
+    std::iter::once("tiler-macos".to_owned())
+        .chain(words.iter().map(|s| s.to_string()))
+        .collect()
+}
+
+#[test]
+fn default_is_nonmutating_preflight() {
+    let r = parse_args(&argv(&[])).unwrap();
+    assert_eq!(r.command, Command::Preflight);
+    assert!(!r.may_mutate);
+}
+
+#[test]
+fn help_and_check_never_mutate() {
+    for cmd in [
+        "help",
+        "check",
+        "preflight",
+        "secure-input",
+        "spaces-diagnose",
+    ] {
+        let r = parse_args(&argv(&[cmd])).unwrap();
+        assert!(!r.may_mutate, "{cmd} must not mutate");
+    }
+    let r = parse_args(&argv(&["ax-enumerate"])).unwrap();
+    assert!(!r.may_mutate);
+}
+
+#[test]
+fn ctrl_defaults_to_ctrl() {
+    let r = parse_args(&argv(&["preflight"])).unwrap();
+    assert_eq!(r.modifier, ProbeModifier::Ctrl);
+    let r = parse_args(&argv(&["--ctrl", "meta", "preflight"])).unwrap();
+    assert_eq!(r.modifier, ProbeModifier::Meta);
+}
+
+#[test]
+fn owned_modes_require_identity() {
+    assert!(parse_args(&argv(&["ax-set-frame", "--pid", "9"])).is_err());
+    assert!(parse_args(&argv(&["ax-observe", "--pid", "9"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "ax-observe",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+        ]))
+        .unwrap()
+        .may_mutate
+    );
+    let r = parse_args(&argv(&[
+        "ax-set-frame",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--wid",
+        "3",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+}
+
+#[test]
+fn input_session_needs_an_explicit_route() {
+    // Explicit route is mandatory (never a default); stall-once is
+    // bounded and tap-agnostic at parse time (route validation refuses
+    // carbon+stall later). Post-route defaults to session; hid is the
+    // explicit upstream discriminator.
+    let r = parse_args(&argv(&["input-session", "--route", "carbon"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            route: crate::input_session::InputSessionRoute::Carbon,
+            stall_once_ms: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            post_route: crate::input_session::PostRoute::Session,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "carbon",
+        "--post-route",
+        "hid",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            route: crate::input_session::InputSessionRoute::Carbon,
+            post_route: crate::input_session::PostRoute::Hid,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
+        "--stall-once-ms",
+        "1200",
+        "--seconds",
+        "60",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            route: crate::input_session::InputSessionRoute::Tap,
+            stall_once_ms: 1200,
+            seconds: 60,
+            ..
+        }
+    ));
+    // Fixture-only DIRECT hold and watchdog-only flags parse through.
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
+        "--direct-disable-hold-ms",
+        "300",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            direct_disable_hold_ms: 300,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
+        "--direct-rearm",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            direct_rearm: true,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
+        "--seconds",
+        "4",
+        "--watchdog-only",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            watchdog_only: true,
+            seconds: 4,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["input-session"])).is_err());
+    assert!(parse_args(&argv(&["input-session", "--route", "auto"])).is_err());
+    assert!(parse_args(&argv(&["input-session", "--route", "tap", "--bogus"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "input-session",
+            "--route",
+            "carbon",
+            "--post-route",
+            "auto",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "input-session",
+            "--route",
+            "tap",
+            "--watchdog-only",
+            "--bogus"
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn input_tap_suppress_is_explicit_opt_in() {
+    let r = parse_args(&argv(&["input-tap"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputTap {
+            suppress: false,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&["input-tap", "--suppress"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputTap { suppress: true, .. }
+    ));
+    // Registration has no suppression channel at all.
+    assert!(parse_args(&argv(&["input-register", "--suppress"])).is_err());
+}
+
+#[test]
+fn spaces_diagnose_stays_read_only_with_optional_wid() {
+    let r = parse_args(&argv(&["spaces-diagnose"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDiagnose { wid: None, .. }
+    ));
+    let r = parse_args(&argv(&["spaces-diagnose", "--wid", "7"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDiagnose { wid: Some(7), .. }
+    ));
+    // Owned membership read stays read-only too.
+    let r = parse_args(&argv(&[
+        "spaces-diagnose",
+        "--wid",
+        "7",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate);
+    assert!(parse_args(&argv(&["spaces-diagnose", "--nonce", "0123456789abcdef"])).is_err());
+}
+
+#[test]
+fn cg_owned_windows_is_read_only_with_identity() {
+    let r = parse_args(&argv(&[
+        "cg-owned-windows",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(r.command, Command::CgOwnedWindows { .. }));
+    assert!(parse_args(&argv(&["cg-owned-windows", "--pid", "9"])).is_err());
+}
+
+#[test]
+fn spaces_session_is_bounded_holder_with_explicit_opt_in() {
+    let r = parse_args(&argv(&["spaces-session"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesSession {
+            seconds: DEFAULT_PROBE_SECONDS,
+            allow_untested: false,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "spaces-session",
+        "--seconds",
+        "20",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesSession {
+            seconds: 20,
+            allow_untested: true,
+        }
+    ));
+    assert!(parse_args(&argv(&["spaces-session", "--bogus"])).is_err());
+}
+
+#[test]
+fn owned_controls_parse_with_exact_identity() {
+    // owned-frame is read-only; minimize/post/focus mutate.
+    let r = parse_args(&argv(&[
+        "owned-frame",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--wid",
+        "3",
+    ]))
+    .unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(r.command, Command::OwnedFrame { .. }));
+    for args in [
+        vec![
+            "owned-minimize",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--minimize",
+        ],
+        vec![
+            "owned-focus",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+        ],
+        vec![
+            "owned-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--chord",
+            "focus-h",
+        ],
+    ] {
+        let r = parse_args(&argv(&args)).unwrap();
+        assert!(r.may_mutate, "{args:?} is write-intent");
+    }
+    // Minimize needs exactly one of --minimize/--restore.
+    assert!(
+        parse_args(&argv(&[
+            "owned-minimize",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "owned-minimize",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--minimize",
+            "--restore",
+        ]))
+        .is_err()
+    );
+    // Only semantic chords parse; arbitrary keys refuse.
+    assert!(
+        parse_args(&argv(&[
+            "owned-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--chord",
+            "ctrl-h",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "owned-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+        ]))
+        .is_err()
+    );
+    // Missing identity refuses everywhere.
+    assert!(parse_args(&argv(&["owned-frame", "--pid", "9"])).is_err());
+    assert!(parse_args(&argv(&["owned-focus", "--pid", "9"])).is_err());
+}
+
+#[test]
+fn probe_spawn_close_window_is_opt_in_ms() {
+    let r = parse_args(&argv(&["probe-spawn", "--close-window-ms", "9000"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            close_window_ms: 9000,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["probe-spawn", "--close-window-ms"])).is_err());
+}
+
+#[test]
+fn ax_session_is_bounded_holder_with_seconds_cap() {
+    let r = parse_args(&argv(&["ax-session"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::AxSession {
+            seconds: DEFAULT_PROBE_SECONDS,
+        }
+    ));
+    let r = parse_args(&argv(&["ax-session", "--seconds", "20"])).unwrap();
+    assert!(matches!(r.command, Command::AxSession { seconds: 20 }));
+    assert!(parse_args(&argv(&["ax-session", "--bogus"])).is_err());
+}
+
+#[test]
+fn focus_session_is_bounded_holder() {
+    let r = parse_args(&argv(&["focus-session"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::FocusSession {
+            seconds: DEFAULT_PROBE_SECONDS,
+            appkit: false,
+        }
+    ));
+    let r = parse_args(&argv(&["focus-session", "--seconds", "20"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::FocusSession {
+            seconds: 20,
+            appkit: false,
+        }
+    ));
+    // AppKit lifecycle is an explicit diagnostic opt-in, never implicit.
+    let r = parse_args(&argv(&["focus-session", "--appkit"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::FocusSession { appkit: true, .. }
+    ));
+    assert!(parse_args(&argv(&["focus-session", "--bogus"])).is_err());
+}
+
+#[test]
+fn focus_diagnose_is_read_only_with_opt_in_flags() {
+    let r = parse_args(&argv(&["focus-diagnose"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::FocusDiagnose {
+            fallback: false,
+            appkit: false,
+        }
+    ));
+    // Experimental fallback evidence and the AppKit init lifecycle are
+    // both explicit opt-ins; either stays read-only.
+    let r = parse_args(&argv(&["focus-diagnose", "--fallback"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::FocusDiagnose {
+            fallback: true,
+            appkit: false,
+        }
+    ));
+    let r = parse_args(&argv(&["focus-diagnose", "--appkit"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::FocusDiagnose {
+            fallback: false,
+            appkit: true,
+        }
+    ));
+    let r = parse_args(&argv(&["focus-diagnose", "--fallback", "--appkit"])).unwrap();
+    assert!(!r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::FocusDiagnose {
+            fallback: true,
+            appkit: true,
+        }
+    ));
+    assert!(parse_args(&argv(&["focus-diagnose", "--bogus"])).is_err());
+}
+
+#[test]
+fn probe_spawn_fixed_size_is_explicit_opt_in() {
+    let r = parse_args(&argv(&["probe-spawn"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            fixed_size: false,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&["probe-spawn", "--fixed-size"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            fixed_size: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn probe_spawn_regular_policy_is_explicit_opt_in() {
+    let r = parse_args(&argv(&["probe-spawn"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            regular_policy: false,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&["probe-spawn", "--regular-policy"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            regular_policy: true,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["probe-spawn", "--bogus"])).is_err());
+}
+
+#[test]
+fn probe_spawn_transient_fixtures_are_opt_in_ms() {
+    let r = parse_args(&argv(&["probe-spawn"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            transient_panel_ms: 0,
+            transient_sheet_ms: 0,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "probe-spawn",
+        "--transient-panel-ms",
+        "4000",
+        "--transient-sheet-ms",
+        "5000",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawn {
+            transient_panel_ms: 4000,
+            transient_sheet_ms: 5000,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["probe-spawn", "--transient-panel-ms"])).is_err());
+}
+
+#[test]
+fn owned_fullscreen_parses_with_exact_identity_and_single_arm() {
+    for (flag, want) in [("--enter", true), ("--exit", false)] {
+        let r = parse_args(&argv(&[
+            "owned-fullscreen",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            flag,
+        ]))
+        .unwrap();
+        assert!(r.may_mutate, "{flag} is write-intent");
+        assert!(matches!(
+            r.command,
+            Command::OwnedFullscreen {
+                fullscreen: got,
+                ..
+            } if got == want
+        ));
+    }
+    // Exactly one arm: missing or both refuse.
+    assert!(
+        parse_args(&argv(&[
+            "owned-fullscreen",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "owned-fullscreen",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--enter",
+            "--exit",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--scope",
+        "com.apple.Calculator",
+        "--seconds",
+        "30",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            user_start: true,
+            seconds: 30,
+            input: TileInput::Carbon,
+            ..
+        }
+    ));
+    if let Command::Tile { scopes, .. } = r.command {
+        assert_eq!(scopes, vec!["com.apple.TextEdit", "com.apple.Calculator"]);
+    }
+    // Defaults: carbon route, 30 s.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            seconds: DEFAULT_TILE_SECONDS,
+            input: TileInput::Carbon,
+            ..
+        }
+    ));
+    // Explicit tap/off routes only (never auto).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--input",
+        "tap",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            input: TileInput::Tap,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "com.apple.TextEdit",
+        "--input",
+        "off",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            input: TileInput::Off,
+            ..
+        }
+    ));
+    assert!(
+        parse_args(&argv(&[
+            "tile",
+            "--user-start",
+            "--scope",
+            "x",
+            "--input",
+            "auto"
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn tile_never_implies_scope_or_start() {
+    // No flags at all: parses (validation refuses later), but carries
+    // no implicit scope and no start token.
+    let r = parse_args(&argv(&["tile"])).unwrap();
+    assert!(matches!(
+        r.command,
+        Command::Tile {
+            user_start: false,
+            seconds: DEFAULT_TILE_SECONDS,
+            ..
+        }
+    ));
+    if let Command::Tile { scopes, .. } = r.command {
+        assert!(scopes.is_empty());
+    }
+    // Unknown flags refuse at parse time.
+    assert!(parse_args(&argv(&["tile", "--user-start", "--scope", "x", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["tile", "--scope"])).is_err());
+}
+
+#[test]
+fn space_write_modes_require_full_identity_and_may_mutate() {
+    for args in [
+        vec![
+            "spaces-move",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--space",
+            "5",
+            "--allow-untested",
+        ],
+        vec![
+            "spaces-restore",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+            "--space",
+            "5",
+            "--allow-untested",
+        ],
+        vec![
+            "spaces-switch",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--space",
+            "5",
+        ],
+        vec!["spaces-create", "--pid", "9", "--nonce", "0123456789abcdef"],
+        vec![
+            "spaces-destroy",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--space",
+            "5",
+        ],
+    ] {
+        let r = parse_args(&argv(&args)).unwrap();
+        assert!(r.may_mutate, "{args:?} is write-intent");
+    }
+    // The untested prerequisite defaults off (explicit opt-in only).
+    let r = parse_args(&argv(&[
+        "spaces-move",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--wid",
+        "3",
+        "--space",
+        "5",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesMove {
+            allow_untested: false,
+            ..
+        }
+    ));
+    assert!(
+        parse_args(&argv(&[
+            "spaces-move",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--wid",
+            "3",
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "spaces-switch",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+        ]))
+        .is_err()
+    );
+}

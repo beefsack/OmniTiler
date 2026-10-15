@@ -1,6 +1,7 @@
 # macOS recipes (CLT only, mise toolchain). Imported by the root justfile.
 # Build/check/bundle entry points; only `launch`/`preflight-app` execute the
-# signed bundle (bounded, via LaunchServices), everything else never launches
+# signed bundle (bounded, via LaunchServices); `tile` is also a live entry point.
+# Other recipes never launch
 # live probes.
 
 # Pass recipe arguments through as positional words: `"$@"` below carries
@@ -22,6 +23,13 @@ preflight:
 # read the JSON payload as the outcome, never the recipe exit code alone.
 launch *args:
     bash scripts/macos-launch.sh "$@"
+
+# Bounded scoped-tile dev session: explicit --user-start plus a non-empty
+# --scope stay mandatory (no implicit scope/start added here); the wrapper
+# timeout always covers the tile's own bounded --seconds (default 30).
+# Example: just tile --user-start --scope com.apple.TextEdit --scope com.apple.calculator --input tap --seconds 120
+tile *args:
+    bash scripts/macos-tile.sh "$@"
 
 # Bundle-attributed preflight (the grant under test); the plain `preflight`
 # above stays nonmutating under terminal attribution (false expected there).

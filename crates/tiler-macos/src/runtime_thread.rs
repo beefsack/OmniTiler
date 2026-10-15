@@ -24,16 +24,14 @@ use tiler_core::{
     window_policy::geometry_write_allowed,
 };
 
-use crate::input::cg_flag_bits;
-use crate::input_match::{Chord, TapKeyKind, TapTuning, decide_tap_event};
 use crate::runtime::{
-    AxCompletion, DesiredFrame, FocusRequest, FrameCommand, InputDirection, InputSemanticAction,
-    ObservedWindow, Shared, emit, lock_focus, lock_shared, parse_window_id, window_id,
+    AxCompletion, DesiredFrame, FocusCommand, FocusRequest, FrameCommand, InputSemanticAction,
+    NativeContext, ObservedWindow, Shared, emit, lock_focus, lock_shared, parse_window_id,
+    window_id,
 };
-use crate::runtime_backend::{AxBackendFactory, InputSourceFactory};
-use crate::runtime_lifecycle::{EngineExit, InputExit, WorkerExit};
+use crate::runtime_lifecycle::EngineExit;
 use crate::runtime_log::sanitize_backend_reason;
-use crate::runtime_observe::{BackendSnapshot, PendingObservation, merge_readback, stage_latest};
+use crate::runtime_types::ScopedBackendSnapshot;
 
 // -- Wake-driven inbox ---------------------------------------------------------
 
@@ -56,10 +54,30 @@ pub(crate) enum EngineJob {
         windows: Vec<ObservedWindow>,
         focused_wid: Option<u32>,
     },
+    /// Native-mode scoped observation: per-window Space membership plus the
+    /// context revision and worker-stamped focus evidence ride along, so the
+    /// engine admits exactly-homed current-user-Space members per domain
+    /// without ever inferring Space from geometry.
+    ScopedObservation {
+        pid: u32,
+        generation: u64,
+        seq: u64,
+        snapshot: ScopedBackendSnapshot,
+    },
     InputAction {
         action: InputSemanticAction,
     },
     AxResult {
+        pid: u32,
+        generation: u64,
+        cmd_id: u64,
+        completion: AxCompletion,
+    },
+    /// Honest focus-dispatch completion from the owning AX worker (the SAME
+    /// owner that observed the window). `cmd_id` carries the focus
+    /// `request_id`; dispatch truth only — arrival is verified by later
+    /// observations, never claimed here.
+    FocusResult {
         pid: u32,
         generation: u64,
         cmd_id: u64,
@@ -79,7 +97,11 @@ impl EngineJob {
     fn is_data(&self) -> bool {
         matches!(
             self,
-            Self::Observation { .. } | Self::InputAction { .. } | Self::AxResult { .. }
+            Self::Observation { .. }
+                | Self::ScopedObservation { .. }
+                | Self::InputAction { .. }
+                | Self::AxResult { .. }
+                | Self::FocusResult { .. }
         )
     }
 }
@@ -185,11 +207,16 @@ impl Inbox {
 /// revision token so a worker holding a taken batch can drop commands the
 /// newer desired state already superseded. Stopping drops the pending set
 /// (queued work is invalidated on terminate).
-pub(crate) struct FrameSlot {
+///
+/// Public so the scoped effect hook can name it; construction and mutation
+/// stay crate-internal.
+#[derive(Debug)]
+pub struct FrameSlot {
     state: Mutex<FrameSlotState>,
     wake: Condvar,
 }
 
+#[derive(Debug)]
 struct FrameSlotState {
     latest: Option<Vec<FrameCommand>>,
     stopped: bool,
@@ -224,7 +251,7 @@ impl FrameSlot {
     }
 
     /// Current revision token: bumped by every accepted `set_latest`.
-    fn current_rev(&self) -> u64 {
+    pub(crate) fn current_rev(&self) -> u64 {
         self.state.lock().expect("frame slot mutex").rev
     }
 
@@ -251,7 +278,7 @@ impl FrameSlot {
     /// observation cadence and stop latency. A `None` is ambiguous by
     /// design — the caller re-checks `stop`/`is_stopped` to tell a quiet
     /// slice from teardown.
-    fn wait_versioned_timeout(
+    pub(crate) fn wait_versioned_timeout(
         &self,
         stop: &AtomicBool,
         timeout: Duration,
@@ -286,8 +313,65 @@ impl FrameSlot {
     }
 }
 
+/// Latest-wins focus slot for one app worker: at most one pending focus
+/// command (a newer desired focus supersedes — refocusing an already
+/// superseded target would fight the plan). Stopping drops the pending
+/// command (queued focus is invalidated on terminate). Unlike [`FrameSlot`]
+/// there is no revision token or blocking take: the worker polls once per
+/// multiplex iteration (bounded cadence), which also bounds focus latency
+/// without a second condvar to multiplex.
+pub(crate) struct FocusSlot {
+    state: Mutex<FocusSlotState>,
+}
+
+struct FocusSlotState {
+    latest: Option<FocusCommand>,
+    stopped: bool,
+}
+
+impl FocusSlot {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(FocusSlotState {
+                latest: None,
+                stopped: false,
+            }),
+        }
+    }
+
+    /// Overwrite the pending focus command. Returns `None` when stopped
+    /// (caller counts the invalidation).
+    fn set_latest(&self, cmd: FocusCommand) -> Option<()> {
+        let mut state = self.state.lock().expect("focus slot mutex");
+        if state.stopped {
+            return None;
+        }
+        state.latest = Some(cmd);
+        Some(())
+    }
+
+    /// Take the pending command for dispatch, if any.
+    pub(crate) fn take(&self) -> Option<FocusCommand> {
+        let mut state = self.state.lock().expect("focus slot mutex");
+        if state.stopped {
+            return None;
+        }
+        state.latest.take()
+    }
+
+    pub(crate) fn stop(&self) {
+        let mut state = self.state.lock().expect("focus slot mutex");
+        state.stopped = true;
+        state.latest = None;
+    }
+}
+
 pub(crate) use crate::runtime_core::{
-    RetainedApp, RetainedCore, build_event, clear_focus_into, skeleton_key,
+    RetainedApp, RetainedCore, build_event, build_native_event, clear_focus_into,
+    domain_member_apps, forget_app_members, native_domain_views, skeleton_key,
+};
+use crate::runtime_native::{
+    handle_scoped_observation, plan_native_observation, reply_base_revision,
 };
 
 // -- Engine event wire ---------------------------------------------------------
@@ -368,6 +452,61 @@ pub(crate) fn engine_main(
     EngineExit::Done
 }
 
+/// Shared dispatch-truth accounting for [`EngineJob::AxResult`] and
+/// [`EngineJob::FocusResult`]: completion tokens counted plus generation
+/// freshness fenced, so late results from dead lifetimes never pollute.
+/// `kind` names the ring lane (`ax-result` for frames, `focus-result` for
+/// owner-dispatched focus).
+fn note_completion(
+    shared: &Arc<Mutex<Shared>>,
+    kind: &'static str,
+    pid: u32,
+    generation: u64,
+    cmd_id: u64,
+    completion: &AxCompletion,
+) {
+    // Preserve dispatch detail without leaking strings: Applied and
+    // Timeout carry elapsed millis in the count; Failed maps its
+    // reason to a fixed sanitized token.
+    let (token, count): (&'static str, u64) = match completion {
+        AxCompletion::Applied { elapsed_ms } => ("applied", *elapsed_ms),
+        AxCompletion::PartialApplied { elapsed_ms, .. } => ("partial-applied", *elapsed_ms),
+        AxCompletion::Failed { reason } => (sanitize_backend_reason(reason), 0),
+        AxCompletion::Timeout { timeout_ms } => ("timeout", *timeout_ms),
+    };
+    lock_shared(shared).count_completion(token);
+    let valid = lock_shared(shared)
+        .apps
+        .get(&pid)
+        .is_some_and(|r| r.generation == generation && !r.terminated);
+    if valid {
+        // Honest completion only: backend dispatch truth is logged
+        // here and never substitutes observed truth, which arrives
+        // exclusively through observations.
+        emit(shared, pid, generation, cmd_id, kind, token, count);
+    } else {
+        let terminated = lock_shared(shared)
+            .apps
+            .get(&pid)
+            .is_some_and(|r| r.terminated || r.generation != generation);
+        if terminated {
+            lock_shared(shared).diagnostics.terminated_invalidated += 1;
+            emit(
+                shared,
+                pid,
+                generation,
+                cmd_id,
+                kind,
+                "terminated-invalidated",
+                0,
+            );
+        } else {
+            lock_shared(shared).diagnostics.stale_dropped += 1;
+            emit(shared, pid, generation, cmd_id, kind, "stale-rejected", 0);
+        }
+    }
+}
+
 fn process_job(
     job: EngineJob,
     engine: &mut Engine,
@@ -423,6 +562,7 @@ fn process_job(
             }
             let removed = retained.apps.remove(&pid);
             clear_focus_into(retained, pid);
+            forget_app_members(retained, pid);
             let closed: Vec<WindowId> = removed
                 .map(|app| {
                     app.windows
@@ -442,7 +582,28 @@ fn process_job(
             );
             // Reconcile the survivors so unaffected apps stay operational;
             // the closed windows ride as explicit closes (never minimize
-            // slots for a dead app).
+            // slots for a dead app). Native mode re-plans every current
+            // domain (closed IDs ride each domain event; unknown IDs are
+            // ignored there); synthetic mode keeps the skeleton event.
+            let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
+            if let Some(ctx) = native_ctx {
+                let views = native_domain_views(&ctx);
+                plan_native_observation(
+                    engine,
+                    retained,
+                    &ctx,
+                    &views,
+                    closed,
+                    CoreCommand::Reconcile,
+                    shared,
+                    focus_queue,
+                    focus_capacity,
+                    pid,
+                    generation,
+                    0,
+                );
+                return;
+            }
             let event = wire_event(engine, retained, None, closed, CoreCommand::Reconcile);
             let reply = engine.handle(&event);
             apply_reply(
@@ -572,6 +733,24 @@ fn process_job(
                 seq,
             );
         }
+        EngineJob::ScopedObservation {
+            pid,
+            generation,
+            seq,
+            snapshot,
+        } => {
+            handle_scoped_observation(
+                engine,
+                retained,
+                shared,
+                focus_queue,
+                focus_capacity,
+                pid,
+                generation,
+                seq,
+                snapshot,
+            );
+        }
         EngineJob::InputAction { action } => {
             // The subject is observed truth, never planned focus.
             let focused = retained.observed_focus.clone();
@@ -599,9 +778,75 @@ fn process_job(
                     },
                     "move",
                 ),
+                InputSemanticAction::ToggleFloat => (
+                    CoreCommand::ToggleFloat {
+                        window: window.0.clone(),
+                        float_rect: None,
+                    },
+                    "toggle-float",
+                ),
             };
             lock_shared(shared).diagnostics.input_forwarded += 1;
             emit(shared, 0, 0, 0, "input", op, 0);
+            // Native mode resolves the subject's homed domain and plans
+            // exactly there (one domain event over that domain's full
+            // membership); an unmapped subject refuses instead of planning
+            // the skeleton. Synthetic mode keeps the single skeleton event.
+            let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
+            if let Some(ctx) = native_ctx {
+                let Some(key) = retained.window_domains.get(&window.0).cloned() else {
+                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
+                    emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
+                    return;
+                };
+                let views = native_domain_views(&ctx);
+                let Some(view) = views.iter().find(|v| v.key == key) else {
+                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
+                    emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
+                    return;
+                };
+                let member_apps = domain_member_apps(retained, &key);
+                let revision = retained
+                    .domain_revisions
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(retained.last_revision);
+                let predicate = engine.fixed_size_predicate();
+                let session = engine.session(&key);
+                let focus_op = matches!(command, CoreCommand::Focus { .. });
+                let event = build_native_event(
+                    retained,
+                    view,
+                    &member_apps,
+                    Some(window),
+                    Vec::new(),
+                    command,
+                    session,
+                    predicate,
+                    revision,
+                );
+                let reply = engine.handle(&event);
+                if let Some(base) = reply_base_revision(&reply) {
+                    retained.domain_revisions.insert(key, base);
+                }
+                lock_shared(shared).count_reply(&format!("{op}-{}", reply_kind(&reply)));
+                let mut merged = MergedPlan::default();
+                collect_reply(&reply, &mut merged);
+                apply_merged(
+                    merged,
+                    None,
+                    op,
+                    focus_op,
+                    retained,
+                    shared,
+                    focus_queue,
+                    focus_capacity,
+                    0,
+                    0,
+                    0,
+                );
+                return;
+            }
             let event = wire_event(engine, retained, Some(window), Vec::new(), command);
             let reply = engine.handle(&event);
             apply_reply(
@@ -622,53 +867,15 @@ fn process_job(
             cmd_id,
             completion,
         } => {
-            // Preserve dispatch detail without leaking strings: Applied and
-            // Timeout carry elapsed millis in the count; Failed maps its
-            // reason to a fixed sanitized token.
-            let (token, count): (&'static str, u64) = match &completion {
-                AxCompletion::Applied { elapsed_ms } => ("applied", *elapsed_ms),
-                AxCompletion::Failed { reason } => (sanitize_backend_reason(reason), 0),
-                AxCompletion::Timeout { timeout_ms } => ("timeout", *timeout_ms),
-            };
-            lock_shared(shared).count_completion(token);
-            let valid = lock_shared(shared)
-                .apps
-                .get(&pid)
-                .is_some_and(|r| r.generation == generation && !r.terminated);
-            if valid {
-                // Honest completion only: backend dispatch truth is logged
-                // here and never substitutes observed truth, which arrives
-                // exclusively through `AxObservation`.
-                emit(shared, pid, generation, cmd_id, "ax-result", token, count);
-            } else {
-                let terminated = lock_shared(shared)
-                    .apps
-                    .get(&pid)
-                    .is_some_and(|r| r.terminated || r.generation != generation);
-                if terminated {
-                    lock_shared(shared).diagnostics.terminated_invalidated += 1;
-                    emit(
-                        shared,
-                        pid,
-                        generation,
-                        cmd_id,
-                        "ax-result",
-                        "terminated-invalidated",
-                        0,
-                    );
-                } else {
-                    lock_shared(shared).diagnostics.stale_dropped += 1;
-                    emit(
-                        shared,
-                        pid,
-                        generation,
-                        cmd_id,
-                        "ax-result",
-                        "stale-rejected",
-                        0,
-                    );
-                }
-            }
+            note_completion(shared, "ax-result", pid, generation, cmd_id, &completion);
+        }
+        EngineJob::FocusResult {
+            pid,
+            generation,
+            cmd_id,
+            completion,
+        } => {
+            note_completion(shared, "focus-result", pid, generation, cmd_id, &completion);
         }
         EngineJob::Barrier(tx) => {
             let _ = tx.send(());
@@ -679,7 +886,7 @@ fn process_job(
     }
 }
 
-fn reply_kind(reply: &CoreReply) -> &'static str {
+pub(crate) fn reply_kind(reply: &CoreReply) -> &'static str {
     match reply {
         CoreReply::Projection(_) => "projection",
         CoreReply::Tiled(_) => "tiled",
@@ -698,6 +905,11 @@ fn reply_kind(reply: &CoreReply) -> &'static str {
         CoreReply::Diverged(_) => "diverged",
     }
 }
+
+/// Live per-app emission targets: PID, generation, frame slot, focus slot.
+/// One row per non-terminated app, collected without holding the lock
+/// during emission.
+type LiveSlots = Vec<(u32, u64, Arc<FrameSlot>, Arc<FocusSlot>)>;
 
 /// Whether frame emission for `window` is withheld: the retained observation
 /// still carries a native overlay flag for it. The reserved slot/allocation
@@ -731,11 +943,55 @@ fn apply_reply(
     seq: u64,
 ) {
     let token: &'static str = reply_kind(&reply);
+    let mut merged = MergedPlan::default();
+    collect_reply(&reply, &mut merged);
+    if let Some(base) = merged.revision {
+        retained.last_revision = base;
+    }
+    // Single-reply focus emission only for explicit focus operations (the
+    // merged native caller passes explicit focus replies through this same
+    // gate per reply — observations never focus).
+    let focus_reply = matches!(reply, CoreReply::FocusDirectional(_));
+    apply_merged(
+        merged,
+        Some(token),
+        op,
+        focus_reply,
+        retained,
+        shared,
+        focus_queue,
+        focus_capacity,
+        pid,
+        generation,
+        seq,
+    )
+}
+
+/// Merged plan geometry across one or more core replies (one in synthetic
+/// mode, one per tile domain in native mode). Geometry stays in plan order
+/// per reply; replies concatenate in domain order.
+#[derive(Default)]
+pub(crate) struct MergedPlan {
+    /// Full plan geometry including overlaid members (plan truth; the
+    /// emission filter below withholds overlay writes without touching it).
+    geometry: Vec<(String, Rect)>,
+    /// Planned focus target, when some reply named one.
+    focus_to: Option<WindowId>,
+    /// Plan revision when some reply carried one (drives empty-set
+    /// supersede; refusals carry none and emit nothing).
+    revision: Option<u64>,
+}
+
+/// Extract plan geometry, focus target, and revision from one core reply.
+/// Pure over the reply; the overlay filter and emission live in
+/// [`apply_merged`] so synthetic single-reply and native multi-reply paths
+/// share them exactly.
+pub(crate) fn collect_reply(reply: &CoreReply, out: &mut MergedPlan) {
     // Geometry plus revision carried by success replies.
     let mut geometry: Vec<(String, Rect)> = Vec::new();
     let mut revision: Option<u64> = None;
     let mut focus_to: Option<WindowId> = None;
-    match &reply {
+    match reply {
         CoreReply::Projection(plan) => {
             revision = Some(plan.base_revision);
             geometry = plan
@@ -789,9 +1045,38 @@ fn apply_reply(
         }
         _ => {}
     }
-    if let Some(base) = revision {
-        retained.last_revision = base;
+    out.geometry.extend(geometry);
+    if out.focus_to.is_none() {
+        out.focus_to = focus_to;
     }
+    if out.revision.is_none() {
+        out.revision = revision;
+    }
+}
+
+/// Apply one merged plan: snapshot desired geometry, filter overlay writes,
+/// and hand per-app latest-wins frame sets plus at most one focus dispatch
+/// to the owning workers. Shared exactly by the synthetic single-reply path
+/// and the native multi-reply path so emission semantics cannot diverge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_merged(
+    merged: MergedPlan,
+    token: Option<&'static str>,
+    op: &'static str,
+    focus_reply: bool,
+    retained: &mut RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
+    focus_capacity: usize,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) {
+    let MergedPlan {
+        geometry,
+        focus_to,
+        revision,
+    } = merged;
     // Snapshot desired geometry for tests and diagnostics. Built from the
     // FULL plan geometry: overlaid members stay plan truth even while
     // emission below withholds their writes.
@@ -825,15 +1110,36 @@ fn apply_reply(
     // only into the focus request below, and the input subject stays on
     // `observed_focus` until an observation confirms arrival. A dropped
     // request therefore never advances focus.
-    // Collect live per-app slots without holding the lock during emission.
-    let slots: Vec<(u32, u64, Arc<FrameSlot>)> = {
+    // Collect live per-app slots plus the current topology revision fence
+    // and focus route without holding the lock during emission.
+    let (slots, topology_revision, focus_route, native_mode): (
+        LiveSlots,
+        u64,
+        crate::focus_route::FocusRoute,
+        bool,
+    ) = {
         let guard = lock_shared(shared);
-        guard
-            .apps
-            .iter()
-            .filter(|(_, r)| !r.terminated)
-            .map(|(pid, r)| (*pid, r.generation, Arc::clone(&r.frames)))
-            .collect()
+        (
+            guard
+                .apps
+                .iter()
+                .filter(|(_, r)| !r.terminated)
+                .map(|(pid, r)| {
+                    (
+                        *pid,
+                        r.generation,
+                        Arc::clone(&r.frames),
+                        Arc::clone(&r.focus),
+                    )
+                })
+                .collect(),
+            guard.topology_revision,
+            guard.config.focus_route,
+            matches!(
+                guard.config.topology_mode,
+                crate::runtime_types::TopologyMode::Native
+            ),
+        )
     };
     // Group the plan by app so each worker receives its whole desired
     // set in one latest-wins handoff.
@@ -846,8 +1152,8 @@ fn apply_reply(
         };
         let generation = slots
             .iter()
-            .find(|(p, _, _)| *p == wpid)
-            .map(|(_, generation, _)| *generation)
+            .find(|(p, _, _, _)| *p == wpid)
+            .map(|(_, generation, _, _)| *generation)
             .unwrap_or(0);
         // Per-app command sequence comes from retained state.
         let cmd_id = retained
@@ -868,13 +1174,20 @@ fn apply_reply(
             y: rect.y,
             w: rect.w,
             h: rect.h,
+            topology_revision,
+            // Engine-homed target domain at plan time: the backend pins
+            // effects to exactly this domain, so a window that crosses
+            // displays mid-plan refuses the remaining legs instead of
+            // actuating outside its planned domain. `None` for unmapped
+            // (synthetic/legacy) windows, which derive live instead.
+            domain: retained.window_domains.get(window).cloned(),
         });
     }
     let mut emitted = 0u64;
     let mut coalesced = 0u64;
     let mut dead = unparseable;
     for (wpid, cmds) in &by_app {
-        let Some((_, _, slot)) = slots.iter().find(|(p, _, _)| *p == *wpid) else {
+        let Some((_, _, slot, _)) = slots.iter().find(|(p, _, _, _)| *p == *wpid) else {
             dead += cmds.len() as u64;
             continue;
         };
@@ -891,7 +1204,7 @@ fn apply_reply(
     // pending set. Refusals carry no plan (`revision` is `None`) and emit
     // nothing.
     if revision.is_some() {
-        for (wpid, _, slot) in &slots {
+        for (wpid, _, slot, _) in &slots {
             if !by_app.contains_key(wpid)
                 && let Some(overwritten) = slot.set_latest(Vec::new())
             {
@@ -901,18 +1214,22 @@ fn apply_reply(
     }
     // Focus requests out: only explicit focus operations dispatch native
     // focus. Reconcile/admit/move re-plan geometry (and track focus
-    // internally) without moving native focus.
+    // internally) without moving native focus. Each dispatch travels two
+    // paths: the bounded controller outbox (drained record, existing API)
+    // and the owning app's latest-wins focus slot (actuation — the SAME
+    // per-app AX owner that observed the window dispatches it). Both share
+    // one `request_id` so dispatch truth correlates across them.
     let mut focus_dispatched = 0u64;
     let mut focus_dropped = 0u64;
-    if matches!(reply, CoreReply::FocusDirectional(_))
+    if focus_reply
         && let Some(to_window) = focus_to
         && let Some((fpid, fwid)) = parse_window_id(&to_window.0)
     {
-        let generation = slots
+        let (generation, focus_slot) = slots
             .iter()
-            .find(|(p, _, _)| *p == fpid)
-            .map(|(_, generation, _)| *generation)
-            .unwrap_or(0);
+            .find(|(p, _, _, _)| *p == fpid)
+            .map(|(_, generation, _, focus)| (*generation, Some(Arc::clone(focus))))
+            .unwrap_or((0, None));
         let request_id = {
             retained.focus_seq += 1;
             retained.focus_seq
@@ -925,6 +1242,7 @@ fn apply_reply(
             window: to_window.0.clone(),
             dispatched: true,
             verified: false,
+            topology_revision,
         };
         let mut queue = lock_focus(focus_queue);
         if queue.len() < focus_capacity {
@@ -933,10 +1251,37 @@ fn apply_reply(
         } else {
             focus_dropped = 1;
         }
+        drop(queue);
+        // Owner actuation path, native mode only (the synthetic skeleton
+        // has no per-app focus dispatch; its workers never read the slot,
+        // so emitting there would only perturb the exact outbox counters
+        // the legacy tests pin). Latest-wins: a newer desired focus
+        // supersedes. A stopped slot means the app is terminating: the
+        // command dies with its lifetime, counted as dropped.
+        if native_mode && let Some(slot) = focus_slot {
+            let cmd = FocusCommand {
+                pid: fpid,
+                generation,
+                request_id,
+                wid: fwid,
+                window: to_window.0,
+                revision: topology_revision,
+                route: focus_route,
+            };
+            if slot.set_latest(cmd).is_some() {
+                focus_dispatched += 1;
+            } else {
+                focus_dropped += 1;
+            }
+        } else if native_mode {
+            focus_dropped += 1;
+        }
     }
     {
         let mut guard = lock_shared(shared);
-        guard.count_reply(&format!("{op}-{token}"));
+        if let Some(token) = token {
+            guard.count_reply(&format!("{op}-{token}"));
+        }
         guard.diagnostics.frames_emitted += emitted;
         guard.diagnostics.frames_coalesced += coalesced;
         guard.diagnostics.frames_overlay_skipped += overlay_skipped;
@@ -955,6 +1300,11 @@ fn apply_reply(
     // revision (verified against the core: fresh sessions start clean
     // regardless of the cursor), so no cursor reset is needed here. Held
     // and minimize-slot sessions persist with their cursor untouched.
+    //
+    // `token` is `None` only for merged native applies, whose caller
+    // counts each reply separately; the ring entry below then carries the
+    // merged op name instead of a single reply kind.
+    let token = token.unwrap_or("merged");
     emit(shared, pid, generation, seq, "core-reply", token, emitted);
     if emitted > 0 {
         emit(shared, pid, generation, seq, "frame", "emitted", emitted);
@@ -962,435 +1312,6 @@ fn apply_reply(
     if focus_dropped > 0 {
         emit(shared, pid, generation, seq, "focus", "dropped-full", 1);
     }
-}
-
-/// Bound for one worker multiplex slice: frame waits and backend
-/// observation pumps share this cadence. Command wake stays immediate
-/// (slot `Condvar`); autonomous fake observations wake immediately (channel
-/// `recv_timeout`); native notifications interrupt the runloop pump. The
-/// bound only caps quiet-slice latency — correctness never depends on it.
-const OBSERVE_SLICE: Duration = Duration::from_millis(20);
-
-/// Publish one worker-stamped observation. Sequence and generation are
-/// stamped here, never by the backend. Returns false under backpressure
-/// (caller retains the latest snapshot and retries — the final state is
-/// never silently lost).
-fn send_observation(
-    inbox: &Arc<Inbox>,
-    shared: &Arc<Mutex<Shared>>,
-    pid: u32,
-    generation: u64,
-    seq: u64,
-    snapshot: &BackendSnapshot,
-) -> bool {
-    let job = EngineJob::Observation {
-        pid,
-        generation,
-        seq,
-        windows: snapshot.windows.clone(),
-        focused_wid: snapshot.focused_wid,
-    };
-    if inbox.try_send_data(job) {
-        lock_shared(shared).diagnostics.observations_published += 1;
-        emit(
-            shared,
-            pid,
-            generation,
-            seq,
-            "observation",
-            "published",
-            snapshot.windows.len() as u64,
-        );
-        true
-    } else {
-        false
-    }
-}
-
-fn note_observation_failure(
-    shared: &Arc<Mutex<Shared>>,
-    pid: u32,
-    generation: u64,
-    seq: u64,
-    reason: &str,
-) {
-    // Failure preserves retained engine state: nothing is published, the
-    // last good observation stands, and the failure is counted. The outcome
-    // is the sanitized reason token (allowlisted OS names only), so the why
-    // is preserved without leaking arbitrary backend strings; an error is
-    // never an empty observation.
-    let token = sanitize_backend_reason(reason);
-    lock_shared(shared).diagnostics.observation_failures += 1;
-    emit(shared, pid, generation, seq, "observation", token, 0);
-}
-
-/// Per-app AX worker: creates the backend inside this owning thread,
-/// reports its own `Launch` to the engine once the backend exists (so backend
-/// readiness can never stall the spawner), publishes a startup observation,
-/// then multiplexes autonomous backend observations, latest-wins frame
-/// commands, and post-apply readbacks. Never touches the core. A panic
-/// here is supervision evidence, never a clean outcome.
-///
-/// Observation rules: unchanged snapshots are skipped (no busy feedback when
-/// native clamps or refuses); failures preserve retained state; a saturated
-/// inbox retains the latest snapshot for retry instead of dropping the final
-/// state. Readbacks merge the last known focus so a focus-blind frame read
-/// never clears observed focus truth.
-///
-/// Command fence: NO command from a taken batch starts once stop is set or
-/// a newer desired set supersedes the batch — including the first command.
-/// Calls already inside the backend may finish (taken is not inflight), but
-/// nothing taken-but-unstarted begins after the fence.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn app_worker_main(
-    pid: u32,
-    generation: u64,
-    factory: Arc<dyn AxBackendFactory>,
-    frames: Arc<FrameSlot>,
-    inbox: Arc<Inbox>,
-    shared: Arc<Mutex<Shared>>,
-    stop: Arc<AtomicBool>,
-    ready: Arc<Mutex<Option<Result<(), String>>>>,
-) -> WorkerExit {
-    let mut backend = match factory.create(pid) {
-        Ok(backend) => backend,
-        Err(reason) => {
-            *ready.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Err(reason));
-            return WorkerExit::Clean;
-        }
-    };
-    // Backend exists: queue admission before marking ready, so `Ready`
-    // implies the engine `Launch` is already in the control lane. Dropped on
-    // a stopped runtime (the entry is gone; the engine rejects it as stale).
-    let _ = inbox.send_control(EngineJob::Launch { pid, generation });
-    *ready.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Ok(()));
-    // A stop that raced creation must not begin AX work: readiness was
-    // already reported, so fall through to honest teardown instead.
-    if stop.load(Ordering::SeqCst) || frames.is_stopped() {
-        return teardown_worker(&mut backend, &shared, pid, generation, 0);
-    }
-    let mut seq: u64 = 0;
-    let mut last: Option<BackendSnapshot> = None;
-    let mut pending = PendingObservation::new();
-    let mut focus_hint: Option<u32> = None;
-    // Startup observation: the first truth the engine ever sees for this
-    // lifetime. A failure publishes nothing (retained state starts empty
-    // and stays empty until a good read); it never publishes an empty list
-    // in place of the failure.
-    match backend.snapshot() {
-        Ok(windows) => {
-            let snapshot = BackendSnapshot {
-                windows,
-                focused_wid: None,
-            };
-            seq += 1;
-            if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
-                last = Some(snapshot);
-            } else {
-                pending.set(snapshot);
-            }
-        }
-        Err(reason) => note_observation_failure(&shared, pid, generation, seq + 1, &reason),
-    }
-    loop {
-        if stop.load(Ordering::SeqCst) || frames.is_stopped() {
-            break;
-        }
-        // Autonomous backend observation (bounded; `None` covers both "no
-        // autonomous source" and "nothing new since the last pump").
-        if let Some(result) = backend.poll_observation(&stop) {
-            match result {
-                Ok(snapshot) => stage_latest(&last, &mut pending, snapshot),
-                Err(reason) => {
-                    note_observation_failure(&shared, pid, generation, seq + 1, &reason);
-                }
-            }
-        }
-        if stop.load(Ordering::SeqCst) || frames.is_stopped() {
-            break;
-        }
-        // Flush the latest retained observation (backpressure: retained and
-        // retried, never silently lost).
-        if let Some(snapshot) = pending.take() {
-            seq += 1;
-            if send_observation(&inbox, &shared, pid, generation, seq, &snapshot) {
-                focus_hint = snapshot.focused_wid;
-                last = Some(snapshot);
-            } else {
-                pending.set(snapshot);
-            }
-        }
-        let Some((taken_rev, cmds)) = frames.wait_versioned_timeout(&stop, OBSERVE_SLICE) else {
-            continue;
-        };
-        // An empty taken batch is still a cancellation: a whole empty
-        // desired set (window removal) supersedes pending frame state, and
-        // the readback below confirms the removal. It must flow through,
-        // never short-circuit.
-        for (index, cmd) in cmds.iter().enumerate() {
-            // Fence every command including the first: a taken batch is not
-            // inflight work, so nothing in it may start after stop or after
-            // a superseding desired set. Calls already inside the backend
-            // finish on their own bound.
-            if stop.load(Ordering::SeqCst) {
-                let skipped = (cmds.len() - index) as u64;
-                lock_shared(&shared).diagnostics.terminated_invalidated += skipped;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "frame",
-                    "stop-fenced",
-                    skipped,
-                );
-                break;
-            }
-            if frames.current_rev() != taken_rev {
-                let skipped = (cmds.len() - index) as u64;
-                lock_shared(&shared).diagnostics.frames_coalesced += skipped;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "frame",
-                    "superseded",
-                    skipped,
-                );
-                break;
-            }
-            if cmd.generation != generation || cmd.pid != pid {
-                lock_shared(&shared).diagnostics.stale_dropped += 1;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "frame",
-                    "stale-rejected",
-                    0,
-                );
-                continue;
-            }
-            // Redundant once observers report back: desired geometry already
-            // matching the last observed geometry needs no native write.
-            // Identity is wid plus full rect; anything else still actuates.
-            if last
-                .as_ref()
-                .and_then(|s| {
-                    s.windows.iter().find(|w| {
-                        w.wid == cmd.wid
-                            && w.x == cmd.x
-                            && w.y == cmd.y
-                            && w.w == cmd.w
-                            && w.h == cmd.h
-                    })
-                })
-                .is_some()
-            {
-                lock_shared(&shared).diagnostics.frames_redundant_skipped += 1;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "frame",
-                    "redundant-skipped",
-                    0,
-                );
-                continue;
-            }
-            // The backend bounds each call with its own finite messaging
-            // timeout; completion is honest dispatch truth only. Frame
-            // dispatch is logged worker-side (the engine logs the async
-            // completion separately), so the normal log reconstructs
-            // core -> frame -> completion.
-            emit(
-                &shared,
-                pid,
-                generation,
-                cmd.cmd_id,
-                "frame",
-                "dispatched",
-                0,
-            );
-            let completion = backend.apply_frame(cmd);
-            let job = EngineJob::AxResult {
-                pid,
-                generation,
-                cmd_id: cmd.cmd_id,
-                completion,
-            };
-            if !inbox.try_send_data(job) {
-                lock_shared(&shared).diagnostics.result_dropped_full += 1;
-                emit(
-                    &shared,
-                    pid,
-                    generation,
-                    cmd.cmd_id,
-                    "ax-result",
-                    "queue-full-dropped",
-                    0,
-                );
-            }
-        }
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        // Post-apply readback: what the desktop actually shows after this
-        // batch. Unchanged readbacks are skipped (a native clamp is not
-        // replayed endlessly); failures preserve retained state.
-        match backend.snapshot() {
-            Ok(windows) => {
-                let snapshot = merge_readback(windows, focus_hint);
-                stage_latest(&last, &mut pending, snapshot);
-            }
-            Err(reason) => note_observation_failure(&shared, pid, generation, seq + 1, &reason),
-        }
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-    }
-    teardown_worker(&mut backend, &shared, pid, generation, seq)
-}
-
-/// Honest teardown: the outcome is logged and returned, never a silent
-/// clean. (A panic inside still propagates and the shutdown report stays
-/// dirty via join accounting; a returned `Unclean` is distinct join
-/// evidence that also poisons the terminal shutdown.) Teardown accounting
-/// lives on the join side only: this records the live error log plus the
-/// operational failure count, never `worker_unclean_observed` (the join
-/// adds that exactly once), so the numerical report stays trustworthy.
-fn teardown_worker(
-    backend: &mut Box<dyn crate::runtime_backend::AxBackend>,
-    shared: &Arc<Mutex<Shared>>,
-    pid: u32,
-    generation: u64,
-    seq: u64,
-) -> WorkerExit {
-    match backend.shutdown() {
-        Ok(()) => {
-            emit(shared, pid, generation, seq, "observer", "torn-down", 0);
-            WorkerExit::Clean
-        }
-        Err(_) => {
-            lock_shared(shared).diagnostics.observation_failures += 1;
-            emit(
-                shared,
-                pid,
-                generation,
-                seq,
-                "observer",
-                "teardown-failed",
-                0,
-            );
-            WorkerExit::Unclean {
-                reason: "teardown-failed",
-            }
-        }
-    }
-}
-
-/// Exact-match tuning for one configured chord: the existing
-/// [`TapTuning`] mask semantics, so extra modifiers fail the match.
-fn tuning_for(modifier: crate::config::ProbeModifier, key_code: u32) -> TapTuning {
-    let (want_flags, flags_mask) = cg_flag_bits(modifier);
-    TapTuning {
-        want_flags,
-        flags_mask,
-        want_code: i64::from(key_code),
-    }
-}
-
-/// Dedicated input owner: creates, drives, and destroys its input source
-/// inside this thread. Exact chord matches on key down only are forwarded
-/// as semantic actions; this thread never touches the core. An unexpected
-/// source EOS (`None` without stop) is counted, logged, and exits — never
-/// spun on.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn input_main(
-    shared: Arc<Mutex<Shared>>,
-    inbox: Arc<Inbox>,
-    stop: Arc<AtomicBool>,
-    factory: Arc<dyn InputSourceFactory>,
-    focus_chord: Chord,
-    move_chord: Chord,
-    direction: InputDirection,
-    ready_tx: mpsc::Sender<Result<(), String>>,
-) -> InputExit {
-    // Retain the parked thread so stop/shutdown can `unpark` it awake.
-    lock_shared(&shared).input_thread = Some(std::thread::current());
-    let mut source = match factory.create() {
-        Ok(source) => {
-            let _ = ready_tx.send(Ok(()));
-            source
-        }
-        Err(reason) => {
-            let _ = ready_tx.send(Err(reason));
-            return InputExit::Done;
-        }
-    };
-    let focus_tuning = tuning_for(focus_chord.modifier, focus_chord.key_code);
-    let move_tuning = tuning_for(move_chord.modifier, move_chord.key_code);
-    // The source is destroyed here on thread exit.
-    loop {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let Some(event) = source.next(&stop) else {
-            if stop.load(Ordering::SeqCst) {
-                break;
-            }
-            // Unexpected EOS (disconnect/exhaustion): counted, logged, and
-            // folded into the shutdown outcome (unclean, never clean) —
-            // never spun on.
-            lock_shared(&shared).diagnostics.unexpected_eos += 1;
-            emit(&shared, 0, 0, 0, "input", "eos-unexpected", 0);
-            break;
-        };
-        // Forward semantic actions only on key down with an exact chord
-        // match. Key-up, inexact modifiers (including extras), and unrelated
-        // keys are ignored; the core is never consulted here.
-        if event.kind != TapKeyKind::KeyDown {
-            lock_shared(&shared).diagnostics.input_ignored += 1;
-            continue;
-        }
-        let mut pending = false;
-        let focus_hit = decide_tap_event(
-            TapKeyKind::KeyDown,
-            event.flags,
-            i64::from(event.key_code),
-            focus_tuning,
-            false,
-            &mut pending,
-        )
-        .matched;
-        let move_hit = decide_tap_event(
-            TapKeyKind::KeyDown,
-            event.flags,
-            i64::from(event.key_code),
-            move_tuning,
-            false,
-            &mut pending,
-        )
-        .matched;
-        let action = if focus_hit {
-            Some(InputSemanticAction::FocusStep { direction })
-        } else if move_hit {
-            Some(InputSemanticAction::MoveStep { direction })
-        } else {
-            None
-        };
-        let Some(action) = action else {
-            lock_shared(&shared).diagnostics.input_ignored += 1;
-            continue;
-        };
-        if !inbox.try_send_data(EngineJob::InputAction { action }) {
-            lock_shared(&shared).diagnostics.data_dropped_full += 1;
-        }
-    }
-    InputExit::Done
 }
 
 #[cfg(test)]
@@ -1439,6 +1360,8 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            topology_revision: 0,
+            domain: None,
         };
         assert_eq!(slot.set_latest(vec![cmd(1)]), Some(0));
         // A whole newer desired set overwrites the pending one; the
@@ -1458,5 +1381,34 @@ mod tests {
         slot.stop();
         assert_eq!(slot.set_latest(vec![cmd(4)]), None);
         assert_eq!(slot.take_versioned(&stop), None);
+    }
+
+    fn focus_cmd(pid: u32, generation: u64, revision: u64) -> FocusCommand {
+        FocusCommand {
+            pid,
+            generation,
+            request_id: 1,
+            wid: 7,
+            window: format!("{pid}_7"),
+            revision,
+            route: crate::focus_route::FocusRoute::Slps,
+        }
+    }
+
+    #[test]
+    fn focus_slot_is_latest_wins_and_dies_with_lifetime() {
+        let slot = Arc::new(FocusSlot::new());
+        // Newer desired focus supersedes: only the latest dispatches, so a
+        // refocus never fights the plan.
+        assert!(slot.set_latest(focus_cmd(9, 1, 3)).is_some());
+        assert!(slot.set_latest(focus_cmd(9, 1, 4)).is_some());
+        let taken = slot.take().expect("pending focus");
+        assert_eq!(taken.revision, 4);
+        assert!(slot.take().is_none(), "take drains");
+        // Stop invalidates: queued focus never outlives its lifetime.
+        assert!(slot.set_latest(focus_cmd(9, 1, 5)).is_some());
+        slot.stop();
+        assert!(slot.set_latest(focus_cmd(9, 1, 6)).is_none());
+        assert!(slot.take().is_none());
     }
 }

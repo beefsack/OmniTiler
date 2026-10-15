@@ -18,10 +18,13 @@
 //! must validate that identity before any mutation and must never fall back
 //! to Ghostty, the controlling terminal, or an arbitrary window.
 //!
-//! There is no `NSRunningApplication.launchDate` token anywhere: directly
-//! spawned helpers have no LaunchServices entry, and the live window-nonce
-//! title is the current-process proof (a stale record plus a same-executable
-//! PID reuse carries a different nonce title and is refused).
+//! There is no `NSRunningApplication.launchDate` token anywhere for directly
+//! spawned helpers: they have no LaunchServices entry, and the live
+//! window-nonce title is the current-process proof (a stale record plus a
+//! same-executable PID reuse carries a different nonce title and is
+//! refused). Bundled helpers (spawned from the signed helper `.app`) DO
+//! carry a LaunchServices entry plus launch date, so the scoped backend can
+//! additionally bind them under an explicit helper-bundle scope.
 //!
 //! `hung_ms` / `slow_ms` stall the owned target *after* its window is
 //! serviced (ready marker printed), so AX timeout handling is measurable
@@ -99,6 +102,20 @@ pub struct ProbeTargetSpec {
     /// accessory); enabled via `--regular-policy` (probe binary and
     /// `focus-session` holder only).
     pub regular_policy: bool,
+    /// Owned transient dialog fixture: an `NSPanel` utility window with a
+    /// native dialog subrole, opened after `ready` and closed after this many
+    /// milliseconds while the main owned window stays alive to its seconds
+    /// deadline. Default 0 (never opens); clamped to 20000 in the helper.
+    /// Enabled via `--transient-panel-ms` (probe binary and `probe-spawn`).
+    pub transient_panel_ms: u64,
+    /// Owned attached-sheet fixture: a secondary window presented as a true
+    /// sheet on the main owned window (`beginSheet`, no completion work),
+    /// closed via `endSheet` after this many milliseconds while the parent
+    /// stays alive. Default 0 (never opens); clamped to 20000 in the helper.
+    /// AX/CG identity of the sheet (role vs window alias, separate vs shared
+    /// WID) is observed natively, never invented. Enabled via
+    /// `--transient-sheet-ms`.
+    pub transient_sheet_ms: u64,
 }
 
 impl ProbeTargetSpec {
@@ -126,6 +143,8 @@ impl ProbeTargetSpec {
             defer_window_ms: 0,
             close_window_ms: 0,
             regular_policy: false,
+            transient_panel_ms: 0,
+            transient_sheet_ms: 0,
         })
     }
 
@@ -157,6 +176,20 @@ impl ProbeTargetSpec {
         self
     }
 
+    /// Open the transient utility panel `ms` after `ready` (see field docs).
+    /// Builder; clamped to 20000 in the helper.
+    pub fn with_transient_panel_ms(mut self, ms: u64) -> Self {
+        self.transient_panel_ms = ms;
+        self
+    }
+
+    /// Present the attached sheet `ms` after `ready` (see field docs).
+    /// Builder; clamped to 20000 in the helper.
+    pub fn with_transient_sheet_ms(mut self, ms: u64) -> Self {
+        self.transient_sheet_ms = ms;
+        self
+    }
+
     /// argv fragment for spawning the helper (no shell; exact args).
     pub fn argv(&self) -> Vec<String> {
         let mut args = vec![
@@ -180,6 +213,14 @@ impl ProbeTargetSpec {
         }
         if self.regular_policy {
             args.push("--regular-policy".to_owned());
+        }
+        if self.transient_panel_ms > 0 {
+            args.push("--transient-panel-ms".to_owned());
+            args.push(self.transient_panel_ms.to_string());
+        }
+        if self.transient_sheet_ms > 0 {
+            args.push("--transient-sheet-ms".to_owned());
+            args.push(self.transient_sheet_ms.to_string());
         }
         args
     }
@@ -280,6 +321,30 @@ mod tests {
             .with_regular_policy(true);
         assert!(regular.regular_policy);
         assert!(regular.argv().contains(&"--regular-policy".to_owned()));
+    }
+
+    #[test]
+    fn transient_fixtures_are_opt_in_and_reach_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert_eq!(plain.transient_panel_ms, 0);
+        assert_eq!(plain.transient_sheet_ms, 0);
+        assert!(!plain.argv().contains(&"--transient-panel-ms".to_owned()));
+        assert!(!plain.argv().contains(&"--transient-sheet-ms".to_owned()));
+        let transient = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_transient_panel_ms(4000)
+            .with_transient_sheet_ms(5000);
+        let argv = transient.argv();
+        let panel = argv
+            .iter()
+            .position(|a| a == "--transient-panel-ms")
+            .expect("panel flag present");
+        assert_eq!(argv[panel + 1], "4000");
+        let sheet = argv
+            .iter()
+            .position(|a| a == "--transient-sheet-ms")
+            .expect("sheet flag present");
+        assert_eq!(argv[sheet + 1], "5000");
     }
 
     // Unix-only: reads `/dev/urandom`, which does not exist on Windows.
@@ -404,6 +469,84 @@ mod tests {
         assert!(title_nonce(Some(&format!("{title} "))).is_none());
         assert!(title_nonce(None).is_none());
     }
+
+    #[test]
+    fn handshake_accepts_bundled_helper_bundle() {
+        // The bundled helper reports the stable helper bundle, not the probe
+        // bundle: both verify with exact PID and nonce.
+        for bundle in [crate::BUNDLE_ID, crate::HELPER_BUNDLE_ID] {
+            assert!(
+                check_handshake_identity(
+                    bundle,
+                    4242,
+                    "0123456789abcdef",
+                    4242,
+                    "0123456789abcdef"
+                )
+                .is_ok(),
+                "{bundle}"
+            );
+        }
+        assert_ne!(crate::BUNDLE_ID, crate::HELPER_BUNDLE_ID);
+    }
+
+    #[test]
+    fn bundled_helper_resolves_beside_the_probe_app_only() {
+        use std::path::Path;
+        // Inside the probe bundle layout: sibling helper `.app` executable.
+        let exe = Path::new("/tmp/target/macos/OmniTilerProbe.app/Contents/MacOS/tiler-macos");
+        assert_eq!(
+            bundled_helper_for_exe(exe),
+            Some(Path::new(
+                "/tmp/target/macos/OmniTilerProbeHelper.app/Contents/MacOS/tiler-macos-probe-target"
+            )
+            .to_owned())
+        );
+        // Outside a bundle layout (plain cargo runs): no bundled helper.
+        assert_eq!(
+            bundled_helper_for_exe(Path::new("/tmp/target/debug/tiler-macos")),
+            None
+        );
+        assert_eq!(
+            bundled_helper_for_exe(Path::new("/tmp/target/macos/tiler-macos")),
+            None
+        );
+        // Wrong leaf names never resolve (fail closed, never guessed).
+        assert_eq!(
+            bundled_helper_for_exe(Path::new("/tmp/X.app/Contents/Resources/tiler-macos")),
+            None
+        );
+        assert_eq!(
+            bundled_helper_for_exe(Path::new("/tmp/X.app/Bundle/tiler-macos")),
+            None
+        );
+    }
+
+    #[test]
+    fn helper_line_queue_is_bounded_with_counted_drops() {
+        // Finite protocol bound: handshake (2 lines) plus snapshots fits
+        // with margin; a full queue drops via try_send (counted) instead of
+        // blocking the helper, and a dropped receiver ends the sender
+        // without killing anything.
+        const { assert!(HELPER_LINE_QUEUE_BOUND >= 128) };
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(2);
+        // Handshake on an empty queue never drops.
+        assert!(tx.try_send("identity".to_owned()).is_ok());
+        assert!(tx.try_send("ready".to_owned()).is_ok());
+        // Full queue: non-blocking drop, counted by the caller.
+        let mut drops = 0u64;
+        if tx.try_send("snapshot".to_owned()).is_err() {
+            drops += 1;
+        }
+        assert_eq!(drops, 1);
+        // Handshake lines survive; the drop was the snapshot only.
+        assert_eq!(rx.try_recv().unwrap(), "identity");
+        assert_eq!(rx.try_recv().unwrap(), "ready");
+        // Broken receiver: try_send disconnects promptly (never blocks the
+        // helper, never kills it, no unbounded buffer).
+        drop(rx);
+        assert!(tx.try_send("late".to_owned()).is_err());
+    }
 }
 
 /// Durable spawn record: what `probe-stop` and every owned read/write path
@@ -491,23 +634,111 @@ fn expected_helper_canonical() -> Result<String, String> {
         .parent()
         .ok_or_else(|| "current exe has no parent dir".to_owned())?;
     let sibling = dir.join("tiler-macos-probe-target");
-    if !sibling.is_file()
-        || std::fs::symlink_metadata(&sibling)
+    canonical_plain_file(&sibling).map_err(|_| {
+        "probe helper 'tiler-macos-probe-target' not found beside the CLI binary (or is a symlink)"
+            .to_owned()
+    })
+}
+
+/// Reject anything that is not a plain regular file at exactly this path
+/// (no symlinks, no dirs, no foreign mounts tricks at the leaf), then
+/// canonicalize.
+fn canonical_plain_file(path: &std::path::Path) -> Result<String, String> {
+    if !path.is_file()
+        || std::fs::symlink_metadata(path)
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(true)
     {
-        return Err(
-            "probe helper 'tiler-macos-probe-target' not found beside the CLI binary (or is a symlink)".to_owned(),
-        );
+        return Err(format!(
+            "helper '{}' is not a plain file",
+            path.to_string_lossy()
+        ));
     }
-    sibling
-        .canonicalize()
+    path.canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|e| format!("helper canonicalize: {e}"))
 }
 
-fn helper_binary_next_to_current_exe() -> Result<std::path::PathBuf, String> {
-    expected_helper_canonical().map(std::path::PathBuf::from)
+/// Pure bundled-helper resolution for a probe binary running inside
+/// `OmniTilerProbe.app`: the sibling `OmniTilerProbeHelper.app` assembled by
+/// `scripts/macos-app.sh` next to it. Pure path math (no FS reads); `None`
+/// outside a bundle layout (plain `cargo` runs).
+fn bundled_helper_for_exe(current_exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let macos_dir = current_exe.parent()?;
+    if macos_dir.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let app_dir = contents_dir.parent()?;
+    if app_dir.extension()?.to_str()? != "app" {
+        return None;
+    }
+    let root = app_dir.parent()?;
+    Some(
+        root.join("OmniTilerProbeHelper.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("tiler-macos-probe-target"),
+    )
+}
+
+/// Canonical path of the bundled helper `.app` executable. Fails closed
+/// outside a bundle layout or when the helper app is absent.
+fn bundled_helper_canonical() -> Result<String, String> {
+    let current = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+    let helper = bundled_helper_for_exe(&current)
+        .ok_or_else(|| "current exe is not inside a probe .app bundle".to_owned())?;
+    canonical_plain_file(&helper)
+}
+
+/// Canonical helper paths we trust, in preference order: the direct sibling
+/// (old Child path, preserved) then the bundled helper `.app` executable.
+/// Records and spawns constrain to exactly these; empty means no trusted
+/// helper is available and every load refuses.
+fn expected_helper_canonicals() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(canonical) = expected_helper_canonical() {
+        out.push(canonical);
+    }
+    if let Ok(canonical) = bundled_helper_canonical()
+        && !out.contains(&canonical)
+    {
+        out.push(canonical);
+    }
+    out
+}
+
+fn helper_binary_for_current_exe() -> Result<std::path::PathBuf, String> {
+    // Direct sibling first (old Child path, preserved); bundled helper
+    // `.app` executable second (signed layout).
+    let direct = expected_helper_canonical();
+    let bundled = bundled_helper_canonical();
+    match (direct, bundled) {
+        (Ok(path), _) | (Err(_), Ok(path)) => Ok(std::path::PathBuf::from(path)),
+        (Err(direct_err), Err(bundled_err)) => Err(format!(
+            "no trusted helper (direct: {direct_err}; bundled: {bundled_err})"
+        )),
+    }
+}
+
+/// Regular-policy fixture prefers the dedicated signed helper `.app`
+/// executable (regular bundle, no `LSUIElement`) so the window server can
+/// report it via `NSWorkspace` after the SLPS dispatch. A directly spawned
+/// binary inside the agent (`LSUIElement`) probe bundle becomes SLPS-front
+/// while `NSWorkspace` keeps the previous app, splitting the selected
+/// oracle. Non-regular holders keep the legacy direct-first order above.
+fn helper_binary_for_regular_policy() -> Result<std::path::PathBuf, String> {
+    let direct = expected_helper_canonical();
+    let bundled = bundled_helper_canonical();
+    match (bundled, direct) {
+        (Ok(path), _) | (Err(_), Ok(path)) => Ok(std::path::PathBuf::from(path)),
+        (Err(bundled_err), Err(direct_err)) => Err(format!(
+            "no trusted helper (bundled: {bundled_err}; direct: {direct_err})"
+        )),
+    }
 }
 
 /// Write a fresh spawn record with `create_new` (never truncate a live
@@ -604,9 +835,10 @@ fn write_stale_record_for_test(record: &SpawnRecord) {
     std::fs::write(session_record_path(record.pid), json).unwrap();
 }
 
-/// Pure handshake check: the child's own stdout pipe must report the owned
-/// bundle constant, the exact spawned PID, and the issued per-run nonce.
-/// Unit-tested; [`spawn_verified`] fails closed on any mismatch.
+/// Pure handshake check: the child's own stdout pipe must report an owned
+/// bundle (the probe bundle for direct spawns, the stable helper bundle for
+/// bundled-helper spawns), the exact spawned PID, and the issued per-run
+/// nonce. Unit-tested; [`spawn_verified`] fails closed on any mismatch.
 pub fn check_handshake_identity(
     bundle: &str,
     claimed_pid: u64,
@@ -614,13 +846,13 @@ pub fn check_handshake_identity(
     child_pid: u32,
     expected_nonce: &str,
 ) -> Result<(), String> {
-    if bundle != crate::BUNDLE_ID
-        || claimed_pid != u64::from(child_pid)
-        || claimed_nonce != expected_nonce
+    if (bundle == crate::BUNDLE_ID || bundle == crate::HELPER_BUNDLE_ID)
+        && claimed_pid == u64::from(child_pid)
+        && claimed_nonce == expected_nonce
     {
-        return Err("probe helper identity mismatch (bundle/pid/nonce)".to_owned());
+        return Ok(());
     }
-    Ok(())
+    Err("probe helper identity mismatch (bundle/pid/nonce)".to_owned())
 }
 
 /// Load and fully authenticate a spawn session: record presence, pid/nonce
@@ -644,14 +876,15 @@ pub fn load_verified_record(pid: u32, nonce: &str) -> Result<SpawnRecord, String
     if record.pid != pid || record.nonce != nonce {
         return Err("spawn record mismatch (pid/nonce); refusing".to_owned());
     }
-    // Constrain the recorded exe to the helper we expect: a record pointing
-    // anywhere else (even inside the session dir) is refused.
-    let expected = expected_helper_canonical()?;
+    // Constrain the recorded exe to a trusted helper: the direct sibling or
+    // the bundled helper `.app` executable. A record pointing anywhere else
+    // (even inside the session dir) is refused.
+    let expected = expected_helper_canonicals();
     let recorded_canon = std::path::Path::new(&record.helper_path)
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|_| "recorded helper path unresolvable; refusing".to_owned())?;
-    if recorded_canon != expected {
+    if !expected.contains(&recorded_canon) {
         return Err("spawn record helper differs from expected probe helper; refusing".to_owned());
     }
     // Live revalidation before any signal or write: owned bundle when the
@@ -703,12 +936,15 @@ pub fn verify_record_unchanged(
 }
 
 /// Verified spawn session: the OS `Child` handle (exact identity, no PID
-/// reuse window) plus the handshake-proven nonce and helper path.
+/// reuse window) plus the handshake-proven bundle, nonce, and helper path.
 pub struct SpawnSession {
     pub child: Child,
     pub pid: u32,
     pub nonce: String,
     pub helper_path: String,
+    /// Handshake-verified bundle: the probe bundle for direct spawns, the
+    /// stable helper bundle for bundled-helper spawns.
+    pub bundle: String,
 }
 
 /// Raw helper spawn: the exact `Child`, its PID, the canonical helper path,
@@ -716,18 +952,32 @@ pub struct SpawnSession {
 /// binds identity next. Holder sessions use this seam to attach AX
 /// observation BEFORE the window exists (so window creation is observable);
 /// [`spawn_verified`] below keeps the strict spawn-then-handshake order.
-/// The reader thread forwards EVERY non-empty line (unbounded channel, never
-/// blocks) and exits at child death; callers read exactly the lines their
-/// protocol needs.
+/// The reader thread forwards EVERY non-empty line over a bounded queue
+/// (never blocks the helper: a full queue drops the oldest snapshot line
+/// and counts it, never the handshake — the identity plus ready lines are
+/// the first two lines, sent while the queue is empty). Callers read
+/// exactly the lines their protocol needs; `line_drops` counts dropped
+/// snapshot lines only.
 pub struct UnreadySpawn {
     pub child: Child,
     pub pid: u32,
     pub helper_path: String,
     pub lines: std::sync::mpsc::Receiver<String>,
+    pub line_drops: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Bounded helper-stdout queue: comfortably holds the finite handshake
+/// (identity + ready) plus periodic snapshots for the longest probe
+/// lifetime (60s at 2 lines/s is ~120 lines). The handshake can never drop:
+/// it is the first two sends on an empty queue.
+pub const HELPER_LINE_QUEUE_BOUND: usize = 512;
+
 pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, String> {
-    let helper = helper_binary_next_to_current_exe()?;
+    let helper = if spec.regular_policy {
+        helper_binary_for_regular_policy()?
+    } else {
+        helper_binary_for_current_exe()?
+    };
     let helper_canon = helper
         .canonicalize()
         .map(|p| p.to_string_lossy().into_owned())
@@ -745,7 +995,9 @@ pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, Stri
         let _ = child.wait();
         "probe helper stdout unavailable".to_owned()
     })?;
-    let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
+    let (line_tx, line_rx) = std::sync::mpsc::sync_channel::<String>(HELPER_LINE_QUEUE_BOUND);
+    let line_drops = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let drops = std::sync::Arc::clone(&line_drops);
     std::thread::Builder::new()
         .name("probe-handshake".to_owned())
         .spawn(move || {
@@ -760,8 +1012,20 @@ pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, Stri
                         if trimmed.is_empty() {
                             continue;
                         }
-                        if line_tx.send(trimmed).is_err() {
-                            break;
+                        // Non-blocking forward: a full queue drops this
+                        // snapshot line and counts it (the helper never
+                        // blocks on stdout, so it can never SIGPIPE-stall on
+                        // a slow holder). The handshake lines are the first
+                        // two sends on an empty queue, so they can never
+                        // drop; a closed receiver (holder gone) ends the
+                        // thread. Child cleanup stays with the exact-Child
+                        // holder on every path below.
+                        match line_tx.try_send(trimmed) {
+                            Ok(()) => {}
+                            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                drops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => break,
                         }
                     }
                     Err(_) => break,
@@ -778,6 +1042,7 @@ pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, Stri
         pid,
         helper_path: helper_canon,
         lines: line_rx,
+        line_drops,
     })
 }
 
@@ -796,8 +1061,9 @@ fn early_exit_text(child: &mut Child) -> Option<String> {
 /// stall is therefore scheduled *after* ready, so the child is a live
 /// (unresponsive) window for real AX-latency measurement, not a missing one.
 /// Identity mismatch, early exit, or either timeout kills the exact child
-/// handle and fails; no PID guessing, no orphaned helper.
-pub fn await_handshake(spawn: &mut UnreadySpawn, spec: &ProbeTargetSpec) -> Result<(), String> {
+/// handle and fails; no PID guessing, no orphaned helper. Returns the
+/// verified handshake bundle (probe or helper bundle).
+pub fn await_handshake(spawn: &mut UnreadySpawn, spec: &ProbeTargetSpec) -> Result<String, String> {
     let pid = spawn.pid;
     let fail = |child: &mut Child, msg: String| -> String {
         if let Some(exit) = early_exit_text(child) {
@@ -862,7 +1128,7 @@ pub fn await_handshake(spawn: &mut UnreadySpawn, spec: &ProbeTargetSpec) -> Resu
         let _ = spawn.child.wait();
         return Err("probe helper ready marker missing".to_owned());
     }
-    Ok(())
+    Ok(bundle.to_owned())
 }
 
 /// Write the durable spawn record after a proven handshake. Currency for
@@ -887,7 +1153,7 @@ pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
     let mut raw = start_helper_process(spec)?;
     let pid = raw.pid;
     let helper_path = raw.helper_path.clone();
-    await_handshake(&mut raw, spec)?;
+    let bundle = await_handshake(&mut raw, spec)?;
     if let Err(e) = record_spawn(pid, spec, &helper_path) {
         let _ = raw.child.kill();
         let _ = raw.child.wait();
@@ -898,6 +1164,7 @@ pub fn spawn_verified(spec: &ProbeTargetSpec) -> Result<SpawnSession, String> {
         pid,
         nonce: spec.nonce.clone(),
         helper_path,
+        bundle,
     })
 }
 

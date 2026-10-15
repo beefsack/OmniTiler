@@ -22,6 +22,14 @@
     </array>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Agent (no Dock icon, never takes front-process status): the probe
+         measures foreground (SLPS front == NSWorkspace frontmost) and must
+         not perturb it at launch. A regular APPL bundle activated by
+         `open -n` holds the SLPS front process while NSWorkspace still
+         attributes the previous app, splitting the very foreground under
+         test; LSUIElement keeps both legs on the true frontmost. -->
+    <key>LSUIElement</key>
+    <true/>
     <!-- No TCC usage strings yet: Phase 0 probe requests nothing by default.
          Accessibility / Input Monitoring entries are added only with the
          authorized live experiment that needs them. -->

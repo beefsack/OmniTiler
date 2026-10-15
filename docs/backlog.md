@@ -3347,11 +3347,11 @@ decisions of 2026-09-24 are under
   bundle with stable designated requirement and Accessibility grant (via
   LaunchServices launch) verified; owned-window AX legs live-proven (identity
   join, observers, frame set/restore, focus/raise, stalled-app timeout);
-  Carbon registration and idle tap lifecycle work. SLPS focus route implemented
-  pending acceptance: Accessory-helper AX/CG focus worked but NSWorkspace
-  disagreed; same-route original-app restore observed once. Regular-policy
-  full-agreement fixture awaits an unlocked baseline (final NSWorkspace/AX
-  readback identified loginwindow; recovery refused without dispatch).
+   Carbon registration and tap lifecycle work. SLPS focus target/restore now
+   pass (142/114 ms dispatch-through-agreement): the tentative oracle joins
+   SLPS front + NSWorkspace + direct per-app AX focus/main + CG ownership;
+   systemwide AX is diagnostic-only. Main-thread agreement polling now pumps
+   AppKit rather than starving workspace updates.
   Phase 1 [threading/lifecycle skeleton](changes/macos-phase-1-skeleton.md)
   delivered offline: shared Engine owner, minimal configurable-modifier input
   boundary, per-app AX observer/actuation owners, typed handoffs, bounded
@@ -3359,16 +3359,30 @@ decisions of 2026-09-24 are under
   live tiling and durable stranded-window recovery are not enabled by this
   skeleton. [Window-policy/classification slice](changes/macos-window-classification.md)
   implemented offline: additive core predicates and actual Windows-copy
-  conformance, typed AX/CG classifier and fake Engine fixtures. Tentative A,
-  pending later user review, removes restored-fullscreen wire omission and
-  keeps adapter/core parity; desired slot retention remains TBD
+   conformance, typed AX/CG classifier and fake Engine fixtures. User-approved
+   option A (2026-10-15) removes restored-fullscreen wire omission and keeps
+   current adapter/core behavior; exact reference/native outcomes remain TBD
   ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators)).
   Cross-platform CI is green, including Linux workspace/native-effect gates.
-  Native fact readers, hint-source availability and classification TBDs remain
-  pending. Next:
-  prove original → owned target → original agreement, then Ctrl-chord
-  delivery/suppression/passthrough, actual tap-disable recovery, hard lifetime
-  and enabled Mission Control collisions; native Space move/switch/create
+   User-approved 2026-10-15: skeleton details, classification and shared
+   `window_policy`; basic tiling dogfooding MVP first, then native Spaces,
+   then effects; Authentic takes conflicting Mission Control shortcuts and
+   safe native settings with Revert; both DMG and Homebrew; native fullscreen
+   initially; Tier 2 unchanged. [Scoped tile development mode](changes/macos-scoped-tile.md)
+    supplies native facts/topology/actuation/input; 406 macOS tests, strict
+    clippy/fmt and signed bundle verification pass. Scoped explicit-tap tiling
+    is live-proven on owned helper/TextEdit windows: admission, tap focus/move,
+    float, minimize/close reflow, fullscreen exclusion and normal/kill frame
+    preservation/input release. Real panels/sheets remain native untouched
+    children; separate AXSheets identity stays TBD. Calculator's live bundle
+    is `com.apple.calculator`; its hintless non-resizable window stays clamped
+    within a larger tiled slot without a write storm. Scope/fullscreen input
+    release is implemented with AX-owner-published facts and callback atomics.
+    Next: physical Carbon Ctrl-chord delivery and actual OS timeout-notification
+    recovery (explicit fresh tap re-arm and watchdog exit already pass), then
+    remove development-only scope/lifetime guards for ordinary dogfooding.
+    Hint-source/classification and physical multi-display/game checks remain;
+    native Space move/switch/create
   probes follow ([record](changes/macos-phase-0.md)); offline
   [native-Spaces routes and recovery plan](research/macos-port/native-spaces-routes.md)
   now distinguish SIP-on bridged-move claims, blocked compat restoration,
@@ -3394,14 +3408,24 @@ decisions of 2026-09-24 are under
   [setup](macos-dev-environment.md)
   [survey](research/macos-port/prior-art.md)
   [plan](research/macos-port/plan.md)
-- P2 | Shared minimize/fullscreen slot retention (tentative candidate) |
-  Tentative A, pending later user review: keep truthful adapter reporting for
-  tile A/B/C -> minimize B -> restore B fullscreen -> exit; existing core
-  forgets the saved D23 slot and fresh-admits. A shared-core slot-retention
-  fix is a candidate for a later separate change; desired behavior and exact
-  reference/native outcomes remain TBD
+- P2 | Shared minimize/fullscreen reference comparison |
+   User-approved option A (2026-10-15): keep truthful adapter reporting for
+   tile A/B/C -> minimize B -> restore B fullscreen -> exit; existing core
+   forgets the saved D23 slot and fresh-admits. Keep this behavior; compare
+   exact Tier 1/native outcomes before proposing any shared slot change
   ([discriminator](spec/reference-outcomes.md#macos-classification-discriminators),
-  [record](changes/macos-window-classification.md)).
+   [record](changes/macos-window-classification.md)).
+- P1 | Windows shared window-policy adoption | Adopt the approved
+   `tiler_core::window_policy` predicates in the Windows work stream,
+   preserving adapter acquisition/actuation and current conformance vectors.
+- P1 | KDE shared window-policy adoption | Adopt the approved
+   `tiler_core::window_policy` predicates in the KDE work stream,
+   preserving script-host acquisition and documented host-specific exceptions.
+- P2 | macOS classification dogfooding discriminators | Investigate AX-size-
+   settability-only admission, actionable accessory documents, elevated-level
+   standard windows, app-specific nonstandard documents and sheet identity.
+   Keep conservative current candidates tentative; refine against Tier 1 intent
+   and the [minimal sequences](spec/reference-outcomes.md#macos-classification-discriminators).
 - P1 | Rust toolchain tracking (recurring) | User (2026-09-30): track latest
   stable Rust pre-1.0 and fix breakage. Windows uses rustup `stable`; Linux
   and CI get Rust from the nixpkgs pins in `devenv.yaml` and `flake.lock`, which must be bumped

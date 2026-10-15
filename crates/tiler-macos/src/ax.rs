@@ -89,13 +89,22 @@ pub fn gate_owned_frame(
 
 /// Authenticate an owned session for `target_pid` + caller nonce against
 /// the persisted spawn record (pid/nonce, expected helper, live
-/// bundle-or-exe plus the CURRENT live window nonce). Every mutating or
+/// bundle-or-exe plus the CURRENT live window nonce). The bound identity
+/// carries the LIVE bundle (probe or dedicated helper — see
+/// [`crate::ownership::is_owned_bundle`]), never a normalized one: a
+/// bundled-helper session bound to the probe bundle would fail every
+/// downstream effect gate. Every mutating or
 /// observing AX path enters here; arbitrary/foreign PIDs fail closed with no
 /// AX call made.
 pub fn authorize_owned_action(target_pid: u32, nonce: &str) -> Result<OwnedIdentity, AxError> {
     let record =
         crate::probe_target::load_verified_record(target_pid, nonce).map_err(AxError::Ownership)?;
-    OwnedIdentity::new(record.pid, crate::BUNDLE_ID, &record.nonce).map_err(AxError::Ownership)
+    // Fresh live bundle (plus exe revalidation) AFTER the record proof: the
+    // record only proves pid/nonce/exe/title currency, while the identity
+    // must name the exact live bundle for the effect gates below.
+    let live_bundle = crate::ownership::verify_live_process(target_pid, Some(&record.helper_path))
+        .map_err(AxError::Ownership)?;
+    OwnedIdentity::new(record.pid, &live_bundle, &record.nonce).map_err(AxError::Ownership)
 }
 
 /// Resolve the live bundle ID for a PID and require the owned one. Caller
@@ -789,6 +798,408 @@ pub fn set_frame_owned(
         let _ = (&entry, wid, frame);
         Err(AxError::Unsupported(
             "AX frame set is macOS-only".to_owned(),
+        ))
+    }
+}
+
+/// Owned window state with AX + CG frames (read-only: no writes on any
+/// path). Every leg is `Option`: an unreadable attribute is unknown
+/// evidence, never a guessed state. No titles, no content, no paths.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowStateReport {
+    pub pid: u32,
+    pub wid: u32,
+    pub ax_frame: Option<crate::ffi::AxFrame>,
+    pub cg_bounds: Option<crate::ffi::CgBounds>,
+    pub cg_onscreen: Option<bool>,
+    pub cg_layer: Option<i32>,
+    pub minimized: Option<bool>,
+    pub fullscreen: Option<bool>,
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+}
+
+/// App-thread body for [`read_window_owned`]. Runs ONLY on the dedicated
+/// per-app AX worker: constructs, uses, and drops every `AxElement` here.
+/// Never called on the caller/main thread. Read-only throughout: entry +
+/// CG revalidation gates the reads, nothing is written.
+#[cfg(target_os = "macos")]
+fn read_window_on_worker(
+    owned: &OwnedIdentity,
+    entry: &crate::probe_target::SpawnRecord,
+    target_pid: u32,
+    wid: u32,
+) -> Result<WindowStateReport, AxError> {
+    use crate::ffi::{AxElement, ax_window_id};
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    revalidate_entry(entry)?;
+    let app = AxElement::application(target_pid as i32)
+        .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
+    let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
+    let windows = app
+        .windows()
+        .map_err(|code| AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code))))?;
+    let window = windows
+        .iter()
+        .find(|w| ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            AxError::Ownership(format!(
+                "wid {wid} not joined to owned pid {target_pid} (identity join failed)"
+            ))
+        })?;
+    let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
+    revalidate_entry(entry)?;
+    // Fresh CG join for the same (pid, wid): the AX handle alone cannot
+    // prove the WID still belongs to this PID.
+    let cg = crate::cg::verify_wid_owned_by_pid(target_pid, wid).ok();
+    Ok(WindowStateReport {
+        pid: target_pid,
+        wid,
+        ax_frame: crate::ffi::ax_get_frame(window).ok(),
+        cg_bounds: cg.as_ref().map(|w| w.bounds),
+        cg_onscreen: cg.as_ref().map(|w| w.onscreen),
+        cg_layer: cg.as_ref().map(|w| w.layer),
+        minimized: crate::ffi::ax_bool_attribute(window, "AXMinimized").ok(),
+        fullscreen: crate::ffi::ax_fullscreen_state(window).ok(),
+        role: crate::ffi::ax_string_attribute(window, "AXRole")
+            .ok()
+            .flatten(),
+        subrole: crate::ffi::ax_string_attribute(window, "AXSubrole")
+            .ok()
+            .flatten(),
+    })
+}
+
+/// Read one owned window's AX + CG state with entry/CG revalidation.
+/// Read-only: no writes on any path. Threading: gates on the caller, then
+/// a dedicated per-app AX worker performs every `AxElement` call. The
+/// caller waits bounded and reports a timeout rather than stalling.
+pub fn read_window_owned(
+    owned: &OwnedIdentity,
+    target_pid: u32,
+    wid: u32,
+) -> Result<WindowStateReport, AxError> {
+    if wid == 0 {
+        return Err(AxError::Ownership("refusing window id 0".to_owned()));
+    }
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    let entry = crate::probe_target::load_verified_record(target_pid, &owned.nonce)
+        .map_err(AxError::Ownership)?;
+    #[cfg(target_os = "macos")]
+    {
+        let owned_send = owned.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<WindowStateReport, AxError>>();
+        std::thread::Builder::new()
+            .name(format!("ax-read-window-{target_pid}"))
+            .spawn(move || {
+                let outcome = read_window_on_worker(&owned_send, &entry, target_pid, wid);
+                let _ = done_tx.send(outcome);
+            })
+            .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
+        match done_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(report) => report,
+            Err(_) => Err(AxError::Timeout {
+                pid: target_pid,
+                timeout_ms: 15_000,
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = entry;
+        Err(AxError::Unsupported(
+            "AX window read is macOS-only".to_owned(),
+        ))
+    }
+}
+
+/// Owned minimize/restore outcome: the requested state, the preimage, the
+/// readback, and whether the readback proves the request landed. An
+/// accepted OS status alone never proves it — only `applied`
+/// (`minimized == Some(want)`) does. No geometry writes on any path, so no
+/// frame restoration is owed; a failed leg leaves the window as-is with
+/// the readback as evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MinimizeReport {
+    pub pid: u32,
+    pub wid: u32,
+    pub want_minimized: bool,
+    pub was_minimized: Option<bool>,
+    pub minimized: Option<bool>,
+    pub applied: bool,
+    pub already: bool,
+    pub ax_frame: Option<crate::ffi::AxFrame>,
+    pub cg_onscreen: Option<bool>,
+}
+
+/// App-thread body for [`set_minimized_owned`]. Runs ONLY on the dedicated
+/// per-app AX worker. Entry + CG revalidation before the write and before
+/// the readback; the boolean setter is the single write.
+#[cfg(target_os = "macos")]
+fn set_minimized_on_worker(
+    owned: &OwnedIdentity,
+    entry: &crate::probe_target::SpawnRecord,
+    target_pid: u32,
+    wid: u32,
+    want: bool,
+) -> Result<MinimizeReport, AxError> {
+    use crate::ffi::{AxElement, ax_window_id};
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    revalidate_entry(entry)?;
+    let app = AxElement::application(target_pid as i32)
+        .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
+    let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
+    let windows = app
+        .windows()
+        .map_err(|code| AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code))))?;
+    let window = windows
+        .iter()
+        .find(|w| ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            AxError::Ownership(format!(
+                "wid {wid} not joined to owned pid {target_pid} (identity join failed)"
+            ))
+        })?;
+    let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
+    let was = crate::ffi::ax_bool_attribute(window, "AXMinimized").ok();
+    revalidate_entry(entry)?;
+    crate::cg::verify_wid_owned_by_pid(target_pid, wid)
+        .map_err(|e| AxError::Ownership(format!("CG rejoin before minimize write refused: {e}")))?;
+    crate::ffi::ax_set_bool_attribute(window, "AXMinimized", want).map_err(|code| {
+        AxError::System(format!("minimize: {}", crate::ffi::ax_error_name(code)))
+    })?;
+    // Settle + re-read: the compositor applies minimization asynchronously
+    // (observed live: an accepted write still reads back the old state
+    // immediately after). Poll boundedly; the verdict below still requires
+    // the read state to equal the request — an accepted status alone never
+    // proves it. Reads only from here on; no further writes whatever the
+    // outcome.
+    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    let minimized = loop {
+        let state = crate::ffi::ax_bool_attribute(window, "AXMinimized").ok();
+        if state == Some(want) || std::time::Instant::now() >= settle_deadline {
+            break state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let applied = minimized == Some(want);
+    if !applied {
+        return Err(AxError::System(format!(
+            "minimize write accepted but readback mismatch (want {want}, have {minimized:?}); window left as-is, no geometry written"
+        )));
+    }
+    Ok(MinimizeReport {
+        pid: target_pid,
+        wid,
+        want_minimized: want,
+        was_minimized: was,
+        minimized,
+        applied: true,
+        already: was == Some(want),
+        ax_frame: crate::ffi::ax_get_frame(window).ok(),
+        cg_onscreen: crate::cg::verify_wid_owned_by_pid(target_pid, wid)
+            .map(|w| w.onscreen)
+            .ok(),
+    })
+}
+
+/// Minimize or restore one owned window with preimage + readback proof.
+/// Explicit owned minimize/restore only (disposable helper fixture
+/// control); never hides foreign windows. Threading: gates on the caller,
+/// then a dedicated per-app AX worker with a bounded wait.
+pub fn set_minimized_owned(
+    owned: &OwnedIdentity,
+    target_pid: u32,
+    wid: u32,
+    want: bool,
+) -> Result<MinimizeReport, AxError> {
+    if wid == 0 {
+        return Err(AxError::Ownership("refusing window id 0".to_owned()));
+    }
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    let entry = crate::probe_target::load_verified_record(target_pid, &owned.nonce)
+        .map_err(AxError::Ownership)?;
+    #[cfg(target_os = "macos")]
+    {
+        let owned_send = owned.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<MinimizeReport, AxError>>();
+        std::thread::Builder::new()
+            .name(format!("ax-minimize-{target_pid}"))
+            .spawn(move || {
+                let outcome = set_minimized_on_worker(&owned_send, &entry, target_pid, wid, want);
+                let _ = done_tx.send(outcome);
+            })
+            .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
+        match done_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(report) => report,
+            Err(_) => Err(AxError::Timeout {
+                pid: target_pid,
+                timeout_ms: 15_000,
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (entry, want);
+        Err(AxError::Unsupported("AX minimize is macOS-only".to_owned()))
+    }
+}
+
+/// Owned fullscreen enter/exit outcome: the requested state, the preimage,
+/// the readback, and whether the readback proves the request landed. An
+/// accepted OS status alone never proves it — only `applied`
+/// (`fullscreen == Some(want)`) does. Fixture-only control for the bounded
+/// owned helper (never a shipped product fullscreen feature, never foreign
+/// windows). No geometry writes on any path; a failed leg leaves the window
+/// as-is with the readback as evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FullscreenReport {
+    pub pid: u32,
+    pub wid: u32,
+    pub want_fullscreen: bool,
+    pub was_fullscreen: Option<bool>,
+    pub fullscreen: Option<bool>,
+    pub applied: bool,
+    pub already: bool,
+    pub ax_frame: Option<crate::ffi::AxFrame>,
+    pub cg_onscreen: Option<bool>,
+}
+
+/// App-thread body for [`set_fullscreen_owned`]. Runs ONLY on the dedicated
+/// per-app AX worker. Entry + CG revalidation before the write and before
+/// the readback; the boolean setter is the single write. Spelling follows
+/// the reader: `AXFullScreen` (yabai) first, `AXFullscreen` (rift) fallback
+/// on service failures only.
+#[cfg(target_os = "macos")]
+fn set_fullscreen_on_worker(
+    owned: &OwnedIdentity,
+    entry: &crate::probe_target::SpawnRecord,
+    target_pid: u32,
+    wid: u32,
+    want: bool,
+) -> Result<FullscreenReport, AxError> {
+    use crate::ffi::{AxElement, ax_window_id};
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    revalidate_entry(entry)?;
+    let app = AxElement::application(target_pid as i32)
+        .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
+    let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
+    let windows = app
+        .windows()
+        .map_err(|code| AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code))))?;
+    let window = windows
+        .iter()
+        .find(|w| ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            AxError::Ownership(format!(
+                "wid {wid} not joined to owned pid {target_pid} (identity join failed)"
+            ))
+        })?;
+    let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
+    let was = crate::ffi::ax_fullscreen_state(window).ok();
+    revalidate_entry(entry)?;
+    crate::cg::verify_wid_owned_by_pid(target_pid, wid).map_err(|e| {
+        AxError::Ownership(format!("CG rejoin before fullscreen write refused: {e}"))
+    })?;
+    let set_result = crate::ffi::ax_set_bool_attribute(window, "AXFullScreen", want);
+    if let Err(code) = set_result {
+        const FALLBACK_CODES: [i32; 3] = [-25205, -25210, crate::ffi::AX_NOT_IMPLEMENTED];
+        if FALLBACK_CODES.contains(&code) {
+            crate::ffi::ax_set_bool_attribute(window, "AXFullscreen", want).map_err(
+                |fallback| {
+                    AxError::System(format!(
+                        "fullscreen: {}",
+                        crate::ffi::ax_error_name(fallback)
+                    ))
+                },
+            )?;
+        } else {
+            return Err(AxError::System(format!(
+                "fullscreen: {}",
+                crate::ffi::ax_error_name(code)
+            )));
+        }
+    }
+    // Settle + re-read: native Space animation applies asynchronously
+    // (an accepted write still reads back the old state immediately after).
+    // Poll boundedly; the verdict below still requires the read state to
+    // equal the request. Reads only from here on; no further writes.
+    let settle_deadline = std::time::Instant::now() + std::time::Duration::from_millis(5000);
+    let fullscreen = loop {
+        let state = crate::ffi::ax_fullscreen_state(window).ok();
+        if state == Some(want) || std::time::Instant::now() >= settle_deadline {
+            break state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let applied = fullscreen == Some(want);
+    if !applied {
+        return Err(AxError::System(format!(
+            "fullscreen write accepted but readback mismatch (want {want}, have {fullscreen:?}); window left as-is, no geometry written"
+        )));
+    }
+    Ok(FullscreenReport {
+        pid: target_pid,
+        wid,
+        want_fullscreen: want,
+        was_fullscreen: was,
+        fullscreen,
+        applied: true,
+        already: was == Some(want),
+        ax_frame: crate::ffi::ax_get_frame(window).ok(),
+        cg_onscreen: crate::cg::verify_wid_owned_by_pid(target_pid, wid)
+            .map(|w| w.onscreen)
+            .ok(),
+    })
+}
+
+/// Enter or exit native fullscreen on one owned window with preimage +
+/// readback proof. Fixture-only (disposable helper control for the bounded
+/// fullscreen enter/exit preflight); never a shipped feature, never foreign
+/// windows. Threading: gates on the caller, then a dedicated per-app AX
+/// worker with a bounded wait.
+pub fn set_fullscreen_owned(
+    owned: &OwnedIdentity,
+    target_pid: u32,
+    wid: u32,
+    want: bool,
+) -> Result<FullscreenReport, AxError> {
+    if wid == 0 {
+        return Err(AxError::Ownership("refusing window id 0".to_owned()));
+    }
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    let entry = crate::probe_target::load_verified_record(target_pid, &owned.nonce)
+        .map_err(AxError::Ownership)?;
+    #[cfg(target_os = "macos")]
+    {
+        let owned_send = owned.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<FullscreenReport, AxError>>();
+        std::thread::Builder::new()
+            .name(format!("ax-fullscreen-{target_pid}"))
+            .spawn(move || {
+                let outcome = set_fullscreen_on_worker(&owned_send, &entry, target_pid, wid, want);
+                let _ = done_tx.send(outcome);
+            })
+            .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
+        match done_rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(report) => report,
+            Err(_) => Err(AxError::Timeout {
+                pid: target_pid,
+                timeout_ms: 20_000,
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (entry, want);
+        Err(AxError::Unsupported(
+            "AX fullscreen is macOS-only".to_owned(),
         ))
     }
 }

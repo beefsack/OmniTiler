@@ -1,13 +1,21 @@
 # macOS port: tier-2 implementation plan
 
-Status: Phase 0 in progress, 2026-10-14. Tier 2 was selected 2026-10-03;
+Status: scoped tap tiling live-proven, full input matrix pending, 2026-10-15.
+The [scoped-tile record](../../changes/macos-scoped-tile.md) carries current
+local gates, signed-artifact identity, native tiling/input/cleanup evidence and
+the remaining physical Carbon/OS-timeout-notification checks. The tentative
+selected SLPS + NSWorkspace + direct-app-AX oracle replaces systemwide AX as a
+functional gate. Priority
+is basic tiling dogfooding, then native workspaces, then effects.
+Tier 2 was selected 2026-10-03;
 language/threading/native-Spaces/Meta/signing/floor decisions are now adopted
 in the table below. Read-only display/Space/current queries have live evidence;
 Signing/TCC rebuild survival and owned AX identity, notifications, frame/partial
 restoration, focus/raise, and stalled-app timeout now have live evidence. Input
-delivery and Space mutations remain unverified. Carbon registration and bounded
-idle tap creation/release pass; the synthetic input fixture is blocked on
-AX/workspace focus disagreement and restoration, with its harness removed.
+delivery through the explicit tap now passes synthetic native-pipeline tests;
+Space mutations remain outside scoped tiling. Carbon registration passes but
+physical delivery remains pending; exact tap suppression, passthrough, explicit
+fresh-guard re-arm, hard lifetime, scoped reflow and stop/kill readbacks pass.
 The [active record](../../changes/macos-phase-0.md) and
 [setup runbook](../../macos-dev-environment.md) carry the current evidence.
 The [Phase 1 threading skeleton](../../changes/macos-phase-1-skeleton.md)
@@ -659,10 +667,11 @@ and parking is a possible later user setting, not initial scope.
   fullscreen-space check ([input.rs](https://github.com/karinushka/paneru/blob/b1b6abbd3f1a4be138152b6f0389c9ff1b27a269/src/platform/input.rs#L596-L598));
   glazewm maps maximize to `AXFullScreen` in
   [native_window.rs](https://github.com/glzr-io/glazewm/blob/5709ad0a3c7c386bbc3e38166a865ffc12937515/packages/wm-platform/src/platform_impl/macos/native_window.rs#L220-L226).
-- PROPOSAL (preserved from the prior plan, no invented behavior): native
-  mac fullscreen (own Space) vs project fullscreen handling differences
-  stay OPEN. Scope against the KDE reference; leave native-fullscreen
-  windows and their Spaces untouched until the spike proves otherwise.
+- SELECTED (user 2026-10-15): start with native macOS fullscreen; revisit
+  only for serious inconsistencies/problems. Keep current core option A for
+  minimize → restore directly fullscreen → exit, with exact Tier 1 reference
+  comparison still TBD. Ordinary tiling leaves native-fullscreen windows and
+  their Spaces untouched; detection and readback still need live acceptance.
   Amethyst native-Space throw/focus-across-screens
   ([HotKeyManager.swift](https://github.com/ianyh/Amethyst/blob/6508ee2cacf8f9b357e1a3249a8f28ba5c94db2a/Amethyst/Events/HotKeyManager.swift#L154-L171))
   and Silica private `CGSSpaceID`/`CGSSpaceType` in
@@ -781,7 +790,8 @@ in-memory preimage plus a reaper callback is not crash recovery.
    private-symbol loading/entitlements verified on an artifact. No surveyed
    source establishes a blanket private-API notarization ban or a guarantee
    of acceptance. Our tentative distribution stays
-  notarized Developer ID DMG plus Homebrew cask first (open decision);
+   DMG plus Homebrew (user-approved 2026-10-15); release signing and
+   notarization remain separate decisions;
   notarization is not App Store approval.
 - FACT: App Store rules require sandboxing (2.4.5) and public APIs (2.5.1),
   with alternate-desktop review exposure (2.5.8) per the Apple review
@@ -922,7 +932,7 @@ mapping, TCC/native IDs, and the event loop. Own-repo source baseline:
 
 ## Adopted and open decisions
 
-Decisions adopted 2026-10-14 are durable in
+Decisions adopted 2026-10-14 and 2026-10-15 are durable in
 [Current Decisions](../../decisions.md#scope-and-platform-goals). Proposals
 elsewhere in this research do not override these selections.
 
@@ -932,13 +942,15 @@ elsewhere in this research do not override these selections.
 | Intel support | **Adopted: Apple Silicon only** | No Intel commitment |
 | Stable signer | **Adopted: persistent self-signed dev identity** | Fixed `io.github.omnitiler.macos.probe` bundle ID/path/signer; no paid membership initially. Developer ID/notarized release route remains open |
 | Cmd/Meta vs Ctrl/Option mapping | **Adopted: Ctrl default Meta, user-configurable on macOS** | Preserve per-binding conflicts and Compatible/Authentic presets; Mission Control Ctrl+arrow/digit are expected conflicts |
-| Thread topology | **Adopted from day one** | Main = AppKit/UI only; dedicated minimal input thread; per-app AX threads with timeouts; engine owns core state; channels. Tap timeout-disable recovery and hung apps are design inputs |
-| Workspace implementation | **Adopted: native Spaces first** | yabai primary/general reference. Virtual/parking may later be a user setting alongside native; not initial scope |
-| Distribution | Notarized Developer ID DMG plus Homebrew cask first vs alternatives | DMG plus cask first; notarization is not Store approval; open |
+| Thread topology | **Adopted from day one; skeleton details approved 2026-10-15** | Main = AppKit/UI; dedicated minimal input thread; per-app AX threads; engine owner. std bounded channels, whole-app latest-wins, retained stop outcomes, async logging, 20 ms AX pump slices |
+| Workspace implementation | **Adopted: native Spaces; reaffirmed 2026-10-15** | Continue learning from yabai; virtual-workspace jank rules out parking as the initial substitute. Tier 2 unchanged |
+| Distribution | **Adopted 2026-10-15: both DMG and Homebrew** | Release signing/notarization remains separately open; notarization is not Store approval |
 | Updates | Manual DMG upgrade first vs Sparkle later | Manual first; Sparkle only after safe-restore/update proof for hidden/stranded windows; open |
 | UI language / unsafe | **Adopted: all Rust** | [Unsafe Code](../../principles.md#unsafe-code); [enforcement](../../decisions.md#rust-unsafe-guardrail) |
-| Native settings takeover | Visible off/revert with preimages of owned changes only vs alternatives | Default pending; open |
-| Native vs project fullscreen | Preserve native fullscreen Spaces/games vs project slot restoration | Define against KDE intent after the capability spike; open |
+| Native settings takeover | **Adopted 2026-10-15: Authentic takes conflicting window-management shortcuts** | Includes Mission Control Ctrl+arrow/digit; native settings takeover where it causes no problems/breakage, with Revert and owned preimages as KDE/Windows. Implementation follows scoped tiling |
+| Native vs project fullscreen | **Adopted 2026-10-15: native fullscreen initially** | Revisit only for serious inconsistencies/problems; option A for minimize → restore directly fullscreen → exit retains current core behavior |
+| Delivery priority | **Adopted 2026-10-15** | Basic tiling MVP for dogfooding → native workspaces → effects |
+| Shared classification policy | **Approved 2026-10-15** | Shared `window_policy` core slice; Windows/KDE adoption in their work streams; dialogs/sheets/panels float, shared fixed-size predicate, Ghostty ordinary. Remaining native edge cases stay discriminating TBDs |
 
 Other distribution/UI choices in earlier drafts remain proposals if
 included here; architectural proposals stay distinct from the selected

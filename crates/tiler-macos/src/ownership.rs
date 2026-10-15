@@ -23,12 +23,23 @@ const PROTECTED_BUNDLE_SUBSTRINGS: &[&str] = &[
     "vscode",
 ];
 
+/// True when `bundle_id` is one of the two known owned probe identities:
+/// the probe bundle itself (direct spawns, which carry no LaunchServices
+/// entry and bind via executable path) or the dedicated signed helper
+/// bundle (bundled-helper spawns, which carry a LaunchServices entry plus
+/// launch date). Anything else — including empty/unknown — is never owned.
+#[must_use]
+pub fn is_owned_bundle(bundle_id: &str) -> bool {
+    bundle_id == crate::BUNDLE_ID || bundle_id == crate::HELPER_BUNDLE_ID
+}
+
 /// Identity of the owned disposable probe target process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnedIdentity {
     /// PID of the spawned `probe_target` child.
     pub pid: u32,
-    /// Must equal [`crate::BUNDLE_ID`].
+    /// Must equal [`crate::BUNDLE_ID`] or [`crate::HELPER_BUNDLE_ID`]
+    /// (see [`is_owned_bundle`]).
     pub bundle_id: String,
     /// Opaque nonce issued at spawn; ≥16 hex chars.
     pub nonce: String,
@@ -39,10 +50,11 @@ impl OwnedIdentity {
         if pid <= 1 {
             return Err(format!("refusing identity for reserved pid {pid}"));
         }
-        if bundle_id != crate::BUNDLE_ID {
+        if !is_owned_bundle(bundle_id) {
             return Err(format!(
-                "refusing identity: bundle '{bundle_id}' != owned '{}'",
-                crate::BUNDLE_ID
+                "refusing identity: bundle '{bundle_id}' != owned '{}' or '{}'",
+                crate::BUNDLE_ID,
+                crate::HELPER_BUNDLE_ID
             ));
         }
         validate_nonce(nonce)?;
@@ -54,12 +66,18 @@ impl OwnedIdentity {
     }
 
     /// Validate that `target` is this exact owned process. `target_bundle`
-    /// is the live-observed bundle of `target_pid`; any protected bundle or
-    /// PID mismatch fails closed.
+    /// is the live-observed bundle of `target_pid`; any protected bundle,
+    /// any bundle outside the two known owned IDs, or PID mismatch fails
+    /// closed.
     pub fn check_action(&self, target_pid: u32, target_bundle: &str) -> Result<(), String> {
         if is_protected_bundle(target_bundle) {
             return Err(format!(
                 "refusing action on protected bundle '{target_bundle}'"
+            ));
+        }
+        if !is_owned_bundle(target_bundle) {
+            return Err(format!(
+                "refusing action: target bundle '{target_bundle}' is not a known owned bundle"
             ));
         }
         if target_bundle != self.bundle_id {
@@ -96,13 +114,14 @@ pub fn is_protected_bundle(bundle_id: &str) -> bool {
 }
 
 /// Live verification of an owned process: the PID must currently resolve to
-/// the owned bundle ID in the running-application table, or — for a directly
-/// spawned helper with no LaunchServices bundle entry — to the expected
-/// helper executable path. Child-owned contract: exact `Child` PID +
-/// executable-path binding + per-run nonce (checked by the spawn record) +
-/// CURRENT live window-nonce title over a fresh CGWindowList snapshot at
-/// use. Caller-supplied PIDs/nonces that fail any live check are refused;
-/// PID reuse cannot authorize another process.
+/// an owned bundle ID (the probe bundle, or the dedicated signed helper
+/// bundle for the regular-policy focus fixture) in the running-application
+/// table, or — for a directly spawned helper with no LaunchServices bundle
+/// entry — to the expected helper executable path. Child-owned contract: exact
+/// `Child` PID + executable-path binding + per-run nonce (checked by the spawn
+/// record) + CURRENT live window-nonce title over a fresh CGWindowList
+/// snapshot at use. Caller-supplied PIDs/nonces that fail any live check are
+/// refused; PID reuse cannot authorize another process.
 pub fn verify_live_process(pid: u32, expected_exe: Option<&str>) -> Result<String, String> {
     if pid <= 1 {
         return Err(format!("refusing reserved pid {pid}"));
@@ -115,10 +134,11 @@ pub fn verify_live_process(pid: u32, expected_exe: Option<&str>) -> Result<Strin
             if is_protected_bundle(&bundle) {
                 return Err(format!("refusing action on protected bundle '{bundle}'"));
             }
-            if bundle != crate::BUNDLE_ID {
+            if bundle != crate::BUNDLE_ID && bundle != crate::HELPER_BUNDLE_ID {
                 return Err(format!(
-                    "refusing action: live bundle '{bundle}' != owned '{}'",
-                    crate::BUNDLE_ID
+                    "refusing action: live bundle '{bundle}' != owned '{}' or '{}'",
+                    crate::BUNDLE_ID,
+                    crate::HELPER_BUNDLE_ID
                 ));
             }
             if let Some(expected) = expected_exe {
@@ -163,6 +183,27 @@ mod tests {
     #[test]
     fn rejects_wrong_bundle() {
         assert!(OwnedIdentity::new(4242, "com.example.other", "0123456789abcdef").is_err());
+        assert!(OwnedIdentity::new(4242, "", "0123456789abcdef").is_err());
+    }
+
+    #[test]
+    fn accepts_both_known_owned_bundles() {
+        // Direct spawns bind the probe bundle; bundled-helper spawns bind
+        // the dedicated signed helper bundle. Both are owned; anything
+        // else (including empty/unknown) refuses.
+        assert!(OwnedIdentity::new(4242, crate::BUNDLE_ID, "0123456789abcdef").is_ok());
+        assert!(OwnedIdentity::new(4242, crate::HELPER_BUNDLE_ID, "0123456789abcdef").is_ok());
+        assert!(!is_owned_bundle("com.example.other"));
+        assert!(!is_owned_bundle(""));
+        assert!(!is_owned_bundle("com.mitchellh.ghostty"));
+        let helper = OwnedIdentity::new(4242, crate::HELPER_BUNDLE_ID, "0123456789abcdef").unwrap();
+        assert!(helper.check_action(4242, crate::HELPER_BUNDLE_ID).is_ok());
+        // Cross-bundle use refuses: a helper identity never authorizes the
+        // probe bundle and vice versa.
+        assert!(helper.check_action(4242, crate::BUNDLE_ID).is_err());
+        assert!(owned().check_action(4242, crate::HELPER_BUNDLE_ID).is_err());
+        // Unknown live bundles refuse even against a valid identity.
+        assert!(owned().check_action(4242, "com.example.other").is_err());
     }
 
     #[test]

@@ -55,11 +55,13 @@
 //!   (see [`native_tap_status`]); installing a tap is never needed to test
 //!   the offline skeleton.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "macos")]
 use crate::runtime::AX_CALL_TIMEOUT;
 use crate::runtime::{AxCompletion, FrameCommand, ObservedWindow};
+use crate::runtime_types::{FocusCommand, ScopedBackendSnapshot};
 
 pub use crate::runtime_observe::BackendSnapshot;
 
@@ -85,6 +87,27 @@ pub struct RawKeyEvent {
 }
 
 use crate::input_match::TapKeyKind;
+
+/// Live effect hook bound into each scoped backend by its owning worker:
+/// the shared revision source plus the worker's stop flag, frame-slot
+/// handle, and freshest main-thread frontmost. The worker re-binds every
+/// multiplex iteration (cheap clones), so every setter leg and every focus
+/// dispatch fences against live state — a topology update, terminate, or
+/// frontmost change mid-plan fences the very next leg, not just the next
+/// command. In-flight calls always finish; subsequent legs withhold.
+#[derive(Debug, Clone)]
+pub struct EffectHook {
+    /// Live native-context cell (revision-fenced domains).
+    pub cell: crate::runtime::NativeContextCell,
+    /// Worker stop flag (terminate/shutdown): set means withhold.
+    pub stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Owning app's latest-wins frame slot, for mid-batch supersession
+    /// checks (a newer desired set landing mid-apply withholds the rest).
+    pub frames: Arc<crate::runtime_thread::FrameSlot>,
+    /// Freshest main-thread frontmost: PID plus bundle (`None` = unknown
+    /// session, which denies). Supplied per bind, never read off-main.
+    pub frontmost: Option<(u32, Option<String>)>,
+}
 
 /// Per-app AX backend. Created, driven, and destroyed inside the owning app
 /// worker thread. No `Send` bound: native state stays thread-affine without
@@ -113,6 +136,38 @@ pub trait AxBackend {
     /// silent clean. Default: nothing to tear down.
     fn shutdown(&mut self) -> Result<(), String> {
         Ok(())
+    }
+    /// Bind the live effect hook (revision cell, stop flag, frame slot,
+    /// freshest frontmost). The owning worker re-binds every multiplex
+    /// iteration, so the backend never fences against a stale revision.
+    /// Default: ignored (synthetic backends have no domains).
+    fn bind_effect_hook(&mut self, _hook: &EffectHook) {}
+    /// Scoped snapshot with per-window Space membership plus the context
+    /// revision read at snapshot time. Default maps the legacy snapshot
+    /// with unknown membership (every window omits engine-side: fail
+    /// closed, never guessed). The native backend overrides this with real
+    /// membership; the worker calls it only in native topology mode.
+    fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
+        self.snapshot()
+            .map(|windows| ScopedBackendSnapshot::from_unscoped(windows, None, 0))
+    }
+    /// Autonomous scoped observation, if the backend supports it. Default:
+    /// `None` (no scoped source). The native backend overrides this with
+    /// the thread-affine observer; `stop` bounds it like
+    /// [`AxBackend::poll_observation`].
+    fn poll_scoped(&mut self, _stop: &AtomicBool) -> Option<Result<ScopedBackendSnapshot, String>> {
+        None
+    }
+    /// Dispatch one latest-wins focus command on the owning thread (the
+    /// SAME owner that observed the window). Default refuses (fail closed):
+    /// only backends with a real dispatcher override this. Dispatch truth
+    /// only — arrival is verified by later observations, never claimed
+    /// here.
+    fn dispatch_focus(&mut self, cmd: &FocusCommand) -> AxCompletion {
+        let _ = cmd;
+        AxCompletion::Failed {
+            reason: "focus dispatch unsupported by backend".to_owned(),
+        }
     }
 }
 

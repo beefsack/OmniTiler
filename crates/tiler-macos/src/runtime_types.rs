@@ -10,10 +10,14 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
+use tiler_core::session::DomainKey;
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use crate::config::ProbeModifier;
+use crate::focus_route::FocusRoute;
+use crate::scope::AppScope;
 
 // -- Phase-1 single-domain skeleton constants --------------------------------
 //
@@ -117,16 +121,271 @@ impl InputDirection {
     }
 }
 
+/// Which topology the runtime actuates: the legacy single synthetic domain
+/// (default, preserving every existing offline fixture) or the actual
+/// multi-domain native topology supplied via
+/// [`crate::runtime::RuntimeHandle::update_topology`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TopologyMode {
+    /// Single fixed synthetic domain (`macos-main` / `macos-space-1`).
+    #[default]
+    Synthetic,
+    /// Actual multi-domain topology: per-display current-user-Space domains
+    /// from [`crate::topology`] snapshots. Observations and commands carry
+    /// the snapshot revision; stale revisions fence instead of actuating.
+    Native,
+}
+
+/// One display's tile domain in integer adapter units: the
+/// `visible` work area (menu/Dock-excluded) is what the core plans into;
+/// `bounds` is the full display rect for reference. Both derive from the
+/// main-thread snapshot conversion; a display whose rects never converted
+/// never becomes a domain (refused, never guessed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDomain {
+    /// CG display ID (stable within the session).
+    pub cg_id: u32,
+    /// Exact managed display UUID for re-homing live SLS rows (exact-UUID
+    /// match per yabai; `None` when the public lookup failed — re-homing
+    /// then refuses rather than guessing positionally).
+    pub uuid: Option<String>,
+    /// Core output identity (`macos-display-{cg_id}`).
+    pub output: OutputId,
+    /// Core workspace identity (`space-{sid}` for the current user Space).
+    pub workspace: WorkspaceId,
+    /// Current user Space ID on this display.
+    pub space: u64,
+    /// Full display rect in integer CG top-left points.
+    pub bounds: Rect,
+    /// Tiling work area in integer CG top-left points.
+    pub visible: Rect,
+}
+
+/// Shared native tile context: the revision-fenced per-display domains the
+/// main-thread supplier derived at snapshot time. Plain data only (IDs plus
+/// integer rects — no titles, no paths, no bundle strings); per-app AX
+/// owners and the engine read it through an `Arc`, never mutated in place.
+/// A new snapshot replaces the whole context, so readers always see one
+/// consistent revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeContext {
+    /// Snapshot fingerprint revision all domains were derived under.
+    pub revision: u64,
+    /// Exactly-homed current-user-Space domains, in display order.
+    pub domains: Vec<NativeDomain>,
+    /// Displays skipped during derivation, with honest reasons. Skipped
+    /// displays tile nothing; their windows never reach the engine.
+    pub skipped: Vec<SkippedDisplay>,
+}
+
+/// Display skipped during derivation, with the honest reason (counts and
+/// IDs only). Skipped displays tile nothing: their windows never reach the
+/// engine (omission, never destruction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedDisplay {
+    pub cg_id: u32,
+    pub reason: String,
+}
+
+impl NativeContext {
+    /// Derive the tile context from a main-thread topology snapshot.
+    /// `space_type` resolves a Space ID to its read-only type (`None` =
+    /// unreadable); the live side injects the existing `sls_space_type`
+    /// read on the main thread, tests inject scripted types. Each display
+    /// is homed exactly like the selection path (empty membership set:
+    /// homing plus current-user-Space gating only); refused or degenerate
+    /// displays are skipped with reasons, never guessed into a domain.
+    /// Identical snapshots derive identical contexts (revision included).
+    pub fn derive(
+        snapshot: &crate::topology::TopologySnapshot,
+        space_type: &dyn Fn(u64) -> Option<crate::ffi::SlsSpaceType>,
+    ) -> (Self, Vec<SkippedDisplay>) {
+        let mut domains = Vec::new();
+        let mut skipped = Vec::new();
+        for display in &snapshot.displays {
+            let domain = (|| {
+                let selected =
+                    crate::topology::select_domain(snapshot, display.cg_id, &[], space_type)
+                        .map_err(|e| e.to_string())?;
+                let geometry = snapshot
+                    .displays
+                    .iter()
+                    .find(|d| d.cg_id == display.cg_id)
+                    .ok_or_else(|| format!("display {} vanished mid-derive", display.cg_id))?;
+                let bounds = geometry
+                    .cg_bounds
+                    .and_then(|r| r.to_rect())
+                    .ok_or_else(|| format!("display {} bounds unusable", display.cg_id))?;
+                let visible = geometry
+                    .visible
+                    .and_then(|r| r.to_rect())
+                    .ok_or_else(|| format!("display {} work area unusable", display.cg_id))?;
+                Ok::<NativeDomain, String>(NativeDomain {
+                    cg_id: display.cg_id,
+                    uuid: display.uuid.clone(),
+                    output: OutputId(selected.output),
+                    workspace: WorkspaceId(selected.workspace),
+                    space: selected.space,
+                    bounds,
+                    visible,
+                })
+            })();
+            match domain {
+                Ok(domain) => domains.push(domain),
+                Err(reason) => skipped.push(SkippedDisplay {
+                    cg_id: display.cg_id,
+                    reason,
+                }),
+            }
+        }
+        (
+            Self {
+                revision: snapshot.revision,
+                domains,
+                skipped: skipped.clone(),
+            },
+            skipped,
+        )
+    }
+}
+
+/// Per-window scoped metadata carried alongside a native snapshot. The
+/// `spaces` list is the live Space membership read for the window (empty =
+/// unreadable/unknown, never "no Space"); the engine admits a window only
+/// on exact `[current]` membership and omits everything else. Show-state
+/// flags ride along for the pre-effect recheck baseline (setters re-read
+/// live; these never authorize alone).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedWindowMeta {
+    pub wid: u32,
+    pub spaces: Vec<u64>,
+    pub fullscreen: bool,
+    pub minimized: bool,
+    pub hidden: bool,
+}
+
+/// One backend-reported scoped observation payload for a single app. Plain
+/// data only; handles never escape the owning thread. `revision` is the
+/// context revision read at snapshot time: the engine re-fences it against
+/// the current context, so snapshot drift supersedes plans instead of
+/// actuating stale domains. `focus_evidence` is stamped by the owning
+/// worker from the main-thread supplier (never by the backend), so a
+/// backend can never forge global focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedBackendSnapshot {
+    pub windows: Vec<ObservedWindow>,
+    pub focused_wid: Option<u32>,
+    /// CG owner join for the focused window (observed on the owner thread
+    /// alongside the snapshot); false withholds global focus, never claims.
+    pub focus_cg_owned: bool,
+    /// Worker-stamped focus evidence (`None` until the controller publishes
+    /// any: focus stays unfocused, never guessed). Stamped from the
+    /// main-thread supplier at send time with the worker's bounded
+    /// selected-oracle read (`sys_focus`) over the `ax_focus` slot when the
+    /// owner read succeeded, so the live AX leg is always owner-thread
+    /// truth (the main thread performs no AX reads and the tile controller
+    /// leaves the slot empty).
+    pub focus_evidence: Option<FocusEvidence>,
+    /// Bounded selected-oracle focus read taken on the owning per-app AX
+    /// thread alongside this snapshot (`None` = unreadable there, never a
+    /// claim). The owner never fabricates this from local state: it is a
+    /// real selected SLPS+direct read (SLPS front agreeing with the
+    /// workspace frontmost before+after, direct per-app focused window with
+    /// CG ownership) — or nothing. The raw system-wide read stays
+    /// diagnostic-only and never lands here. Manual submissions attest
+    /// their own legs instead (test/controller surface); the live path
+    /// always reads.
+    pub sys_focus: Option<(u32, Option<u32>)>,
+    /// Global-focus promotion verdict: `Some((pid, wid))` only when the
+    /// selected-oracle AX leg, the app-local focused window, the CG join,
+    /// and the main-thread frontmost all agree. Stamped by the worker at
+    /// send time (freshest evidence); the engine promotes observed focus
+    /// only on this verdict matching the reported window.
+    pub global_focus: Option<(u32, u32)>,
+    pub meta: Vec<ScopedWindowMeta>,
+    /// Classifier-omitted window count (excluded shapes never publish as
+    /// observed, so the engine cannot mistake omission for closure).
+    pub excluded: usize,
+    pub revision: u64,
+}
+
+impl ScopedBackendSnapshot {
+    /// Fail-closed mapping of a legacy (metadataless) snapshot: every
+    /// window carries unknown membership, so the engine omits all of them.
+    /// Used only by the default trait path; the native backend always
+    /// attaches real membership.
+    #[must_use]
+    pub fn from_unscoped(
+        windows: Vec<ObservedWindow>,
+        focused_wid: Option<u32>,
+        revision: u64,
+    ) -> Self {
+        Self {
+            windows,
+            focused_wid,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: Vec::new(),
+            excluded: 0,
+            revision,
+        }
+    }
+}
+
+/// Main-thread-supplied global focus evidence: workspace-frontmost PID plus
+/// the selected-oracle AX focus slot. Plain IDs only. The main thread fills
+/// the frontmost legs and NEVER the AX leg (no AX on the controller thread):
+/// the owning per-app worker stamps `ax_focus` from its bounded
+/// selected-oracle read (`sys_focus`) at send time. The engine promotes an
+/// app-local focused window to observed truth only on full agreement (see
+/// [`crate::focus_route::global_focus_agrees`]); anything else arrives
+/// unfocused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusEvidence {
+    pub frontmost_pid: Option<u32>,
+    pub frontmost_bundle: Option<String>,
+    pub ax_focus: Option<(u32, Option<u32>)>,
+}
+
+/// Typed focus command to one app worker through its latest-wins focus
+/// slot. `generation` fences PID reuse exactly like [`FrameCommand`], and
+/// `revision` fences display/Space change mid-plan: a worker dispatches
+/// only commands matching the live generation and revision (counted
+/// otherwise, never dispatched). `route` selects the native dispatcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusCommand {
+    pub pid: u32,
+    pub generation: u64,
+    pub request_id: u64,
+    pub wid: u32,
+    pub window: String,
+    pub revision: u64,
+    pub route: FocusRoute,
+}
+
 /// Typed semantic input action. Produced by the input thread from exact
 /// chord matches on key down only; the input thread never touches the core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputSemanticAction {
-    FocusStep { direction: InputDirection },
-    MoveStep { direction: InputDirection },
+    FocusStep {
+        direction: InputDirection,
+    },
+    MoveStep {
+        direction: InputDirection,
+    },
+    /// Minimal float toggle for the observed-focus window, resolved
+    /// engine-side to the existing [`tiler_core::boundary::CoreCommand::ToggleFloat`]
+    /// with no explicit rect. No additive core API.
+    ToggleFloat,
 }
 
 /// Typed frame command to one app worker. `generation` fences PID reuse:
 /// a worker applies only commands for the generation it was spawned with.
+/// `topology_revision` fences display/Space change mid-plan: a worker
+/// skips commands whose revision no longer matches the current snapshot
+/// (counted, never applied). Synthetic-mode commands carry revision 0.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameCommand {
     pub pid: u32,
@@ -138,6 +397,12 @@ pub struct FrameCommand {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    pub topology_revision: u64,
+    /// Engine-homed target domain at plan time (`None` for legacy synthetic
+    /// plans). The backend pins effects to this domain: a window that
+    /// crosses displays mid-plan refuses the remaining legs instead of
+    /// actuating outside its planned domain.
+    pub domain: Option<DomainKey>,
 }
 
 /// Typed focus request out of the engine. `generation` fences PID reuse and
@@ -146,7 +411,9 @@ pub struct FrameCommand {
 /// drained, so a stale request can never dispatch after relaunch.
 /// `dispatched` means queued for the native dispatcher; `verified` is always
 /// false in the skeleton — only a later [`AxObservation`] can verify focus.
-/// Dispatch must never be read as arrival.
+/// Dispatch must never be read as arrival. `topology_revision` fences
+/// display/Space change mid-plan exactly like [`FrameCommand`]: queued
+/// requests from a superseded revision drain stale instead of dispatching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusRequest {
     pub pid: u32,
@@ -156,17 +423,36 @@ pub struct FocusRequest {
     pub window: String,
     pub dispatched: bool,
     pub verified: bool,
+    pub topology_revision: u64,
 }
 
 /// Honest AX completion: dispatch truth only (accepted, refused, timed
-/// out). A completion never substitutes observed truth, which arrives
-/// exclusively through [`AxObservation`]. Reasons carry OS status names
-/// only, never user content.
+/// out, or partially applied). A completion never substitutes observed
+/// truth, which arrives exclusively through [`AxObservation`]. Reasons carry
+/// OS status names only, never user content. `PartialApplied` carries the
+/// actual partial truth after the single bounded readback: which legs took
+/// effect plus the readback rect (`None` when unreadable, never guessed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AxCompletion {
-    Applied { elapsed_ms: u64 },
-    Failed { reason: String },
-    Timeout { timeout_ms: u64 },
+    Applied {
+        elapsed_ms: u64,
+    },
+    PartialApplied {
+        elapsed_ms: u64,
+        /// First size leg applied (Silica order runs size before position;
+        /// a first-size refusal with later legs applied is still partial).
+        size_first_applied: bool,
+        position_applied: bool,
+        size_applied: bool,
+        readback_xywh: Option<(i32, i32, i32, i32)>,
+        readback_unreadable: bool,
+    },
+    Failed {
+        reason: String,
+    },
+    Timeout {
+        timeout_ms: u64,
+    },
 }
 
 /// Opaque window identity minted by the runtime: `"<pid>_<wid>"`. The
@@ -183,6 +469,31 @@ pub fn window_id(pid: u32, wid: u32) -> String {
 pub fn parse_window_id(value: &str) -> Option<(u32, u32)> {
     let (pid, wid) = value.split_once('_')?;
     Some((pid.parse().ok()?, wid.parse().ok()?))
+}
+
+/// One tile input chord: an exact key plus whether the Shift arm rides
+/// alongside the Ctrl-role modifier, resolving to one semantic action.
+/// Matching is exact (see [`crate::input::cg_flag_bits`]): extra modifiers
+/// beyond the named set fail the match. `shift` selects the move arm (the
+/// Windows `FOCUS_MOVE_ROWS` Shifted shape, read-only reference); focus and
+/// float chords carry no Shift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileBinding {
+    pub key_code: u32,
+    pub shift: bool,
+    pub action: InputSemanticAction,
+}
+
+impl TileBinding {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.key_code > 255 {
+            return Err(format!(
+                "tile chord key code {} out of range 0..=255",
+                self.key_code
+            ));
+        }
+        Ok(())
+    }
 }
 
 // -- Configuration -------------------------------------------------------------
@@ -206,14 +517,34 @@ pub struct RuntimeConfig {
     /// Bounded async normal-log queue depth. Senders use `try_send` only:
     /// a full queue drops counted and never stalls the engine/input/apps.
     pub log_queue_depth: usize,
-    /// Modifier filling the Ctrl role for input chords (default Meta).
+    /// Modifier filling the Ctrl role for input chords (default Ctrl).
     pub modifier: ProbeModifier,
     /// Key code of the exact focus-step chord.
     pub focus_key: u32,
     /// Key code of the exact move-step chord.
     pub move_key: u32,
+    /// Key code of the exact float-toggle chord (minimal toggle of the
+    /// observed-focus window via the existing core `ToggleFloat` command).
+    pub float_key: u32,
     /// Direction carried by focus/move steps.
     pub step_direction: InputDirection,
+    /// Full tile chord catalogue for the scoped-tile entry point. `None`
+    /// keeps the legacy three-chord path (one focus/move/float chord plus
+    /// `step_direction`); `Some` replaces it with the exact catalogue
+    /// (focus/move/float arms, per-chord directions). No other behavior
+    /// changes; validation requires a non-empty duplicate-free table.
+    pub tile_bindings: Option<Vec<TileBinding>>,
+    /// Scoped-tile bundle allowlist. Empty disables scope enforcement
+    /// (legacy synthetic fixtures); non-empty enforces the explicit scope:
+    /// only listed bundles actuate, Ghostty and the own bundle are rejected
+    /// at validation and at the effect boundary, unknown bundles never actuate.
+    pub allowed_bundles: Vec<String>,
+    /// Which topology the runtime actuates (default synthetic preserves old
+    /// offline fixtures; native uses supplied snapshots per display).
+    pub topology_mode: TopologyMode,
+    /// Which native route scoped focus requests dispatch through (default
+    /// SLPS pending live agreement; public-API seam is explicit opt-in).
+    pub focus_route: FocusRoute,
     /// Shared fixed-size admission predicate for the skeleton engine (D1).
     /// Both-axes default (current delivered behavior); changing it affects
     /// subsequent admissions only, never existing classifications.
@@ -228,17 +559,22 @@ impl Default for RuntimeConfig {
             worker_ready_timeout: Duration::from_secs(5),
             startup_ready_timeout: Duration::from_secs(5),
             log_queue_depth: crate::runtime_log::LOG_SINK_CAP,
-            modifier: ProbeModifier::Meta,
+            modifier: ProbeModifier::Ctrl,
             focus_key: crate::input::PROBE_KEY_CODE,
             move_key: 0x05,
+            float_key: 0x06,
             step_direction: InputDirection::Right,
+            tile_bindings: None,
+            allowed_bundles: Vec::new(),
+            topology_mode: TopologyMode::Synthetic,
+            focus_route: FocusRoute::default(),
             fixed_size_predicate: FixedSizePredicate::BothAxes,
         }
     }
 }
 
 impl RuntimeConfig {
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.engine_queue_depth == 0 {
             return Err("engine_queue_depth must be nonzero".to_owned());
         }
@@ -248,15 +584,44 @@ impl RuntimeConfig {
         if self.focus_key == self.move_key {
             return Err("focus_key and move_key must differ".to_owned());
         }
+        if self.focus_key == self.float_key || self.move_key == self.float_key {
+            return Err("float_key must differ from focus_key and move_key".to_owned());
+        }
         if self.startup_ready_timeout.is_zero() {
             return Err("startup_ready_timeout must be nonzero".to_owned());
         }
         if self.log_queue_depth == 0 {
             return Err("log_queue_depth must be nonzero".to_owned());
         }
-        if self.focus_key > 255 || self.move_key > 255 {
+        if self.focus_key > 255 || self.move_key > 255 || self.float_key > 255 {
             return Err("chord key codes must fit 0..=255".to_owned());
         }
+        if let Some(bindings) = &self.tile_bindings {
+            if bindings.is_empty() {
+                return Err("tile_bindings must be non-empty when set".to_owned());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            let (modifier_flags, _) = crate::input::cg_flag_bits(self.modifier);
+            for binding in bindings {
+                binding.validate()?;
+                let flags = modifier_flags
+                    | if binding.shift {
+                        crate::native_input::CG_SHIFT_BIT
+                    } else {
+                        0
+                    };
+                if !seen.insert((binding.key_code, flags)) {
+                    return Err(format!(
+                        "tile_bindings duplicates effective chord key {} shift={}",
+                        binding.key_code, binding.shift
+                    ));
+                }
+            }
+        }
+        AppScope {
+            allowed: self.allowed_bundles.clone(),
+        }
+        .validate()?;
         Ok(())
     }
 }
@@ -392,6 +757,11 @@ pub enum SubmitOutcome {
     AppTerminated,
     /// The observation carries a stale app lifetime (PID relaunched since).
     StaleGeneration,
+    /// A legacy (metadataless) observation submitted in native topology
+    /// mode: without per-window Space membership nothing can home, so the
+    /// submission is refused instead of tiling outside the work areas.
+    /// Scoped observations travel separately and are unaffected.
+    RequiresScoped,
     AdmissionClosed,
 }
 
@@ -413,4 +783,109 @@ pub enum WorkerReadiness {
     Pending,
     Ready,
     Failed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::{DisplayRect, NsDisplay, SlsDisplayRow, SlsSpaceType};
+    use crate::topology;
+
+    fn ns(cg_id: u32, uuid: &str, x: f64, y: f64, w: f64, h: f64) -> NsDisplay {
+        NsDisplay {
+            cg_id,
+            uuid: Some(uuid.to_owned()),
+            frame: DisplayRect { x, y, w, h },
+            visible: DisplayRect { x, y, w, h },
+            scale: 2.0,
+        }
+    }
+
+    fn row(id: Option<&str>, spaces: &[u64], current: Option<u64>) -> SlsDisplayRow {
+        SlsDisplayRow {
+            identifier: id.map(str::to_owned),
+            spaces: spaces.to_vec(),
+            current,
+        }
+    }
+
+    fn user_space(_: u64) -> Option<SlsSpaceType> {
+        Some(SlsSpaceType::User)
+    }
+
+    #[test]
+    fn derive_homes_each_display_to_actual_work_areas() {
+        let snapshot = topology::build_snapshot(
+            &[
+                ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0),
+                ns(2, "uuid-2", 1440.0, 0.0, 1440.0, 900.0),
+            ],
+            &[
+                row(Some("uuid-1"), &[11], Some(11)),
+                row(Some("uuid-2"), &[21], Some(21)),
+            ],
+            Some(true),
+        );
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &user_space);
+        assert!(skipped.is_empty());
+        assert_eq!(ctx.revision, snapshot.revision);
+        assert_eq!(ctx.domains.len(), 2);
+        // Display 1 converts 1:1 (primary at the origin); display 2 keeps
+        // its global CG x offset (work areas, never the skeleton bounds).
+        assert_eq!(
+            ctx.domains[0].visible,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1440,
+                h: 900,
+            }
+        );
+        assert_eq!(
+            ctx.domains[1].visible,
+            Rect {
+                x: 1440,
+                y: 0,
+                w: 1440,
+                h: 900,
+            }
+        );
+        assert_eq!(ctx.domains[0].space, 11);
+        assert_eq!(ctx.domains[1].space, 21);
+        assert_eq!(ctx.domains[0].uuid.as_deref(), Some("uuid-1"));
+        // Identical snapshots derive identical contexts.
+        let (again, _) = NativeContext::derive(&snapshot, &user_space);
+        assert_eq!(ctx, again);
+    }
+
+    #[test]
+    fn derive_skips_refused_displays_with_reasons() {
+        // Second display's current Space reads fullscreen: it skips (tiles
+        // nothing) while the healthy display still derives.
+        let snapshot = topology::build_snapshot(
+            &[
+                ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0),
+                ns(2, "uuid-2", 1440.0, 0.0, 1440.0, 900.0),
+            ],
+            &[
+                row(Some("uuid-1"), &[11], Some(11)),
+                row(Some("uuid-2"), &[21], Some(21)),
+            ],
+            Some(true),
+        );
+        let space_type = |sid: u64| {
+            Some(if sid == 11 {
+                SlsSpaceType::User
+            } else {
+                SlsSpaceType::Fullscreen
+            })
+        };
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &space_type);
+        assert_eq!(ctx.domains.len(), 1);
+        assert_eq!(ctx.domains[0].cg_id, 1);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].cg_id, 2);
+        assert!(!skipped[0].reason.is_empty());
+        assert_eq!(ctx.skipped, skipped, "reasons ride the context");
+    }
 }

@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Stable signed .app recipe for the Phase 0 macOS probe.
-# Fixed bundle ID (crates/tiler-macos/Info.plist) and FIXED output path
-# (target/macos/OmniTilerProbe.app). Fails closed when the persistent named
-# dev identity is unavailable: no ad-hoc fallback (`codesign -s -` is never
-# used), no custom output path (an arbitrary rm -rf target is refused).
+# Stable signed .app recipes for the Phase 0 macOS probe.
+# Fixed bundle IDs (crates/tiler-macos/Info.plist plus Info.helper.plist) and
+# FIXED output paths (target/macos/OmniTilerProbe.app plus
+# target/macos/OmniTilerProbeHelper.app). Fails closed when the persistent
+# named dev identity is unavailable: no ad-hoc fallback (`codesign -s -` is
+# never used), no custom output path (an arbitrary rm -rf target is refused).
 #
 #   scripts/macos-app.sh --identity 'OmniTiler Mac Dev'
 #   scripts/macos-app.sh --verify
 #
 # Steps: cargo build both binaries (mise toolchain, MACOSX_DEPLOYMENT_TARGET
-# fixed at the macOS floor) -> assemble .app -> sign nested executables
-# first, bundle last -> codesign verify/DR -> spctl diagnostic (not a grant).
-# Cert creation is a later step; a missing identity is a hard error, not a
-# fallback.
+# fixed at the macOS floor) -> assemble both .apps (the helper app carries
+# only the probe-target binary under the stable helper bundle ID) -> sign
+# nested executables first, each bundle last -> codesign verify/DR -> spctl
+# diagnostic (not a grant). Cert creation is a later step; a missing
+# identity is a hard error, not a fallback. No TCC usage strings are added
+# by this script (no TCC/security changes).
 #
 # Deployment-target note: the floor is enforced ONLY by this script's
 # `MACOSX_DEPLOYMENT_TARGET` export at build time. A plain
@@ -26,10 +29,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 CRATE_DIR="$REPO_ROOT/crates/tiler-macos"
 OUT="$REPO_ROOT/target/macos/OmniTilerProbe.app"
+HELPER_OUT="$REPO_ROOT/target/macos/OmniTilerProbeHelper.app"
 TARGET_DIR="$REPO_ROOT/target"
 TARGET_MACOS_DIR="$REPO_ROOT/target/macos"
 MARKER_REL="Contents/Resources/.omnitiler-probe-marker"
 BUNDLE_ID="io.github.omnitiler.macos.probe"
+HELPER_BUNDLE_ID="io.github.omnitiler.macos.probe.helper"
+HELPER_INFO="$CRATE_DIR/Info.helper.plist"
 DEPLOYMENT_TARGET="15.0"
 
 IDENTITY=""
@@ -57,11 +63,11 @@ command -v mise >/dev/null 2>&1 || fail "mise not found; install per docs/macos-
 command -v codesign >/dev/null 2>&1 || fail "codesign not found (CLT required)"
 command -v security >/dev/null 2>&1 || fail "security not found (CLT required)"
 
-# Fixed-output guard: only this exact path may be (re)created. Anything else
-# is refused rather than risk deleting foreign data. The path itself must
-# never be a symlink (a symlinked OUT would make `rm -rf` delete foreign
+# Fixed-output guard: only the two exact paths below may be (re)created.
+# Anything else is refused rather than risk deleting foreign data. Neither
+# path may be a symlink (a symlinked OUT would make `rm -rf` delete foreign
 # content), and neither may its parents (`target`, `target/macos`): a
-# symlinked parent would divert the same deletion. After assembly the bundle
+# symlinked parent would divert the same deletion. After assembly each bundle
 # must contain no symlinks at all. An existing output must carry our dedicated
 # owned-bundle marker; absent/mismatched marker means foreign data and refuses
 # before any `rm -rf`.
@@ -69,27 +75,35 @@ case "$OUT" in
   "$REPO_ROOT"/target/macos/OmniTilerProbe.app) ;;
   *) fail "refusing non-fixed output path: $OUT" ;;
 esac
+case "$HELPER_OUT" in
+  "$REPO_ROOT"/target/macos/OmniTilerProbeHelper.app) ;;
+  *) fail "refusing non-fixed output path: $HELPER_OUT" ;;
+esac
 [[ ! -L "$OUT" ]] || fail "refusing symlinked output path: $OUT"
+[[ ! -L "$HELPER_OUT" ]] || fail "refusing symlinked output path: $HELPER_OUT"
 [[ ! -L "$TARGET_DIR" ]] || fail "refusing symlinked parent: $TARGET_DIR"
 [[ ! -L "$TARGET_MACOS_DIR" ]] || fail "refusing symlinked parent: $TARGET_MACOS_DIR"
 
 require_owned_marker() {
-  local marker="$OUT/$MARKER_REL"
-  [[ -d "$OUT" ]] || fail "existing output is not a directory: $OUT (refusing foreign-file risk)"
+  local app="$1" bundle="$2"
+  local marker="$app/$MARKER_REL"
+  [[ -d "$app" ]] || fail "existing output is not a directory: $app (refusing foreign-file risk)"
   [[ -f "$marker" && ! -L "$marker" ]] \
     || fail "existing output lacks owned-bundle marker ($marker); refusing to delete foreign data"
-  grep -Fqx "$BUNDLE_ID" "$marker" \
+  grep -Fqx "$bundle" "$marker" \
     || fail "existing output marker mismatch ($marker); refusing to delete foreign bundle"
 }
 
 verify_app() {
-  local app="$1"
+  local app="$1" bundle="$2"
+  shift 2
+  # Remaining args: MacOS binary leaf names to floor-check.
   [[ -d "$app" ]] || fail "app missing: $app"
   [[ ! -L "$app" ]] || fail "app path is a symlink: $app"
   # Owned-bundle marker: proves this directory was assembled by this script.
   local marker="$app/$MARKER_REL"
   [[ -f "$marker" && ! -L "$marker" ]] || fail "bundle lacks owned marker: $marker"
-  grep -Fqx "$BUNDLE_ID" "$marker" || fail "bundle marker mismatch: $marker"
+  grep -Fqx "$bundle" "$marker" || fail "bundle marker mismatch: $marker"
   # No symlinks anywhere inside the bundle: a planted link could divert
   # signing, verification, or a later launch at a foreign file.
   local links
@@ -102,13 +116,15 @@ verify_app() {
   echo "--- signature display ---"
   codesign --display --verbose=2 "$app" || fail "codesign display failed"
   echo "--- deployment-target floor ($DEPLOYMENT_TARGET) ---"
-  check_minos_floor "$app/Contents/MacOS/tiler-macos"
-  check_minos_floor "$app/Contents/MacOS/tiler-macos-probe-target"
+  local bin
+  for bin in "$@"; do
+    check_minos_floor "$app/Contents/MacOS/$bin"
+  done
   if command -v spctl >/dev/null 2>&1; then
     echo "--- spctl assessment (diagnostic, not a grant) ---"
     spctl -a -vvv -t exec "$app" || echo "note: spctl assessment non-zero (dev-signed; expected before notarization)"
   fi
-  /usr/bin/shasum -a 256 "$app/Contents/MacOS/tiler-macos" || true
+  /usr/bin/shasum -a 256 "$app/Contents/MacOS/$1" || true
   echo "verify: OK $app"
 }
 
@@ -128,7 +144,8 @@ check_minos_floor() {
 }
 
 if [[ "$VERIFY_ONLY" -eq 1 ]]; then
-  verify_app "$OUT"
+  verify_app "$OUT" "$BUNDLE_ID" tiler-macos tiler-macos-probe-target
+  verify_app "$HELPER_OUT" "$HELPER_BUNDLE_ID" tiler-macos-probe-target
   exit 0
 fi
 
@@ -178,12 +195,18 @@ BIN_DIR="$REPO_ROOT/target/debug"
 [[ ! -L "$TARGET_DIR" ]] || fail "refusing symlinked parent: $TARGET_DIR"
 [[ ! -L "$TARGET_MACOS_DIR" ]] || fail "refusing symlinked parent: $TARGET_MACOS_DIR"
 [[ ! -L "$OUT" ]] || fail "refusing symlinked output path: $OUT"
+[[ ! -L "$HELPER_OUT" ]] || fail "refusing symlinked output path: $HELPER_OUT"
 if [[ -e "$OUT" ]]; then
-  require_owned_marker
+  require_owned_marker "$OUT" "$BUNDLE_ID"
 fi
-rm -rf -- "$OUT"
+if [[ -e "$HELPER_OUT" ]]; then
+  require_owned_marker "$HELPER_OUT" "$HELPER_BUNDLE_ID"
+fi
+rm -rf -- "$OUT" "$HELPER_OUT"
 mkdir -p -- "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
+mkdir -p -- "$HELPER_OUT/Contents/MacOS" "$HELPER_OUT/Contents/Resources"
 [[ ! -L "$OUT" ]] || fail "output path became a symlink during assembly: $OUT"
+[[ ! -L "$HELPER_OUT" ]] || fail "output path became a symlink during assembly: $HELPER_OUT"
 # Source binaries must be plain files: never sign (or ship) a symlinked
 # foreign executable from inside the expected target dir.
 for src in "$BIN_DIR/tiler-macos" "$BIN_DIR/tiler-macos-probe-target"; do
@@ -192,19 +215,25 @@ done
 cp -f -- "$CRATE_DIR/Info.plist" "$OUT/Contents/Info.plist"
 cp -f -- "$BIN_DIR/tiler-macos" "$OUT/Contents/MacOS/tiler-macos"
 cp -f -- "$BIN_DIR/tiler-macos-probe-target" "$OUT/Contents/MacOS/tiler-macos-probe-target"
+cp -f -- "$HELPER_INFO" "$HELPER_OUT/Contents/Info.plist"
+cp -f -- "$BIN_DIR/tiler-macos-probe-target" "$HELPER_OUT/Contents/MacOS/tiler-macos-probe-target"
 # BSD chmod has no -- separator; these fixed absolute operands cannot be options.
 chmod +x "$OUT/Contents/MacOS/tiler-macos" "$OUT/Contents/MacOS/tiler-macos-probe-target"
+chmod +x "$HELPER_OUT/Contents/MacOS/tiler-macos-probe-target"
 
-# Bundle ID guard: Info.plist must carry the fixed ID.
+# Bundle ID guards: each Info.plist must carry its fixed ID.
 grep -Fq "<string>$BUNDLE_ID</string>" "$OUT/Contents/Info.plist" \
   || fail "bundle ID drift: $BUNDLE_ID missing from Info.plist"
+grep -Fq "<string>$HELPER_BUNDLE_ID</string>" "$HELPER_OUT/Contents/Info.plist" \
+  || fail "bundle ID drift: $HELPER_BUNDLE_ID missing from Info.helper.plist"
 
-# Dedicated owned-bundle marker: written at assembly, required before any
-# future `rm -rf` of this path and checked by `verify`.
+# Dedicated owned-bundle markers: written at assembly, required before any
+# future `rm -rf` of these paths and checked by `verify`.
 printf '%s\n' "$BUNDLE_ID" > "$OUT/$MARKER_REL"
+printf '%s\n' "$HELPER_BUNDLE_ID" > "$HELPER_OUT/$MARKER_REL"
 
-# Sign nested executables first, bundle last, by resolved hash (unique exact
-# full-name match above; never a substring, never ambiguous).
+# Sign nested executables first, each bundle last, by resolved hash (unique
+# exact full-name match above; never a substring, never ambiguous).
 codesign --force --options runtime --timestamp=none --sign "$SIGN_HASH" \
   "$OUT/Contents/MacOS/tiler-macos" \
   || fail "codesign failed for tiler-macos"
@@ -213,6 +242,13 @@ codesign --force --options runtime --timestamp=none --sign "$SIGN_HASH" \
   || fail "codesign failed for probe target"
 codesign --force --options runtime --timestamp=none --sign "$SIGN_HASH" "$OUT" \
   || fail "codesign failed for bundle"
+codesign --force --options runtime --timestamp=none --sign "$SIGN_HASH" \
+  "$HELPER_OUT/Contents/MacOS/tiler-macos-probe-target" \
+  || fail "codesign failed for helper probe target"
+codesign --force --options runtime --timestamp=none --sign "$SIGN_HASH" "$HELPER_OUT" \
+  || fail "codesign failed for helper bundle"
 
-verify_app "$OUT"
+verify_app "$OUT" "$BUNDLE_ID" tiler-macos tiler-macos-probe-target
+verify_app "$HELPER_OUT" "$HELPER_BUNDLE_ID" tiler-macos-probe-target
 echo "app: $OUT"
+echo "helper app: $HELPER_OUT"

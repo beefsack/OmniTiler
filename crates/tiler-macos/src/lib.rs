@@ -30,27 +30,58 @@ pub mod ax_session;
 pub mod cg;
 pub mod classifier;
 pub mod cli;
+#[cfg(test)]
+mod cli_tests;
 pub mod config;
 pub mod engine;
 pub mod ffi;
 pub mod focus;
+pub mod focus_diagnose;
+pub mod focus_route;
 pub mod input;
+pub mod input_eligibility;
 pub mod input_match;
+pub mod input_session;
+pub mod input_session_legs;
+pub mod native_facts;
+pub mod native_input;
+#[cfg(test)]
+mod native_input_tests;
+pub mod native_tile_backend;
+#[cfg(test)]
+mod native_tile_backend_tests;
+pub mod owned_control;
 pub mod ownership;
 pub mod probe_target;
 pub mod runtime;
 pub mod runtime_backend;
 mod runtime_core;
+mod runtime_input;
 pub mod runtime_lifecycle;
 pub mod runtime_log;
+mod runtime_native;
 mod runtime_observe;
 mod runtime_thread;
 pub mod runtime_types;
+mod runtime_worker;
+pub mod scope;
+pub mod scope_inspect;
 pub mod session;
 pub mod spaces;
+pub mod synth;
+pub mod tile;
+pub mod topology;
+pub mod watchdog;
 
 /// Stable probe bundle identity. Fixed across runs for TCC stability.
 pub const BUNDLE_ID: &str = "io.github.omnitiler.macos.probe";
+/// Stable bundled-helper identity: the signed helper `.app` packaged by
+/// `scripts/macos-app.sh` alongside the probe. Distinct from [`BUNDLE_ID`]
+/// so an explicit helper-bundle scope admits the bundled helper (which
+/// carries a LaunchServices entry plus launch date) without ever admitting
+/// the probe itself. Direct-spawned (unbundled) helpers carry no bundle and
+/// never match any allowlist entry.
+pub const HELPER_BUNDLE_ID: &str = "io.github.omnitiler.macos.probe.helper";
 /// Apple Silicon only for Phase 0.
 pub const SUPPORTED_ARCH: &str = "aarch64";
 /// Adopted minimum macOS release.

@@ -24,6 +24,7 @@
 //!   observed focus truth.
 
 use crate::runtime::ObservedWindow;
+use crate::runtime_types::ScopedBackendSnapshot;
 
 /// One backend-reported observation payload for a single app. Plain data
 /// only; handles never escape the owning thread.
@@ -31,6 +32,25 @@ use crate::runtime::ObservedWindow;
 pub struct BackendSnapshot {
     pub windows: Vec<ObservedWindow>,
     pub focused_wid: Option<u32>,
+}
+
+/// True when resending `next` after `prev` would be busy feedback: same
+/// geometry, focus knowledge, owner-read selected-oracle focus, membership
+/// metadata, omissions, and revision. Focus evidence is deliberately
+/// EXCLUDED (stamped fresh at every send; including it would republish on
+/// every evidence refresh), but `sys_focus` is COMPARED: it is a real
+/// owner-thread selected-oracle read per snapshot, so a changed selected
+/// focus must republish — otherwise an app-local focus of a background app
+/// would preserve stale global focus forever.
+#[must_use]
+pub fn scoped_snapshots_equal(prev: &ScopedBackendSnapshot, next: &ScopedBackendSnapshot) -> bool {
+    prev.focused_wid == next.focused_wid
+        && prev.focus_cg_owned == next.focus_cg_owned
+        && prev.sys_focus == next.sys_focus
+        && prev.windows == next.windows
+        && prev.meta == next.meta
+        && prev.excluded == next.excluded
+        && prev.revision == next.revision
 }
 
 /// True when resending `next` after `prev` would be busy feedback: same
@@ -212,5 +232,77 @@ mod tests {
         let mut fresh = PendingObservation::new();
         stage_latest(&None, &mut fresh, snap(1));
         assert_eq!(fresh.peek(), Some(&snap(1)));
+    }
+
+    fn scoped(wid: u32, spaces: &[u64], revision: u64) -> ScopedBackendSnapshot {
+        ScopedBackendSnapshot {
+            windows: vec![win(wid)],
+            focused_wid: None,
+            focus_cg_owned: false,
+            focus_evidence: None,
+            sys_focus: None,
+            global_focus: None,
+            meta: vec![crate::runtime_types::ScopedWindowMeta {
+                wid,
+                spaces: spaces.to_vec(),
+                fullscreen: false,
+                minimized: false,
+                hidden: false,
+            }],
+            excluded: 0,
+            revision,
+        }
+    }
+
+    #[test]
+    fn scoped_equality_covers_membership_omissions_and_revision() {
+        let a = scoped(1, &[11], 9);
+        assert!(scoped_snapshots_equal(&a, &a.clone()));
+        // Same geometry, different home Space: must republish (the engine
+        // would otherwise keep planning the stale domain).
+        assert!(!scoped_snapshots_equal(&a, &scoped(1, &[12], 9)));
+        // Same geometry and home, new revision: must republish (drift
+        // supersedes plans; equality would swallow the fence).
+        assert!(!scoped_snapshots_equal(&a, &scoped(1, &[11], 10)));
+        // Moved geometry republishes too.
+        let mut moved = a.clone();
+        moved.windows[0].x = 5;
+        assert!(!scoped_snapshots_equal(&a, &moved));
+    }
+
+    #[test]
+    fn scoped_equality_ignores_fresh_evidence_stamps() {
+        // Evidence stamps at every send; including it in equality would
+        // republish on every evidence refresh (busy feedback storm).
+        let mut a = scoped(1, &[11], 9);
+        let mut b = a.clone();
+        a.focus_evidence = Some(crate::runtime_types::FocusEvidence {
+            frontmost_pid: Some(1001),
+            frontmost_bundle: None,
+            ax_focus: Some((1001, Some(1))),
+        });
+        b.focus_evidence = None;
+        assert!(scoped_snapshots_equal(&a, &b));
+    }
+
+    #[test]
+    fn scoped_equality_tracks_owner_sys_focus() {
+        // The selected-oracle leg is a real owner-thread read per snapshot:
+        // a changed sys identity must republish (otherwise an app-local
+        // focus of a background app preserves stale global focus forever),
+        // while an identical sys stays quiet.
+        let a = scoped(1, &[11], 9);
+        let mut moved = a.clone();
+        moved.sys_focus = Some((1002, Some(3)));
+        assert!(!scoped_snapshots_equal(&a, &moved));
+        let mut same = a.clone();
+        same.sys_focus = None;
+        assert!(scoped_snapshots_equal(&a, &same));
+        let mut matched = a.clone();
+        matched.sys_focus = Some((1001, Some(1)));
+        let mut matched2 = matched.clone();
+        assert!(scoped_snapshots_equal(&matched, &matched2));
+        matched2.sys_focus = Some((1001, Some(2)));
+        assert!(!scoped_snapshots_equal(&matched, &matched2));
     }
 }

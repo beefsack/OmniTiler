@@ -1,0 +1,389 @@
+#![forbid(unsafe_code)]
+
+//! Truthful synthetic key-event posts to an owned PID (fixtures only).
+//!
+//! One CG key event per call through the maintained `objc2-core-graphics`
+//! bindings (`CGEvent::new_keyboard_event` + `set_flags` +
+//! `post_to_pid`): down and up are separate calls so the session names the
+//! exact intended owned target in the selected oracle immediately before
+//! EACH post and refuses otherwise. Posted events are synthetic by
+//! construction (the OS marks the event source accordingly); the session
+//! reports them as synthetic, never physical. No raw user keys or content
+//! anywhere: callers post only approved fixture chords with counters.
+//!
+//! Structural ownership proof (not a doc comment): the ONLY posting entry,
+//! [`post_guarded`], is `pub(crate)` and takes an unforgeable
+//! [`OwnedPostTarget`] whose private fields no caller can construct
+//! directly. The two constructors each demand fresh owned-session proof:
+//! [`OwnedPostTarget::from_held_child`] revalidates the exact held `Child`
+//! plus executable plus CG join (input-session, which carries the Child but
+//! no nonce), and [`OwnedPostTarget::from_spawn_record`] authenticates the
+//! spawn record (pid/nonce, expected helper, live bundle-or-exe) plus the
+//! CG join (owned-control, which carries the nonce). A foreign PID/target
+//! without owned proof cannot reach the window server: construction itself
+//! refuses before any bundle/oracle read, and the boundary re-enforces the
+//! fresh selected-oracle agreement plus the Ghostty/protected refusal
+//! immediately before EACH OS post.
+
+use std::time::Instant;
+
+/// One posted synthetic key event: target, chord class, edge, and the
+/// dispatch latency measured around the post call itself (never delivery).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostedEvent {
+    pub pid: u32,
+    pub key_code: u16,
+    pub flags: u64,
+    pub down: bool,
+    /// Microseconds around the post call (dispatch cost, not delivery).
+    pub post_latency_us: u64,
+}
+
+/// Validate a post target before any OS touch. Reserved PIDs, the caller's
+/// own process (a self-post proves nothing and risks feedback), and
+/// unrepresentable PIDs (out of `i32` range: the CG post takes a signed
+/// pid — `u32::MAX` is not a valid OS PID and refuses here rather than
+/// wrapping at the boundary) never reach the window server. Liveness and
+/// ownership are proven separately by [`OwnedPostTarget`]; this is the
+/// static floor, not the oracle.
+pub(crate) fn validate_post_target(pid: u32) -> Result<(), String> {
+    if pid <= 1 {
+        return Err(format!("refusing synthetic post to reserved pid {pid}"));
+    }
+    if pid == std::process::id() {
+        return Err("refusing synthetic post to the controller itself".to_owned());
+    }
+    if i32::try_from(pid).is_err() {
+        return Err(format!("refusing synthetic post: pid {pid} out of range"));
+    }
+    Ok(())
+}
+
+/// Which CG producer the guarded post uses. `Session` is the normal
+/// default; `Hid` is the fixture-only upstream discriminator.
+///
+/// The direct-to-PID route (bypassing session taps/Carbon matching) is
+/// deliberately absent: every live leg posts through the session stream so
+/// taps observe it. Kept minimal so the boundary has no unused arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuardedPostRoute {
+    Session,
+    Hid,
+}
+
+/// Pure guarded-post verdict over plain data (no OS touch): the protected
+/// bundle refusal plus the fresh selected-oracle agreement flag. Ghostty
+/// (any case/variant), the own probe bundle, any protected terminal bundle,
+/// and an unknown/empty bundle all refuse; a lost oracle
+/// (unknown/mismatch) refuses. The `Main` fallback is ACCEPTED here when
+/// the selected oracle agrees: agreement is the `selected_focus_agrees`
+/// verdict (SLPS front == workspace frontmost == want PID plus selected
+/// direct window == want WID plus CG join), which never distinguishes the
+/// `focused` vs `main` leg source — both selected routes
+/// (`slps-front-direct-focused`, `slps-front-direct-main`) agree
+/// identically. Unit-tested; the live boundary below performs the reads and
+/// passes the outcomes here.
+pub(crate) fn guarded_verdict(bundle: Option<&str>, oracle_agrees: bool) -> Result<(), String> {
+    if !oracle_agrees {
+        return Err("refusing synthetic post: selected oracle disagrees".to_owned());
+    }
+    match bundle {
+        Some(id) if !id.is_empty() => {
+            if crate::scope::is_ghostty_bundle(id) {
+                return Err("refusing synthetic post to Ghostty (never a target)".to_owned());
+            }
+            if id == crate::BUNDLE_ID {
+                return Err("refusing synthetic post to the probe itself".to_owned());
+            }
+            if crate::ownership::is_protected_bundle(id) {
+                return Err("refusing synthetic post to a protected bundle".to_owned());
+            }
+            Ok(())
+        }
+        _ => Err("refusing synthetic post with unknown bundle".to_owned()),
+    }
+}
+
+/// Unforgeable owned post target: private fields, constructible only through
+/// fresh owned-session proof. The boundary ([`post_guarded`]) additionally
+/// re-reads the live bundle plus the selected oracle immediately before
+/// EACH post, so a stale target (PID reuse between construction and post)
+/// still refuses at the boundary. Sequential reads, honest TOCTOU: proof,
+/// bundle, oracle, and post are sequential live reads, not one atomic
+/// transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OwnedPostTarget {
+    pid: u32,
+    wid: u32,
+}
+
+impl OwnedPostTarget {
+    /// Prove ownership through the exact held `Child` plus executable plus
+    /// CG join (input-session path: the caller holds the Child and carries
+    /// no nonce). Refuses reserved/self/out-of-range PIDs, wid 0, exited or
+    /// unknown holder states, executable drift, and lost CG joins before
+    /// any bundle/oracle read.
+    pub(crate) fn from_held_child(
+        child: &mut std::process::Child,
+        pid: u32,
+        wid: u32,
+        helper_path: &str,
+    ) -> Result<Self, String> {
+        validate_post_target(pid)?;
+        if wid == 0 {
+            return Err("refusing synthetic post to window id 0".to_owned());
+        }
+        crate::focus::recheck_holder_before_mutation(child, pid, helper_path, wid)
+            .map_err(|e| format!("holder recheck refused post target: {e}"))?;
+        Ok(Self { pid, wid })
+    }
+
+    /// Prove ownership through the spawn record (owned-control path: the
+    /// caller carries pid/nonce, never a WID). Authenticates pid/nonce plus
+    /// the expected helper plus live bundle-or-exe, refuses protected
+    /// bundles over the bound identity, and joins the fresh exact window
+    /// (CG owner-PID set intersected with the live AX identity join — no
+    /// caller-typed WID, exactly one owned window or refuse) — all before
+    /// any oracle read or post.
+    pub(crate) fn from_spawn_record(pid: u32, nonce: &str) -> Result<Self, String> {
+        validate_post_target(pid)?;
+        let owned = crate::ax::authorize_owned_action(pid, nonce)
+            .map_err(|e| format!("ownership refused post target: {e}"))?;
+        if crate::ownership::is_protected_bundle(&owned.bundle_id)
+            || crate::scope::is_ghostty_bundle(&owned.bundle_id)
+            || owned.bundle_id == crate::BUNDLE_ID
+        {
+            return Err("refusing synthetic post to a protected bundle".to_owned());
+        }
+        let wid = crate::focus::join_helper_wid(pid)
+            .map_err(|e| format!("CG join refused post target: {e}"))?;
+        if wid == 0 {
+            return Err("refusing synthetic post to window id 0".to_owned());
+        }
+        Ok(Self { pid, wid })
+    }
+
+    #[must_use]
+    pub(crate) fn pid(self) -> u32 {
+        self.pid
+    }
+
+    #[must_use]
+    pub(crate) fn wid(self) -> u32 {
+        self.wid
+    }
+}
+
+/// Single shared guarded posting boundary: every actual CG post in this
+/// crate flows through here. Enforces, immediately BEFORE each OS post:
+/// the static [`validate_post_target`] floor, the protected/Ghostty bundle
+/// refusal over the FRESH live bundle, and the FRESH selected oracle
+/// ([`crate::focus::read_agreement`] naming exactly the target immediately
+/// before the post, `Main` fallback accepted when the oracle agrees). The
+/// target itself already carries fresh owned-session proof (held-Child
+/// recheck or spawn-record auth plus CG join at construction); this
+/// boundary re-reads the oracle plus bundle live and never trusts a stale
+/// caller claim.
+///
+/// Sequential reads, honest TOCTOU: proof, bundle, oracle, and post are
+/// sequential live reads, not one atomic transaction. A PID reuse between
+/// construction and the post is not excluded by this boundary; callers keep
+/// their per-edge construction plus the per-edge oracle for that reason.
+///
+/// Never a Ghostty (or any foreign) event target.
+pub(crate) fn post_guarded(
+    target: &OwnedPostTarget,
+    key_code: u16,
+    flags: u64,
+    down: bool,
+    route: GuardedPostRoute,
+) -> Result<PostedEvent, String> {
+    let (pid, wid) = (target.pid, target.wid);
+    validate_post_target(pid)?;
+    // Fresh live bundle for the protected/Ghostty refusal (never a caller
+    // claim). Direct-spawn helpers have no bundle entry: fall back to the
+    // probe-bundle convention used by `live_owned_bundle` only when the PID
+    // is live, otherwise refuse unknown.
+    let bundle: Option<String> =
+        match crate::ffi::bundle_id_for_pid(pid as i32).filter(|b| !b.is_empty()) {
+            Some(bundle) => Some(bundle),
+            None if crate::ffi::process_exists(pid as i32) => Some(crate::BUNDLE_ID.to_owned()),
+            None => None,
+        };
+    let oracle_agrees = crate::focus::read_agreement(pid, wid).is_ok();
+    guarded_verdict(bundle.as_deref(), oracle_agrees)?;
+    match route {
+        GuardedPostRoute::Session => raw_post_key_event_to_session(pid, key_code, flags, down),
+        GuardedPostRoute::Hid => raw_post_key_event_to_hid(pid, key_code, flags, down),
+    }
+}
+
+/// Raw session-stream post (crate-private): session taps observe it, global
+/// Carbon hotkeys match it, and the frontmost app receives it unless a tap
+/// suppresses. Only [`post_guarded`] calls this, after owned proof plus the
+/// fresh oracle plus bundle refusal.
+fn raw_post_key_event_to_session(
+    pid: u32,
+    key_code: u16,
+    flags: u64,
+    down: bool,
+) -> Result<PostedEvent, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
+        let event = CGEvent::new_keyboard_event(None, key_code, down)
+            .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
+        CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+        let start = Instant::now();
+        CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&event));
+        Ok(PostedEvent {
+            pid,
+            key_code,
+            flags,
+            down,
+            post_latency_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (key_code, flags, down);
+        Err("synthetic key posts are macOS-only".to_owned())
+    }
+}
+
+/// Raw HID-tap post (crate-private, fixture-only discriminator): upstream of
+/// the session tap. Only [`post_guarded`] calls this, after owned proof
+/// plus the fresh oracle plus bundle refusal.
+fn raw_post_key_event_to_hid(
+    pid: u32,
+    key_code: u16,
+    flags: u64,
+    down: bool,
+) -> Result<PostedEvent, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
+        let event = CGEvent::new_keyboard_event(None, key_code, down)
+            .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
+        CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+        let start = Instant::now();
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        Ok(PostedEvent {
+            pid,
+            key_code,
+            flags,
+            down,
+            post_latency_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (key_code, flags, down);
+        Err("synthetic key posts are macOS-only".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_target_floor_refuses_reserved_self_and_out_of_range() {
+        assert!(validate_post_target(0).is_err());
+        assert!(validate_post_target(1).is_err());
+        assert!(validate_post_target(std::process::id()).is_err());
+        // Unrepresentable at the signed CG boundary: not a valid OS PID,
+        // refused here rather than wrapping at the post.
+        assert!(validate_post_target(u32::MAX).is_err());
+        assert!(validate_post_target(u32::from(u16::MAX)).is_ok());
+        // Representable but foreign: the floor passes (liveness is unproven
+        // here); owned proof plus the oracle refuse before any post.
+        assert!(validate_post_target(4242).is_ok());
+    }
+
+    #[test]
+    fn spawn_record_proof_refuses_foreign_without_live_touch() {
+        // No record exists for this PID/nonce: refused on pid/nonce
+        // mismatch before any bundle read, oracle read, or post. Move the
+        // PID far from any live process so no cleanup path can touch it.
+        let pid = u32::MAX - 4242;
+        assert!(
+            OwnedPostTarget::from_spawn_record(pid, "0123456789abcdef0123456789abcdef").is_err()
+        );
+        // Reserved PIDs refuse even before the record lookup.
+        assert!(OwnedPostTarget::from_spawn_record(0, "0123456789abcdef0123456789abcdef").is_err());
+        // Representable but unrecorded PID: refused on pid/nonce mismatch
+        // (record-file read only — no signal, no AX, no CG touch).
+        assert!(
+            OwnedPostTarget::from_spawn_record(4242, "0123456789abcdef0123456789abcdef").is_err()
+        );
+    }
+
+    #[test]
+    fn guarded_verdict_refuses_unknown_mismatch_and_ghostty() {
+        // Unknown bundle refuses even with agreement.
+        assert!(guarded_verdict(None, true).is_err());
+        assert!(guarded_verdict(Some(""), true).is_err());
+        // Oracle mismatch refuses even with a healthy bundle.
+        assert!(guarded_verdict(Some("com.apple.TextEdit"), false).is_err());
+        // Ghostty (any case/variant), own bundle, and protected terminals
+        // refuse even with agreement.
+        for bundle in [
+            "com.mitchellh.ghostty",
+            "COM.MITCHELLH.GHOSTTY",
+            crate::BUNDLE_ID,
+            "com.apple.Terminal",
+        ] {
+            assert!(guarded_verdict(Some(bundle), true).is_err(), "{bundle}");
+        }
+        // Ordinary bundle with agreement passes the pure verdict (the OS
+        // post itself is still macOS-only and oracle-gated live).
+        assert!(guarded_verdict(Some("com.apple.TextEdit"), true).is_ok());
+    }
+
+    #[test]
+    fn guarded_verdict_accepts_main_fallback_when_oracle_agrees() {
+        // The Main fallback is accepted exactly when the selected oracle
+        // agrees: `selected_focus_agrees` never distinguishes the focused
+        // vs main leg source, so a main-sourced agreement passes here.
+        let agrees =
+            crate::ffi::selected_focus_agrees(4242, 7, Some(4242), Some(4242), Some(7), true);
+        assert!(agrees);
+        assert!(guarded_verdict(Some("com.apple.TextEdit"), agrees).is_ok());
+        // Unknown/mismatch still refuses on the same path.
+        let disagrees =
+            crate::ffi::selected_focus_agrees(4242, 7, Some(4242), Some(4242), Some(9), true);
+        assert!(!disagrees);
+        assert!(guarded_verdict(Some("com.apple.TextEdit"), disagrees).is_err());
+    }
+
+    #[test]
+    fn posted_event_shape_is_dispatch_only() {
+        // Portable shape check: a posted event records its own dispatch
+        // cost, never a delivery claim. Construction is pure (no OS touch:
+        // unit tests never post — live posting happens only in the bounded
+        // fixtures after owned proof plus oracle).
+        let posted = PostedEvent {
+            pid: 4242,
+            key_code: 0x04,
+            flags: 0x0004_0000,
+            down: true,
+            post_latency_us: 7,
+        };
+        assert_eq!(posted.pid, 4242);
+        assert_eq!(posted.key_code, 0x04);
+        assert!(posted.down);
+        assert_eq!(posted.post_latency_us, 7);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn post_guarded_has_no_public_bypass_off_macos() {
+        // No bypass remains: the posting entry is crate-private and the
+        // target type is unforgeable without owned proof. A foreign target
+        // cannot even be constructed without that proof.
+        assert!(
+            OwnedPostTarget::from_spawn_record(4242, "0123456789abcdef0123456789abcdef").is_err()
+        );
+    }
+}

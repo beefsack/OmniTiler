@@ -910,6 +910,7 @@ mod tests {
                 pid,
                 nonce: "0123456789abcdef0123456789abcdef".to_owned(),
                 helper_path: "/nonexistent-helper".to_owned(),
+                bundle: crate::BUNDLE_ID.to_owned(),
             }),
             finished: false,
         };
@@ -961,6 +962,7 @@ mod tests {
                 pid,
                 nonce: "0123456789abcdef0123456789abcdef".to_owned(),
                 helper_path: "/nonexistent-helper".to_owned(),
+                bundle: crate::BUNDLE_ID.to_owned(),
             }),
             finished: false,
         };

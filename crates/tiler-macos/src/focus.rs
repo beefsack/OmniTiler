@@ -16,8 +16,12 @@
 //! `SetFrontProcess`, helper self-activation, taps, or synthetic keystrokes
 //! (prior failed routes). All `unsafe` lives in [`crate::ffi`]; this module
 //! uses only its safe API. Dispatch (`Ok`) means sent — focus arrival is
-//! async and MUST be verified by the workspace + AX oracle here (agreement
-//! required for target AND restore, disagreement fails closed). Restoration
+//! async and MUST be verified by the selected oracle here (SLPS
+//! front-process agreeing with the NSWorkspace frontmost before AND after,
+//! plus the direct per-app focused window — `AXFocusedWindow`, else
+//! `AXMainWindow` — with a CG owner join; agreement required for target AND
+//! restore, disagreement fails closed). The system-wide `AXFocusedApplication`
+//! read is diagnostic-only and `AXFrontmost` never gates. Restoration
 //! uses the SAME route to the recorded preimage. The oracle fixture is the
 //! owned helper with the opt-in regular activation policy (see
 //! [`crate::probe_target`]); no separate process-identity machinery.
@@ -91,8 +95,12 @@ pub struct FocusDispatch {
     pub dispatch_latency_ms: u64,
 }
 
-/// Verified focus state: workspace frontmost + AX focused app/window agree,
-/// with CG ownership. Required for target AND restore alike.
+/// Verified focus state: SLPS front-process + workspace frontmost + direct
+/// per-app focused window agree, with CG ownership. Required for target AND
+/// restore alike. `evidence_route` always records the selected oracle route
+/// (`slps-front-direct-focused` or `slps-front-direct-main`): the raw
+/// system-wide leg is diagnostic-only and never feeds production agreement,
+/// and `AXFrontmost` never gates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FocusAgreement {
     pub workspace_pid: i32,
@@ -100,19 +108,22 @@ pub struct FocusAgreement {
     pub ax_pid: i32,
     pub ax_wid: Option<u32>,
     pub cg_wid_owned: bool,
+    pub evidence_route: String,
 }
 
 /// Original preimage (foreign app to restore). `wid` is required: a missing
 /// focused window fails closed (no wid => no same-route restore). `exe` is
 /// the live executable currency: the restore revalidates it (plus bundle
 /// and CG join) before dispatching, so a stale PID/WID reuse is refused
-/// instead of focused.
+/// instead of focused. `evidence_route` always records the selected oracle
+/// route; the raw system-wide read never feeds production.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OriginalPreimage {
     pub pid: i32,
     pub bundle: String,
     pub wid: u32,
     pub exe: String,
+    pub evidence_route: String,
 }
 
 /// Space baseline/readback: per-display membership in display order. Each
@@ -132,7 +143,7 @@ pub struct SpaceSnapshot {
     pub displays: Vec<DisplaySpaces>,
 }
 
-fn latency_ms(start: Instant) -> u64 {
+pub(crate) fn latency_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
@@ -220,9 +231,11 @@ pub fn dispatch_focus(pid: u32, wid: u32) -> Result<FocusDispatch, FocusError> {
     })
 }
 
-/// Capture the original frontmost preimage with workspace + AX + CG
-/// agreement, plus executable currency for the restore. Fails closed on any
-/// disagreement (workspace pid != AX pid, AX wid missing, CG join mismatch,
+/// Capture the original frontmost preimage with the selected oracle (SLPS
+/// front-process agreeing with the workspace frontmost, plus the direct
+/// per-app focused window with CG ownership), plus executable currency for
+/// the restore. Fails closed on any disagreement (SLPS pid != workspace
+/// pid, AX identity mismatch, selected wid missing, CG join mismatch,
 /// unreadable exe/bundle). `exclude_pid` (the owned helper once spawned)
 /// must not already be frontmost — otherwise there is no foreign preimage
 /// to restore. Callers capture BEFORE spawning the helper so spawn-time
@@ -262,40 +275,44 @@ pub fn capture_original(exclude_pid: Option<u32>) -> Result<OriginalPreimage, Fo
                 .to_owned(),
         ));
     }
-    let (ax_pid, ax_wid) = match crate::ffi::ax_focused_preimage_detailed() {
-        Ok(v) => v,
-        Err(ax_cause) => {
-            // Real AX cause (named AXError), never a wedged-OS guess:
-            // a windowless launcher (including this probe bundle itself) as
-            // frontmost yields kAXErrorNoValue/kAXErrorFailure legs while
-            // workspace attribution stays readable. PIDs/bundle IDs only —
+    // Selected oracle read: SLPS front == workspace frontmost (before+after)
+    // plus the direct per-app focused window (focused, else main fallback)
+    // with CG ownership. The route is recorded honestly from this same read
+    // — never a second live call that could race it.
+    let selected = match crate::ffi::ax_selected_focus_evidence() {
+        Ok(evidence) => evidence,
+        Err(selected_cause) => {
+            // Real cause (named SLPS/AX/CG leg), never a wedged-OS guess:
+            // a windowless frontmost yields a named missing-window leg while
+            // foreground attribution stays readable. PIDs/bundle IDs only —
             // never titles or content.
             let ws_side = crate::ffi::frontmost_app()
                 .map(|(p, b)| format!("workspace frontmost pid {p} bundle '{b}'"))
                 .unwrap_or_else(|| "workspace frontmost unreadable".to_owned());
             return Err(FocusError::System(format!(
-                "AX focus preimage unreadable ({ax_cause}); {ws_side}; refusing"
+                "selected focus preimage unreadable ({selected_cause}); {ws_side}; refusing"
             )));
         }
     };
+    let (ax_pid, ax_wid) = (selected.pid, selected.wid);
     if ax_pid != ws_pid {
         return Err(FocusError::Disagreement(format!(
-            "workspace pid {ws_pid} != AX focused pid {ax_pid}; refusing without agreement"
+            "workspace pid {ws_pid} != selected AX pid {ax_pid}; refusing without agreement"
         )));
     }
     let wid = ax_wid.ok_or_else(|| {
         FocusError::System(
-            "AX focused window none (kAXErrorNoValue: frontmost has no key window); refusing without a restorable wid"
+            "selected focused window none (frontmost has no focused/main window); refusing without a restorable wid"
                 .to_owned(),
         )
     })?;
     if wid == 0 {
         return Err(FocusError::Invalid(
-            "AX focused wid is 0; refusing".to_owned(),
+            "selected focused wid is 0; refusing".to_owned(),
         ));
     }
     crate::cg::verify_wid_owned_by_pid(ws_pid as u32, wid).map_err(|e| {
-        FocusError::Disagreement(format!("CG join disagrees with workspace+AX: {e}"))
+        FocusError::Disagreement(format!("CG join disagrees with selected oracle: {e}"))
     })?;
     if ws_bundle.is_empty() {
         return Err(FocusError::System(
@@ -312,6 +329,7 @@ pub fn capture_original(exclude_pid: Option<u32>) -> Result<OriginalPreimage, Fo
         bundle: ws_bundle,
         wid,
         exe,
+        evidence_route: selected.route.as_str().to_owned(),
     })
 }
 
@@ -358,9 +376,11 @@ pub fn verify_original_currency(original: &OriginalPreimage) -> Result<(), Focus
     Ok(())
 }
 
-/// Read the current workspace + AX agreement once (no wait). `Ok` only when
-/// both agree on `want_pid`/`want_wid` with CG ownership; otherwise `Err`
-/// naming the mismatch.
+/// Read the current selected-oracle agreement once (no wait). `Ok` only
+/// when the SLPS front-process PID, the workspace frontmost PID, and the
+/// direct per-app selected window ALL agree on `want_pid`/`want_wid` with
+/// CG ownership; otherwise `Err` naming the mismatch. The system-wide AX
+/// read never participates; `AXFrontmost` never gates.
 pub fn read_agreement(want_pid: u32, want_wid: u32) -> Result<FocusAgreement, FocusError> {
     if want_pid <= 1 {
         return Err(FocusError::Invalid(format!(
@@ -375,8 +395,15 @@ pub fn read_agreement(want_pid: u32, want_wid: u32) -> Result<FocusAgreement, Fo
         .map_err(|_| FocusError::Invalid(format!("pid {want_pid} out of range")))?;
     let (ws_pid, ws_bundle) = crate::ffi::frontmost_app()
         .ok_or_else(|| FocusError::System("frontmost unreadable".to_owned()))?;
-    let (ax_pid, ax_wid) = crate::ffi::ax_focused_preimage_detailed()
-        .map_err(|cause| FocusError::System(format!("AX focus unreadable ({cause})")))?;
+    // Selected production read: SLPS foreground plus the direct per-app
+    // window legs. The experimental diagnostic fallback (behind
+    // `focus-diagnose --fallback`) and the raw system-wide read never feed
+    // agreement.
+    let slps_pid = crate::ffi::slps_front_pid().map_err(FocusError::System)?;
+    let selected = crate::ffi::ax_selected_focus_evidence()
+        .map_err(|cause| FocusError::System(format!("selected focus unreadable ({cause})")))?;
+    let (ax_pid, ax_wid) = (selected.pid, selected.wid);
+    let evidence_route = selected.route.as_str().to_owned();
     let cg_owned = crate::cg::verify_wid_owned_by_pid(want_pid, want_wid).is_ok()
         && crate::ffi::cg_window_list_all()
             .map(|list| list.iter().any(|w| w.wid == want_wid && w.pid == want_pid))
@@ -387,12 +414,24 @@ pub fn read_agreement(want_pid: u32, want_wid: u32) -> Result<FocusAgreement, Fo
         ax_pid,
         ax_wid,
         cg_wid_owned: cg_owned,
+        evidence_route: evidence_route.clone(),
     };
-    if ws_pid == want_pid_i32 && ax_pid == want_pid_i32 && ax_wid == Some(want_wid) && cg_owned {
+    let agreed = ws_pid == want_pid_i32
+        && slps_pid == want_pid_i32
+        && crate::ffi::selected_focus_agrees(
+            want_pid,
+            want_wid,
+            Some(slps_pid),
+            Some(ws_pid),
+            ax_wid,
+            cg_owned,
+        )
+        && ax_pid == want_pid_i32;
+    if agreed {
         Ok(agreement)
     } else {
         Err(FocusError::Disagreement(format!(
-            "want pid {want_pid} wid {want_wid}, have workspace {ws_pid} AX ({ax_pid},{ax_wid:?}) cg_owned={cg_owned}"
+            "want pid {want_pid} wid {want_wid}, have slps {slps_pid} workspace {ws_pid} AX ({ax_pid},{ax_wid:?}) cg_owned={cg_owned} route={evidence_route}"
         )))
     }
 }
@@ -400,6 +439,14 @@ pub fn read_agreement(want_pid: u32, want_wid: u32) -> Result<FocusAgreement, Fo
 /// Poll until workspace + AX + CG agree on `want_pid`/`want_wid` or the
 /// timeout. Returns the agreement plus the poll wall time; timeout is a
 /// disagreement (never a pass).
+///
+/// Inter-read wait keeps a main-thread caller serviced: the controller polls
+/// on the main thread, and an uns serviced `sleep` there starves the very
+/// workspace foreground delivery the oracle reads (the owned helper already
+/// pumps; a fresh spawn plus a blocked poll left the controller's
+/// `NSWorkspace` read stale while SLPS/AX/CG had moved). Off the main
+/// thread the wait sleeps and never touches main UI; the decision is the
+/// live `MainThreadMarker`, never an init flag. Bounded by the deadline.
 pub fn await_agreement(
     want_pid: u32,
     want_wid: u32,
@@ -418,8 +465,45 @@ pub fn await_agreement(
                 "focus agreement timeout ({timeout:?}): {last_err}"
             )));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        poll_wait(deadline);
     }
+}
+
+/// Pure inter-read step: never longer than 100ms and never past the
+/// deadline. Unit-tested; no desktop effect.
+pub(crate) fn poll_step_ms(remaining_ms: u64) -> u64 {
+    remaining_ms.min(100)
+}
+
+/// Bounded inter-read wait for [`await_agreement`]. On the main thread the
+/// wait drains pending AppKit events then pumps the runloop (bounded
+/// slices, autorelease-pooled) instead of sleeping uns serviced; off the
+/// main thread it sleeps. Safe APIs only; no `unsafe` outside
+/// [`crate::ffi`].
+fn poll_wait(deadline: Instant) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return;
+    }
+    let step_ms = poll_step_ms(remaining.as_millis().min(u128::from(u64::MAX)) as u64);
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            objc2::rc::autoreleasepool(|_| {
+                // `sharedApplication` here is a benign singleton handle
+                // (no activation, no windows, no `finishLaunching`): in the
+                // `raw` init path it only exists to let the drain service
+                // queued application events during the wait. In the
+                // `appkit-accessory` path it returns the already-finished
+                // singleton. Either way nothing activates or steals focus.
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                crate::ffi::drain_app_events(&app);
+                crate::ffi::pump_runloop_once(step_ms);
+            });
+            return;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(step_ms));
 }
 
 /// Join the owned helper's window: intersect the fresh CG owner-PID set
@@ -431,7 +515,7 @@ pub fn await_agreement(
 /// required — zero or several fails closed with the counts as evidence.
 /// Every `AxElement` is constructed, used, and dropped on a dedicated
 /// worker; the caller waits bounded.
-fn join_helper_wid(pid: u32) -> Result<u32, FocusError> {
+pub(crate) fn join_helper_wid(pid: u32) -> Result<u32, FocusError> {
     if pid <= 1 {
         return Err(FocusError::Invalid(format!("refusing reserved pid {pid}")));
     }
@@ -546,6 +630,11 @@ pub struct PreFocusRestore {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FocusSessionReport {
     pub bundle: String,
+    /// Initialization path for this run: `raw` (default, no AppKit) or
+    /// `appkit-accessory` (explicit diagnostic `--appkit`: Accessory +
+    /// `finishLaunching` plus a bounded pump, equal to the tile
+    /// lifecycle; no windows, no activation, no focus effects).
+    pub init_path: String,
     pub trust_observed: Option<bool>,
     pub slps_available: bool,
     pub helper_pid: u32,
@@ -620,7 +709,7 @@ fn poll_exit(child: &mut std::process::Child, timeout_ms: u64) -> bool {
 /// only). Reap runs only after an observed exit; the spawn record is removed
 /// only on a verified exit (observed status or poll-observed exit) and is
 /// retained otherwise for inspection.
-fn stop_verified(child: &mut std::process::Child, pid: u32) -> HolderStop {
+pub(crate) fn stop_verified(child: &mut std::process::Child, pid: u32) -> HolderStop {
     let mut out = HolderStop {
         pid,
         reaped: false,
@@ -671,7 +760,7 @@ fn stop_verified(child: &mut std::process::Child, pid: u32) -> HolderStop {
 /// target mutation. The `try_wait` Unknown state fails closed (no signal,
 /// no mutation); an exited Child, a changed executable, or a lost CG join
 /// refuses the dispatch.
-fn recheck_holder_before_mutation(
+pub(crate) fn recheck_holder_before_mutation(
     child: &mut std::process::Child,
     pid: u32,
     exe: &str,
@@ -728,7 +817,7 @@ pub struct RestoreAttempt {
 
 /// SAME-route restore attempt for post-spawn failure paths (see
 /// [`RestoreAttempt`]).
-fn attempt_restore(original: &OriginalPreimage) -> RestoreAttempt {
+pub(crate) fn attempt_restore(original: &OriginalPreimage) -> RestoreAttempt {
     if let Err(e) = verify_original_currency(original) {
         return RestoreAttempt {
             dispatch: None,
@@ -782,13 +871,42 @@ fn original_readback(original: &OriginalPreimage) -> Option<FocusAgreement> {
 /// Pre-stop readbacks cannot observe focus moves caused by the helper's own
 /// exit, so every failure path reports this post-stop readback alongside
 /// the stop evidence; `None` explicitly marks unrestored.
-fn stop_and_readback(
+pub(crate) fn stop_and_readback(
     raw: &mut crate::probe_target::UnreadySpawn,
     original: &OriginalPreimage,
 ) -> (SpaceSnapshot, HolderStop, Option<FocusAgreement>) {
     let space_after = capture_space().unwrap_or(SpaceSnapshot { displays: vec![] });
     let stop = stop_verified(&mut raw.child, raw.pid);
     (space_after, stop, original_readback(original))
+}
+
+/// Explicit diagnostic AppKit lifecycle equal to the tile controller:
+/// Accessory policy + `finishLaunching` plus a bounded pump (drain + 50ms
+/// slices, no `run`), no windows, no activation, no focus effects, no
+/// settings writes. Used only behind the `--appkit` opt-in so a future
+/// live run can discriminate initialization; the default path never calls
+/// this. Main thread only.
+pub(crate) fn init_appkit_accessory_for_diagnose() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| "appkit diagnostic requires the main thread".to_owned())?;
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Accessory);
+        app.finishLaunching();
+        for _ in 0..4 {
+            objc2::rc::autoreleasepool(|_| {
+                crate::ffi::drain_app_events(&app);
+                crate::ffi::pump_runloop_once(50);
+            });
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("appkit diagnostic is macOS-only".to_owned())
+    }
 }
 
 /// Bounded owned focus session over the regular-policy fixture: throwaway
@@ -798,8 +916,21 @@ fn stop_and_readback(
 /// verified exact-Child cleanup. Every post-dispatch failure preserves the
 /// restoration readback and cleanup evidence. No taps, no synthetic keys, no
 /// SA, no activation API anywhere on this path.
-pub fn run_focus_session(seconds: u64) -> Result<String, (i32, String)> {
+///
+/// `appkit` selects the initialization path, labelled in the report as
+/// `init_path`: `false` (default) runs raw with no AppKit initialization;
+/// `true` runs the explicit diagnostic AppKit lifecycle equal to the tile
+/// controller (Accessory + `finishLaunching` plus a bounded pump, no
+/// windows, no activation, no focus effects) so a future live run can
+/// discriminate initialization.
+pub fn run_focus_session(seconds: u64, appkit: bool) -> Result<String, (i32, String)> {
     crate::config::ProbeConfig::validate_probe_seconds(seconds).map_err(|e| (2, e))?;
+    let init_path = if appkit {
+        init_appkit_accessory_for_diagnose().map_err(|e| (2, e))?;
+        "appkit-accessory".to_owned()
+    } else {
+        "raw".to_owned()
+    };
     let err_json = |stage: &str, error: String| -> (i32, String) {
         (
             1,
@@ -1143,6 +1274,7 @@ pub fn run_focus_session(seconds: u64) -> Result<String, (i32, String)> {
     let post_stop_ok = post_stop_readback.is_some();
     let report = FocusSessionReport {
         bundle: crate::BUNDLE_ID.to_owned(),
+        init_path: init_path.clone(),
         trust_observed: trust,
         slps_available: true,
         helper_pid: pid,
@@ -1278,5 +1410,30 @@ mod tests {
         assert!(e.to_string().contains("workspace"));
         let e = FocusError::Unavailable("symbols missing".to_owned());
         assert!(e.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn poll_step_never_exceeds_100ms_or_remaining() {
+        // Pure step cap: no FFI, no desktop effect.
+        assert_eq!(poll_step_ms(0), 0);
+        assert_eq!(poll_step_ms(1), 1);
+        assert_eq!(poll_step_ms(99), 99);
+        assert_eq!(poll_step_ms(100), 100);
+        assert_eq!(poll_step_ms(101), 100);
+        assert_eq!(poll_step_ms(5_000), 100);
+        assert_eq!(poll_step_ms(u64::MAX), 100);
+    }
+
+    #[test]
+    fn await_agreement_invalid_ids_stay_bounded_without_live_effects() {
+        // Reserved PIDs / zero WIDs fail validation before any FFI, so this
+        // exercises the bounded poll wait with no desktop effect on any
+        // platform. Tests run off the main thread, so the wait sleeps.
+        let start = Instant::now();
+        let err = await_agreement(0, 7, Duration::from_millis(200)).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(err.to_string().contains("timeout"));
+        assert!(elapsed >= Duration::from_millis(150));
+        assert!(elapsed < Duration::from_secs(2));
     }
 }

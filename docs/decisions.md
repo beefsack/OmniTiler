@@ -48,8 +48,8 @@ platform API behavior.
 - Elevated (administrator) windows stay unmanaged by default: they float at
   their native position while other windows keep tiling. A future opt-in
   where the user runs the tiler elevated may be considered; not a default now.
-- macOS App Store, distribution, updates, and native-settings takeover choices
-  remain open; the Phase 0 decisions below settle the initial architecture.
+- macOS App Store and update choices remain open; distribution and native-settings
+  takeover are selected below (2026-10-15).
 - macOS starts now (user 2026-10-14), superseding the 2026-10-10 sequencing
   after KDE 0.1 ships. K2/K3 core extraction and the shared restart store are now due for
   consumer-driven review, not automatic extraction. See the
@@ -110,7 +110,7 @@ platform API behavior.
   - Live procedures are governed by the
     [macOS live-testing guide](live-macos-testing.md); capability and recovery
     evidence is tracked in [Phase 0](changes/macos-phase-0.md).
-  - **Tentative, pending user review (Phase 1 skeleton):** use standard-library
+  - **User-approved 2026-10-15 (Phase 1 skeleton):** use standard-library
     bounded data handoffs, whole per-app latest-wins desired-frame batches,
     and separate lifecycle/stop admission. App generations and source sequences
     fence late observations/results; queued focus is only intent, never focus
@@ -118,13 +118,13 @@ platform API behavior.
     handles for later reap, and retain panic/unclean evidence across repeated
     stop calls. Normal structured logs use a bounded writer handoff so a slow
     sink cannot stall functional owners. No new channel/runtime dependency.
-  - **Tentative, pending user review:** the native AX observer pumps its own
+  - **User-approved 2026-10-15:** the native AX observer pumps its own
     run loop in at most 20 ms slices; commands and stop may wait for that
     slice plus an in-flight bounded AX call. This avoids a custom unsafe
     cross-thread run-loop handle. Input's inactive source parks until explicitly
     woken; the engine waits for inbox work. Native latency/idle cost remains
     unmeasured. [Offline evidence](changes/macos-phase-1-skeleton.md).
-  - **Tentative, pending user review (Phase 1 classification):** normalize
+  - **User-approved 2026-10-15 (Phase 1 classification):** normalize
     AXStandardWindow as the ordinary candidate; AXDialog, AXSystemDialog,
     AXFloatingWindow, AXSheet and modal windows as untouched float exceptions,
     including recognized nonzero-layer panels. Fullscreen is an independent
@@ -132,17 +132,86 @@ platform API behavior.
     CG offscreen alone does not imply exclusion or destruction. Own-bundle
     windows are excluded; Ghostty remains ordinary. Fixed admission uses shared
     usable min/max hints, never synthetic bounds inferred from AXSize
-    settability. Native hint acquisition remains unresolved.
+     settability. Native minimum hints are read when reported; maximum-hint
+     availability remains unresolved.
     [Offline implementation](changes/macos-window-classification.md).
-    Activation-policy/layer/application exceptions, sheet identity and the
-    restored-fullscreen slot question remain
+     Activation-policy/layer/application exceptions, sheet identity and exact
+     restored-fullscreen reference outcomes remain
     [TBD discriminators](spec/reference-outcomes.md#macos-classification-discriminators).
-  - **Tentative A, pending later user review (restored fullscreen):** remove
+  - **User-approved option A, 2026-10-15 (restored fullscreen):** remove
     the macOS `omit_from_wire` workaround and report a minimized window's
     fullscreen return truthfully, preserving current adapter/core behavior.
     Existing convergence forgets its saved D23 slot and fresh-admits on exit.
-    Desired slot retention remains TBD; a shared-core fix is a tentative P2
-    candidate for a later separate change, not part of this extraction.
+     Keep this current core behavior; consistency with Tier 1 input WMs is
+     the overall goal. Exact reference/native outcomes remain TBD rather than
+     implying a selected slot-retention change.
+- macOS user decisions 2026-10-15:
+  - **Priority:** basic tiling MVP for early dogfooding, then managed native
+    workspaces, then effects (borders/underlay). A scoped development preview
+    is the first live milestone, not feature-complete platform delivery.
+  - **Shared policy is critical:** retain `tiler_core::window_policy` as the
+    platform-neutral policy slice. Windows and KDE adoption follow in their
+    respective work streams; platform acquisition and actuation stay local.
+  - **Authentic owns conflicting window-management shortcuts**, including
+    Mission Control Ctrl+arrow and Ctrl+digit. More generally Authentic may
+    take over native settings where doing so causes no problems or breakage,
+    with explicit Revert and owned preimages as on KDE/Windows. Compatible
+    retains the per-binding conflict model. This selects product behavior;
+    scoped tile mode does not yet change native settings.
+  - **Continue native Spaces**, learning from yabai where possible: inherent
+    virtual-workspace jank makes parking an unsuitable initial substitute.
+    The selected Tier-2/SIP-enabled boundary is unchanged.
+  - **Distribution: both DMG and Homebrew.** Release signing/notarization and
+    updates retain their separately recorded open questions.
+  - **Start with native macOS fullscreen**, revisiting only if it causes
+    serious inconsistencies or problems. Fullscreen windows remain untouched
+    by ordinary tiling.
+  - Classification edge cases may use sensible tentative adapter decisions
+    consistent with Tier 1 intent, refined during dogfooding. Unsupported
+    outcomes remain explicit [minimal discriminators](spec/reference-outcomes.md#macos-classification-discriminators).
+  - **Tentative adapter defaults, 2026-10-15:** retain normal hint-based
+    admission when AXSize settability is the only extra capability fact;
+    exclude accessory/prohibited owners and elevated-level standard windows;
+    float generic nonstandard documents reporting dialog roles rather than
+    invent application-specific exceptions. These conservative candidates
+    follow the [pinned comparison](changes/archive/macos-window-classification.md#reference-comparison),
+    not new native acceptance. Distinct sheet identity and useful accessory
+    documents remain TBD pending their discriminating dogfooding journeys.
+  - **Tentative macOS focus oracle, 2026-10-15:** use the reference-tiler
+    route for production and acceptance: foreground requires SLPS
+    `_SLPSGetFrontProcess`/`GetProcessPID` and NSWorkspace
+    `frontmostApplication` to agree on PID; read that PID's direct per-app
+    `AXFocusedWindow`, falling back to `AXMainWindow`, and join it to the CG
+    window ID through `_AXUIElementGetWindow` with CG ownership verification.
+    Recheck foreground around acquisition; unknown or mismatched identity
+    refuses. Systemwide `AXFocusedApplication` is diagnostic-only, never a
+    gate; `AXFrontmost` is not part of this oracle. Immediately before each
+    synthetic key post, this oracle must name the intended target PID/window;
+    Ghostty is never a synthetic-key target.
+    Local-source review confirms no systemwide-AX foreground gate on the
+    inspected routes: [yabai foreground](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c)
+    and [per-app focused window](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/application.c),
+    [AeroSpace native focus](https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/getNativeFocusedWindow.swift),
+    and [rift window-server focus](https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/window_server.rs).
+    Their precise native routes differ; this is a selected combination, not a
+    claim that every reference uses identical checks. Live target and restore
+    agreement pass with this route; evidence remains in the
+    [scoped-tile record](changes/macos-scoped-tile.md).
+  - **Tentative native observation recovery, 2026-10-15:** use per-window AX
+    subscriptions (including minimize/restore) as the immediate trigger, plus
+    a deduplicated 1 s complete-reread backstop on each app's existing AX owner.
+    Incomplete reads preserve state and retry at that cadence. This repairs
+    missed/unsupported notifications without another thread or a main-thread
+    AX poll. Pinned native notification shapes are described in the
+    [scoped-tile record](changes/macos-scoped-tile.md).
+  - **Tentative scoped input eligibility, 2026-10-15:** intercept only an
+    eligible foreground window in the explicit bundle scope/current-user
+    domain, never fullscreen/hidden/minimized or unknown/stale state. AX
+    owners publish per-PID plain facts; input attests at 250 ms and callbacks
+    read an atomic gate (500 ms deadline, app-fact TTL about 2 s). Out-of-scope
+    input releases native registrations/guards. Genuine user-disable remains
+    refused; an explicit recovery request may install a fresh same-chord tap.
+    This does not replace physical-input or game acceptance.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring
@@ -1254,7 +1323,9 @@ platform API behavior.
   Right`). The initial
   release supports standard US keyboards and preserves hardcoded shifted
   aliases; layout detection, omission, opt-in configuration and migration are
-  deferred. macOS modifier mapping is decided when macOS starts.
+  deferred. macOS uses Ctrl as configurable Meta by default (2026-10-14);
+  [macOS choices](#scope-and-platform-goals) also select Authentic takeover
+  of conflicting Mission Control/window-management shortcuts (2026-10-15).
 - Launcher shortcuts (user 2026-10-11, Windows): default-on Win+B opens the
   user's Windows default web browser (system association, never a named
   browser) and Win+T opens Windows Terminal. Rationale: auto-tiler users
@@ -1273,6 +1344,9 @@ platform API behavior.
   Compatible (avoid conflicting OS bindings) and Authentic (stay consistent
   with tiling WMs such as COSMIC/Hyprland, override OS bindings). The preset
   choice may be offered on first run. Applies to KDE, Windows and macOS.
+  macOS Authentic takes window-management conflicts and native settings where
+  safe and nonbreaking, with Revert (user 2026-10-15); scoped tile development
+  mode currently only reports per-chord registration conflicts.
 - Windows input and Snap (user 2026-10-01): `WH_KEYBOARD_LL` with `vkE8`
   menu-mask at Win key-up while Win held, consuming only approved catalog
   chords; `RegisterHotKey` rejected after all four chords returned 1409

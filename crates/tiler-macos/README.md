@@ -1,4 +1,4 @@
-# tiler-macos — Phase 0 capability probe
+# tiler-macos — scoped tiling preview and capability probes
 
 Tier 2 (public + scoped private APIs, SIP left enabled). Apple Silicon only;
 minimum macOS 15. All Rust; `unsafe` exists
@@ -13,12 +13,65 @@ safe-wrapper/stub module remains substantial.
 No foreign pointer crosses the FFI boundary: callers get owned
 opaque handles (`AxElement`), plain data, or errors.
 
-Threading: main thread AppKit/event dispatch only; dedicated input thread for
-the event tap with a minimal callback; Carbon hotkey wait on the main thread
-(Carbon dispatches there) in bounded runloop slices; per-app AX threads with
+Threading: main thread AppKit/event dispatch; dedicated input owner for scoped
+Carbon registrations or the explicit event tap with a minimal callback;
+standalone Carbon probes retain their main-thread pump. Per-app AX threads have
 finite messaging timeouts and bounded runloops; engine thread owns state via
 a bounded `sync_channel` (`try_send` backpressure, never a block in a
 callback).
+
+## Scoped tiling development mode
+
+The scoped preview connects native AX facts and current-Space display domains
+to the shared Engine, with per-app frame writes/readback and owner-dispatched
+SLPS focus. **Basic scoped tiling is live-proven with explicit tap input**;
+physical Carbon delivery and OS timeout-notification recovery remain pending.
+See the
+[change record](../../docs/changes/macos-scoped-tile.md) and
+[live protocol](../../docs/live-macos-testing.md).
+
+```zsh
+mise exec -- just app 'OmniTiler Mac Dev'
+mise exec -- just verify
+mise exec -- just preflight-app
+mise exec -- just tile --user-start --scope com.apple.TextEdit --scope com.apple.calculator --input tap --seconds 120
+```
+
+`--user-start`, a nonempty bundle allowlist and a finite 1–120 second lifetime
+are mandatory. `--input carbon` is the default; `--input tap` explicitly
+installs exact-chord interception; `--input off` disables input. `--modifier
+ctrl|meta|alt|shift` configures the modifier (Ctrl by default; `meta` means
+Command). Focus uses modifier+H/J/K/L or arrows; move adds Shift; float toggle
+is modifier+G. Carbon conflicts are reported per chord; no native settings
+are changed. Shift alone cannot distinguish the focus/move arms and is
+rejected for this catalogue.
+
+The separately signed `OmniTilerProbeHelper.app` has bundle ID
+`io.github.omnitiler.macos.probe.helper`; it can join an explicit helper scope
+when launched through LaunchServices with its bounded nonce arguments. The
+directly spawned, unbundled probe helper remains a separate ownership route.
+Own-probe, Ghostty, protected-terminal and unknown bundles never actuate in
+scoped mode. Scope is app-wide, so all windows of a named app are candidates.
+
+Only each display's current ordinary user Space participates. Fullscreen,
+minimized, hidden, ambiguous-membership and out-of-scope windows take no
+geometry/focus writes. Display/Space changes supersede plans; unreadable
+topology invalidates them until a fresh snapshot recovers. The session
+dictionary's typed screen-lock marker, login/console state and Secure Input
+gate native effects and input; unknown lock state refuses.
+Input guards release outside the explicit foreground scope and in fullscreen;
+AX-owner-published facts gate callbacks without running AX on the input thread.
+Calculator's native fixed-size clamp is currently tolerated rather than
+invented as equal min/max hints; its slot can remain larger than its frame.
+
+Normal lifetime expiry performs bounded shutdown and releases input; stop or
+process loss leaves window geometry in place. An independent watchdog forces
+a dirty exit after startup allowance + requested lifetime + 5 seconds teardown
++ 30 seconds grace. Watchdog expiry reports stderr rather than terminal JSON.
+The LaunchServices wrapper polls completion and cannot prove the app's exit
+code: inspect the JSON and structured diagnostics. Run build/test gates
+sequentially when they share the Cargo target directory; the signed build
+sets a deployment target that plain Cargo does not.
 
 ## Owned target
 
@@ -37,8 +90,9 @@ Current ownership: the exact spawned `Child` handle plus its PID, the
 per-run nonce over the child's own stdout pipe and in its window title, the
 recorded executable path, and a CURRENT live binding on every cross-command
 use (fresh CGWindowList snapshot must show a window owned by exactly that
-PID with exactly the recorded nonce title). No process-identity machinery
-and no `NSRunningApplication.launchDate` token anywhere. Live status:
+PID with exactly the recorded nonce title). No `NSRunningApplication.launchDate`
+token is used by these direct-Child probes; the scoped tiling adapter separately
+binds LaunchServices app lifetimes. Live status:
 window-server titles (`kCGWindowName`) are withheld without Screen
 Recording consent (2 of 44 entries named system-wide; the owned helper's
 title is absent), so cross-command stop/read/write fail closed with a
@@ -95,7 +149,7 @@ a wrapper timeout or any stderr content is never success evidence, even with
 partial stdout beside it.
 
 Explicit bounded modes (all finite; `--ctrl meta|ctrl|alt|shift`, default
-`meta`; fixed probe chord `0x04`):
+`ctrl`; fixed probe chord `0x04`):
 
 ```zsh
 mise exec -- just launch -- ax-observe --pid PID --nonce HEX --timeout-ms 1000
@@ -124,7 +178,33 @@ identity currency before cleanup, recording a structured restore attempt
 (dispatch/agreement outcomes with causes; null only when currency refusal
 meant nothing was attempted, with the reason recorded). No activation API,
 taps, keys, SA, or Space writes. The regular-policy fixture is experimental,
-live unproven: whether full agreement holds is measured, never assumed.
+live-proven with the selected SLPS/NSWorkspace/direct-app-AX/CG oracle. The
+main polling loop services AppKit/run-loop work while waiting; sleeping there
+previously left workspace foreground evidence stale.
+
+`focus-diagnose` is the bounded read-only focus-evidence diagnostic: raw
+systemwide AX status beside direct frontmost-app count/focused/main reads,
+before/after `AXFrontmost`, and CG ownership. It emits IDs/statuses and timing,
+never titles/content, with a 60-second hard lifetime. The default uses raw
+initialization; `--appkit` initializes/pumps an Accessory app like tile mode.
+`--fallback` explicitly evaluates unaccepted SLPS-front corroboration for
+diagnosis only. Production and acceptance use SLPS front-process PID agreeing
+with NSWorkspace and the direct per-app AXFocusedWindow (AXMainWindow fallback)
+joined to CG ownership; systemwide AX and AXFrontmost never gate. The
+same optional `--appkit` initialization discriminator exists for `focus-session`.
+Current evidence and unresolved initialization/query-order confounds are in
+the [scoped-tile record](../../docs/changes/macos-scoped-tile.md).
+
+`scope-inspect --scope BUNDLE` reads bounded, title-free native facts,
+classification, AX/CG frames and membership without actuating windows.
+`input-session --route tap --direct-rearm` is the bounded owned-helper native
+suppression/passthrough/re-arm fixture; its results are synthetic pipeline
+evidence, not physical keyboard evidence. `--watchdog-only` runs an explicit
+hard-exit fixture and is not a normal tiling command.
+
+```zsh
+mise exec -- just launch -- --timeout 75 -- focus-diagnose --appkit
+```
 
 `ax-session` is the Child-holder AX session: it proves focus restoration on
 a throwaway spawn first, then runs pre-window plus window-joined observers

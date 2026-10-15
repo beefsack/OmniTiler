@@ -41,24 +41,28 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::input_match::Chord;
 use crate::runtime_backend::{AxBackendFactory, InputSourceFactory};
+use crate::runtime_input::input_main_bound;
 use crate::runtime_lifecycle::{
     EngineExit, InputExit, LiveHandle, LoggerExit, WorkerExit, classify_shutdown, join_exited,
 };
 pub use crate::runtime_lifecycle::{ReapReport, ShutdownOutcome, ShutdownReport};
 use crate::runtime_log::{LogEvent, LogSink, StderrSink, sanitize_backend_reason, spawn_logger};
-use crate::runtime_thread::{
-    EngineJob, FrameSlot, Inbox, app_worker_main, engine_main, input_main,
-};
+use crate::runtime_thread::{EngineJob, FocusSlot, FrameSlot, Inbox, engine_main};
+use crate::runtime_worker::app_worker_main;
 
+pub use crate::focus_route::FocusRoute;
 pub use crate::runtime_types::{
-    AX_CALL_TIMEOUT, AxCompletion, AxObservation, DesiredFrame, FocusRequest, FrameCommand,
-    InputDirection, InputSemanticAction, LifecycleEvent, LifecycleLogEntry, ObservedWindow,
-    PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER,
-    PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics, StartupError, SubmitOutcome,
-    TerminateOutcome, WorkerReadiness, parse_window_id, window_id,
+    AX_CALL_TIMEOUT, AxCompletion, AxObservation, DesiredFrame, FocusCommand, FocusEvidence,
+    FocusRequest, FrameCommand, InputDirection, InputSemanticAction, LifecycleEvent,
+    LifecycleLogEntry, NativeContext, NativeDomain, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP,
+    PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE,
+    RuntimeConfig, RuntimeDiagnostics, ScopedBackendSnapshot, ScopedWindowMeta, StartupError,
+    SubmitOutcome, TerminateOutcome, TileBinding, TopologyMode, WorkerReadiness, parse_window_id,
+    window_id,
 };
+pub use crate::scope::{AppScope, ProcessIdentity};
+pub use crate::topology::TopologySnapshot;
 /// Shared fixed-size admission predicate plus hint vector, re-exported so
 /// offline tests drive both D1 predicate modes without a core dependency.
 pub use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
@@ -114,6 +118,35 @@ impl std::fmt::Display for StartFailure {
 
 impl std::error::Error for StartFailure {}
 
+// -- Scoped observations -------------------------------------------------------
+
+/// Revision-tagged scoped observation for native topology mode. `windows`
+/// must already be routed to the current display domain (only exactly-homed
+/// current-user-Space windows); `revision` must equal the current snapshot
+/// fingerprint or the submission fences stale. Focus travels with its global
+/// truth evidence: `frontmost_pid` (workspace frontmost), `ax_focus` (AX
+/// focused PID plus window), and `cg_owned` (CG owner join for the focused
+/// window). The runtime promotes `focused_wid` to observed truth only when
+/// all three agree (see [`crate::focus_route::global_focus_agrees`]).
+///
+/// `meta` carries each window's live Space membership, without which the
+/// engine cannot home the window: Space is never inferred from geometry,
+/// so windows without membership evidence omit (never actuate, never
+/// close).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedObservation {
+    pub pid: u32,
+    pub generation: u64,
+    pub seq: u64,
+    pub windows: Vec<ObservedWindow>,
+    pub focused_wid: Option<u32>,
+    pub revision: u64,
+    pub frontmost_pid: Option<u32>,
+    pub ax_focus: Option<(u32, Option<u32>)>,
+    pub cg_owned: bool,
+    pub meta: Vec<ScopedWindowMeta>,
+}
+
 // -- Shared lifecycle state ----------------------------------------------------
 
 pub(crate) struct AppRecord {
@@ -121,6 +154,11 @@ pub(crate) struct AppRecord {
     pub(crate) terminated: bool,
     stop: Arc<AtomicBool>,
     pub(crate) frames: Arc<FrameSlot>,
+    /// Latest-wins focus slot for the owning AX worker (the SAME owner
+    /// that observed the window dispatches focus). Stopped alongside
+    /// `frames` on terminate/shutdown/drop so queued focus never outlives
+    /// its lifetime.
+    pub(crate) focus: Arc<FocusSlot>,
     /// Backend readiness set by the worker inside its owning thread: `None`
     /// while the backend is still being created, `Ok(())` once it exists,
     /// `Err` when creation was refused. Polled by [`RuntimeHandle::launch_app`]
@@ -130,12 +168,74 @@ pub(crate) struct AppRecord {
     worker_name: String,
 }
 
+/// Live native-context cell: the single shared source every setter leg,
+// the worker rebind path, and the engine read on every fence. Stored by
+// [`RuntimeHandle::update_topology`] (and cleared by
+// [`RuntimeHandle::invalidate_topology`]) under the shared lock; cloned
+// out as a stable handle for owner threads, which then read it lock-free
+// per fence. Replaced wholesale per snapshot, never mutated in place, so
+// readers always see one consistent revision. Plain data only.
+#[derive(Debug, Clone, Default)]
+pub struct NativeContextCell(Arc<Mutex<Option<Arc<NativeContext>>>>);
+
+impl NativeContextCell {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publish a freshly derived context (or clear it with `None`).
+    pub fn store(&self, ctx: Option<Arc<NativeContext>>) {
+        *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = ctx;
+    }
+
+    /// Load the current context, if any.
+    #[must_use]
+    pub fn load(&self) -> Option<Arc<NativeContext>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+}
+
 pub(crate) struct Shared {
     pub(crate) config: RuntimeConfig,
     generation_counter: u64,
     log_counter: u64,
     start: Instant,
     pub(crate) apps: BTreeMap<u32, AppRecord>,
+    /// Current native topology snapshot (the main-thread controller owns
+    /// the cadence). `None` until the first
+    /// [`RuntimeHandle::update_topology`]; synthetic mode never sets it.
+    pub(crate) topology: Option<TopologySnapshot>,
+    /// Current display/Space revision fence. Synthetic mode holds 0 so every
+    /// legacy command (revision 0) passes; native mode tracks the latest
+    /// snapshot fingerprint.
+    pub(crate) topology_revision: u64,
+    /// Derived native tile context (per-display current-user-Space domains
+    /// in integer work areas), published by the main-thread supplier
+    /// alongside the snapshot. Retired by [`NativeContextCell`] below;
+    /// kept here so the engine can fence without an extra hop.
+    /// `None` until the first successful derivation; scoped observations
+    /// and effects fence while it is absent.
+    pub(crate) native_context: Option<Arc<NativeContext>>,
+    /// Live cell handle cloned into per-app backends at bind time. The
+    /// single shared source for every setter-leg fence read; written
+    /// synchronously by [`RuntimeHandle::update_topology`] (and cleared by
+    /// [`RuntimeHandle::invalidate_topology`]), so a topology update
+    /// mid-plan fences the very next leg — not just the next command.
+    pub(crate) native_cell: NativeContextCell,
+    /// Main-thread-supplied global focus evidence (workspace-frontmost PID
+    /// plus bundle, plain IDs — never AX reads: the main thread performs no
+    /// AX under any cadence). The AX focused leg (`ax_focus`) is NOT read on
+    /// the main thread: each owning per-app AX worker reads the bounded
+    /// systemwide leg on its own thread (`sys_focus`) and stamps it over
+    /// `ax_focus` at send time, so a hung app can never stall the
+    /// controller. The engine promotes an app-local focused window to
+    /// observed truth only on full agreement; `None` (no evidence yet)
+    /// withholds promotion, never guesses.
+    pub(crate) focus_evidence: Option<FocusEvidence>,
     zombies: Vec<LiveHandle>,
     engine_handle: Option<std::thread::JoinHandle<EngineExit>>,
     input_handle: Option<std::thread::JoinHandle<InputExit>>,
@@ -368,6 +468,11 @@ impl Runtime {
                 log_counter: 0,
                 start: Instant::now(),
                 apps: BTreeMap::new(),
+                topology: None,
+                topology_revision: 0,
+                native_context: None,
+                native_cell: NativeContextCell::new(),
+                focus_evidence: None,
                 zombies: Vec::new(),
                 engine_handle: None,
                 input_handle: None,
@@ -403,6 +508,11 @@ impl Runtime {
             log_counter: 0,
             start: Instant::now(),
             apps: BTreeMap::new(),
+            topology: None,
+            topology_revision: 0,
+            native_context: None,
+            native_cell: NativeContextCell::new(),
+            focus_evidence: None,
             zombies: Vec::new(),
             engine_handle: None,
             input_handle: None,
@@ -473,38 +583,40 @@ impl Runtime {
         let input_shared = Arc::clone(&shared);
         let input_inbox = Arc::clone(&inbox);
         let stop_input = { lock_shared(&shared).stop_input.clone() };
-        let focus_chord = Chord::new(config.modifier, config.focus_key).map_err(|reason| {
-            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
-            let report = cleanup_failed_start(&shared, &inbox, ready_bound);
-            StartFailure {
-                error: StartupError::InvalidConfig(reason),
-                handle,
-                report,
-            }
-        });
-        let focus_chord = focus_chord?;
-        let move_chord = Chord::new(config.modifier, config.move_key).map_err(|reason| {
-            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
-            let report = cleanup_failed_start(&shared, &inbox, ready_bound);
-            StartFailure {
-                error: StartupError::InvalidConfig(reason),
-                handle,
-                report,
-            }
-        });
-        let move_chord = move_chord?;
         let direction = config.step_direction;
+        let modifier = config.modifier;
+        // The scoped-tile catalogue replaces the legacy three-chord path
+        // when set; otherwise the legacy chords stand in as a three-entry
+        // catalogue (identical matching, no behavior change).
+        let catalogue = config.tile_bindings.clone().unwrap_or_else(|| {
+            vec![
+                crate::runtime_types::TileBinding {
+                    key_code: config.focus_key,
+                    shift: false,
+                    action: crate::runtime_types::InputSemanticAction::FocusStep { direction },
+                },
+                crate::runtime_types::TileBinding {
+                    key_code: config.move_key,
+                    shift: false,
+                    action: crate::runtime_types::InputSemanticAction::MoveStep { direction },
+                },
+                crate::runtime_types::TileBinding {
+                    key_code: config.float_key,
+                    shift: false,
+                    action: crate::runtime_types::InputSemanticAction::ToggleFloat,
+                },
+            ]
+        });
         let input_thread = std::thread::Builder::new()
             .name("phase1-input".to_owned())
             .spawn(move || {
-                input_main(
+                input_main_bound(
                     input_shared,
                     input_inbox,
                     stop_input,
                     input_factory,
-                    focus_chord,
-                    move_chord,
-                    direction,
+                    modifier,
+                    &catalogue,
                     input_ready_tx,
                 )
             });
@@ -769,7 +881,7 @@ impl RuntimeHandle {
                 });
             }
         }
-        let (frames, stop, ready, generation) = {
+        let (frames, focus, stop, ready, generation) = {
             let mut guard = lock_shared(&self.shared);
             // A retained (timed-out) handle for this PID also blocks overlap.
             let blocked = guard.zombies.iter().any(|z| match z {
@@ -799,6 +911,7 @@ impl RuntimeHandle {
             guard.generation_counter += 1;
             let generation = guard.generation_counter;
             let frames = Arc::new(FrameSlot::new());
+            let focus = Arc::new(FocusSlot::new());
             let stop = Arc::new(AtomicBool::new(false));
             let ready = Arc::new(Mutex::new(None));
             guard.apps.insert(
@@ -808,12 +921,13 @@ impl RuntimeHandle {
                     terminated: false,
                     stop: Arc::clone(&stop),
                     frames: Arc::clone(&frames),
+                    focus: Arc::clone(&focus),
                     ready: Arc::clone(&ready),
                     worker: None,
                     worker_name: format!("phase1-ax-{pid}"),
                 },
             );
-            (frames, stop, ready, generation)
+            (frames, focus, stop, ready, generation)
         };
 
         let worker_shared = Arc::clone(&self.shared);
@@ -828,6 +942,7 @@ impl RuntimeHandle {
                     generation,
                     worker_factory,
                     frames,
+                    focus,
                     worker_inbox,
                     worker_shared,
                     stop,
@@ -918,6 +1033,7 @@ impl RuntimeHandle {
             let zombie = guard.apps.remove(&pid).and_then(|record| {
                 record.stop.store(true, Ordering::SeqCst);
                 record.frames.stop();
+                record.focus.stop();
                 record.worker.map(|handle| LiveHandle::Worker {
                     pid,
                     generation: record.generation,
@@ -1011,6 +1127,9 @@ impl RuntimeHandle {
             0,
         );
         frames.stop();
+        if let Some(record) = lock_shared(&self.shared).apps.get(&pid) {
+            record.focus.stop();
+        }
         // Purge queued focus for the dead app: dispatch must never outlive
         // its lifetime. Sequential locks only (focus, then shared): holding
         // the focus guard across a shared lock would invert the
@@ -1049,6 +1168,12 @@ impl RuntimeHandle {
     /// bounded: a saturated engine queue refuses with a counted outcome
     /// instead of blocking the caller. Sequence staleness is decided
     /// engine-side in FIFO order.
+    ///
+    /// Native topology mode refuses legacy (metadataless) observations as
+    /// `RequiresScoped`: without per-window Space membership the engine
+    /// cannot home a single window (Space is never inferred from geometry),
+    /// so admitting them would tile outside the actual work areas. Scoped
+    /// observations travel via [`RuntimeHandle::submit_scoped_observation`].
     pub fn submit_observation(&self, obs: AxObservation) -> SubmitOutcome {
         let generation = {
             let mut guard = lock_shared(&self.shared);
@@ -1061,6 +1186,23 @@ impl RuntimeHandle {
                 .is_some_and(|h| h.is_finished())
             {
                 return SubmitOutcome::AdmissionClosed;
+            }
+            if matches!(
+                guard.config.topology_mode,
+                crate::runtime_types::TopologyMode::Native
+            ) {
+                guard.diagnostics.stale_dropped += 1;
+                drop(guard);
+                emit(
+                    &self.shared,
+                    obs.pid,
+                    obs.generation,
+                    obs.seq,
+                    "observation",
+                    "native-requires-scoped",
+                    0,
+                );
+                return SubmitOutcome::RequiresScoped;
             }
             let Some(record) = guard.apps.get(&obs.pid) else {
                 return SubmitOutcome::UnknownApp;
@@ -1118,6 +1260,273 @@ impl RuntimeHandle {
         }
     }
 
+    /// Publish a native topology snapshot from the main-thread controller.
+    /// Stores the snapshot, fences the revision (fingerprint), purges queued
+    /// focus requests from superseded revisions (counted), and emits the
+    /// change. Returns the new revision. Synthetic mode ignores snapshots
+    /// (legacy fixtures keep revision 0); native mode requires them before
+    /// scoped observations admit.
+    ///
+    /// In native mode this also derives the shared tile context with the
+    /// live read-only Space-type read (main thread): skipped displays are
+    /// emitted with reasons and tile nothing. See
+    /// [`RuntimeHandle::update_topology_with`] for the scripted-type form
+    /// that portable tests use.
+    pub fn update_topology(&self, snapshot: TopologySnapshot) -> u64 {
+        self.update_topology_with(snapshot, &|sid| crate::ffi::sls_space_type(sid).ok())
+    }
+
+    /// Publish a native topology snapshot with an injected Space-type
+    /// resolver (`None` = unreadable type). The live side passes the
+    /// existing `sls_space_type` read (see [`RuntimeHandle::update_topology`]);
+    /// tests inject scripted types. Other than the resolver this is
+    /// identical to [`RuntimeHandle::update_topology`].
+    pub fn update_topology_with(
+        &self,
+        snapshot: TopologySnapshot,
+        space_type: &dyn Fn(u64) -> Option<crate::ffi::SlsSpaceType>,
+    ) -> u64 {
+        let revision = snapshot.revision;
+        let native = matches!(
+            lock_shared(&self.shared).config.topology_mode,
+            crate::runtime_types::TopologyMode::Native
+        );
+        let (context, skipped) = if native {
+            let (ctx, skipped) = NativeContext::derive(&snapshot, space_type);
+            (Some(Arc::new(ctx)), skipped.len() as u64)
+        } else {
+            (None, 0)
+        };
+        if skipped > 0 {
+            // Skipped displays tile nothing (reasons ride the derived
+            // context's skipped list for controller inspection via
+            // diagnostics-free means; the count here keeps the ring typed).
+            emit(
+                &self.shared,
+                0,
+                0,
+                revision,
+                "topology",
+                "displays-skipped",
+                skipped,
+            );
+        }
+        let purged = {
+            let mut guard = lock_shared(&self.shared);
+            guard.topology = Some(snapshot);
+            guard.topology_revision = revision;
+            guard.native_context = context.clone();
+            guard.native_cell.store(context);
+            let mut queue = lock_focus(&self.focus_queue);
+            let before = queue.len();
+            queue.retain(|request| request.topology_revision == revision);
+            (before - queue.len()) as u64
+        };
+        if purged > 0 {
+            lock_shared(&self.shared).diagnostics.stale_dropped += purged;
+            emit(&self.shared, 0, 0, 0, "topology", "focus-purged", purged);
+        }
+        emit(&self.shared, 0, 0, revision, "topology", "updated", 0);
+        revision
+    }
+
+    /// Publish main-thread-supplied global focus evidence (workspace
+    /// frontmost PID plus bundle, plain IDs — never AX reads: the main
+    /// thread performs no AX under any cadence). The controller owns the
+    /// cadence (alongside topology pumps); per-app owners read the bounded
+    /// systemwide focus truth on their own threads and stamp it over
+    /// `ax_focus` at send time, and the promotion rule admits an app-local
+    /// focused window only on full agreement, so a background app's focused
+    /// window never becomes global focus.
+    pub fn update_focus_evidence(&self, evidence: FocusEvidence) {
+        lock_shared(&self.shared).focus_evidence = Some(evidence);
+        emit(&self.shared, 0, 0, 0, "focus", "evidence-updated", 0);
+    }
+
+    /// Invalidate the published native context after an unreadable topology
+    /// snapshot read: clears the live cell and the stored snapshot alike so
+    /// no stale revision keeps authorizing effects. Scoped submissions
+    /// refuse (`StaleGeneration`), the engine fences (`no-context`), and
+    /// bound backends fail every scoped call closed until the next
+    /// successful [`RuntimeHandle::update_topology`]. Supplied for the main
+    /// tile controller (next unit), which owns the snapshot cadence.
+    pub fn invalidate_topology(&self) {
+        {
+            let mut guard = lock_shared(&self.shared);
+            guard.topology = None;
+            guard.native_context = None;
+            guard.native_cell.store(None);
+        }
+        emit(&self.shared, 0, 0, 0, "topology", "invalidated", 0);
+    }
+
+    /// Current topology revision fence (`None` until the first snapshot).
+    pub fn topology_revision(&self) -> Option<u64> {
+        lock_shared(&self.shared)
+            .topology
+            .as_ref()
+            .map(|t| t.revision)
+    }
+
+    /// Submit one revision-tagged scoped observation. The windows must
+    /// already be routed to the current display domain by the controller
+    /// (see [`crate::native_tile_backend::route_display_domain`]); this
+    /// checks the revision fence and the global-focus truth gate, then
+    /// forwards through the scoped engine lane (per-domain sessions over
+    /// the actual work areas — never the synthetic skeleton).
+    /// A superseded revision is refused as `StaleGeneration` (counted);
+    /// native mode with no snapshot yet refuses the same way. Focus is
+    /// accepted only when the workspace-frontmost plus AX preimage agree
+    /// on the reporting app (see [`crate::focus_route::global_focus_agrees`]):
+    /// an app-local focused window from a background app arrives as
+    /// unfocused instead of becoming global truth. Windows without
+    /// membership evidence (`meta`) omit engine-side: Space is never
+    /// inferred from geometry.
+    pub fn submit_scoped_observation(&self, obs: ScopedObservation) -> SubmitOutcome {
+        let (generation, native) = {
+            let mut guard = lock_shared(&self.shared);
+            if guard.admission_closed {
+                return SubmitOutcome::AdmissionClosed;
+            }
+            if guard
+                .engine_handle
+                .as_ref()
+                .is_some_and(|h| h.is_finished())
+            {
+                return SubmitOutcome::AdmissionClosed;
+            }
+            let Some(record) = guard.apps.get(&obs.pid) else {
+                return SubmitOutcome::UnknownApp;
+            };
+            if record.terminated {
+                return SubmitOutcome::AppTerminated;
+            }
+            if obs.generation != record.generation {
+                guard.diagnostics.stale_dropped += 1;
+                drop(guard);
+                emit(
+                    &self.shared,
+                    obs.pid,
+                    obs.generation,
+                    obs.seq,
+                    "observation",
+                    "stale-generation-rejected",
+                    0,
+                );
+                return SubmitOutcome::StaleGeneration;
+            }
+            let native = matches!(
+                guard.config.topology_mode,
+                crate::runtime_types::TopologyMode::Native
+            );
+            if native {
+                // Absent topology refuses first (before the revision
+                // compare): without a published snapshot there is no fence
+                // to match, only an unscoped past.
+                if guard.topology.is_none() {
+                    guard.diagnostics.stale_dropped += 1;
+                    drop(guard);
+                    emit(
+                        &self.shared,
+                        obs.pid,
+                        obs.generation,
+                        obs.seq,
+                        "observation",
+                        "no-topology-rejected",
+                        0,
+                    );
+                    return SubmitOutcome::StaleGeneration;
+                }
+                if guard.topology_revision != obs.revision {
+                    guard.diagnostics.stale_dropped += 1;
+                    drop(guard);
+                    emit(
+                        &self.shared,
+                        obs.pid,
+                        obs.generation,
+                        obs.seq,
+                        "observation",
+                        "stale-revision-rejected",
+                        0,
+                    );
+                    return SubmitOutcome::StaleGeneration;
+                }
+            }
+            (record.generation, native)
+        };
+        let _ = native;
+        // Global-focus verdict on the caller-supplied legs (single shared
+        // rule — see `resolve_global_focus`): only full selected-oracle
+        // (SLPS + workspace + direct AX + CG) agreement promotes the
+        // app-local window. The engine additionally requires domain
+        // membership before promoting.
+        let global_focus = crate::focus_route::resolve_global_focus(
+            obs.pid,
+            obs.focused_wid,
+            obs.ax_focus,
+            obs.cg_owned,
+            obs.frontmost_pid,
+        );
+        if obs.focused_wid.is_some() && global_focus.is_none() {
+            lock_shared(&self.shared).diagnostics.stale_dropped += 1;
+            emit(
+                &self.shared,
+                obs.pid,
+                obs.generation,
+                obs.seq,
+                "observation",
+                "focus-disagreement-cleared",
+                0,
+            );
+        }
+        let focused_wid = global_focus.map(|(_, wid)| wid);
+        let job = EngineJob::ScopedObservation {
+            pid: obs.pid,
+            generation,
+            seq: obs.seq,
+            snapshot: ScopedBackendSnapshot {
+                windows: obs.windows,
+                focused_wid,
+                focus_cg_owned: obs.cg_owned,
+                focus_evidence: Some(FocusEvidence {
+                    frontmost_pid: obs.frontmost_pid,
+                    frontmost_bundle: None,
+                    ax_focus: obs.ax_focus,
+                }),
+                sys_focus: obs.ax_focus,
+                global_focus,
+                meta: obs.meta,
+                excluded: 0,
+                revision: obs.revision,
+            },
+        };
+        if self.inbox.try_send_data(job) {
+            SubmitOutcome::Accepted
+        } else {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+            SubmitOutcome::EngineQueueFull
+        }
+    }
+
+    /// Request the minimal float toggle for the observed-focus window: sends
+    /// a toggle intent through the engine lane, resolved there to the
+    /// existing core `ToggleFloat` command with no explicit rect. The
+    /// subject is observed truth, never planned focus; with no observed
+    /// focus this is refused engine-side (counted), never queued blindly.
+    pub fn request_float_toggle(&self) -> SubmitOutcome {
+        if !engine_alive(&self.shared) {
+            return SubmitOutcome::AdmissionClosed;
+        }
+        if self.inbox.try_send_data(EngineJob::InputAction {
+            action: InputSemanticAction::ToggleFloat,
+        }) {
+            SubmitOutcome::Accepted
+        } else {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+            SubmitOutcome::EngineQueueFull
+        }
+    }
+
     /// Offline fault injection only: makes the engine thread panic on its
     /// next job, proving panic handling is honest. Never used by
     /// production paths.
@@ -1138,17 +1547,22 @@ impl RuntimeHandle {
     /// Drain queued focus requests (dispatched, never verified). Freshness
     /// is re-checked here: requests whose app was terminated or relaunched
     /// since dispatch are dropped counted instead of delivered, closing the
-    /// race between dispatch and terminate.
+    /// race between dispatch and terminate. Revision staleness is fenced
+    /// too: requests from a superseded topology revision drain stale after
+    /// a display/Space change mid-plan instead of dispatching.
     pub fn drain_focus_requests(&self) -> Vec<FocusRequest> {
         // Snapshot live generations without holding shared across the focus
         // lock (order is shared-then-focus; here sequential is enough).
-        let live: BTreeMap<u32, (u64, bool)> = {
+        let (live, revision): (BTreeMap<u32, (u64, bool)>, u64) = {
             let guard = lock_shared(&self.shared);
-            guard
-                .apps
-                .iter()
-                .map(|(pid, record)| (*pid, (record.generation, record.terminated)))
-                .collect()
+            (
+                guard
+                    .apps
+                    .iter()
+                    .map(|(pid, record)| (*pid, (record.generation, record.terminated)))
+                    .collect(),
+                guard.topology_revision,
+            )
         };
         let mut queue = lock_focus(&self.focus_queue);
         let requests = std::mem::take(&mut *queue);
@@ -1161,7 +1575,10 @@ impl RuntimeHandle {
                 .is_some_and(|(generation, terminated)| {
                     *generation == request.generation && !terminated
                 });
-            if live_match {
+            // Synthetic commands carry revision 0 against revision 0 and
+            // pass; native commands must match the live fence.
+            let revision_match = request.topology_revision == revision;
+            if live_match && revision_match {
                 fresh.push(request);
             } else {
                 stale += 1;
@@ -1241,9 +1658,14 @@ impl RuntimeHandle {
             guard.stop_input.store(true, Ordering::SeqCst);
             let slots: Vec<Arc<FrameSlot>> =
                 guard.apps.values().map(|r| Arc::clone(&r.frames)).collect();
+            let focus_slots: Vec<Arc<FocusSlot>> =
+                guard.apps.values().map(|r| Arc::clone(&r.focus)).collect();
             let stops: Vec<Arc<AtomicBool>> =
                 guard.apps.values().map(|r| Arc::clone(&r.stop)).collect();
             for slot in &slots {
+                slot.stop();
+            }
+            for slot in &focus_slots {
                 slot.stop();
             }
             for stop in &stops {
@@ -1421,6 +1843,7 @@ impl Drop for RuntimeHandle {
                 for record in guard.apps.values() {
                     record.stop.store(true, Ordering::SeqCst);
                     record.frames.stop();
+                    record.focus.stop();
                 }
                 (guard.input_thread.clone(), Some(guard.stop_logger.clone()))
             }
@@ -1431,6 +1854,7 @@ impl Drop for RuntimeHandle {
                 for record in guard.apps.values() {
                     record.stop.store(true, Ordering::SeqCst);
                     record.frames.stop();
+                    record.focus.stop();
                 }
                 (guard.input_thread.clone(), Some(guard.stop_logger.clone()))
             }

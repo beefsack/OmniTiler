@@ -4,10 +4,13 @@
 //! Policy: public AX/CF/CG surface uses maintained bindings
 //! (`objc2-application-services` for AXUIElement/AXObserver/AXValue,
 //! `objc2-core-foundation` for CFString/CFArray/CFDictionary/CFNumber/CFRunLoop,
-//! `objc2-app-kit`/`objc2-foundation` for process identity, `core-foundation`/
-//! `core-graphics` for the event tap, `libc` for `dlopen`/`dlsym`/`kill`/
-//! `proc_pidpath`). The sole hand-written `extern "C"` declaration is the
-//! private `_AXUIElementGetWindow` in the small `private_raw` module. The
+//! `objc2-app-kit`/`objc2-foundation` for process identity,
+//! `objc2-core-graphics` (`CGEvent::tap_enable`/`tap_is_enabled` via the
+//! existing `CGEvent` feature) for the tap-state pair, `core-foundation`/
+//! `core-graphics` for the event tap itself, `libc` for `dlopen`/`dlsym`/
+//! `kill`/`proc_pidpath`). The sole hand-written `extern "C"` declaration is
+//! the private `_AXUIElementGetWindow` in the small `private_raw` module
+//! (genuinely uncovered private SPI). The
 //! Carbon Event Manager and SkyLight (SLS) dynamic tables live in this module
 //! beside it (not inside it): each entry point is resolved at runtime via
 //! maintained `libc::dlopen`/`libc::dlsym` with a null-checked signature, and
@@ -23,8 +26,9 @@
 //!
 //! Honest boundary note: calling maintained `objc2` AX/CF wrappers still
 //! requires isolated `unsafe` blocks at each call site (their APIs are
-//! `unsafe` because they touch live AX objects). The win is one hand-written
-//! `extern "C"` declaration (the private join above) instead of dozens for
+//! `unsafe` because they touch live AX objects). The win is two hand-written
+//! `extern "C"` declarations (the private join above plus the tap-state pair
+//! below) instead of dozens for
 //! public AX/CF/CG/libc APIs; the remaining `unsafe` is wrapper-call boundary
 //! plus the small private dynamic-symbol tables described above. Private SLS
 //! top-level results are wrapped as `CFType` and checked-downcast to
@@ -37,7 +41,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     mpsc::SyncSender,
 };
 
@@ -76,6 +80,323 @@ pub enum SecureState {
     Active,
     Inactive,
     Unknown,
+}
+
+/// Actual window-server session lock verdict: the login-done plus on-console
+/// legs of the session dictionary plus the screen-lock marker, never the
+/// loginwindow-frontmost heuristic alone. `Unknown` (unreadable session or
+/// malformed marker) fails closed everywhere it gates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionLock {
+    /// Readable session, login done, on console, screen unlocked: the
+    /// ordinary unlocked desktop.
+    Unlocked,
+    /// Screen locked, login not done, or off console: no unlocked desktop
+    /// to act on.
+    Locked,
+    /// Unreadable session dictionary or malformed marker: refuse, never
+    /// proceed.
+    Unknown,
+}
+
+/// Raw screen-lock marker leg from the session dictionary: absent (normally
+/// unlocked — the marker only appears to report the locked state),
+/// a boolean verdict, or a malformed (present but wrong-typed) read.
+/// Absence and malformation are distinct: absence proceeds under the other
+/// legs, malformation fails closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScreenLockRead {
+    /// Marker absent: normally unlocked (the window server only plants the
+    /// marker to report the locked state).
+    Absent,
+    /// Marker reads locked.
+    Locked,
+    /// Marker reads unlocked.
+    Unlocked,
+    /// Marker present but wrong-typed: fail closed, never guessed.
+    Malformed,
+}
+
+/// Read-only window-server session legs plus the lock verdict. Booleans and
+/// static key spellings only; never user names or content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionState {
+    pub login_done: Option<bool>,
+    pub on_console: Option<bool>,
+    /// Raw screen-lock marker leg (absence vs malformed distinguished).
+    pub screen_lock: ScreenLockRead,
+    pub lock: SessionLock,
+}
+
+impl SessionState {
+    #[must_use]
+    pub const fn unlocked(self) -> bool {
+        matches!(self.lock, SessionLock::Unlocked)
+    }
+
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            login_done: None,
+            on_console: None,
+            screen_lock: ScreenLockRead::Absent,
+            lock: SessionLock::Unknown,
+        }
+    }
+}
+
+/// Pure lock verdict over the session legs: a locked screen marker is
+/// locked (screen-lock proof, strongest leg); a malformed marker is unknown;
+/// otherwise login-done AND on-console is the ordinary unlocked desktop, any
+/// false leg is locked, and anything unreadable is unknown (fail closed —
+/// never guessed unlocked).
+#[must_use]
+pub const fn lock_from_session_legs(
+    login_done: Option<bool>,
+    on_console: Option<bool>,
+    screen_lock: ScreenLockRead,
+) -> SessionLock {
+    match screen_lock {
+        ScreenLockRead::Locked => SessionLock::Locked,
+        ScreenLockRead::Malformed => SessionLock::Unknown,
+        ScreenLockRead::Absent | ScreenLockRead::Unlocked => match (login_done, on_console) {
+            (Some(true), Some(true)) => SessionLock::Unlocked,
+            (Some(false), _) | (_, Some(false)) => SessionLock::Locked,
+            _ => SessionLock::Unknown,
+        },
+    }
+}
+
+/// Read-only focus-diagnose legs: per-leg AX statuses plus IDs/counts only.
+/// No titles, content, paths, or owner names anywhere on this surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxSystemFocusLeg {
+    pub system_element: String,
+    pub system_timeout_status: Option<i32>,
+    pub system_timeout_name: Option<String>,
+    pub focused_app_status: String,
+    pub focused_pid: Option<i32>,
+    pub app_timeout_status: Option<i32>,
+    pub app_timeout_name: Option<String>,
+    pub app_pid_status: String,
+    pub focused_window_status: String,
+    pub focused_wid: Option<u32>,
+}
+
+/// Direct per-application focus read for exactly one PID (the observed
+/// frontmost): window count (no every-window joins: bounded diagnose
+/// inspects focused/main/count only), focused/main window joins, and the
+/// `AXFrontmost` pair read BEFORE and AFTER all window legs. IDs only;
+/// never titles, content, or paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxAppFocusLeg {
+    pub pid: i32,
+    pub element: String,
+    pub timeout_status: Option<i32>,
+    pub timeout_name: Option<String>,
+    pub windows_status: String,
+    pub windows_count: Option<usize>,
+    pub window_join_failures: u64,
+    pub joined_wids: Vec<u32>,
+    pub focused_status: String,
+    pub focused_wid: Option<u32>,
+    pub main_status: String,
+    pub main_wid: Option<u32>,
+    /// `AXFrontmost` read BEFORE the window legs: `Ok(true)` is the
+    /// healthy corroborating leg; `Ok(false)` or any `Err` status name is
+    /// carried here (unknown/false refuses the fallback, never assumed).
+    pub frontmost_before_status: String,
+    pub frontmost_before: Option<bool>,
+    /// `AXFrontmost` read AFTER the window legs: both sides must be
+    /// `Some(true)` and stable for any corroborated candidate. A
+    /// before/after disagreement is instability data, never a proven host
+    /// flap claim.
+    pub frontmost_after_status: String,
+    pub frontmost_after: Option<bool>,
+}
+
+/// Which native route produced a focus preimage. Serialized in reports so
+/// selected-route evidence is always distinguishable from raw diagnostic
+/// reads. `Systemwide` is the raw system-wide `AXFocusedApplication` read:
+/// diagnostic-only, never production evidence. `SlpsFrontCorroborated` is
+/// the experimental unproven corroboration (behind `focus-diagnose
+/// --fallback`): diagnostic-only, never production evidence. The two
+/// `SlpsFrontDirect*` routes are the selected production oracle: the
+/// read-only SLPS front-process PID agreeing with the NSWorkspace frontmost
+/// before AND after, plus the direct per-app focused-window read on that PID
+/// (`Focused` when `AXFocusedWindow` joined, `Main` when it was
+/// unavailable/missing and `AXMainWindow` joined instead) with a fresh CG
+/// owner join. No system-wide AX and no `AXFrontmost` gating on any selected
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreimageRoute {
+    /// Raw system-wide `AXFocusedApplication` read. Diagnostic-only.
+    Systemwide,
+    /// System-wide service leg failed; corroborated fallback instead (see
+    /// [`ax_focused_preimage_evidence`]). Diagnostic-only, unproven.
+    SlpsFrontCorroborated,
+    /// Selected oracle with the direct `AXFocusedWindow` leg joined.
+    SlpsFrontDirectFocused,
+    /// Selected oracle with the `AXFocusedWindow` leg unavailable/missing
+    /// and the `AXMainWindow` leg joined instead.
+    SlpsFrontDirectMain,
+}
+
+impl PreimageRoute {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Systemwide => "systemwide",
+            Self::SlpsFrontCorroborated => "slps-front-corroborated",
+            Self::SlpsFrontDirectFocused => "slps-front-direct-focused",
+            Self::SlpsFrontDirectMain => "slps-front-direct-main",
+        }
+    }
+}
+
+/// Focus preimage plus its provenance: the focused PID/window with the route
+/// that produced them and a per-leg detail string (IDs and status names
+/// only — never titles, content, or paths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreimageEvidence {
+    pub pid: i32,
+    pub wid: Option<u32>,
+    pub route: PreimageRoute,
+    pub detail: String,
+}
+
+/// Direct per-application focused-window read for exactly one PID (the
+/// SLPS/NSWorkspace-agreed frontmost): the `AXFocusedWindow` join plus the
+/// `AXMainWindow` fallback join with their status names, the AX identity PID
+/// read, and the selected window with its source. `selected_source` is
+/// `"focused"` when the focused leg joined nonzero, `"main"` when the
+/// focused leg was unavailable/missing and the main leg joined nonzero, and
+/// `"none"` otherwise (never a claim). No system-wide AX and no
+/// `AXFrontmost` anywhere on this surface: those stay diagnostic-only.
+/// IDs and status names only — never titles, content, or paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectFocusRead {
+    pub pid: i32,
+    pub ax_pid: Option<i32>,
+    pub focused_status: String,
+    pub focused_wid: Option<u32>,
+    pub main_status: String,
+    pub main_wid: Option<u32>,
+    pub selected_wid: Option<u32>,
+    pub selected_source: String,
+}
+
+/// Pure direct-window selection over plain data: the joined `AXFocusedWindow`
+/// leg wins when present and nonzero; otherwise the joined `AXMainWindow`
+/// leg wins when present and nonzero (unavailable/missing focused leg only);
+/// otherwise nothing. Zero WIDs are missing, never selected. The main
+/// fallback never overrides a usable focused leg, and a non-exact target
+/// still refuses downstream in [`selected_focus_agrees`]. Unit-tested; no
+/// desktop effect.
+#[must_use]
+pub fn select_direct_window(
+    focused_wid: Option<u32>,
+    main_wid: Option<u32>,
+) -> (Option<u32>, &'static str) {
+    match (focused_wid, main_wid) {
+        (Some(wid), _) if wid != 0 => (Some(wid), "focused"),
+        (_, Some(wid)) if wid != 0 => (Some(wid), "main"),
+        _ => (None, "none"),
+    }
+}
+
+/// Pure selected-oracle agreement over plain data: true only when the SLPS
+/// front-process PID and the workspace frontmost PID both equal `want_pid`,
+/// the selected direct window equals `want_wid` (nonzero), and the fresh CG
+/// owner join holds. Unknown/missing foreground legs, any PID disagreement,
+/// a missing/zero selected window, or a lost CG join refuses — never
+/// guessed. Unit-tested; callers perform the live reads and pass the
+/// outcomes here. No system-wide AX leg and no `AXFrontmost` leg participate.
+#[must_use]
+pub fn selected_focus_agrees(
+    want_pid: u32,
+    want_wid: u32,
+    slps_pid: Option<i32>,
+    ws_pid: Option<i32>,
+    selected_wid: Option<u32>,
+    cg_owned: bool,
+) -> bool {
+    if want_pid <= 1 || want_wid == 0 || !cg_owned {
+        return false;
+    }
+    let Ok(want) = i32::try_from(want_pid) else {
+        return false;
+    };
+    if slps_pid != Some(want) || ws_pid != Some(want) {
+        return false;
+    }
+    selected_wid == Some(want_wid)
+}
+/// Pure fallback trigger: the experimental corroborated route is attempted
+/// ONLY for the exactly observed system-wide service failures: the missing
+/// system-wide element (`system-wide AX element unavailable`) or the
+/// `AXFocusedApplication` leg unreadable with `kAXErrorCannotComplete`.
+/// Every other systemwide outcome — success (even a later disagreement), a
+/// messaging-timeout leg, a malformed/downcast leg, a permission leg, or a
+/// failure on a different leg such as `AXFocusedWindow` — never triggers.
+/// Unit-tested; no desktop effect. Diagnostic-only: production preimage and
+/// agreement reads use the selected SLPS+direct oracle and never consult
+/// this (nor the system-wide read at all).
+#[must_use]
+pub fn preimage_fallback_trigger(system_err: &str) -> bool {
+    matches!(
+        system_err,
+        "system-wide AX element unavailable"
+            | "AXFocusedApplication unreadable: kAXErrorCannotComplete"
+    )
+}
+
+/// Pure `AXFrontmost` stability over plain data: true only when the
+/// before-leg AND the after-leg both read `Some(true)`. Any unknown, false,
+/// or disagreement is instability data (refuse), never a proven host-flap
+/// claim. Unit-tested; no desktop effect.
+#[must_use]
+pub fn frontmost_pair_stable(before: Option<bool>, after: Option<bool>) -> bool {
+    before == Some(true) && after == Some(true)
+}
+
+/// Pure fallback agreement over plain data: true only when the SLPS
+/// front-process PID, the workspace frontmost before AND after, the direct
+/// per-app AX identity, a present nonzero focused window, and the fresh CG
+/// owner join ALL agree, with `AXFrontmost` observed `Some(true)` BOTH
+/// before AND after the window legs. Unknown/false/either-side disagreement,
+/// any PID disagreement, workspace instability mid-read, a missing/zero
+/// window, or a lost CG join refuses. Unit-tested; callers perform the live
+/// reads and pass the outcomes here. The before/after split exists because
+/// the diagnose direct leg reads windows/focused/main before frontmost while
+/// the first fallback draft read frontmost first: the canonical acquisition
+/// is frontmost-before, window legs, frontmost-after, shared by both.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn preimage_fallback_agrees(
+    psn_pid: i32,
+    ws_before: Option<i32>,
+    ws_after: Option<i32>,
+    frontmost_before: Option<bool>,
+    frontmost_after: Option<bool>,
+    ax_pid: Option<i32>,
+    ax_wid: Option<u32>,
+    cg_owned: bool,
+) -> bool {
+    if psn_pid <= 1 || !cg_owned {
+        return false;
+    }
+    if ws_before != Some(psn_pid) || ws_after != Some(psn_pid) {
+        return false;
+    }
+    if !frontmost_pair_stable(frontmost_before, frontmost_after) {
+        return false;
+    }
+    if ax_pid != Some(psn_pid) {
+        return false;
+    }
+    matches!(ax_wid, Some(wid) if wid != 0)
 }
 
 /// Current UID for owned-state-dir ownership checks. The single `libc`
@@ -146,11 +467,14 @@ impl std::error::Error for AxObserveError {}
 /// App-level session notification names (observed on the application
 /// element; each fires for any window of the app). Names per the surveyed
 /// AX notification taxonomy (AXSwift `AXNotification`: windowCreated,
-/// focusedWindowChanged, windowMoved, windowResized); registration success
+/// focusedWindowChanged, windowMoved, windowResized) plus
+/// `AXMainWindowChanged` (glide `src/actor/app.rs` `APP_NOTIFICATIONS`, rift
+/// `src/actor/app.rs` `APP_NOTIFICATIONS`); registration success
 /// is still verified per name at runtime — an unsupported name fails to add.
 pub const AX_SESSION_APP_NOTIFICATIONS: &[&str] = &[
     "AXWindowCreated",
     "AXFocusedWindowChanged",
+    "AXMainWindowChanged",
     "AXWindowMoved",
     "AXWindowResized",
 ];
@@ -158,9 +482,20 @@ pub const AX_SESSION_APP_NOTIFICATIONS: &[&str] = &[
 /// Window-level session notification names (observed on the joined owned
 /// window element, never a foreign one). `AXUIElementDestroyed` covers the
 /// owned window's teardown; `AXMoved`/`AXResized` are the element-level
-/// companions of the app-level move/resize notifications.
-pub const AX_SESSION_WINDOW_NOTIFICATIONS: &[&str] =
-    &["AXMoved", "AXResized", "AXUIElementDestroyed"];
+/// companions of the app-level move/resize notifications;
+/// `AXWindowMiniaturized`/`AXWindowDeminiaturized` cover minimize/restore
+/// (yabai `src/window.h` `ax_window_notification`, AeroSpace
+/// `Sources/AppBundle/tree/MacApp.swift` `AxWindow.new`, glide
+/// `src/actor/app.rs` `WINDOW_NOTIFICATIONS`, rift `src/actor/app.rs`
+/// `WINDOW_NOTIFICATIONS` — all four subscribe minimize/deminimize on the
+/// window element, never app-level only).
+pub const AX_SESSION_WINDOW_NOTIFICATIONS: &[&str] = &[
+    "AXMoved",
+    "AXResized",
+    "AXUIElementDestroyed",
+    "AXWindowMiniaturized",
+    "AXWindowDeminiaturized",
+];
 
 /// Outcome of one bounded owned-session observation run. `notifications_added`
 /// names exactly what registered; `notifications_received` carries per-name
@@ -516,6 +851,249 @@ mod macos {
         }
     }
 
+    // -- Multi-chord Carbon set (scoped-tile catalogue) --
+    //
+    // One handler proc routes by the event's hotkey ID (read via
+    // `GetEventParameter`): per-chord handler procs cannot distinguish which
+    // chord fired, because every handler on the dispatcher target observes
+    // every hotkey event. `GetEventParameter` resolves through its own table
+    // (missing symbol fails only this path closed — the single-chord probe
+    // path above never needs it). Hot IDs are 1-based under the same 'OMTP'
+    // signature as the single path; the two paths never mix in one process
+    // (separate commands), so IDs never collide.
+
+    /// One forwarded Carbon chord hit: the registered key code plus the
+    /// Carbon modifier bits it was registered with, so the input owner can
+    /// exact-match without trusting the fire alone. Only registered-chord
+    /// fires cross the boundary.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CarbonHit {
+        pub key_code: u32,
+        pub carbon_modifiers: u32,
+    }
+
+    /// Per-chord Carbon registration status: the raw OS status per chord (0
+    /// accepted; a conflict such as `hotKeyInUse` reports honestly per chord
+    /// and never writes global shortcut settings).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct CarbonChordStatus {
+        pub key_code: u32,
+        pub carbon_modifiers: u32,
+        pub os_status: i32,
+    }
+
+    type GetEventParamFn =
+        unsafe extern "C" fn(RawRef, u32, u32, *mut u32, u32, *mut EventHotKeyID, *mut u32) -> i32;
+
+    static CARBON_GET_PARAM: OnceLock<Option<GetEventParamFn>> = OnceLock::new();
+
+    fn carbon_get_param() -> Option<GetEventParamFn> {
+        *CARBON_GET_PARAM.get_or_init(|| {
+            // SAFETY: symbol null-checked before transmuting to the
+            // documented `GetEventParameter` signature; missing fails closed.
+            unsafe {
+                let handle = libc::dlopen(CARBON_PATH.as_ptr().cast(), 0x1);
+                if handle.is_null() {
+                    return None;
+                }
+                let name = CString::new("GetEventParameter").expect("static");
+                let sym = libc::dlsym(handle, name.as_ptr());
+                if sym.is_null() {
+                    return None;
+                }
+                Some(std::mem::transmute::<*mut std::ffi::c_void, GetEventParamFn>(sym))
+            }
+        })
+    }
+
+    const K_EVENT_PARAM_DIRECT_OBJECT: u32 = 0x686b_6579; // 'hkey'
+    const TYPE_EVENT_HOTKEY_ID: u32 = 0x686b_6579; // 'hkey'
+    const OMTP_SIGNATURE: u32 = 0x4f4d_5450; // 'OMTP'
+
+    struct CarbonSetRefcon {
+        tx: SyncSender<CarbonHit>,
+        counter: Arc<EventCounter>,
+        routes: Vec<(u32, u32, u32)>,
+    }
+
+    unsafe extern "C" fn carbon_set_handler(
+        _next: RawRef,
+        event: RawRef,
+        user_data: RawRef,
+    ) -> i32 {
+        // SAFETY: `user_data` is the live `Box<CarbonSetRefcon>` installed
+        // by `carbon_register_set`, reclaimed only after the handler is
+        // removed. Reads only; `try_send` never blocks or panics.
+        if !user_data.is_null()
+            && !event.is_null()
+            && let Some(get_param) = carbon_get_param()
+        {
+            let refcon = unsafe { &*(user_data as *const CarbonSetRefcon) };
+            let mut id = EventHotKeyID {
+                signature: 0,
+                id: 0,
+            };
+            // SAFETY: live event; out-pointer is a stack local; the status
+            // gates every use of `id`.
+            let status = unsafe {
+                get_param(
+                    event,
+                    K_EVENT_PARAM_DIRECT_OBJECT,
+                    TYPE_EVENT_HOTKEY_ID,
+                    std::ptr::null_mut(),
+                    std::mem::size_of::<EventHotKeyID>() as u32,
+                    std::ptr::addr_of_mut!(id),
+                    std::ptr::null_mut(),
+                )
+            };
+            if status == 0
+                && id.signature == OMTP_SIGNATURE
+                && let Some((_, keycode, mods)) =
+                    refcon.routes.iter().find(|(hid, _, _)| *hid == id.id)
+            {
+                refcon.counter.bump();
+                let _ = refcon.tx.try_send(CarbonHit {
+                    key_code: *keycode,
+                    carbon_modifiers: *mods,
+                });
+            }
+        }
+        0
+    }
+
+    /// Owned multi-chord Carbon registration. Thread-bound by construction
+    /// (raw refs; intentionally `!Send`). `Drop` unregisters every accepted
+    /// chord before reclaiming the refcon.
+    pub struct CarbonChordSet {
+        hotkey_refs: Vec<RawRef>,
+        handler_ref: RawRef,
+        refcon: *mut CarbonSetRefcon,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for CarbonChordSet {
+        fn drop(&mut self) {
+            // SAFETY: refs were returned live by Carbon; every hotkey
+            // unregisters before the handler is removed and the refcon
+            // reclaimed, so no callback can fire afterwards.
+            unsafe {
+                if let Some(table) = carbon_table() {
+                    for hotkey_ref in self.hotkey_refs.drain(..) {
+                        if !hotkey_ref.is_null() {
+                            (table.unregister)(hotkey_ref);
+                        }
+                    }
+                    if !self.handler_ref.is_null() {
+                        (table.remove)(self.handler_ref);
+                    }
+                }
+                if !self.refcon.is_null() {
+                    drop(Box::from_raw(self.refcon));
+                }
+            }
+        }
+    }
+
+    /// One multi-chord registration: the live guard plus the honest OS
+    /// status per chord. Conflicts refuse per chord (recorded, never a
+    /// settings write); accepted chords still arm.
+    pub struct CarbonChordReport {
+        pub set: CarbonChordSet,
+        pub statuses: Vec<CarbonChordStatus>,
+    }
+
+    /// Register a discrete Carbon hotkey per chord. Returns the live guard
+    /// plus per-chord OS statuses; delivery additionally needs live
+    /// keypresses and a pumped runloop on the owning thread, verified
+    /// separately. Created/used/dropped on the owning (input) thread.
+    pub fn carbon_register_set(
+        chords: &[(u32, u32)],
+        tx: &SyncSender<CarbonHit>,
+        counter: &Arc<EventCounter>,
+    ) -> Result<CarbonChordReport, String> {
+        if chords.is_empty() {
+            return Err("empty chord table".to_owned());
+        }
+        if chords.len() > 64 {
+            return Err(format!("chord table too large ({})", chords.len()));
+        }
+        let table = carbon_table().ok_or_else(|| "Carbon Event Manager unavailable".to_owned())?;
+        if carbon_get_param().is_none() {
+            return Err("GetEventParameter unavailable; multi-chord Carbon unsupported".to_owned());
+        }
+        let routes: Vec<(u32, u32, u32)> = chords
+            .iter()
+            .enumerate()
+            .map(|(index, (keycode, mods))| (index as u32 + 1, *keycode, *mods))
+            .collect();
+        let refcon = Box::new(CarbonSetRefcon {
+            tx: tx.clone(),
+            counter: counter.clone(),
+            routes,
+        });
+        let refcon_ptr = Box::into_raw(refcon);
+        // SAFETY: pointers null-checked; hotkey refs released in `Drop`;
+        // the refcon outlives the handler registration.
+        unsafe {
+            let spec = EventTypeSpec {
+                event_class: K_EVENT_CLASS_KEYBOARD,
+                event_kind: K_EVENT_HOTKEY_PRESSED,
+            };
+            let mut handler_ref: RawRef = std::ptr::null_mut();
+            let target = (table.get_dispatcher_target)();
+            if target.is_null() {
+                drop(Box::from_raw(refcon_ptr));
+                return Err("Carbon dispatcher target unavailable".to_owned());
+            }
+            let status = (table.install)(
+                target,
+                carbon_set_handler,
+                1,
+                &spec,
+                refcon_ptr as RawRef,
+                &mut handler_ref,
+            );
+            if status != 0 {
+                drop(Box::from_raw(refcon_ptr));
+                return Err(format!("Carbon handler install status {status}"));
+            }
+            let mut hotkey_refs = Vec::with_capacity(chords.len());
+            let mut statuses = Vec::with_capacity(chords.len());
+            for (index, (keycode, mods)) in chords.iter().enumerate() {
+                let hot_id = EventHotKeyID {
+                    signature: OMTP_SIGNATURE,
+                    id: index as u32 + 1,
+                };
+                let mut hotkey_ref: RawRef = std::ptr::null_mut();
+                let status = (table.register)(
+                    *keycode,
+                    *mods,
+                    hot_id,
+                    (table.get_dispatcher_target)(),
+                    0,
+                    &mut hotkey_ref,
+                );
+                statuses.push(CarbonChordStatus {
+                    key_code: *keycode,
+                    carbon_modifiers: *mods,
+                    os_status: status,
+                });
+                if status == 0 && !hotkey_ref.is_null() {
+                    hotkey_refs.push(hotkey_ref);
+                }
+            }
+            Ok(CarbonChordReport {
+                set: CarbonChordSet {
+                    hotkey_refs,
+                    handler_ref,
+                    refcon: refcon_ptr,
+                    _not_send: std::marker::PhantomData,
+                },
+                statuses,
+            })
+        }
+    }
+
     // -- Typed AX surface (maintained `objc2` bindings) --
 
     /// Owned AX element handle. Constructible only through this module's
@@ -725,6 +1303,386 @@ mod macos {
         }
     }
 
+    /// Whether the calling thread has queried a current run loop. Read-only
+    /// observation for the focus-diagnose main-vs-worker comparison.
+    /// `CFRunLoop::current` is created-on-demand, so this reports
+    /// query-presence only — never pumped/live acceptance, never created,
+    /// started, or modified beyond the query itself.
+    pub fn runloop_present() -> bool {
+        CFRunLoop::current().is_some()
+    }
+
+    /// Shared `AXFrontmost` read for the canonical acquisition order
+    /// (frontmost-before, window legs, frontmost-after). One safe reader
+    /// reused by the diagnose direct leg and the experimental fallback so
+    /// the two never diverge in acquisition. No timeout set here: the
+    /// caller sets the per-element messaging timeout before any join.
+    fn ax_frontmost_read(app: &AxElement) -> (String, Option<bool>) {
+        match ax_bool_attribute(app, "AXFrontmost") {
+            Ok(v) => (
+                if v {
+                    "kAXErrorSuccess-true".to_owned()
+                } else {
+                    "kAXErrorSuccess-false".to_owned()
+                },
+                Some(v),
+            ),
+            Err(code) => (ax_error_name(code), None),
+        }
+    }
+
+    /// Window join with its own per-element messaging timeout first. A
+    /// refused timeout is an honest `Err` and the join never runs
+    /// unbounded. Shared by the system leg, the direct app leg
+    /// (focused/main), and the experimental fallback candidate.
+    fn ax_window_join_with_timeout(window: &AxElement) -> Result<u32, String> {
+        let st = ax_set_messaging_timeout(window, 2.0);
+        if st != 0 {
+            return Err(format!(
+                "window messaging timeout unset: {}",
+                ax_error_name(st)
+            ));
+        }
+        ax_window_id_detailed(window)
+    }
+
+    /// Focused/main single-window join for the direct app leg: attribute
+    /// read, downcast, then the per-element timeout plus join above. A
+    /// refused window timeout stops that leg with its cause, never an
+    /// unbounded join.
+    fn ax_single_window_join(app: &AxElement, attr: &str) -> (String, Option<u32>) {
+        match app.copy_attribute(attr) {
+            Ok(v) => match v.downcast::<AXUIElement>() {
+                Ok(inner) => {
+                    let window = AxElement {
+                        inner,
+                        _not_send: std::marker::PhantomData,
+                    };
+                    match ax_window_join_with_timeout(&window) {
+                        Ok(wid) => ("kAXErrorSuccess".to_owned(), Some(wid)),
+                        Err(e) => (e, None),
+                    }
+                }
+                Err(_) => ("not-an-AXUIElement".to_owned(), None),
+            },
+            Err(code) => (ax_error_name(code), None),
+        }
+    }
+
+    /// Read-only system-wide focus leg with per-leg statuses: the same
+    /// `AXFocusedApplication` route as [`ax_focused_preimage_detailed`], but
+    /// every leg reports its own status instead of failing the whole read
+    /// at the first error. Nonmutating except the two finite messaging
+    /// timeouts (2s, as in the preimage); never writes attributes or
+    /// settings, never fabricates a PID. IDs and status names only.
+    pub fn ax_system_focus_leg() -> super::AxSystemFocusLeg {
+        let Some(system) = AxElement::system_wide() else {
+            return super::AxSystemFocusLeg {
+                system_element: "unavailable".to_owned(),
+                system_timeout_status: None,
+                system_timeout_name: None,
+                focused_app_status: "system-wide AX element unavailable".to_owned(),
+                focused_pid: None,
+                app_timeout_status: None,
+                app_timeout_name: None,
+                app_pid_status: "unreached".to_owned(),
+                focused_window_status: "unreached".to_owned(),
+                focused_wid: None,
+            };
+        };
+        let timeout_status = ax_set_messaging_timeout(&system, 2.0);
+        let timeout_name = ax_error_name(timeout_status);
+        if timeout_status != 0 {
+            return super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "unreached (timeout unset)".to_owned(),
+                focused_pid: None,
+                app_timeout_status: None,
+                app_timeout_name: None,
+                app_pid_status: "unreached".to_owned(),
+                focused_window_status: "unreached".to_owned(),
+                focused_wid: None,
+            };
+        }
+        let app_value = match system.copy_attribute("AXFocusedApplication") {
+            Ok(v) => v,
+            Err(code) => {
+                return super::AxSystemFocusLeg {
+                    system_element: "ok".to_owned(),
+                    system_timeout_status: Some(timeout_status),
+                    system_timeout_name: Some(timeout_name),
+                    focused_app_status: ax_error_name(code),
+                    focused_pid: None,
+                    app_timeout_status: None,
+                    app_timeout_name: None,
+                    app_pid_status: "unreached".to_owned(),
+                    focused_window_status: "unreached".to_owned(),
+                    focused_wid: None,
+                };
+            }
+        };
+        let app_inner: CFRetained<AXUIElement> = match app_value.downcast() {
+            Ok(v) => v,
+            Err(_) => {
+                return super::AxSystemFocusLeg {
+                    system_element: "ok".to_owned(),
+                    system_timeout_status: Some(timeout_status),
+                    system_timeout_name: Some(timeout_name),
+                    focused_app_status: "not-an-AXUIElement".to_owned(),
+                    focused_pid: None,
+                    app_timeout_status: None,
+                    app_timeout_name: None,
+                    app_pid_status: "unreached".to_owned(),
+                    focused_window_status: "unreached".to_owned(),
+                    focused_wid: None,
+                };
+            }
+        };
+        let app = AxElement {
+            inner: app_inner,
+            _not_send: std::marker::PhantomData,
+        };
+        let app_timeout = ax_set_messaging_timeout(&app, 2.0);
+        let app_timeout_name = ax_error_name(app_timeout);
+        if app_timeout != 0 {
+            return super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "kAXErrorSuccess".to_owned(),
+                focused_pid: None,
+                app_timeout_status: Some(app_timeout),
+                app_timeout_name: Some(app_timeout_name),
+                app_pid_status: "unreached (timeout unset)".to_owned(),
+                focused_window_status: "unreached".to_owned(),
+                focused_wid: None,
+            };
+        }
+        let mut pid: libc::pid_t = 0;
+        // SAFETY: live element; valid out-pointer; status gates the read.
+        let pid_err = unsafe {
+            app.inner
+                .pid(NonNull::new(std::ptr::addr_of_mut!(pid)).expect("non-null"))
+        };
+        if pid_err.0 != 0 {
+            return super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "kAXErrorSuccess".to_owned(),
+                focused_pid: None,
+                app_timeout_status: Some(app_timeout),
+                app_timeout_name: Some(app_timeout_name),
+                app_pid_status: ax_error_name(pid_err.0),
+                focused_window_status: "unreached".to_owned(),
+                focused_wid: None,
+            };
+        }
+        if pid <= 1 {
+            return super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "kAXErrorSuccess".to_owned(),
+                focused_pid: Some(pid as i32),
+                app_timeout_status: Some(app_timeout),
+                app_timeout_name: Some(app_timeout_name),
+                app_pid_status: "reserved-pid".to_owned(),
+                focused_window_status: "unreached".to_owned(),
+                focused_wid: None,
+            };
+        }
+        match app.copy_attribute("AXFocusedWindow") {
+            Ok(window_value) => {
+                let window_inner: CFRetained<AXUIElement> = match window_value.downcast() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return super::AxSystemFocusLeg {
+                            system_element: "ok".to_owned(),
+                            system_timeout_status: Some(timeout_status),
+                            system_timeout_name: Some(timeout_name),
+                            focused_app_status: "kAXErrorSuccess".to_owned(),
+                            focused_pid: Some(pid as i32),
+                            app_timeout_status: Some(app_timeout),
+                            app_timeout_name: Some(app_timeout_name),
+                            app_pid_status: "kAXErrorSuccess".to_owned(),
+                            focused_window_status: "not-an-AXUIElement".to_owned(),
+                            focused_wid: None,
+                        };
+                    }
+                };
+                let window = AxElement {
+                    inner: window_inner,
+                    _not_send: std::marker::PhantomData,
+                };
+                // Per-element messaging timeout precedes the join: a
+                // refused timeout stops this leg with its cause, never an
+                // unbounded join.
+                match ax_window_join_with_timeout(&window) {
+                    Ok(wid) => super::AxSystemFocusLeg {
+                        system_element: "ok".to_owned(),
+                        system_timeout_status: Some(timeout_status),
+                        system_timeout_name: Some(timeout_name),
+                        focused_app_status: "kAXErrorSuccess".to_owned(),
+                        focused_pid: Some(pid as i32),
+                        app_timeout_status: Some(app_timeout),
+                        app_timeout_name: Some(app_timeout_name),
+                        app_pid_status: "kAXErrorSuccess".to_owned(),
+                        focused_window_status: "kAXErrorSuccess".to_owned(),
+                        focused_wid: Some(wid),
+                    },
+                    Err(e) => super::AxSystemFocusLeg {
+                        system_element: "ok".to_owned(),
+                        system_timeout_status: Some(timeout_status),
+                        system_timeout_name: Some(timeout_name),
+                        focused_app_status: "kAXErrorSuccess".to_owned(),
+                        focused_pid: Some(pid as i32),
+                        app_timeout_status: Some(app_timeout),
+                        app_timeout_name: Some(app_timeout_name),
+                        app_pid_status: "kAXErrorSuccess".to_owned(),
+                        focused_window_status: e,
+                        focused_wid: None,
+                    },
+                }
+            }
+            Err(-25210) => super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "kAXErrorSuccess".to_owned(),
+                focused_pid: Some(pid as i32),
+                app_timeout_status: Some(app_timeout),
+                app_timeout_name: Some(app_timeout_name),
+                app_pid_status: "kAXErrorSuccess".to_owned(),
+                focused_window_status: "kAXErrorNoValue".to_owned(),
+                focused_wid: None,
+            },
+            Err(code) => super::AxSystemFocusLeg {
+                system_element: "ok".to_owned(),
+                system_timeout_status: Some(timeout_status),
+                system_timeout_name: Some(timeout_name),
+                focused_app_status: "kAXErrorSuccess".to_owned(),
+                focused_pid: Some(pid as i32),
+                app_timeout_status: Some(app_timeout),
+                app_timeout_name: Some(app_timeout_name),
+                app_pid_status: "kAXErrorSuccess".to_owned(),
+                focused_window_status: ax_error_name(code),
+                focused_wid: None,
+            },
+        }
+    }
+
+    /// Read-only direct per-application focus leg for exactly `pid`: the
+    /// independent route that bypasses the system-wide `AXFocusedApplication`
+    /// read (`AXUIElementCreateApplication` + `AXWindows` count +
+    /// `AXFocusedWindow` / `AXMainWindow` joins plus the `AXFrontmost` pair).
+    /// Canonical acquisition is frontmost-before, window legs,
+    /// frontmost-after, shared with the experimental fallback via
+    /// [`ax_frontmost_read`]. Every `AxElement` lives and dies on the
+    /// calling thread. Nonmutating except the finite messaging timeouts
+    /// (2s); never writes attributes. IDs, counts, and status names only.
+    /// Bounded: windows contribute a count only (no every-window joins),
+    /// so the worker bound never pays a per-window worst case.
+    pub fn ax_app_focus_leg(pid: i32) -> super::AxAppFocusLeg {
+        if pid <= 1 {
+            return super::AxAppFocusLeg {
+                pid,
+                element: "refused-reserved-pid".to_owned(),
+                timeout_status: None,
+                timeout_name: None,
+                windows_status: "unreached".to_owned(),
+                windows_count: None,
+                window_join_failures: 0,
+                joined_wids: Vec::new(),
+                focused_status: "unreached".to_owned(),
+                focused_wid: None,
+                main_status: "unreached".to_owned(),
+                main_wid: None,
+                frontmost_before_status: "unreached".to_owned(),
+                frontmost_before: None,
+                frontmost_after_status: "unreached".to_owned(),
+                frontmost_after: None,
+            };
+        }
+        let Some(app) = AxElement::application(pid) else {
+            return super::AxAppFocusLeg {
+                pid,
+                element: "unavailable".to_owned(),
+                timeout_status: None,
+                timeout_name: None,
+                windows_status: "unreached".to_owned(),
+                windows_count: None,
+                window_join_failures: 0,
+                joined_wids: Vec::new(),
+                focused_status: "unreached".to_owned(),
+                focused_wid: None,
+                main_status: "unreached".to_owned(),
+                main_wid: None,
+                frontmost_before_status: "unreached".to_owned(),
+                frontmost_before: None,
+                frontmost_after_status: "unreached".to_owned(),
+                frontmost_after: None,
+            };
+        };
+        let timeout_status = ax_set_messaging_timeout(&app, 2.0);
+        let timeout_name = ax_error_name(timeout_status);
+        if timeout_status != 0 {
+            return super::AxAppFocusLeg {
+                pid,
+                element: "ok".to_owned(),
+                timeout_status: Some(timeout_status),
+                timeout_name: Some(timeout_name),
+                windows_status: "unreached (timeout unset)".to_owned(),
+                windows_count: None,
+                window_join_failures: 0,
+                joined_wids: Vec::new(),
+                focused_status: "unreached".to_owned(),
+                focused_wid: None,
+                main_status: "unreached".to_owned(),
+                main_wid: None,
+                frontmost_before_status: "unreached".to_owned(),
+                frontmost_before: None,
+                frontmost_after_status: "unreached".to_owned(),
+                frontmost_after: None,
+            };
+        }
+        // Canonical order: frontmost BEFORE the window legs.
+        let (frontmost_before_status, frontmost_before) = ax_frontmost_read(&app);
+        // Windows contribute a count only (no every-window joins): the
+        // app timeout above already bounds this read.
+        let (windows_status, windows_count) = match app.windows() {
+            Ok(list) => ("kAXErrorSuccess".to_owned(), Some(list.len())),
+            Err(code) => (ax_error_name(code), None),
+        };
+        // Focused/main joins each carry their own per-element window
+        // timeout inside [`ax_single_window_join`].
+        let (focused_status, focused_wid) = ax_single_window_join(&app, "AXFocusedWindow");
+        let (main_status, main_wid) = ax_single_window_join(&app, "AXMainWindow");
+        // Canonical order: frontmost AFTER the window legs; the pair must
+        // both read true/stable for any corroborated candidate.
+        let (frontmost_after_status, frontmost_after) = ax_frontmost_read(&app);
+        super::AxAppFocusLeg {
+            pid,
+            element: "ok".to_owned(),
+            timeout_status: Some(timeout_status),
+            timeout_name: Some(timeout_name),
+            windows_status,
+            windows_count,
+            window_join_failures: 0,
+            joined_wids: Vec::new(),
+            focused_status,
+            focused_wid,
+            main_status,
+            main_wid,
+            frontmost_before_status,
+            frontmost_before,
+            frontmost_after_status,
+            frontmost_after,
+        }
+    }
+
     /// Window frame in screen points.
     #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
     pub struct AxFrame {
@@ -882,6 +1840,23 @@ mod macos {
         // SAFETY: live element + action name in the maintained binding;
         // status is the only effect read.
         let status = unsafe { element.inner.perform_action(&action) }.0;
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
+    /// Set the application's focused window to exactly `window` (public
+    /// `AXFocusedWindow` attribute write on the application element). This
+    /// is the documented AX way to move key-window focus inside one app;
+    /// it never touches other apps, the window server graces nothing, and
+    /// arrival is still verified separately by the focus agreement oracle.
+    /// Callers join `window` to the owned PID first and revalidate identity
+    /// around the write; a refused write is `Err` status, never assumed.
+    pub fn ax_set_focused_window(app: &AxElement, window: &AxElement) -> Result<(), i32> {
+        let name = CFString::from_str("AXFocusedWindow");
+        // SAFETY: live app/window elements from checked constructors plus a
+        // live name in the maintained binding; status is the only effect
+        // read. `Deref` chains `&AXUIElement` to `&CFType` (same chain the
+        // position/size legs use for `&AXValue`).
+        let status = unsafe { app.inner.set_attribute_value(&name, &window.inner) }.0;
         if status == 0 { Ok(()) } else { Err(status) }
     }
 
@@ -1517,25 +2492,33 @@ mod macos {
             Ok(())
         }
 
-        /// Best-effort focused window of the observed app (`AXFocusedWindow`
-        /// joined to a window id). `None` is honest unknown — never a claim
-        /// of "no focus". The app-level timeout gates the attribute read and
-        /// a per-window timeout gates the identity join: a join that refuses
-        /// its bound yields unknown, never an unbounded read.
+        /// Best-effort focused window of the observed app: the direct
+        /// `AXFocusedWindow` join, falling back to the `AXMainWindow` join
+        /// only when the focused leg is unavailable/missing (same selection
+        /// as [`super::select_direct_window`]). `None` is honest unknown —
+        /// never a claim of "no focus". The app-level timeout gates the
+        /// attribute reads and a per-window timeout gates each identity
+        /// join: a join that refuses its bound yields unknown, never an
+        /// unbounded read. Global promotion still requires the selected
+        /// oracle agreement (SLPS + workspace foreground, exact PID/WID, CG
+        /// ownership) — never this leg alone.
         pub fn focused_wid(&self, messaging_timeout_secs: f32) -> Option<u32> {
             if ax_set_messaging_timeout(&self.app, messaging_timeout_secs) != 0 {
                 return None;
             }
-            let value = self.app.copy_attribute("AXFocusedWindow").ok()?;
-            let inner: CFRetained<AXUIElement> = value.downcast().ok()?;
-            let window = AxElement {
-                inner,
-                _not_send: std::marker::PhantomData,
+            let join = |attr: &str| {
+                let value = self.app.copy_attribute(attr).ok()?;
+                let inner: CFRetained<AXUIElement> = value.downcast().ok()?;
+                let window = AxElement {
+                    inner,
+                    _not_send: std::marker::PhantomData,
+                };
+                if ax_set_messaging_timeout(&window, messaging_timeout_secs) != 0 {
+                    return None;
+                }
+                ax_window_id(&window).filter(|wid| *wid != 0)
             };
-            if ax_set_messaging_timeout(&window, messaging_timeout_secs) != 0 {
-                return None;
-            }
-            ax_window_id(&window)
+            join("AXFocusedWindow").or_else(|| join("AXMainWindow"))
         }
 
         /// Honest teardown: removes every registration, invalidates the
@@ -1623,6 +2606,86 @@ mod macos {
             }
             None
         }
+    }
+
+    // -- Window-server session lock state (actual, not just loginwindow) --
+    //
+    // `CGSessionCopyCurrentDictionary` rides the maintained
+    // `objc2-core-graphics` `CGSession` binding (no hand declaration, no new
+    // `unsafe` beyond the single cast below): a plain C call that is
+    // read-only, touches no AppKit, and runs on no runloop, so it is callable
+    // from any thread — the tap owner, the per-app AX owners, and the main
+    // thread all read it live. Same class as Hammerspoon's
+    // `hs.caffeinate.sessionProperties`, which calls it from a Lua C-function
+    // context (hammerspoon `extensions/caffeinate/libcaffeinate.m`).
+    // CGSession.h uses different literal spellings for these two macros:
+    // `kCGSessionLoginDoneKey` → `"kCGSessionLoginDoneKey"`, and
+    // `kCGSessionOnConsoleKey` → `"kCGSSessionOnConsoleKey"`.
+    // The `CGSSessionScreenIsLocked` boolean
+    // marker is undocumented window-server state (no surveyed local checkout
+    // names it; typed session-dict marker reads have skhd precedent —
+    // `skhd.c` `secure_keyboard_entry_process_info` reads
+    // `kCGSSessionSecureInputPID` from the session dictionary): it is read
+    // tier2-style with fail-closed typing (absent is normally unlocked, a
+    // wrong-typed marker is unknown), and login/console/frontmost gates stay
+    // regardless. A NULL dictionary (not running inside a Quartz GUI session)
+    // or any missing documented leg is `Unknown` — fail closed, never guessed
+    // unlocked.
+
+    /// Live window-server session legs plus the lock verdict. Read-only C
+    /// call, callable from any thread (see the note above). Booleans only.
+    pub fn session_state() -> SessionState {
+        use objc2_core_foundation::{CFBoolean, CFDictionary, CFString, CFType};
+        let raw = objc2_core_graphics::CGSessionCopyCurrentDictionary();
+        let Some(raw) = raw else {
+            return SessionState::unknown();
+        };
+        // SAFETY: the window-server session dictionary has string keys
+        // (same cast as glide `src/sys/session.rs` `current_session_dict`).
+        let dict: CFRetained<CFDictionary<CFString, CFType>> =
+            unsafe { CFRetained::cast_unchecked(raw) };
+        let flag = |key: &'static str| {
+            dict.get(&CFString::from_static_str(key))
+                .and_then(|value| value.downcast::<CFBoolean>().ok())
+                .map(|boolean| boolean.as_bool())
+        };
+        let login_done = flag("kCGSessionLoginDoneKey");
+        let on_console = flag("kCGSSessionOnConsoleKey");
+        // Undocumented screen-lock marker: absence is normally unlocked
+        // (proceeds under the other legs); presence must be boolean —
+        // anything else is malformed (unknown, never guessed).
+        let screen_lock = match dict.get(&CFString::from_static_str("CGSSessionScreenIsLocked")) {
+            None => ScreenLockRead::Absent,
+            Some(value) => match value.downcast::<CFBoolean>() {
+                Ok(boolean) => {
+                    if boolean.as_bool() {
+                        ScreenLockRead::Locked
+                    } else {
+                        ScreenLockRead::Unlocked
+                    }
+                }
+                Err(_) => ScreenLockRead::Malformed,
+            },
+        };
+        SessionState {
+            login_done,
+            on_console,
+            screen_lock,
+            lock: lock_from_session_legs(login_done, on_console, screen_lock),
+        }
+    }
+
+    /// This process's own bundle identifier via the maintained
+    /// `objc2-foundation` `NSBundle` binding. `None` for unbundled
+    /// (direct-spawn) processes. The owned helper calls this on its main
+    /// thread to select regular activation when running inside the signed
+    /// helper `.app`; every other module treats the value as an opaque ID.
+    /// No titles, no content.
+    pub fn own_bundle_id() -> Option<String> {
+        use objc2_foundation::NSBundle;
+        NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|id| id.to_string())
     }
 
     // -- Dynamic SkyLight reads (private symbols; missing => Err) --
@@ -1925,6 +2988,21 @@ mod macos {
         }
     }
 
+    /// Read-only Space membership for exactly one window ID. Single-element
+    /// call over [`sls_spaces_for_windows`]: this matches the pinned yabai
+    /// usage (`window_space_list` in `src/window.c` queries one window and
+    /// reads the flat Space list), so per-window membership never depends
+    /// on the undocumented multi-window result structure. A total SLS
+    /// failure is `Err` (nothing publishable as scoped); callers treat an
+    /// empty list as unknown home (omit, never destroy).
+    /// Source: https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window.c
+    pub fn sls_spaces_for_window(wid: u32) -> Result<Vec<u64>, String> {
+        if wid == 0 {
+            return Err("refusing window id 0".to_owned());
+        }
+        sls_spaces_for_windows(std::slice::from_ref(&wid))
+    }
+
     // -- Read-only Space type (`SLSSpaceGetType`, pinned yabai signature) --
     //
     // Signature pinned against yabai `src/misc/extern.h`:
@@ -2031,6 +3109,12 @@ mod macos {
     /// or PID are skipped (never guessed); a null list is `Err`, never an
     /// empty claim.
     pub fn cg_window_list_all() -> Result<Vec<CgWindow>, String> {
+        cg_window_list_inner(true)
+    }
+
+    /// Shared parser: `with_title == false` skips the `kCGWindowName` leg
+    /// entirely (no title acquisition, not even transiently).
+    fn cg_window_list_inner(with_title: bool) -> Result<Vec<CgWindow>, String> {
         use core_foundation::array::CFArray;
         use core_foundation::base::TCFType;
         use core_foundation::boolean::CFBoolean;
@@ -2128,21 +3212,25 @@ mod macos {
                 // Window title (`kCGWindowName`) when the window server
                 // reports one; absent (nil/missing/non-string) is `None`,
                 // never guessed. Only the owned helper's nonce title is
-                // ever compared; foreign titles are opaque here.
-                let title = dict
-                    .find(raw_key(&key_name))
-                    .and_then(|v| {
-                        let raw = *v;
-                        if raw.is_null() {
-                            None
-                        } else {
-                            Some(CFString::wrap_under_get_rule(
-                                raw as core_foundation::string::CFStringRef,
-                            ))
-                        }
-                    })
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.is_empty());
+                // ever compared; foreign titles are opaque here. Skipped
+                // entirely when `with_title` is false (no acquisition).
+                let title = if with_title {
+                    dict.find(raw_key(&key_name))
+                        .and_then(|v| {
+                            let raw = *v;
+                            if raw.is_null() {
+                                None
+                            } else {
+                                Some(CFString::wrap_under_get_rule(
+                                    raw as core_foundation::string::CFStringRef,
+                                ))
+                            }
+                        })
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                };
                 out.push(CgWindow {
                     wid,
                     pid,
@@ -2297,7 +3385,9 @@ mod macos {
     // -- Process identity (live proof, not caller claims) --
 
     /// Live (pid, bundle-id) pairs from NSWorkspace. Trusted `objc2`
-    /// wrappers; no custom bindings.
+    /// wrappers; no custom bindings. Threading: same read-only model-object
+    /// class as [`frontmost_app`] (see its note); callable off the main
+    /// thread for discovery snapshots.
     pub fn running_apps() -> Vec<(i32, String)> {
         use objc2_app_kit::NSWorkspace;
         let workspace = NSWorkspace::sharedWorkspace();
@@ -2324,10 +3414,92 @@ mod macos {
             .filter(|b| !b.is_empty())
     }
 
+    /// Live process-start token for PID-reuse binding: the
+    /// `NSRunningApplication.launchDate` description for `pid` via the
+    /// maintained `objc2-app-kit` binding. Plain string data only; `None`
+    /// when unreadable or off the main runloop state the table needs. The
+    /// scoped backend binds this alongside bundle plus executable path; a
+    /// PID reuse with a new launch date refuses instead of authorizing.
+    /// Directly spawned helpers have no LaunchServices entry (`None`):
+    /// callers fall back to the spawn nonce as the start token.
+    pub fn launch_date_for_pid(pid: i32) -> Option<String> {
+        use objc2_app_kit::NSRunningApplication;
+        if pid <= 1 {
+            return None;
+        }
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
+        app.launchDate().map(|date| format!("{date:?}"))
+    }
+
+    /// Thread-safe process identity triple for PID-reuse binding: bundle ID
+    /// plus launch date from one `NSRunningApplication` lookup plus the
+    /// executable path. `NSRunningApplication` model-object reads involve no
+    /// view, window, runloop, or notification state, so per-app AX owners
+    /// may call this (the one justified AppKit exception); every other
+    /// AppKit/UI read stays on the main thread. No titles, no content, no
+    /// owner names — IDs and currency only. Fields are independently
+    /// optional (`None` = unreadable there, never a claim); callers refuse
+    /// whatever their contract requires (the scoped backend requires all
+    /// three — a missing launch date refuses, never falls back).
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct NsAppIdentity {
+        pub bundle: Option<String>,
+        pub launch_date: Option<String>,
+        pub exe: Option<String>,
+    }
+
+    pub fn ns_app_identity_for_pid(pid: i32) -> NsAppIdentity {
+        use objc2_app_kit::NSRunningApplication;
+        if pid <= 1 {
+            return NsAppIdentity {
+                bundle: None,
+                launch_date: None,
+                exe: None,
+            };
+        }
+        let (bundle, launch_date) =
+            match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                Some(app) => (
+                    app.bundleIdentifier().map(|b| b.to_string()),
+                    app.launchDate().map(|date| format!("{date:?}")),
+                ),
+                None => (None, None),
+            };
+        NsAppIdentity {
+            bundle,
+            launch_date,
+            exe: process_executable_path(pid),
+        }
+    }
+
     /// Frontmost application identity (PID plus bundle ID) from the maintained
     /// `objc2-app-kit` binding. No AX involved (works without consent) and no
     /// titles/content: PIDs and bundle IDs only. `None` when unreadable.
     /// Used for focus preimage baselines and frontmost-restore verification.
+    ///
+    /// Threading (reviewed, not asserted): this is a read-only model-object
+    /// query — shared workspace plus `NSRunningApplication` PID/bundle
+    /// strings, no view, window, runloop, or notification involvement — and
+    /// the maintained binding marks it accordingly: `NSWorkspace::
+    /// sharedWorkspace` and `frontmostApplication(&self)` take NO
+    /// `MainThreadMarker`, while genuinely main-confined entry points in the
+    /// same binding version do (`NSApplication::sharedApplication(mtm)` in
+    /// `objc2-app-kit 0.3.2`, which the tile controller and the owned helper
+    /// both call with a live marker). Local-source precedent matches:
+    /// rift `src/actor/notification_center.rs` and glide
+    /// `src/actor/notification_center.rs` both call `NSWorkspace::
+    /// sharedWorkspace().frontmostApplication()` from actor (non-main)
+    /// contexts — glide in the same constructor that gates its
+    /// `NSApplication::sharedApplication(MainThreadMarker::new().unwrap())`
+    /// on the main thread, i.e. the same maintained-binding authors mark
+    /// main confinement explicitly where it applies. The scoped tile route
+    /// still prefers main-thread evidence where it already exists (the
+    /// controller publishes frontmost via `update_focus_evidence` and the
+    /// effect hook carries it to `NativeGates::session_safe`); the tap
+    /// owner (`live_gate`) and the standalone focus dispatch keep this
+    /// direct read under the justification above. No blind main-only claim
+    /// is made either way: if the binding ever gains a marker here, every
+    /// off-main caller fails to compile and must reroute.
     pub fn frontmost_app() -> Option<(i32, String)> {
         use objc2_app_kit::NSWorkspace;
         let workspace = NSWorkspace::sharedWorkspace();
@@ -2561,6 +3733,438 @@ mod macos {
         if status == 0 { Ok(()) } else { Err(status) }
     }
 
+    // -- Read-only SLPS front-process route (yabai
+    // `window_manager_focused_application` shape, read half only) --
+    //
+    // Source pins (local checkouts, no web fetch):
+    //   yabai `src/misc/extern.h:76`
+    //   (`extern OSStatus _SLPSGetFrontProcess(ProcessSerialNumber *psn)`)
+    //   plus its use in `src/window_manager.c:1343-1347`
+    //   (`_SLPSGetFrontProcess(&psn)` then `GetProcessPID(&psn, &pid)`) and
+    //   `src/process_manager.c:248` (same pair for the front PID).
+    //   `GetProcessPID` itself is Carbon `HIServices/Processes.h`
+    //   (`OSStatus`, PSN in-pointer first, `pid_t` out-pointer second,
+    //   deprecated since 10.9) — the same Carbon precedent as the existing
+    //   `GetProcessForPID` choice above, not yabai's (yabai never calls PID
+    //   mapping itself). Both symbols resolve dynamically via the same
+    //   candidate libraries; a single missing symbol fails this table closed
+    //   while the dispatch table above is unaffected (separate
+    //   `OnceLock`, separate availability). Both calls are synchronous
+    //   read-only getters with no wait parameter — the same bounded class as
+    //   [`frontmost_app`] and [`session_state`]. No focus is moved, no event
+    //   is posted, no attribute is written on any path here.
+
+    struct SlpsFrontTable {
+        get_front: unsafe extern "C" fn(*mut SlpsPsn) -> i32,
+        pid_for_psn: unsafe extern "C" fn(*const SlpsPsn, *mut libc::pid_t) -> i32,
+    }
+
+    static SLPS_FRONT_TABLE: OnceLock<Option<SlpsFrontTable>> = OnceLock::new();
+
+    fn slps_front_table() -> Option<&'static SlpsFrontTable> {
+        SLPS_FRONT_TABLE
+            .get_or_init(|| {
+                // SAFETY: every symbol null-checked before transmuting to its
+                // pinned signature; a single missing symbol fails this table
+                // closed (dispatch availability is untouched).
+                unsafe {
+                    let get_front = slps_resolve("_SLPSGetFrontProcess")?;
+                    let pid_for_psn = slps_resolve("GetProcessPID")?;
+                    Some(SlpsFrontTable {
+                        get_front: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(*mut SlpsPsn) -> i32,
+                        >(get_front),
+                        pid_for_psn: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(*const SlpsPsn, *mut libc::pid_t) -> i32,
+                        >(pid_for_psn),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// Whether the read-only front-process route resolved (both symbols).
+    /// Independent of [`slps_available`] (dispatch may resolve without this
+    /// and vice versa).
+    pub fn slps_front_available() -> bool {
+        slps_front_table().is_some()
+    }
+
+    /// Front-process PID via `_SLPSGetFrontProcess` + `GetProcessPID`.
+    /// Reserved PIDs refused before return; nonzero OS statuses are `Err`
+    /// with the code. Read-only; callable from any thread (same class as
+    /// [`frontmost_app`]).
+    pub fn slps_front_pid() -> Result<i32, String> {
+        let table = slps_front_table()
+            .ok_or_else(|| "SLPS front-process symbols unavailable".to_owned())?;
+        let mut psn = SlpsPsn { high: 0, low: 0 };
+        // SAFETY: resolved non-null symbol; valid out-pointer; status gates
+        // the read.
+        let status = unsafe { (table.get_front)(std::ptr::addr_of_mut!(psn)) };
+        if status != 0 {
+            return Err(format!("_SLPSGetFrontProcess: OS status {status}"));
+        }
+        let mut pid: libc::pid_t = 0;
+        // SAFETY: resolved non-null symbol; PSN is a live local, PID pointer
+        // is a valid out-pointer; status gates the read.
+        let status = unsafe { (table.pid_for_psn)(&psn, std::ptr::addr_of_mut!(pid)) };
+        if status != 0 {
+            return Err(format!("GetProcessPID: OS status {status}"));
+        }
+        if pid <= 1 {
+            return Err(format!("front-process pid {pid} is reserved; refusing"));
+        }
+        Ok(pid as i32)
+    }
+
+    /// Experimental corroborated focus preimage with provenance.
+    /// Diagnostic-only: production preimage and agreement reads stay strict
+    /// systemwide and never call this. The system-wide
+    /// [`ax_focused_preimage_detailed`] route is tried first: when it
+    /// succeeds its `(pid, wid)` returns with route
+    /// [`super::PreimageRoute::Systemwide`]. The experimental fallback
+    /// engages ONLY for the exactly observed system-wide service failure
+    /// (see [`super::preimage_fallback_trigger`]): the independent
+    /// read-only front-process PID above, required to equal the NSWorkspace
+    /// frontmost observed before AND after (stable, never fabricated from
+    /// workspace alone), plus the direct per-app legs on that PID in the
+    /// canonical order — `AXFrontmost` BEFORE the window legs AND AFTER,
+    /// both required `Some(true)` and stable, `AXFocusedWindow` joined to
+    /// a nonzero WID (per-element timeout first), AX identity PID equal —
+    /// plus a fresh title-free CG owner join. Any before/after
+    /// disagreement is instability data that refuses (never a proven host
+    /// claim), as is any PID disagreement, workspace instability mid-read,
+    /// a missing/zero window, or a lost CG join, with the leg named (never
+    /// a guess). No fallback when systemwide SUCCEEDS but disagrees; no
+    /// dispatch, activation, taps, synthetic input, Space moves, or
+    /// attribute writes on any path — the finite messaging timeouts (2s,
+    /// as in the preimage) are the only AX setting touched. Every
+    /// `AxElement` is constructed, used, and dropped on the calling thread
+    /// (same thread-affinity contract as the preimage). Unproven: this
+    /// route lacks acceptance and is never production evidence.
+    pub fn ax_focused_preimage_evidence() -> Result<super::PreimageEvidence, String> {
+        match ax_focused_preimage_detailed() {
+            Ok((pid, wid)) => Ok(super::PreimageEvidence {
+                pid,
+                wid,
+                route: super::PreimageRoute::Systemwide,
+                detail: "systemwide AXFocusedApplication success".to_owned(),
+            }),
+            Err(system_err) if !super::preimage_fallback_trigger(&system_err) => Err(system_err),
+            Err(system_err) => {
+                let (ws_before, ws_bundle) = frontmost_app().ok_or_else(|| {
+                    format!("workspace frontmost unreadable ({system_err}); refusing")
+                })?;
+                if ws_before <= 1 {
+                    return Err(format!(
+                        "workspace frontmost pid {ws_before} is reserved; refusing"
+                    ));
+                }
+                let psn_pid = slps_front_pid().map_err(|e| format!("{e} ({system_err})"))?;
+                if psn_pid != ws_before {
+                    return Err(format!(
+                        "SLPS front pid {psn_pid} != workspace frontmost pid {ws_before} ({system_err}); refusing without agreement"
+                    ));
+                }
+                let app = AxElement::application(psn_pid).ok_or_else(|| {
+                    format!("no AX element for pid {psn_pid} ({system_err}); refusing")
+                })?;
+                let app_timeout = ax_set_messaging_timeout(&app, 2.0);
+                if app_timeout != 0 {
+                    return Err(format!(
+                        "frontmost application AX messaging timeout unset: {} ({system_err})",
+                        ax_error_name(app_timeout)
+                    ));
+                }
+                let mut ax_pid: libc::pid_t = 0;
+                // SAFETY: live element; valid out-pointer; status gates read.
+                let pid_err = unsafe {
+                    app.inner
+                        .pid(NonNull::new(std::ptr::addr_of_mut!(ax_pid)).expect("non-null"))
+                };
+                if pid_err.0 != 0 {
+                    return Err(format!(
+                        "frontmost AX identity pid unreadable: {} ({system_err})",
+                        ax_error_name(pid_err.0)
+                    ));
+                }
+                if ax_pid as i32 != psn_pid {
+                    return Err(format!(
+                        "AX identity pid {} != SLPS front pid {psn_pid} ({system_err}); refusing without agreement",
+                        ax_pid
+                    ));
+                }
+                // Canonical acquisition: frontmost BEFORE the window legs,
+                // shared reader with the diagnose direct leg.
+                let (front_before_status, front_before) = ax_frontmost_read(&app);
+                if front_before != Some(true) {
+                    return Err(format!(
+                        "AXFrontmost before-window-legs {front_before_status} ({front_before:?}) for pid {psn_pid} ({system_err}); refusing"
+                    ));
+                }
+                let window_value = app.copy_attribute("AXFocusedWindow").map_err(|code| {
+                    format!(
+                        "AXFocusedWindow unreadable: {} ({system_err})",
+                        ax_error_name(code)
+                    )
+                })?;
+                let window_inner: CFRetained<AXUIElement> = window_value
+                    .downcast()
+                    .map_err(|_| format!("AXFocusedWindow is not an AXUIElement ({system_err})"))?;
+                let window = AxElement {
+                    inner: window_inner,
+                    _not_send: std::marker::PhantomData,
+                };
+                // Per-element messaging timeout precedes the join: a
+                // refused timeout stops this candidate with its cause,
+                // never an unbounded join.
+                let wid = ax_window_join_with_timeout(&window)
+                    .map_err(|e| format!("AXFocusedWindow join: {e} ({system_err})"))?;
+                if wid == 0 {
+                    return Err(format!("AX focused wid is 0 ({system_err}); refusing"));
+                }
+                // Canonical acquisition: frontmost AFTER the window legs;
+                // both sides must read true/stable.
+                let (front_after_status, front_after) = ax_frontmost_read(&app);
+                if front_after != Some(true) {
+                    return Err(format!(
+                        "AXFrontmost after-window-legs {front_after_status} ({front_after:?}) for pid {psn_pid} ({system_err}); refusing without stability"
+                    ));
+                }
+                let cg_owned = cg_window_list_basic()
+                    .map(|list| list.iter().any(|w| w.wid == wid && w.pid == psn_pid as u32))
+                    .map_err(|e| format!("CG owner join unreadable: {e} ({system_err})"))?;
+                if !cg_owned {
+                    return Err(format!(
+                        "CG join disagrees: wid {wid} not owned by pid {psn_pid} ({system_err}); refusing"
+                    ));
+                }
+                let (ws_after, _) = frontmost_app()
+                    .ok_or_else(|| format!("workspace frontmost unreadable after corroboration ({system_err}); refusing"))?;
+                if ws_after != ws_before {
+                    return Err(format!(
+                        "workspace frontmost moved during corroboration ({ws_before} -> {ws_after}); refusing"
+                    ));
+                }
+                if !super::preimage_fallback_agrees(
+                    psn_pid,
+                    Some(ws_before),
+                    Some(ws_after),
+                    front_before,
+                    front_after,
+                    Some(ax_pid as i32),
+                    Some(wid),
+                    cg_owned,
+                ) {
+                    return Err(format!(
+                        "fallback agreement recheck failed for pid {psn_pid} ({system_err}); refusing"
+                    ));
+                }
+                Ok(super::PreimageEvidence {
+                    pid: psn_pid,
+                    wid: Some(wid),
+                    route: super::PreimageRoute::SlpsFrontCorroborated,
+                    detail: format!(
+                        "systemwide ({system_err}) superseded by SLPS front pid {psn_pid} == workspace '{ws_bundle}' stable, AXFrontmost before+after true/stable, AXFocusedWindow wid {wid}, CG owned"
+                    ),
+                })
+            }
+        }
+    }
+
+    // -- Selected focus oracle (production): SLPS + NSWorkspace foreground,
+    // direct per-app focused window --
+    //
+    // FOREGROUND = the read-only SLPS front-process PID (`_SLPSGetFrontProcess`
+    // + `GetProcessPID`) agreeing with the NSWorkspace `frontmostApplication`
+    // PID, observed before AND after the window legs (stability revalidation).
+    // FOCUSED WINDOW = the direct per-app AX read on exactly that PID:
+    // `AXFocusedWindow` joined via `_AXUIElementGetWindow`, falling back to
+    // `AXMainWindow` only when the focused leg is unavailable/missing — then a
+    // fresh title-free CG owner join on the selected `(pid, wid)`. The
+    // system-wide `AXFocusedApplication` read is diagnostic-only (kept raw in
+    // the diagnose legs) and `AXFrontmost` never gates: neither is queried
+    // here. Every `AxElement` is constructed, used, and dropped on the calling
+    // thread; every join carries its own finite messaging timeout first (a
+    // refused timeout stops that leg with its cause, never an unbounded
+    // join). No dispatch, activation, taps, synthetic input, Space moves, or
+    // attribute writes on any path — the finite messaging timeouts (2s, as in
+    // the preimage) are the only AX setting touched.
+
+    /// Direct per-application focused-window read for exactly `pid`: the
+    /// `AXFocusedWindow` join plus, only when that leg is
+    /// unavailable/missing, the `AXMainWindow` fallback join, with the AX
+    /// identity PID and the pure [`super::select_direct_window`] selection.
+    /// No system-wide AX, no `AXFrontmost`: production selection over plain
+    /// data via [`super::selected_focus_agrees`]. IDs and status names only.
+    pub fn ax_direct_focused_read(pid: i32) -> super::DirectFocusRead {
+        let blank = super::DirectFocusRead {
+            pid,
+            ax_pid: None,
+            focused_status: "unreached".to_owned(),
+            focused_wid: None,
+            main_status: "unreached".to_owned(),
+            main_wid: None,
+            selected_wid: None,
+            selected_source: "none".to_owned(),
+        };
+        if pid <= 1 {
+            return super::DirectFocusRead {
+                focused_status: "refused-reserved-pid".to_owned(),
+                main_status: "refused-reserved-pid".to_owned(),
+                ..blank
+            };
+        }
+        let Some(app) = AxElement::application(pid) else {
+            return super::DirectFocusRead {
+                focused_status: "unavailable".to_owned(),
+                main_status: "unavailable".to_owned(),
+                ..blank
+            };
+        };
+        if ax_set_messaging_timeout(&app, 2.0) != 0 {
+            return super::DirectFocusRead {
+                focused_status: "unreached (timeout unset)".to_owned(),
+                main_status: "unreached (timeout unset)".to_owned(),
+                ..blank
+            };
+        }
+        let mut ax_pid_value: libc::pid_t = 0;
+        // SAFETY: live element; valid out-pointer; status gates the read.
+        let pid_err = unsafe {
+            app.inner
+                .pid(NonNull::new(std::ptr::addr_of_mut!(ax_pid_value)).expect("non-null"))
+        };
+        let ax_pid = if pid_err.0 == 0 {
+            Some(ax_pid_value as i32)
+        } else {
+            None
+        };
+        // Focused leg first; main leg only fills a missing focused leg.
+        // Each join carries its own per-element window timeout inside
+        // [`ax_single_window_join`].
+        let (focused_status, focused_wid) = ax_single_window_join(&app, "AXFocusedWindow");
+        let (main_status, main_wid) = ax_single_window_join(&app, "AXMainWindow");
+        let (selected_wid, selected_source) = super::select_direct_window(focused_wid, main_wid);
+        super::DirectFocusRead {
+            pid,
+            ax_pid,
+            focused_status,
+            focused_wid,
+            main_status,
+            main_wid,
+            selected_wid,
+            selected_source: selected_source.to_owned(),
+        }
+    }
+
+    /// Selected-oracle focus evidence with provenance: the SLPS front PID
+    /// agreeing with the NSWorkspace frontmost before AND after the direct
+    /// window legs, the direct per-app selection on that PID (focused, else
+    /// main fallback), the AX identity agreement, and the fresh CG owner
+    /// join. Any foreground disagreement or instability, identity mismatch,
+    /// missing/zero window, or lost CG join refuses with the leg named
+    /// (never a guess). Production evidence; the raw system-wide read stays
+    /// available separately for diagnosis only.
+    pub fn ax_selected_focus_evidence() -> Result<super::PreimageEvidence, String> {
+        let (ws_before, ws_bundle) =
+            frontmost_app().ok_or_else(|| "workspace frontmost unreadable".to_owned())?;
+        if ws_before <= 1 {
+            return Err(format!(
+                "workspace frontmost pid {ws_before} is reserved; refusing"
+            ));
+        }
+        let slps_before = slps_front_pid()?;
+        if slps_before != ws_before {
+            return Err(format!(
+                "SLPS front pid {slps_before} != workspace frontmost pid {ws_before}; refusing without agreement"
+            ));
+        }
+        let read = ax_direct_focused_read(ws_before);
+        match read.ax_pid {
+            Some(ax_pid) if ax_pid == ws_before => {}
+            other => {
+                return Err(format!(
+                    "AX identity pid {other:?} != frontmost pid {ws_before} (focused {} main {}); refusing without agreement",
+                    read.focused_status, read.main_status
+                ));
+            }
+        }
+        let Some(wid) = read.selected_wid else {
+            return Err(format!(
+                "direct focused window none for pid {ws_before} (focused {} main {}); refusing without a restorable wid",
+                read.focused_status, read.main_status
+            ));
+        };
+        if wid == 0 {
+            return Err(format!(
+                "direct focused wid is 0 for pid {ws_before}; refusing"
+            ));
+        }
+        let cg_owned = cg_window_list_basic()
+            .map(|list| {
+                list.iter()
+                    .any(|w| w.wid == wid && w.pid == ws_before as u32)
+            })
+            .map_err(|e| format!("CG owner join unreadable: {e}"))?;
+        if !cg_owned {
+            return Err(format!(
+                "CG join disagrees: wid {wid} not owned by pid {ws_before}; refusing"
+            ));
+        }
+        // Foreground revalidation AFTER the window legs: a move mid-read
+        // refuses instead of joining a stale window to a new frontmost.
+        let (ws_after, _) = frontmost_app().ok_or_else(|| {
+            "workspace frontmost unreadable after window legs; refusing".to_owned()
+        })?;
+        if ws_after != ws_before {
+            return Err(format!(
+                "workspace frontmost moved during direct read ({ws_before} -> {ws_after}); refusing"
+            ));
+        }
+        let slps_after = slps_front_pid()?;
+        if slps_after != ws_before {
+            return Err(format!(
+                "SLPS front pid moved during direct read ({slps_before} -> {slps_after}); refusing"
+            ));
+        }
+        if !super::selected_focus_agrees(
+            ws_before as u32,
+            wid,
+            Some(slps_after),
+            Some(ws_after),
+            Some(wid),
+            cg_owned,
+        ) {
+            return Err(format!(
+                "selected agreement recheck failed for pid {ws_before} wid {wid}; refusing"
+            ));
+        }
+        let (route, leg) = match read.selected_source.as_str() {
+            "main" => (
+                super::PreimageRoute::SlpsFrontDirectMain,
+                format!(
+                    "AXMainWindow wid {wid} (AXFocusedWindow {})",
+                    read.focused_status
+                ),
+            ),
+            _ => (
+                super::PreimageRoute::SlpsFrontDirectFocused,
+                format!("AXFocusedWindow wid {wid}"),
+            ),
+        };
+        Ok(super::PreimageEvidence {
+            pid: ws_before,
+            wid: Some(wid),
+            route,
+            detail: format!(
+                "SLPS front pid {slps_before} == workspace '{ws_bundle}' stable before+after, {leg}, CG owned"
+            ),
+        })
+    }
+
     // -- Owned probe window (AppKit boundary; main thread only) --
 
     /// Pump the current thread's runloop once, bounded, via the maintained
@@ -2579,6 +4183,19 @@ mod macos {
     /// legs fail. Bounded: at most 64 dequeues per call (`None` ends the
     /// drain early), zero sleep. Maintained `objc2-app-kit` wrappers only.
     pub fn drain_app_events(app: &objc2_app_kit::NSApplication) {
+        drain_app_events_inner(app, false);
+    }
+
+    /// Same drain as [`drain_app_events`] plus downstream key-delivery
+    /// counting into the process-local [`KeyCounts`] (helper fixture only:
+    /// the owned probe window's own loop uses this so posted test chords
+    /// are observable as AppKit delivery proof; every other caller keeps
+    /// the non-counting drain and its counters stay zero and unread).
+    pub fn drain_app_events_counted(app: &objc2_app_kit::NSApplication) {
+        drain_app_events_inner(app, true);
+    }
+
+    fn drain_app_events_inner(app: &objc2_app_kit::NSApplication, count: bool) {
         use objc2_app_kit::NSEventMask;
         use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
         // SAFETY: extern-static default-mode read (same pattern as
@@ -2593,10 +4210,85 @@ mod macos {
                 true,
             );
             match event {
-                Some(event) => app.sendEvent(&event),
+                Some(event) => {
+                    if count {
+                        count_key_event(&event);
+                    }
+                    app.sendEvent(&event)
+                }
                 None => break,
             }
         }
+    }
+
+    /// Downstream delivery counters for the owned helper's own key events
+    /// (`input-session` fixture only): KeyDown/KeyUp carrying the probe
+    /// keycode (`0x04`, the approved `h` chord position) bucketed by the
+    /// device-independent modifier nibble (`(flags & 0x1E0000) >> 17`, 16
+    /// buckets with bit0=Shift bit1=Ctrl bit2=Alt bit3=Cmd — the session
+    /// reads exact/extra/plain classes off with its own want/mask), plus totals for all other keys (counts only, never
+    /// codes). Process-local and cumulative; content-free by construction
+    /// (no text, no titles, no non-probe codes).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct KeyCounts {
+        pub h_down: [u64; 16],
+        pub h_up: [u64; 16],
+        pub other_down: u64,
+        pub other_up: u64,
+    }
+
+    impl KeyCounts {
+        const fn zero() -> Self {
+            Self {
+                h_down: [0; 16],
+                h_up: [0; 16],
+                other_down: 0,
+                other_up: 0,
+            }
+        }
+    }
+
+    static KEY_COUNTS: std::sync::Mutex<KeyCounts> = std::sync::Mutex::new(KeyCounts::zero());
+
+    fn count_key_event(event: &objc2_app_kit::NSEvent) {
+        use objc2_app_kit::NSEventType;
+        const PROBE_KEY: u16 = 0x04;
+        const MOD_MASK: u64 = 0x001E_0000;
+        let raw = event.r#type().0 as u64;
+        let down = raw == NSEventType::KeyDown.0 as u64;
+        let up = raw == NSEventType::KeyUp.0 as u64;
+        if !down && !up {
+            return;
+        }
+        let key_code = event.keyCode();
+        let flags = event.modifierFlags().bits() as u64;
+        let Ok(mut counts) = KEY_COUNTS.lock() else {
+            return;
+        };
+        if key_code == PROBE_KEY {
+            let bucket = ((flags & MOD_MASK) >> 17) as usize;
+            if down {
+                counts.h_down[bucket] += 1;
+            } else {
+                counts.h_up[bucket] += 1;
+            }
+        } else if down {
+            counts.other_down += 1;
+        } else {
+            counts.other_up += 1;
+        }
+    }
+
+    /// Cumulative downstream key-delivery snapshot for this process (the
+    /// owned helper's own AppKit arrivals; the controller never enables
+    /// counting so its snapshot stays zero). The holder diffs successive
+    /// snapshots around each tagged post.
+    #[must_use]
+    pub fn key_counts_snapshot() -> KeyCounts {
+        KEY_COUNTS
+            .lock()
+            .map(|counts| *counts)
+            .unwrap_or(KeyCounts::zero())
     }
 
     /// Owned probe window runner. Creates the window on the calling (main)
@@ -2617,9 +4309,13 @@ mod macos {
     /// fixture runs as `Regular`, intending the window server to report the
     /// helper as frontmost after an explicit SLPS focus dispatch
     /// (`focus-session` only — no activation API, self-activation, taps, or
-    /// keys anywhere). Experimental, live unproven: whether full agreement
-    /// actually holds is measured by the session, never assumed here.
-    // Eight flat fixture params (one opt-in more than the lint threshold);
+    /// keys anywhere). Bundled helpers (running inside the signed helper
+    /// `.app`) always take `Regular` regardless of the flag (decided by the
+    /// helper binary from its own bundle ID): a bundled helper is a real
+    /// user-visible app, not a background holder. Experimental, live
+    /// unproven: whether full agreement actually holds is measured by the
+    /// session, never assumed here.
+    // Ten flat fixture params (two opt-ins more than the lint threshold);
     // bundling them into a struct would churn the stub + helper binary for
     // no behavioral gain, so the lint is allowed here with this note.
     #[allow(clippy::too_many_arguments)]
@@ -2631,6 +4327,8 @@ mod macos {
         defer_window_ms: u64,
         close_window_ms: u64,
         regular_policy: bool,
+        transient_panel_ms: u64,
+        transient_sheet_ms: u64,
         ready: &dyn Fn(),
     ) -> Result<(), String> {
         use objc2::MainThreadMarker;
@@ -2705,6 +4403,82 @@ mod macos {
         if hung_ms > 0 {
             std::thread::sleep(Duration::from_millis(hung_ms.min(20_000)));
         }
+        // Owned transient fixtures (opt-in, disposable, helper-only): a
+        // native `NSPanel` utility window (dialog subrole natively, no role
+        // spoof) and/or a true attached sheet on the main owned window
+        // (`beginSheet` with no completion work). Both open immediately after
+        // `ready` and close only themselves at their deadline while the main
+        // owned window stays alive to its seconds deadline. Markers carry
+        // counts/visibility only, never titles.
+        use objc2_app_kit::NSPanel;
+        let panel: Option<objc2::rc::Retained<NSPanel>> = if transient_panel_ms > 0 {
+            let panel_frame = NSRect::new(NSPoint::new(300.0, 300.0), NSSize::new(320.0, 180.0));
+            let panel_style = NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::UtilityWindow;
+            let created = NSPanel::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc::<NSPanel>(),
+                panel_frame,
+                panel_style,
+                NSBackingStoreType(2),
+                false,
+            );
+            created.setTitle(&NSString::from_str(&format!("{title} panel")));
+            created.setFloatingPanel(true);
+            created.orderFront(None);
+            objc2::rc::autoreleasepool(|_| {
+                pump_runloop_once(200);
+            });
+            let own_windows = cg_window_list_all()
+                .map(|list| {
+                    let me = std::process::id();
+                    list.iter().filter(|w| w.pid == me).count()
+                })
+                .unwrap_or(usize::MAX);
+            println!(
+                "{}",
+                serde_json::json!({"transient": "panel", "opened": true, "windows": own_windows, "visible": created.isVisible()})
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            Some(created)
+        } else {
+            None
+        };
+        let sheet: Option<objc2::rc::Retained<NSWindow>> = if transient_sheet_ms > 0 {
+            let sheet_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(300.0, 140.0));
+            let sheet_style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+            let created: objc2::rc::Retained<NSWindow> = unsafe {
+                NSWindow::initWithContentRect_styleMask_backing_defer(
+                    mtm.alloc::<NSWindow>(),
+                    sheet_frame,
+                    sheet_style,
+                    NSBackingStoreType(2),
+                    false,
+                )
+            };
+            created.setTitle(&NSString::from_str(&format!("{title} sheet")));
+            // SAFETY: live parent + live sheet in maintained wrappers; `None`
+            // completion performs no work. Presents a true attached sheet
+            // (native `AXSheet` role on the sheet element) without activation.
+            window.beginSheet_completionHandler(&created, None);
+            objc2::rc::autoreleasepool(|_| {
+                pump_runloop_once(300);
+            });
+            let own_windows = cg_window_list_all()
+                .map(|list| {
+                    let me = std::process::id();
+                    list.iter().filter(|w| w.pid == me).count()
+                })
+                .unwrap_or(usize::MAX);
+            println!(
+                "{}",
+                serde_json::json!({"transient": "sheet", "opened": true, "windows": own_windows, "sheets": window.sheets().len()})
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            Some(created)
+        } else {
+            None
+        };
         // Owned teardown stimulus: close only this window at the deadline,
         // then keep running windowless until the seconds deadline or the
         // holder stop. Programmatic close of the owned window (no user
@@ -2717,7 +4491,25 @@ mod macos {
             None
         };
         let mut closed = false;
+        let panel_close_at = if transient_panel_ms > 0 {
+            Some(Instant::now() + Duration::from_millis(transient_panel_ms.min(20_000)))
+        } else {
+            None
+        };
+        let sheet_close_at = if transient_sheet_ms > 0 {
+            Some(Instant::now() + Duration::from_millis(transient_sheet_ms.min(20_000)))
+        } else {
+            None
+        };
+        let mut panel_closed = false;
+        let mut sheet_closed = false;
         let deadline = Instant::now() + Duration::from_secs(seconds.clamp(1, 600));
+        // Downstream delivery snapshots for the `input-session` fixture:
+        // cumulative AppKit key arrivals printed on the stdout event pipe
+        // every 500 ms (the holder diffs them around each tagged post).
+        // Counting rides the counted drain below, so delivery proof shares
+        // the exact dispatch path (never a side channel).
+        let mut last_snapshot = Instant::now();
         while Instant::now() < deadline {
             if !closed
                 && let Some(close_deadline) = close_at
@@ -2738,7 +4530,56 @@ mod macos {
                     .unwrap_or(usize::MAX);
                 println!(
                     "{}",
-                    serde_json::json!({"closed": true, "windows": own_windows, "visible": window.isVisible()})
+                    serde_json::json!({"closed": true, "windows": own_windows, "visible": window.isVisible(), "key_counts": key_counts_snapshot()})
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if !panel_closed
+                && let (Some(panel_window), Some(panel_deadline)) = (panel.as_ref(), panel_close_at)
+                && Instant::now() >= panel_deadline
+            {
+                // Timer closes only the owned transient panel; the main
+                // owned window stays alive.
+                panel_window.close();
+                panel_closed = true;
+                let own_windows = cg_window_list_all()
+                    .map(|list| {
+                        let me = std::process::id();
+                        list.iter().filter(|w| w.pid == me).count()
+                    })
+                    .unwrap_or(usize::MAX);
+                println!(
+                    "{}",
+                    serde_json::json!({"transient": "panel", "closed": true, "windows": own_windows, "visible": panel_window.isVisible()})
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if !sheet_closed
+                && let (Some(sheet_window), Some(sheet_deadline)) = (sheet.as_ref(), sheet_close_at)
+                && Instant::now() >= sheet_deadline
+            {
+                // Timer dismisses only the owned attached sheet; the parent
+                // owned window stays alive.
+                window.endSheet(sheet_window);
+                sheet_window.orderOut(None);
+                sheet_closed = true;
+                let own_windows = cg_window_list_all()
+                    .map(|list| {
+                        let me = std::process::id();
+                        list.iter().filter(|w| w.pid == me).count()
+                    })
+                    .unwrap_or(usize::MAX);
+                println!(
+                    "{}",
+                    serde_json::json!({"transient": "sheet", "closed": true, "windows": own_windows, "sheets": window.sheets().len()})
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if last_snapshot.elapsed() >= Duration::from_millis(500) {
+                last_snapshot = Instant::now();
+                println!(
+                    "{}",
+                    serde_json::json!({"key_counts": key_counts_snapshot()})
                 );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
@@ -2746,7 +4587,7 @@ mod macos {
             // the bare runloop: focus machinery arrives as NSEvents, and a
             // pump that never dequeues them leaves activation parked.
             objc2::rc::autoreleasepool(|_| {
-                drain_app_events(&app);
+                drain_app_events_counted(&app);
                 pump_runloop_once(50);
             });
         }
@@ -2918,21 +4759,1131 @@ mod macos {
             elapsed_secs: start.elapsed().as_secs(),
         })
     }
+
+    // -- Multi-chord continuous tap source (scoped-tile entry point) --
+    //
+    // The bounded probe tap above (`run_event_tap_bounded`) runs one chord
+    // for a fixed duration on the calling thread. The tile input owner needs
+    // a continuous owned source instead: one tap over the whole catalogue
+    // with a bounded pump per slice, created/driven/destroyed on the owner
+    // thread. Matching reuses the exact [`decide_tap_event`] contract
+    // (exact chord only, extras fail; repeats forward as repeated KeyDown
+    // matches; modifier release clears pending; Caps/Fn bits sit outside
+    // the mask so they neither match nor break). Timeout disables re-enable
+    // inside `pump` (recovery, counted); a user disable surfaces as
+    // [`TapPump::UserDisabled`] so the caller refuses truthfully instead of
+    // claiming success. The callback stays minimal (exact compare,
+    // non-blocking forward of exact matches only, atomics) and never
+    // touches the core, AX, logging, or blocking calls.
+
+    /// One exact chord in a continuous tap source: tap tuning plus the key
+    /// code forwarded on exact match. Plain data; the callback owns matching.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TapChordSpec {
+        pub want_flags: u64,
+        pub flags_mask: u64,
+        pub want_code: i64,
+        pub key_code: u32,
+    }
+
+    /// One exact-chord tap hit: the matched key code plus the edge. Only
+    /// exact matches cross the boundary — never raw deliveries, never titles
+    /// or content.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TapHit {
+        pub key_code: u32,
+        pub down: bool,
+        /// Raw `CGEventFlags` bits at the event, so the input owner can
+        /// re-apply the exact-chord match before forwarding.
+        pub flags: u64,
+    }
+
+    /// Health of one bounded tap pump slice.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TapPump {
+        /// Slice pumped; interception still held (timeout disables re-enable
+        /// inside the pump, counted in the report).
+        Held,
+        /// The user disabled the tap: interception is released and the
+        /// caller must refuse truthfully, never claim success.
+        UserDisabled,
+    }
+
+    /// Counters for one continuous tap source (terminal-JSON evidence).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct TapSourceReport {
+        pub matched: u32,
+        pub suppressed: u32,
+        pub deliveries: u32,
+        pub reenables_after_timeout: u32,
+    }
+
+    struct TapMultiShared {
+        tx: SyncSender<TapHit>,
+        chords: Vec<(crate::input_match::TapTuning, u32)>,
+        suppress_armed: bool,
+        matched: AtomicU32,
+        suppressed: AtomicU32,
+        deliveries: AtomicU32,
+        /// Disable cause observed by the callback: 0 none, 1 timeout
+        /// (recovered inside `pump`), 2 user (refused by the caller).
+        disable_kind: AtomicU32,
+        /// Per-chord KeyDown pending bit (chord count capped at 64).
+        pending: AtomicU64,
+        reenables: AtomicU32,
+        /// Gate released (lock screen, Secure Input, unknown session): the
+        /// callback passes everything untouched while set, so interception
+        /// is released without destroying the tap; clearing resumes
+        /// narrowly. The tap `enable()` wrapper has no disable leg, so the
+        /// gate lives here instead of in the port state.
+        gated: AtomicBool,
+        /// Scoped input eligibility (lock-free cached, owner-published from
+        /// fresh scope/foreground/Space/showstate facts outside the
+        /// callback): while ineligible the callback Keeps/noForwards every
+        /// chord (no suppress, no forward, no count). `None` means the
+        /// legacy unrestricted path (fixture/tests); `Some` is the normal
+        /// scoped tile path (starts ineligible until attested).
+        scoped_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
+        /// Fixture-only one-shot callback stall (milliseconds, 0 = off):
+        /// the first exact-match KeyDown after creation sleeps this long
+        /// INSIDE the tap callback to provoke a REAL OS
+        /// `TapDisabledByTimeout` (never a manual callback). Set only by
+        /// [`TapSource::create_stall_once`], which only the `input-session`
+        /// fault-injection leg uses; production tile sources always run 0.
+        stall_once_ms: AtomicU64,
+    }
+
+    // Direct tap-state via the maintained `objc2-core-graphics` binding
+    // (`CGEvent::tap_enable` / `CGEvent::tap_is_enabled` under the existing
+    // `CGEvent` feature): the `core-graphics` tap wrapper exposes enable-only,
+    // so the DIRECT disable/recovery fixture reads and writes state through
+    // the maintained binding below instead of a hand-written `extern "C"`.
+    // The live `core-graphics` tap Mach port and the `objc2` `CFMachPort`
+    // name the same window-server port object, so the call borrows the live
+    // port for the call only (never a foreign pointer across the boundary).
+    fn tap_port<'a>(
+        tap: &'a core_graphics::event::CGEventTap<'static>,
+    ) -> &'a objc2_core_foundation::CFMachPort {
+        use core_foundation::base::TCFType as _;
+        // SAFETY: the pointer is the live tap Mach port owned by `tap`
+        // (borrowed for the call); both wrappers name the same CF object.
+        unsafe {
+            &*(tap.mach_port().as_concrete_TypeRef() as *const objc2_core_foundation::CFMachPort)
+        }
+    }
+
+    /// Owned continuous tap over a chord table. Thread-bound by
+    /// construction (tap plus runloop source; intentionally `!Send`). `Drop`
+    /// removes the runloop source; the tap port invalidates with it.
+    pub struct TapSource {
+        tap: core_graphics::event::CGEventTap<'static>,
+        runloop_source: core_foundation::runloop::CFRunLoopSource,
+        shared: Arc<TapMultiShared>,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl TapSource {
+        /// Create the tap over `chords` (1..=64 exact chords). Fails closed
+        /// when creation is denied (no consent) — a denial is `Err`, never a
+        /// silent success. `suppress_armed` arms exact-chord KeyDown/KeyUp
+        /// pair suppression for the tile catalogue; unmatched events always
+        /// pass (`Keep`).
+        pub fn create(
+            chords: &[TapChordSpec],
+            suppress_armed: bool,
+            tx: &SyncSender<TapHit>,
+        ) -> Result<Self, TapSetupError> {
+            Self::create_inner(chords, suppress_armed, tx, 0, None)
+        }
+
+        /// Scoped tile tap over `chords` with lock-free cached eligibility:
+        /// while the cache reads ineligible the callback Keeps/noForwards
+        /// every chord BEFORE suppression (no suppress, no forward, no
+        /// count). The owner publishes fresh scope/foreground/Space/showstate
+        /// facts outside the callback; unknown/stale denies. Normal tile
+        /// path (starts ineligible until attested); the fixture uses an
+        /// explicit unrestricted test gate instead.
+        pub fn create_scoped(
+            chords: &[TapChordSpec],
+            suppress_armed: bool,
+            tx: &SyncSender<TapHit>,
+            eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
+        ) -> Result<Self, TapSetupError> {
+            Self::create_inner(chords, suppress_armed, tx, 0, Some(eligibility))
+        }
+
+        /// Fixture-only tap with a one-shot callback stall: identical to
+        /// [`TapSource::create`] except the first exact-match KeyDown sleeps
+        /// `stall_ms` (1..=2000) inside the callback to provoke a REAL OS
+        /// `TapDisabledByTimeout`. Only the `input-session`
+        /// `--stall-once-ms` leg uses this; production tile code must never
+        /// call it (the tile factory defaults the stall to 0 and exposes no
+        /// production path to set it).
+        pub fn create_stall_once(
+            chords: &[TapChordSpec],
+            suppress_armed: bool,
+            tx: &SyncSender<TapHit>,
+            stall_ms: u64,
+        ) -> Result<Self, TapSetupError> {
+            if stall_ms == 0 || stall_ms > 2000 {
+                return Err(TapSetupError::Runloop(format!(
+                    "stall_ms must be 1..=2000, got {stall_ms}"
+                )));
+            }
+            Self::create_inner(chords, suppress_armed, tx, stall_ms, None)
+        }
+
+        fn create_inner(
+            chords: &[TapChordSpec],
+            suppress_armed: bool,
+            tx: &SyncSender<TapHit>,
+            stall_once_ms: u64,
+            scoped_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
+        ) -> Result<Self, TapSetupError> {
+            use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
+            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+            use core_graphics::event::{
+                CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+                CGEventType, CallbackResult, EventField,
+            };
+
+            if chords.is_empty() {
+                return Err(TapSetupError::Runloop("empty chord table".to_owned()));
+            }
+            if chords.len() > 64 {
+                return Err(TapSetupError::Runloop(format!(
+                    "chord table too large ({})",
+                    chords.len()
+                )));
+            }
+            let table: Vec<(TapTuning, u32)> = chords
+                .iter()
+                .map(|spec| {
+                    (
+                        TapTuning {
+                            want_flags: spec.want_flags,
+                            flags_mask: spec.flags_mask,
+                            want_code: spec.want_code,
+                        },
+                        spec.key_code,
+                    )
+                })
+                .collect();
+            let shared = Arc::new(TapMultiShared {
+                tx: tx.clone(),
+                chords: table,
+                suppress_armed,
+                matched: AtomicU32::new(0),
+                suppressed: AtomicU32::new(0),
+                deliveries: AtomicU32::new(0),
+                disable_kind: AtomicU32::new(0),
+                pending: AtomicU64::new(0),
+                reenables: AtomicU32::new(0),
+                gated: AtomicBool::new(false),
+                scoped_eligibility,
+                stall_once_ms: AtomicU64::new(stall_once_ms),
+            });
+            let callback_shared = shared.clone();
+            let tap = CGEventTap::new(
+                CGEventTapLocation::Session,
+                CGEventTapPlacement::HeadInsertEventTap,
+                CGEventTapOptions::Default,
+                vec![
+                    CGEventType::KeyDown,
+                    CGEventType::KeyUp,
+                    CGEventType::FlagsChanged,
+                ],
+                move |_proxy, etype, event| {
+                    // Gated (lock screen, Secure Input, unknown session):
+                    // pass everything untouched — interception released,
+                    // nothing matched, nothing forwarded, nothing counted.
+                    if callback_shared.gated.load(Ordering::SeqCst) {
+                        return CallbackResult::Keep;
+                    }
+                    // Scoped eligibility BEFORE suppression (lock-free cached
+                    // read only, no blocking work): out-of-scope/fullscreen/
+                    // wrong-Space/unknown/stale Keeps/noForwards every chord
+                    // (no suppress, no forward, no count). Dropping already-
+                    // consumed hits would NOT restore passthrough; this gate
+                    // prevents the consume itself.
+                    if let Some(cache) = callback_shared.scoped_eligibility.as_ref()
+                        && !cache.is_eligible()
+                    {
+                        return CallbackResult::Keep;
+                    }
+                    // `CGEventType` has no `PartialEq`; compare discriminants.
+                    let kind = etype as u32;
+                    if kind == CGEventType::TapDisabledByTimeout as u32 {
+                        callback_shared.disable_kind.store(1, Ordering::SeqCst);
+                        return CallbackResult::Keep;
+                    }
+                    if kind == CGEventType::TapDisabledByUserInput as u32 {
+                        callback_shared.disable_kind.store(2, Ordering::SeqCst);
+                        return CallbackResult::Keep;
+                    }
+                    let tap_kind = if kind == CGEventType::KeyDown as u32 {
+                        TapKeyKind::KeyDown
+                    } else if kind == CGEventType::KeyUp as u32 {
+                        TapKeyKind::KeyUp
+                    } else if kind == CGEventType::FlagsChanged as u32 {
+                        TapKeyKind::Other
+                    } else {
+                        return CallbackResult::Keep;
+                    };
+                    if matches!(tap_kind, TapKeyKind::KeyDown | TapKeyKind::KeyUp) {
+                        callback_shared.deliveries.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let flags = event.get_flags().bits();
+                    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                    // First exact match wins (tables are duplicate-free, so
+                    // at most one arm matches). Minimal per-chord work:
+                    // exact compare plus a non-blocking forward.
+                    let mut hit: Option<(u32, bool)> = None;
+                    for (index, (tuning, key_code)) in
+                        callback_shared.chords.iter().enumerate()
+                    {
+                        let mut pending =
+                            (callback_shared.pending.load(Ordering::SeqCst) >> index) & 1 == 1;
+                        let decision = decide_tap_event(
+                            tap_kind,
+                            flags,
+                            code,
+                            *tuning,
+                            callback_shared.suppress_armed,
+                            &mut pending,
+                        );
+                        if pending {
+                            callback_shared.pending.fetch_or(1u64 << index, Ordering::SeqCst);
+                        } else {
+                            callback_shared
+                                .pending
+                                .fetch_and(!(1u64 << index), Ordering::SeqCst);
+                        }
+                        if decision.matched {
+                            hit = Some((*key_code, decision.suppress));
+                            break;
+                        }
+                    }
+                    match hit {
+                        Some((key_code, suppress)) => {
+                            callback_shared.matched.fetch_add(1, Ordering::SeqCst);
+                            let _ = callback_shared.tx.try_send(TapHit {
+                                key_code,
+                                down: matches!(tap_kind, TapKeyKind::KeyDown),
+                                flags,
+                            });
+                            // Fixture-only one-shot stall: the first
+                            // exact-match KeyDown sleeps inside the callback
+                            // (consumed atomically, so exactly once) to
+                            // provoke a REAL OS `TapDisabledByTimeout`.
+                            // Zero in every production run: no sleep.
+                            if matches!(tap_kind, TapKeyKind::KeyDown) {
+                                let stall =
+                                    callback_shared.stall_once_ms.swap(0, Ordering::SeqCst);
+                                if stall > 0 {
+                                    std::thread::sleep(std::time::Duration::from_millis(
+                                        stall.min(2000),
+                                    ));
+                                }
+                            }
+                            if suppress {
+                                callback_shared.suppressed.fetch_add(1, Ordering::SeqCst);
+                                return CallbackResult::Drop;
+                            }
+                            CallbackResult::Keep
+                        }
+                        None => CallbackResult::Keep,
+                    }
+                },
+            )
+            .map_err(|()| {
+                TapSetupError::Denied(
+                    "CGEventTapCreate returned null (needs Accessibility consent for the stable bundle identity; grant in System Settings, then retry)"
+                        .to_owned(),
+                )
+            })?;
+            let runloop_source = tap.mach_port().create_runloop_source(0).map_err(|()| {
+                TapSetupError::Runloop("runloop source creation failed".to_owned())
+            })?;
+            // SAFETY: extern-static mode read; the source is added here and
+            // removed symmetrically in `Drop`; the tap Drop invalidates the
+            // port (RAII disable).
+            unsafe {
+                CFRunLoop::get_current().add_source(&runloop_source, kCFRunLoopDefaultMode);
+            }
+            tap.enable();
+            Ok(Self {
+                tap,
+                runloop_source,
+                shared,
+                _not_send: std::marker::PhantomData,
+            })
+        }
+
+        /// Pump one bounded runloop slice (at most ~250 ms). A timeout
+        /// disable re-enables here (recovery, counted); a user disable
+        /// returns [`TapPump::UserDisabled`] for a truthful refusal.
+        pub fn pump(&mut self, millis: u64) -> TapPump {
+            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+            use std::time::Duration;
+            // SAFETY: extern-static mode read (same pattern as the bounded
+            // probe tap); the slice bound caps stop latency.
+            unsafe {
+                CFRunLoop::run_in_mode(
+                    kCFRunLoopDefaultMode,
+                    Duration::from_millis(millis.min(250)),
+                    false,
+                );
+            }
+            match self.shared.disable_kind.swap(0, Ordering::SeqCst) {
+                0 => TapPump::Held,
+                1 => {
+                    self.tap.enable();
+                    self.shared.reenables.fetch_add(1, Ordering::SeqCst);
+                    TapPump::Held
+                }
+                _ => TapPump::UserDisabled,
+            }
+        }
+
+        /// Hold or release interception without destroying the tap: the
+        /// Secure Input / lock gate releases while gated and resumes
+        /// narrowly when the ordinary unlocked state returns. Implemented
+        /// as a callback gate (pass everything untouched) because the
+        /// maintained tap wrapper exposes no disable leg.
+        pub fn set_enabled(&self, enabled: bool) {
+            self.shared.gated.store(!enabled, Ordering::SeqCst);
+        }
+
+        /// Fixture-only DIRECT tap disable/enable at the OS level
+        /// (maintained `CGEvent::tap_enable`): the tap stops
+        /// receiving events while directly disabled, so exact chords pass
+        /// through to the frontmost app. Only the `input-session`
+        /// DIRECT legs use this (driven by the input
+        /// owner thread from the factory's hold flag); production tile code
+        /// must never call it.
+        pub fn set_tap_direct_enabled(&self, enabled: bool) {
+            // SAFETY: live-port borrow inside `tap_port` (see helper above);
+            // the maintained binding performs the OS call.
+            objc2_core_graphics::CGEvent::tap_enable(tap_port(&self.tap), enabled);
+        }
+
+        /// Actual OS tap-state readback (maintained
+        /// `CGEvent::tap_is_enabled`): `false`
+        /// after a DIRECT disable, `true` after recovery. The DIRECT legs
+        /// gate on this reading (never on a callback atomic alone).
+        #[must_use]
+        pub fn is_tap_direct_enabled(&self) -> bool {
+            // SAFETY: same live-port borrow as above; read-only, no writes.
+            objc2_core_graphics::CGEvent::tap_is_enabled(tap_port(&self.tap))
+        }
+
+        #[must_use]
+        pub fn report(&self) -> TapSourceReport {
+            TapSourceReport {
+                matched: self.shared.matched.load(Ordering::SeqCst),
+                suppressed: self.shared.suppressed.load(Ordering::SeqCst),
+                deliveries: self.shared.deliveries.load(Ordering::SeqCst),
+                reenables_after_timeout: self.shared.reenables.load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    impl Drop for TapSource {
+        fn drop(&mut self) {
+            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+            // SAFETY: the source was added in `create` on this thread;
+            // removal is symmetric and idempotent; the tap port invalidates
+            // on drop (RAII disable).
+            unsafe {
+                CFRunLoop::get_current().remove_source(&self.runloop_source, kCFRunLoopDefaultMode);
+            }
+        }
+    }
+
+    // -- Scoped-tile read-only substrate (no titles, no writes) --
+    //
+    // Every reader below is a bounded AX/AppKit/CG read with no mutation and
+    // no title acquisition. AX readers assume the caller set a finite
+    // messaging timeout on the element first (a refused timeout aborts the
+    // narrow operation before any join/read). Attribute-name prior art:
+    // - role/subrole/minimized/fullscreen/size-settability: yabai
+    //   `src/window.c` (`window_is_minimized`, `window_is_fullscreen` over
+    //   `kAXFullscreenAttribute = "AXFullScreen"`, `window_ax_can_resize`
+    //   over `AXUIElementIsAttributeSettable(kAXSizeAttribute)`) at
+    //   https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window.c
+    // - role/subrole/minimized/fullscreen(`AXFullscreen` spelling)/resizable:
+    //   rift `src/sys/axuielement.rs` + `src/sys/app.rs` at
+    //   https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/sys/axuielement.rs
+    // - size settability: glide `src/sys/app.rs` (`is_settable(size)`) at
+    //   https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/sys/app.rs
+    //   and Silica `SIAccessibilityElement.m` (`isSizeWriteable`) at
+    //   https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SIAccessibilityElement.m
+    // - min size (`AXMinSize`, then `AXMinimumSize`): Rectangle
+    //   `AXExtension.swift` at
+    //   https://github.com/rxhanson/Rectangle/blob/1d46069c27b3b0564bd7cc1e6d97bf6d53093079/Rectangle/Rectangle/Utilities/AXExtension.swift
+    //   (no surveyed source reads an AX max size: max stays `None`, TBD).
+    // - activation policy gate (`Regular` only): rift `src/sys/app.rs`
+    //   (`activationPolicy() != Regular` skips) and glide (same shape).
+    // - display/Space-change notifications (`NSApplicationDidChangeScreenParametersNotification`,
+    //   `NSWorkspaceActiveSpaceDidChangeNotification`): glide
+    //   `src/actor/notification_center.rs` and rift
+    //   `src/actor/notification_center.rs` (observer wiring itself is later
+    //   work; this unit exposes poll-changed over revisions instead).
+    // `AXModal` has NO surveyed prior art: it is probed read-only and
+    // `None` on any unsupported read, never defaulted here.
+
+    /// String AX read (`AXRole`/`AXSubrole`). `Ok(None)` is honest unknown
+    /// (missing value or non-string); `Err` is a real read failure.
+    pub fn ax_string_attribute(element: &AxElement, name: &str) -> Result<Option<String>, i32> {
+        match element.copy_attribute(name) {
+            // `kAXErrorNoValue` (-25210): attribute present but valueless.
+            Err(-25210) => Ok(None),
+            Err(code) => Err(code),
+            Ok(value) => match value.downcast::<CFString>() {
+                Ok(s) => Ok(Some(s.to_string())),
+                Err(_) => Ok(None),
+            },
+        }
+    }
+
+    /// Boolean AX read. No defaults: an unreadable attribute is `Err`, so
+    /// callers carry `None` (unknown) instead of inventing a state.
+    pub fn ax_bool_attribute(element: &AxElement, name: &str) -> Result<bool, i32> {
+        use objc2_core_foundation::CFBoolean;
+        let value = element.copy_attribute(name)?;
+        value
+            .downcast::<CFBoolean>()
+            .map(|b| b.as_bool())
+            .map_err(|_| AX_NOT_IMPLEMENTED)
+    }
+
+    /// Boolean AX write (owned minimize/restore leg: `AXMinimized`).
+    /// Safety audit: same shape as the frame setters above — stack-lived
+    /// inputs only (`CFString` name plus a retained `CFBoolean` built by
+    /// value, never a raw pointer the caller owns); the maintained
+    /// `AXValue`-free path calls `set_attribute_value` on the live element
+    /// with both arguments in maintained wrappers, and the returned status
+    /// is the only effect read (callers must read back separately: an
+    /// accepted status is never state proof). Scoped to the
+    /// owned-test-control path ([`crate::ax::set_minimized_owned`]), which
+    /// owns entry/exe/nonce/CG revalidation around every call; no other
+    /// caller may adopt this for foreign windows.
+    pub fn ax_set_bool_attribute(element: &AxElement, name: &str, value: bool) -> Result<(), i32> {
+        use objc2_core_foundation::{CFBoolean, CFString};
+        let attr = CFString::from_str(name);
+        let flag = CFBoolean::new(value);
+        // SAFETY: live element/name/value in maintained wrappers; status is
+        // the only effect read.
+        let status = unsafe { element.inner.set_attribute_value(&attr, flag) }.0;
+        if status == 0 { Ok(()) } else { Err(status) }
+    }
+
+    /// `AXSize` settability (`AXUIElementIsAttributeSettable`). Carried fact
+    /// only: no admission inference is drawn from it (TBD lane, see
+    /// [`crate::classifier`]).
+    pub fn ax_is_size_settable(element: &AxElement) -> Result<bool, i32> {
+        let attr = CFString::from_str("AXSize");
+        let mut raw: u8 = 0;
+        // SAFETY: out-pointer is a live local; status gates the read.
+        // `Boolean` is an 8-bit Darwin type; nonzero means settable.
+        let status = unsafe {
+            element.inner.is_attribute_settable(
+                &attr,
+                NonNull::new(std::ptr::addr_of_mut!(raw)).expect("non-null"),
+            )
+        };
+        if status.0 == 0 {
+            Ok(raw != 0)
+        } else {
+            Err(status.0)
+        }
+    }
+
+    /// One CGSize AX read. Unsupported/missing shapes are `Ok(None)`, never
+    /// guessed; real failures are `Err`.
+    fn ax_cgsize_attribute(element: &AxElement, name: &str) -> Result<Option<(f64, f64)>, i32> {
+        let value = match element.copy_attribute(name) {
+            // NoValue / AttributeUnsupported / NotImplemented: no usable
+            // bound here (the caller tries the next name or reports none).
+            Err(-25210) | Err(-25205) | Err(AX_NOT_IMPLEMENTED) => return Ok(None),
+            Err(code) => return Err(code),
+            Ok(value) => value,
+        };
+        let size: CFRetained<AXValue> = value.downcast().map_err(|_| AX_NOT_IMPLEMENTED)?;
+        let mut raw = CGSize {
+            width: 0.0,
+            height: 0.0,
+        };
+        // SAFETY: value lives in a maintained wrapper; the out-pointer is a
+        // live local; the boolean result gates use.
+        let ok = unsafe {
+            size.value(
+                AXValueType::CGSize,
+                NonNull::new(std::ptr::addr_of_mut!(raw) as *mut std::ffi::c_void)
+                    .expect("non-null"),
+            )
+        };
+        if !ok {
+            return Ok(None);
+        }
+        if raw.width.is_finite() && raw.height.is_finite() && raw.width >= 0.0 && raw.height >= 0.0
+        {
+            Ok(Some((raw.width, raw.height)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Actual minimum size probe: `AXMinSize`, then `AXMinimumSize`
+    /// (Rectangle prior art above). Unsupported everywhere is `Ok(None)`.
+    /// There is deliberately no max-size probe: no surveyed source reads an
+    /// AX max size, so max stays `None` (TBD), never inferred from
+    /// settability.
+    pub fn ax_min_size(element: &AxElement) -> Result<Option<(f64, f64)>, i32> {
+        for name in ["AXMinSize", "AXMinimumSize"] {
+            if let Some(min) = ax_cgsize_attribute(element, name)? {
+                return Ok(Some(min));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Fullscreen state with both surveyed spellings: yabai's `AXFullScreen`
+    /// first, rift's `AXFullscreen` as fallback. Still unreadable after both
+    /// is `Err` (unknown), never a defaulted state.
+    pub fn ax_fullscreen_state(element: &AxElement) -> Result<bool, i32> {
+        match ax_bool_attribute(element, "AXFullScreen") {
+            Err(-25205) | Err(-25210) | Err(AX_NOT_IMPLEMENTED) => {
+                ax_bool_attribute(element, "AXFullscreen")
+            }
+            other => other,
+        }
+    }
+
+    /// Whether the app owning `pid` is hidden (`NSRunningApplication.isHidden`,
+    /// public AppKit, no AX consent involved). Caller-thread read (main);
+    /// unknown pids are `Err`, never assumed visible.
+    pub fn app_hidden_for_pid(pid: i32) -> Result<bool, String> {
+        if pid <= 1 {
+            return Err(format!("refusing reserved pid {pid}"));
+        }
+        use objc2_app_kit::NSRunningApplication;
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => Ok(app.isHidden()),
+            None => Err(format!("no running application for pid {pid}")),
+        }
+    }
+
+    /// Raw activation policy for `pid` (`NSApplicationActivationPolicy`
+    /// discriminant: 0=Regular, 1=Accessory, 2=Prohibited). Mapped to
+    /// [`crate::classifier::ActivationPolicy`] by the pure layer; unknown
+    /// pids or values are errors there, never guessed policy.
+    pub fn activation_policy_raw_for_pid(pid: i32) -> Result<i64, String> {
+        if pid <= 1 {
+            return Err(format!("refusing reserved pid {pid}"));
+        }
+        use objc2_app_kit::NSRunningApplication;
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => Ok(app.activationPolicy().0 as i64),
+            None => Err(format!("no running application for pid {pid}")),
+        }
+    }
+
+    /// One CGWindowList entry without the title leg: identity plus geometry
+    /// plus layer/on-screen only. No `kCGWindowName` read, no owner names, no
+    /// content — and therefore nothing to log.
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+    pub struct CgWindowBasic {
+        pub wid: u32,
+        pub pid: u32,
+        pub layer: i32,
+        pub onscreen: bool,
+        pub bounds: CgBounds,
+    }
+
+    /// Title-free window list: the same maintained binding as
+    /// [`cg_window_list_all`], parsed with the title leg skipped (no title
+    /// acquisition, not even transiently).
+    pub fn cg_window_list_basic() -> Result<Vec<CgWindowBasic>, String> {
+        cg_window_list_inner(false).map(|list| {
+            list.into_iter()
+                .map(|w| CgWindowBasic {
+                    wid: w.wid,
+                    pid: w.pid,
+                    layer: w.layer,
+                    onscreen: w.onscreen,
+                    bounds: w.bounds,
+                })
+                .collect()
+        })
+    }
+
+    /// AppKit display in global bottom-left points: full frame plus the
+    /// menu/Dock-excluded visible frame plus backing scale. Plain data only.
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+    pub struct DisplayRect {
+        pub x: f64,
+        pub y: f64,
+        pub w: f64,
+        pub h: f64,
+    }
+
+    /// One display snapshot row: CG display ID plus the exact managed
+    /// display UUID (public `CGDisplayCreateUUIDFromDisplayID`, never a
+    /// private symbol) plus AppKit frames plus scale. `uuid` is `None` only
+    /// when the public lookup fails (unknown, never guessed). No names, no
+    /// content.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct NsDisplay {
+        pub cg_id: u32,
+        pub uuid: Option<String>,
+        pub frame: DisplayRect,
+        pub visible: DisplayRect,
+        pub scale: f64,
+    }
+
+    /// Read-only display snapshot. MUST run on the main thread (AppKit
+    /// `NSScreen`); any other thread fails closed before touching UI state.
+    /// Points throughout (never physical pixels); the AppKit bottom-left to
+    /// CG/AX top-left conversion is pure (see [`crate::topology`]) so mixed
+    /// scales need no pixel math.
+    pub fn ns_display_snapshot() -> Result<Vec<NsDisplay>, String> {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSScreen;
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Err("display snapshot requires the main thread".to_owned());
+        };
+        let screens = NSScreen::screens(mtm);
+        let count = screens.len().min(MAX_DISPLAYS);
+        let mut out = Vec::with_capacity(count);
+        for i in 0..count {
+            let screen = screens.objectAtIndex(i);
+            let frame = screen.frame();
+            let visible = screen.visibleFrame();
+            let cg_id = screen.CGDirectDisplayID();
+            out.push(NsDisplay {
+                cg_id,
+                uuid: cg_display_uuid(cg_id),
+                frame: DisplayRect {
+                    x: frame.origin.x,
+                    y: frame.origin.y,
+                    w: frame.size.width,
+                    h: frame.size.height,
+                },
+                visible: DisplayRect {
+                    x: visible.origin.x,
+                    y: visible.origin.y,
+                    w: visible.size.width,
+                    h: visible.size.height,
+                },
+                scale: screen.backingScaleFactor(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Whether the session uses separate Spaces per display (public
+    /// `NSScreen.screensHaveSeparateSpaces`, the AppKit reading of the
+    /// Mission Control "Displays have separate Spaces" setting that rift
+    /// probes as `SLSGetSpaceManagementMode(cid) == 1`). `None` off the main
+    /// thread (unknown, never guessed). The pure layer homes unified
+    /// (non-separate) sessions conservatively: a single SLS row shares its
+    /// current Space across displays; anything else refuses.
+    pub fn ns_separate_spaces() -> Option<bool> {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSScreen;
+        let mtm = MainThreadMarker::new()?;
+        Some(NSScreen::screensHaveSeparateSpaces(mtm))
+    }
+
+    /// Managed display UUID for a CG display ID via the PUBLIC
+    /// `CGDisplayCreateUUIDFromDisplayID` (CoreGraphics, create-rule +1).
+    /// No maintained `objc2` binding covers it, so the public symbol resolves
+    /// dynamically exactly like the other uncovered tables here; a missing
+    /// symbol or null result is `None`, never a guessed UUID. Stringified
+    /// with the maintained `CFUUID::new_string` (`CFUUIDCreateString`).
+    pub fn cg_display_uuid(display_id: u32) -> Option<String> {
+        use objc2_core_foundation::{CFRetained, CFUUID};
+        if display_id == 0 {
+            return None;
+        }
+        let table = cg_uuid_table()?;
+        // SAFETY: resolved non-null public symbol; plain integer in;
+        // create-rule +1 out (null-checked); owned exactly once below.
+        let uuid: CFRetained<CFUUID> = unsafe {
+            let raw = (table.create)(display_id);
+            CFRetained::from_raw(std::ptr::NonNull::new(raw as *mut CFUUID)?)
+        };
+        let text = CFUUID::new_string(None, Some(&uuid))?;
+        let uuid = text.to_string();
+        if uuid.is_empty() { None } else { Some(uuid) }
+    }
+
+    struct CgUuidTable {
+        create: unsafe extern "C" fn(u32) -> *mut std::ffi::c_void,
+    }
+
+    static CG_UUID_TABLE: std::sync::OnceLock<Option<CgUuidTable>> = std::sync::OnceLock::new();
+
+    /// Public CoreGraphics framework only (plus the already-linked image as
+    /// fallback). A missing symbol fails closed, never guessed.
+    fn cg_uuid_table() -> Option<&'static CgUuidTable> {
+        use std::ffi::CString;
+        CG_UUID_TABLE
+            .get_or_init(|| {
+                // SAFETY: `dlsym` lookup null-checked before transmuting to
+                // the documented public signature
+                // (`CFUUIDRef CGDisplayCreateUUIDFromDisplayID(CGDirectDisplayID)`);
+                // no call is made here.
+                unsafe {
+                    const CANDIDATE: &[u8] =
+                        b"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics\0";
+                    let cname = CString::new("CGDisplayCreateUUIDFromDisplayID").expect("static");
+                    let probe = |handle: *mut std::ffi::c_void| {
+                        if handle.is_null() {
+                            return None;
+                        }
+                        let sym = libc::dlsym(handle, cname.as_ptr());
+                        if sym.is_null() {
+                            return None;
+                        }
+                        Some(CgUuidTable {
+                            create: std::mem::transmute::<
+                                *mut std::ffi::c_void,
+                                unsafe extern "C" fn(u32) -> *mut std::ffi::c_void,
+                            >(sym),
+                        })
+                    };
+                    let handle = libc::dlopen(CANDIDATE.as_ptr().cast(), 0x1);
+                    if let Some(table) = probe(handle) {
+                        return Some(table);
+                    }
+                    let linked = libc::dlopen(std::ptr::null(), 0x1);
+                    if let Some(table) = probe(linked) {
+                        return Some(table);
+                    }
+                    None
+                }
+            })
+            .as_ref()
+    }
+
+    /// One managed display/Space row keyed by its in-row
+    /// `"Display Identifier"` (UUID match per yabai `display_space_list`:
+    /// `CFEqual(uuid, identifier)` — exact, never positional). Unlike
+    /// [`SlsDisplay`] (whose `uuid` pairs `SLSCopyManagedDisplays` order
+    /// positionally), this row carries its own identifier, so multi-display
+    /// homing is exact. A missing identifier leaves `current` unknown too
+    /// (the current-Space query needs the UUID): `None`, never guessed.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct SlsDisplayRow {
+        pub identifier: Option<String>,
+        pub spaces: Vec<u64>,
+        pub current: Option<u64>,
+    }
+
+    /// Read-only managed display/Space/current rows with in-row identifiers.
+    /// Same bounds and container-kind verification as
+    /// [`sls_display_spaces`]; IDs and counts only.
+    pub fn sls_display_rows() -> Result<Vec<SlsDisplayRow>, String> {
+        let table = sls_table().ok_or_else(|| "SLS symbols unavailable".to_owned())?;
+        // SAFETY: resolved symbols; retained top-level result wrapped as
+        // `CFType` and checked-downcast to `CFArray`; elements indexed
+        // within `len().min(...)`; nested container kinds verified before
+        // typed use; strings via `to_string`. Row identifiers come from
+        // checked per-element downcasts of `"Display Identifier"`.
+        unsafe {
+            use objc2_core_foundation::CFDictionary as CFDictUntyped;
+            let cid = (table.connection)();
+            let spaces_raw = (table.copy_spaces)(cid);
+            if spaces_raw.is_null() {
+                return Err("SLSCopyManagedDisplaySpaces returned null".to_owned());
+            }
+            let spaces_top: CFRetained<CFType> =
+                CFRetained::from_raw(NonNull::new(spaces_raw as *mut CFType).expect("non-null"));
+            let spaces_untyped: CFRetained<CFArray> = spaces_top.downcast().map_err(|_| {
+                "SLSCopyManagedDisplaySpaces returned a non-array top-level container".to_owned()
+            })?;
+            // SAFETY: top-level kind verified by the downcast above.
+            let spaces_array: CFRetained<CFArray<CFType>> =
+                CFRetained::cast_unchecked(spaces_untyped);
+            let spaces_key = CFString::from_str("Spaces");
+            let id_key = CFString::from_str("id64");
+            let identifier_key = CFString::from_str("Display Identifier");
+            let mut out = Vec::new();
+            for index in 0..spaces_array.len().min(MAX_DISPLAYS) {
+                let display_item = match spaces_array.get(index) {
+                    Some(item) => item,
+                    None => continue,
+                };
+                let mut identifier: Option<String> = None;
+                let mut spaces: Vec<u64> = Vec::new();
+                if display_item.downcast_ref::<CFDictUntyped>().is_some() {
+                    // SAFETY: kind verified above; entries map `CFString`
+                    // keys to `CFType` values.
+                    let display_dict: CFRetained<CFDictionary<CFString, CFType>> =
+                        CFRetained::cast_unchecked(display_item.clone());
+                    identifier = display_dict
+                        .get(&identifier_key)
+                        .and_then(|v| v.downcast::<CFString>().ok())
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.is_empty());
+                    if let Some(spaces_val) = display_dict.get(&spaces_key)
+                        && spaces_val.downcast_ref::<CFArray>().is_some()
+                    {
+                        // SAFETY: kind verified; space list holds dictionaries.
+                        let spaces_list: CFRetained<CFArray<CFType>> =
+                            CFRetained::cast_unchecked(spaces_val.clone());
+                        for j in 0..spaces_list.len().min(MAX_SPACES_PER_DISPLAY) {
+                            let space_item = match spaces_list.get(j) {
+                                Some(item) => item,
+                                None => continue,
+                            };
+                            if space_item.downcast_ref::<CFDictUntyped>().is_some() {
+                                // SAFETY: kind verified; space entries map
+                                // `CFString` keys to `CFType` values.
+                                let space_dict: CFRetained<CFDictionary<CFString, CFType>> =
+                                    CFRetained::cast_unchecked(space_item.clone());
+                                if let Some(sid_val) = space_dict.get(&id_key)
+                                    && let Ok(num) = sid_val.downcast::<CFNumber>()
+                                    && let Some(sid) = num.as_i64()
+                                    && sid >= 0
+                                {
+                                    spaces.push(sid as u64);
+                                }
+                            }
+                        }
+                    }
+                }
+                // The current-Space query needs the row's own identifier;
+                // without one the current stays unknown (never guessed from
+                // another row).
+                let current = match identifier.clone() {
+                    Some(uuid) => {
+                        let uuid_cf = CFString::from_str(&uuid);
+                        let uuid_ptr =
+                            CFRetained::as_ptr(&uuid_cf).as_ptr() as *const std::ffi::c_void;
+                        Some((table.current_space)(cid, uuid_ptr))
+                    }
+                    None => None,
+                };
+                out.push(SlsDisplayRow {
+                    identifier,
+                    spaces,
+                    current,
+                });
+            }
+            Ok(out)
+        }
+    }
+
+    // -- Main-thread display/Space-change guard (read-only events) --
+    //
+    // Shape pinned against glide `src/actor/notification_center.rs`
+    // (`NotificationCenterInner`: `NSApplicationDidChangeScreenParametersNotification`
+    // on the default center, `NSWorkspaceActiveSpaceDidChangeNotification` on
+    // the workspace center) at
+    // https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/actor/notification_center.rs
+    // and rift `src/actor/notification_center.rs` (same two names; rift
+    // additionally registers with a nil object for screen parameters) at
+    // https://github.com/acsandmann/rift/blob/8114ccc534b5c9a7e6a77ce27568d8739be9216f/src/actor/notification_center.rs
+    // Differences (deliberate): the callbacks do NO snapshot/resnapshot work
+    // and NO AX reads — they only bump one atomic generation. The controller
+    // polls [`DisplayChangeFlag::take_changed`] and re-snapshots on the main
+    // thread itself. No AppKit object crosses threads: the guard
+    // (`!Send + !Sync`, main-thread-owned) holds the observer; only the
+    // `Send + Sync` flag (plain atomics) is shared.
+
+    /// Shareable dirty generation for display/Space changes. `Send + Sync`
+    /// (atomics only); the main-thread owner hands clones to the
+    /// controller, which polls [`Self::take_changed`] and re-snapshots.
+    #[derive(Debug, Clone, Default)]
+    pub struct DisplayChangeFlag {
+        dirty: Arc<AtomicU64>,
+    }
+
+    impl DisplayChangeFlag {
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Record an external change (also used by the observer callbacks).
+        /// Coalescing: bursts collapse into one dirty generation.
+        pub fn mark_changed(&self) {
+            self.dirty.fetch_add(1, Ordering::SeqCst);
+        }
+
+        /// Take the pending change: `true` exactly when at least one change
+        /// landed since the last take. Controller resnapshots on `true`.
+        #[must_use]
+        pub fn take_changed(&self) -> bool {
+            self.dirty.swap(0, Ordering::SeqCst) != 0
+        }
+    }
+
+    #[repr(C)]
+    struct DisplayChangeIvars {
+        dirty: Arc<AtomicU64>,
+    }
+
+    // SAFETY: opaque observer state passed through the `initWith:` shape
+    // (rift/glide prior art above: `#[repr(C)]` struct, `Object` encoding,
+    // carried to `set_ivars`); never dereferenced as an ObjC object.
+    unsafe impl objc2::Encode for DisplayChangeIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    // Method receivers (`alloc`, `ivars`) resolve through these (rift/glide
+    // `notification_center.rs` shape).
+    use objc2::{AnyThread, DeclaredClass};
+
+    objc2::define_class! {
+        // SAFETY: `NSObject` imposes no subclassing requirements and this
+        // class implements no `Drop`; callbacks bump one atomic only (no AX,
+        // no layout, no logging, no panics).
+        #[unsafe(super(objc2_foundation::NSObject))]
+        #[ivars = Box<DisplayChangeIvars>]
+        struct DisplayChangeObserver;
+
+        // SAFETY: each signature matches its selector invocation below
+        // (`name:` with one `NSNotification` argument).
+        impl DisplayChangeObserver {
+            #[unsafe(method(displayParametersDidChange:))]
+            fn display_parameters_did_change(&self, _notif: &objc2_foundation::NSNotification) {
+                // Minimal callback: bump only. No snapshot, no AX, no log.
+                self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
+            }
+
+            #[unsafe(method(activeSpaceDidChange:))]
+            fn active_space_did_change(&self, _notif: &objc2_foundation::NSNotification) {
+                // Minimal callback: bump only. No snapshot, no AX, no log.
+                self.ivars().dirty.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Main-thread-owned observer guard. `!Send + !Sync` via
+    /// `PhantomData<Rc>` (no `unsafe impl`): install, use, and drop on the
+    /// main thread. `Drop` unregisters best-effort (`NSNotificationCenter`
+    /// removal is thread-safe; explicit drop on the main thread is the
+    /// honest path).
+    pub struct DisplayChangeGuard {
+        observer: objc2::rc::Retained<DisplayChangeObserver>,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for DisplayChangeGuard {
+        fn drop(&mut self) {
+            // SAFETY: live observer in maintained wrappers; removals are
+            // teardown-only and thread-safe; statuses ignored (explicit
+            // main-thread drop is the honest path).
+            unsafe {
+                use objc2_app_kit::NSWorkspace;
+                use objc2_foundation::NSNotificationCenter;
+                NSNotificationCenter::defaultCenter().removeObserver(&self.observer);
+                NSWorkspace::sharedWorkspace()
+                    .notificationCenter()
+                    .removeObserver(&self.observer);
+            }
+        }
+    }
+
+    impl DisplayChangeGuard {
+        /// Clone the shareable dirty flag for the controller thread.
+        #[must_use]
+        pub fn flag(&self) -> DisplayChangeFlag {
+            DisplayChangeFlag {
+                dirty: self.observer.ivars().dirty.clone(),
+            }
+        }
+    }
+
+    /// Install the display/Space-change observer on the calling (main)
+    /// thread. Registers `NSApplicationDidChangeScreenParametersNotification`
+    /// (default center, nil object — rift shape) and
+    /// `NSWorkspaceActiveSpaceDidChangeNotification` (workspace center,
+    /// workspace object — glide/rift shape). Returns the main-thread guard
+    /// plus the shareable flag. Any other thread fails closed before
+    /// touching notification state.
+    pub fn install_display_change_guard() -> Result<(DisplayChangeGuard, DisplayChangeFlag), String>
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSWorkspace;
+        use objc2_foundation::NSNotificationCenter;
+        let Some(_mtm) = MainThreadMarker::new() else {
+            return Err("display change guard requires the main thread".to_owned());
+        };
+        let flag = DisplayChangeFlag::new();
+        // Bound before the macro: a struct literal inline would parse as a
+        // block inside `msg_send!`.
+        let ivars = DisplayChangeIvars {
+            dirty: flag.dirty.clone(),
+        };
+        // Ivars set directly, then the superclass `init` (the `define_class!`
+        // doc shape): avoids an `initWith:` round-trip through `msg_send!`.
+        let allocated: objc2::rc::Allocated<DisplayChangeObserver> = DisplayChangeObserver::alloc();
+        let observer: objc2::rc::Retained<DisplayChangeObserver> =
+            unsafe { objc2::msg_send![super(allocated.set_ivars(Box::new(ivars))), init] };
+        // SAFETY: observer/centers/names live in maintained wrappers;
+        // selectors match the `define_class!` methods above; the observer
+        // is retained by the guard (centers hold weak references).
+        unsafe {
+            use objc2::sel;
+            use objc2_app_kit::{
+                NSApplicationDidChangeScreenParametersNotification,
+                NSWorkspaceActiveSpaceDidChangeNotification,
+            };
+            NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &observer,
+                sel!(displayParametersDidChange:),
+                Some(NSApplicationDidChangeScreenParametersNotification),
+                None,
+            );
+            let workspace = NSWorkspace::sharedWorkspace();
+            workspace
+                .notificationCenter()
+                .addObserver_selector_name_object(
+                    &observer,
+                    sel!(activeSpaceDidChange:),
+                    Some(NSWorkspaceActiveSpaceDidChangeNotification),
+                    Some(&workspace),
+                );
+        }
+        Ok((
+            DisplayChangeGuard {
+                observer,
+                _not_send: std::marker::PhantomData,
+            },
+            flag,
+        ))
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, Phase1Observer, SLPS_CPS_USER_GENERATED,
-    SLPS_EVENT_LEN, SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage,
-    ax_focused_preimage_detailed, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
-    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
-    ax_set_size, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    carbon_register, cg_post_event_access_known, cg_window_list_all, frontmost_app,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, running_apps, secure_input_known, slps_available, slps_post_event,
-    slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_spaces,
-    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
-    sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit,
+    CarbonHotkey, CgBounds, CgWindow, CgWindowBasic, DisplayChangeFlag, DisplayChangeGuard,
+    DisplayRect, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
+    ax_app_focus_leg, ax_bool_attribute, ax_direct_focused_read, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
+    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute,
+    ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size,
+    ax_string_attribute, ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    bundle_id_for_pid, carbon_register, carbon_register_set, cg_display_uuid,
+    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, drain_app_events,
+    drain_app_events_counted, frontmost_app, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
+    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -2983,6 +5934,128 @@ mod stub {
         _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CarbonHit {
+        pub key_code: u32,
+        pub carbon_modifiers: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct CarbonChordStatus {
+        pub key_code: u32,
+        pub carbon_modifiers: u32,
+        pub os_status: i32,
+    }
+
+    pub struct CarbonChordSet {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    pub struct CarbonChordReport {
+        pub statuses: Vec<CarbonChordStatus>,
+    }
+
+    impl CarbonChordReport {
+        #[must_use]
+        pub fn into_statuses(self) -> Vec<CarbonChordStatus> {
+            self.statuses
+        }
+    }
+
+    pub fn carbon_register_set(
+        _chords: &[(u32, u32)],
+        _tx: &SyncSender<CarbonHit>,
+        _counter: &Arc<EventCounter>,
+    ) -> Result<CarbonChordReport, String> {
+        Err("Carbon hotkeys are macOS-only".to_owned())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TapChordSpec {
+        pub want_flags: u64,
+        pub flags_mask: u64,
+        pub want_code: i64,
+        pub key_code: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct TapHit {
+        pub key_code: u32,
+        pub down: bool,
+        pub flags: u64,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TapPump {
+        Held,
+        UserDisabled,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct TapSourceReport {
+        pub matched: u32,
+        pub suppressed: u32,
+        pub deliveries: u32,
+        pub reenables_after_timeout: u32,
+    }
+
+    pub struct TapSource {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl TapSource {
+        pub fn create(
+            _chords: &[TapChordSpec],
+            _suppress_armed: bool,
+            _tx: &SyncSender<TapHit>,
+        ) -> Result<Self, TapSetupError> {
+            Err(TapSetupError::Denied("event tap is macOS-only".to_owned()))
+        }
+
+        pub fn create_scoped(
+            _chords: &[TapChordSpec],
+            _suppress_armed: bool,
+            _tx: &SyncSender<TapHit>,
+            _eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
+        ) -> Result<Self, TapSetupError> {
+            Err(TapSetupError::Denied("event tap is macOS-only".to_owned()))
+        }
+
+        pub fn create_stall_once(
+            _chords: &[TapChordSpec],
+            _suppress_armed: bool,
+            _tx: &SyncSender<TapHit>,
+            _stall_ms: u64,
+        ) -> Result<Self, TapSetupError> {
+            Err(TapSetupError::Denied("event tap is macOS-only".to_owned()))
+        }
+
+        pub fn pump(&mut self, _millis: u64) -> TapPump {
+            TapPump::Held
+        }
+
+        pub fn set_enabled(&self, _enabled: bool) {}
+
+        pub fn set_tap_direct_enabled(&self, _enabled: bool) {}
+
+        #[must_use]
+        pub fn is_tap_direct_enabled(&self) -> bool {
+            false
+        }
+
+        #[must_use]
+        pub fn report(&self) -> TapSourceReport {
+            TapSourceReport {
+                matched: 0,
+                suppressed: 0,
+                deliveries: 0,
+                reenables_after_timeout: 0,
+            }
+        }
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
     pub struct CgBounds {
         pub x: f64,
@@ -2999,6 +6072,126 @@ mod stub {
         pub onscreen: bool,
         pub bounds: CgBounds,
         pub title: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+    pub struct CgWindowBasic {
+        pub wid: u32,
+        pub pid: u32,
+        pub layer: i32,
+        pub onscreen: bool,
+        pub bounds: CgBounds,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+    pub struct DisplayRect {
+        pub x: f64,
+        pub y: f64,
+        pub w: f64,
+        pub h: f64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct NsDisplay {
+        pub cg_id: u32,
+        pub uuid: Option<String>,
+        pub frame: DisplayRect,
+        pub visible: DisplayRect,
+        pub scale: f64,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct SlsDisplayRow {
+        pub identifier: Option<String>,
+        pub spaces: Vec<u64>,
+        pub current: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct DisplayChangeFlag {
+        changed: bool,
+    }
+
+    impl DisplayChangeFlag {
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn mark_changed(&self) {
+            let _ = self.changed;
+        }
+
+        #[must_use]
+        pub fn take_changed(&self) -> bool {
+            self.changed
+        }
+    }
+
+    pub struct DisplayChangeGuard {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    pub fn install_display_change_guard() -> Result<(DisplayChangeGuard, DisplayChangeFlag), String>
+    {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn cg_display_uuid(_display_id: u32) -> Option<String> {
+        None
+    }
+
+    pub fn ns_separate_spaces() -> Option<bool> {
+        None
+    }
+
+    pub fn sls_display_rows() -> Result<Vec<SlsDisplayRow>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn cg_window_list_basic() -> Result<Vec<CgWindowBasic>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ns_display_snapshot() -> Result<Vec<NsDisplay>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_string_attribute(_element: &AxElement, _name: &str) -> Result<Option<String>, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_bool_attribute(_element: &AxElement, _name: &str) -> Result<bool, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_set_bool_attribute(
+        _element: &AxElement,
+        _name: &str,
+        _value: bool,
+    ) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_is_size_settable(_element: &AxElement) -> Result<bool, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_min_size(_element: &AxElement) -> Result<Option<(f64, f64)>, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_fullscreen_state(_element: &AxElement) -> Result<bool, i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn app_hidden_for_pid(_pid: i32) -> Result<bool, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn activation_policy_raw_for_pid(_pid: i32) -> Result<i64, String> {
+        Err("macOS-only".to_owned())
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3052,6 +6245,75 @@ mod stub {
         Err("macOS-only".to_owned())
     }
 
+    pub fn runloop_present() -> bool {
+        false
+    }
+
+    pub fn ax_system_focus_leg() -> super::AxSystemFocusLeg {
+        super::AxSystemFocusLeg {
+            system_element: "macOS-only".to_owned(),
+            system_timeout_status: None,
+            system_timeout_name: None,
+            focused_app_status: "macOS-only".to_owned(),
+            focused_pid: None,
+            app_timeout_status: None,
+            app_timeout_name: None,
+            app_pid_status: "macOS-only".to_owned(),
+            focused_window_status: "macOS-only".to_owned(),
+            focused_wid: None,
+        }
+    }
+
+    pub fn ax_app_focus_leg(pid: i32) -> super::AxAppFocusLeg {
+        super::AxAppFocusLeg {
+            pid,
+            element: "macOS-only".to_owned(),
+            timeout_status: None,
+            timeout_name: None,
+            windows_status: "macOS-only".to_owned(),
+            windows_count: None,
+            window_join_failures: 0,
+            joined_wids: Vec::new(),
+            focused_status: "macOS-only".to_owned(),
+            focused_wid: None,
+            main_status: "macOS-only".to_owned(),
+            main_wid: None,
+            frontmost_before_status: "macOS-only".to_owned(),
+            frontmost_before: None,
+            frontmost_after_status: "macOS-only".to_owned(),
+            frontmost_after: None,
+        }
+    }
+
+    pub fn slps_front_available() -> bool {
+        false
+    }
+
+    pub fn slps_front_pid() -> Result<i32, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_focused_preimage_evidence() -> Result<super::PreimageEvidence, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_direct_focused_read(pid: i32) -> super::DirectFocusRead {
+        super::DirectFocusRead {
+            pid,
+            ax_pid: None,
+            focused_status: "macOS-only".to_owned(),
+            focused_wid: None,
+            main_status: "macOS-only".to_owned(),
+            main_wid: None,
+            selected_wid: None,
+            selected_source: "none".to_owned(),
+        }
+    }
+
+    pub fn ax_selected_focus_evidence() -> Result<super::PreimageEvidence, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn ax_get_frame(_element: &AxElement) -> Result<AxFrame, i32> {
         Err(AX_NOT_IMPLEMENTED)
     }
@@ -3077,6 +6339,10 @@ mod stub {
     }
 
     pub fn ax_raise(_element: &AxElement) -> Result<(), i32> {
+        Err(AX_NOT_IMPLEMENTED)
+    }
+
+    pub fn ax_set_focused_window(_app: &AxElement, _window: &AxElement) -> Result<(), i32> {
         Err(AX_NOT_IMPLEMENTED)
     }
 
@@ -3148,6 +6414,17 @@ mod stub {
         None
     }
 
+    /// Off-platform session: no window server, so the lock state is unknown
+    /// (fail closed everywhere it gates, same as an unreadable live session).
+    pub fn session_state() -> SessionState {
+        SessionState::unknown()
+    }
+
+    /// Off-platform helper: never bundled.
+    pub fn own_bundle_id() -> Option<String> {
+        None
+    }
+
     pub fn sls_connection_available() -> bool {
         false
     }
@@ -3161,6 +6438,10 @@ mod stub {
     }
 
     pub fn sls_spaces_for_windows(_wids: &[u32]) -> Result<Vec<u64>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn sls_spaces_for_window(_wid: u32) -> Result<Vec<u64>, String> {
         Err("macOS-only".to_owned())
     }
 
@@ -3182,6 +6463,25 @@ mod stub {
 
     pub fn process_executable_path(_pid: i32) -> Option<String> {
         None
+    }
+
+    pub fn launch_date_for_pid(_pid: i32) -> Option<String> {
+        None
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct NsAppIdentity {
+        pub bundle: Option<String>,
+        pub launch_date: Option<String>,
+        pub exe: Option<String>,
+    }
+
+    pub fn ns_app_identity_for_pid(_pid: i32) -> NsAppIdentity {
+        NsAppIdentity {
+            bundle: None,
+            launch_date: None,
+            exe: None,
+        }
     }
 
     pub fn process_exists(_pid: i32) -> bool {
@@ -3215,9 +6515,30 @@ mod stub {
         _defer_window_ms: u64,
         _close_window_ms: u64,
         _regular_policy: bool,
+        _transient_panel_ms: u64,
+        _transient_sheet_ms: u64,
         _ready: &dyn Fn(),
     ) -> Result<(), String> {
         Err("owned probe window is macOS-only".to_owned())
+    }
+
+    /// Stub downstream key-delivery counters (always zero off-macOS).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct KeyCounts {
+        pub h_down: [u64; 16],
+        pub h_up: [u64; 16],
+        pub other_down: u64,
+        pub other_up: u64,
+    }
+
+    #[must_use]
+    pub fn key_counts_snapshot() -> KeyCounts {
+        KeyCounts {
+            h_down: [0; 16],
+            h_up: [0; 16],
+            other_down: 0,
+            other_up: 0,
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3251,17 +6572,26 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CarbonHotkey, CgBounds, CgWindow, Phase1Observer, SLPS_CPS_USER_GENERATED,
-    SLPS_EVENT_LEN, SlpsPsn, SlsMoveSymbols, activate_app, ax_focused_preimage,
-    ax_focused_preimage_detailed, ax_get_frame, ax_is_process_trusted, ax_observe_bounded,
-    ax_observe_session, ax_raise, ax_set_frame, ax_set_messaging_timeout, ax_set_position,
-    ax_set_size, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    carbon_register, cg_post_event_access_known, cg_window_list_all, frontmost_app,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, running_apps, secure_input_known, slps_available, slps_post_event,
-    slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_spaces,
-    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
-    sls_spaces_for_windows, terminate_process,
+    AxElement, AxFrame, CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit,
+    CarbonHotkey, CgBounds, CgWindow, CgWindowBasic, DisplayChangeFlag, DisplayChangeGuard,
+    DisplayRect, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
+    ax_app_focus_leg, ax_bool_attribute, ax_direct_focused_read, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
+    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute,
+    ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size,
+    ax_string_attribute, ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    bundle_id_for_pid, carbon_register, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, frontmost_app, install_display_change_guard,
+    key_counts_snapshot, launch_date_for_pid, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
+    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]
@@ -3273,6 +6603,350 @@ mod tests {
         assert_eq!(ax_error_name(0), "kAXErrorSuccess");
         assert!(ax_error_name(-25204).contains("CannotComplete"));
         assert!(ax_error_name(99999).contains("99999"));
+    }
+
+    #[test]
+    fn fallback_trigger_is_exactly_the_service_failure() {
+        // The exactly observed host failures trigger; every other outcome
+        // never does (success, window-leg failures, timeout legs,
+        // malformed/downcast, permission, unknown text). Diagnostic-only.
+        assert!(super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorCannotComplete"
+        ));
+        assert!(super::preimage_fallback_trigger(
+            "system-wide AX element unavailable"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedWindow unreadable: kAXErrorCannotComplete"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedWindow join: _AXUIElementGetWindow status -25204"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "system-wide AX messaging timeout unset: kAXErrorFailure"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "focused application AX messaging timeout unset: kAXErrorFailure"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication is not an AXUIElement"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorFailure"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorIllegalArgument"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorInvalidUIElement"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorNoValue"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "AXFocusedApplication unreadable: kAXErrorNotImplemented"
+        ));
+        assert!(!super::preimage_fallback_trigger(
+            "focused application pid unreadable: kAXErrorCannotComplete"
+        ));
+        assert!(!super::preimage_fallback_trigger("kAXErrorSuccess"));
+        assert!(!super::preimage_fallback_trigger(""));
+    }
+
+    #[test]
+    fn frontmost_pair_requires_both_true_and_stable() {
+        // Pure instability regression: any unknown/false/disagreement is
+        // instability data that refuses, never a proven host claim.
+        use super::frontmost_pair_stable as stable;
+        assert!(stable(Some(true), Some(true)));
+        assert!(!stable(Some(true), Some(false)));
+        assert!(!stable(Some(false), Some(true)));
+        assert!(!stable(Some(false), Some(false)));
+        assert!(!stable(Some(true), None));
+        assert!(!stable(None, Some(true)));
+        assert!(!stable(None, None));
+    }
+
+    #[test]
+    fn fallback_agrees_only_on_full_corroboration() {
+        use super::preimage_fallback_agrees as agrees;
+        // All legs agree, frontmost before+after both true/stable.
+        assert!(agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        // Reserved PSN refuses.
+        assert!(!agrees(
+            1,
+            Some(1),
+            Some(1),
+            Some(true),
+            Some(true),
+            Some(1),
+            Some(7),
+            true
+        ));
+        // PSN/workspace disagreement refuses (never fabricated).
+        assert!(!agrees(
+            100,
+            Some(200),
+            Some(200),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        // Workspace instability mid-read refuses.
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(200),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!agrees(
+            100,
+            None,
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        // Unknown/false AXFrontmost on either side refuses.
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(false),
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(false),
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            None,
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            None,
+            Some(true),
+            Some(100),
+            Some(7),
+            true
+        ));
+        // AX identity mismatch refuses.
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(200),
+            Some(7),
+            true
+        ));
+        // Missing/zero window refuses (no wid => no restorable focus).
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(100),
+            None,
+            true
+        ));
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(0),
+            true
+        ));
+        // Lost CG join refuses.
+        assert!(!agrees(
+            100,
+            Some(100),
+            Some(100),
+            Some(true),
+            Some(true),
+            Some(100),
+            Some(7),
+            false
+        ));
+    }
+
+    #[test]
+    fn preimage_route_names_are_stable() {
+        assert_eq!(super::PreimageRoute::Systemwide.as_str(), "systemwide");
+        assert_eq!(
+            super::PreimageRoute::SlpsFrontCorroborated.as_str(),
+            "slps-front-corroborated"
+        );
+        assert_eq!(
+            super::PreimageRoute::SlpsFrontDirectFocused.as_str(),
+            "slps-front-direct-focused"
+        );
+        assert_eq!(
+            super::PreimageRoute::SlpsFrontDirectMain.as_str(),
+            "slps-front-direct-main"
+        );
+    }
+
+    #[test]
+    fn direct_selection_prefers_focused_then_main() {
+        // Joined focused leg wins when present and nonzero.
+        assert_eq!(
+            super::select_direct_window(Some(7), Some(8)),
+            (Some(7), "focused")
+        );
+        assert_eq!(
+            super::select_direct_window(Some(7), None),
+            (Some(7), "focused")
+        );
+        // Unavailable/missing focused leg falls back to a usable main leg.
+        assert_eq!(
+            super::select_direct_window(None, Some(8)),
+            (Some(8), "main")
+        );
+        // Zero WIDs are missing, never selected (either leg).
+        assert_eq!(
+            super::select_direct_window(Some(0), Some(8)),
+            (Some(8), "main")
+        );
+        assert_eq!(
+            super::select_direct_window(Some(0), Some(0)),
+            (None, "none")
+        );
+        assert_eq!(super::select_direct_window(None, Some(0)), (None, "none"));
+        // Unknown on both legs selects nothing.
+        assert_eq!(super::select_direct_window(None, None), (None, "none"));
+    }
+
+    #[test]
+    fn selected_agreement_requires_foreground_and_exact_window() {
+        // Full selected agreement: SLPS == workspace == want, exact
+        // selected WID, CG owned.
+        assert!(super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            Some(100),
+            Some(7),
+            true
+        ));
+        // SLPS/workspace mismatch refuses even with the right window.
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(200),
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            Some(200),
+            Some(7),
+            true
+        ));
+        // Unknown foreground legs refuse.
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            None,
+            Some(100),
+            Some(7),
+            true
+        ));
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            None,
+            Some(7),
+            true
+        ));
+        // Non-exact window refuses: selected names another WID, is
+        // missing, or the target is zero.
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            Some(100),
+            Some(8),
+            true
+        ));
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            Some(100),
+            None,
+            true
+        ));
+        assert!(!super::selected_focus_agrees(
+            100,
+            0,
+            Some(100),
+            Some(100),
+            Some(0),
+            true
+        ));
+        // Lost CG join refuses.
+        assert!(!super::selected_focus_agrees(
+            100,
+            7,
+            Some(100),
+            Some(100),
+            Some(7),
+            false
+        ));
+        // Reserved want PID refuses before any read.
+        assert!(!super::selected_focus_agrees(
+            1,
+            7,
+            Some(1),
+            Some(1),
+            Some(7),
+            true
+        ));
     }
 
     #[test]
@@ -3309,6 +6983,39 @@ mod tests {
         let _ = sls_connection_available();
         let _ = sls_main_connection_id();
         let _ = sls_space_type(1);
+        let _ = sls_display_rows();
+        let _ = cg_display_uuid(1);
+        let _ = ns_separate_spaces();
+    }
+
+    #[test]
+    fn display_change_flag_coalesces_and_takes() {
+        // Pure atomic semantics, all platforms: bursts collapse into one
+        // dirty generation; take clears it.
+        let flag = DisplayChangeFlag::new();
+        assert!(!flag.take_changed());
+        flag.mark_changed();
+        flag.mark_changed();
+        assert!(flag.take_changed());
+        assert!(!flag.take_changed());
+        // Cloned flags share the generation (controller handoff shape).
+        let shared = flag.clone();
+        shared.mark_changed();
+        assert!(flag.take_changed());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn display_guard_install_requires_main_thread() {
+        // Test threads are never the main thread: install must fail closed
+        // here without touching notification state. (If this ever ran on the
+        // main thread, install would be a harmless read-only observer.)
+        if objc2::MainThreadMarker::new().is_none() {
+            assert!(install_display_change_guard().is_err());
+        }
+        // Off-main display reads fail closed too.
+        assert!(ns_display_snapshot().is_err());
+        assert!(ns_separate_spaces().is_none());
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -3341,5 +7048,82 @@ mod tests {
         let first = cg_post_event_access_known();
         let second = cg_post_event_access_known();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn session_lock_verdict_needs_all_legs() {
+        use ScreenLockRead::{Absent, Locked, Malformed, Unlocked as MarkerUnlocked};
+        // Both documented legs true with the marker absent or unlocked: the
+        // ordinary unlocked desktop.
+        for screen in [Absent, MarkerUnlocked] {
+            assert_eq!(
+                lock_from_session_legs(Some(true), Some(true), screen),
+                SessionLock::Unlocked
+            );
+        }
+        assert!(
+            SessionState {
+                login_done: Some(true),
+                on_console: Some(true),
+                screen_lock: Absent,
+                lock: SessionLock::Unlocked,
+            }
+            .unlocked()
+        );
+        // A locked screen marker is locked even under healthy documented
+        // legs (screen-lock proof is the strongest leg).
+        for legs in [
+            (Some(true), Some(true)),
+            (Some(true), None),
+            (None, None),
+            (Some(false), Some(false)),
+        ] {
+            assert_eq!(
+                lock_from_session_legs(legs.0, legs.1, Locked),
+                SessionLock::Locked
+            );
+        }
+        // Any false documented leg: locked, never unlocked.
+        for legs in [
+            (Some(false), Some(true)),
+            (Some(true), Some(false)),
+            (Some(false), Some(false)),
+            (Some(false), None),
+            (None, Some(false)),
+        ] {
+            assert_eq!(
+                lock_from_session_legs(legs.0, legs.1, Absent),
+                SessionLock::Locked
+            );
+        }
+        // A malformed marker is unknown even under healthy legs (fail
+        // closed, never guessed).
+        assert_eq!(
+            lock_from_session_legs(Some(true), Some(true), Malformed),
+            SessionLock::Unknown
+        );
+        // Any unreadable documented leg with no locked marker: unknown.
+        for legs in [(None, None), (None, Some(true)), (Some(true), None)] {
+            for screen in [Absent, MarkerUnlocked] {
+                assert_eq!(
+                    lock_from_session_legs(legs.0, legs.1, screen),
+                    SessionLock::Unknown
+                );
+            }
+        }
+        assert!(!SessionState::unknown().unlocked());
+        // Absence and malformation stay distinct on the raw leg.
+        assert_ne!(Absent, Malformed);
+    }
+
+    #[test]
+    fn session_state_read_is_repeatable() {
+        // Read-only C call with no side effects: two reads agree. Off
+        // platform this pins the fail-closed stub (`Unknown`).
+        let first = session_state();
+        let second = session_state();
+        assert_eq!(first, second);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(first.lock, SessionLock::Unknown);
     }
 }

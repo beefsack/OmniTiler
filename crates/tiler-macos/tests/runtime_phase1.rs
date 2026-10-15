@@ -575,11 +575,11 @@ fn key(kind: TapKeyKind, key_flags: u64, key_code: u32) -> RawKeyEvent {
 }
 
 fn focus_key() -> RawKeyEvent {
-    key(TapKeyKind::KeyDown, flags(ProbeModifier::Meta), 0x04)
+    key(TapKeyKind::KeyDown, flags(ProbeModifier::Ctrl), 0x04)
 }
 
 fn move_key() -> RawKeyEvent {
-    key(TapKeyKind::KeyDown, flags(ProbeModifier::Meta), 0x05)
+    key(TapKeyKind::KeyDown, flags(ProbeModifier::Ctrl), 0x05)
 }
 
 /// Wait until the input owner has classified `forwarded`/`ignored` events,
@@ -1227,15 +1227,15 @@ fn input_matching_forwards_only_exact_keydown() {
 
     // Key-up, wrong modifier, extra modifier, and wrong key are all ignored
     // with no core contact.
-    let extra_modifier = flags(ProbeModifier::Meta) | flags(ProbeModifier::Shift);
+    let extra_modifier = flags(ProbeModifier::Ctrl) | flags(ProbeModifier::Shift);
     send_input_and_flush(
         &fixture,
         &[
-            key(TapKeyKind::KeyUp, flags(ProbeModifier::Meta), 0x04),
-            key(TapKeyKind::KeyDown, flags(ProbeModifier::Ctrl), 0x04),
+            key(TapKeyKind::KeyUp, flags(ProbeModifier::Ctrl), 0x04),
+            key(TapKeyKind::KeyDown, flags(ProbeModifier::Meta), 0x04),
             key(TapKeyKind::KeyDown, extra_modifier, 0x04),
-            key(TapKeyKind::KeyDown, flags(ProbeModifier::Meta), 0x09),
-            key(TapKeyKind::Other, flags(ProbeModifier::Meta), 0x04),
+            key(TapKeyKind::KeyDown, flags(ProbeModifier::Ctrl), 0x09),
+            key(TapKeyKind::Other, flags(ProbeModifier::Ctrl), 0x04),
         ],
         baseline.input_forwarded,
         baseline.input_ignored + 5,
@@ -1545,12 +1545,30 @@ fn structured_log_reconstructs_lifecycle() {
     flush(&fixture.handle);
     let _ = wait_applied(&fixture);
     // The applied completion is processed asynchronously; rendezvous with
-    // it before terminating so the log shows the full lifecycle.
-    wait_diagnostics(
-        &fixture.handle,
-        |d| d.completions.get("applied").copied().unwrap_or(0) >= 1,
-        "applied completion",
-    );
+    // the engine-logged `ax-result/applied` before terminating so the log
+    // shows the full lifecycle. Neither backend dispatch truth
+    // (`wait_applied`) nor the `completions["applied"]` counter proves it:
+    // the counter increments even for late results the engine then logs
+    // as `terminated-invalidated`, so only the ring entry itself orders
+    // the completion ahead of terminate.
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "ax-result" && e.outcome == "applied")
+        {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "engine never logged ax-result/applied: {:?}",
+                fixture.handle.log_snapshot()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     let TerminateOutcome::Terminated { .. } = fixture.handle.terminate_app(APP_A) else {
         panic!("terminate");
     };

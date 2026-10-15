@@ -2,9 +2,9 @@
 
 //! Probe configuration: Ctrl-role modifier plus finite bounds.
 //!
-//! "Ctrl configurable default Meta": the chord filed under `Ctrl` uses a
-//! configurable modifier that defaults to Meta (Cmd), so the default probe
-//! never hijacks the system Ctrl chord space.
+//! "Ctrl configurable default Ctrl": the chord filed under `Ctrl` uses a
+//! configurable modifier that defaults to Ctrl (pass `--ctrl meta` for the
+//! Cmd chord space).
 
 use serde::{Deserialize, Serialize};
 
@@ -22,9 +22,10 @@ pub const DEFAULT_PROBE_SECONDS: u64 = 30;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ProbeModifier {
-    /// Command (Meta). Default.
-    #[default]
+    /// Command (Meta). Opt-in via `--ctrl meta`.
     Meta,
+    /// Control. Default.
+    #[default]
     Ctrl,
     Alt,
     Shift,
@@ -64,7 +65,7 @@ pub struct ProbeConfig {
 impl Default for ProbeConfig {
     fn default() -> Self {
         Self {
-            modifier: ProbeModifier::Meta,
+            modifier: ProbeModifier::Ctrl,
             tap_seconds: DEFAULT_TAP_SECONDS,
             ax_timeout_ms: DEFAULT_AX_TIMEOUT_MS,
             max_windows: DEFAULT_MAX_WINDOWS,
@@ -111,9 +112,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_modifier_is_meta() {
-        assert_eq!(ProbeConfig::default().modifier, ProbeModifier::Meta);
-        assert_eq!(ProbeModifier::parse("META").unwrap(), ProbeModifier::Meta);
+    fn default_modifier_is_ctrl() {
+        assert_eq!(ProbeConfig::default().modifier, ProbeModifier::Ctrl);
+        assert_eq!(ProbeModifier::parse("CTRL").unwrap(), ProbeModifier::Ctrl);
     }
 
     #[test]
