@@ -69,3 +69,36 @@ all inline tests out, split by role so every resulting test file stays under
   `mod` (rustfmt and rustc agree on both).
 - Gates: locked four-package build, same-package tests, workspace fmt check,
   strict all-target clippy, `git diff --check`; suite 2,115 / 0 / 1.
+
+## Production split (row 19)
+
+Production follows the tests-first row: `workspace_owner.rs` (1,801 lines)
+becomes `workspace_owner/mod.rs` plus seven role leaves, every production
+file under the 1,500-line soft cap. No behavior change: whole-item moves,
+all leaf bodies byte-identical to the row-18 parent slices, public
+`crate::workspace_owner` paths preserved through explicit parent
+re-exports (`build_send_event_inner` stays file-local in `sends.rs`: no
+test or external use).
+
+- `sends.rs` 467: `OwnerRow`, send builders/stamps, send fences and overlay
+  gates, stay-focus, directional refusal, float carry.
+- `migration.rs` 309: `MigrateRow`, migrate builder and transfer verify,
+  rect translation, migration target and fences.
+- `directional.rs` 397: directional/output/drag fence snapshots, selection,
+  pair adjacency, transfer verifies, focus target, point lookup.
+- `markers.rs` 135: marker slots, restart classification, eligibility gates.
+- `foreground.rs` 144: foreground veto classifier.
+- `rows.rs` 178: planned writes, writable subset, hidden snapshots, dispatch
+  gate, row assembly.
+- `identity.rs` 142: output context, fixed-admission stamp, lifetime guards,
+  domain values.
+- `mod.rs` 73: shared imports, seven `mod` decls, explicit `pub use`
+  re-exports, `tests` plus `fixed_admission_tests` decls. The fixed-admission
+  test file is renamed `tests_fixed_admission.rs` to
+  `fixed_admission_tests.rs` for the ordinary `mod` declaration; module name
+  and body are unchanged.
+
+Leaves use `use super::*` per the `tiling_sys` precedent except the
+import-free `foreground` and `markers`. Gates: locked four-package build,
+same-package tests, workspace fmt check, strict all-target clippy,
+`git diff --check`; suite 2,115 / 0 / 1.
