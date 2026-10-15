@@ -6005,6 +6005,12 @@ mod stub {
         _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
     }
 
+    // Preserve the native RAII guard's teardown boundary. Stub creation
+    // always refuses, so there is no native resource to release here.
+    impl Drop for TapSource {
+        fn drop(&mut self) {}
+    }
+
     impl TapSource {
         pub fn create(
             _chords: &[TapChordSpec],

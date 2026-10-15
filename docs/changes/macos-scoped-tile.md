@@ -143,6 +143,12 @@ delivery and timeout-notification recovery retain their pending classifications.
   in Linux/Windows builds. Those portability gaps are corrected without
   changing native behavior; cross-platform results are attached to the
   corrective publication.
+- Portable verification also exposed a no-op display flag, incomplete stub
+  teardown parity and test-only import/borrow issues; pure flag semantics are
+  now shared and the stubs retain the native guard contract. An observation
+  isolation fixture queued input before its autonomous focused snapshot had
+  reached the engine; it now waits for that exact accepted sequence. Its
+  assertions are unchanged and 40 targeted repetitions passed.
 - Final `just app 'OmniTiler Mac Dev'` and `just verify` pass for both bundles,
   including strict signature and macOS 15.0 load commands. Development
   Gatekeeper rejection remains a diagnostic; no security policy was changed.

@@ -2060,6 +2060,37 @@ fn startup_change_and_readback_converge_without_replay() {
     shutdown_clean(&fixture);
 }
 
+/// Wait until the engine has consumed worker-stamped observation `seq`
+/// for (`pid`, `generation`). Engine-consume evidence only: the
+/// `observation/applied` ring entry. Worker-send counters
+/// (`observations_published`), queued submits, frame counts, and bare
+/// flushes never satisfy this: the worker publishes asynchronously behind
+/// the test thread, so a barrier queued before the publish proves nothing
+/// about focus establishment. Discriminates by `seq` so startup (seq 1,
+/// one window, unfocused) can never satisfy readiness for the focused
+/// change (seq 2).
+fn wait_observation_applied(fixture: &Fixture, pid: u32, generation: u64, seq: u64) {
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if fixture.handle.log_snapshot().iter().any(|e| {
+            e.pid == pid
+                && e.generation == generation
+                && e.ref_id == seq
+                && e.kind == "observation"
+                && e.outcome == "applied"
+        }) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "engine never applied observation pid={pid} gen={generation} seq={seq}: {:?}",
+                fixture.handle.log_snapshot()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn hung_observation_pump_cannot_stall_others() {
     let fixture = start(test_config());
@@ -2075,8 +2106,10 @@ fn hung_observation_pump_cannot_stall_others() {
 
     // While A sits in its pump, B's backend observation plus input both
     // progress (the rendezvous below proves the engine is not stalled).
-    // The flush first establishes B's observed focus so the input step has
-    // a subject; input sent earlier would race focus establishment.
+    // Rendezvous on engine-consumed seq 2 (two windows, focused 21) before
+    // the input step: the worker publishes asynchronously behind the test
+    // thread, so a bare flush queued before the publish would race focus
+    // establishment and the oracle would honestly refuse with no focus.
     obs_tx_b
         .send(Ok(backend_snapshot(
             vec![win(21, 0, 0, 480, 1080), win(22, 480, 0, 480, 1080)],
@@ -2088,7 +2121,7 @@ fn hung_observation_pump_cannot_stall_others() {
         APP_B,
         vec![win(21, 0, 0, 480, 1080), win(22, 480, 0, 480, 1080)],
     );
-    flush(&fixture.handle);
+    wait_observation_applied(&fixture, APP_B, gen_b, 2);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
     wait_desired_names(&fixture, &["1002_21", "1002_22"]);
 
