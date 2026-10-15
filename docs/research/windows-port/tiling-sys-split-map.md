@@ -184,3 +184,32 @@ eight role leaves behind an 81-line mod.rs (physical): chords 827, intents
 preserved through parent re-exports. Max production file 1,262, max test
 file 2,810: every file within caps. Required gates pass with 2,115 / 0 / 1.
 Full layout and evidence: [owner/snapkey record](../../changes/archive/windows-owner-snapkey-split.md).
+
+## remaining top-level split (rows 22-26)
+
+Follow-on to the families above, same soft caps and the same
+physical/nonblank size convention.
+
+Row 22 moves every inline test module of the four remaining oversized
+Windows top-level files into file-backed directory modules; no
+production moves. Settings tests 1,330 / 1,297 / 33, tiling tests
+294 / 286 / 6, input_pump tests 728 / 709 / 19 plus native core_tests
+1,568 / 1,525 / 35, render_pump tests 822 / 785 / 28 plus native
+native_tests 88 / 83 / 3; 124 tests total, all qualified paths
+unchanged (one necessary `include_str!` fixture depth fix in
+`settings/tests.rs`).
+
+Rows 23-26 move production into role leaves behind thin `mod.rs` roots
+(physical): settings mod 86 (schema 604, chords 166, catalog 1,374,
+effective 226, validation 248, presets 130, persistence 188,
+tile_bridge 66); tiling mod 79 (geometry 248, classification 310,
+float 706, reconcile 592, cli 1,429, workspace 629); input_pump mod 73
+(backoff 60, inbox_sender 278, channels 123, snapshot 64, fake 74,
+native 1,143); render_pump mod 64 (present 136, render_core 652, fake
+309, native 1,118). All leaf bodies are whole-item moves; public crate
+paths are preserved through parent re-exports, with only two
+compile-required `pub(super)` widenings (`InboxSender::invalidates`,
+`hide_backoff`, each for the sibling `tests` module). Max production
+file 1,429, max test file 1,568: every file within caps. Required gates
+pass with 2,115 / 0 / 1. Full layout and evidence:
+[remaining-split record](../../changes/archive/windows-remaining-module-split.md).

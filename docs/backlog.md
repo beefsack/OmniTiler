@@ -552,16 +552,26 @@ decisions of 2026-09-24 are under
   within caps (owner max production 467, max test 2,810; snapkey max
   production 1,262, max test 304). Sizes are physical lines including blanks
   (nonblank alongside in the record). Gates green 2,115 / 0 / 1.
-  Remaining module-size work: Windows top-level settings.rs (4,368),
-  tiling.rs (4,224), input_pump.rs (4,115) and render_pump.rs (3,203) physical
-  lines; no standalone test file exceeds 3,000 in Windows/core, but core
+  Windows remaining top-level split complete 2026-10-15: tests-first row
+  plus one production row per family moves settings, tiling, input_pump
+  and render_pump into role leaves, every file within caps (max
+  production `tiling/cli.rs` 1,429, max test
+  `input_pump/native/core_tests.rs` 1,568; 124 tests, paths unchanged).
+  Sizes are physical lines including blanks (nonblank alongside in the
+  record). Gates green 2,115 / 0 / 1.
+  Remaining module-size work (out of that scope, not investigated): Windows
+  `workspace.rs` (2,918), `active_border_sys.rs` (1,986),
+  `product_hide.rs` (1,832), `settings_ui.rs` (1,832), `winarrow.rs`
+  (1,774), `render_handoff.rs` (1,515) physical lines; no Windows test
+  file exceeds 3,000 (max `tests_pending_drop.rs` 2,852). Core
   engine.rs (8,491) and session.rs (7,239) still carry large inline test
   modules as the next test-extraction candidates. Shared crates and KDE files
   above still split with their work streams; no further plan.
   ([split map](research/windows-port/tiling-sys-split-map.md),
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
    [phase 2](changes/windows-tiling-sys-split-phase2.md),
-   [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md)).
+   [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md),
+   [remaining-split record](changes/archive/windows-remaining-module-split.md)).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in
