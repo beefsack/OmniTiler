@@ -1,6 +1,6 @@
 use super::*;
 
-use super::tiling_sys_render_2::poll_render_carrier;
+use super::render_ack::poll_render_carrier;
 
 /// Owner-side dedicated-render bridge (product path only). The renderer
 /// thread creates, pumps, presents and destroys all three overlay carriers;

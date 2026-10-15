@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-use super::tiling_sys_pending_seams::{INJECTED_ARRIVAL_PLACEMENT, INJECTED_PLACEMENT_NORMALS};
+use super::pending_seams::{INJECTED_ARRIVAL_PLACEMENT, INJECTED_PLACEMENT_NORMALS};
 
 /// Whether a window's `WINDOWPLACEMENT` coordinates ride workspace
 /// coordinates: a top-level window without `WS_EX_TOOLWINDOW` per the

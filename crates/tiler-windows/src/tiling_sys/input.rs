@@ -1,6 +1,6 @@
 use super::*;
 
-use super::tiling_sys_trace::log_json_at;
+use super::trace::log_json_at;
 
 /// Owner-side dedicated-input bridge (product path only). The pump owns both
 /// hooks and their classifiers; the owner publishes versioned snapshots and

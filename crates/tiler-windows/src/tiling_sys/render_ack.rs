@@ -1,6 +1,6 @@
 use super::*;
 
-use super::tiling_sys_render_1::{PostedNote, render_hide_reason, render_record_applied};
+use super::render_bridge::{PostedNote, render_hide_reason, render_record_applied};
 
 pub(super) fn poll_render_carrier(state: &mut TileLoop, carrier: RenderCarrier, now: Instant) {
     let ack = state

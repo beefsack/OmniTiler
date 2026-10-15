@@ -413,7 +413,7 @@ fn converge_tail(
     // reaches this tail.
     {
         let outputs: Vec<String> = sides.iter().map(|(o, _)| o.clone()).collect();
-        super::tiling_sys_scope_trailing::tail_trailing(state, &outputs);
+        super::scope_trailing::tail_trailing(state, &outputs);
     }
     let mut focus_outcome: &'static str = "no-focus";
     let mut focus_window: Option<String> = None;

@@ -1,6 +1,6 @@
 use super::*;
 
-use super::tiling_sys_trace::log_json_at;
+use super::trace::log_json_at;
 
 /// Trace-only non-wait owner-work timing sample for one pump iteration,
 /// aggregated into the bounded [`Health`] window instead of per-wake file

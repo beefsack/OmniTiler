@@ -1,4 +1,4 @@
-use super::tiling_sys_rows::desired_entries;
+use super::rows::desired_entries;
 use super::*;
 
 /// Bundled inputs for one geometry application pass.

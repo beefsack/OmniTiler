@@ -58,88 +58,89 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 #[cfg(test)]
-use self::tiling_sys_admission::admission_clear_planned;
-use self::tiling_sys_admission::{
+use self::admission::admission_clear_planned;
+use self::admission::{
     admission_clear_eligible, clear_maximize_at_admission, committed_ordinary_pin,
     engine_is_automatic_fixed, engine_is_float, fanout_pending_closed, fixed_origin_provenance,
     fixed_predicate_for, float_focus_candidates, float_send_admits, handle_engine_event,
     is_automatic_in, overlay_refusal_for, stamp_engine_event,
 };
-use self::tiling_sys_assignments::{
+use self::assignments::{
     MAX_HIDE_DIAG_PER_SELECT, audit_hidden_claims, ensure_workspace_assignments,
     workspace_close_cleanup, workspace_hide_one, workspace_proof_reveal_gate,
 };
-use self::tiling_sys_chords_1::{
+use self::chord_resolution::{
     ChordObserved, ChordTarget, chord_overlay_refusal, observe_chord_intent,
     orientation_overlay_refusal, orientation_plan, resolve_chord_target, settle_chord_reject,
 };
 #[cfg(test)]
-use self::tiling_sys_chords_2::FreshFloatObservation;
-use self::tiling_sys_chords_2::{
-    NativeUnfloatClear, UnfloatClearEffects, apply_float_from_tiled, apply_unfloat_to_tiled,
-    clear_float_mark, clear_sticky_mark, restore_raised_band, unfloat_maximize_clear,
-};
-#[cfg(test)]
-use self::tiling_sys_cross_drag::prepare_cross_drag_event;
-use self::tiling_sys_cross_drag::{
+use self::cross_drag::prepare_cross_drag_event;
+use self::cross_drag::{
     CrossDragSettle, DropDestination, adopt_gaps_for_route, adopt_gaps_on_candidate,
     assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas, resolve_drop_destination,
     settle_cross_drag_drop, snapshot_cross_drag,
 };
-use self::tiling_sys_directional_1::{
+use self::directional_cross::run_directional_cross;
+use self::directional_resolution::{
     chord_output, directional_arrival_verified, directional_live, directional_outputs_from_areas,
     directional_snapshot, drag_drop_live, output_for_point, output_for_rect,
     resolve_directional_target, revision_for, workspace_domain_for,
 };
-use self::tiling_sys_directional_2::run_directional_cross;
-pub use self::tiling_sys_dispatch::{LaunchBackend, SystemLaunchBackend};
-use self::tiling_sys_dispatch::{
+pub use self::dispatch::{LaunchBackend, SystemLaunchBackend};
+use self::dispatch::{
     dispatch_float_intent, dispatch_launch_intent, dispatch_orientation_intent,
     dispatch_sticky_intent, dispatch_workspace_tiling_intent,
 };
-use self::tiling_sys_focus::{
-    hide_border, note_focus_advance, publish_managed, refresh_active_border,
+#[cfg(test)]
+use self::drag_preview::prepare_cross_drag_preview;
+use self::drag_preview::{prepare_cross_singleton_event, refresh_drag_preview};
+#[cfg(test)]
+use self::float_toggle::FreshFloatObservation;
+use self::float_toggle::{
+    NativeUnfloatClear, UnfloatClearEffects, apply_float_from_tiled, apply_unfloat_to_tiled,
+    clear_float_mark, clear_sticky_mark, restore_raised_band, unfloat_maximize_clear,
 };
-pub(crate) use self::tiling_sys_focus_actuation::owner_snap_dropped;
-use self::tiling_sys_focus_actuation::{
+use self::focus::{hide_border, note_focus_advance, publish_managed, refresh_active_border};
+pub(crate) use self::focus_actuation::owner_snap_dropped;
+use self::focus_actuation::{
     FocusActuation, actuate_focus, born_maximized_keep_overlay_for, overlay_expected,
     same_axis_move_for,
 };
 #[cfg(test)]
-use self::tiling_sys_fullscreen::{
-    FULLSCREEN_STYLE_BITS, OwnedExitEffects, exit_fullscreen_owned_with,
-};
-use self::tiling_sys_fullscreen::{
+use self::fullscreen::{FULLSCREEN_STYLE_BITS, OwnedExitEffects, exit_fullscreen_owned_with};
+use self::fullscreen::{
     FullscreenMeta, clear_fullscreen_meta, effective_stale_meta_via_effects, enter_fullscreen,
     exit_fullscreen_owned, holdable_key, live_style_for_retire, read_fullscreen_meta,
     track_fullscreen_holds,
 };
-use self::tiling_sys_geometry::{
-    ApplyInput, ApplySummary, apply_geometry, audit_json, reply_outcome,
+use self::geometry::{ApplyInput, ApplySummary, apply_geometry, audit_json, reply_outcome};
+use self::group_underlay::{
+    chord_held_now, classify_move_size_start, hide_preview, hide_underlay, live_outer_rect,
+    refresh_group_underlay,
 };
-use self::tiling_sys_hints::{HintCx, HintOutcome, HintStats};
+use self::hints::{HintCx, HintOutcome, HintStats};
 #[cfg(test)]
-use self::tiling_sys_hints::{clear_test_hints, inject_test_hints};
-use self::tiling_sys_input::{
+use self::hints::{clear_test_hints, inject_test_hints};
+use self::input::{
     InputBridge, log_input_faults, offer_input_control, offer_input_snapshot, poll_input_ack,
 };
-use self::tiling_sys_keyboard_1::keyboard_tick;
-use self::tiling_sys_keyboard_2::dispatch_resize_intent;
-use self::tiling_sys_minmax::{fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
-pub(crate) use self::tiling_sys_monitors::ensure_pm_v2;
-use self::tiling_sys_monitors::{MonitorArea, all_monitors, monitor_fulls};
+use self::keyboard_resize::dispatch_resize_intent;
+use self::keyboard_tick::keyboard_tick;
+use self::minmax::{fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
+pub(crate) use self::monitors::ensure_pm_v2;
+use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
 #[cfg(test)]
-use self::tiling_sys_observe::WaitWake;
-use self::tiling_sys_observe::{
+use self::observe::WaitWake;
+use self::observe::{
     HookEvent, ObservedWindow, OwnerWaitCounts, class_of, foreground_lifetime, hook_queue,
     observe_window, pump_wait, pump_wait_with_intent, verify_proof_owned, window_identity,
     winevent_proc,
 };
-pub use self::tiling_sys_observe::{KnownIdentity, ObserveFailure};
-use self::tiling_sys_output_send::{resolve_output_send_target, run_output_send};
-use self::tiling_sys_owner_work::OwnerWorkGuard;
+pub use self::observe::{KnownIdentity, ObserveFailure};
+use self::output_send::{resolve_output_send_target, run_output_send};
+use self::owner_work::OwnerWorkGuard;
 #[cfg(test)]
-use self::tiling_sys_pending_seams::{
+use self::pending_seams::{
     APPLY_WRITABLES, INJECTED_APPLY, INJECTED_AREAS, INJECTED_ELEVATED, INJECTED_FLOAT_MOVE_OK,
     INJECTED_FLOAT_MOVES, INJECTED_FOCUS, INJECTED_ICONIC, INJECTED_NATIVE_MOVE_OK,
     INJECTED_NATIVE_TRANSFERS, INJECTED_OBSERVE, INJECTED_OVERLAY, INJECTED_STOP, INJECTED_SUSPEND,
@@ -151,62 +152,53 @@ use self::tiling_sys_pending_seams::{
     inject_pending_recovery, inject_pending_stop, inject_pending_suspend, inject_pending_tag,
     inject_pending_unreadable, pending_apply_writables, pending_counters, pending_native_transfers,
 };
-use self::tiling_sys_pending_seams::{
+use self::pending_seams::{
     fresh_arrival_rect, live_is_iconic, live_member_tag, live_query_recovery,
 };
 #[cfg(not(test))]
-use self::tiling_sys_placement::placement_is_workspace_coords;
-use self::tiling_sys_placement::{
+use self::placement::placement_is_workspace_coords;
+use self::placement::{
     fresh_arrival_placement, live_placement_workspace_coords, screen_to_placement_raw,
     translate_placement_normal_to_target,
 };
 #[cfg(test)]
-use self::tiling_sys_placement::{live_placement_normal, placement_raw_to_screen};
-use self::tiling_sys_preview::{
+use self::placement::{live_placement_normal, placement_raw_to_screen};
+use self::preview::{
     PreviewBound, PreviewFresh, PreviewGate, PreviewStartBinding, preview_hide_for_refusal,
     preview_prior_desc, preview_same_size, preview_sample_gate,
 };
-pub use self::tiling_sys_probes::live_overlay_flags;
-use self::tiling_sys_probes::{
+pub use self::probes::live_overlay_flags;
+use self::probes::{
     WriteTarget, is_zoomed_now, pid_current, restore_wake_probe, restore_zoom_placement,
     revalidate_target, toggle_zoom_async,
 };
 #[cfg(test)]
-use self::tiling_sys_reconcile::sweep_retire_stale_fullscreen;
-use self::tiling_sys_reconcile::{reconcile_tick, writable_tokens};
-use self::tiling_sys_render_1::{
+use self::reconcile::sweep_retire_stale_fullscreen;
+use self::reconcile::{reconcile_tick, writable_tokens};
+#[cfg(test)]
+use self::render_ack::{RENDER_FRAME_SCOPE, RENDER_SUMMARY_WINDOW, RenderFrameSample};
+use self::render_ack::{
+    RenderFrameHealth, note_render_hidden, render_end_snapshot, render_same_thread_gate,
+    same_thread_sample,
+};
+use self::render_bridge::{
     RenderBridge, drain_render_failures, hide_preview_finish, hide_render_carrier,
     owned_overlay_hwnd, poll_render_acks, post_border_frame, post_preview_frame,
     post_underlay_frame, render_carrier_visible,
 };
-#[cfg(test)]
-use self::tiling_sys_render_2::{RENDER_FRAME_SCOPE, RENDER_SUMMARY_WINDOW, RenderFrameSample};
-use self::tiling_sys_render_2::{
-    RenderFrameHealth, note_render_hidden, render_end_snapshot, render_same_thread_gate,
-    same_thread_sample,
-};
-use self::tiling_sys_restart::{
-    admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers,
-};
-use self::tiling_sys_retained::{HiddenRecord, PendingClosed, RetainedRow};
-use self::tiling_sys_rows::{
+use self::restart::{admit_born_fullscreen, admit_slotless_maximized, adopt_restart_markers};
+use self::retained::{HiddenRecord, PendingClosed, RetainedRow};
+use self::rows::{
     assemble_domain_rows, drop_member_state, hold_band_target, hold_marker_target,
     hydrate_tile_override_marker, install_float_mark_held, install_sticky_mark_held,
     install_tile_override_mark_held, marker_tag_pid_fresh, prune_float_state,
     remove_tile_override_mark_best_effort, retain_float_focus_validated,
 };
-use self::tiling_sys_shell::{
+use self::shell::{
     DIALOG_CLASS, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, exe_file_name, is_border_shell_popup,
     is_shell_class, rect_from_win,
 };
-use self::tiling_sys_trace::{log_engine_placement_trace, log_json_at, refresh_border_timed};
-use self::tiling_sys_underlay_1::{
-    chord_held_now, classify_move_size_start, hide_preview, hide_underlay, live_outer_rect,
-    refresh_group_underlay,
-};
-#[cfg(test)]
-use self::tiling_sys_underlay_2::prepare_cross_drag_preview;
-use self::tiling_sys_underlay_2::{prepare_cross_singleton_event, refresh_drag_preview};
+use self::trace::{log_engine_placement_trace, log_json_at, refresh_border_timed};
 use crate::active_border::{
     ActiveBorderOptions, border_eligible, border_outer_rect, scale_style, scale_to_physical,
 };
@@ -1745,7 +1737,7 @@ fn workspace_do_select(
                 .scope_owner
                 .plan_shared_select(&state.workspaces, target)
             {
-                return tiling_sys_scope_effects::shared_select(
+                return scope_effects::shared_select(
                     state,
                     me,
                     store,
@@ -1766,7 +1758,7 @@ fn workspace_do_select(
                 .scope_owner
                 .swap_plan_for(&state.workspaces, output, target)
         {
-            return tiling_sys_scope_effects::global_swap_select(
+            return scope_effects::global_swap_select(
                 state,
                 me,
                 store,
@@ -2028,7 +2020,7 @@ fn workspace_do_select(
     // Trailing maintenance through the shared scope contract (item 12
     // stage B): local keeps the exact legacy per-output sequence, scoped
     // modes converge per-output plans / the one logical ring.
-    tiling_sys_scope_trailing::trailing_after_select(state, output);
+    scope_trailing::trailing_after_select(state, output);
     // Post-reveal fresh observation: the pre-switch `observed` cannot contain
     // the hidden target set, so focusing from it always misses as `vanished`.
     // Re-enumerate, republish origins, establish the appropriate target focus
@@ -2797,7 +2789,7 @@ fn workspace_send_stay_native(
     // Ordinary lifecycle supplies the next spare when the transfer filled the
     // trailing empty; the source view stays selected throughout.
     // Item 12 stage B: scoped trailing spare.
-    tiling_sys_scope_sends::trailing_spare_scoped(state, output);
+    scope_sends::trailing_spare_scoped(state, output);
     SendEffect {
         outcome: "ok",
         focus: "none",
@@ -2943,28 +2935,24 @@ fn workspace_do_send(
     if state.allowlist.is_some() && !state.workspace_proof {
         return fail("workspace-disabled");
     }
-    let target_id = match tiling_sys_scope_sends::resolve_scoped_send_target(
-        state,
-        output,
-        &loc.workspace,
-        target,
-    ) {
-        // Item 12 stage B: numbered/relative/trailing resolve over the
-        // adopted scoped ring (local delegates to the workspace resolvers,
-        // so the local path is unchanged); shared trailing creation mints
-        // one logical id across all output domains.
-        tiling_sys_scope_sends::ScopedSendTarget::Id(id) => id,
-        tiling_sys_scope_sends::ScopedSendTarget::Unknown(outcome) => {
-            return fail(outcome);
-        }
-    };
+    let target_id =
+        match scope_sends::resolve_scoped_send_target(state, output, &loc.workspace, target) {
+            // Item 12 stage B: numbered/relative/trailing resolve over the
+            // adopted scoped ring (local delegates to the workspace resolvers,
+            // so the local path is unchanged); shared trailing creation mints
+            // one logical id across all output domains.
+            scope_sends::ScopedSendTarget::Id(id) => id,
+            scope_sends::ScopedSendTarget::Unknown(outcome) => {
+                return fail(outcome);
+            }
+        };
     if target_id == loc.workspace {
         return fail("no-op");
     }
     // Shared convergence before tokens/fences: outputs lacking the logical
     // target id gain an empty entry so the transfer below preserves the
     // window's output-bound domain instead of refusing.
-    tiling_sys_scope_sends::ensure_shared_send_entry(state, output, &target_id);
+    scope_sends::ensure_shared_send_entry(state, output, &target_id);
     let source_token = state.workspaces.workspace_token(output, &loc.workspace);
     let target_token = state.workspaces.workspace_token(output, &target_id);
     let fail_at = |outcome: &'static str| SendEffect {
@@ -3885,7 +3873,7 @@ fn workspace_send_stay(
     // trailing empty; the source view stays selected throughout (no history
     // record: only verified selects record; trailing maintenance retains the
     // null focus by never touching focus). Item 12 stage B: scoped spare.
-    tiling_sys_scope_sends::trailing_spare_scoped(state, output);
+    scope_sends::trailing_spare_scoped(state, output);
     // Exact-lifetime focus plan through the tested classifier: genuine null
     // (sole-mover stay emptied the source) resolves Null with ok/no-focus
     // and no setter; a some-but-stale mapping resolves Stale with
@@ -6035,7 +6023,7 @@ fn workspace_migrate_one(
     };
     // Item 12 stage B: shared whole-workspace migration refuses per the
     // established contract before any mutation.
-    if let Some(outcome) = tiling_sys_scope_sends::migration_scope_refusal(state) {
+    if let Some(outcome) = scope_sends::migration_scope_refusal(state) {
         log_refuse(outcome);
         return outcome;
     }
@@ -7524,7 +7512,7 @@ fn run_workspace_migrate(
         // arrival; local stays on the primitive's own invalidation).
         let moved = outcome.moved_id.clone();
         let converged = converged_refill.clone();
-        tiling_sys_scope_trailing::note_migration_completed(
+        scope_trailing::note_migration_completed(
             state,
             source_output,
             converged.as_deref(),
@@ -7619,7 +7607,7 @@ fn run_workspace_migrate(
     // on the primitive's own invalidation).
     let refill = outcome.source_refill.clone();
     let moved = outcome.moved_id.clone();
-    tiling_sys_scope_trailing::note_migration_completed(
+    scope_trailing::note_migration_completed(
         state,
         source_output,
         refill.as_deref(),
@@ -8525,10 +8513,10 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
 /// return the workspaces come back with then-current contents. Focus
 /// preserves the surviving view unless the removed monitor held focus.
 /// Mode-aware monitor topology sync (item 12 stage C): thin dispatcher into
-/// [`tiling_sys_scope_hotplug`]. Local keeps the legacy body below unchanged;
+/// [`scope_hotplug`]. Local keeps the legacy body below unchanged;
 /// global-unique adds scoped history/trailing and shared skips displacement.
 fn sync_monitor_outputs(state: &mut TileLoop, areas: &[MonitorArea]) {
-    tiling_sys_scope_hotplug::sync_monitor_outputs(state, areas);
+    scope_hotplug::sync_monitor_outputs(state, areas);
 }
 
 fn sync_monitor_outputs_local(state: &mut TileLoop, areas: &[MonitorArea]) {
@@ -11683,8 +11671,8 @@ fn run_tile_loop(
     // Item 12 stage B: scoped startup priming on the fixed topology (mode
     // order/history baselines plus shared current convergence and the
     // trailing floor). Runs once here; later hotplug syncs mode-aware
-    // through `tiling_sys_scope_hotplug`.
-    tiling_sys_scope_trailing::prime_after_sync(&mut state);
+    // through `scope_hotplug`.
+    scope_trailing::prime_after_sync(&mut state);
     log_json_at(
         &log_path,
         serde_json::json!({
@@ -15527,168 +15515,129 @@ fn inspect_carrier(class: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_esc.rs"]
+#[path = "tests_esc.rs"]
 mod esc_sequence_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_input_snapshot.rs"]
+#[path = "tests_input_snapshot.rs"]
 mod input_snapshot_offer_tests;
 
-#[path = "tiling_sys_scope_effects.rs"]
-mod tiling_sys_scope_effects;
+mod scope_effects;
 
-#[path = "tiling_sys_scope_sends.rs"]
-mod tiling_sys_scope_sends;
+mod scope_sends;
 
-#[path = "tiling_sys_scope_trailing.rs"]
-mod tiling_sys_scope_trailing;
+mod scope_trailing;
 
-#[path = "tiling_sys_scope_hotplug.rs"]
-mod tiling_sys_scope_hotplug;
+mod scope_hotplug;
 
-#[path = "tiling_sys_shell.rs"]
-mod tiling_sys_shell;
+mod shell;
 
-#[path = "tiling_sys_monitors.rs"]
-mod tiling_sys_monitors;
+mod monitors;
 
-#[path = "tiling_sys_observe.rs"]
-mod tiling_sys_observe;
+mod observe;
 
-#[path = "tiling_sys_hints.rs"]
-mod tiling_sys_hints;
+mod hints;
 
-#[path = "tiling_sys_pending_seams.rs"]
-mod tiling_sys_pending_seams;
+mod pending_seams;
 
-#[path = "tiling_sys_placement.rs"]
-mod tiling_sys_placement;
+mod placement;
 
-#[path = "tiling_sys_minmax.rs"]
-mod tiling_sys_minmax;
+mod minmax;
 
-#[path = "tiling_sys_trace.rs"]
-mod tiling_sys_trace;
+mod trace;
 
-#[path = "tiling_sys_owner_work.rs"]
-mod tiling_sys_owner_work;
+mod owner_work;
 
-#[path = "tiling_sys_preview.rs"]
-mod tiling_sys_preview;
+mod preview;
 
-#[path = "tiling_sys_input.rs"]
-mod tiling_sys_input;
+mod input;
 
-#[path = "tiling_sys_render_1.rs"]
-mod tiling_sys_render_1;
+mod render_bridge;
 
-#[path = "tiling_sys_render_2.rs"]
-mod tiling_sys_render_2;
+mod render_ack;
 
-#[path = "tiling_sys_retained.rs"]
-mod tiling_sys_retained;
+mod retained;
 
-#[path = "tiling_sys_focus.rs"]
-mod tiling_sys_focus;
+mod focus;
 
-#[path = "tiling_sys_underlay_1.rs"]
-mod tiling_sys_underlay_1;
+mod group_underlay;
 
-#[path = "tiling_sys_underlay_2.rs"]
-mod tiling_sys_underlay_2;
+mod drag_preview;
 
-#[path = "tiling_sys_probes.rs"]
-mod tiling_sys_probes;
+mod probes;
 
-#[path = "tiling_sys_fullscreen.rs"]
-mod tiling_sys_fullscreen;
+mod fullscreen;
 
-#[path = "tiling_sys_admission.rs"]
-mod tiling_sys_admission;
+mod admission;
 
-#[path = "tiling_sys_rows.rs"]
-mod tiling_sys_rows;
+mod rows;
 
-#[path = "tiling_sys_reconcile.rs"]
-mod tiling_sys_reconcile;
+mod reconcile;
 
-#[path = "tiling_sys_geometry.rs"]
-mod tiling_sys_geometry;
+mod geometry;
 
-#[path = "tiling_sys_focus_actuation.rs"]
-mod tiling_sys_focus_actuation;
+mod focus_actuation;
 
-#[path = "tiling_sys_keyboard_1.rs"]
-mod tiling_sys_keyboard_1;
+mod keyboard_tick;
 
-#[path = "tiling_sys_keyboard_2.rs"]
-mod tiling_sys_keyboard_2;
+mod keyboard_resize;
 
-#[path = "tiling_sys_chords_1.rs"]
-mod tiling_sys_chords_1;
+mod chord_resolution;
 
-#[path = "tiling_sys_chords_2.rs"]
-mod tiling_sys_chords_2;
+mod float_toggle;
 
-#[path = "tiling_sys_dispatch.rs"]
-mod tiling_sys_dispatch;
+mod dispatch;
 
-#[path = "tiling_sys_directional_1.rs"]
-mod tiling_sys_directional_1;
+mod directional_resolution;
 
-#[path = "tiling_sys_directional_2.rs"]
-mod tiling_sys_directional_2;
+mod directional_cross;
 
-#[path = "tiling_sys_output_send.rs"]
-mod tiling_sys_output_send;
+mod output_send;
 
-#[path = "tiling_sys_cross_drag.rs"]
-mod tiling_sys_cross_drag;
+mod cross_drag;
 
-#[path = "tiling_sys_restart.rs"]
-mod tiling_sys_restart;
+mod restart;
 
-#[path = "tiling_sys_assignments.rs"]
-mod tiling_sys_assignments;
+mod assignments;
 
 #[cfg(test)]
-#[path = "tiling_sys_scope_tests.rs"]
+#[path = "tests_scope_tests.rs"]
 mod tiling_sys_scope_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_scope_send_tests.rs"]
+#[path = "tests_scope_send_tests.rs"]
 mod tiling_sys_scope_send_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_scope_hotplug_tests.rs"]
+#[path = "tests_scope_hotplug_tests.rs"]
 mod tiling_sys_scope_hotplug_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_same_axis.rs"]
+#[path = "tests_same_axis.rs"]
 mod same_axis_move_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_fixed_predicate.rs"]
+#[path = "tests_fixed_predicate.rs"]
 mod fixed_predicate_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_born_maximized.rs"]
+#[path = "tests_born_maximized.rs"]
 mod born_maximized_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_float_unfloat.rs"]
+#[path = "tests_float_unfloat.rs"]
 mod float_unfloat_clear_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_owned_exit.rs"]
+#[path = "tests_owned_exit.rs"]
 mod owned_exit_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_send_preflight.rs"]
+#[path = "tests_send_preflight.rs"]
 mod send_preflight_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_float_send_gate.rs"]
+#[path = "tests_float_send_gate.rs"]
 mod float_send_gate_tests;
 
 /// D16 deferred-send production-route regressions (offline, native-free):
@@ -15700,55 +15649,55 @@ mod float_send_gate_tests;
 /// survivor frames prove the skip holds even with drift; ordinary tiled
 /// sends prove the applications still run.
 #[cfg(test)]
-#[path = "tiling_sys_tests_deferred_send.rs"]
+#[path = "tests_deferred_send.rs"]
 mod deferred_send_route_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_border_shell.rs"]
+#[path = "tests_border_shell.rs"]
 mod border_shell_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_owner_work.rs"]
+#[path = "tests_owner_work.rs"]
 mod owner_work_trace_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_render_frame.rs"]
+#[path = "tests_render_frame.rs"]
 mod render_frame_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_preview.rs"]
+#[path = "tests_preview.rs"]
 mod preview_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_rmax03.rs"]
+#[path = "tests_rmax03.rs"]
 mod rmax03_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_d23_minimize.rs"]
+#[path = "tests_d23_minimize.rs"]
 mod d23_minimize_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_float_nav.rs"]
+#[path = "tests_float_nav.rs"]
 mod float_nav_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_restart.rs"]
+#[path = "tests_restart.rs"]
 mod restart_adoption_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_orientation.rs"]
+#[path = "tests_orientation.rs"]
 mod orientation_route_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_windrag.rs"]
+#[path = "tests_windrag.rs"]
 mod windrag_press_focus_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_intent_wake.rs"]
+#[path = "tests_intent_wake.rs"]
 mod intent_wake_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_launch.rs"]
+#[path = "tests_launch.rs"]
 mod launch_dispatch_tests;
 
 #[cfg(test)]
@@ -15758,25 +15707,25 @@ mod launch_dispatch_tests;
 /// contract hold simultaneously, pinning the suspend-path dual handoff
 /// (infallible input clears plus all-carrier render hides with no stale
 /// show presentable afterwards).
-#[path = "tiling_sys_tests_stage3.rs"]
+#[path = "tests_stage3.rs"]
 mod stage3_combined_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_pending_drop.rs"]
+#[path = "tests_pending_drop.rs"]
 mod pending_drop_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_directional_cross.rs"]
+#[path = "tests_directional_cross.rs"]
 mod directional_cross_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_output_send.rs"]
+#[path = "tests_output_send.rs"]
 mod output_send_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_cross_drag.rs"]
+#[path = "tests_cross_drag.rs"]
 mod cross_drag_adapter_tests;
 
 #[cfg(test)]
-#[path = "tiling_sys_tests_workspace_migrate.rs"]
+#[path = "tests_workspace_migrate.rs"]
 mod workspace_migrate_adapter_tests;

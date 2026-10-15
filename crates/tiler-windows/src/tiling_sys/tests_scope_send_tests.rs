@@ -4,7 +4,7 @@
 //! `tiling_sys` module and private seams (`workspace_do_send`,
 //! `workspace_do_select`, `workspace_migrate_one`, the pending-injection
 //! seams, `rmax03_adapter_tests::test_state`) stay reachable. Covers the
-//! thin scoped-send call sites in `tiling_sys_scope_sends.rs`: scoped
+//! thin scoped-send call sites in `scope_sends.rs`: scoped
 //! numbered/relative/trailing resolution, shared entry convergence,
 //! output-bound transfers with real retained Engine sessions, float overlay
 //! retention, follow convergence with one shared history entry, stay with no
@@ -266,7 +266,7 @@ fn tmp_ledger(tag: &str) -> (crate::storage::LedgerStore, std::path::PathBuf) {
     (store, tmp)
 }
 
-use super::tiling_sys_scope_sends::{ScopedSendTarget, resolve_scoped_send_target};
+use super::scope_sends::{ScopedSendTarget, resolve_scoped_send_target};
 
 #[test]
 fn local_send_resolvers_match_managed_equivalents() {
@@ -720,10 +720,7 @@ fn shared_migration_refuses_without_mutation() {
         &intent,
         1,
     );
-    assert_eq!(
-        outcome,
-        super::tiling_sys_scope_sends::MIGRATION_SHARED_REFUSAL
-    );
+    assert_eq!(outcome, super::scope_sends::MIGRATION_SHARED_REFUSAL);
     assert_eq!(state.workspaces.workspace_ids("mon-a"), ids_a_before);
     assert_eq!(state.workspaces.workspace_ids("mon-b"), ids_b_before);
     assert_eq!(format!("{:?}", state.engine), engine_before);
@@ -765,14 +762,14 @@ fn global_migration_validates_moved_previous_only() {
         )
         .expect("migrate");
     assert_eq!(outcome.moved_id, "ws-1");
-    super::tiling_sys_scope_sends::note_migration_history(&mut state, "mon-a", "ws-1");
+    super::scope_sends::note_migration_history(&mut state, "mon-a", "ws-1");
     assert_eq!(state.scope_owner.history().previous("mon-a"), None);
     assert_eq!(
         state.scope_owner.history().previous("mon-b").as_deref(),
         Some("ws-3")
     );
     // A previous that never named the moved id is untouched.
-    super::tiling_sys_scope_sends::note_migration_history(&mut state, "mon-b", "ws-1");
+    super::scope_sends::note_migration_history(&mut state, "mon-b", "ws-1");
     assert_eq!(
         state.scope_owner.history().previous("mon-b").as_deref(),
         Some("ws-3")

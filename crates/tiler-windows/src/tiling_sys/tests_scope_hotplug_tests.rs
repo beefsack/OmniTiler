@@ -1,7 +1,7 @@
 //! Mode-aware disconnect/reconnect topology tests (item 12 stage C).
 //!
 //! Offline simulated topology: drive the real production
-//! [`super::tiling_sys_scope_hotplug::sync_monitor_outputs`] entry with
+//! [`super::scope_hotplug::sync_monitor_outputs`] entry with
 //! narrowed [`super::MonitorArea`] sets (no live windows, hooks, overlays,
 //! or settings changes). Covers each mode for active-on-removed versus
 //! active-on-survivor, sends/new windows while absent, history
@@ -143,14 +143,14 @@ fn session_nonempty(state: &TileLoop, output: &str, ws: &str) -> bool {
 }
 
 fn sync(state: &mut TileLoop, narrow: &[MonitorArea]) {
-    super::tiling_sys_scope_hotplug::sync_monitor_outputs(state, narrow);
+    super::scope_hotplug::sync_monitor_outputs(state, narrow);
 }
 
 /// Global sync with an explicit foreground location: drives the real
 /// production foreground-on-removed branch with an identified member
 /// location (the native read plus lifetime gate stay live-only).
 fn sync_fg(state: &mut TileLoop, narrow: &[MonitorArea], fg: Option<(String, String)>) {
-    super::tiling_sys_scope_hotplug::sync_global_with_foreground(state, narrow, fg);
+    super::scope_hotplug::sync_global_with_foreground(state, narrow, fg);
 }
 
 fn record(state: &mut TileLoop, output: &str, current: &str) -> bool {
@@ -742,7 +742,7 @@ fn shared_cold_startup_matches_stage_b_oracle() {
     // output's view (mon-a ws-3), not the primary (mon-b ws-1), primes one
     // history without recording, and converges the trailing floor.
     state.last_areas = rev.clone();
-    super::tiling_sys_scope_trailing::prime_after_sync(&mut state);
+    super::scope_trailing::prime_after_sync(&mut state);
     assert_eq!(state.workspaces.active_id("mon-a"), Some("ws-3".to_owned()));
     assert_eq!(state.workspaces.active_id("mon-b"), Some("ws-3".to_owned()));
     assert_eq!(state.scope_owner.history().shared_previous(), None);

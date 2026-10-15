@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-use super::tiling_sys_hints::test_hint_for;
+use super::hints::test_hint_for;
 
 /// `SendMessageTimeoutW` timeout failure code: distinguishes a hung-window
 /// abort from any other setter failure.

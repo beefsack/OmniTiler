@@ -290,7 +290,7 @@ fn sync_global(
         if state.workspaces.active_id(&output).is_none() {
             continue;
         }
-        super::tiling_sys_scope_trailing::global_cleanup_output(state, &output);
+        super::scope_trailing::global_cleanup_output(state, &output);
     }
     sync_tail(state, areas, &current, &deferred);
 }
@@ -450,7 +450,7 @@ fn sync_shared(state: &mut TileLoop, areas: &[MonitorArea]) {
             owner.record_completed(spaces, key, &active);
         }
     }
-    super::tiling_sys_scope_trailing::shared_cleanup(state);
+    super::scope_trailing::shared_cleanup(state);
     sync_tail(state, areas, &current, &deferred);
 }
 

@@ -500,7 +500,7 @@ function New-ProofRunDir {
 # receipt binds explicit per-file hashes plus one combined source hash.
 $SOURCE_FILES = @(
   "crates/tiler-windows/src/tiling.rs",
-  "crates/tiler-windows/src/tiling_sys.rs",
+  "crates/tiler-windows/src/tiling_sys/mod.rs",
   "crates/tiler-windows/src/test_window.rs",
   "crates/tiler-windows/src/lifecycle.rs",
   "crates/tiler-windows/src/main.rs",

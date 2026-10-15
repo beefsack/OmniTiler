@@ -406,7 +406,7 @@ pub(super) fn converge_all(state: &mut super::TileLoop) {
 }
 
 /// Trailing convergence inside the scoped select tail (swap/shared effects
-/// in `tiling_sys_scope_effects::converge_tail`, after close cleanup and
+/// in `scope_effects::converge_tail`, after close cleanup and
 /// before focus). `outputs` are the transition's changed outputs; shared
 /// converges the one logical ring once.
 pub(super) fn tail_trailing(state: &mut super::TileLoop, outputs: &[String]) {
@@ -523,7 +523,7 @@ pub(super) fn note_migration_completed(
         let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
         owner.record_completed(spaces, source_output, refill);
     } else {
-        super::tiling_sys_scope_sends::note_migration_history(state, source_output, moved_id);
+        super::scope_sends::note_migration_history(state, source_output, moved_id);
     }
     let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
     owner.record_completed(spaces, target_output, moved_id);

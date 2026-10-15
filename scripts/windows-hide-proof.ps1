@@ -70,7 +70,7 @@ function New-HideProofRunDir {
 
 $SOURCE_FILES = @(
   "crates/tiler-windows/src/product_hide.rs",
-  "crates/tiler-windows/src/tiling_sys.rs",
+  "crates/tiler-windows/src/tiling_sys/mod.rs",
   "crates/tiler-windows/src/tiling.rs",
   "crates/tiler-windows/src/test_window.rs",
   "crates/tiler-windows/src/lifecycle.rs",

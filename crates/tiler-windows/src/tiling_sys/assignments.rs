@@ -229,7 +229,7 @@ pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, st
     if retired_any {
         // Trailing convergence through the shared scope contract (item 12
         // stage B): local keeps the exact legacy per-output loop.
-        tiling_sys_scope_trailing::converge_all(state);
+        scope_trailing::converge_all(state);
     }
 }
 

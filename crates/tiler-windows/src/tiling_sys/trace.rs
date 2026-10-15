@@ -1,6 +1,6 @@
 use super::*;
 
-use super::tiling_sys_owner_work::OwnerWorkGuard;
+use super::owner_work::OwnerWorkGuard;
 
 pub(super) fn log_json_at(path: &Path, value: serde_json::Value) {
     use std::io::Write;

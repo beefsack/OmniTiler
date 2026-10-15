@@ -142,7 +142,7 @@ pub(super) fn ensure_shared_send_entry(state: &mut super::TileLoop, output: &str
 /// converge through the shared scope contract (per-output scoped plan, one
 /// logical ring). Never records history in any mode.
 pub(super) fn trailing_spare_scoped(state: &mut super::TileLoop, output: &str) {
-    super::tiling_sys_scope_trailing::converge_spare(state, output);
+    super::scope_trailing::converge_spare(state, output);
 }
 
 /// Whole-workspace migration scope guard: shared mode refuses with
