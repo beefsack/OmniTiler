@@ -117,9 +117,9 @@ Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-
 
 ### Windows tray menu pager discriminator (2026-10-15)
 
-| Variant | Minimal action sequence | Ours offline outcome / tentative decision | Unsupported / physical outcomes |
+| Variant | Minimal action sequence | Ours outcome | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Already-active pager row | With two workspaces on the focused output, open the tray menu and click the already-active workspace number | Tentative 2026-10-15: `already-active` no-op with no hide/reveal, focus, geometry, or history write ([record](../changes/windows-tray-menu-pager.md)) | Native focus/geometry settlement and exact reference-WM outcomes TBD; no in-taskbar visual pager behavior selected |
+| Already-active pager row | With two workspaces on the focused output, open the tray menu and click the already-active workspace number | Observed native 2026-10-15: `already-active` visibility no-op, visibility unchanged ([record](../changes/archive/windows-tray-menu-pager.md)) | Native focus/geometry settlement and exact reference-WM outcomes TBD; no geometry/history invariants measured; no in-taskbar visual pager behavior selected |
 
 ### R-FLT-06 readings
 

@@ -610,6 +610,13 @@ platform API behavior.
     existing recovery lease. Explorer may initially put the icon in overflow.
   - User 2026-10-14 approved as delivered: tray menu Stop uses a 50 ms
     menu-thread check and `EndMenu` (`f4b9f41`).
+  - User 2026-10-15 approved as delivered (single-output native): tray
+    workspace pager stopgap. The tray icon shows the focused-output active
+    workspace number over the existing glyph with the warning badge
+    preserved; the existing menu gains one plain row per focused-output
+    workspace with the active row radio-checked; left-click and right-click
+    keep opening the existing menu. No popup, no app icons, no urgency
+    marks. The embedded in-taskbar visual pager stays separate research.
   - User 2026-10-14 taskbar pager target: one Plasma-style numbered pager
     inside each output's taskbar, showing only that output's workspaces and
     miniature window rectangles/icons. Visualization plus click-to-switch;
