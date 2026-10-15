@@ -21,6 +21,7 @@ pub(super) fn ensure_workspace_assignments(
     retained: &[RetainedRow],
     areas: &[MonitorArea],
 ) {
+    let mut admitted_outputs: Vec<String> = Vec::new();
     for window in observed.iter_mut() {
         if !scope_allows(&state.scope, &window.identity.exe_path) {
             continue;
@@ -129,6 +130,7 @@ pub(super) fn ensure_workspace_assignments(
                 state.member_rects.insert(fresh_token, window.visible);
                 state.member_identity.insert(key.clone(), identity);
                 state.member_tags.insert(key, fresh_tag);
+                admitted_outputs.push(output);
             }
             continue;
         }
@@ -150,7 +152,7 @@ pub(super) fn ensure_workspace_assignments(
     // Born-held first-seen fullscreen members join the workspace slotless
     // (floating Engine observation, no tile slot); later fullscreen on a
     // slotted or lifetime-known window stays a managed overlay transition.
-    admit_born_fullscreen(state, me, retained, areas);
+    admitted_outputs.extend(admit_born_fullscreen(state, me, retained, areas));
     // One aggregate hint-query budget for the whole preamble (item 13):
     // the slotless fixed verdicts and the restart-adoption assemblies below
     // share it, so many fresh maximized windows cannot reset the timer per
@@ -160,8 +162,18 @@ pub(super) fn ensure_workspace_assignments(
     let mut hint_cx = HintCx::new();
     // First-seen maximized members join slotless the same way (membership
     // without a tile slot); the mode-gated clear restores them on tiled.
-    admit_slotless_maximized(state, me, retained, areas, &mut hint_cx);
+    admitted_outputs.extend(admit_slotless_maximized(
+        state,
+        me,
+        retained,
+        areas,
+        &mut hint_cx,
+    ));
     adopt_restart_markers(state, me, observed, retained, areas, &mut hint_cx);
+    // Admission-filled trailing empties mint the next spare now (same tick,
+    // gated on successful admission only: observation-only ticks never
+    // churn). Restart adoption grants no membership, so it never admits.
+    scope_trailing::converge_admitted(state, &admitted_outputs);
     if state.active_output.is_empty()
         && let Some(first) = state.workspaces.output_keys().into_iter().next()
     {

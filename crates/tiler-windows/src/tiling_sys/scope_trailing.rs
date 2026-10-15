@@ -365,6 +365,34 @@ pub(super) fn converge_spare(state: &mut super::TileLoop, output: &str) {
     }
 }
 
+/// Trailing convergence after successful workspace admission (normal fresh
+/// members, born-fullscreen holds, slotless-maximized admissions) inside
+/// `ensure_workspace_assignments`. `outputs` are the outputs whose active
+/// workspace gained at least one member this tick; empty means no admission
+/// and no convergence (observation-only ticks never churn). Local and
+/// global-unique converge per admitted output through the ordinary spare
+/// lifecycle; shared converges the one logical ring once. Never records
+/// history in any mode.
+pub(super) fn converge_admitted(state: &mut super::TileLoop, outputs: &[String]) {
+    if outputs.is_empty() {
+        return;
+    }
+    if state.scope_owner.adopted() == WorkspaceMode::Shared {
+        let Some(first) = outputs.iter().find(|o| !o.is_empty()).cloned() else {
+            return;
+        };
+        converge_spare(state, &first);
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    for output in outputs {
+        if output.is_empty() || !seen.insert(output.clone()) {
+            continue;
+        }
+        converge_spare(state, output);
+    }
+}
+
 /// Trailing convergence after close-driven membership drops (hidden-claim
 /// audit retirements). Local keeps the exact legacy per-output loop; global
 /// converges each output through the scoped plan; shared converges the one
@@ -1200,5 +1228,531 @@ mod tests {
         );
         assert!(state.scope_owner.history().baseline("mon-b").is_some());
         clear_pending_seams();
+    }
+
+    // Admission trailing regressions. Fixtures stage the exact post-assign
+    // tables admission writes; the native gate-to-output wiring itself is
+    // code-reviewed, not fixture-exercised. Production assigns onto the
+    // active workspace, so fills activate the tail first.
+    fn observed_for(member: &WindowKey) -> super::super::ObservedWindow {
+        super::super::ObservedWindow {
+            hwnd: member.hwnd,
+            token: format!("t{}", member.hwnd),
+            outer: BOUNDS,
+            visible: BOUNDS,
+            insets: crate::tiling::FrameInsets::default(),
+            identity: crate::tiling::ObservedTarget {
+                hwnd: member.hwnd,
+                pid: member.pid,
+                process_creation: member.creation.clone(),
+                exe_path: "test.exe".to_owned(),
+                user_sid: "S-1-5-test".to_owned(),
+                session_id: 1,
+                tag: String::new(),
+            },
+            facts: crate::tiling::WindowFacts {
+                visible: true,
+                minimized: false,
+                maximized: false,
+                cloaked: false,
+                elevated: false,
+                shell: false,
+                tool_window: false,
+                owned: false,
+                captionless_fullscreen: false,
+                no_activate: false,
+                dialog: false,
+            },
+        }
+    }
+
+    fn admission_me() -> crate::model::ProcessIdentity {
+        crate::model::ProcessIdentity {
+            pid: 4242,
+            process_creation: "test-creation".to_owned(),
+            user_sid: "S-1-5-test".to_owned(),
+            session_id: 1,
+            exe_path: "test.exe".to_owned(),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum FillLane {
+        Normal,
+        BornHold,
+        SlotlessMax,
+    }
+
+    // Activate the tail, then stage the member like admission does: normal
+    // tiles with a slot, born holds seed the snapshot plus the hold set,
+    // slotless-max carries no rect. Returns the filled tail id.
+    fn fill_active_tail(
+        state: &mut TileLoop,
+        output: &str,
+        member: &WindowKey,
+        lane: FillLane,
+    ) -> String {
+        let tail = state
+            .workspaces
+            .workspace_ids(output)
+            .last()
+            .cloned()
+            .expect("tail");
+        assert!(
+            state.workspaces.activate(output, &tail),
+            "fill targets the active tail"
+        );
+        stage_member(state, output, &tail, member);
+        let token = format!("t{}", member.hwnd);
+        match lane {
+            FillLane::Normal => {
+                state.member_rects.insert(token, BOUNDS);
+            }
+            FillLane::BornHold => {
+                state.member_rects.insert(token, BOUNDS);
+                state.born_fullscreen.insert(member.clone());
+            }
+            FillLane::SlotlessMax => {}
+        }
+        tail
+    }
+
+    // Record two views (baseline `second`, previous `first`); convergence
+    // must preserve both since admission trailing never records history.
+    fn prime_history(state: &mut TileLoop, output: &str, first: &str, second: &str) {
+        match state.scope_owner.adopted() {
+            WorkspaceMode::PerOutputLocal => {
+                state.workspaces.observe_workspace_change(output, first);
+                state.workspaces.observe_workspace_change(output, second);
+            }
+            WorkspaceMode::GlobalUnique => {
+                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                owner.record_completed(spaces, output, first);
+                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                owner.record_completed(spaces, output, second);
+            }
+            WorkspaceMode::Shared => {
+                state.scope_owner.history_mut().prime_shared(first);
+                let (owner, spaces) = (&mut state.scope_owner, &mut state.workspaces);
+                owner.record_completed(spaces, output, second);
+            }
+        }
+    }
+
+    fn assert_history(state: &TileLoop, output: &str, baseline: &str, previous: &str) {
+        match state.scope_owner.adopted() {
+            WorkspaceMode::PerOutputLocal => {
+                assert_eq!(
+                    state.workspaces.history_baseline(output).as_deref(),
+                    Some(baseline)
+                );
+                assert_eq!(
+                    state.workspaces.history_previous(output).as_deref(),
+                    Some(previous)
+                );
+            }
+            WorkspaceMode::GlobalUnique => {
+                assert_eq!(
+                    state.scope_owner.history().baseline(output).as_deref(),
+                    Some(baseline)
+                );
+                assert_eq!(
+                    state.scope_owner.history().previous(output).as_deref(),
+                    Some(previous)
+                );
+            }
+            WorkspaceMode::Shared => {
+                assert_eq!(
+                    state.scope_owner.history().shared_previous().as_deref(),
+                    Some(previous)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn admission_fill_converges_next_spare_local() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        let tail0 = ids.last().cloned().expect("tail");
+        stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+        prime_history(&mut state, "mon-a", &head, &tail0);
+        let before_b = state.workspaces.workspace_ids("mon-b");
+        let member = key(0xA12, 112);
+        let tail = fill_active_tail(&mut state, "mon-a", &member, FillLane::Normal);
+        assert_eq!(tail, tail0);
+        assert!(
+            state
+                .member_rects
+                .contains_key(&format!("t{}", member.hwnd)),
+            "normal admission tiles with a slot"
+        );
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        let after = state.workspaces.workspace_ids("mon-a");
+        assert_eq!(after.len(), ids.len() + 1);
+        assert!(
+            state
+                .workspaces
+                .workspace_members("mon-a", &tail)
+                .contains(&member)
+        );
+        assert_eq!(
+            state.workspaces.active_id("mon-a").as_deref(),
+            Some(tail.as_str())
+        );
+        assert_history(&state, "mon-a", &tail, &head);
+        assert_eq!(state.workspaces.workspace_ids("mon-b"), before_b);
+        clear_pending_seams();
+    }
+
+    // Born holds (snapshot seed plus hold set) and slotless-max rows (no
+    // rect) both occupy the tail, so both converge the next spare.
+    #[test]
+    fn admission_fill_lanes_occupy_local() {
+        for (lane, hwnd, pid) in [
+            (FillLane::BornHold, 0xA13u64, 113u32),
+            (FillLane::SlotlessMax, 0xA14u64, 114u32),
+        ] {
+            clear_pending_seams();
+            let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+            let ids = state.workspaces.workspace_ids("mon-a");
+            let head = ids.first().cloned().expect("head");
+            let tail0 = ids.last().cloned().expect("tail");
+            stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+            prime_history(&mut state, "mon-a", &head, &tail0);
+            let member = key(hwnd, pid);
+            let tail = fill_active_tail(&mut state, "mon-a", &member, lane);
+            match lane {
+                FillLane::BornHold => {
+                    assert!(state.born_fullscreen.contains(&member));
+                    assert!(
+                        state.member_rects.contains_key(&format!("t{hwnd}")),
+                        "born hold seeds the hidden snapshot"
+                    );
+                }
+                FillLane::SlotlessMax => {
+                    assert!(
+                        !state.member_rects.contains_key(&format!("t{hwnd}")),
+                        "slotless-max carries no tile slot"
+                    );
+                }
+                FillLane::Normal => unreachable!(),
+            }
+            converge_admitted(&mut state, &["mon-a".to_owned()]);
+            let after = state.workspaces.workspace_ids("mon-a");
+            assert_eq!(after.len(), ids.len() + 1);
+            assert!(
+                state
+                    .workspaces
+                    .workspace_members("mon-a", &tail)
+                    .contains(&member)
+            );
+            assert_eq!(
+                state.workspaces.active_id("mon-a").as_deref(),
+                Some(tail.as_str())
+            );
+            assert_history(&state, "mon-a", &tail, &head);
+            clear_pending_seams();
+        }
+    }
+
+    #[test]
+    fn admission_fill_converges_per_output_global_unique() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::GlobalUnique);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        let tail0 = ids.last().cloned().expect("tail");
+        stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+        prime_history(&mut state, "mon-a", &head, &tail0);
+        let before_b = state.workspaces.workspace_ids("mon-b");
+        let active_b = state.workspaces.active_id("mon-b").expect("active b");
+        let member = key(0xA15, 115);
+        let tail = fill_active_tail(&mut state, "mon-a", &member, FillLane::Normal);
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        assert_eq!(state.workspaces.workspace_ids("mon-a").len(), ids.len() + 1);
+        assert!(
+            state
+                .workspaces
+                .workspace_members("mon-a", &tail)
+                .contains(&member)
+        );
+        assert_eq!(state.workspaces.workspace_ids("mon-b"), before_b);
+        assert_eq!(
+            state.workspaces.active_id("mon-b").as_deref(),
+            Some(active_b.as_str())
+        );
+        assert_history(&state, "mon-a", &tail, &head);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn admission_fill_converges_one_logical_spare_shared() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::Shared);
+        let ring = state.scope_owner.shared_ring(&state.workspaces);
+        let before = ring.clone();
+        let head = ring.first().cloned().expect("head");
+        let tail = ring.last().cloned().expect("tail");
+        let home = state
+            .workspaces
+            .output_keys()
+            .into_iter()
+            .find(|o| state.workspaces.workspace_ids(o).contains(&tail))
+            .expect("tail home");
+        let head_home = state
+            .workspaces
+            .output_keys()
+            .into_iter()
+            .find(|o| state.workspaces.workspace_ids(o).contains(&head))
+            .expect("head home");
+        stage_member(&mut state, &head_home, &head, &key(0xA10, 110));
+        prime_history(&mut state, &home, &head, &tail);
+        let member = key(0xA16, 116);
+        let filled = fill_active_tail(&mut state, &home, &member, FillLane::SlotlessMax);
+        assert_eq!(filled, tail);
+        converge_admitted(
+            &mut state,
+            &["mon-a".to_owned(), "mon-b".to_owned(), "mon-a".to_owned()],
+        );
+        let ring = state.scope_owner.shared_ring(&state.workspaces);
+        assert!(ring.contains(&tail), "occupied fill is never pruned");
+        let spare = ring.last().cloned().expect("fresh spare");
+        assert!(
+            !before.contains(&spare),
+            "spare {spare} is freshly minted past the filled tail"
+        );
+        assert!(
+            !shared_occupied_id(&state, &spare, &sticky_set(&state)),
+            "fresh spare stays globally unoccupied"
+        );
+        for output in state.workspaces.output_keys() {
+            assert!(
+                state.workspaces.workspace_ids(&output).contains(&spare),
+                "logical {spare} converges onto {output}"
+            );
+        }
+        assert!(ring.len() >= MIN_WORKSPACES);
+        assert_history(&state, &home, &tail, &head);
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn admission_empty_never_churns() {
+        clear_pending_seams();
+        for mode in [
+            WorkspaceMode::PerOutputLocal,
+            WorkspaceMode::GlobalUnique,
+            WorkspaceMode::Shared,
+        ] {
+            let mut state = two_output_state(mode);
+            let before_a = state.workspaces.workspace_ids("mon-a");
+            let before_b = state.workspaces.workspace_ids("mon-b");
+            converge_admitted(&mut state, &[]);
+            converge_admitted(&mut state, &[String::new()]);
+            assert_eq!(state.workspaces.workspace_ids("mon-a"), before_a);
+            assert_eq!(state.workspaces.workspace_ids("mon-b"), before_b);
+        }
+        clear_pending_seams();
+    }
+
+    // Repeated convergence is idempotent: a second run appends nothing.
+    #[test]
+    fn admission_converge_is_idempotent() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+        fill_active_tail(&mut state, "mon-a", &key(0xA17, 117), FillLane::Normal);
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        let once = state.workspaces.workspace_ids("mon-a");
+        assert_eq!(once.len(), ids.len() + 1);
+        converge_admitted(&mut state, &["mon-a".to_owned(), "mon-a".to_owned()]);
+        assert_eq!(state.workspaces.workspace_ids("mon-a"), once);
+        clear_pending_seams();
+    }
+
+    // A fresh admission onto a non-trailing workspace appends nothing: the
+    // trailing empty is still free.
+    #[test]
+    fn admission_nontrailing_fill_appends_nothing() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        let tail = ids.last().cloned().expect("tail");
+        stage_member(&mut state, "mon-a", &head, &key(0xA18, 118));
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        let after = state.workspaces.workspace_ids("mon-a");
+        assert_eq!(after, ids);
+        assert!(
+            state
+                .workspaces
+                .workspace_members("mon-a", &tail)
+                .is_empty(),
+            "tail stays the free spare"
+        );
+        clear_pending_seams();
+    }
+
+    // Chained fills mint each spare: filling the fresh tail converges again.
+    #[test]
+    fn admission_chained_fills_mint_each_spare() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+        let first = key(0xA19, 119);
+        let tail_a = fill_active_tail(&mut state, "mon-a", &first, FillLane::Normal);
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        let second = key(0xA1A, 120);
+        let tail_b = fill_active_tail(&mut state, "mon-a", &second, FillLane::Normal);
+        assert_ne!(tail_a, tail_b);
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        let after = state.workspaces.workspace_ids("mon-a");
+        assert_eq!(after.len(), ids.len() + 2);
+        assert!(
+            state
+                .workspaces
+                .workspace_members("mon-a", &tail_a)
+                .contains(&first)
+        );
+        assert!(
+            state
+                .workspaces
+                .workspace_members("mon-a", &tail_b)
+                .contains(&second)
+        );
+        assert_eq!(
+            state.workspaces.active_id("mon-a").as_deref(),
+            Some(tail_b.as_str())
+        );
+        clear_pending_seams();
+    }
+
+    // A sticky-adopted fill never occupies: converging after adoption mints
+    // no spare since the tail reads free.
+    #[test]
+    fn admission_sticky_fill_appends_nothing() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let member = key(0xA1B, 121);
+        fill_active_tail(&mut state, "mon-a", &member, FillLane::Normal);
+        state.sticky.insert(member.clone(), false);
+        converge_admitted(&mut state, &["mon-a".to_owned()]);
+        assert_eq!(state.workspaces.workspace_ids("mon-a"), ids);
+        clear_pending_seams();
+    }
+
+    // Repeated observation of a known member runs the real assignment
+    // boundary with no admission: tables and rings stay unchanged.
+    #[test]
+    fn repeated_nontrailing_observation_never_churns() {
+        clear_pending_seams();
+        let mut state = two_output_state(WorkspaceMode::PerOutputLocal);
+        let ids = state.workspaces.workspace_ids("mon-a");
+        let head = ids.first().cloned().expect("head");
+        let member = key(0xA1C, 122);
+        stage_member(&mut state, "mon-a", &head, &member);
+        let before_a = state.workspaces.workspace_ids("mon-a");
+        let before_b = state.workspaces.workspace_ids("mon-b");
+        let staged_identity = state.member_identity.get(&member).cloned();
+        let me = admission_me();
+        let mut observed = vec![observed_for(&member)];
+        let retained: Vec<super::super::RetainedRow> = Vec::new();
+        super::super::ensure_workspace_assignments(
+            &mut state,
+            &me,
+            &mut observed,
+            &retained,
+            &areas(),
+        );
+        assert_eq!(state.member_identity.get(&member), staged_identity.as_ref());
+        assert_eq!(
+            state.member_tokens.get(&member).map(String::as_str),
+            Some(format!("t{}", member.hwnd).as_str())
+        );
+        assert!(state.workspaces.member_loc(&member).is_some());
+        assert_eq!(state.workspaces.workspace_ids("mon-a"), before_a);
+        assert_eq!(state.workspaces.workspace_ids("mon-b"), before_b);
+        clear_pending_seams();
+    }
+
+    // Owner-to-pager parity after an admission spare: taskbar cells and tray
+    // rows both project the owner ring, ending on an empty spare with the
+    // filled tail active.
+    #[test]
+    fn admission_spare_keeps_taskbar_tray_parity() {
+        for mode in [WorkspaceMode::PerOutputLocal, WorkspaceMode::GlobalUnique] {
+            clear_pending_seams();
+            let mut state = two_output_state(mode);
+            let ids = state.workspaces.workspace_ids("mon-a");
+            let head = ids.first().cloned().expect("head");
+            stage_member(&mut state, "mon-a", &head, &key(0xA10, 110));
+            let member = key(0xA1D, 123);
+            let tail = fill_active_tail(&mut state, "mon-a", &member, FillLane::Normal);
+            converge_admitted(&mut state, &["mon-a".to_owned()]);
+            let after = state.workspaces.workspace_ids("mon-a");
+            let spare = after.last().cloned().expect("spare");
+            assert!(
+                state
+                    .workspaces
+                    .workspace_members("mon-a", &spare)
+                    .is_empty(),
+                "final spare is empty"
+            );
+            assert_eq!(
+                state.workspaces.active_id("mon-a").as_deref(),
+                Some(tail.as_str())
+            );
+            let taskbar = crate::pager::TaskbarFacts {
+                rect: Rect {
+                    x: 0,
+                    y: 560,
+                    w: 800,
+                    h: 40,
+                },
+                tray_left: Some(700),
+                kind: crate::pager::TaskbarKind::Primary,
+                visible: true,
+                dpi: 96,
+            };
+            let pager = crate::pager::build_output_pager(
+                &state.workspaces,
+                &state.pager_live,
+                &state.member_tokens,
+                &state.member_rects,
+                &state.float_rects,
+                "mon-a",
+                BOUNDS,
+                &taskbar,
+            )
+            .expect("pager anchors on the bottom-docked bar");
+            assert_eq!(pager.ids, after);
+            assert_eq!(pager.cells.len(), after.len());
+            let active = state.workspaces.active_id("mon-a");
+            let menu = crate::tray::menu_items_with_pager(
+                false,
+                "status",
+                crate::tray::WorkspaceMenu::new(Some(true), true),
+                &after,
+                active.as_deref(),
+            );
+            let rows = menu
+                .iter()
+                .filter(|item| {
+                    matches!(item, crate::tray::MenuItem::Command { id, .. }
+                        if crate::tray_pager::workspace_pick_index(*id, after.len()).is_some())
+                })
+                .count();
+            assert_eq!(rows, after.len());
+            assert_eq!(pager.cells.len(), rows);
+            clear_pending_seams();
+        }
     }
 }

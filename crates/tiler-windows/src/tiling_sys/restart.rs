@@ -20,7 +20,8 @@ pub(super) fn admit_born_fullscreen(
     me: &ProcessIdentity,
     retained: &[RetainedRow],
     areas: &[MonitorArea],
-) {
+) -> Vec<String> {
+    let mut admitted: Vec<String> = Vec::new();
     let log_path = state.log_path.clone();
     for row in retained {
         if !row.fullscreen {
@@ -105,8 +106,10 @@ pub(super) fn admit_born_fullscreen(
                     }),
                 );
             }
+            admitted.push(output);
         }
     }
+    admitted
 }
 
 /// Slotless maximized admission (R-MAX-03 / KDE floating parity): first-seen
@@ -126,7 +129,8 @@ pub(super) fn admit_slotless_maximized(
     retained: &[RetainedRow],
     areas: &[MonitorArea],
     hint_cx: &mut HintCx,
-) {
+) -> Vec<String> {
+    let mut admitted: Vec<String> = Vec::new();
     let log_path = state.log_path.clone();
     for row in retained {
         let is_member = state.workspaces.member_loc(&row.key).is_some()
@@ -261,8 +265,10 @@ pub(super) fn admit_slotless_maximized(
                     "window": token,
                 }),
             );
+            admitted.push(output);
         }
     }
+    admitted
 }
 
 /// Restart marker adoption: the next owner re-adopts every surviving sticky
