@@ -15580,6 +15580,10 @@ mod focus_actuation;
 
 mod keyboard_tick;
 
+mod keyboard_directional;
+
+mod keyboard_overlays;
+
 mod keyboard_resize;
 
 mod chord_resolution;

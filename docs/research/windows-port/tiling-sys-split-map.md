@@ -53,7 +53,7 @@ outlines; confirm whole-item boundaries before each extraction.
 | 18 | `focus`, `group_underlay`, `drag_preview`, `probes` | Managed publication, focus origins, borders, movesize/preview/hover, write/zoom/restore probes | 2,600 total | Observation `TileLoop` impl stays intact in parent for later extraction | Done; 609 / 705 / 1,002 / 251 lines |
 | 19 | `fullscreen`, `admission` | Fullscreen metadata/holds/exit, admission/float gates, event stamps | 600 / 900 | Ownership and engine seams | Extracted; 645 / 848 lines |
 | 20 | `rows`, `reconcile`, `geometry`, `focus_actuation` | Marks/hydration/pruning, row assembly, reconcile tick, geometry/audit, focus and predicates | 2,100 total | Reconcile/apply boundary and test seams | Extracted; 906 / 289 / 529 / 391 lines |
-| 21 | `keyboard_tick`, `keyboard_resize`, `chord_resolution`, `float_toggle`, `dispatch` | Keyboard tick, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Single 2,136-line `keyboard_tick` remains oversized; extraction decision pending | Done; 2,138 / 296 / 213 / 1,132 / 1,377 lines |
+| 21 | `keyboard_tick`, `keyboard_directional`, `keyboard_overlays`, `keyboard_resize`, `chord_resolution`, `float_toggle`, `dispatch` | Keyboard tick, directional/maximize/fullscreen dispatch, resize/chords/float/raise/unfloat, launch/orientation/tiling/sticky | 4,600 total | Three match-arm helpers replace the oversized function; loop continuation and effect fences preserved | Done; 217 / 1,288 / 641 / 296 / 213 / 1,132 / 1,377 lines |
 | 22 | `directional_resolution`, `directional_cross`, `output_send`, `cross_drag` | Output routing/fences, directional crossing, send/drop/settle/reflow | 4,300 total | Retained Engine and native verification; keep operations intact | Done; 368 / 626 / 1,175 / 1,455 lines |
 | 23 | `restart`, `assignments` | Born/slotless/restart marks, assignments, hide/reveal | 1,300 total | Shared retained-state transitions | Extracted; 658 / 492 lines |
 | 24 | `workspace_mode`, `selection`, `sends` | Workspace mode/release/retry, select/send, trailing-spare/follow behavior | 2,300+ total | Existing scope children call parent seams; later extraction needs narrow re-exports | Pending; late |
@@ -64,12 +64,14 @@ outlines; confirm whole-item boundaries before each extraction.
 | 29 | `run_loop` | Main tile loop | 2,600 total | Entrypoint/state orchestration; one large function may remain oversized | Pending; late |
 | 30 | `commands`, `first_run`, `proof_commands`, `inspection` | Public CLI entrypoints, first-run configuration, proof loops, inventory/inspection and shutdown glue | 1,500+ total | Preserve external entrypoint paths via parent re-exports | Pending; last |
 | Follow-up | `observation` | Whole observation `TileLoop` impl and enumeration/cursor helpers | 400 total | Keep shared `TileLoop` state and crate-visible snapshot planner in `mod.rs` initially | Pending |
-| Follow-up | `keyboard_tick` | Oversized single function | 2,136 | Splitting requires function extraction, not whole-item moves | Pending decision |
+| Follow-up | `keyboard_tick`, `keyboard_directional`, `keyboard_overlays` | Three large keyboard match arms extracted into responsibility-based helpers | 2,136 before split | Explicit behavior-preserving refactor exception, not a pure move | Done; 217 / 1,288 / 641 lines |
 
 ## Verification and handover
 
-- Every extraction is one pure-move commit. Compare removed/added bodies,
-  permitting only necessary module declarations/visibility and rustfmt changes.
+- Whole-item extractions are pure moves. Keyboard match-arm extraction is the
+  explicit refactor exception: preserve event-loop continuation and body order.
+  Compare removed/added bodies, permitting necessary declarations/visibility,
+  helper calls, arm-level continue-to-return changes, log-path borrowing and rustfmt.
 - Required gates: locked four-package build/test/strict all-target clippy,
   workspace format check and `git diff --check`. Test baseline:
   **2,095 passed / 0 failed / 1 ignored** before upstream shared-policy tests.
@@ -117,15 +119,22 @@ outlines; confirm whole-item boundaries before each extraction.
 - Row 23 extracts restart/assignments; parent becomes **15,782 lines**. Bodies
   compare exactly after removing visibility/import changes, with no formatter
   deviations. Required gates pass with 2,106 / 0 / 1.
-- Directory layout: all 72 files moved under `tiling_sys/`; `mod.rs` now
-  has **15,731 lines** after module/import spelling changes. The 39 production
-  children use role names; all meet the soft cap except `keyboard_tick.rs`
-  (**2,138 lines**, one **2,136-line function**), pending an extraction decision.
+- Directory checkpoint: all 72 files moved under `tiling_sys/`; `mod.rs`
+  had **15,731 lines** after module/import spelling changes. Production
+  children use role names; the then-oversized `keyboard_tick.rs` stayed intact.
   The two proof scripts' source-hash paths follow the root move.
 - D23 now uses a real `hidden` test submodule: **2,062 / 1,537 lines**.
   All 27 test bodies are unchanged; 13 qualified test paths gain `hidden::`.
   Descendant access retains private helpers without visibility changes.
   Required gates pass with **2,106 / 0 / 1** after both structural steps.
+- Keyboard follow-up: extract directional, maximize and fullscreen arms into
+  three helpers, grouped in `keyboard_directional.rs` (**1,288 lines**) and
+  `keyboard_overlays.rs` (**641 lines**); `keyboard_tick.rs` is **217 lines**.
+  The 58 arm-level continues become helper returns. Original bodies compare
+  exactly after those changes, log-path borrowing and rustfmt; the event loop
+  compares exactly apart from helper imports/calls. All required gates preserve
+  **2,106 / 0 / 1**. The family now has **74 files**, all **41 production
+  children** below the soft cap; only `mod.rs` (**15,735 lines**) remains oversized.
 - Next: pending rows 24-30 target the files above under `tiling_sys/`, starting
   selection/sends. The whole observation `TileLoop` impl remains in `mod.rs`
   for `tiling_sys/observation.rs` later.

@@ -5,8 +5,10 @@
 Continue the [split map](../research/windows-port/tiling-sys-split-map.md)
 after phase 1: subdivide the D23 tests and extract production responsibilities
 in orders 14-30. Preserve behavior, test names and public entrypoint paths.
-Only whole-item moves, necessary visibility/imports/module declarations and
-rustfmt changes are allowed. Oversized individual functions remain intact.
+Use whole-item moves, necessary visibility/imports/module declarations and
+rustfmt changes. The keyboard tick is the explicit exception: extract its
+three large match arms into helpers without changing behavior. Other oversized
+individual functions remain intact.
 Organize the existing family under `tiling_sys/mod.rs`, use role-based child
 names and replace the D23 textual include with a real test submodule.
 
@@ -21,6 +23,12 @@ names and replace the D23 textual include with a real test submodule.
 - Baseline: 35,537 parent lines; 2,106 tests passed, zero failed, one ignored.
   Test-count increases require evidence of additions in upstream commits.
 - No live testing. Record file sizes and soft-cap exceptions after each move.
+- Keyboard follow-up: keep the batch loop and shared log-path snapshot in
+  `keyboard_tick.rs`; move directional dispatch to `keyboard_directional.rs`
+  and maximize/fullscreen dispatch to `keyboard_overlays.rs`. Convert only
+  arm-level `continue` statements to helper returns; preserve statement order,
+  ownership, native-effect fences and event-loop continuation. Compare helper
+  bodies against the pre-extraction arms and run the existing required gates.
 
 ## Accepted evidence
 
@@ -80,23 +88,34 @@ names and replace the D23 textual include with a real test submodule.
   lines. Bodies compare exactly after removing necessary visibility/imports,
   with no formatter deviations. Required gates pass: 2,106 / 0 / 1.
 
-- Layout: all 72 files now live under `tiling_sys/`; `mod.rs` has 15,731
+- Layout checkpoint: all 72 files moved under `tiling_sys/`; `mod.rs` had 15,731
   lines. Positional production filenames have role names; tests use `tests_*`.
   Only module paths/imports and two proof-script source paths change.
-  `keyboard_tick.rs` remains byte-identical (2,138 lines, one 2,136-line
-  function); extracting its internals is pending a decision.
+  At that checkpoint `keyboard_tick.rs` remained byte-identical (2,138 lines,
+  one 2,136-line function).
 - D23: real `hidden` child replaces `include!`, using parent-private helpers
   without visibility changes. Files have 2,062 / 1,537 lines; all 27 test bodies
   remain unchanged, with 13 qualified test paths gaining `hidden::`.
   Locked four-package build/test/clippy, workspace fmt and diff checks pass
   after both structural steps: 2,106 passed / 0 failed / 1 ignored.
+- Keyboard follow-up: directional, maximize and fullscreen arms now have one
+  helper each, grouped by responsibility. `keyboard_tick.rs` is 217 lines;
+  `keyboard_directional.rs` is 1,288 and `keyboard_overlays.rs` is 641. All 41
+  production children meet the soft cap; `mod.rs` remains 15,735 lines.
+  All 58 arm-level continues become helper returns; no nested loops or original
+  returns occur in the moved arms. Formatted helper bodies compare exactly to
+  the originals after only that adaptation and borrowed batch log-path use.
+  The event loop compares exactly apart from helper imports/calls. Locked
+  four-package build/test/strict all-target clippy, workspace fmt and diff
+  checks pass: 2,106 passed / 0 failed / 1 ignored.
 
 ## Remaining work
 
 Production map orders 24-30, starting with selection/sends;
 retain the whole observation `TileLoop` impl for later extraction. All remaining
 targets are listed under their new directory paths in the split map.
-The oversized single `keyboard_tick` function is pending an extraction decision.
+The keyboard soft-cap exception is resolved; main loop and public commands
+remain for their planned late extractions.
 
 ## Commit records
 
