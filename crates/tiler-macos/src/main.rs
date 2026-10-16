@@ -145,39 +145,6 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             }
             serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
         }
-        Command::InputRegister { seconds } => {
-            // stderr (unbuffered): the LaunchServices wrapper streams it
-            // live with `--stream`. Carbon hotkeys are system-wide, so the
-            // user keeps this terminal focused while pressing.
-            eprintln!(
-                "tiler-macos input-register: press {}+h during the {}s window (keep this terminal focused); zero deliveries without a press is expected",
-                request.modifier.as_str(),
-                seconds,
-            );
-            let idle = std::time::Duration::from_secs(seconds.saturating_add(10));
-            let (engine, handle) = tiler_macos::engine::Engine::spawn_thread(idle);
-            let report = tiler_macos::input::register_hotkey_bounded(
-                request.modifier,
-                tiler_macos::input::PROBE_KEY_CODE,
-                seconds,
-                &engine.tx,
-            )
-            .map_err(|e| (1, e.to_string()))?;
-            let _ = engine.try_send(tiler_macos::engine::EngineMessage::Shutdown);
-            let state = handle
-                .join()
-                .map_err(|_| (1, "engine thread failed".to_owned()))?;
-            Ok(serde_json::json!({
-                "modifier": request.modifier.as_str(),
-                "seconds": seconds,
-                "os_accepted": report.os_accepted,
-                "os_status": report.os_status,
-                "deliveries": report.deliveries,
-                "engine_input_events": state.input_events,
-                "note": "deliveries need a live keypress during the bounded wait; zero without one is expected",
-            })
-            .to_string())
-        }
         Command::InputTap { seconds, suppress } => {
             let idle = std::time::Duration::from_secs(seconds.saturating_add(10));
             let (engine, handle) = tiler_macos::engine::Engine::spawn_thread(idle);

@@ -63,7 +63,7 @@ pub(crate) fn validate_post_target(pid: u32) -> Result<(), String> {
 /// Which CG producer the guarded post uses. `Session` is the normal
 /// default; `Hid` is the fixture-only upstream discriminator.
 ///
-/// The direct-to-PID route (bypassing session taps/Carbon matching) is
+/// The direct-to-PID route (bypassing session taps) is
 /// deliberately absent: every live leg posts through the session stream so
 /// taps observe it. Kept minimal so the boundary has no unused arms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,10 +225,10 @@ pub(crate) fn post_guarded(
     }
 }
 
-/// Raw session-stream post (crate-private): session taps observe it, global
-/// Carbon hotkeys match it, and the frontmost app receives it unless a tap
-/// suppresses. Only [`post_guarded`] calls this, after owned proof plus the
-/// fresh oracle plus bundle refusal.
+/// Raw session-stream post (crate-private): session taps observe it, and
+/// the frontmost app receives it unless a tap suppresses. Only
+/// [`post_guarded`] calls this, after owned proof plus the fresh oracle
+/// plus bundle refusal.
 fn raw_post_key_event_to_session(
     pid: u32,
     key_code: u16,

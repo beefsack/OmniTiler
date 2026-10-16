@@ -72,16 +72,15 @@ fn owned_modes_require_identity() {
 
 #[test]
 fn input_session_needs_an_explicit_route() {
-    // Explicit route is mandatory (never a default); stall-once is
-    // bounded and tap-agnostic at parse time (route validation refuses
-    // carbon+stall later). Post-route defaults to session; hid is the
-    // explicit upstream discriminator.
-    let r = parse_args(&argv(&["input-session", "--route", "carbon"])).unwrap();
+    // Explicit route is mandatory (never a default); tap is the sole route.
+    // Post-route defaults to session; hid is the explicit upstream
+    // discriminator.
+    let r = parse_args(&argv(&["input-session", "--route", "tap"])).unwrap();
     assert!(r.may_mutate);
     assert!(matches!(
         r.command,
         Command::InputSession {
-            route: crate::input_session::InputSessionRoute::Carbon,
+            route: crate::input_session::InputSessionRoute::Tap,
             stall_once_ms: 0,
             ..
         }
@@ -96,7 +95,7 @@ fn input_session_needs_an_explicit_route() {
     let r = parse_args(&argv(&[
         "input-session",
         "--route",
-        "carbon",
+        "tap",
         "--post-route",
         "hid",
     ]))
@@ -104,7 +103,7 @@ fn input_session_needs_an_explicit_route() {
     assert!(matches!(
         r.command,
         Command::InputSession {
-            route: crate::input_session::InputSessionRoute::Carbon,
+            route: crate::input_session::InputSessionRoute::Tap,
             post_route: crate::input_session::PostRoute::Hid,
             ..
         }
@@ -207,13 +206,14 @@ fn input_session_needs_an_explicit_route() {
         }
     ));
     assert!(parse_args(&argv(&["input-session"])).is_err());
+    assert!(parse_args(&argv(&["input-session", "--route", "carbon"])).is_err());
     assert!(parse_args(&argv(&["input-session", "--route", "auto"])).is_err());
     assert!(parse_args(&argv(&["input-session", "--route", "tap", "--bogus"])).is_err());
     assert!(
         parse_args(&argv(&[
             "input-session",
             "--route",
-            "carbon",
+            "tap",
             "--post-route",
             "auto",
         ]))
@@ -246,8 +246,8 @@ fn input_tap_suppress_is_explicit_opt_in() {
         r.command,
         Command::InputTap { suppress: true, .. }
     ));
-    // Registration has no suppression channel at all.
-    assert!(parse_args(&argv(&["input-register", "--suppress"])).is_err());
+    // Unknown commands refuse (the removed Carbon register probe stays gone).
+    assert!(parse_args(&argv(&["input-register"])).is_err());
 }
 
 #[test]
@@ -889,7 +889,7 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
             ..
         }
     ));
-    // Explicit off route only (never auto, never carbon: probe-only).
+    // Explicit off route only (never auto, never carbon).
     let r = parse_args(&argv(&[
         "tile",
         "--user-start",
@@ -951,7 +951,7 @@ fn tile_parses_with_explicit_scope_start_and_bounded_lifetime() {
         ]))
         .is_err()
     );
-    // Carbon is probe-only (input-register, input-session --route carbon).
+    // Carbon stays unparsed (no register probe, no carbon route).
     assert!(
         parse_args(&argv(&[
             "tile",

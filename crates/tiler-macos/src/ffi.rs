@@ -11,8 +11,8 @@
 //! `kill`/`proc_pidpath`). The sole hand-written `extern "C"` declaration is
 //! the private `_AXUIElementGetWindow` in the small `private_raw` module
 //! (genuinely uncovered private SPI). The
-//! Carbon Event Manager and SkyLight (SLS) dynamic tables live in this module
-//! beside it (not inside it): each entry point is resolved at runtime via
+//! SkyLight (SLS), SLPS, and read-only symbolic-hotkey dynamic tables live in
+//! this module beside it (not inside it): each entry point is resolved at runtime via
 //! maintained `libc::dlopen`/`libc::dlsym` with a null-checked signature, and
 //! a single missing symbol fails the table closed. Each `unsafe` block carries
 //! an inline justification: null checks before use, bounded lengths, no
@@ -425,27 +425,6 @@ pub fn current_uid() -> u32 {
     0
 }
 
-/// Thread-safe event counter shared with C callbacks via this module only.
-#[derive(Debug, Default)]
-pub struct EventCounter {
-    hits: AtomicU32,
-}
-
-impl EventCounter {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn hits(&self) -> u32 {
-        self.hits.load(Ordering::SeqCst)
-    }
-
-    #[cfg(any(test, target_os = "macos"))]
-    fn bump(&self) {
-        self.hits.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
 /// Shareable dirty generation for display/Space changes. Pure atomic
 /// semantics are identical on every platform; only native observer
 /// installation is platform-specific. Clones share the pending change.
@@ -661,8 +640,8 @@ mod macos {
     //
     // `_AXUIElementGetWindow` has no maintained Rust wrapper; it stays
     // hand-declared here with its safe wrapper (`ax_window_id`). Everything
-    // else dynamic in this module (Carbon Event Manager and SkyLight entry
-    // points below) is resolved via maintained `libc::dlopen`/`libc::dlsym`
+    // else dynamic in this module (SkyLight, SLPS, and read-only
+    // symbolic-hotkey entry points below) is resolved via maintained `libc::dlopen`/`libc::dlsym`
     // with null-checked signatures because no maintained Rust wrapper covers
     // those tables; missing symbols fail closed, never guessed. Process
     // signaling/identity (`kill`, `proc_pidpath`) likewise uses `libc`.
@@ -673,491 +652,16 @@ mod macos {
         }
     }
 
-    // -- Carbon hotkeys (no trusted Rust wrapper; symbols resolved
-    // dynamically because the CLT SDK does not link the Carbon Event Manager
-    // for non-listed clients; missing symbols fail closed, never guessed) --
+    // -- Raw foreign-pointer aliases (shared by the dynamic tables below) --
 
     type RawRef = *mut std::ffi::c_void;
     type RawConstRef = *const std::ffi::c_void;
 
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct EventTypeSpec {
-        event_class: u32,
-        event_kind: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct EventHotKeyID {
-        signature: u32,
-        id: u32,
-    }
-
-    const K_EVENT_CLASS_KEYBOARD: u32 = 0x6b65_7962; // 'keyb'
-    const K_EVENT_HOTKEY_PRESSED: u32 = 5;
-
-    /// Carbon Event Manager entry points, resolved at runtime.
-    /// HotKey's dispatcher-target route installs the handler proc directly,
-    /// without a UPP wrapper (pinned source in the Phase 0 change record).
-    /// `NewEventHandlerUPP`, `InstallApplicationEventHandler` and
-    /// `DisposeEventHandlerUPP` were unavailable on the observed runtime;
-    /// the previous application-target + UPP route therefore failed closed.
-    struct CarbonTable {
-        get_dispatcher_target: unsafe extern "C" fn() -> RawRef,
-        install: unsafe extern "C" fn(
-            RawRef,
-            unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
-            u32,
-            *const EventTypeSpec,
-            RawRef,
-            *mut RawRef,
-        ) -> i32,
-        register: unsafe extern "C" fn(u32, u32, EventHotKeyID, RawRef, u32, *mut RawRef) -> i32,
-        unregister: unsafe extern "C" fn(RawRef) -> i32,
-        remove: unsafe extern "C" fn(RawRef) -> i32,
-        kind: unsafe extern "C" fn(RawConstRef) -> u32,
-    }
-
-    static CARBON_TABLE: OnceLock<Option<CarbonTable>> = OnceLock::new();
-
+    // Carbon framework image for the remaining read-only dynamic table
+    // (public `CopySymbolicHotKeys` below). The `RegisterEventHotKey`
+    // dispatcher-target hotkey route was removed; the SLPS tables resolve
+    // their own Carbon image paths inline.
     const CARBON_PATH: &[u8] = b"/System/Library/Frameworks/Carbon.framework/Carbon\0";
-
-    fn carbon_table() -> Option<&'static CarbonTable> {
-        CARBON_TABLE
-            .get_or_init(|| {
-                // SAFETY: every symbol null-checked before transmuting to its
-                // documented Carbon signature; a single missing symbol fails
-                // the whole table closed.
-                unsafe {
-                    let handle = libc::dlopen(CARBON_PATH.as_ptr().cast(), 0x1);
-                    if handle.is_null() {
-                        return None;
-                    }
-                    macro_rules! resolve {
-                        ($name:literal as $ty:ty) => {{
-                            let cname = CString::new($name).expect("static");
-                            let sym = libc::dlsym(handle, cname.as_ptr());
-                            if sym.is_null() {
-                                return None;
-                            }
-                            std::mem::transmute::<*mut std::ffi::c_void, $ty>(sym)
-                        }};
-                    }
-                    Some(CarbonTable {
-                        get_dispatcher_target: resolve!(
-                            "GetEventDispatcherTarget" as unsafe extern "C" fn() -> RawRef
-                        ),
-                        install: resolve!(
-                            "InstallEventHandler"
-                                as unsafe extern "C" fn(
-                                    RawRef,
-                                    unsafe extern "C" fn(RawRef, RawRef, RawRef) -> i32,
-                                    u32,
-                                    *const EventTypeSpec,
-                                    RawRef,
-                                    *mut RawRef,
-                                ) -> i32
-                        ),
-                        register: resolve!(
-                            "RegisterEventHotKey"
-                                as unsafe extern "C" fn(
-                                    u32,
-                                    u32,
-                                    EventHotKeyID,
-                                    RawRef,
-                                    u32,
-                                    *mut RawRef,
-                                ) -> i32
-                        ),
-                        unregister: resolve!(
-                            "UnregisterEventHotKey" as unsafe extern "C" fn(RawRef) -> i32
-                        ),
-                        remove: resolve!(
-                            "RemoveEventHandler" as unsafe extern "C" fn(RawRef) -> i32
-                        ),
-                        kind: resolve!("GetEventKind" as unsafe extern "C" fn(RawConstRef) -> u32),
-                    })
-                }
-            })
-            .as_ref()
-    }
-
-    struct CarbonRefcon {
-        tx: SyncSender<EngineMessage>,
-        keycode: u32,
-        counter: Arc<EventCounter>,
-    }
-
-    unsafe extern "C" fn carbon_hotkey_handler(
-        _next: RawRef,
-        event: RawRef,
-        user_data: RawRef,
-    ) -> i32 {
-        // SAFETY: `user_data` is the live `Box<CarbonRefcon>` installed by
-        // `carbon_register`; it is reclaimed only after the handler is
-        // removed. Reads only; `try_send` never blocks or panics.
-        if !user_data.is_null() && !event.is_null() {
-            // The table is initialized at registration, before any event can
-            // fire; this is the cached path.
-            if let Some(table) = carbon_table()
-                && unsafe { (table.kind)(event as RawConstRef) } == K_EVENT_HOTKEY_PRESSED
-            {
-                let refcon = unsafe { &*(user_data as *const CarbonRefcon) };
-                refcon.counter.bump();
-                let _ = refcon.tx.try_send(EngineMessage::InputEvent {
-                    key_code: refcon.keycode,
-                });
-            }
-        }
-        0
-    }
-
-    /// Owned Carbon hotkey registration. Main-thread-bound by construction
-    /// (contains raw refs; intentionally `!Send`). `Drop` unregisters.
-    /// The handler proc installs directly (no UPP wrapper on this route).
-    pub struct CarbonHotkey {
-        hotkey_ref: RawRef,
-        handler_ref: RawRef,
-        refcon: *mut CarbonRefcon,
-        // `Rc` is `!Send + !Sync`, so this handle stays thread-bound without
-        // any `unsafe impl`. Must be created/used/dropped on the same thread.
-        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
-    }
-
-    impl Drop for CarbonHotkey {
-        fn drop(&mut self) {
-            // SAFETY: refs were returned live by Carbon; unregister before
-            // reclaiming the refcon so no callback can fire afterwards. If
-            // the table vanished (impossible after successful registration),
-            // the refcon is still reclaimed.
-            unsafe {
-                if let Some(table) = carbon_table() {
-                    if !self.hotkey_ref.is_null() {
-                        (table.unregister)(self.hotkey_ref);
-                    }
-                    if !self.handler_ref.is_null() {
-                        (table.remove)(self.handler_ref);
-                    }
-                }
-                if !self.refcon.is_null() {
-                    drop(Box::from_raw(self.refcon));
-                }
-            }
-        }
-    }
-
-    /// Register one Carbon hotkey chord. Returns the live guard on OS
-    /// acceptance (`noErr`); delivery additionally needs a live keypress and
-    /// a running main-thread runloop, verified separately.
-    pub fn carbon_register(
-        keycode: u32,
-        carbon_modifiers: u32,
-        counter: Arc<EventCounter>,
-        tx: &SyncSender<EngineMessage>,
-    ) -> Result<CarbonHotkey, i32> {
-        let table = carbon_table().ok_or(-2)?;
-        let refcon = Box::new(CarbonRefcon {
-            tx: tx.clone(),
-            keycode,
-            counter,
-        });
-        let refcon_ptr = Box::into_raw(refcon);
-        // SAFETY: all pointers null-checked; Carbon refs released in `Drop`
-        // in reverse order; the refcon outlives the handler registration.
-        // The dispatcher-target route installs the proc directly (no UPP).
-        unsafe {
-            let spec = EventTypeSpec {
-                event_class: K_EVENT_CLASS_KEYBOARD,
-                event_kind: K_EVENT_HOTKEY_PRESSED,
-            };
-            let mut handler_ref: RawRef = std::ptr::null_mut();
-            let target = (table.get_dispatcher_target)();
-            if target.is_null() {
-                drop(Box::from_raw(refcon_ptr));
-                return Err(-1);
-            }
-            let status = (table.install)(
-                target,
-                carbon_hotkey_handler,
-                1,
-                &spec,
-                refcon_ptr as RawRef,
-                &mut handler_ref,
-            );
-            if status != 0 {
-                drop(Box::from_raw(refcon_ptr));
-                return Err(status);
-            }
-            let hot_id = EventHotKeyID {
-                signature: 0x4f4d_5450, // 'OMTP'
-                id: 1,
-            };
-            let mut hotkey_ref: RawRef = std::ptr::null_mut();
-            let status = (table.register)(
-                keycode,
-                carbon_modifiers,
-                hot_id,
-                (table.get_dispatcher_target)(),
-                0,
-                &mut hotkey_ref,
-            );
-            if status != 0 {
-                (table.remove)(handler_ref);
-                drop(Box::from_raw(refcon_ptr));
-                return Err(status);
-            }
-            Ok(CarbonHotkey {
-                hotkey_ref,
-                handler_ref,
-                refcon: refcon_ptr,
-                _not_send: std::marker::PhantomData,
-            })
-        }
-    }
-
-    // -- Multi-chord Carbon set (scoped-tile catalogue) --
-    //
-    // One handler proc routes by the event's hotkey ID (read via
-    // `GetEventParameter`): per-chord handler procs cannot distinguish which
-    // chord fired, because every handler on the dispatcher target observes
-    // every hotkey event. `GetEventParameter` resolves through its own table
-    // (missing symbol fails only this path closed — the single-chord probe
-    // path above never needs it). Hot IDs are 1-based under the same 'OMTP'
-    // signature as the single path; the two paths never mix in one process
-    // (separate commands), so IDs never collide.
-
-    /// One forwarded Carbon chord hit: the registered key code plus the
-    /// Carbon modifier bits it was registered with, so the input owner can
-    /// exact-match without trusting the fire alone. Only registered-chord
-    /// fires cross the boundary.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct CarbonHit {
-        pub key_code: u32,
-        pub carbon_modifiers: u32,
-    }
-
-    /// Per-chord Carbon registration status: the raw OS status per chord (0
-    /// accepted; a conflict such as `hotKeyInUse` reports honestly per chord
-    /// and never writes global shortcut settings).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct CarbonChordStatus {
-        pub key_code: u32,
-        pub carbon_modifiers: u32,
-        pub os_status: i32,
-    }
-
-    type GetEventParamFn =
-        unsafe extern "C" fn(RawRef, u32, u32, *mut u32, u32, *mut EventHotKeyID, *mut u32) -> i32;
-
-    static CARBON_GET_PARAM: OnceLock<Option<GetEventParamFn>> = OnceLock::new();
-
-    fn carbon_get_param() -> Option<GetEventParamFn> {
-        *CARBON_GET_PARAM.get_or_init(|| {
-            // SAFETY: symbol null-checked before transmuting to the
-            // documented `GetEventParameter` signature; missing fails closed.
-            unsafe {
-                let handle = libc::dlopen(CARBON_PATH.as_ptr().cast(), 0x1);
-                if handle.is_null() {
-                    return None;
-                }
-                let name = CString::new("GetEventParameter").expect("static");
-                let sym = libc::dlsym(handle, name.as_ptr());
-                if sym.is_null() {
-                    return None;
-                }
-                Some(std::mem::transmute::<*mut std::ffi::c_void, GetEventParamFn>(sym))
-            }
-        })
-    }
-
-    const K_EVENT_PARAM_DIRECT_OBJECT: u32 = 0x686b_6579; // 'hkey'
-    const TYPE_EVENT_HOTKEY_ID: u32 = 0x686b_6579; // 'hkey'
-    const OMTP_SIGNATURE: u32 = 0x4f4d_5450; // 'OMTP'
-
-    struct CarbonSetRefcon {
-        tx: SyncSender<CarbonHit>,
-        counter: Arc<EventCounter>,
-        routes: Vec<(u32, u32, u32)>,
-    }
-
-    unsafe extern "C" fn carbon_set_handler(
-        _next: RawRef,
-        event: RawRef,
-        user_data: RawRef,
-    ) -> i32 {
-        // SAFETY: `user_data` is the live `Box<CarbonSetRefcon>` installed
-        // by `carbon_register_set`, reclaimed only after the handler is
-        // removed. Reads only; `try_send` never blocks or panics.
-        if !user_data.is_null()
-            && !event.is_null()
-            && let Some(get_param) = carbon_get_param()
-        {
-            let refcon = unsafe { &*(user_data as *const CarbonSetRefcon) };
-            let mut id = EventHotKeyID {
-                signature: 0,
-                id: 0,
-            };
-            // SAFETY: live event; out-pointer is a stack local; the status
-            // gates every use of `id`.
-            let status = unsafe {
-                get_param(
-                    event,
-                    K_EVENT_PARAM_DIRECT_OBJECT,
-                    TYPE_EVENT_HOTKEY_ID,
-                    std::ptr::null_mut(),
-                    std::mem::size_of::<EventHotKeyID>() as u32,
-                    std::ptr::addr_of_mut!(id),
-                    std::ptr::null_mut(),
-                )
-            };
-            if status == 0
-                && id.signature == OMTP_SIGNATURE
-                && let Some((_, keycode, mods)) =
-                    refcon.routes.iter().find(|(hid, _, _)| *hid == id.id)
-            {
-                refcon.counter.bump();
-                let _ = refcon.tx.try_send(CarbonHit {
-                    key_code: *keycode,
-                    carbon_modifiers: *mods,
-                });
-            }
-        }
-        0
-    }
-
-    /// Owned multi-chord Carbon registration. Thread-bound by construction
-    /// (raw refs; intentionally `!Send`). `Drop` unregisters every accepted
-    /// chord before reclaiming the refcon.
-    pub struct CarbonChordSet {
-        hotkey_refs: Vec<RawRef>,
-        handler_ref: RawRef,
-        refcon: *mut CarbonSetRefcon,
-        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
-    }
-
-    impl Drop for CarbonChordSet {
-        fn drop(&mut self) {
-            // SAFETY: refs were returned live by Carbon; every hotkey
-            // unregisters before the handler is removed and the refcon
-            // reclaimed, so no callback can fire afterwards.
-            unsafe {
-                if let Some(table) = carbon_table() {
-                    for hotkey_ref in self.hotkey_refs.drain(..) {
-                        if !hotkey_ref.is_null() {
-                            (table.unregister)(hotkey_ref);
-                        }
-                    }
-                    if !self.handler_ref.is_null() {
-                        (table.remove)(self.handler_ref);
-                    }
-                }
-                if !self.refcon.is_null() {
-                    drop(Box::from_raw(self.refcon));
-                }
-            }
-        }
-    }
-
-    /// One multi-chord registration: the live guard plus the honest OS
-    /// status per chord. Conflicts refuse per chord (recorded, never a
-    /// settings write); accepted chords still arm.
-    pub struct CarbonChordReport {
-        pub set: CarbonChordSet,
-        pub statuses: Vec<CarbonChordStatus>,
-    }
-
-    /// Register a discrete Carbon hotkey per chord. Returns the live guard
-    /// plus per-chord OS statuses; delivery additionally needs live
-    /// keypresses and a pumped runloop on the owning thread, verified
-    /// separately. Created/used/dropped on the owning (input) thread.
-    pub fn carbon_register_set(
-        chords: &[(u32, u32)],
-        tx: &SyncSender<CarbonHit>,
-        counter: &Arc<EventCounter>,
-    ) -> Result<CarbonChordReport, String> {
-        if chords.is_empty() {
-            return Err("empty chord table".to_owned());
-        }
-        if chords.len() > 64 {
-            return Err(format!("chord table too large ({})", chords.len()));
-        }
-        let table = carbon_table().ok_or_else(|| "Carbon Event Manager unavailable".to_owned())?;
-        if carbon_get_param().is_none() {
-            return Err("GetEventParameter unavailable; multi-chord Carbon unsupported".to_owned());
-        }
-        let routes: Vec<(u32, u32, u32)> = chords
-            .iter()
-            .enumerate()
-            .map(|(index, (keycode, mods))| (index as u32 + 1, *keycode, *mods))
-            .collect();
-        let refcon = Box::new(CarbonSetRefcon {
-            tx: tx.clone(),
-            counter: counter.clone(),
-            routes,
-        });
-        let refcon_ptr = Box::into_raw(refcon);
-        // SAFETY: pointers null-checked; hotkey refs released in `Drop`;
-        // the refcon outlives the handler registration.
-        unsafe {
-            let spec = EventTypeSpec {
-                event_class: K_EVENT_CLASS_KEYBOARD,
-                event_kind: K_EVENT_HOTKEY_PRESSED,
-            };
-            let mut handler_ref: RawRef = std::ptr::null_mut();
-            let target = (table.get_dispatcher_target)();
-            if target.is_null() {
-                drop(Box::from_raw(refcon_ptr));
-                return Err("Carbon dispatcher target unavailable".to_owned());
-            }
-            let status = (table.install)(
-                target,
-                carbon_set_handler,
-                1,
-                &spec,
-                refcon_ptr as RawRef,
-                &mut handler_ref,
-            );
-            if status != 0 {
-                drop(Box::from_raw(refcon_ptr));
-                return Err(format!("Carbon handler install status {status}"));
-            }
-            let mut hotkey_refs = Vec::with_capacity(chords.len());
-            let mut statuses = Vec::with_capacity(chords.len());
-            for (index, (keycode, mods)) in chords.iter().enumerate() {
-                let hot_id = EventHotKeyID {
-                    signature: OMTP_SIGNATURE,
-                    id: index as u32 + 1,
-                };
-                let mut hotkey_ref: RawRef = std::ptr::null_mut();
-                let status = (table.register)(
-                    *keycode,
-                    *mods,
-                    hot_id,
-                    (table.get_dispatcher_target)(),
-                    0,
-                    &mut hotkey_ref,
-                );
-                statuses.push(CarbonChordStatus {
-                    key_code: *keycode,
-                    carbon_modifiers: *mods,
-                    os_status: status,
-                });
-                if status == 0 && !hotkey_ref.is_null() {
-                    hotkey_refs.push(hotkey_ref);
-                }
-            }
-            Ok(CarbonChordReport {
-                set: CarbonChordSet {
-                    hotkey_refs,
-                    handler_ref,
-                    refcon: refcon_ptr,
-                    _not_send: std::marker::PhantomData,
-                },
-                statuses,
-            })
-        }
-    }
 
     // -- Read-only symbolic-hotkey effective table (public Carbon) --
     //
@@ -6504,23 +6008,22 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
-    CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit, CarbonHotkey, CgBounds,
-    CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
-    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_focused_preimage,
-    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, carbon_register,
-    carbon_register_set, cg_display_uuid, cg_post_event_access_known, cg_window_list_all,
-    cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted,
-    frontmost_app, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
-    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts, NsAppIdentity,
+    NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
+    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_identifier, ax_is_process_trusted, ax_is_size_settable,
+    ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
@@ -6570,49 +6073,6 @@ mod stub {
                 && self.w > 0.0
                 && self.h > 0.0
         }
-    }
-
-    pub struct CarbonHotkey {
-        _priv: (),
-        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct CarbonHit {
-        pub key_code: u32,
-        pub carbon_modifiers: u32,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct CarbonChordStatus {
-        pub key_code: u32,
-        pub carbon_modifiers: u32,
-        pub os_status: i32,
-    }
-
-    pub struct CarbonChordSet {
-        _priv: (),
-        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
-    }
-
-    pub struct CarbonChordReport {
-        pub set: CarbonChordSet,
-        pub statuses: Vec<CarbonChordStatus>,
-    }
-
-    impl CarbonChordReport {
-        #[must_use]
-        pub fn into_statuses(self) -> Vec<CarbonChordStatus> {
-            self.statuses
-        }
-    }
-
-    pub fn carbon_register_set(
-        _chords: &[(u32, u32)],
-        _tx: &SyncSender<CarbonHit>,
-        _counter: &Arc<EventCounter>,
-    ) -> Result<CarbonChordReport, String> {
-        Err("Carbon hotkeys are macOS-only".to_owned())
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7046,15 +6506,6 @@ mod stub {
         Err(AxObserveError::Unsupported("macOS-only".to_owned()))
     }
 
-    pub fn carbon_register(
-        _keycode: u32,
-        _carbon_modifiers: u32,
-        _counter: Arc<EventCounter>,
-        _tx: &SyncSender<EngineMessage>,
-    ) -> Result<CarbonHotkey, i32> {
-        Err(AX_NOT_IMPLEMENTED)
-    }
-
     /// Off-macOS stub for the Phase 1 thread-affine observer guard: creation
     /// always fails fast (AX is macOS-only); every other method is a no-op so
     /// portable code paths compile without live behavior.
@@ -7262,10 +6713,9 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CarbonChordReport, CarbonChordSet, CarbonChordStatus, CarbonHit,
-    CarbonHotkey, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts,
-    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
-    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    AxElement, AxFrame, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect,
+    KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
+    SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
     ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
     ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
@@ -7274,17 +6724,16 @@ pub use stub::{
     ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
     ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
     ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    carbon_register, carbon_register_set, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, terminate_process,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, frontmost_app, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, ns_app_identity_for_pid,
+    ns_display_snapshot, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window,
+    runloop_present, running_apps, secure_input_known, session_state, slps_available,
+    slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front,
+    sls_bridged_availability, sls_connection_available, sls_display_rows, sls_display_spaces,
+    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
+    sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
 };
 
 #[cfg(test)]
@@ -7787,15 +7236,6 @@ mod tests {
         assert!(AxElement::system_wide().is_none());
         assert!(ax_is_process_trusted().is_none());
         assert!(sls_display_spaces().is_err());
-    }
-
-    #[test]
-    fn counter_counts() {
-        let c = EventCounter::new();
-        assert_eq!(c.hits(), 0);
-        c.bump();
-        c.bump();
-        assert_eq!(c.hits(), 2);
     }
 
     #[test]

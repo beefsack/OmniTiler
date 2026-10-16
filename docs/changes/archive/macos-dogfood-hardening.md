@@ -131,7 +131,12 @@ Monitor to quit the exact OmniTilerProbe instance; do not use name-pattern kills
 The wrapper may return nonzero because it saw the instructional stderr even on
 success: read the JSON, not the wrapper exit code.
 
-### 2. Carbon Ctrl+h delivery (diagnostic only)
+### 2. Carbon Ctrl+h delivery (retired)
+
+Retired 2026-10-16: the diagnostic-only Carbon hotkey code and `input-register`
+command have been removed; the event tap is the sole hotkey route. Do not run
+this historical step. Its original instructions and 0/3 physical-delivery result
+below are retained as evidence.
 
 ```sh
 mise exec -- just launch -- --timeout 30 --stream -- input-register --seconds 15

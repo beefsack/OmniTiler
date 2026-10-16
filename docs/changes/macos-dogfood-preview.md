@@ -7,8 +7,8 @@ Extend the [scoped tile preview](macos-scoped-tile.md) into a foreground macOS
 current native Space. Basic tiling comes first; managed workspaces and effects
 remain later work. Stop leaves native frames in place and releases input owners.
 
-- Select the event tap tentatively as the primary product input route; retain
-  Carbon only for a concrete probe purpose.
+- Select the event tap tentatively as the sole hotkey route. Carbon diagnostics
+  were subsequently removed by the 2026-10-16 Simplicity decision.
 - Recover and log native timeout/user-input tap-disable notifications. Prove a
   real OS timeout notification and continued exact-chord suppression with a
   bounded probe-only callback stall.
@@ -37,8 +37,8 @@ remain later work. Stop leaves native frames in place and releases input owners.
 Initial scope follows the 2026-10-15 product decisions. Previous scoped evidence
 remains in its original record; it does not establish unscoped acceptance.
 
-- The product now selects the tap by default; Carbon remains only in diagnostic
-  probes. The platform-local catalogue mirrors the existing Windows/KDE basic
+- The product selects the tap; Carbon diagnostic probes have been retired and
+  removed. The platform-local catalogue mirrors the existing Windows/KDE basic
   actions and invokes shared core commands: focus/move, float, directional
   grow/shrink, and orientation (34 exact chords). There is no existing portable
   shortcut catalogue to reuse. Managed-workspace and native-state actions stay
@@ -181,7 +181,7 @@ mise exec -- just dev trace --scope com.apple.TextEdit --seconds 30
 
 Known gaps: no managed workspaces, borders/underlay or other effects; native
 fullscreen remains untouched; no maximize/sticky/native-fullscreen bindings;
-physical Carbon delivery is unverified and Carbon is diagnostic-only. Actual
+Carbon diagnostics are retired (physical delivery failed 0/3 presses). Actual
 OS timeout notification recovery still needs physical-input evidence. Fixed-size
 applications can clamp tiled slots; the earlier sheet/classification and
 multi-display/game discriminators remain open. This is a basic tiling preview,
@@ -242,13 +242,14 @@ Native Spaces remain the selected direction, with SIP enabled.
 First unscoped user dogfooding was positive on moves, tiling and inner gaps.
 The [hardening follow-up](archive/macos-dogfood-hardening.md) adds the missing
 native same-app focus raise leg, change-only idle records and shared outer gaps.
-It includes the copy-paste physical timeout, Carbon and manual Space-transfer
-script plus the same-app focus/gap/logging recheck. Physical outcomes remain
+It includes the copy-paste physical timeout and manual Space-transfer
+script plus the same-app focus/gap/logging recheck; the historical Carbon step
+is marked retired and must not be run. Physical outcomes remain
 pending; native dispatch success alone does not prove focus arrival.
 
 Actual OS timeout-notification recovery needs a bounded physical-input
 discriminator; the synthetic stall modes must not be
-reported as a timeout pass. Physical Carbon delivery remains unproven and is no
-longer a product-route prerequisite. The next product acceptance journey is
+reported as a timeout pass. The Carbon diagnostic is removed; its failed physical
+delivery result remains in the hardening record. The next product acceptance journey is
 unscoped user dogfooding with `mise exec -- just dev trace`. This record remains
 active until the outstanding native timeout evidence is resolved.

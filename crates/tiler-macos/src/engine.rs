@@ -2,7 +2,7 @@
 
 //! Engine thread: sole owner of mutable probe state.
 //!
-//! Main (AppKit), input-tap, Carbon-hotkey, and per-app AX threads never
+//! Main (AppKit), input-tap, and per-app AX threads never
 //! mutate shared state; they forward [`EngineMessage`] over a *bounded*
 //! [`sync_channel`](std::sync::mpsc::sync_channel) via non-blocking
 //! `try_send`. A full queue drops the event at the sender (backpressure),

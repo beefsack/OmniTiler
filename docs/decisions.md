@@ -232,8 +232,10 @@ platform API behavior.
     below supersedes terminal refusal based solely on a user-input notification.
     This does not replace physical-input or game acceptance.
   - **Tentative preview input route, 2026-10-16:** the CGEventTap is the
-    primary and sole product hotkey route; Carbon remains only as a discrete
-    registration/delivery diagnostic. Both native disable notifications are
+    sole hotkey route. The diagnostic-only Carbon registration/delivery code,
+    probe and route options are removed (user-approved Simplicity decision after
+    physical delivery failed 0/3 presses). Unrelated read-only symbolic-hotkey
+    lookup and focus APIs remain. Both native disable notifications are
     logged and recover through verified same-tap re-enable or fresh same-chord
     creation. An enabled-state health check on existing input pump turns
     separately detects disabled taps without a notification; this never counts
@@ -250,7 +252,7 @@ platform API behavior.
      terminals remain ordinary product candidates. Scoped allowlists retain
      their protected-terminal fence and explicit helper-fixture exception.
   - **User direction 2026-10-16 (dogfooding and consistency):** generally accept
-    the tentative focus oracle, tap-only product input with Carbon diagnostic-only,
+    the tentative focus oracle, tap-only product input (Carbon diagnostics since retired),
     Authentic exact-chord consumption without persistent writes, basic default
     action set, classification edge defaults and fixed-window clamping, provided
     they remain consistent with KDE/Windows and the Tier 1 input tilers. These
@@ -268,7 +270,8 @@ platform API behavior.
     for physical input, focus arrival or shell acceptance. The
     [live guide](live-macos-testing.md#user-run-physical-checks) and
     [copy-paste procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
-     apply this to timeout recovery, Carbon delivery and manual native transfers.
+     apply this to timeout recovery and manual native transfers; the Carbon
+     delivery step is retired following removal of that diagnostic.
   - **User 2026-10-16 (input eligibility, may change):** macOS consumes its
     owned chords first and fences actions afterward, matching Windows, instead
     of passing a chord through when foreground eligibility is unknown, stale,

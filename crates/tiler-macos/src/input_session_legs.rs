@@ -10,13 +10,12 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::ffi::{CarbonChordStatus, TapSourceReport};
+use crate::ffi::TapSourceReport;
 use crate::focus::SpaceSnapshot;
 use crate::input::cg_flag_bits;
 use crate::input_session::{
-    ABSENCE_WAIT, ArrowStatus, CtxMeta, DELIVERY_WAIT, InputSessionRequest, InputSessionRoute,
-    KEY_H, OwnerHit, PostLeg, bucket_index, extra_flag_for, gated_post, latest_helper_counts,
-    pump_main,
+    ABSENCE_WAIT, ArrowStatus, CtxMeta, DELIVERY_WAIT, InputSessionRequest, KEY_H, OwnerHit,
+    PostLeg, bucket_index, extra_flag_for, gated_post, latest_helper_counts, pump_main,
 };
 use crate::native_input::{TapTileFactory, tile_catalogue};
 
@@ -637,12 +636,11 @@ pub(crate) fn poll_helper_counts(
     best
 }
 
-/// The post legs per route (see module docs). Pushes one [`PostLeg`] per
+/// The post legs (see module docs). Pushes one [`PostLeg`] per
 /// chord and enforces each leg's delivery/absence expectation; any mismatch
-/// fails with `(stage, cause)`. Arrow chords: carbon observes registration
-/// statuses only (never posted); tap posts matched Left/Right only after
-/// the `h` proof on a single-Space baseline with a Space readback (Up/Down
-/// never posted).
+/// fails with `(stage, cause)`. Matched Left/Right arrow suppression runs
+/// only after the `h` proof on a single-Space baseline with a Space readback
+/// (Up/Down never posted).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_post_legs(
     child: &mut std::process::Child,
@@ -682,12 +680,12 @@ pub(crate) fn run_post_legs(
             })
     };
 
-    // Exact chord: carbon expects the owner hit plus helper delivery; tap
-    // expects the owner match plus helper ABSENCE (suppression proof over
-    // the bounded hold, never assumed); stall expects the stalled down
-    // suppressed under burst load behind the sleeping callback (see
-    // `post_stall_leg`); physical-stall awaits ONE real HID press instead
-    // (see [`crate::input_session_physical::await_physical_stall_leg`]).
+    // Exact chord: the tap expects the owner match plus helper ABSENCE
+    // (suppression proof over the bounded hold, never assumed); stall
+    // expects the stalled down suppressed under burst load behind the
+    // sleeping callback (see `post_stall_leg`); physical-stall awaits ONE
+    // real HID press instead (see
+    // [`crate::input_session_physical::await_physical_stall_leg`]).
     let tap_before = tap_counts();
     let mut exact = if request.physical_stall {
         crate::input_session_physical::await_physical_stall_leg(
@@ -712,25 +710,11 @@ pub(crate) fn run_post_legs(
             KEY_H,
             want,
             Some(h_index),
-            request.route == InputSessionRoute::Tap,
+            true,
         )
         .map_err(|e| ("post-exact".to_owned(), e))?
     };
-    if request.route == InputSessionRoute::Carbon {
-        if exact.helper_exact_delta != (1, 1) {
-            return fail(
-                "post-exact",
-                format!(
-                    "carbon exact delivery mismatch (want exact +1/+1, have {:?})",
-                    exact.helper_exact_delta
-                ),
-            );
-        }
-        exact.verdict = format!(
-            "carbon-hit latency_ms={} helper +1/+1",
-            exact.owner_latency_ms.unwrap_or(u64::MAX)
-        );
-    } else if request.stall_once_ms > 0 {
+    if request.stall_once_ms > 0 {
         // The stall leg carries its own verdict (down suppressed under
         // burst load, bypass arrivals recorded); nothing further to assert
         // here — the disable stage below decides from the re-enable
@@ -1251,13 +1235,11 @@ pub(crate) fn run_post_legs(
     plain.verdict = "passed-through".to_owned();
     legs.push(plain);
 
-    // Arrow observations. Carbon: registration statuses only (Mission
-    // Control chords are never posted and no settings are written). Tap:
-    // matched Left/Right suppression only after the `h` proof above AND a
-    // single-Space baseline plus a Space readback proving no Space moved
-    // (a suppressed event never dispatches; Up/Down are never posted — no
-    // user-owned overview restore path exists).
-    if request.route == InputSessionRoute::Tap && single_space_baseline {
+    // Arrow observations: matched Left/Right suppression only after the `h`
+    // proof above AND a single-Space baseline plus a Space readback proving
+    // no Space moved (a suppressed event never dispatches; Up/Down are never
+    // posted — no user-owned overview restore path exists).
+    if single_space_baseline {
         for (name, code) in [("arrow-left", 0x7Bu32), ("arrow-right", 0x7Cu32)] {
             let index = tile_catalogue()
                 .iter()
@@ -1307,37 +1289,14 @@ pub(crate) fn run_post_legs(
     Ok(())
 }
 
-/// Arrow observation rows: every catalogue arrow chord with its OS
-/// registration status when known (carbon source or the transient tap-leg
-/// probe) plus the tap suppression note from the legs above.
-pub(crate) fn arrow_observations(
-    request: InputSessionRequest,
-    carbon_statuses: &[CarbonChordStatus],
-    legs: &[PostLeg],
-) -> Vec<ArrowStatus> {
+/// Arrow observation rows: every catalogue arrow chord plus the tap
+/// suppression note from the legs above.
+pub(crate) fn arrow_observations(legs: &[PostLeg]) -> Vec<ArrowStatus> {
     let mut out = Vec::new();
     for binding in tile_catalogue() {
         if !matches!(binding.key_code, 0x7B..=0x7E) {
             continue;
         }
-        let carbon_os_status = carbon_statuses
-            .iter()
-            .find(|s| {
-                s.key_code == binding.key_code
-                    && s.carbon_modifiers
-                        == crate::input::carbon_mod_bits(request.modifier)
-                            + if binding.shift {
-                                crate::native_input::CARBON_SHIFT_BIT
-                            } else {
-                                0
-                            }
-                            + if binding.alt {
-                                crate::native_input::CARBON_ALT_BIT
-                            } else {
-                                0
-                            }
-            })
-            .map(|s| s.os_status);
         let tap_observed = legs
             .iter()
             .find(|leg| {
@@ -1349,7 +1308,6 @@ pub(crate) fn arrow_observations(
             key_code: binding.key_code,
             shift: binding.shift,
             alt: binding.alt,
-            carbon_os_status,
             tap_observed,
         });
     }
@@ -1369,10 +1327,10 @@ mod tests {
     };
     use crate::native_input::tile_catalogue;
 
-    fn request(route: InputSessionRoute) -> InputSessionRequest {
+    fn request() -> InputSessionRequest {
         InputSessionRequest {
             seconds: DEFAULT_INPUT_SECONDS,
-            route,
+            route: InputSessionRoute::Tap,
             post_route: PostRoute::Session,
             stall_once_ms: 0,
             physical_stall: false,
@@ -1386,11 +1344,8 @@ mod tests {
 
     #[test]
     fn route_parses_exactly() {
-        assert_eq!(
-            InputSessionRoute::parse("carbon"),
-            Ok(InputSessionRoute::Carbon)
-        );
         assert_eq!(InputSessionRoute::parse("tap"), Ok(InputSessionRoute::Tap));
+        assert!(InputSessionRoute::parse("carbon").is_err());
         assert!(InputSessionRoute::parse("auto").is_err());
         assert!(InputSessionRoute::parse("").is_err());
     }
@@ -1400,17 +1355,13 @@ mod tests {
         assert_eq!(PostRoute::parse("session"), Ok(PostRoute::Session));
         assert_eq!(PostRoute::parse("hid"), Ok(PostRoute::Hid));
         assert!(PostRoute::parse("auto").is_err());
-        assert_eq!(
-            request(InputSessionRoute::Carbon).post_route,
-            PostRoute::Session
-        );
-        // The HID producer is orthogonal to the input source: allowed on
-        // both routes, so the Carbon HID leg and the tap stall
-        // discriminator both validate.
-        let mut r = request(InputSessionRoute::Carbon);
+        assert_eq!(request().post_route, PostRoute::Session);
+        // The HID producer is orthogonal to the input source, so the HID
+        // leg and the tap stall discriminator both validate.
+        let mut r = request();
         r.post_route = PostRoute::Hid;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.post_route = PostRoute::Hid;
         r.stall_once_ms = 2000;
         assert!(r.validate().is_ok());
@@ -1418,68 +1369,58 @@ mod tests {
 
     #[test]
     fn validation_bounds_lifetime_and_stall() {
-        assert!(request(InputSessionRoute::Carbon).validate().is_ok());
-        let mut r = request(InputSessionRoute::Carbon);
+        assert!(request().validate().is_ok());
+        let mut r = request();
         r.seconds = 0;
         assert!(r.validate().is_err());
         r.seconds = MAX_PROBE_SECONDS + 1;
         assert!(r.validate().is_err());
-        // Stall is tap-only and bounded.
-        let mut r = request(InputSessionRoute::Carbon);
-        r.stall_once_ms = 500;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        // Stall is bounded.
+        let mut r = request();
         r.stall_once_ms = MAX_STALL_ONCE_MS + 1;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         assert!(r.validate().is_ok());
     }
 
     #[test]
     fn validation_bounds_direct_hold_and_watchdog_only() {
-        // DIRECT hold is tap-only and bounded, never combined with stall.
-        let mut r = request(InputSessionRoute::Carbon);
-        r.direct_disable_hold_ms = 300;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        // DIRECT hold is bounded, never combined with stall.
+        let mut r = request();
         r.direct_disable_hold_ms = MAX_DIRECT_HOLD_MS + 1;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.direct_disable_hold_ms = 300;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.direct_disable_hold_ms = 300;
         r.stall_once_ms = 500;
         assert!(r.validate().is_err());
-        // Watchdog-only is tap-only, 2..=5s, and takes no other fault flag.
-        let mut r = request(InputSessionRoute::Carbon);
-        r.watchdog_only = true;
-        r.seconds = 4;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        // Watchdog-only is 2..=5s and takes no other fault flag.
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 1;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = MAX_WATCHDOG_ONLY_SECONDS + 1;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         r.stall_once_ms = 500;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         r.direct_disable_hold_ms = 300;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         r.direct_rearm = true;
@@ -1488,23 +1429,20 @@ mod tests {
 
     #[test]
     fn validation_bounds_direct_rearm() {
-        // DIRECT-REARM is tap-only and never combined with the other fault
-        // legs (stall, hold, disable-once, watchdog-only).
-        let mut r = request(InputSessionRoute::Carbon);
-        r.direct_rearm = true;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        // DIRECT-REARM is never combined with the other fault legs (stall,
+        // hold, disable-once, watchdog-only).
+        let mut r = request();
         r.direct_rearm = true;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.direct_rearm = true;
         r.stall_once_ms = 500;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.direct_rearm = true;
         r.direct_disable_hold_ms = 300;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.direct_rearm = true;
         r.disable_once = true;
         assert!(r.validate().is_err());
@@ -1512,40 +1450,36 @@ mod tests {
 
     #[test]
     fn validation_bounds_physical_stall() {
-        // Physical-stall is tap-only with a stall armed, never combined
-        // with the other fault legs, and needs user-reaction budget.
-        let mut r = request(InputSessionRoute::Carbon);
-        r.stall_once_ms = 1200;
+        // Physical-stall needs a stall armed, is never combined with the
+        // other fault legs, and needs user-reaction budget.
+        let mut r = request();
         r.physical_stall = true;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
-        r.physical_stall = true;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         r.physical_stall = true;
         r.seconds = 30;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         r.physical_stall = true;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         r.physical_stall = true;
         r.direct_disable_hold_ms = 300;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         r.physical_stall = true;
         r.direct_rearm = true;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.stall_once_ms = 1200;
         r.physical_stall = true;
         r.disable_once = true;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         r.physical_stall = true;
@@ -1554,28 +1488,25 @@ mod tests {
 
     #[test]
     fn validation_bounds_disable_once() {
-        // DISABLE-ONCE is tap-only and never combined with the other fault
-        // legs (stall, hold, re-arm, watchdog-only). The leg reports the
-        // actual OS recovery kind; validation only fences the combination.
-        let mut r = request(InputSessionRoute::Carbon);
-        r.disable_once = true;
-        assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        // DISABLE-ONCE is never combined with the other fault legs (stall,
+        // hold, re-arm, watchdog-only). The leg reports the actual OS
+        // recovery kind; validation only fences the combination.
+        let mut r = request();
         r.disable_once = true;
         assert!(r.validate().is_ok());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.disable_once = true;
         r.stall_once_ms = 500;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.disable_once = true;
         r.direct_disable_hold_ms = 300;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.disable_once = true;
         r.direct_rearm = true;
         assert!(r.validate().is_err());
-        let mut r = request(InputSessionRoute::Tap);
+        let mut r = request();
         r.watchdog_only = true;
         r.seconds = 4;
         r.disable_once = true;
@@ -1709,7 +1640,7 @@ mod tests {
     fn arrows_cover_all_arms() {
         // Observation rows exist for all four arrows on all four
         // directional arms (4 arrows x focus/move/grow/shrink = 16 rows).
-        let rows = arrow_observations(request(InputSessionRoute::Carbon), &[], &[]);
+        let rows = arrow_observations(&[]);
         assert_eq!(rows.len(), 16);
         for code in [0x7Bu32, 0x7Cu32, 0x7Du32, 0x7Eu32] {
             assert!(

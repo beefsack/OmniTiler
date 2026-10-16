@@ -6,7 +6,7 @@
 //!
 //! Threading contract (see `engine`):
 //! - Main thread: AppKit/UI only (`probe_target` window runs here).
-//! - Dedicated input thread: minimal event-tap/hotkey callback, forwards via
+//! - Dedicated input thread: minimal event-tap callback, forwards via
 //!   channel, never blocks.
 //! - Per-app AX threads: one bounded worker per observed PID so a hung app
 //!   isolates; every wait has a finite timeout.

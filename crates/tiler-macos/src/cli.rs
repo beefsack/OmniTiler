@@ -42,9 +42,6 @@ pub enum Command {
         nonce: String,
         wid: u32,
     },
-    InputRegister {
-        seconds: u64,
-    },
     InputTap {
         seconds: u64,
         suppress: bool,
@@ -259,27 +256,26 @@ pub fn help_text() -> String {
             \x20 ax-set-frame --pid PID --nonce HEX --wid WID\n\
            \x20 ax-raise --pid PID --nonce HEX --wid WID\n\
            \x20 \x20 (refuses when focus preimage is foreign; never steals focus)\n\
-           \x20 input-register [--seconds N]  Carbon Ctrl chord, finite (max {max_tap}s)\n\
             \x20 input-tap [--seconds N] [--suppress]  CGEventTap Ctrl-chord, finite RAII (max {max_tap}s)\n\
             \x20 \x20 (default observe-only, Keep always; --suppress arms exact-chord\n\
             \x20 \x20 KeyDown/KeyUp pair suppression only, unrelated keys always pass)\n\
-             \x20 input-session --route carbon|tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--physical-stall] [--direct-disable-hold-ms MS] [--direct-rearm] [--disable-once] [--watchdog-only]\n\
+             \x20 input-session --route tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--physical-stall] [--direct-disable-hold-ms MS] [--direct-rearm] [--disable-once] [--watchdog-only]\n\
              \x20 \x20 (bounded owned input fixture over the REAL native tile source:\n\
              \x20 \x20 dedicated owner thread, owned helper window, synthetic CG posts\n\
              \x20 \x20 with per-post oracle proof, helper delivery counters; --stall-once-ms\n\
-             \x20 \x20 is tap-only and provokes a real OS timeout-disable; --physical-stall\n\
+             \x20 \x20 provokes a real OS timeout-disable; --physical-stall\n\
              \x20 \x20 needs --stall-once-ms and awaits ONE physical Ctrl+h press;\n\
              \x20 \x20 --direct-disable-hold-ms\n\
-             \x20 \x20 is tap-only and parks the tap DIRECTLY OS-disabled for the exact-post\n\
+             \x20 \x20 parks the tap DIRECTLY OS-disabled for the exact-post\n\
              \x20 \x20 passthrough plus recovery proof (actual CGEventTapIsEnabled readbacks);\n\
-             \x20 \x20 --direct-rearm is tap-only and re-arms EXPLICITLY after an intentional\n\
+             \x20 \x20 --direct-rearm re-arms EXPLICITLY after an intentional\n\
              \x20 \x20 own-fault DIRECT disable (old guard drops, FRESH source on the same owner);\n\
-             \x20 \x20 --disable-once is tap-only and disables the tap directly once with\n\
+             \x20 \x20 --disable-once disables the tap directly once with\n\
              \x20 \x20 no fixture hold and no assumed notification kind, then reports the\n\
              \x20 \x20 ACTUAL recovery kind from the counters (user-input vs\n\
              \x20 \x20 unnotified-enabled-readback; never a timeout claim without the\n\
              \x20 \x20 actual timeout counter) and re-proves exact suppression;\n\
-            \x20 \x20 --watchdog-only is tap-only 2..=5s with no helper/posts: arms the tap,\n\
+            \x20 \x20 --watchdog-only is 2..=5s with no helper/posts: arms the tap,\n\
             \x20 \x20 parks past the hard watchdog, dirty exit is the evidence; input LIVE only,\n\
             \x20 \x20 no tiling, no frame writes)\n\
            \x20 tile --user-start (--scope BUNDLE [--scope BUNDLE ...] | --unscoped [--exclude BUNDLE ...]) [--seconds N] [--input tap|off] [--preset authentic|compatible] [--log normal|verbose|trace] [--ctrl meta|ctrl|alt|shift]\n\
@@ -290,8 +286,7 @@ pub fn help_text() -> String {
            \x20 \x20 own bundles plus --exclude stay out). Scoped lifetimes are\n\
            \x20 \x20 finite 1..={max_probe}s (default {default_tile}s); unscoped\n\
            \x20 \x20 --seconds 0 runs unbounded until owner exit or exact-PID stop.\n\
-           \x20 \x20 event tap by default, off parks (carbon is probe-only:\n\
-           \x20 \x20 input-register, input-session --route carbon); authentic consumes\n\
+           \x20 \x20 event tap by default, off parks; authentic consumes\n\
             \x20 \x20 the exact supported chords while running, compatible leaves known\n\
             \x20 \x20 conflicting chords (unshifted Ctrl+arrows under the Ctrl meta) to macOS;\n\
            \x20 \x20 modifier/preset/exclusions resolve CLI-over-settings-file;\n\
@@ -578,7 +573,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let (pid, nonce, wid) = parse_owned_wid(args, "ax-raise")?;
             Command::AxRaise { pid, nonce, wid }
         }
-        "input-register" | "input-tap" => {
+        "input-tap" => {
             let mut seconds = DEFAULT_TAP_SECONDS;
             let mut suppress = false;
             let mut j = 0;
@@ -589,37 +584,33 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         seconds =
                             parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
                     }
-                    "--suppress" if cmd == "input-tap" => {
+                    "--suppress" => {
                         suppress = true;
                     }
                     other => return Err(format!("{cmd}: unknown arg '{other}'")),
                 }
                 j += 1;
             }
-            if cmd == "input-register" {
-                Command::InputRegister { seconds }
-            } else {
-                Command::InputTap { seconds, suppress }
-            }
+            Command::InputTap { seconds, suppress }
         }
         "input-session" => {
             // Bounded owned input fixture over the REAL native tile source:
-            // explicit --route (carbon|tap) is mandatory, --stall-once-ms
-            // is tap-only (fault-injection leg provoking a real OS
+            // explicit --route tap is mandatory, --stall-once-ms
+            // (fault-injection leg provoking a real OS
             // timeout-disable, never a manual callback),
-            // --direct-disable-hold-ms is tap-only (DIRECT OS-disable plus
+            // --direct-disable-hold-ms (DIRECT OS-disable plus
             // recovery proof with actual CGEventTapIsEnabled readbacks),
-            // --direct-rearm is tap-only (EXPLICIT fresh re-arm after an
+            // --direct-rearm (EXPLICIT fresh re-arm after an
             // intentional own-fault DIRECT disable: old guard drops without a
             // same-tap re-enable, fresh source installs on the same owner),
-            // --disable-once is tap-only (one-shot directly-disabled fault
+            // --disable-once (one-shot directly-disabled fault
             // with no fixture hold and no assumed notification kind; the leg
             // reports the actual recovery kind from the counters),
-            // --physical-stall is tap-only with --stall-once-ms (awaits ONE
+            // --physical-stall needs --stall-once-ms (awaits ONE
             // physical Ctrl+h press instead of a synthetic exact post, so the
             // stall consumes real HID load; recovery still re-proves
             // suppression synthetically),
-            // --watchdog-only is tap-only 2..=5s with no helper/posts
+            // --watchdog-only is 2..=5s with no helper/posts
             // (the dirty watchdog exit is the evidence).
             // --post-route session|hid selects the CG producer tap
             // (default session; hid is the fixture-only upstream
@@ -686,7 +677,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             }
             Command::InputSession {
                 seconds,
-                route: route.ok_or("input-session needs --route carbon|tap")?,
+                route: route.ok_or("input-session needs --route tap")?,
                 post_route,
                 stall_once_ms,
                 physical_stall,

@@ -58,11 +58,8 @@ pub const DEFAULT_TILE_SECONDS: u64 = 30;
 /// Tile lifetime bound (seconds): the configured probe max.
 pub const MAX_TILE_SECONDS: u64 = MAX_PROBE_SECONDS;
 
-/// Which input route the tile run arms. The event tap is the primary (and
-/// now sole product) route with exact-chord pair suppression; off parks.
-/// No auto fallback between them. Carbon stays available only as a probe
-/// (`input-register`, `input-session --route carbon`), never as a product
-/// selection.
+/// Which input route the tile run arms. The event tap is the sole product
+/// route with exact-chord pair suppression; off parks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TileInput {
@@ -78,9 +75,7 @@ impl TileInput {
         match s.to_ascii_lowercase().as_str() {
             "tap" => Ok(Self::Tap),
             "off" => Ok(Self::Off),
-            other => Err(format!(
-                "unknown --input '{other}' (expected tap|off; carbon is probe-only: input-register, input-session --route carbon)"
-            )),
+            other => Err(format!("unknown --input '{other}' (expected tap|off)")),
         }
     }
 
@@ -282,7 +277,6 @@ pub struct TileOutcome {
     pub secure_active_seen: u64,
     pub gated_ms: u64,
     pub input_refusal: Option<String>,
-    pub carbon_statuses: Vec<crate::ffi::CarbonChordStatus>,
     /// Latest continuous-tap counters (`None` for the off route): timeout
     /// re-enables, user-input notifications, and enabled-readback-only
     /// recoveries are first-class terminal evidence (cumulative across
@@ -330,7 +324,6 @@ impl TileOutcome {
             secure_active_seen: 0,
             gated_ms: 0,
             input_refusal: Some(reason),
-            carbon_statuses: Vec::new(),
             tap_report: None,
             shutdown_outcome: "not-started".to_owned(),
             shutdown_joined: 0,
@@ -1020,14 +1013,13 @@ mod native {
                 WorkerReadiness::Pending | WorkerReadiness::UnknownPid => {}
             }
         }
-        let (gated_ms, input_refusal, carbon_statuses, tap_report) = match &input {
+        let (gated_ms, input_refusal, tap_report) = match &input {
             InputGuard::Tap(factory) => (
                 factory.gated_ms(),
                 early_refusal.clone().or_else(|| factory.refusal()),
-                Vec::new(),
                 Some(factory.latest_report()),
             ),
-            InputGuard::Off(_) => (0, early_refusal.clone(), Vec::new(), None),
+            InputGuard::Off(_) => (0, early_refusal.clone(), None),
         };
         // Bounded shutdown independent of blocked AX: only proven exits
         // join; the rest retain for reap. Windows stay in place — nothing
@@ -1082,7 +1074,6 @@ mod native {
             secure_active_seen,
             gated_ms,
             input_refusal,
-            carbon_statuses,
             tap_report,
             shutdown_outcome: format!("{:?}", report.outcome),
             shutdown_joined: report.joined,
@@ -1276,8 +1267,7 @@ mod tests {
         assert_eq!(TileInput::parse("off"), Ok(TileInput::Off));
         assert!(TileInput::parse("auto").is_err());
         assert!(TileInput::parse("").is_err());
-        // Carbon is probe-only now (input-register, input-session
-        // --route carbon), never a product tile selection.
+        // Carbon stays unparsed (no register probe, no product selection).
         assert!(TileInput::parse("carbon").is_err());
         assert_eq!(TileInput::default(), TileInput::Tap);
     }

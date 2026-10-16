@@ -3,6 +3,8 @@
 The [basic dogfood preview](macos-dogfood-preview.md) supersedes this milestone's
 product input defaults, catalogue, disable policy and scope/lifetime prerequisites.
 Its live evidence and original limitations below remain historical evidence.
+The 2026-10-16 [Carbon removal](archive/macos-carbon-removal.md) also retires
+the Carbon route and its pending delivery checks below; use only tap input.
 
 ## Goal and status
 

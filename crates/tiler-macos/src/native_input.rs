@@ -36,18 +36,16 @@
 //! Sources are continuous and owned: the input owner creates, drives, and
 //! destroys its guard on its own thread; callbacks stay minimal
 //! (exact-chord compare, non-blocking forward of exact matches only,
-//! atomics) and never touch the core, AX, logging, or blocking calls. No
-//! auto fallback between backends: Carbon is the default discrete route,
-//! the tap installs only under the explicit tap flag, and off parks. No
-//! raw input is logged anywhere (counters only).
+//! atomics) and never touch the core, AX, logging, or blocking calls. The
+//! tap is the sole input route; off parks. No raw input is logged anywhere
+//! (counters only).
 //!
 //! Scoped eligibility (see [`crate::input_eligibility`]) gates BEFORE
-//! suppression/registration: the owner attests fresh scope/foreground/Space/
+//! suppression: the owner attests fresh scope/foreground/Space/
 //! showstate facts outside the callback and publishes to a lock-free cache;
-//! the tap callback Keeps/noForwards while ineligible and the Carbon owner
-//! releases its registration while ineligible (re-arms on return; the tap
-//! owner recreates its guard on return to avoid a user-disabled sticky
-//! cycle). Scoped sources start ineligible until attested; the
+//! the tap callback Keeps/noForwards while ineligible and the tap owner
+//! recreates its guard on return to eligible to avoid a user-disabled sticky
+//! cycle. Scoped sources start ineligible until attested; the
 //! `input-session` fixture uses an explicit unrestricted test gate for its
 //! known post targets (strict per-edge oracle still enforced).
 
@@ -60,10 +58,8 @@ use std::time::Instant;
 
 use crate::config::ProbeModifier;
 use crate::dev_selection::TileScope;
-use crate::ffi::{
-    CarbonChordSet, CarbonChordStatus, CarbonHit, TapChordSpec, TapHit, TapPump, TapSource,
-};
-use crate::input::{carbon_mod_bits, cg_flag_bits};
+use crate::ffi::{TapChordSpec, TapHit, TapPump, TapSource};
+use crate::input::cg_flag_bits;
 use crate::input_eligibility::{EligibilityCache, EligibilityFactsStore};
 use crate::input_match::TapKeyKind;
 use crate::input_policy::{
@@ -80,10 +76,6 @@ use crate::runtime::{InputDirection, InputSemanticAction};
 use crate::runtime_backend::{InputSource, InputSourceFactory, RawKeyEvent};
 use crate::runtime_types::TileBinding;
 
-/// Carbon modifier bit for Shift (`Events.h`: shiftKey 512).
-pub const CARBON_SHIFT_BIT: u32 = 512;
-/// Carbon modifier bit for Alt/Option (`Events.h`: optionKey 2048).
-pub const CARBON_ALT_BIT: u32 = 2048;
 /// `CGEventFlags` Shift bit (matches [`cg_flag_bits`] mask space).
 pub const CG_SHIFT_BIT: u64 = 0x0002_0000;
 /// `CGEventFlags` Alternate bit (matches [`cg_flag_bits`] mask space).
@@ -92,8 +84,7 @@ pub const CG_ALT_BIT: u64 = 0x0008_0000;
 /// The scoped-tile chord catalogue: 8 focus chords, 8 move
 /// chords (Shift arm), 8 grow chords (Alt arm, outwards), 8 shrink chords
 /// (Alt+Shift arm, inwards), the float toggle, and the orientation toggle.
-/// The Ctrl-role modifier applies at tuning time ([`tap_specs_for`],
-/// [`carbon_mods_for`]), so the table itself is modifier-free.
+/// The Ctrl-role modifier applies at tuning time ([`tap_specs_for`]), so the table itself is modifier-free.
 /// Duplicate-free by construction; validated by
 /// [`RuntimeConfig::validate`].
 #[must_use]
@@ -162,15 +153,6 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
     out
 }
 
-/// Carbon modifier bits for one catalogue chord: the Ctrl-role modifier
-/// plus Shift for the move/shrink arms plus Alt for the resize arms.
-#[must_use]
-pub fn carbon_mods_for(modifier: ProbeModifier, shift: bool, alt: bool) -> u32 {
-    carbon_mod_bits(modifier)
-        | if shift { CARBON_SHIFT_BIT } else { 0 }
-        | if alt { CARBON_ALT_BIT } else { 0 }
-}
-
 /// Tap specs for one catalogue: exact `(want, mask)` per chord with the
 /// Shift and Alt arms folded into `want` under the same mask.
 #[must_use]
@@ -224,10 +206,9 @@ pub fn interception_gate(
     }
 }
 
-/// Live interception gate over current OS state (tap and Carbon owners;
-/// the tap releases interception while gated, Carbon releases its whole
-/// registration). Unknown Secure Input proceeds; anything gated holds
-/// until the ordinary unlocked state returns.
+/// Live interception gate over current OS state (the tap owner releases
+/// interception while gated). Unknown Secure Input proceeds; anything gated
+/// holds until the ordinary unlocked state returns.
 ///
 /// Threading: the session-dict read is a plain thread-safe C call and the
 /// frontmost read is the justified off-main model query (see
@@ -241,7 +222,7 @@ fn live_gate() -> Option<&'static str> {
 }
 
 /// Refuse input-source creation outside the ordinary unlocked desktop.
-/// Checked BEFORE any Carbon registration or tap install (never register
+/// Checked BEFORE any tap install (never intercept
 /// while locked, unknown, Secure Input active, or frontmost unreadable):
 /// an unknown session refuses rather than arming blind. Runs on the input
 /// owner thread; reads are the thread-safe session C call, Secure Input
@@ -363,331 +344,6 @@ fn attest_live(
         allow_fullscreen,
         now_ms,
     })
-}
-
-// -- Carbon owned source -----------------------------------------------------
-
-/// Discrete Carbon-hotkey input factory over the tile catalogue. Each chord
-/// registers discretely with its honest OS status; conflicts refuse per
-/// chord (recorded, never a settings write) while accepted chords still
-/// arm. No tap is ever installed here. While gated (lock screen, Secure
-/// Input, unknown session, out-of-scope foreground, fullscreen, wrong
-/// Space) the owner holds NO registration at all — the live loop releases
-/// its set on gating and re-arms on return; an unrecoverable
-/// re-registration ends the run truthfully with a refusal (never silent
-/// held hotkeys, never a dirty EOS). Dropping hits does NOT restore
-/// passthrough; only the RAII release does.
-pub struct CarbonTileFactory {
-    modifier: ProbeModifier,
-    bindings: Vec<TileBinding>,
-    statuses: Arc<Mutex<Vec<CarbonChordStatus>>>,
-    refusal: Arc<Mutex<Option<String>>>,
-    gated_ms: Arc<AtomicU64>,
-    /// Shared OS-delivery counter across (re-)registrations: every handler
-    /// installed by this factory bumps the same counter, so the session
-    /// reads total Carbon dispatches (not just the latest set's).
-    deliveries: Arc<crate::ffi::EventCounter>,
-    /// Product selection for eligibility (scoped allowlist or unscoped
-    /// ordinary apps; disabled = never eligible until set). Normal tile
-    /// sets this from the request; the fixture uses an explicit
-    /// unrestricted test gate.
-    scope: TileScope,
-    /// Lock-free cached eligibility (starts ineligible until attested;
-    /// fixture unrestricted gate starts eligible with per-edge oracle).
-    eligibility: Arc<EligibilityCache>,
-    /// Shared per-PID publisher facts (each per-app AX owner publishes only
-    /// its own PID from already-read snapshots; `None` until the tile wires
-    /// it — unknown reads deny). No AX crosses into the input owner through
-    /// this handle: plain cloned records plus a brief `Mutex`, consulted
-    /// outside the callback only.
-    facts: Option<Arc<EligibilityFactsStore>>,
-}
-
-impl CarbonTileFactory {
-    pub fn new(modifier: ProbeModifier, bindings: Vec<TileBinding>) -> Result<Self, String> {
-        if bindings.is_empty() {
-            return Err("carbon tile input needs a non-empty chord table".to_owned());
-        }
-        for binding in &bindings {
-            binding.validate()?;
-        }
-        Ok(Self {
-            modifier,
-            bindings,
-            statuses: Arc::new(Mutex::new(Vec::new())),
-            refusal: Arc::new(Mutex::new(None)),
-            gated_ms: Arc::new(AtomicU64::new(0)),
-            deliveries: Arc::new(crate::ffi::EventCounter::new()),
-            scope: TileScope::scoped_disabled(),
-            eligibility: Arc::new(EligibilityCache::new_scoped()),
-            facts: None,
-        })
-    }
-
-    /// Set the product selection for eligibility (normal tile path;
-    /// ineligible until attested facts).
-    #[must_use]
-    pub fn with_scope(mut self, scope: TileScope) -> Self {
-        self.scope = scope;
-        self
-    }
-
-    /// Share the per-PID publisher facts store (tile wires this before
-    /// `Runtime::start`; `None` (default) denies scoped attests until wired).
-    #[must_use]
-    pub fn with_facts_store(mut self, store: Arc<EligibilityFactsStore>) -> Self {
-        self.facts = Some(store);
-        self
-    }
-
-    /// Fixture-only explicit unrestricted test gate (input-session known
-    /// post targets with strict per-edge oracle). Normal tile must never
-    /// call this.
-    #[must_use]
-    pub fn with_unrestricted_test_gate(mut self) -> Self {
-        self.eligibility = Arc::new(EligibilityCache::new_unrestricted_test_gate());
-        self
-    }
-
-    /// Lock-free cached eligibility (owner-published, callback-read).
-    #[must_use]
-    pub fn eligibility(&self) -> Arc<EligibilityCache> {
-        Arc::clone(&self.eligibility)
-    }
-
-    /// Latest per-chord OS statuses (empty until the owner creates its
-    /// source; conflicts stay visible here for the terminal JSON).
-    #[must_use]
-    pub fn statuses(&self) -> Vec<CarbonChordStatus> {
-        self.statuses
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-
-    /// Truthful refusal recorded by the owner (unrecoverable re-registration
-    /// after a gate); `None` means no refusal.
-    #[must_use]
-    pub fn refusal(&self) -> Option<String> {
-        self.refusal
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()
-    }
-
-    /// Milliseconds the owner spent gated (registration released).
-    #[must_use]
-    pub fn gated_ms(&self) -> u64 {
-        self.gated_ms.load(Ordering::SeqCst)
-    }
-
-    /// Total OS Carbon dispatches across every registration this factory
-    /// installed (handler bumps, including non-catalogue noise the owner
-    /// later ignores — the per-chord proof is the owner's exact-match
-    /// count, this is the OS-dispatch ceiling).
-    #[must_use]
-    pub fn deliveries(&self) -> u32 {
-        self.deliveries.hits()
-    }
-}
-
-impl InputSourceFactory for CarbonTileFactory {
-    fn create(&self) -> Result<Box<dyn InputSource>, String> {
-        // Gate BEFORE any OS registration: never arm while locked, unknown,
-        // Secure Input active, or frontmost unreadable.
-        creation_gate()?;
-        let chords: Vec<(u32, u32)> = self
-            .bindings
-            .iter()
-            .map(|binding| {
-                (
-                    binding.key_code,
-                    carbon_mods_for(self.modifier, binding.shift, binding.alt),
-                )
-            })
-            .collect();
-        let (tx, rx) = mpsc::sync_channel::<CarbonHit>(64);
-        let counter = Arc::clone(&self.deliveries);
-        let report = crate::ffi::carbon_register_set(&chords, &tx, &counter)
-            .map_err(|reason| format!("carbon chord set refused: {reason}"))?;
-        *self
-            .statuses
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = report.statuses.clone();
-        if report.statuses.iter().all(|s| s.os_status != 0) {
-            return Err(format!(
-                "carbon chord set: every chord refused ({} chords)",
-                report.statuses.len()
-            ));
-        }
-        // The OS matched the registered modifier combo to fire; the flags
-        // below replay that combo so the input owner re-checks the exact
-        // chord before forwarding (defense in depth). The table keys the
-        // FULL pair (key code plus Carbon modifiers): focus/move/grow/shrink
-        // arms share key codes, so a key-code-only lookup would replay the
-        // focus flags for a Shift move hit.
-        let (want, _) = cg_flag_bits(self.modifier);
-        let flags_of: Vec<(u32, u32, u64)> = self
-            .bindings
-            .iter()
-            .map(|binding| {
-                (
-                    binding.key_code,
-                    carbon_mods_for(self.modifier, binding.shift, binding.alt),
-                    want | if binding.shift { CG_SHIFT_BIT } else { 0 }
-                        | if binding.alt { CG_ALT_BIT } else { 0 },
-                )
-            })
-            .collect();
-        Ok(Box::new(CarbonTileSource {
-            set: Some(report.set),
-            rx,
-            flags_of,
-            chords,
-            counter,
-            statuses: Arc::clone(&self.statuses),
-            refusal: Arc::clone(&self.refusal),
-            gated_ms: Arc::clone(&self.gated_ms),
-            scope: self.scope.clone(),
-            eligibility: Arc::clone(&self.eligibility),
-            facts: self.facts.clone(),
-            last_attest: None,
-        }))
-    }
-
-    fn describe(&self) -> &'static str {
-        "tile-carbon"
-    }
-}
-
-pub(crate) struct CarbonTileSource {
-    /// Live registration (`None` while gated: the owner holds no hotkeys
-    /// then, never silent held chords).
-    pub(crate) set: Option<CarbonChordSet>,
-    pub(crate) rx: mpsc::Receiver<CarbonHit>,
-    pub(crate) flags_of: Vec<(u32, u32, u64)>,
-    pub(crate) chords: Vec<(u32, u32)>,
-    pub(crate) counter: Arc<crate::ffi::EventCounter>,
-    pub(crate) statuses: Arc<Mutex<Vec<CarbonChordStatus>>>,
-    pub(crate) refusal: Arc<Mutex<Option<String>>>,
-    pub(crate) gated_ms: Arc<AtomicU64>,
-    pub(crate) scope: TileScope,
-    pub(crate) eligibility: Arc<EligibilityCache>,
-    pub(crate) facts: Option<Arc<EligibilityFactsStore>>,
-    pub(crate) last_attest: Option<Instant>,
-}
-
-/// Resolve the replay flags for one Carbon hit against the full-pair
-/// table (key code plus the Carbon modifiers the chord registered with).
-/// Unknown pairs replay `0` (no exact chord can match downstream, so the
-/// hit is ignored — never guessed into a chord).
-pub(crate) fn carbon_flags_for_hit(table: &[(u32, u32, u64)], hit: &CarbonHit) -> u64 {
-    table
-        .iter()
-        .find(|(code, mods, _)| *code == hit.key_code && *mods == hit.carbon_modifiers)
-        .map(|(_, _, flags)| *flags)
-        .unwrap_or(0)
-}
-
-impl CarbonTileSource {
-    /// Re-arm after a gate: fresh channel plus fresh registration, statuses
-    /// republished. An unrecoverable refusal ends the run truthfully (the
-    /// tile surfaces it as input refusal, never a dirty EOS).
-    fn reregister(&mut self) -> Result<(), String> {
-        let (tx, rx) = mpsc::sync_channel::<CarbonHit>(64);
-        let report = crate::ffi::carbon_register_set(&self.chords, &tx, &self.counter)
-            .map_err(|reason| format!("carbon chord set refused: {reason}"))?;
-        *self
-            .statuses
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = report.statuses.clone();
-        if report.statuses.iter().all(|s| s.os_status != 0) {
-            return Err(format!(
-                "carbon chord set: every chord refused ({} chords)",
-                report.statuses.len()
-            ));
-        }
-        self.set = Some(report.set);
-        self.rx = rx;
-        Ok(())
-    }
-
-    fn note_refusal(&self, reason: String) {
-        *self
-            .refusal
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = Some(reason);
-    }
-
-    pub(crate) fn next_gated(
-        &mut self,
-        stop: &AtomicBool,
-        gate: &dyn Fn() -> Option<&'static str>,
-    ) -> Option<RawKeyEvent> {
-        loop {
-            if stop.load(Ordering::SeqCst) {
-                return None;
-            }
-            // Gated (lock screen, Secure Input, unknown session): the live
-            // registration releases NOW (set dropped, hotkeys unregistered)
-            // until the ordinary unlocked state returns. Bounded park slices
-            // keep stop latency finite; the shutdown `unpark` wakes a parked
-            // slice early.
-            if gate().is_some() {
-                self.set = None;
-                self.gated_ms.fetch_add(50, Ordering::SeqCst);
-                std::thread::park_timeout(std::time::Duration::from_millis(50));
-                continue;
-            }
-            // Scoped eligibility BEFORE registration (cheap live reads plus a
-            // plain store snapshot outside any callback; unknown/stale
-            // denies): out-of-scope/fullscreen/wrong-Space releases the whole
-            // RAII registration (dropping hits would NOT restore passthrough
-            // — only the release does) until attested facts return. No AX
-            // runs on this thread: per-app facts arrive via the shared store
-            // from each AX owner's already-read snapshots.
-            if !attest_tile_eligibility(
-                &self.scope,
-                &self.eligibility,
-                self.facts.as_ref(),
-                false,
-                &mut self.last_attest,
-            ) {
-                self.set = None;
-                self.gated_ms.fetch_add(50, Ordering::SeqCst);
-                std::thread::park_timeout(std::time::Duration::from_millis(50));
-                continue;
-            }
-            if self.set.is_none()
-                && let Err(reason) = self.reregister()
-            {
-                self.note_refusal(reason);
-                return None;
-            }
-            match self.rx.recv_timeout(std::time::Duration::from_millis(20)) {
-                Ok(hit) => {
-                    let flags = carbon_flags_for_hit(&self.flags_of, &hit);
-                    return Some(RawKeyEvent {
-                        kind: TapKeyKind::KeyDown,
-                        flags,
-                        key_code: hit.key_code,
-                    });
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Pump the owner thread's runloop so Carbon can deliver;
-                    // the bound caps stop latency.
-                    crate::ffi::pump_runloop_once(20);
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
-            }
-        }
-    }
-}
-
-impl InputSource for CarbonTileSource {
-    fn next(&mut self, stop: &AtomicBool) -> Option<RawKeyEvent> {
-        self.next_gated(stop, &live_gate)
-    }
 }
 
 // -- Tap owned source --------------------------------------------------------

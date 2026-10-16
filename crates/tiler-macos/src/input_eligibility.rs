@@ -1,14 +1,12 @@
 #![forbid(unsafe_code)]
 
-//! Scoped input eligibility: lock-free cached gate before suppression and
-//! registration.
+//! Scoped input eligibility: lock-free cached gate before suppression.
 //!
 //! Normal `tile --input tap` must not suppress 17 chords globally when the
-//! foreground is outside the bundle scope or fullscreen, and Carbon must not
-//! hold 17 global interceptions there either. The fix is eligibility BEFORE
-//! suppression/registration, not merely dropping already-consumed hits:
-//! out-of-scope/fullscreen callbacks Keep/noForward and Carbon RAII
-//! registrations RELEASE (dropping hits does NOT restore passthrough).
+//! foreground is outside the bundle scope or fullscreen. The fix is
+//! eligibility BEFORE suppression, not merely dropping already-consumed
+//! hits: out-of-scope/fullscreen callbacks Keep/noForward (dropping hits
+//! does NOT restore passthrough).
 //!
 //! Ownership and isolation (no new threads, no new channels):
 //! - Each per-app AX owner publishes ONLY its own PID's candidate facts to
@@ -19,15 +17,14 @@
 //!   denies) and can never stall keyboard/tap delivery. Records are keyed by
 //!   PID, so one background app cannot overwrite the foreground PID's
 //!   record.
-//! - The input owner (which already owns its Carbon/tap guard) attests from
+//! - The input owner (which already owns its tap guard) attests from
 //!   cheap live reads OUTSIDE the callback (session verdict, Secure Input,
 //!   workspace frontmost, SLPS front) plus a plain store snapshot, and
 //!   publishes to a lock-free [`EligibilityCache`].
 //! - The tap callback reads ONLY atomics plus the monotonic clock (no
 //!   `Mutex`, no allocation, no OS/AX/NS calls, no logging) and
 //!   Keeps/noForwards while ineligible.
-//! - The Carbon owner releases its whole registration while ineligible and
-//!   re-arms on return; the tap owner drops its old guard and installs a
+//! - The tap owner drops its old guard and installs a
 //!   FRESH guard on return to eligible (new epoch) to avoid a disabled
 //!   sticky cycle. A recorded hard creation denial still fails closed and
 //!   is never auto-overridden; transient disable notifications recover

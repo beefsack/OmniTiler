@@ -2,12 +2,10 @@
 
 //! Product input policy for the macOS basic dogfood preview.
 //!
-//! The tap is the primary (and now sole product) interception route over the
+//! The tap is the sole product interception route over the
 //! shared basic tiling catalogue ([`crate::native_input::tile_catalogue`]:
 //! 8 focus + 8 move + float, 8 grow + 8 shrink resize steps, and the parent
-//! orientation toggle; Ctrl-role modifier defaulting to Ctrl). Carbon
-//! remains a probe-only route (`input-register`, `input-session --route
-//! carbon`); the product tile no longer selects it.
+//! orientation toggle; Ctrl-role modifier defaulting to Ctrl).
 //!
 //! Presets mirror the Windows `Preset::Authentic` / `Preset::Compatible`
 //! contract ([`apply semantics`]: Authentic keeps every supported chord,

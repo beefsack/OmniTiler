@@ -2,9 +2,8 @@
 
 //! Bounded owned `input-session` fixture (Child-holder, input LIVE only).
 //!
-//! Exercises the REAL native tile input sources on a dedicated input owner
-//! thread ([`crate::native_input::CarbonTileFactory`] /
-//! [`crate::native_input::TapTileFactory`]) against a known owned helper
+//! Exercises the REAL native tile input source on a dedicated input owner
+//! thread ([`crate::native_input::TapTileFactory`]) against a known owned helper
 //! window, with downstream delivery proof from the helper's own AppKit key
 //! counters (exact vs extra-modifier vs plain passthrough), never just a
 //! tap callback or API return. Synthetic posts ride native CG through the
@@ -16,11 +15,7 @@
 //! this path: focus moves only via the SAME SLPS route with agreement for
 //! target and restore (shared with `focus-session`).
 //!
-//! Legs per route (all bounded, all with settle readbacks):
-//! - carbon: exact `Ctrl+h` (owner hit + helper delivery + latency),
-//!   extra-modifier and plain variants (no hit, helper passthrough), arrow
-//!   registration statuses (posts never: Mission Control chords stay
-//!   observations only), release post after teardown (delivery, no hit).
+//! Legs (all bounded, all with settle readbacks) over the tap route:
 //! - tap: exact `Ctrl+h` suppressed (owner match plus helper absence over a
 //!   bounded window), extra/plain passthrough, matched Left/Right arrow
 //!   suppression only after the `h` proof AND a single-Space baseline (Up/
@@ -87,12 +82,12 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::config::{MAX_PROBE_SECONDS, ProbeModifier};
-use crate::ffi::{CarbonChordStatus, TapSourceReport};
+use crate::ffi::TapSourceReport;
 use crate::focus::{FocusAgreement, FocusDispatch, HolderStop, OriginalPreimage, SpaceSnapshot};
 use crate::input::cg_flag_bits;
 use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
 use crate::input_session_legs::{arrow_observations, post_chord_leg, run_post_legs};
-use crate::native_input::{CarbonTileFactory, TapTileFactory, tile_catalogue};
+use crate::native_input::{TapTileFactory, tile_catalogue};
 use crate::runtime_backend::{InputSource, InputSourceFactory};
 use crate::synth::{GuardedPostRoute, PostedEvent, post_guarded};
 use crate::watchdog::Watchdog;
@@ -134,21 +129,19 @@ pub(crate) const DELIVERY_WAIT: Duration = Duration::from_millis(3000);
 pub(crate) const ABSENCE_WAIT: Duration = Duration::from_millis(1500);
 pub(crate) const POLL_SLICE_MS: u64 = 50;
 
-/// Which native tile source the dedicated owner drives. Exactly one arms
-/// per run; no auto fallback.
+/// Which native tile source the dedicated owner drives. The tap is the sole
+/// route (no auto fallback).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InputSessionRoute {
-    Carbon,
     Tap,
 }
 
 impl InputSessionRoute {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
-            "carbon" => Ok(Self::Carbon),
             "tap" => Ok(Self::Tap),
-            other => Err(format!("unknown --route '{other}' (expected carbon|tap)")),
+            other => Err(format!("unknown --route '{other}' (expected tap)")),
         }
     }
 }
@@ -158,8 +151,7 @@ impl InputSessionRoute {
 /// chords/owned window, no permission-tier change): local producer evidence
 /// (`hammerspoon/extensions/eventtap/libeventtap.m` `keyStrokes` posts at
 /// `kCGHIDEventTap` when no target app is given) shows HID as the upstream
-/// injection point, while two old Carbon legs posted at session (and one
-/// direct-to-PID leg bypassed hotkeys entirely) never hit.
+/// injection point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PostRoute {
@@ -197,9 +189,6 @@ pub struct InputSessionRequest {
 impl InputSessionRequest {
     pub fn validate(&self) -> Result<(), String> {
         if self.watchdog_only {
-            if self.route != InputSessionRoute::Tap {
-                return Err("watchdog-only is tap-only (the probe owns a tap)".to_owned());
-            }
             if self.seconds < MIN_WATCHDOG_ONLY_SECONDS || self.seconds > MAX_WATCHDOG_ONLY_SECONDS
             {
                 return Err(format!(
@@ -237,38 +226,25 @@ impl InputSessionRequest {
                 self.seconds
             ));
         }
-        if self.stall_once_ms > 0 {
-            if self.route != InputSessionRoute::Tap {
-                return Err("stall-once is tap-only (carbon has no tap callback)".to_owned());
-            }
-            if self.stall_once_ms > MAX_STALL_ONCE_MS {
-                return Err(format!(
-                    "stall-once-ms must be 1..={MAX_STALL_ONCE_MS}, got {}",
-                    self.stall_once_ms
-                ));
-            }
+        if self.stall_once_ms > MAX_STALL_ONCE_MS {
+            return Err(format!(
+                "stall-once-ms must be 1..={MAX_STALL_ONCE_MS}, got {}",
+                self.stall_once_ms
+            ));
         }
-        if self.direct_disable_hold_ms > 0 {
-            if self.route != InputSessionRoute::Tap {
-                return Err("direct-disable-hold is tap-only (carbon has no tap)".to_owned());
-            }
-            if self.direct_disable_hold_ms > MAX_DIRECT_HOLD_MS {
-                return Err(format!(
-                    "direct-disable-hold-ms must be 1..={MAX_DIRECT_HOLD_MS}, got {}",
-                    self.direct_disable_hold_ms
-                ));
-            }
-            if self.stall_once_ms > 0 {
-                return Err(
-                    "direct-disable-hold and stall-once are separate fault legs (never combined)"
-                        .to_owned(),
-                );
-            }
+        if self.direct_disable_hold_ms > MAX_DIRECT_HOLD_MS {
+            return Err(format!(
+                "direct-disable-hold-ms must be 1..={MAX_DIRECT_HOLD_MS}, got {}",
+                self.direct_disable_hold_ms
+            ));
+        }
+        if self.direct_disable_hold_ms > 0 && self.stall_once_ms > 0 {
+            return Err(
+                "direct-disable-hold and stall-once are separate fault legs (never combined)"
+                    .to_owned(),
+            );
         }
         if self.direct_rearm {
-            if self.route != InputSessionRoute::Tap {
-                return Err("direct-rearm is tap-only (carbon has no tap)".to_owned());
-            }
             if self.stall_once_ms > 0 {
                 return Err(
                     "direct-rearm and stall-once are separate fault legs (never combined)"
@@ -283,9 +259,6 @@ impl InputSessionRequest {
             }
         }
         if self.disable_once {
-            if self.route != InputSessionRoute::Tap {
-                return Err("disable-once is tap-only (carbon has no tap)".to_owned());
-            }
             if self.stall_once_ms > 0 {
                 return Err(
                     "disable-once and stall-once are separate fault legs (never combined)"
@@ -306,9 +279,6 @@ impl InputSessionRequest {
             }
         }
         if self.physical_stall {
-            if self.route != InputSessionRoute::Tap {
-                return Err("physical-stall is tap-only (carbon has no tap callback)".to_owned());
-            }
             if self.stall_once_ms == 0 {
                 return Err("physical-stall needs --stall-once-ms (the stalled tap)".to_owned());
             }
@@ -409,7 +379,6 @@ pub(crate) struct OwnerHit {
 }
 
 enum OwnerFactory {
-    Carbon(Arc<CarbonTileFactory>),
     Tap(Arc<TapTileFactory>),
 }
 
@@ -420,8 +389,7 @@ pub(crate) struct OwnerDone {
 }
 
 /// Dedicated input-owner thread body: creates, drives, and destroys its
-/// REAL native tile source inside this thread (Carbon dispatches may arrive
-/// via the controller main pump; the channel crosses threads). Exact chord
+/// REAL native tile source inside this thread. Exact chord
 /// matches (indexed by catalogue order) are forwarded as [`OwnerHit`];
 /// everything else counts as ignored. A `None` without stop is an honest
 /// unexpected EOS (counted, thread exits, never spun on).
@@ -430,19 +398,14 @@ fn owner_main(
     modifier: ProbeModifier,
     stop: Arc<AtomicBool>,
     hit_tx: mpsc::Sender<OwnerHit>,
-    ready_tx: mpsc::Sender<Result<Vec<CarbonChordStatus>, String>>,
+    ready_tx: mpsc::Sender<Result<(), String>>,
 ) -> OwnerDone {
     let create = match &factory {
-        OwnerFactory::Carbon(factory) => factory.create(),
         OwnerFactory::Tap(factory) => factory.create(),
     };
     let mut source: Box<dyn InputSource> = match create {
         Ok(source) => {
-            let statuses = match &factory {
-                OwnerFactory::Carbon(factory) => factory.statuses(),
-                OwnerFactory::Tap(_) => Vec::new(),
-            };
-            let _ = ready_tx.send(Ok(statuses));
+            let _ = ready_tx.send(Ok(()));
             source
         }
         Err(reason) => {
@@ -528,7 +491,7 @@ pub(crate) struct CtxMeta {
 }
 
 /// Gate ONE synthetic post through the shared guarded boundary (the normal
-/// dispatch path: session taps observe it, global Carbon hotkeys match it,
+/// dispatch path: session taps observe it,
 /// and the frontmost app — which the oracle must confirm is exactly
 /// `(pid, wid)` RIGHT NOW — receives it unless a tap suppresses): Secure
 /// Input must not be active, the session must read unlocked, and the time
@@ -593,7 +556,7 @@ pub(crate) fn latest_helper_counts(
 }
 
 /// Pump the controller main thread while waiting (Application events plus
-/// the runloop in bounded slices): Carbon dispatches and workspace reads
+/// the runloop in bounded slices): workspace reads
 /// need a serviced main thread. No windows, no activation, no focus effect.
 pub(crate) fn pump_main() {
     #[cfg(target_os = "macos")]
@@ -650,7 +613,6 @@ pub(crate) struct ArrowStatus {
     pub(crate) key_code: u32,
     pub(crate) shift: bool,
     pub(crate) alt: bool,
-    pub(crate) carbon_os_status: Option<i32>,
     pub(crate) tap_observed: Option<String>,
 }
 
@@ -667,8 +629,6 @@ struct InputSessionReport {
     helper_bundle: String,
     focus_latency_ms: u64,
     restore_latency_ms: u64,
-    carbon_statuses: Vec<CarbonChordStatus>,
-    carbon_deliveries: u32,
     tap_report: TapSourceReport,
     owner_matched: u64,
     owner_ignored: u64,
@@ -757,7 +717,7 @@ fn run_watchdog_only_session(request: InputSessionRequest) -> Result<String, (i3
     );
     let stop = Arc::new(AtomicBool::new(false));
     let (hit_tx, hit_rx) = mpsc::channel::<OwnerHit>();
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<Vec<CarbonChordStatus>, String>>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let owner_factory = OwnerFactory::Tap(Arc::clone(&factory));
     let owner_stop = Arc::clone(&stop);
     let owner_modifier = request.modifier;
@@ -1093,48 +1053,28 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
     }
     let focus_latency_ms = crate::focus::latency_ms(t_focus);
 
-    // Dedicated input owner over the REAL native tile source.
+    // Dedicated input owner over the REAL native tile source (tap only).
+    // Fixture-only explicit unrestricted test gate for known post
+    // targets (strict per-edge oracle still enforced in `gated_post`
+    // via the shared guarded boundary); normal tile stays scoped.
     let catalogue = tile_catalogue();
     let (want_flags, _) = cg_flag_bits(request.modifier);
     let stop = Arc::new(AtomicBool::new(false));
     let (hit_tx, hit_rx) = mpsc::channel::<OwnerHit>();
-    let (ready_tx, ready_rx) = mpsc::channel::<Result<Vec<CarbonChordStatus>, String>>();
-    let (owner_factory, carbon_factory, tap_factory): (
-        OwnerFactory,
-        Option<Arc<CarbonTileFactory>>,
-        Option<Arc<TapTileFactory>>,
-    ) = match request.route {
-        InputSessionRoute::Carbon => {
-            // Fixture-only explicit unrestricted test gate for known post
-            // targets (strict per-edge oracle still enforced in `gated_post`
-            // via the shared guarded boundary); normal tile stays scoped.
-            let factory = Arc::new(
-                CarbonTileFactory::new(request.modifier, catalogue)
-                    .map(|f| f.with_unrestricted_test_gate())
-                    .map_err(|e| err_json("input-factory", e))?,
-            );
-            (
-                OwnerFactory::Carbon(Arc::clone(&factory)),
-                Some(factory),
-                None,
-            )
-        }
-        InputSessionRoute::Tap => {
-            let factory = Arc::new(
-                TapTileFactory::new(request.modifier, catalogue)
-                    .map(|f| {
-                        let f = f.with_unrestricted_test_gate();
-                        if request.stall_once_ms > 0 {
-                            f.with_stall_once(request.stall_once_ms)
-                        } else {
-                            f
-                        }
-                    })
-                    .map_err(|e| err_json("input-factory", e))?,
-            );
-            (OwnerFactory::Tap(Arc::clone(&factory)), None, Some(factory))
-        }
-    };
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    let tap_factory = Arc::new(
+        TapTileFactory::new(request.modifier, catalogue)
+            .map(|f| {
+                let f = f.with_unrestricted_test_gate();
+                if request.stall_once_ms > 0 {
+                    f.with_stall_once(request.stall_once_ms)
+                } else {
+                    f
+                }
+            })
+            .map_err(|e| err_json("input-factory", e))?,
+    );
+    let owner_factory = OwnerFactory::Tap(Arc::clone(&tap_factory));
     let owner_stop = Arc::clone(&stop);
     let owner_handle = std::thread::Builder::new()
         .name("input-owner".to_owned())
@@ -1180,19 +1120,16 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             pump_main();
         }
     };
-    let readiness: Vec<CarbonChordStatus> = match ready_statuses {
-        Ok(statuses) => statuses,
-        Err(reason) => {
-            let _ = stop_and_cleanup_owner(stop, owner_handle);
-            let restore_attempt = crate::focus::attempt_restore(&original);
-            let (space_after, stop_info, post_stop_readback) =
-                crate::focus::stop_and_readback(&mut raw, &original);
-            return Err((
-                1,
-                serde_json::json!({"stage": "input-ready", "error": format!("input source refused: {reason}"), "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
-            ));
-        }
-    };
+    if let Err(reason) = ready_statuses {
+        let _ = stop_and_cleanup_owner(stop, owner_handle);
+        let restore_attempt = crate::focus::attempt_restore(&original);
+        let (space_after, stop_info, post_stop_readback) =
+            crate::focus::stop_and_readback(&mut raw, &original);
+        return Err((
+            1,
+            serde_json::json!({"stage": "input-ready", "error": format!("input source refused: {reason}"), "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+        ));
+    }
 
     // Post-readiness focus re-assertion (causal sequencing repair): source
     // creation plus the readiness wait pump the main AFTER the initial helper
@@ -1214,7 +1151,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": "focus-rerecheck", "error": e.to_string(), "readiness": readiness, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": "focus-rerecheck", "error": e.to_string(), "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
     if let Err(e) = crate::focus::dispatch_focus(pid, wid) {
@@ -1224,7 +1161,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": "focus-redispatch", "error": e.to_string(), "readiness": readiness, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": "focus-redispatch", "error": e.to_string(), "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
     if let Err(e) = crate::focus::await_agreement(pid, wid, Duration::from_secs(5)) {
@@ -1234,7 +1171,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": "focus-reagreement", "error": e.to_string(), "readiness": readiness, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": "focus-reagreement", "error": e.to_string(), "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
 
@@ -1259,7 +1196,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
         &space_before,
         single_space_baseline,
         &mut legs,
-        tap_factory.as_deref(),
+        Some(&*tap_factory),
     );
     if let Err((stage, cause)) = leg_result {
         let (owner_done, owner_joined) = stop_and_cleanup_owner(stop, owner_handle);
@@ -1269,13 +1206,13 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": stage, "error": cause, "legs": legs, "readiness": readiness, "helper_last": helper_last, "owner_done": {"matched": owner_done.matched, "ignored": owner_done.ignored, "unexpected_eos": owner_done.unexpected_eos, "joined": owner_joined}, "tap_report": tap_factory.as_ref().map(|f| f.latest_report()), "tap_refusal": tap_factory.as_ref().and_then(|f| f.refusal()), "tap_direct_enabled": tap_factory.as_ref().and_then(|f| f.latest_direct_enabled()), "rearm_epoch": tap_factory.as_ref().map(|f| f.rearm_epoch()), "direct_rearm": request.direct_rearm, "disable_once": request.disable_once, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": stage, "error": cause, "legs": legs, "helper_last": helper_last, "owner_done": {"matched": owner_done.matched, "ignored": owner_done.ignored, "unexpected_eos": owner_done.unexpected_eos, "joined": owner_joined}, "tap_report": tap_factory.latest_report(), "tap_refusal": tap_factory.refusal(), "tap_direct_enabled": tap_factory.latest_direct_enabled(), "rearm_epoch": tap_factory.rearm_epoch(), "direct_rearm": request.direct_rearm, "disable_once": request.disable_once, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
 
     // Termination first, release proof second: stop the owner (bounded
-    // join; the source drops on thread exit, releasing Carbon registration
-    // / tap interception via RAII), then the release post must still reach
+    // join; the source drops on thread exit, releasing tap interception
+    // via RAII), then the release post must still reach
     // the helper with no owner hit.
     let (owner_done, _) = stop_and_cleanup_owner(stop, owner_handle);
     let mut release_leg = post_chord_leg(
@@ -1301,7 +1238,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
                 crate::focus::stop_and_readback(&mut raw, &original);
             return Err((
                 1,
-                serde_json::json!({"stage": "release-post", "error": reason, "legs": legs, "readiness": readiness, "helper_last": helper_last, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+                serde_json::json!({"stage": "release-post", "error": reason, "legs": legs, "helper_last": helper_last, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
             ));
         }
     };
@@ -1314,7 +1251,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
             crate::focus::stop_and_readback(&mut raw, &original);
         return Err((
             1,
-            serde_json::json!({"stage": "release-post", "error": format!("release delivery mismatch (want exact +1/+1, have {:?})", release_leg.helper_exact_delta), "legs": legs, "release": release_leg, "readiness": readiness, "helper_last": helper_last, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
+            serde_json::json!({"stage": "release-post", "error": format!("release delivery mismatch (want exact +1/+1, have {:?})", release_leg.helper_exact_delta), "legs": legs, "release": release_leg, "helper_last": helper_last, "restore_attempt": restore_attempt, "space_before": space_before, "space_after": space_after, "stop": stop_info, "post_stop_readback": post_stop_readback}).to_string(),
         ));
     }
     legs.push(release_leg);
@@ -1362,37 +1299,10 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
     let stop_info = crate::focus::stop_verified(&mut raw.child, raw.pid);
     let post_stop_readback = crate::focus::read_agreement(original.pid as u32, original.wid).ok();
 
-    let (carbon_statuses, carbon_deliveries, tap_report, gated_ms, input_refusal) =
-        match request.route {
-            InputSessionRoute::Carbon => {
-                let factory = carbon_factory.expect("carbon factory held");
-                (
-                    factory.statuses(),
-                    factory.deliveries(),
-                    TapSourceReport {
-                        matched: 0,
-                        suppressed: 0,
-                        deliveries: 0,
-                        reenables_after_timeout: 0,
-                        user_disables: 0,
-                        unnotified_disables: 0,
-                    },
-                    factory.gated_ms(),
-                    factory.refusal(),
-                )
-            }
-            InputSessionRoute::Tap => {
-                let factory = tap_factory.as_ref().expect("tap factory held");
-                (
-                    transient_arrow_statuses(request.modifier),
-                    0,
-                    factory.latest_report(),
-                    factory.gated_ms(),
-                    factory.refusal(),
-                )
-            }
-        };
-    let arrows = arrow_observations(request, &carbon_statuses, &legs);
+    let tap_report = tap_factory.latest_report();
+    let gated_ms = tap_factory.gated_ms();
+    let input_refusal = tap_factory.refusal();
+    let arrows = arrow_observations(&legs);
     watchdog.disarm();
     let outcome = if input_refusal.is_some() {
         "input-refused"
@@ -1411,8 +1321,6 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
         helper_bundle,
         focus_latency_ms,
         restore_latency_ms,
-        carbon_statuses,
-        carbon_deliveries,
         tap_report,
         owner_matched: owner_done.matched,
         owner_ignored: owner_done.ignored,
@@ -1423,7 +1331,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
         direct_disable_hold_ms: request.direct_disable_hold_ms,
         direct_rearm: request.direct_rearm,
         disable_once: request.disable_once,
-        rearm_epoch: tap_factory.as_ref().map(|f| f.rearm_epoch()).unwrap_or(0),
+        rearm_epoch: tap_factory.rearm_epoch(),
         watchdog_only: request.watchdog_only,
         arrows,
         space_before,
@@ -1448,7 +1356,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
 }
 
 /// Stop the owner thread (bounded join): the input source drops on thread
-/// exit, releasing Carbon registration / tap interception via RAII. Every
+/// exit, releasing tap interception via RAII. Every
 /// owner pump slice is bounded well under the join bound, so the join
 /// cannot hang past it short of an OS-level wedge (which the watchdog
 /// covers as the hard backstop).
@@ -1475,40 +1383,5 @@ fn stop_and_cleanup_owner(
             },
             false,
         ),
-    }
-}
-
-/// Transient arrow-chord registration read (tap route only): register the
-/// eight catalogue arrow chords on the calling thread purely to read their
-/// honest OS statuses (Mission Control conflicts surface here, never as
-/// settings writes), then drop immediately. No posts, no interception, no
-/// pump: statuses are valid at registration time.
-fn transient_arrow_statuses(modifier: ProbeModifier) -> Vec<CarbonChordStatus> {
-    use std::sync::mpsc::sync_channel;
-    let chords: Vec<(u32, u32)> = tile_catalogue()
-        .iter()
-        .filter(|b| matches!(b.key_code, 0x7B..=0x7E))
-        .map(|b| {
-            (
-                b.key_code,
-                crate::input::carbon_mod_bits(modifier)
-                    + if b.shift {
-                        crate::native_input::CARBON_SHIFT_BIT
-                    } else {
-                        0
-                    }
-                    + if b.alt {
-                        crate::native_input::CARBON_ALT_BIT
-                    } else {
-                        0
-                    },
-            )
-        })
-        .collect();
-    let (tx, _rx) = sync_channel(8);
-    let counter = Arc::new(crate::ffi::EventCounter::new());
-    match crate::ffi::carbon_register_set(&chords, &tx, &counter) {
-        Ok(report) => report.statuses,
-        Err(_) => Vec::new(),
     }
 }

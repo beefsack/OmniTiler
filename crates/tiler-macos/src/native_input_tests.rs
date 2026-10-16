@@ -1,15 +1,10 @@
 #![cfg(test)]
 //! Mechanical split of `native_input.rs` cfg tests (no behavior change).
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc,
-};
+use std::sync::Arc;
 
 use crate::config::ProbeModifier;
 use crate::dev_selection::TileScope;
 use crate::input::cg_flag_bits;
-use crate::input_eligibility::EligibilityCache;
 use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
 use crate::input_policy::{DisableAction, unnotified_disable_action};
 use crate::native_input::*;
@@ -145,36 +140,6 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation() {
     assert_eq!(dir_of(KEY_H, false, true), Some(InputDirection::Left));
     assert_eq!(dir_of(KEY_L, true, true), Some(InputDirection::Right));
     assert_eq!(dir_of(KEY_UP, false, true), Some(InputDirection::Up));
-}
-
-#[test]
-fn carbon_mods_cover_ctrl_role_plus_shift_and_alt_arms() {
-    assert_eq!(carbon_mods_for(ProbeModifier::Meta, false, false), 256);
-    assert_eq!(carbon_mods_for(ProbeModifier::Meta, true, false), 256 + 512);
-    assert_eq!(
-        carbon_mods_for(ProbeModifier::Meta, false, true),
-        256 + 2048
-    );
-    assert_eq!(
-        carbon_mods_for(ProbeModifier::Meta, true, true),
-        256 + 512 + 2048
-    );
-    assert_eq!(carbon_mods_for(ProbeModifier::Ctrl, false, false), 4096);
-    assert_eq!(
-        carbon_mods_for(ProbeModifier::Ctrl, true, false),
-        4096 + 512
-    );
-    // Windows parity: grow is Win+Alt (here Ctrl+Alt), shrink adds Shift.
-    assert_eq!(
-        carbon_mods_for(ProbeModifier::Ctrl, false, true),
-        4096 + 2048
-    );
-    assert_eq!(
-        carbon_mods_for(ProbeModifier::Ctrl, true, true),
-        4096 + 512 + 2048
-    );
-    assert_eq!(carbon_mods_for(ProbeModifier::Alt, false, false), 2048);
-    assert_eq!(carbon_mods_for(ProbeModifier::Shift, false, false), 512);
 }
 
 #[test]
@@ -394,230 +359,6 @@ fn gate_matrix() {
 }
 
 #[test]
-fn carbon_hit_conversion_distinguishes_shift_arm() {
-    use crate::ffi::CarbonHit;
-    // Regression: focus and move arms share key codes, so the replay
-    // table MUST key the full (key code, Carbon modifiers) pair. A
-    // key-code-only lookup replays the focus flags for a Shift move hit
-    // (focus arm sorts first), silently converting every move into a
-    // focus step.
-    let modifier = ProbeModifier::Ctrl;
-    let catalogue = tile_catalogue();
-    let (want, _) = cg_flag_bits(modifier);
-    let table: Vec<(u32, u32, u64)> = catalogue
-        .iter()
-        .map(|binding| {
-            (
-                binding.key_code,
-                carbon_mods_for(modifier, binding.shift, binding.alt),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
-                    | if binding.alt { CG_ALT_BIT } else { 0 },
-            )
-        })
-        .collect();
-    let focus_hit = CarbonHit {
-        key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, false, false),
-    };
-    let move_hit = CarbonHit {
-        key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, true, false),
-    };
-    let focus_flags = carbon_flags_for_hit(&table, &focus_hit);
-    let move_flags = carbon_flags_for_hit(&table, &move_hit);
-    assert_ne!(
-        focus_flags, move_flags,
-        "Shift move hit must not replay focus flags"
-    );
-    assert_eq!(focus_flags & CG_SHIFT_BIT, 0);
-    assert_eq!(move_flags & CG_SHIFT_BIT, CG_SHIFT_BIT);
-    // End to end through the exact matcher: the move replay matches the
-    // move tuning and fails the focus tuning, and vice versa.
-    let focus_tuning = tuning_for(modifier, KEY_H, false, false);
-    let move_tuning = tuning_for(modifier, KEY_H, true, false);
-    let grow_tuning = tuning_for(modifier, KEY_H, false, true);
-    let shrink_tuning = tuning_for(modifier, KEY_H, true, true);
-    let matched = |flags: u64, tuning: TapTuning| {
-        let mut pending = false;
-        decide_tap_event(
-            TapKeyKind::KeyDown,
-            flags,
-            i64::from(KEY_H),
-            tuning,
-            true,
-            &mut pending,
-        )
-        .matched
-    };
-    assert!(matched(focus_flags, focus_tuning));
-    assert!(!matched(focus_flags, move_tuning));
-    assert!(matched(move_flags, move_tuning));
-    assert!(
-        !matched(move_flags, focus_tuning),
-        "Shift replay must fail the focus chord"
-    );
-    // The Alt arms ride the same full-pair table: a grow replay matches
-    // only the grow tuning, a shrink replay only the shrink tuning.
-    let grow_hit = CarbonHit {
-        key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, false, true),
-    };
-    let shrink_hit = CarbonHit {
-        key_code: KEY_H,
-        carbon_modifiers: carbon_mods_for(modifier, true, true),
-    };
-    let grow_flags = carbon_flags_for_hit(&table, &grow_hit);
-    let shrink_flags = carbon_flags_for_hit(&table, &shrink_hit);
-    assert_ne!(grow_flags, focus_flags);
-    assert_ne!(shrink_flags, move_flags);
-    assert!(matched(grow_flags, grow_tuning));
-    assert!(!matched(grow_flags, focus_tuning));
-    assert!(!matched(grow_flags, move_tuning));
-    assert!(!matched(grow_flags, shrink_tuning));
-    assert!(matched(shrink_flags, shrink_tuning));
-    assert!(!matched(shrink_flags, grow_tuning));
-    assert!(!matched(shrink_flags, move_tuning));
-    assert!(!matched(shrink_flags, focus_tuning));
-    // Unknown pairs replay 0: no exact chord matches downstream, so the
-    // hit is ignored — never guessed into a chord.
-    let unknown = CarbonHit {
-        key_code: KEY_G,
-        carbon_modifiers: 0,
-    };
-    assert_eq!(carbon_flags_for_hit(&table, &unknown), 0);
-    assert!(!matched(0, focus_tuning));
-    assert!(!matched(0, move_tuning));
-}
-
-#[test]
-fn carbon_gated_loop_parks_without_dirty_end() {
-    // Gated the whole time: the owner holds no registration, counts
-    // gated time, records no refusal, and a set stop flag ends the loop
-    // promptly (no hang, no dirty event). Single-threaded: the
-    // injected gate trips the stop flag itself after a few slices
-    // (the source is `!Send`, like the live owner thread confinement).
-    let modifier = ProbeModifier::Ctrl;
-    let catalogue = tile_catalogue();
-    let (want, _) = cg_flag_bits(modifier);
-    let chords: Vec<(u32, u32)> = catalogue
-        .iter()
-        .map(|binding| {
-            (
-                binding.key_code,
-                carbon_mods_for(modifier, binding.shift, binding.alt),
-            )
-        })
-        .collect();
-    let flags_of: Vec<(u32, u32, u64)> = catalogue
-        .iter()
-        .map(|binding| {
-            (
-                binding.key_code,
-                carbon_mods_for(modifier, binding.shift, binding.alt),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
-                    | if binding.alt { CG_ALT_BIT } else { 0 },
-            )
-        })
-        .collect();
-    let (_, rx) = mpsc::sync_channel::<crate::ffi::CarbonHit>(64);
-    let mut source = CarbonTileSource {
-        set: None,
-        rx,
-        flags_of,
-        chords,
-        counter: Arc::new(crate::ffi::EventCounter::new()),
-        statuses: Arc::new(Mutex::new(Vec::new())),
-        refusal: Arc::new(Mutex::new(None)),
-        gated_ms: Arc::new(AtomicU64::new(0)),
-        scope: TileScope::scoped_disabled(),
-        eligibility: Arc::new(EligibilityCache::new_unrestricted_test_gate()),
-        facts: None,
-        last_attest: None,
-    };
-    let stop = AtomicBool::new(false);
-    let calls = AtomicU64::new(0);
-    let outcome = source.next_gated(&stop, &|| {
-        if calls.fetch_add(1, Ordering::SeqCst) >= 3 {
-            stop.store(true, Ordering::SeqCst);
-        }
-        Some("session-unknown")
-    });
-    assert!(outcome.is_none(), "stop ends the run, never a dirty event");
-    assert!(
-        source.gated_ms.load(Ordering::SeqCst) >= 100,
-        "gated time counted while released"
-    );
-    assert!(
-        source
-            .refusal
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .is_none(),
-        "a merely gated run records no refusal"
-    );
-}
-
-#[cfg(not(target_os = "macos"))]
-#[test]
-fn carbon_failed_recovery_ends_truthfully() {
-    // Off-macOS the stub refuses every registration: with the gate
-    // clear and no live set, the loop attempts recovery once, records
-    // the refusal, and ends (never a dirty EOS, never silent hotkeys).
-    // Re-arm on ungate also needs native delivery acceptance.
-    let modifier = ProbeModifier::Ctrl;
-    let catalogue = tile_catalogue();
-    let (want, _) = cg_flag_bits(modifier);
-    let chords: Vec<(u32, u32)> = catalogue
-        .iter()
-        .map(|binding| {
-            (
-                binding.key_code,
-                carbon_mods_for(modifier, binding.shift, binding.alt),
-            )
-        })
-        .collect();
-    let flags_of: Vec<(u32, u32, u64)> = catalogue
-        .iter()
-        .map(|binding| {
-            (
-                binding.key_code,
-                carbon_mods_for(modifier, binding.shift, binding.alt),
-                want | if binding.shift { CG_SHIFT_BIT } else { 0 }
-                    | if binding.alt { CG_ALT_BIT } else { 0 },
-            )
-        })
-        .collect();
-    let (_, rx) = mpsc::sync_channel::<crate::ffi::CarbonHit>(64);
-    let mut source = CarbonTileSource {
-        set: None,
-        rx,
-        flags_of,
-        chords,
-        counter: Arc::new(crate::ffi::EventCounter::new()),
-        statuses: Arc::new(Mutex::new(Vec::new())),
-        refusal: Arc::new(Mutex::new(None)),
-        gated_ms: Arc::new(AtomicU64::new(0)),
-        scope: TileScope::scoped_disabled(),
-        eligibility: Arc::new(EligibilityCache::new_unrestricted_test_gate()),
-        facts: None,
-        last_attest: None,
-    };
-    let stop = AtomicBool::new(false);
-    assert!(source.next_gated(&stop, &|| None).is_none());
-    let refusal = source
-        .refusal
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .clone();
-    assert!(
-        refusal
-            .as_ref()
-            .is_some_and(|reason| reason.contains("refused")),
-        "unrecoverable re-registration refuses truthfully: {refusal:?}"
-    );
-}
-
-#[test]
 fn stall_seam_is_probe_only_never_product() {
     // The deliberate callback-stall seam exists ONLY for the
     // `input-session --stall-once-ms` fault-injection leg. The exact
@@ -659,18 +400,14 @@ fn direct_hold_defaults_off_with_unknown_state() {
 
 #[test]
 fn factories_reject_empty_tables() {
-    assert!(CarbonTileFactory::new(ProbeModifier::Meta, vec![]).is_err());
     assert!(TapTileFactory::new(ProbeModifier::Meta, vec![]).is_err());
     let catalogue = tile_catalogue();
-    assert!(CarbonTileFactory::new(ProbeModifier::Meta, catalogue.clone()).is_ok());
     assert!(TapTileFactory::new(ProbeModifier::Meta, catalogue).is_ok());
-    // Off-macOS creation fails closed (no live tap/Carbon here); the
+    // Off-macOS creation fails closed (no live tap here); the
     // refusal shape — not silent success — is what this pins.
     #[cfg(not(target_os = "macos"))]
     {
         let factory = TapTileFactory::new(ProbeModifier::Meta, tile_catalogue()).unwrap();
-        assert!(factory.create().is_err());
-        let factory = CarbonTileFactory::new(ProbeModifier::Meta, tile_catalogue()).unwrap();
         assert!(factory.create().is_err());
     }
 }
@@ -682,9 +419,6 @@ fn scoped_sources_start_ineligible_until_attested() {
     // explicit unrestricted test gate instead (known post targets with
     // strict per-edge oracle).
     let catalogue = tile_catalogue();
-    let carbon = CarbonTileFactory::new(ProbeModifier::Ctrl, catalogue.clone()).unwrap();
-    assert!(!carbon.eligibility().is_eligible());
-    assert!(!carbon.eligibility().is_unrestricted());
     let tap = TapTileFactory::new(ProbeModifier::Ctrl, catalogue).unwrap();
     assert!(!tap.eligibility().is_eligible());
     let scoped = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
@@ -700,19 +434,15 @@ fn scoped_sources_start_ineligible_until_attested() {
         .with_unrestricted_test_gate();
     assert!(gate.eligibility().is_unrestricted());
     assert!(gate.eligibility().is_eligible());
-    let gate = CarbonTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
-        .unwrap()
-        .with_unrestricted_test_gate();
-    assert!(gate.eligibility().is_eligible());
 }
 
 #[test]
-fn carbon_releases_registration_while_gated() {
-    // The gated loop above already proves the release path (no
-    // registration held, gated time counted, no refusal, stop ends
-    // promptly). Pin the release invariant explicitly: while gated the
-    // owner holds NO hotkeys (dropping hits would NOT restore
-    // passthrough — only the RAII release does).
+fn eligibility_cache_gates_and_rearms_on_flip() {
+    // While gated the owner holds no interception (dropping hits would NOT
+    // restore passthrough — only the guard release does). Pin the cache
+    // invariant explicitly: ineligible publishes deny, and re-enabling
+    // bumps the epoch so the owner re-arms rather than trusting a stale
+    // guard.
     use crate::input_eligibility::EligibilityCache;
     let cache = EligibilityCache::new_unrestricted_test_gate();
     assert!(cache.is_eligible());

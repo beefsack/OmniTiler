@@ -3,8 +3,8 @@
 //! Ctrl-chord matching for the configurable modifier.
 //!
 //! Pure, total functions so boundedness/input-matching is unit-testable
-//! without live taps. Key codes are Mac virtual keycodes (`CGKeyCode` /
-//! Carbon space, e.g. `0x04` is the ANSI `h` position).
+//! without live taps. Key codes are Mac virtual keycodes (`CGKeyCode`
+//! space, e.g. `0x04` is the ANSI `h` position).
 
 use crate::config::ProbeModifier;
 

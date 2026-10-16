@@ -1,13 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Input probes: Carbon hotkey registration and bounded CGEventTap
-//! interception over [`crate::ffi`].
+//! Input probe: bounded CGEventTap interception over [`crate::ffi`].
 //!
 //! Routing (live-macOS contract):
-//! - Carbon hotkeys dispatch on the main thread: `register_hotkey_bounded`
-//!   runs its bounded wait on the calling (main) thread while pumping the
-//!   runloop; a stop condition, never a background stall. Delivery needs a
-//!   live user keypress and is reported, never assumed.
 //! - CGEventTap runs on a dedicated input thread inside FFI with a minimal
 //!   callback (exact-chord compare, non-blocking forward of exact matches
 //!   only — never raw deliveries — and `Keep` unless suppression is armed).
@@ -36,8 +31,7 @@ use crate::engine::EngineMessage;
 use crate::input_match::Chord;
 
 /// Fixed Phase-0 probe chord key: Mac virtual keycode `0x04` (ANSI `h`
-/// position on US layout; `CGKeyCode`/`RegisterEventHotKey` space, *not* USB
-/// HID usage IDs).
+/// position on US layout; `CGKeyCode` space, *not* USB HID usage IDs).
 pub const PROBE_KEY_CODE: u32 = 0x04;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,17 +74,6 @@ pub fn cg_flag_bits(modifier: ProbeModifier) -> (u64, u64) {
         ProbeModifier::Shift => SHIFT,
     };
     (want, MASK)
-}
-
-/// Carbon modifier bits (`Events.h`: cmdKey 256, shiftKey 512,
-/// optionKey 2048, controlKey 4096).
-pub fn carbon_mod_bits(modifier: ProbeModifier) -> u32 {
-    match modifier {
-        ProbeModifier::Meta => 256,
-        ProbeModifier::Shift => 512,
-        ProbeModifier::Alt => 2048,
-        ProbeModifier::Ctrl => 4096,
-    }
 }
 
 /// RAII tap lifetime. The guard is returned *after* the bounded run with the
@@ -187,60 +170,6 @@ pub fn intercept_bounded(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct HotkeyRunReport {
-    pub os_accepted: bool,
-    pub os_status: i32,
-    /// Deliveries observed during the bounded wait (needs a live keypress;
-    /// zero without one is expected, not a failure).
-    pub deliveries: u32,
-    pub elapsed_secs: u64,
-}
-
-/// Bounded Carbon hotkey registration for exactly the probe chord. Must run
-/// on the main thread (Carbon dispatches there); pumps the runloop in bounded
-/// slices until `seconds`, then unregisters via RAII guard drop.
-pub fn register_hotkey_bounded(
-    modifier: ProbeModifier,
-    key_code: u32,
-    seconds: u64,
-    tx: &SyncSender<EngineMessage>,
-) -> Result<HotkeyRunReport, InputError> {
-    let chord = Chord::new(modifier, key_code).map_err(InputError::Unsupported)?;
-    validate_intercept(&chord, seconds)?;
-    #[cfg(target_os = "macos")]
-    {
-        let counter = Arc::new(crate::ffi::EventCounter::new());
-        let guard = crate::ffi::carbon_register(
-            key_code,
-            carbon_mod_bits(modifier),
-            counter.clone(),
-            tx,
-        )
-        .map_err(|status| InputError::Denied(format!("RegisterEventHotKey status {status}")))?;
-        let start = std::time::Instant::now();
-        let deadline = start + std::time::Duration::from_secs(seconds.max(1));
-        while std::time::Instant::now() < deadline {
-            crate::ffi::pump_runloop_once(250);
-        }
-        let report = HotkeyRunReport {
-            os_accepted: true,
-            os_status: 0,
-            deliveries: counter.hits(),
-            elapsed_secs: start.elapsed().as_secs(),
-        };
-        drop(guard);
-        Ok(report)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = tx;
-        Err(InputError::Unsupported(
-            "Carbon hotkeys are macOS-only".to_owned(),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,7 +186,6 @@ mod tests {
             let (want, mask) = cg_flag_bits(modifier);
             assert_eq!(want & mask, want);
             assert_ne!(want, 0);
-            assert_ne!(carbon_mod_bits(modifier), 0);
         }
         // Distinct modifiers, distinct bits.
         assert_ne!(

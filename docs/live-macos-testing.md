@@ -130,10 +130,10 @@ experiment.
   or debugger pauses while a tap is live. A disabled or timed-out tap is
   neither a reliable recovery mechanism nor evidence of release; verify
   disable and exit behavior plus physical delivery separately.
-- Consume only the approved test chords. Register discrete hotkeys before
-  reaching for an intercepting tap; use an intercepting tap only where
-  suppression is proven needed and separately approved, with its consent
-  requirements recorded per tap mode.
+- Consume only the approved test chords. The event tap is the sole hotkey
+  route; the Carbon registration/delivery diagnostic is retired. Use an
+  intercepting tap only where suppression is proven needed and separately
+  approved, with its consent requirements recorded per tap mode.
 - Do not record raw keystrokes, typed text, window titles beyond what
   identity proof requires, or application content; log bounded
   tap-and-action lifecycle summaries only.
@@ -165,8 +165,10 @@ experiment.
   wait for its bounded teardown before starting another probe. Inspect terminal
   JSON rather than inferring success from wrapper exit status.
 - Current [physical procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
-  covers timeout recovery, diagnostic Carbon delivery, manual Space transfers and
-  the same-application focus/gap/logging dogfood recheck.
+  covers timeout recovery, manual Space transfers and the same-application
+  focus/gap/logging dogfood recheck. Its Carbon delivery step is retired: the
+  diagnostic code and `input-register` command have been removed; retain the
+  recorded 0/3 physical-delivery result, but do not run that step.
 
 ## TCC, Signing, And Permission Experiments
 

@@ -6,16 +6,16 @@ only in `src/ffi.rs` (single dedicated module); every other module carries
 `#![forbid(unsafe_code)]`. Trusted `objc2` (`application-services`, `core-foundation`, `app-kit`,
 `foundation`), `core-foundation`/`core-graphics`, and `libc` wrappers are
 used; the sole hand-written declaration is the private
-`_AXUIElementGetWindow` join. Dynamic Carbon/SkyLight tables are resolved via
-`libc` with null-checked signatures. Calling maintained wrappers still needs
+`_AXUIElementGetWindow` join. Dynamic SkyLight/SLPS/symbolic-hotkey tables
+are resolved via `libc` with null-checked signatures. Calling maintained wrappers still needs
 isolated `unsafe` at each call site. The declaration surface is small; the
 safe-wrapper/stub module remains substantial.
 No foreign pointer crosses the FFI boundary: callers get owned
 opaque handles (`AxElement`), plain data, or errors.
 
-Threading: main thread AppKit/event dispatch; dedicated input owner for scoped
-Carbon registrations or the explicit event tap with a minimal callback;
-standalone Carbon probes retain their main-thread pump. Per-app AX threads have
+Threading: main thread AppKit/event dispatch; dedicated input owner for the
+explicit event tap with a minimal callback;
+standalone tap probes run on their own bounded thread. Per-app AX threads have
 finite messaging timeouts and bounded runloops; engine thread owns state via
 a bounded `sync_channel` (`try_send` backpressure, never a block in a
 callback).
@@ -25,7 +25,7 @@ callback).
 The scoped preview connects native AX facts and current-Space display domains
 to the shared Engine, with per-app frame writes/readback and owner-dispatched
 SLPS focus. **Basic scoped tiling is live-proven with explicit tap input**;
-physical Carbon delivery and OS timeout-notification recovery remain pending.
+OS timeout-notification recovery remains pending.
 See the
 [change record](../../docs/changes/macos-scoped-tile.md) and
 [live protocol](../../docs/live-macos-testing.md).
@@ -38,12 +38,11 @@ mise exec -- just tile --user-start --scope com.apple.TextEdit --scope com.apple
 ```
 
 `--user-start`, a nonempty bundle allowlist and a finite 1–120 second lifetime
-are mandatory. `--input carbon` is the default; `--input tap` explicitly
-installs exact-chord interception; `--input off` disables input. `--modifier
+are mandatory. `--input tap` installs exact-chord interception (the sole
+input route); `--input off` disables input. `--modifier
 ctrl|meta|alt|shift` configures the modifier (Ctrl by default; `meta` means
 Command). Focus uses modifier+H/J/K/L or arrows; move adds Shift; float toggle
-is modifier+G. Carbon conflicts are reported per chord; no native settings
-are changed. Shift alone cannot distinguish the focus/move arms and is
+is modifier+G. No native settings are changed. Shift alone cannot distinguish the focus/move arms and is
 rejected for this catalogue.
 
 The separately signed `OmniTilerProbeHelper.app` has bundle ID
@@ -153,7 +152,6 @@ Explicit bounded modes (all finite; `--ctrl meta|ctrl|alt|shift`, default
 
 ```zsh
 mise exec -- just launch -- ax-observe --pid PID --nonce HEX --timeout-ms 1000
-mise exec -- just launch -- input-register --seconds 10 --ctrl ctrl
 mise exec -- just launch -- input-tap --seconds 10 --ctrl ctrl
 mise exec -- just launch -- input-tap --seconds 10 --ctrl ctrl --suppress
 mise exec -- just launch -- spaces-diagnose --wid WID [--pid PID --nonce HEX]
@@ -437,8 +435,8 @@ title, or content logs). Stop interception when Secure Input is active
 ## Gaps (honest, Phase 0)
 
 - Hand-written FFI is one private declaration (`_AXUIElementGetWindow`) plus
-  null-checked dynamic Carbon/SkyLight tables (Tier-2 move diagnostics plus
-  the direct `SLSMoveWindowsToManagedSpace` write; compat setters have no
+  null-checked dynamic SkyLight/SLPS/symbolic-hotkey tables (Tier-2 move
+  diagnostics plus the direct `SLSMoveWindowsToManagedSpace` write; compat setters have no
   callable wrapper; public `CGWindowListCopyWindowInfo` via the maintained
   `core-graphics` binding); maintained-wrapper calls still
   need isolated `unsafe`; the wrapper/stub module is not yet tiny. See the active
@@ -465,8 +463,6 @@ title, or content logs). Stop interception when Secure Input is active
   PID reuse shows a different nonce title, or none, and is refused. An
   unprovable title (window server withholds names) fails closed. Live direct
   spawn binds this way, unblocking authenticated owned probes.
-- Carbon delivery needs a live user keypress on the main-thread runloop;
-  `os_accepted` proves registration only.
 - Event-tap creation needs Accessibility consent for the stable bundle
   identity; denial surfaces with the grant path, not a bypass. Suppression
   (`--suppress`) is implemented for exact-chord pairs but UNVERIFIED live:
