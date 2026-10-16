@@ -37,14 +37,10 @@
 //! `sls_display_spaces`); elements are indexed within `len().min(...)`
 //! rather than materialized unbounded. No custom `unsafe impl Send/Sync` anywhere.
 
-#[cfg(target_os = "macos")]
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-    mpsc::SyncSender,
-};
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::{Arc, atomic::Ordering, mpsc::SyncSender};
 
 use serde::{Deserialize, Serialize};
 

@@ -71,4 +71,9 @@ signatures. All unsafe blocks remain confined to `ffi.rs`; no unsafe was added.
   security-policy change.
 - Review confirms removal completeness and equivalent tap behavior/recovery.
   No live tiler, tap or probe execution was used for this change.
-- Hosted CI result pending publication.
+- Initial [hosted CI](https://github.com/beefsack/OmniTiler/actions/runs/38851426008)
+  passed macOS and all tests, but Linux/Windows strict clippy found an unused
+  `AtomicU32` import after removal of the shared Carbon counter. The import is
+  now macOS-only. macOS tests, CI-selected tests/clippy, formatting and signed
+  build/verification pass after this import-only correction. Hosted portability
+  confirmation pending publication.
