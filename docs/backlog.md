@@ -56,6 +56,14 @@ decisions of 2026-09-24 are under
     a held cross-seam endpoint missed by 150 logical pixels; later controller-DOWN
     fixture results are excluded from product acceptance. Synthetic journeys
     parked; original pointer/focus and protected placement restored exactly.
+  - DEFECT open | Whole-workspace migration (T05) refuses `scope-invalid` when
+    an ordinary client reports Qt's unbounded maximum size (INT_MAX): the
+    observer passes it through and the migrate validator caps sizes at 16384.
+    Two RED regressions are specified for recreation; fix, then repeat live T05.
+    [Reproduction](changes/kde-dual-output-live.md#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15).
+  - Remaining agent-feasible non-drag legs (T02 last legs, T03 history, T05
+    migration, T06 border/underlay on both outputs, exact-tree R4 repeat) were
+    interrupted before results; restart from the inventory.
 - P1 | Shared settings schema and tabbed Settings | Settings dialog has too
   much on one page. Investigate a core-owned settings definition (tabs,
   fields, types, defaults, validation) that each platform renders natively and
@@ -3763,7 +3771,8 @@ decisions of 2026-09-24 are under
   [Residual ledger](changes/archive/reference-source-fill-remaining.md),
   [decision](decisions.md#reference-matrix-and-spec-authority).
 - P2 | Keyboard-layout support | After initial release; US keyboards only
-  for MVP.
+  for MVP. Read-only investigation queued: behavior of `Meta+Shift+1..9` and
+  the US shifted-symbol aliases on German, AZERTY, UK and Nordic layouts.
   [change](changes/shortcuts.md)
 - P3 | AR6/AR7 workspace model + portable policy in core | Deferred until a
   non-KWin host needs it; current KWin is the "native workspaces" mode.

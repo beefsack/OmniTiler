@@ -35,7 +35,7 @@ Accepted subcases and remaining gaps are qualified below.
 | T02 | D13, #43, #46 | Directional move exhausts local structure then crosses; explicit output send-follow/stay, empty/occupied targets and floating boundaries | PASS prior subcases plus local perpendicular V-to-H restructuring both directions and occupied-target left R4 native-written/followed/arrived. BLOCKED: occupied-right fixture lacks a protected-free shown source; no read-only exact-tree route, floating-workspace action or genuine fixed-size client in this fixture. PENDING: full exact D13 tree proof, physical stay bindings and inverse occupied R4 |
 | T03 | #14 | Per-output workspace switching/history, shared-scope refusal where required, preset-specific arrows and letter bindings | PASS prior sampled callbacks retained. BLOCKED populated history: history/switch callbacks absent from the bounded action fixture. PENDING: both-output ring cases, shared-scope refusal and presets |
 | T04 | #15 | Relative workspace send follow/stay, ring ends, trailing-empty fill and sole-mover source emptying on both outputs | PASS primary-scope next/previous follow, native arrival/state-confirmed, source retirement and other-view independence; stay retained view/membership. Secondary shown current outside its managed ring refused before commit twice. Stay-focus fixture lacked a same-output eligible peer and is not defect evidence. PENDING: complete ring-end/previous/stay matrix on both outputs |
-| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | BLOCKED: migration actions are registered but unbound and absent from the bounded callback fixture. Native per-output capability verified; direct controller effective mode and migration acceptance remain pending |
+| T05 | #42 | Whole-workspace migration preserves identity/order/tree/tiling state, occupied target and hidden workspace; overlay and float members | BLOCKED: migration actions are registered but unbound and absent from the bounded callback fixture. Native per-output capability verified; direct controller effective mode and migration acceptance remain pending. DEFECT 2026-10-15: ordinary clients with an unbounded maximum size refuse migration ([reproduction](#whole-workspace-migration-unbounded-maximum-size-refusal-2026-10-15)) |
 | T06 | #34, #44, N4 | Mixed-scale/origin geometry, gaps, border, underlay and preview; dynamic mode/scale/work-area changes and restoration | PASS prior geometry subcases retained. Latest normal development startup established effect/oracle availability during the run. PENDING: mapped-binary freshness, rendering and dynamic mode/scale changes; load/setter diagnostics do not prove rendering |
 | T07 | #1, #34 | Fullscreen/maximize on each output, carry/restore, reserved slot and no unsolicited fullscreen geometry/focus writes | PASS tiled-overlay subcases: five-second fullscreen hold; fullscreen carry left and maximize carry right with arrival/follow; destination peer retained half-slot; native overlay exit restored exact original modes/frames. PENDING: intentional-float overlay, born-state and real-game legs. Earlier synchronous/expando probes remain invalid |
 | T08 | #47 | Pointer drag across outputs to occupied/empty targets; preview/drop agreement, snap-back/cancel and source removal | BLOCKED: earlier crossings prove fallback recovery only. Latest effect-loaded same-output attempt violated pointer-path ownership through acceleration overshoot and is excluded from clean acceptance. Relative synthetic motion/drag now refuses before device allocation; physical preview/drop, hold, re-cross, cancel and removal proof remain pending |
@@ -1003,3 +1003,67 @@ Accepted subcases and remaining gaps are qualified below.
   Verify the nested same-axis group and W3 focus. Native proof is deferred;
   projected frames do not substitute for hierarchy. The broader dual-output
   inventory remains active.
+
+## Whole-workspace migration unbounded maximum-size refusal (2026-10-15)
+
+Status: DEFECT open. Failing (RED) regressions were written but not committed
+and no fix exists; the regressions are specified below so any checkout can
+recreate them. Confirmed still failing against `main` on 2026-10-16.
+
+- Live T05 probe: an ordinary resizeable client reported a real minimum size
+  (176x150) and Qt's unconstrained maximum (2147483647 x 2147483647, INT_MAX,
+  meaning "no maximum"). Whole-workspace migration refused before commit with
+  `omnitiler:route-diag component=workspace-migrate route=migrate-workspace
+  stage=request ... event=refuse outcome=scope-invalid ... gate=pre-commit
+  phase=request reason=scope-invalid`.
+- Causal chain (revision-bound line locators):
+  1. `readConstraintSize` (`kwin/src/plan-adapter-entry.ts:389-400`) rejects
+     only negative/non-numeric extents, so INT_MAX passes through as a
+     concrete `maxSize`.
+  2. `observeMigrateWorkspace` (`kwin/src/plan-adapter-entry.ts:991`, hint
+     read at about `:1339-1347`) copies it onto the observed source window.
+  3. `isMigrateSize` (`kwin/src/workspace-send-adapter.ts:5954-5971`) accepts
+     only integers in `0..16384`; `validateMigrateObservedWindow`
+     (`:5997-6002`) therefore fails, `freshMigrate` (`:4482-4501`) returns
+     null and the request refuses `scope-invalid` (`:4365-4368`).
+- Expected (fix direction, tentative): an unbounded maximum is advisory "no
+  maximum" and is omitted from the observation and wire (`max_size` absent),
+  never refused. Bounded minimum/maximum pairs stay exact; negative extents
+  stay absent. An unbounded hint never classifies an ordinary client as an
+  automatic (fixed-size) float. Decide during the fix whether the omission
+  belongs in `readConstraintSize` (affects every consumer, including ordinary
+  reconcile and send wires) or only in the migrate observer; check how the
+  ordinary reconcile wire currently treats INT_MAX before choosing.
+- RED regression 1, `kwin/tests/workspace-migrate.test.ts`, in
+  `describe("migrate observer origins and phases")`, named "omits
+  Qt-unbounded maxSize hints while keeping bounded minSize exact":
+  - `obsWorld` with currents `out-1: ws-1`, `out-2: ws-9`; windows on `ws-1`
+    / `out-1`: `win-a` (min 176x150, max 2147483647x2147483647), `win-b`
+    (min = max = 400x300), `win-n` (min width -5, height 100); `win-t` on
+    `ws-9` / `out-2`; active `win-a`.
+  - `observeMigrateWorkspace(world.workspace, new Map(), new Set(), GAPS,
+    "right", OBS_POLICY)` returns `status: "ready"`.
+  - `win-a`: `minSize` `{w:176,h:150}`, `maxSize` undefined, `fixedAuto`
+    false, `floating` false. `win-b`: min and max both `{w:400,h:300}`.
+    `win-n`: min and max undefined.
+  - Observed RED: `win-a.maxSize` is `{w:2147483647,h:2147483647}`.
+- RED regression 2, `kwin/tests/workspace-migrate-engine-fixture.test.ts`, in
+  `describe("migrate engine fixture")`, named "migrates an ordinary client
+  carrying Qt-unbounded maxSize with the real Engine" (production observer,
+  adapter request and real Planner):
+  - `makeHarness` windows: `m-win-1` (left, `ws-1`, min 176x150, max
+    INT_MAX x INT_MAX), `m-win-2` (left, `ws-1`), `m-win-t` (right, `ws-9`).
+  - `settlePlan()`, record both left frames, then
+    `handle.requestWorkspaceMigrate("right")`.
+  - Expect: no log line contains `outcome=scope-invalid`; both frames unchanged
+    before the plan; `flushOp("migrate-workspace")` reply has
+    `outcome: "planned"`, `kind: "migrate-workspace"`; the `m-win-1` wire entry
+    has `min_size {w:176,h:150}` and no `max_size`, `fixed_auto` or `floating`
+    keys; both movers end on output `out-right` with desktops `["ws-1"]`; the
+    right output's current desktop is `ws-1`.
+  - Observed RED: the `scope-invalid` refusal above.
+- With both regressions added, the two migrate test files ran 83 tests: 81
+  pass, these 2 fail.
+- After the fix: GREEN both regressions, full KWin typecheck and suite, then
+  repeat live T05 with an ordinary resizeable client on the migrating
+  workspace.
