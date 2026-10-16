@@ -15,6 +15,7 @@ use super::choice::{
     workspace_mode_selected,
 };
 use super::ctl::{checked, enable, get_text, set_checked, set_text};
+use super::dialogs::{DiscardEnd, PreviewEnd};
 use super::info::refresh_list;
 use super::{App, status};
 use super::{
@@ -288,41 +289,70 @@ pub(super) fn stage_state(app: &mut App, state: BindingState) -> Result<(), Stri
     Ok(())
 }
 
-pub(super) fn do_apply(app: &mut App) {
-    if app.invalid.is_some() {
-        status(
-            app,
-            "Error: settings file is invalid; fix or delete it, then Revert. Nothing was written.",
-        );
-        return;
+/// Pure stale verdict over one directory read against the window's base:
+/// `Changed` when another writer created or changed the document since load
+/// (full-document compare; a newly-appeared file counts even when its bytes
+/// equal the defaults), `Vanished` when our base file disappeared, `Invalid`
+/// carrying the reason, else `Fresh`. Both Apply refusal points (before the
+/// preview and after its unbounded think time) share this predicate so the
+/// second check cannot silently overwrite content written mid-preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StaleVerdict {
+    Fresh,
+    Changed,
+    Vanished,
+    Invalid(String),
+}
+
+pub(super) fn stale_verdict(
+    base: &Settings,
+    base_present: bool,
+    loaded: &LoadOutcome,
+) -> StaleVerdict {
+    match loaded {
+        LoadOutcome::Loaded(current) if *current != *base || !base_present => StaleVerdict::Changed,
+        LoadOutcome::Loaded(_) => StaleVerdict::Fresh,
+        LoadOutcome::Missing if base_present => StaleVerdict::Vanished,
+        LoadOutcome::Missing => StaleVerdict::Fresh,
+        LoadOutcome::Invalid(error) => StaleVerdict::Invalid(error.to_string()),
     }
-    let mut draft = match collect_draft(app) {
-        Ok(draft) => draft,
-        Err(reason) => {
-            status(app, &format!("Error: {reason}. Nothing was written."));
-            return;
-        }
-    };
-    // Stale-content refusal: another writer (e.g. a second Settings window
-    // or another tool) created or changed the file since this window loaded,
-    // so never silently overwrite unrelated edits. Compares the full document
-    // (not just the revision) and treats a newly-appeared file as changed
-    // even when its bytes equal the defaults. Reloads the newer values and
-    // asks for a fresh Apply. A second Settings window cannot reach this
-    // race: the per-user named mutex below serializes UI instances.
-    match crate::settings::load_from_dir(&app.dir) {
-        LoadOutcome::Loaded(current) if current != app.base || !app.base_present => {
-            app.base = current.clone();
-            app.work = current;
-            app.base_present = true;
+}
+
+/// Apply one directory read as a stale refusal: reloads the newer values,
+/// reports the full diagnostic on the status line plus a capped dialog, and
+/// writes nothing. Returns `None` when the owner died inside the refusal
+/// dialog (caller must abandon its `App` borrow); otherwise whether a
+/// refusal fired (`Fresh` performs no dialog and returns `Some(false)`).
+fn apply_stale_refusal(
+    app: &mut App,
+    owner: windows_sys::Win32::Foundation::HWND,
+    loaded: LoadOutcome,
+) -> Option<bool> {
+    match stale_verdict(&app.base, app.base_present, &loaded) {
+        StaleVerdict::Fresh => Some(false),
+        StaleVerdict::Changed => {
+            if let LoadOutcome::Loaded(current) = loaded {
+                app.base = current.clone();
+                app.work = current;
+                app.base_present = true;
+            }
             refresh_all(app);
             status(
                 app,
                 "Settings changed on disk (another window saved); reloaded. Re-apply your edits.",
             );
-            return;
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                &super::dialogs::error_body(
+                    "settings changed on disk; reloaded. Re-apply your edits",
+                ),
+            ) {
+                return None;
+            }
+            Some(true)
         }
-        LoadOutcome::Missing if app.base_present => {
+        StaleVerdict::Vanished => {
             app.base = Settings::default();
             app.work = Settings::default();
             app.base_present = false;
@@ -331,18 +361,112 @@ pub(super) fn do_apply(app: &mut App) {
                 app,
                 "Settings file vanished; reloaded defaults. Re-apply your edits.",
             );
-            return;
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                &super::dialogs::error_body("settings file vanished; reloaded defaults"),
+            ) {
+                return None;
+            }
+            Some(true)
         }
-        LoadOutcome::Invalid(error) => {
-            app.invalid = Some(error.to_string());
+        StaleVerdict::Invalid(reason) => {
+            app.invalid = Some(reason.clone());
             enable(app.ctl(ID_APPLY), false);
             status(
                 app,
-                &format!("Error: settings file turned invalid ({error}). Nothing was written."),
+                &format!("Error: settings file turned invalid ({reason}). Nothing was written."),
             );
-            return;
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                &super::dialogs::error_body(&reason),
+            ) {
+                return None;
+            }
+            Some(true)
         }
-        LoadOutcome::Loaded(_) | LoadOutcome::Missing => {}
+    }
+}
+
+/// Apply with conflict preview and result dialogs. Returns false only when
+/// the owner died inside one of the owned modals (the `App` box was freed
+/// with it): the caller must abandon its borrow immediately and touch
+/// nothing, including the post-command badge refresh. Every modal exit is
+/// checked; `WM_CLOSE` during a modal is deferred by the owner `wnd_proc`
+/// (never run while borrowed), so OwnerGone is a backstop, not a path.
+pub(super) fn do_apply(app: &mut App) -> bool {
+    let owner = app.window;
+    if app.invalid.is_some() {
+        let detail = app.invalid.clone().unwrap_or_default();
+        status(
+            app,
+            "Error: settings file is invalid; fix or delete it, then Revert. Nothing was written.",
+        );
+        if !super::dialogs::show_info(
+            owner,
+            super::dialogs::APPLY_TITLE,
+            &super::dialogs::error_body(&detail),
+        ) {
+            return false;
+        }
+        return true;
+    }
+    let mut draft = match collect_draft(app) {
+        Ok(draft) => draft,
+        Err(reason) => {
+            status(app, &format!("Error: {reason}. Nothing was written."));
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                &super::dialogs::error_body(&reason),
+            ) {
+                return false;
+            }
+            return true;
+        }
+    };
+    // Stale-content refusal before the preview: another writer (e.g. a
+    // second Settings window or another tool) created or changed the file
+    // since this window loaded, so never silently overwrite unrelated edits.
+    // A second Settings window cannot reach this race: the per-user named
+    // mutex serializes UI instances.
+    match apply_stale_refusal(app, owner, crate::settings::load_from_dir(&app.dir)) {
+        Some(false) => {}
+        Some(true) => return true,
+        None => return false,
+    }
+    // Advisory conflict preview: the draft's current tray-warning set only
+    // (no Force, no generic confirmation). Cancel writes nothing and opens
+    // no second dialog.
+    {
+        let snapshot = app.gaming.snapshot();
+        let conflicts = super::dialogs::preview_conflicts(
+            &draft,
+            draft.core.keyboard.takeover,
+            draft.core.keyboard.allow_win_l,
+            &snapshot,
+        );
+        if super::dialogs::apply_gate(conflicts.len()) == super::dialogs::ApplyGate::Preview {
+            let body = super::dialogs::preview_body(&conflicts);
+            match super::dialogs::ask_preview(owner, &body) {
+                PreviewEnd::Apply => {}
+                PreviewEnd::Cancel => {
+                    status(app, "Apply cancelled; draft and file preserved.");
+                    return true;
+                }
+                PreviewEnd::OwnerGone => return false,
+            }
+            // Revalidate after the unbounded preview think time: the disk
+            // may have moved while the dialog sat open, and the save below
+            // would otherwise overwrite that content (it only bumps the
+            // revision over whatever it reads). Same refusal, no write.
+            match apply_stale_refusal(app, owner, crate::settings::load_from_dir(&app.dir)) {
+                Some(false) => {}
+                Some(true) => return true,
+                None => return false,
+            }
+        }
     }
     match crate::settings::save_to_dir(&app.dir, &mut draft) {
         Ok(()) => {
@@ -360,9 +484,27 @@ pub(super) fn do_apply(app: &mut App) {
                     draft.revision
                 ),
             );
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                super::dialogs::APPLY_SUCCESS,
+            ) {
+                return false;
+            }
         }
-        Err(error) => status(app, &format!("Error: {error}. Nothing was written.")),
+        Err(error) => {
+            let detail = error.to_string();
+            status(app, &format!("Error: {error}. Nothing was written."));
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::APPLY_TITLE,
+                &super::dialogs::error_body(&detail),
+            ) {
+                return false;
+            }
+        }
     }
+    true
 }
 
 pub(super) fn load_base(dir: &std::path::Path) -> (Settings, bool, Option<String>) {
@@ -373,9 +515,25 @@ pub(super) fn load_base(dir: &std::path::Path) -> (Settings, bool, Option<String
     }
 }
 
-pub(super) fn do_revert(app: &mut App) {
+pub(super) fn do_revert(app: &mut App) -> bool {
     // Revert discards every unsaved edit and reloads saved/default; it never
     // writes and never undoes an already-applied save.
+    let owner = app.window;
+    // Unsaved gate covers the whole draft: HWND-dirty edits, staged
+    // `work != base` drift (presets, rebinding, keep/disable), and a
+    // still-typed pending chord. Cancel leaves every edit intact.
+    let pending = !get_text(app.ctl(ID_BIND_CHORD)).trim().is_empty();
+    let unsaved = super::dialogs::has_unsaved_edits(app.dirty, app.work != app.base, pending);
+    if super::dialogs::revert_gate(unsaved) == super::dialogs::RevertGate::ConfirmDiscard {
+        match super::dialogs::ask_discard(owner, super::dialogs::DISCARD_PROMPT) {
+            DiscardEnd::Discard => {}
+            DiscardEnd::Cancel => {
+                status(app, "Revert cancelled; edits preserved.");
+                return true;
+            }
+            DiscardEnd::OwnerGone => return false,
+        }
+    }
     let (base, present, invalid) = load_base(&app.dir);
     app.base = base.clone();
     app.base_present = present;
@@ -383,17 +541,36 @@ pub(super) fn do_revert(app: &mut App) {
     app.invalid = invalid.clone();
     refresh_all(app);
     match invalid {
-        Some(reason) => status(
-            app,
-            &format!(
-                "Error: settings file is invalid ({reason}). Showing defaults; Apply is disabled, nothing was written."
-            ),
-        ),
-        None => status(
-            app,
-            "Reverted to saved settings. No disk write; prior Apply calls stand.",
-        ),
+        Some(reason) => {
+            status(
+                app,
+                &format!(
+                    "Error: settings file is invalid ({reason}). Showing defaults; Apply is disabled, nothing was written."
+                ),
+            );
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::REVERT_TITLE,
+                &super::dialogs::error_body(&reason),
+            ) {
+                return false;
+            }
+        }
+        None => {
+            status(
+                app,
+                "Reverted to saved settings. No disk write; prior Apply calls stand.",
+            );
+            if !super::dialogs::show_info(
+                owner,
+                super::dialogs::REVERT_TITLE,
+                super::dialogs::REVERT_SUCCESS,
+            ) {
+                return false;
+            }
+        }
     }
+    true
 }
 
 pub(super) fn do_preset(app: &mut App, preset: crate::settings::Preset) {
@@ -422,4 +599,53 @@ pub(super) fn do_preset(app: &mut App, preset: crate::settings::Preset) {
         app,
         &format!("{name} staged (unsaved). Apply to save, Revert to discard."),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stale_verdict;
+    use super::{LoadOutcome, Settings, StaleVerdict};
+    use crate::settings::SettingsError;
+
+    fn changed_doc() -> Settings {
+        let mut settings = Settings::default();
+        settings.core.inner_gap = 7;
+        settings
+    }
+
+    #[test]
+    fn stale_verdict_pins_both_refusal_points() {
+        let base = Settings::default();
+        // Fresh: identical document, file present at load.
+        assert_eq!(
+            stale_verdict(&base, true, &LoadOutcome::Loaded(base.clone())),
+            StaleVerdict::Fresh
+        );
+        // Changed content refuses even though the revision still matches.
+        assert_eq!(
+            stale_verdict(&base, true, &LoadOutcome::Loaded(changed_doc())),
+            StaleVerdict::Changed
+        );
+        // Newly-appeared file counts as changed even when its bytes equal
+        // the defaults: two fresh windows must not silently merge.
+        assert_eq!(
+            stale_verdict(&base, false, &LoadOutcome::Loaded(base.clone())),
+            StaleVerdict::Changed
+        );
+        // Our base file vanished refuses; a window born missing stays fresh.
+        assert_eq!(
+            stale_verdict(&base, true, &LoadOutcome::Missing),
+            StaleVerdict::Vanished
+        );
+        assert_eq!(
+            stale_verdict(&base, false, &LoadOutcome::Missing),
+            StaleVerdict::Fresh
+        );
+        // Invalid files report their reason through the same refusal.
+        let verdict = stale_verdict(&base, true, &LoadOutcome::Invalid(SettingsError::Malformed));
+        match verdict {
+            StaleVerdict::Invalid(reason) => assert!(!reason.is_empty()),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
 }

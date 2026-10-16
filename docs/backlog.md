@@ -713,14 +713,15 @@ decisions of 2026-09-24 are under
    [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md),
    [remaining-split record](changes/archive/windows-remaining-module-split.md),
    [tail-split record](changes/archive/windows-module-size-tail.md)).
-- P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
-  conflict preview and Apply/Revert success/error dialogs in
-  `crates/tiler-windows`; use the short result wording in
-  [Settings decisions](decisions.md#settings-tray-and-first-run). Shortcuts
-  apply immediately; avoid stacked confirmations (tentative, user review pending) and
-  retain required data-loss safety. KDE user-tested live 2026-10-12: dialogs
-  worked; result text shortened in `b718987` (short-text recheck pending).
-  [flow and evidence](changes/archive/kde-shortcut-result-dialogs.md).
+- P2 | Windows shortcut-dialog presentation review | Handoff delivered and
+  scripted-live verified 2026-10-17: owned conflict preview, Apply/Revert
+  success/error dialogs, discard protection, and preview-time stale refusal.
+  Settings bytes and system-input state restored; 2,458 / 0 / 1 locked gates.
+  User review remains for tentative no-stacked-confirmation presentation and
+  Windows advisory Apply/Cancel wording; physical chord delivery is not claimed.
+  Windows Revert still reloads saved settings, not KDE defaults.
+  [Delivery](changes/archive/windows-shortcut-settings-dialogs.md),
+  [decisions](decisions.md#settings-tray-and-first-run).
 - P1 | Windows fullscreen-exit acceptance | Startup/born exits, retained managed
   slot return, borderless exit and owned-exit metadata retirement pinned offline
   2026-10-12; directional post-clear owned-metadata veto corrected. Owned

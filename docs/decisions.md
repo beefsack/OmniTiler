@@ -757,6 +757,16 @@ platform API behavior.
   - Apply validates and atomically saves; Revert discards unsaved edits and
     reloads the saved file; Close never saves. Mouse prevention uses existing
     session-only preimage/readback/conditional restoration, no policy.
+  - Windows dialog handoff (2026-10-17): Apply/Revert report "Settings saved."
+    / "Reverted to saved settings." in owned modal dialogs; concise single-line
+    errors retain full status diagnostics. A save result does not claim runtime
+    delivery. Presets remain staged, and Revert never restores shortcut defaults
+    or undoes an earlier Apply. Tentative, pending user review: unresolved
+    tray-warning conflicts use one scrollable Apply/Cancel advisory preview
+    (Windows has no foreign-binding Force operation); conflict-free Apply has no
+    preliminary confirmation. Revert protects unsaved full-draft edits with
+    "Discard unsaved edits?" and Discard/Cancel. Cancel writes nothing and opens
+    no result dialog. [Delivery and live evidence](changes/archive/windows-shortcut-settings-dialogs.md).
   - Plain official Win32 controls via `windows-sys`; `tiler-windows settings`
     plus tray; single UI instance per user/session; external stale edits
     trigger reload/refusal.

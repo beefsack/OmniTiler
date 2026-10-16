@@ -42,6 +42,7 @@ use self::info::{refresh_info, refresh_list};
 
 mod choice;
 mod ctl;
+mod dialogs;
 mod draft;
 mod info;
 mod tabs;
@@ -179,6 +180,8 @@ pub(super) struct App {
     /// Label-static handles with their owning tab (`tabs::LABEL_RECTS`
     /// order): hidden with their page on tab switches.
     statics: Vec<(usize, HWND)>,
+    /// Top-level Settings window handle (owner for owned modal dialogs).
+    window: HWND,
 }
 
 impl App {
@@ -351,7 +354,7 @@ pub(super) fn show_tab(app: &mut App, index: usize) {
     info::refresh_badge(app);
 }
 
-fn on_command(app: &mut App, id: u32, notify: u32) {
+fn on_command(app: &mut App, id: u32, notify: u32) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BN_CLICKED, LB_GETCURSEL, LB_SETCURSEL, LBN_SELCHANGE, SendMessageW,
     };
@@ -376,7 +379,7 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
             }
             _ => {}
         }
-        return;
+        return true;
     }
     if id == ID_BINDING_LIST {
         if notify == LBN_SELCHANGE {
@@ -399,7 +402,7 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
                                 "Error: {reason}. Press Set rebind (or clear the edit) before switching rows."
                             ),
                         );
-                        return;
+                        return true;
                     }
                     set_text(app.ctl(ID_BIND_CHORD), "");
                 }
@@ -407,10 +410,10 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
                 refresh_info(app);
             }
         }
-        return;
+        return true;
     }
     if notify != BN_CLICKED {
-        return;
+        return true;
     }
     // Check/radio clicks edit the HWND draft immediately (auto controls
     // flip before this notification); Apply stages them into the draft.
@@ -439,23 +442,34 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
         }
         _ => {}
     }
+    // Returns false only when the owner died inside an Apply/Revert modal
+    // (the `App` box was freed with it): the `WM_COMMAND` caller must skip
+    // its post-command badge refresh and touch nothing.
     match id {
         ID_APPLY => do_apply(app),
         ID_REVERT => do_revert(app),
         // ID_CLOSE never reaches here: `wnd_proc` destroys the window without
         // materializing the `App` borrow (see below), so the synchronous
         // `WM_DESTROY` free below never nests inside a live `&mut App`.
-        ID_PRESET_AUTHENTIC => do_preset(app, crate::settings::Preset::Authentic),
-        ID_PRESET_COMPATIBLE => do_preset(app, crate::settings::Preset::Compatible),
+        ID_PRESET_AUTHENTIC => {
+            do_preset(app, crate::settings::Preset::Authentic);
+            true
+        }
+        ID_PRESET_COMPATIBLE => {
+            do_preset(app, crate::settings::Preset::Compatible);
+            true
+        }
         ID_BIND_KEEP => {
             if let Err(reason) = stage_state(app, BindingState::Keep) {
                 status(app, &format!("Error: {reason}."));
             }
+            true
         }
         ID_BIND_DISABLE => {
             if let Err(reason) = stage_state(app, BindingState::Disabled) {
                 status(app, &format!("Error: {reason}."));
             }
+            true
         }
         ID_BIND_REBIND => {
             let text = get_text(app.ctl(ID_BIND_CHORD));
@@ -468,16 +482,20 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
                     "Rebind staged (unsaved). Apply to save, Revert to discard.",
                 );
             }
+            true
         }
         ID_GAMING_OPEN_XBOX => {
             open_gaming_uri(app, crate::gaming::XBOX_SETTINGS_URI, "Xbox mode");
+            true
         }
         ID_GAMING_OPEN_GAMEBAR => {
             open_gaming_uri(app, crate::gaming::GAMEBAR_SETTINGS_URI, "Game Bar");
+            true
         }
         ID_GAMING_OPEN_APP => {
             let uri = crate::gaming::gamebar_app_settings_uri();
             open_gaming_uri(app, &uri, "Game Bar app");
+            true
         }
         ID_GAMING_RECHECK => {
             // Fire-and-forget: the worker pass runs off the UI thread and the
@@ -487,8 +505,9 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
                 app,
                 "Recheck requested; evidence refreshes when the probe completes. Navigation never marks a conflict resolved.",
             );
+            true
         }
-        _ => {}
+        _ => true,
     }
 }
 
@@ -526,8 +545,8 @@ unsafe extern "system" fn wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
-        GetWindowRect, MINMAXINFO, PostQuitMessage, SetWindowLongPtrW, WM_CLOSE, WM_COMMAND,
-        WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_NOTIFY, WM_TIMER,
+        GetWindowRect, IsWindow, MINMAXINFO, PostQuitMessage, SetWindowLongPtrW, WM_CLOSE,
+        WM_COMMAND, WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_NOTIFY, WM_TIMER,
     };
     match msg {
         WM_CREATE => {
@@ -535,6 +554,18 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
             }
+            0
+        }
+        WM_COMMAND | WM_NOTIFY | WM_TIMER if dialogs::dialog_open() => {
+            // An owned modal (Apply preview, discard confirm, result) runs
+            // a nested pump while the outer `on_command` borrow is still
+            // live: ignore every App-touching message so no second `&mut
+            // App` can materialize and alias it. `WM_CLOSE` is NOT ignored:
+            // its arm below defers teardown without touching `App`, and no
+            // `DestroyWindow` path remains while a modal holds, so the box
+            // cannot be freed mid-modal either. Together the pre-modal
+            // borrow stays the unique live reference until the drain past
+            // `on_command` honors any deferred close.
             0
         }
         WM_GETMINMAXINFO => {
@@ -599,14 +630,35 @@ unsafe extern "system" fn wnd_proc(
             if ptr != 0 {
                 let app = unsafe { &mut *(ptr as *mut App) };
                 let notify = ((wparam >> 16) & 0xffff) as u32;
-                on_command(app, id, notify);
-                // Every command may move draft state (HWND dirty flag,
-                // staged bindings, pending chord): re-badge afterwards.
-                info::refresh_badge(app);
+                let alive = on_command(app, id, notify);
+                if alive {
+                    // Every command may move draft state (HWND dirty flag,
+                    // staged bindings, pending chord): re-badge afterwards.
+                    info::refresh_badge(app);
+                }
+                // The `&mut App` borrow ends here (last use above). Only now
+                // is teardown safe: honor a `WM_CLOSE` deferred by a modal.
+                // `WM_DESTROY` reclaims the box synchronously; the flag
+                // drains exactly once so a later command never inherits it.
+                if dialogs::take_close_deferred() && unsafe { IsWindow(hwnd) } != 0 {
+                    unsafe {
+                        DestroyWindow(hwnd);
+                    }
+                }
             }
             0
         }
         WM_CLOSE => {
+            if dialogs::dialog_open() {
+                // Owner close during an owned modal (taskbar, Alt+F4,
+                // programmatic): never destroy while the outer `&mut App`
+                // borrow is live across the nested pump. Record without
+                // touching `App`; the `WM_COMMAND` drain above honors it
+                // the moment that borrow ends, so the close is deferred by
+                // one command, never dropped and never run while borrowed.
+                dialogs::defer_close();
+                return 0;
+            }
             unsafe {
                 DestroyWindow(hwnd);
             }
@@ -830,6 +882,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
         dirty: false,
         groups: Vec::new(),
         statics: Vec::new(),
+        window: std::ptr::null_mut(),
     });
     let raw = Box::into_raw(app);
     let hwnd = unsafe {
@@ -1042,6 +1095,7 @@ pub fn cmd_settings() -> Result<String, DynError> {
     app.controls = owned;
     app.groups = grouped;
     app.statics = labelled;
+    app.window = hwnd;
     // Offline layout invariant over the built specs (rects, tabs, text
     // fit): zero release cost, fails debug builds before first paint.
     debug_assert!(tabs::layout_valid());

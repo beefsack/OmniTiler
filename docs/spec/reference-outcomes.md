@@ -276,11 +276,24 @@ user review. [Offline evidence](../changes/archive/kde-shortcut-result-dialogs.m
 
 | Variant | Minimal action sequence | Ours KDE offline outcome | Unsupported / physical outcomes |
 | --- | --- | --- | --- |
-| Direct Apply | Stage a conflict-free choice; click Apply Shortcuts; use its chord before overall Settings Apply/OK | No preliminary question; applies immediately, result shown in a short dialog: "Shortcuts applied."; ordinary Save remains isolated | Dialogs work well per user live review 2026-10-12; exact physical delivery and new KCM loading TBD. Windows matching dialogs pending; exact reference-WM sequence TBD |
+| Direct Apply | Stage a conflict-free choice; click Apply Shortcuts; use its chord before overall Settings Apply/OK | No preliminary question; applies immediately, result shown in a short dialog: "Shortcuts applied."; ordinary Save remains isolated | Dialogs work well per user live review 2026-10-12; exact physical delivery and new KCM loading TBD. Windows adapter dialogs verified below; exact reference-WM sequence TBD |
 | Complete modal / Cancel / Force | Stage conflicts across several chords with more than 26 holders and one default-only blocker retaining an unrelated chord; Apply; Cancel; remove blocker; Apply; Force | Complete scrollable blocker-first list, stable holder ordering, full indexed diagnostics; blocked Force disabled, retained keys shown; Cancel writes nothing and opens no second dialog; fresh Force is the sole confirmation and revalidates | Exact native many-holder list, physical delivery and timing-dependent stale refusal TBD, user-owned. Windows/reference outcomes TBD |
 | Revert result | After Force, Revert; accept custom-binding-loss warning; repeat with empty cleared list | One loss confirmation followed by success/error result; foreign defaults restored, custom preimages not restored; empty list succeeds | Native default restoration and physical delivery TBD, user-owned; Windows settings Revert is a separate implementation |
 | Full catalog / same-window repeat | Empty 93 project assignments; give 43 foreign holder records their required chords; Authentic; Apply; Cancel; Apply; Force; repeat conflict-free full Apply in the same Settings window | Cancel writes nothing; Force clears exact listed keys then assigns the catalog; per-operation budgets permit repeated use beyond 64 total writes. User 2026-10-14 removes previous-identity labels/Revert skip; old-name records are ordinary foreign holders | Initial KDE live fixture used old-name records: 136-write Force about 250 ms, later 93-write Apply about 187 ms; complete snapshots/restoration verified ([record](../changes/archive/kde-shortcut-apply-failure.md)). Updated ordinary-holder Revert is covered offline; physical delivery, other platforms and reference outcomes TBD |
 | Unchanged Lock Session exemption | With Lock Session already on its post keys, stage another holder conflict; Apply; compare with a fresh preview that relocates Lock Session | User 2026-10-14: omit the entire Lock Session exempt line for equal actual/post keys; show actual move and preserved alternates only for different keys. Native dialog regression passes | Updated live dialog and exact reference outcomes TBD |
+
+### R-CTL-05 Windows modal-flow discriminators (2026-10-17)
+
+Windows Apply saves the full draft; Revert reloads saved settings, not KDE
+shortcut defaults. Presentation choices remain tentative pending user review.
+[Offline and scripted live evidence](../changes/archive/windows-shortcut-settings-dialogs.md).
+
+| Variant | Minimal action sequence | Windows outcome | Unsupported / physical outcomes |
+| --- | --- | --- | --- |
+| Preset / direct Apply | Open Settings from the scoped tiler's tray; select Shortcuts; stage Compatible; Apply | Staging writes nothing; conflict-free Apply shows only "Settings saved."; owner observes the keyboard revision | Scripted desktop verified; physical chord delivery and exact reference-WM journey TBD |
+| Advisory preview / Cancel / Apply | Stage Authentic with an unresolved gaming warning; Apply; Cancel; Apply; accept preview | Complete scrollable warning set, Apply/Cancel with no Force; Cancel preserves draft/file and opens no result; accepted Apply saves and shows the short result | Scripted desktop verified; physical chord delivery and other platforms TBD |
+| Revert / discard safety | Edit a core field; Revert; Cancel; Revert; Discard | Cancel retains the edit; discard reloads saved values and shows "Reverted to saved settings."; neither path writes or undoes an earlier Apply | Scripted desktop verified; exact reference-WM journey TBD |
+| Error / preview drift | Apply an invalid field; separately change the saved file while the preview is open, then accept | Short error modal; validation writes nothing; preview-time external change is reloaded/refused, never overwritten | Scripted desktop verified; atomic filesystem races outside the existing stale-check contract are not claimed solved |
 
 ### 2026-10-10 reference comparison discriminators
 
