@@ -75,5 +75,8 @@ signatures. All unsafe blocks remain confined to `ffi.rs`; no unsafe was added.
   passed macOS and all tests, but Linux/Windows strict clippy found an unused
   `AtomicU32` import after removal of the shared Carbon counter. The import is
   now macOS-only. macOS tests, CI-selected tests/clippy, formatting and signed
-  build/verification pass after this import-only correction. Hosted portability
-  confirmation pending publication.
+  build/verification pass after this import-only correction.
+- Final [hosted CI for `9df721da`](https://github.com/beefsack/OmniTiler/actions/runs/38852606356)
+  passes all eight jobs: macOS, Windows, Rust workspace (including strict
+  clippy), KWin, native, shell, licenses and notices. The portability correction
+  is verified; Carbon removal is complete.
