@@ -70,7 +70,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{
     ActionCtx, ApplySummary, HintCx, MonitorArea, ObservedWindow, RetainedRow, SelectEffect,
-    TileLoop, drop_diag_sample,
+    TileLoop, drop_diag_sample, drop_visibility_sample, note_hide_diag, note_reveal_diag,
+    omission_summary, reveal_err_outcome, reveal_outcome, rollback_newly_hidden,
 };
 use crate::model::ProcessIdentity;
 use crate::storage::LedgerStore;
@@ -99,6 +100,7 @@ fn hide_side_members(
     current: &str,
     ctx: &ActionCtx,
     hide_diag_logged: &mut usize,
+    hide_attempted: &mut usize,
 ) -> HideSide {
     let leaving = state.workspaces.workspace_members(output, current);
     let mut failed = false;
@@ -157,21 +159,16 @@ fn hide_side_members(
         );
         let (outcome, detail) =
             super::workspace_hide_one(state, me, store, dir, key, &expected, iconic);
-        if *hide_diag_logged < super::MAX_HIDE_DIAG_PER_SELECT {
-            let token = state.member_tokens.get(key).cloned().unwrap_or_default();
-            super::log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "workspace-hide",
-                    "correlation": ctx.correlation,
-                    "window": if token.is_empty() { serde_json::Value::Null } else { serde_json::Value::from(token) },
-                    "outcome": outcome,
-                    "detail": detail,
-                    "project_topmost": project_topmost,
-                }),
-            );
-            *hide_diag_logged += 1;
-        }
+        *hide_attempted += 1;
+        note_hide_diag(
+            state,
+            ctx,
+            key,
+            outcome,
+            detail,
+            project_topmost,
+            hide_diag_logged,
+        );
         if state.hidden_claims.contains_key(key) || outcome == "hidden" {
             state.workspaces.set_hidden(key, true);
             if !had_claim {
@@ -195,14 +192,18 @@ fn hide_side_members(
 /// Reveal one entering set with the exact `workspace_do_select`
 /// semantics: claim-free members simply unflag, claimed members reveal
 /// through the proof gate plus the verified claim path, and retired claims
-/// drop their full session state. True when the phase failed. The entering
-/// set is caller-provided because swap sides reveal entries still homed on
-/// the other output until the assignment transfer rekeys them.
+/// drop their full session state. Per-window outcomes log through the shared
+/// per-select cap under the action correlation; the caller reports the
+/// remainder through [`omission_summary`]. True when the phase failed. The
+/// entering set is caller-provided because swap sides reveal entries still
+/// homed on the other output until the assignment transfer rekeys them.
 fn reveal_side_members(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     store: &LedgerStore,
     entering: &BTreeSet<WindowKey>,
+    ctx: &ActionCtx,
+    reveal_diag_logged: &mut usize,
 ) -> bool {
     let mut failed = false;
     for key in entering {
@@ -210,7 +211,16 @@ fn reveal_side_members(
             state.workspaces.set_hidden(key, false);
             continue;
         };
-        if super::workspace_proof_reveal_gate(state, me, key.hwnd).is_err() {
+        if let Err(cause) = super::workspace_proof_reveal_gate(state, me, key.hwnd) {
+            note_reveal_diag(
+                state,
+                ctx,
+                key,
+                "refused",
+                Some(cause),
+                None,
+                reveal_diag_logged,
+            );
             failed = true;
             continue;
         }
@@ -220,67 +230,49 @@ fn reveal_side_members(
             &record.claim,
             record.iconic,
         ) {
-            Ok(crate::product_hide::ProductTeardown::Retired) => {
-                state.hidden_claims.remove(key);
-                if let Some(token) = state.member_tokens.remove(key) {
-                    state.member_rects.remove(&token);
-                    state.float_rects.remove(&token);
-                    state.hint_logged.remove(&token);
-                    state.hint_fallback_uses.remove(&token);
-                    drop_diag_sample(state, &token);
+            Ok(teardown) => {
+                let outcome = reveal_outcome(&teardown);
+                note_reveal_diag(state, ctx, key, outcome, None, None, reveal_diag_logged);
+                if matches!(teardown, crate::product_hide::ProductTeardown::Retired) {
+                    state.hidden_claims.remove(key);
+                    if let Some(token) = state.member_tokens.remove(key) {
+                        state.member_rects.remove(&token);
+                        state.float_rects.remove(&token);
+                        state.hint_logged.remove(&token);
+                        state.hint_fallback_uses.remove(&token);
+                        drop_diag_sample(state, &token);
+                        drop_visibility_sample(state, &token);
+                    }
+                    if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
+                        state.restore_wake = None;
+                    }
+                    state.float_topmost_prev.remove(key);
+                    state.floated.remove(key);
+                    state.member_identity.remove(key);
+                    state.member_tags.remove(key);
+                    state.hint_last_good.remove(key);
+                    state.workspaces.remove_window(key);
+                } else {
+                    state.hidden_claims.remove(key);
+                    state.workspaces.set_hidden(key, false);
                 }
-                if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
-                    state.restore_wake = None;
-                }
-                state.float_topmost_prev.remove(key);
-                state.floated.remove(key);
-                state.member_identity.remove(key);
-                state.member_tags.remove(key);
-                state.hint_last_good.remove(key);
-                state.workspaces.remove_window(key);
             }
-            Ok(_) => {
-                state.hidden_claims.remove(key);
-                state.workspaces.set_hidden(key, false);
-            }
-            Err(_) => {
+            Err(e) => {
+                let (outcome, detail) = reveal_err_outcome(&e.to_string());
+                note_reveal_diag(
+                    state,
+                    ctx,
+                    key,
+                    outcome,
+                    Some(detail),
+                    None,
+                    reveal_diag_logged,
+                );
                 failed = true;
             }
         }
     }
     failed
-}
-
-/// Narrow recovery shared by every scoped transition: reveal exactly the
-/// claims committed above (exact identity, no blind replay, no fabricated
-/// rollback). Retired claims drop member state; revealed claims unflag.
-fn recover_newly_hidden(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    newly_hidden: &[WindowKey],
-) {
-    for key in newly_hidden {
-        let Some(record) = state.hidden_claims.get(key).cloned() else {
-            continue;
-        };
-        match crate::product_hide::sys::reveal_product_claim_to(
-            store,
-            me,
-            &record.claim,
-            record.iconic,
-        ) {
-            Ok(crate::product_hide::ProductTeardown::Retired) => {
-                state.hidden_claims.remove(key);
-                super::drop_member_state(state, key);
-            }
-            Ok(_) => {
-                state.hidden_claims.remove(key);
-                state.workspaces.set_hidden(key, false);
-            }
-            Err(_) => {}
-        }
-    }
 }
 
 /// Relocate one retained Engine session to its post-transfer output domain
@@ -695,6 +687,7 @@ pub(super) fn global_swap_select(
     let target_token = state.workspaces.workspace_token(output, &target);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let mut hide_diag_logged: usize = 0;
+    let mut hide_attempted: usize = 0;
     let hide_start = Instant::now();
     let first = hide_side_members(
         state,
@@ -706,6 +699,7 @@ pub(super) fn global_swap_select(
         &active_current,
         ctx,
         &mut hide_diag_logged,
+        &mut hide_attempted,
     );
     let second = hide_side_members(
         state,
@@ -717,12 +711,23 @@ pub(super) fn global_swap_select(
         &target,
         ctx,
         &mut hide_diag_logged,
+        &mut hide_attempted,
     );
     let hide_ms = hide_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    if let Some(line) = omission_summary(
+        "workspace-hide-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        hide_attempted,
+        hide_diag_logged,
+    ) {
+        super::log_json_at(&state.log_path.clone(), line);
+    }
     let mut newly_hidden = first.newly_hidden;
     newly_hidden.extend(second.newly_hidden);
     if first.failed || second.failed {
-        recover_newly_hidden(state, me, store, &newly_hidden);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -738,11 +743,41 @@ pub(super) fn global_swap_select(
     // activate, so these sets address the right members directly.
     let entering_output = state.workspaces.workspace_members(&other, &target);
     let entering_other = state.workspaces.workspace_members(output, &active_current);
-    let first_reveal_failed = reveal_side_members(state, me, store, &entering_output);
-    let second_reveal_failed = reveal_side_members(state, me, store, &entering_other);
+    let reveal_attempted = entering_output
+        .iter()
+        .chain(entering_other.iter())
+        .filter(|key| state.hidden_claims.contains_key(key))
+        .count();
+    let mut reveal_diag_logged: usize = 0;
+    let first_reveal_failed = reveal_side_members(
+        state,
+        me,
+        store,
+        &entering_output,
+        ctx,
+        &mut reveal_diag_logged,
+    );
+    let second_reveal_failed = reveal_side_members(
+        state,
+        me,
+        store,
+        &entering_other,
+        ctx,
+        &mut reveal_diag_logged,
+    );
     let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    if let Some(line) = omission_summary(
+        "workspace-reveal-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        reveal_attempted,
+        reveal_diag_logged,
+    ) {
+        super::log_json_at(&state.log_path.clone(), line);
+    }
     if first_reveal_failed || second_reveal_failed {
-        recover_newly_hidden(state, me, store, &newly_hidden);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -775,7 +810,7 @@ pub(super) fn global_swap_select(
         .workspaces
         .swap_entries(output, &active_current, &other, &target, &sticky)
     {
-        recover_newly_hidden(state, me, store, &newly_hidden);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -932,6 +967,7 @@ pub(super) fn shared_select(
     }
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let mut hide_diag_logged: usize = 0;
+    let mut hide_attempted: usize = 0;
     let hide_start = Instant::now();
     let mut hide_failed = false;
     let mut newly_hidden: Vec<WindowKey> = Vec::new();
@@ -946,13 +982,24 @@ pub(super) fn shared_select(
             side_current,
             ctx,
             &mut hide_diag_logged,
+            &mut hide_attempted,
         );
         hide_failed = hide_failed || side.failed;
         newly_hidden.extend(side.newly_hidden);
     }
     let hide_ms = hide_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    if let Some(line) = omission_summary(
+        "workspace-hide-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        hide_attempted,
+        hide_diag_logged,
+    ) {
+        super::log_json_at(&state.log_path.clone(), line);
+    }
     if hide_failed {
-        recover_newly_hidden(state, me, store, &newly_hidden);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -970,13 +1017,31 @@ pub(super) fn shared_select(
     }
     let reveal_start = Instant::now();
     let mut reveal_failed = false;
+    let mut reveal_attempted: usize = 0;
+    let mut reveal_diag_logged: usize = 0;
     for (side_output, _) in &sides {
         let entering = state.workspaces.workspace_members(side_output, &target);
-        reveal_failed = reveal_side_members(state, me, store, &entering) || reveal_failed;
+        reveal_attempted += entering
+            .iter()
+            .filter(|key| state.hidden_claims.contains_key(key))
+            .count();
+        reveal_failed =
+            reveal_side_members(state, me, store, &entering, ctx, &mut reveal_diag_logged)
+                || reveal_failed;
     }
     let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    if let Some(line) = omission_summary(
+        "workspace-reveal-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        reveal_attempted,
+        reveal_diag_logged,
+    ) {
+        super::log_json_at(&state.log_path.clone(), line);
+    }
     if reveal_failed {
-        recover_newly_hidden(state, me, store, &newly_hidden);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,

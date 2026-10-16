@@ -106,6 +106,8 @@ pub(super) fn test_state() -> TileLoop {
         diag_emit_clock: 0,
         diag_coalesced: std::collections::HashSet::new(),
         diag_query_ms: 0,
+        vis_diag: super::VisibilityDiagnostics::default(),
+        suspend_started: None,
         restore_wake: None,
         border: crate::active_border::ActiveBorderOptions::default(),
         border_overlay: crate::active_border_sys::BorderOverlay::default(),

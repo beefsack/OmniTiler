@@ -245,6 +245,13 @@
 
 ### Evidence needed before a correction
 
+- Diagnostic follow-up delivered offline 2026-10-16:
+  [Windows visibility diagnostics](archive/windows-visibility-diagnostics.md)
+  adds bounded normal-level per-window hide/reveal results, independent nullable
+  visibility/cloak samples, exception/refusal reasons and monotonic timing.
+  Suppressed history and unsampled suspension intervals remain explicit. This
+  closes the logging follow-up, not the incident's unresolved cause or recovery.
+
 - Minimal discriminator recorded in
   [reference outcomes](../spec/reference-outcomes.md#windows-xbox-return-discriminator).
   Preserve an ordinary tiled origin and sibling, record baseline membership,

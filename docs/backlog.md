@@ -201,11 +201,13 @@ decisions of 2026-09-24 are under
   log-derived synthetic regression delivered offline. Four-launcher plus
   Notepad/Paint physical acceptance pending
   ([record](changes/windows-launcher-geometry-fighting.md)).
-- P3 | Windows visibility diagnostics | Normal logs lack per-window
-  reveal/hide results, visibility/cloak transitions, exception reasons and
-  timing, which left the Xbox-mode incident's hidden window and later
-  exception unexplained ([diagnosis](changes/windows-gaming-coexistence.md)).
-  Add bounded normal-level diagnostics before another incident repro.
+- P3 | Windows visibility diagnostics | Delivered offline: bounded normal-level
+  per-window hide/reveal outcomes and reasons, native visibility/cloak samples,
+  exception lanes/refusal causes and monotonic timing. Omitted/coalesced history
+  is explicit; no behavior change or Xbox recovery claim. Locked native gates:
+  2,313 passed, 0 failed, 1 ignored
+  ([record](changes/archive/windows-visibility-diagnostics.md),
+  [incident diagnosis](changes/windows-gaming-coexistence.md)).
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));

@@ -160,6 +160,9 @@ use self::migration::{migrate_rows_for, workspace_migrate_one};
 #[cfg(test)]
 use self::migration_run::migration_follow_tail;
 use self::migration_run::run_workspace_migrate;
+use self::migration_visibility::migration_view_effects;
+#[cfg(test)]
+use self::migration_visibility::{flush_migrate_hide_summary, flush_migrate_reveal_summary};
 use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
@@ -258,7 +261,17 @@ use self::shell::{
     DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, exe_file_name, is_border_shell_popup,
     is_shell_class, rect_from_win,
 };
-use self::trace::{log_engine_placement_trace, log_json_at, refresh_border_timed};
+use self::trace::{log_engine_placement_trace, log_json_at, log_mono_ms, refresh_border_timed};
+#[cfg(test)]
+use self::visibility_diag::{
+    REHIDE_DIAG_MAX_ENTRIES, REVEAL_DIAG_PER_SELECT, clear_visibility, inject_visibility,
+};
+use self::visibility_diag::{
+    VisibilityDiagnostics, drop_visibility_sample, flush_exceptions, flush_rehide_diag,
+    flush_visibility, gesture_float_cause, note_hide_diag, note_rehide_diag, note_reveal_diag,
+    omission_summary, rehide_err_outcome, rehide_retired_detail, reveal_err_outcome,
+    reveal_log_line, reveal_outcome, rollback_newly_hidden, stage_exceptions, stage_visibility,
+};
 #[cfg(test)]
 use self::windrag::clear_windrag_gesture_scoped;
 use self::windrag::{
@@ -702,6 +715,14 @@ struct TileLoop {
     /// on the next `window-diag` event. Per-window native cost rides each
     /// entry (`timeout_ms`, `query_us`) instead.
     diag_query_ms: u64,
+    /// Bounded normal-level visibility/exception diagnostics (latest samples,
+    /// emitted baselines, throttle clocks, fair order, coalesced tokens, and
+    /// lost-intermediate flags). Pruned by live membership like the hint
+    /// caches above.
+    vis_diag: VisibilityDiagnostics,
+    /// Monotonic start of the current fullscreen suspension, for the resume
+    /// elapsed timing. Set on suspend, consumed on resume; logging only.
+    suspend_started: Option<Instant>,
     /// Prompt-restore wake armed by one async restore dispatch, cleared only
     /// after a gated reconcile consumes it, on expiry, or on member loss.
     restore_wake: Option<RestoreWake>,
@@ -1011,6 +1032,8 @@ mod cross_drag;
 
 mod diag;
 
+mod visibility_diag;
+
 mod restart;
 
 mod assignments;
@@ -1048,6 +1071,8 @@ mod workspace_send_tick;
 mod migration;
 
 mod migration_run;
+
+mod migration_visibility;
 
 mod windrag;
 
@@ -1151,6 +1176,10 @@ mod timeout_fallback_tests;
 #[cfg(test)]
 #[path = "tests_window_diag.rs"]
 mod window_diag_tests;
+
+#[cfg(test)]
+#[path = "tests_visibility_diag.rs"]
+mod visibility_diag_tests;
 
 #[cfg(test)]
 #[path = "tests_d23_minimize.rs"]

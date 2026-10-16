@@ -286,22 +286,28 @@ pub(super) fn gesture_tick(
             );
             continue;
         }
-        if let Some(loc) = state.workspaces.member_loc(&member_key).cloned()
-            && (engine_is_float(state, &loc.output, &loc.workspace, &current.token)
-                || !workspace_mode_tiled(state, &loc.output, &loc.workspace))
-        {
-            log_json_at(
-                &log_path,
-                serde_json::json!({
-                    "event": "gesture",
-                    "tick": state.tick,
-                    "op": "gesture",
-                    "disposition": "observed",
-                    "outcome": "gesture-refused-floating",
-                    "window": current.token,
-                }),
-            );
-            continue;
+        // Distinguish the Engine exception lane (intentional float, born
+        // hold, automatic fixed) from a floating workspace mode: the
+        // incident row conflated both under one outcome.
+        if let Some(loc) = state.workspaces.member_loc(&member_key).cloned() {
+            let engine_float = engine_is_float(state, &loc.output, &loc.workspace, &current.token);
+            let tiled = workspace_mode_tiled(state, &loc.output, &loc.workspace);
+            if engine_float || !tiled {
+                let cause = gesture_float_cause(engine_float, tiled);
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "gesture",
+                        "tick": state.tick,
+                        "op": "gesture",
+                        "disposition": "observed",
+                        "outcome": "gesture-refused-floating",
+                        "cause": cause,
+                        "window": current.token,
+                    }),
+                );
+                continue;
+            }
         }
         let Some(loc) = state.workspaces.member_loc(&member_key).cloned() else {
             continue;

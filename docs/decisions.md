@@ -2589,6 +2589,12 @@ platform API behavior.
   while active. Windows
   reconcile `tick` records now emit only a deduplicated skipped count
   (`eae2934`; [trace-volume record](changes/archive/windows-trace-volume.md)).
+- Windows visibility diagnostics (2026-10-16, delivered offline): normal tiling
+  logs carry process-relative monotonic milliseconds, correlated per-window
+  hide/reveal outcomes, nullable visibility/cloak samples and exception-lane
+  reasons. Bounded one-second batches declare omitted/coalesced/lost history;
+  they never imply complete sampling during suspension or change behavior.
+  [Bounds and evidence](changes/archive/windows-visibility-diagnostics.md).
 - Redact captions, application content, secrets, raw environment, native
   identifiers, raw native IDs, and raw native D-Bus payloads, plus unbounded
   pointer steps. Logging failures never block or change behavior.

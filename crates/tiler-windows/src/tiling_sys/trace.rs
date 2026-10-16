@@ -2,8 +2,27 @@ use super::*;
 
 use super::owner_work::OwnerWorkGuard;
 
-pub(super) fn log_json_at(path: &Path, value: serde_json::Value) {
+/// Process-relative monotonic start for the `mono_ms` stamp below.
+static LOG_START: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since the first tiling log row of this process. Common
+/// monotonic time across normal log records; ticks order work, this measures
+/// delays. Never overwrites an existing field.
+pub(super) fn log_mono_ms() -> u64 {
+    LOG_START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
+pub(super) fn log_json_at(path: &Path, mut value: serde_json::Value) {
     use std::io::Write;
+    if let Some(row) = value.as_object_mut()
+        && row.get("mono_ms").is_none()
+    {
+        row.insert("mono_ms".to_owned(), serde_json::json!(log_mono_ms()));
+    }
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

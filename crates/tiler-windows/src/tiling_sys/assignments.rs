@@ -200,6 +200,14 @@ pub(super) fn ensure_workspace_assignments(
 ///   close. The close queue additionally re-verifies the member tag
 ///   (see [`queue_verified_close`]), so a live window never reports even if
 ///   retirement below were ever reached for it.
+///
+/// Diagnostics: each retirement logs one `workspace-reveal` line in the
+/// `audit` phase before the state removal below, with the safe opaque member
+/// token (null when unknown) and the categorical reveal outcome. The
+/// `maintenance` correlation names the acting sweep (there is no action
+/// context here) and elapsed reads zero (no action clock). Volume needs no
+/// cap: each claim retires at most once, and uncertain claims retain
+/// silently.
 pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
     let keys: Vec<crate::workspace::WindowKey> = state.hidden_claims.keys().cloned().collect();
     let mut retired_any = false;
@@ -224,12 +232,41 @@ pub(super) fn audit_hidden_claims(state: &mut TileLoop, me: &ProcessIdentity, st
         if !dead {
             continue;
         }
-        let _ = crate::product_hide::sys::reveal_product_claim_to(
+        let token = state.member_tokens.get(&key).cloned().unwrap_or_default();
+        let sample = if token.is_empty() {
+            None
+        } else {
+            Some(token.as_str())
+        };
+        let line = match crate::product_hide::sys::reveal_product_claim_to(
             store,
             me,
             &record.claim,
             record.iconic,
-        );
+        ) {
+            Ok(teardown) => reveal_log_line(
+                state.tick,
+                "maintenance",
+                sample,
+                "retired",
+                Some(reveal_outcome(&teardown)),
+                Some("audit"),
+                0,
+            ),
+            Err(e) => {
+                let (outcome, detail) = reveal_err_outcome(&e.to_string());
+                reveal_log_line(
+                    state.tick,
+                    "maintenance",
+                    sample,
+                    outcome,
+                    Some(detail),
+                    Some("audit"),
+                    0,
+                )
+            }
+        };
+        log_json_at(&state.log_path.clone(), line);
         state.hidden_claims.remove(&key);
         // D23: a retired hidden close queues exactly like a visible one, so
         // hidden-workspace closes clean their Engine slots on the next valid

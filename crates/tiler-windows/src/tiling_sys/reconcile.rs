@@ -155,6 +155,21 @@ pub(super) fn reconcile_tick(
     // stamped, and the cleared window converges as eligible next tick.
     clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
+    // Bounded normal-level visibility/exception snapshots over the observation
+    // just taken: managed visibility/cloak transitions and exception-lane
+    // changes with reasons, deduplicated and throttled to one batched event
+    // per second each. Steady ticks emit nothing; logging never affects
+    // behavior. Opaque tokens only. Suspended ticks never sample here (the
+    // loop returns before reconcile), so transitions inside suspension are
+    // unsampled by design, never interpolated.
+    stage_visibility(state, &observed, &retained, &skipped);
+    stage_exceptions(state);
+    if let Some(event) = flush_visibility(state) {
+        log_json_at(&log_path, event);
+    }
+    if let Some(event) = flush_exceptions(state) {
+        log_json_at(&log_path, event);
+    }
     // Structured observer tick before Engine dispatch: full EnumWindows
     // success with the raw enumerated count and the managed (eligible,
     // allowlisted) count, including zero. A zero managed set is a completed

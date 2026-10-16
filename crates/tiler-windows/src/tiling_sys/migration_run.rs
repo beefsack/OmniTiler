@@ -1,213 +1,5 @@
 use super::*;
 
-/// Stage the native view publication for one migration (D4/G37): hide the
-/// occupied target prior (ledger-authorized, stays listed and hidden) and
-/// reveal the source refill plus migrated product-hidden members as the
-/// active views permit (preserving minimized/hidden intent, never
-/// unminimizing). `candidate_ws` already holds the project reassignment
-/// (moved shown on target, refill shown on source); this applies the native
-/// hide/show effects fenced per effect and mirrors the hidden flags onto the
-/// candidate so publication carries both physical views. Under test the
-/// ledger setters are stubbed to project flag moves (native-free); production
-/// routes through [`workspace_hide_one`] and `reveal_product_claim_to` with
-/// the recovery ledger (never bypassed). Any effect failure reconciles
-/// without replay; the caller publishes only after both views verify.
-/// Returns `None` when all effects hold, else the refusal outcome.
-#[allow(clippy::too_many_arguments)]
-fn migration_view_effects(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
-    candidate_ws: &mut crate::workspace::ManagedWorkspaces,
-    source_output: &str,
-    refill: Option<&str>,
-    target_output: &str,
-    target_prior: &str,
-    migrating: &BTreeSet<crate::workspace::WindowKey>,
-    snapshot: &crate::workspace_owner::MigrateFenceSnapshot,
-    tail_areas: &[MonitorArea],
-) -> Option<&'static str> {
-    // Per-effect fence gate shared by every hide/reveal below: real scope,
-    // lifetime, membership plus fresh topology on EACH call (never stubbed,
-    // never fixed areas). The project reassignment has not published yet, so
-    // membership still homes every migrating member on the source.
-    let fences_hold =
-        |state: &TileLoop, source_workspace: &str, target_prior: &str| -> Option<&'static str> {
-            let scope_ok = migrating.iter().all(|key| {
-                state.member_identity.get(key).is_some_and(|stored| {
-                    scope_allows(&state.scope, &stored.exe_path)
-                        && hosted_gate_allows(
-                            &stored.exe_path,
-                            key.hwnd,
-                            stored.pid,
-                            &state.scope_hosts,
-                        )
-                })
-            });
-            let lifetime_ok = migrating.iter().all(|key| {
-                state.member_tags.get(key).is_some_and(|stored| {
-                    crate::workspace_owner::visible_lifetime_ok(
-                        stored,
-                        live_member_tag(key.hwnd).as_deref(),
-                    )
-                })
-            });
-            let membership_ok = migrating.iter().all(|key| {
-                state.workspaces.member_loc(key).is_some_and(|fresh| {
-                    fresh.output == source_output && fresh.workspace == source_workspace
-                })
-            });
-            let topology_ok = fresh_cross_areas().is_some_and(|fresh| {
-                cross_topology_fresh(
-                    &crate::workspace_owner::migrate_snapshot_for_drag(snapshot),
-                    &fresh,
-                )
-            });
-            let live = crate::workspace_owner::MigrateFenceLive {
-                inner_gap: state.inner_gap,
-                outer_gap: state.outer_gap,
-                source_active: state.workspaces.active_id(source_output),
-                target_active: state.workspaces.active_id(target_output),
-                source_tiled: state.workspaces.is_tiled(source_output, source_workspace),
-                target_tiled: state.workspaces.is_tiled(target_output, target_prior),
-                topology_ok,
-                scope_ok,
-                lifetime_ok,
-                membership_ok,
-                views_ok: state.workspaces.active_id(source_output).as_deref()
-                    == Some(source_workspace)
-                    && state.workspaces.active_id(target_output).as_deref() == Some(target_prior),
-                owner_ok: state
-                    .engine
-                    .owner()
-                    .is_some_and(|owner| owner.as_str() == snapshot.owner.as_str())
-                    && state.engine.generation().is_some_and(|generation| {
-                        generation.as_str() == snapshot.generation.as_str()
-                    }),
-            };
-            crate::workspace_owner::migrate_fences_hold(snapshot, &live)
-        };
-    // Pinned source workspace for the pre-commit view fences (the project
-    // reassignment has not published yet, so the source still shows it).
-    let source_workspace = snapshot.moved_workspace.as_str();
-    let mut newly_hidden: Vec<crate::workspace::WindowKey> = Vec::new();
-    // Hide the occupied target prior: visible members take a ledger hide and
-    // stay listed but hidden (D4). Already-hidden and minimized members keep
-    // their intent with no setter. Sticky never applies to the prior.
-    let prior_members: Vec<crate::workspace::WindowKey> = state
-        .workspaces
-        .workspace_members(target_output, target_prior)
-        .into_iter()
-        .collect();
-    for key in &prior_members {
-        if state.workspaces.is_hidden(key) {
-            continue;
-        }
-        if live_is_iconic(key.hwnd) || state.minimized_omitted.contains(key) {
-            continue;
-        }
-        if let Some(outcome) = fences_hold(state, source_workspace, target_prior) {
-            return Some(outcome);
-        }
-        let Some(expected) = state.member_identity.get(key).cloned() else {
-            continue;
-        };
-        #[cfg(test)]
-        {
-            let _ = (me, store, dir, expected);
-            state.workspaces.set_hidden(key, true);
-            candidate_ws.set_hidden(key, true);
-            newly_hidden.push(key.clone());
-        }
-        #[cfg(not(test))]
-        {
-            let iconic = false;
-            let (outcome, _) = workspace_hide_one(state, me, store, dir, key, &expected, iconic);
-            if outcome == "hidden" || state.hidden_claims.contains_key(key) {
-                state.workspaces.set_hidden(key, true);
-                candidate_ws.set_hidden(key, true);
-                newly_hidden.push(key.clone());
-            } else if outcome == "origin-vanished" || outcome == "identity-changed" {
-                drop_member_state(state, key);
-            } else if outcome == "scope-excluded" {
-                // Out-of-scope prior members stay visible with membership
-                // intact (same rule as selects), never a failure.
-            } else {
-                return Some(outcome);
-            }
-        }
-    }
-    // Reveal helper: one hidden-claim member whose new active view permits
-    // visibility. Preserves minimized intent via the stored iconic flag
-    // (never unminimizes). Mirrors the flag onto the candidate.
-    let reveal_one = |state: &mut TileLoop,
-                      candidate_ws: &mut crate::workspace::ManagedWorkspaces,
-                      key: &crate::workspace::WindowKey|
-     -> std::result::Result<(), &'static str> {
-        let Some(record) = state.hidden_claims.get(key).cloned() else {
-            state.workspaces.set_hidden(key, false);
-            candidate_ws.set_hidden(key, false);
-            return Ok(());
-        };
-        if let Some(outcome) = fences_hold(state, source_workspace, target_prior) {
-            return Err(outcome);
-        }
-        #[cfg(test)]
-        {
-            let _ = record;
-            state.hidden_claims.remove(key);
-            state.workspaces.set_hidden(key, false);
-            candidate_ws.set_hidden(key, false);
-            Ok(())
-        }
-        #[cfg(not(test))]
-        {
-            match crate::product_hide::sys::reveal_product_claim_to(
-                store,
-                me,
-                &record.claim,
-                record.iconic,
-            ) {
-                Ok(crate::product_hide::ProductTeardown::Retired) => {
-                    state.hidden_claims.remove(key);
-                    drop_member_state(state, key);
-                    candidate_ws.remove_window(key);
-                    Ok(())
-                }
-                Ok(_) => {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                    candidate_ws.set_hidden(key, false);
-                    Ok(())
-                }
-                Err(_) => Err("migrate-unverified"),
-            }
-        }
-    };
-    // Source refill shows (G37): reveal its hidden members now that the
-    // candidate shows the refill.
-    if let Some(refill) = refill {
-        let refill_members: Vec<crate::workspace::WindowKey> = candidate_ws
-            .workspace_members(source_output, refill)
-            .into_iter()
-            .collect();
-        for key in &refill_members {
-            // Minimized refill members stay minimized: the reveal path
-            // preserves iconic, so they still converge (no skip).
-            if reveal_one(state, candidate_ws, key).is_err() {
-                return Some("migrate-unverified");
-            }
-        }
-    }
-    // Migrated members preserve their pre-existing hidden/minimized intent:
-    // no reveal here (the move carries visibility as-is; an active view does
-    // not unhide intentional concealment nor unminimize). Membership was
-    // fenced per effect above.
-    let _ = tail_areas;
-    None
-}
-
 /// Single causal follow tail for committed workspace migrations (D6): follow
 /// the moved active client only. Empty and sticky-active migrations (no
 /// active window) take no setter. A carried fullscreen (live re-read
@@ -372,6 +164,15 @@ pub(super) fn run_workspace_migrate(
             }
         }
         log_json_at(&log_path, serde_json::Value::Object(line));
+    };
+    // Diagnostics-only: run the `workspace-migrate` dispatch clock for the
+    // view-effect legs below. Never a policy input, never an effect.
+    let diag_start = Instant::now();
+    let diag_ctx = ActionCtx {
+        correlation: correlation_str.to_owned(),
+        tick,
+        queued_at: diag_start,
+        start: diag_start,
     };
     let Some((source_domain_base, source_key)) = workspace_domain_for(
         source_output,
@@ -1228,6 +1029,7 @@ pub(super) fn run_workspace_migrate(
                 &migrating,
                 &snapshot,
                 &view_areas,
+                &diag_ctx,
             ) {
                 reconcile_tick(state, me, &fresh_fulls, &view_areas);
                 log_migrate(view_outcome, serde_json::json!({}));
@@ -1322,6 +1124,7 @@ pub(super) fn run_workspace_migrate(
             &migrating,
             &snapshot,
             &view_areas,
+            &diag_ctx,
         ) {
             reconcile_tick(state, me, &fresh_fulls, &view_areas);
             log_migrate(view_outcome, serde_json::json!({}));

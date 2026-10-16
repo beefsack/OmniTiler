@@ -331,6 +331,7 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
         state.hint_logged.remove(&token);
         state.hint_fallback_uses.remove(&token);
         drop_diag_sample(state, &token);
+        drop_visibility_sample(state, &token);
         state.overlay_now.remove(&token);
     }
     if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {

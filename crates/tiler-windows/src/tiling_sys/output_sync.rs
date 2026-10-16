@@ -120,6 +120,13 @@ pub(super) fn poll_foreground_workspace(
 /// Externally revealed hidden claims without foreground return to hidden
 /// under the same claim and identity: never re-admitted, never moved to the
 /// wrong domain. Destroyed/recycled claims retire their ledger notes.
+///
+/// Diagnostics: every actual actuation attempt accumulates into the
+/// per-second `rehide-sweep` buckets (one summary line per second at most),
+/// so a corrected transient is never silently lost even when no reconcile
+/// samples it, and persistent failures cannot flood. `corrected` means the
+/// drift was re-hidden; `retired` means the claim died and the retirement
+/// reveal outcome rides the detail; anything else names the failing leg.
 fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
     let foreground = unsafe { GetForegroundWindow() } as usize as u64;
     let keys: Vec<crate::workspace::WindowKey> = state.hidden_claims.keys().cloned().collect();
@@ -149,21 +156,45 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
         {
             continue;
         }
+        // Opaque sample window for the sweep below (null when unknown).
+        let token = state.member_tokens.get(&key).cloned().unwrap_or_default();
+        let sample = if token.is_empty() {
+            None
+        } else {
+            Some(token.as_str())
+        };
         match crate::product_hide::sys::rehide_known_claim(me, &record.claim) {
-            Ok(true) => {}
+            Ok(true) => {
+                note_rehide_diag(state, sample, "corrected", "rehidden");
+            }
             Ok(false) => {
                 // Retired: drop the ledger note through the identity-safe
-                // reveal path and forget session membership safely.
-                let _ = crate::product_hide::sys::reveal_product_claim_to(
+                // reveal path and forget session membership safely. The
+                // retirement reveal outcome logs before the state removal.
+                match crate::product_hide::sys::reveal_product_claim_to(
                     store,
                     me,
                     &record.claim,
                     record.iconic,
-                );
+                ) {
+                    Ok(teardown) => {
+                        note_rehide_diag(state, sample, "retired", reveal_outcome(&teardown));
+                    }
+                    Err(e) => {
+                        let (outcome, _) = reveal_err_outcome(&e.to_string());
+                        note_rehide_diag(state, sample, outcome, rehide_retired_detail(outcome));
+                    }
+                }
                 state.hidden_claims.remove(&key);
             }
-            Err(_) => {}
+            Err(e) => {
+                let (outcome, detail) = rehide_err_outcome(&e.to_string());
+                note_rehide_diag(state, sample, outcome, detail);
+            }
         }
+    }
+    if let Some(line) = flush_rehide_diag(state) {
+        log_json_at(&state.log_path.clone(), line);
     }
 }
 /// Sync monitor arrivals/removals with whole-workspace displacement/return:
@@ -464,6 +495,20 @@ pub(super) fn workspace_maintenance(
     // stamped, and the cleared window converges as eligible next tick.
     clear_maximize_at_admission(state, me, &retained);
     workspace_close_cleanup(state);
+    // Bounded normal-level visibility/exception snapshots over the
+    // maintenance observation just taken (same boundary as `reconcile_tick`):
+    // maintenance re-observes after reconcile on the same quiet turn, so
+    // without this its fresher facts would bypass diagnostics until the next
+    // tick. Mutations below converge next tick; the per-second throttle
+    // bounds volume and logging never affects behavior. Opaque tokens only.
+    stage_visibility(state, &observed, &retained, &skipped);
+    stage_exceptions(state);
+    if let Some(event) = flush_visibility(state) {
+        log_json_at(&state.log_path.clone(), event);
+    }
+    if let Some(event) = flush_exceptions(state) {
+        log_json_at(&state.log_path.clone(), event);
+    }
     // Unconfirmed toggle releases retry here on the maintenance observation
     // (no second enumeration): the fingerprint gate inside fires only on a
     // real topology edge, so quiet ticks never poll or log.

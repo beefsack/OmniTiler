@@ -59,6 +59,14 @@ pub(super) fn run_active_tick(
                     .is_none_or(|b| b.work != a.work || b.full != a.full)
             });
         if geometry_changed {
+            let before: Vec<[i32; 4]> = areas
+                .iter()
+                .map(|a| [a.work.x, a.work.y, a.work.w, a.work.h])
+                .collect();
+            let after: Vec<[i32; 4]> = fresh
+                .iter()
+                .map(|a| [a.work.x, a.work.y, a.work.w, a.work.h])
+                .collect();
             *areas = fresh;
             *monitor = areas[0].clone();
             *monitor_count = areas.len();
@@ -78,7 +86,15 @@ pub(super) fn run_active_tick(
                     state.engine.reproject_retained(&key, bounds);
                 }
             }
-            log_json_at(log_path, serde_json::json!({"event":"work-area-changed"}));
+            log_json_at(
+                log_path,
+                serde_json::json!({
+                    "event": "work-area-changed",
+                    "tick": state.tick,
+                    "before": before,
+                    "after": after,
+                }),
+            );
             *snap_retry_at = None;
             // A changed work area is a meaningful retry point for a
             // degraded Snap setup; quiet when the effect holds.
@@ -238,9 +254,12 @@ pub(super) fn run_active_tick(
         if !state.suspended {
             state.suspended = true;
             state.snap_advance = None;
+            // Monotonic suspend start for the resume elapsed timing below;
+            // logging only, never a deadline or behavior change.
+            state.suspend_started = Some(now);
             log_json_at(
                 log_path,
-                serde_json::json!({"event":"suspend","cause":"fullscreen-foreground"}),
+                serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground"}),
             );
             if snap_want {
                 snap_suspend(dir, me, store);
@@ -352,7 +371,18 @@ pub(super) fn run_active_tick(
     }
     if state.suspended {
         state.suspended = false;
-        log_json_at(log_path, serde_json::json!({"event":"resume"}));
+        // Monotonic suspended duration from the suspend start above, so a
+        // later incident row can measure the reported delay from normal logs
+        // alone. `None` (suspend predates this process snapshot) reads null.
+        let suspended_ms: Option<u64> = state.suspend_started.take().map(|at| {
+            now.saturating_duration_since(at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        });
+        log_json_at(
+            log_path,
+            serde_json::json!({"event":"resume","tick":state.tick,"suspended_ms":suspended_ms}),
+        );
         // A fresh foreground may accept the hook now: retry soon.
         *snap_retry_at = None;
         // Fresh Snap preimage when the setting drifted during

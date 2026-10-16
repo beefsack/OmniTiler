@@ -241,6 +241,8 @@ pub(super) fn run_tile_loop(
         diag_emit_clock: 0,
         diag_coalesced: HashSet::new(),
         diag_query_ms: 0,
+        vis_diag: VisibilityDiagnostics::default(),
+        suspend_started: None,
         restore_wake: None,
         border,
         border_overlay: BorderOverlay::default(),
@@ -715,9 +717,10 @@ pub(super) fn run_tile_loop(
         if suspend_read(&mut state, me, &fulls).veto.block {
             state.suspended = true;
             state.snap_advance = None;
+            state.suspend_started = Some(Instant::now());
             log_json_at(
                 &log_path,
-                serde_json::json!({"event":"suspend","cause":"fullscreen-foreground"}),
+                serde_json::json!({"event":"suspend","tick":state.tick,"cause":"fullscreen-foreground"}),
             );
             if snap_want {
                 snap_suspend(dir, me, store);

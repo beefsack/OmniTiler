@@ -166,9 +166,8 @@ pub(super) fn workspace_do_select(
     // partial never leaves a doubled visible set or a lost claim behind.
     let mut newly_hidden: Vec<crate::workspace::WindowKey> = Vec::new();
     let hide_start = Instant::now();
-    // Bounded per-window hide diagnostics for this select: one
-    // `workspace-hide` line per leaving member up to the cap below.
     let mut hide_diag_logged: usize = 0;
+    let mut hide_attempted: usize = 0;
     for key in &leaving {
         if state.workspaces.is_hidden(key) {
             continue;
@@ -234,24 +233,16 @@ pub(super) fn workspace_do_select(
             read_topmost_now(key.hwnd),
         );
         let (outcome, detail) = workspace_hide_one(state, me, store, dir, key, &expected, iconic);
-        // Correlated bounded per-window hide outcome: opaque token plus
-        // outcome and refusal detail only, no titles, paths, or content.
-        // Proves the exact failing window when a select goes partial.
-        if hide_diag_logged < MAX_HIDE_DIAG_PER_SELECT {
-            let token = state.member_tokens.get(key).cloned().unwrap_or_default();
-            log_json_at(
-                &state.log_path,
-                serde_json::json!({
-                    "event": "workspace-hide",
-                    "correlation": ctx.correlation,
-                    "window": if token.is_empty() { serde_json::Value::Null } else { serde_json::Value::from(token) },
-                    "outcome": outcome,
-                    "detail": detail,
-                    "project_topmost": project_topmost,
-                }),
-            );
-            hide_diag_logged += 1;
-        }
+        hide_attempted += 1;
+        note_hide_diag(
+            state,
+            ctx,
+            key,
+            outcome,
+            detail,
+            project_topmost,
+            &mut hide_diag_logged,
+        );
         // A committed claim (exact full identity plus tag) is owned even when
         // the post-hide readback reports uncertain: the ledger and the owner
         // table keep it, never a lost window.
@@ -274,28 +265,18 @@ pub(super) fn workspace_do_select(
     // Narrow recovery reveals exactly the claims committed above (exact
     // identity, no blind replay, no fabricated rollback) and keeps current.
     let hide_ms = hide_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    if let Some(line) = omission_summary(
+        "workspace-hide-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        hide_attempted,
+        hide_diag_logged,
+    ) {
+        log_json_at(&state.log_path.clone(), line);
+    }
     if hide_failed {
-        for key in &newly_hidden {
-            let Some(record) = state.hidden_claims.get(key).cloned() else {
-                continue;
-            };
-            match crate::product_hide::sys::reveal_product_claim_to(
-                store,
-                me,
-                &record.claim,
-                record.iconic,
-            ) {
-                Ok(crate::product_hide::ProductTeardown::Retired) => {
-                    state.hidden_claims.remove(key);
-                    drop_member_state(state, key);
-                }
-                Ok(_) => {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                }
-                Err(_) => {}
-            }
-        }
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -306,12 +287,26 @@ pub(super) fn workspace_do_select(
     }
     let entering = state.workspaces.workspace_members(output, target);
     let reveal_start = Instant::now();
+    let reveal_attempted = entering
+        .iter()
+        .filter(|key| state.hidden_claims.contains_key(key))
+        .count();
+    let mut reveal_diag_logged: usize = 0;
     for key in &entering {
         let Some(record) = state.hidden_claims.get(key).cloned() else {
             state.workspaces.set_hidden(key, false);
             continue;
         };
-        if workspace_proof_reveal_gate(state, me, key.hwnd).is_err() {
+        if let Err(cause) = workspace_proof_reveal_gate(state, me, key.hwnd) {
+            note_reveal_diag(
+                state,
+                ctx,
+                key,
+                "refused",
+                Some(cause),
+                None,
+                &mut reveal_diag_logged,
+            );
             hide_failed = true;
             continue;
         }
@@ -321,33 +316,65 @@ pub(super) fn workspace_do_select(
             &record.claim,
             record.iconic,
         ) {
-            Ok(crate::product_hide::ProductTeardown::Retired) => {
-                state.hidden_claims.remove(key);
-                if let Some(token) = state.member_tokens.remove(key) {
-                    state.member_rects.remove(&token);
-                    state.float_rects.remove(&token);
-                    state.hint_logged.remove(&token);
-                    state.hint_fallback_uses.remove(&token);
-                    drop_diag_sample(state, &token);
+            Ok(teardown) => {
+                let outcome = reveal_outcome(&teardown);
+                note_reveal_diag(
+                    state,
+                    ctx,
+                    key,
+                    outcome,
+                    None,
+                    None,
+                    &mut reveal_diag_logged,
+                );
+                if matches!(teardown, crate::product_hide::ProductTeardown::Retired) {
+                    state.hidden_claims.remove(key);
+                    if let Some(token) = state.member_tokens.remove(key) {
+                        state.member_rects.remove(&token);
+                        state.float_rects.remove(&token);
+                        state.hint_logged.remove(&token);
+                        state.hint_fallback_uses.remove(&token);
+                        drop_diag_sample(state, &token);
+                        drop_visibility_sample(state, &token);
+                    }
+                    if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
+                        state.restore_wake = None;
+                    }
+                    state.float_topmost_prev.remove(key);
+                    state.floated.remove(key);
+                    state.member_identity.remove(key);
+                    state.member_tags.remove(key);
+                    state.hint_last_good.remove(key);
+                    state.workspaces.remove_window(key);
+                } else {
+                    state.hidden_claims.remove(key);
+                    state.workspaces.set_hidden(key, false);
                 }
-                if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
-                    state.restore_wake = None;
-                }
-                state.float_topmost_prev.remove(key);
-                state.floated.remove(key);
-                state.member_identity.remove(key);
-                state.member_tags.remove(key);
-                state.hint_last_good.remove(key);
-                state.workspaces.remove_window(key);
             }
-            Ok(_) => {
-                state.hidden_claims.remove(key);
-                state.workspaces.set_hidden(key, false);
-            }
-            Err(_) => {
+            Err(e) => {
+                let (outcome, detail) = reveal_err_outcome(&e.to_string());
+                note_reveal_diag(
+                    state,
+                    ctx,
+                    key,
+                    outcome,
+                    Some(detail),
+                    None,
+                    &mut reveal_diag_logged,
+                );
                 hide_failed = true;
             }
         }
+    }
+    if let Some(line) = omission_summary(
+        "workspace-reveal-summary",
+        state.tick,
+        &ctx.correlation,
+        None,
+        reveal_attempted,
+        reveal_diag_logged,
+    ) {
+        log_json_at(&state.log_path.clone(), line);
     }
     // A failed reveal phase keeps current as well: the leaving set was
     // hidden successfully, so the safest known view is restored by revealing
@@ -355,27 +382,7 @@ pub(super) fn workspace_do_select(
     // pretended: the outcome stays partial with current kept.
     let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if hide_failed {
-        for key in &newly_hidden {
-            let Some(record) = state.hidden_claims.get(key).cloned() else {
-                continue;
-            };
-            match crate::product_hide::sys::reveal_product_claim_to(
-                store,
-                me,
-                &record.claim,
-                record.iconic,
-            ) {
-                Ok(crate::product_hide::ProductTeardown::Retired) => {
-                    state.hidden_claims.remove(key);
-                    drop_member_state(state, key);
-                }
-                Ok(_) => {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                }
-                Err(_) => {}
-            }
-        }
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
