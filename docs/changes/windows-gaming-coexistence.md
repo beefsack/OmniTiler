@@ -66,8 +66,12 @@
   monitor and native read/navigation fences. Native detector/navigation paths
   are compile-checked, not live-accepted. All changed Rust files are under
   approximately 1,500 lines after cohesive UI/test splits.
-- Status: implementation delivered offline; hosted CI and physical acceptance
-  are recorded separately. This record stays active for physical acceptance
+- Delivery: `4e587b1`; [CI 38828916549](https://github.com/beefsack/OmniTiler/actions/runs/38828916549)
+  passed all eight jobs (Windows, Rust, native, KWin, shell, macOS, notices and
+  licenses). The pre-existing KDE abort did not recur. No KDE/macOS code was
+  changed by this delivery.
+- Status: implementation delivered offline with hosted CI green. This record
+  stays active for physical acceptance
   and the wider parked containment/runtime-recovery work.
 
 ### Physical acceptance plan (pending)
@@ -83,9 +87,11 @@
    before the action key, and vary modifier press order. Confirm no repeat toggle,
    stuck key, unintended action or late Windows activation. Plain Win still opens
    Start; fresh unbound Ctrl chords and takeover-off chords remain native.
-4. Select Authentic and apply. Confirm the amber tray warning and conflict menu
-   row open the existing Settings window; float and fullscreen show separate
-   Game Bar/Xbox evidence and Settings actions. Unknown/query-failure evidence
+4. Select Authentic and apply with Game Bar registered and Xbox configuration
+   enabled or unknown. Confirm the amber tray warning and conflict menu row
+   open the existing Settings window; select float and fullscreen to inspect
+   separate Game Bar/Xbox evidence and Settings actions. Recognised Xbox-off
+   must clear only its own warning. Unknown/query-failure evidence
    must not claim enabled, disabled or resolved. Compatible, per-binding disable,
    rebind-away and takeover-off remove the corresponding active conflict.
 5. Click Xbox mode Settings: verify `ms-settings:gaming-fullscreen` opens the
