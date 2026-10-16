@@ -74,3 +74,12 @@
   re-exported at their old paths. No visibility changes. All bodies match
   exact dedent plus rustfmt and portable prefix is unchanged. All five local
   gates pass: 2,313 passed / 0 failed / 1 ignored.
+- Winarrow production row complete: parent 1,774 -> 731;
+  `winarrow/sys.rs` 1,026. The Windows-only native hook spike is file-backed
+  at the same module depth, separate from portable classification, bounded
+  queue and reporting vocabulary. No import or visibility changes; extracted
+  body matches exact dedent plus rustfmt and portable prefix is unchanged.
+  Existing integration tests remain in place. All five local gates pass:
+  2,313 passed / 0 failed / 1 ignored.
+- Workspace CI `38904671333` passed all eight jobs, including native, with
+  no KDE changes after the earlier native abort.
