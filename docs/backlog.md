@@ -119,7 +119,9 @@ decisions of 2026-09-24 are under
   are accepted pre-0.1; the core change adds follow-up items for each platform
   not migrated in the same change. Repeated replies must not churn
   workspaces.
-- P2 | Research: stateless core with caller-owned state | User 2026-10-16
+- P1 | Research: stateless core with caller-owned state | User 2026-10-16
+  is unsure this is sensible since the stateful core is already efficient;
+  weigh testability and reliability wins against cost. User 2026-10-16
   asks whether the core can hold no state between calls: each call takes the
   caller-held core state (tiling tree, shares, groups, remembered slots,
   focus history, workspace ordering - not derivable from observation), the
