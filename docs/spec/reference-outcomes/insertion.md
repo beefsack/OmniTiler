@@ -408,4 +408,9 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   `S(S-ours-admission-capacity)` + `S(S-ours-ins)` @15faf1e4; native
   event-order/timing TBD, no universal cap
 - Variant hook: none (OPEN; user decision required for any burst-ordering
-  policy, nothing selected).
+  policy, nothing selected). The
+  [best-effort capacity proposal](../../changes/best-effort-admission.md) recommends
+  preserving the existing clean-fit/spatial-seed order while allowing a mixed
+  tile/float roster; it does not establish native burst ordering or change the
+  source-evidenced outcomes above. See the
+  [capacity discriminators](../reference-outcomes.md#best-effort-capacity-discriminators-ours-to-be-open).

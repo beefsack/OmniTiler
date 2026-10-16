@@ -241,4 +241,8 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   KDE via the shared Engine. `S(S-ours-admission-capacity)` +
   `S(S-ours-ins)` + `S(S-ours-admit)` @15faf1e4; exact geometry and native
   settlement TBD, no universal cap
-- Variant hook: none (OPEN; user decision required, nothing selected).
+- Variant hook: Ours-to-be anchor fallback and float/overlap settings under the
+  user's 2026-10-16 host-limitation direction. Defaults, scope relative to B6,
+  recovery and interactions remain OPEN; see the
+  [capacity discriminators](../reference-outcomes.md#best-effort-capacity-discriminators-ours-to-be-open)
+  and [D1-D10 proposal](../../changes/best-effort-admission.md).

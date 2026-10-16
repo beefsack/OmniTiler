@@ -25,7 +25,32 @@ trivially different start state.
 - Enable/adoption ordering and geometry preservation: reuse
   [R-START-01..03](reference-outcomes/restart-persistence.md#r-start-01-enable-over-a-2x2-float-field);
   the neighboring toggle/layout-switch/restart/reload discriminators are in
-  that section. No new policy selected; existing B6/startup decisions stand.
+  that section. Existing B6/startup decisions stand; the following proposal
+  selects nothing new.
+
+### Best-effort capacity discriminators (Ours-to-be OPEN)
+
+- User direction 2026-10-16: propose anchor fallback and float/overlap settings;
+  float preferred, automatic spill to another workspace rejected. Explicit user
+  workspace sends are not rejected by that direction.
+- [Source audit, D1-D10 options and candidate semantics](../changes/best-effort-admission.md).
+  These are variants of R-MIN-04, R-INS-09, R-START-01..03 and the named
+  send/move/drag rows, not new reference evidence. All candidate outcomes and
+  defaults remain **unselected**; exact reference/native outcomes remain TBD.
+
+| Variant | Minimal action sequence | Ours-to-be discriminator / recommendation (OPEN) | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| Minimum versus geometric exhaustion | Run R-MIN-01 with all logical extents positive but infeasible declared minima; independently run zero-hint R-MIN-04 | D1 recommends geometric-only capacity policy, preserving B6 in the first leg; minimum-aware search/float would instead supersede B6. Float default alone does not remove minimum overlap | D1 scope TBD; no new minimum threshold or native squeeze inferred |
+| Largest versus relative versus no-search | In R-MIN-04 make B unsplittable, sibling C splittable, and outside A strictly larger than C; open N while B focused | D2: largest chooses A; relative chooses C; no-search invokes D3 on original B. Default largest recommended; long edge of chosen plain allocation, old/new equal wrapper, N tiled focus, not target focus | Defaults and native activation TBD; no axis/rebalance/output/workspace search selected |
+| Relative rings and equal-area ties | Make B's immediate sibling subtree contain two splittable leaves; put a larger splittable leaf at the next ancestor; open N. Repeat with equal-area candidates on opposite sides of the anchor | D2 recommends sibling-subtree leaves before higher ancestor rings, index-distance then child-order DFS; largest ties use DFS then lifetime ID. Wrapping the parent instead is a distinct unselected interpretation | Precise relative semantics/ties TBD; no screen-distance/MRU assumption |
+| No split anywhere | In a positive 1x1 usable domain with gap 8 and ordinary zero-hint A, open N; repeat one accepted report | D3/D4: float N at observed frame with capacity origin, keep A tiled; alternative D9 creates positive overflowing tiles. Do not erase a lifetime or issue zero/negative geometry | Float/overlap semantics and native frame/focus TBD; no universal window-count cap |
+| Capacity return and explicit retry | Capacity-float N; close another tiled leaf or enlarge output; revisit workspace and repeat report; explicitly tile N; repeat with still-insufficient space | D5 recommends no automatic retry on capacity return/visit/reply; explicit retry tiles once if feasible, otherwise N remains float without a false tile override | Recovery trigger/persistence TBD; no retained old tile slot selected |
+| Enable/startup clean fit versus exhausted seed | Enable over a clean 2x2 field; separately enable over overlapping many-window geometry whose sequential focused anchor exhausts; repeat after restart | D8 preserves clean recursive-cut adoption; declined fit uses existing spatial/focus-last serial seed with D2/D3 per leg, complete mixed roster not whole-seed loss. D5 keeps live exceptions across ordinary enable, but session-local reason can be lost at restart | Startup mixed-roster semantics/restart reason TBD; native batch ordering and original reference enable discriminators remain TBD |
+| Named send versus R4 whole-wrap | Send tiled N to an exhausted destination with room at another leaf; independently move N across an output edge where the mandated whole-target R4 wrap cannot project | D6: named send may use D2 within destination, then D3; R4 preserves whole-target shape, bypasses D2, then D3. No spill to a third workspace/output; source retained until verified transfer | Capacity transfer/follow/stay/frame remap TBD; macOS native-Space sends remain capability-gated |
+| Drag fallback preview agreement | Drag N to a resolved exhausted edge; observe preview; release there; repeat after a capacity change between preview and finish | D6 recommends showing the same float/overlap result before finish, no alternate-target search. Revalidate stale preview; unavailable truthful fallback preview keeps existing refusal/snap-back, never finish-only surprise float | Preview representation and native release/remap TBD |
+| Existing geometry becomes impossible | Settle unequal-age A/B/C; increase gaps or shrink bounds until strict projection fails; repeat report, restore capacity | D7 float mode removes shortest newest-first eligible victim prefix; preserve survivor topology/shares, native focus and floated frame; no re-tile on restoration. D9 overlap mode instead retains links with positive overflowing projection | Eviction order/protection versus retained hold/reseed TBD; declared-minimum-only shrink still B6 under D1 |
+| Protected remainder and game safety | Put a retained fullscreen/maximized reserved slot beside normal A; shrink until projection fails; repeat with only protected slots or nonpositive usable area | D7 recommends evicting only safe normal tiles, never clearing overlays/fixed overrides or treating host refusal as capacity; impossible protected remainder remains narrowly held | Remaining hold and native safety outcomes TBD; no live game probe authorized |
+| Apply settings versus repeated full replies | Capacity-float N; change anchor/no-space settings; resend identical observations, including after manual focus/frame changes; separately start a new admission | D10/D5/D4 recommend next-decision settings, not reclassification; D1-D10 require stable lifetime/provenance/targets, no repeated focus/raise/transfer/frame reset. New input may cause one capacity decision | Contract extension/consumer parity TBD; world-only fallback does not establish Windows/macOS support |
 
 ### Full-state reply settlement discriminators
 
