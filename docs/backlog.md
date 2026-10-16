@@ -186,6 +186,17 @@ decisions of 2026-09-24 are under
   log-derived synthetic regression delivered offline. Four-launcher plus
   Notepad/Paint physical acceptance pending
   ([record](changes/windows-launcher-geometry-fighting.md)).
+- P1 | Windows physical acceptance batch (2026-10-16 deliveries) | One
+  desktop session covers all offline-delivered Windows changes awaiting
+  native checks: trailing workspace after admission into the last empty
+  workspace, both pagers
+  ([record](changes/archive/windows-admission-trailing-workspace.md));
+  pager app icons ([record](changes/windows-taskbar-pager-icons.md)); Xbox
+  conflict handling ([record](changes/windows-gaming-coexistence.md));
+  all-member sends ([record](changes/windows-all-member-workspace-sends.md));
+  launcher geometry fighting
+  ([record](changes/windows-launcher-geometry-fighting.md)); tabbed Settings
+  from the core catalog ([record](changes/shared-settings-catalog-windows-tabs.md)).
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later
