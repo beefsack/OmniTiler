@@ -150,6 +150,10 @@ decisions of 2026-09-24 are under
   Pending physical acceptance: both Ctrl chords route only to tiler actions,
   Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
   hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
+- P1 | Windows all-member workspace sends physical acceptance |
+  Settings/floating-fixed/maximized/fullscreen WS1->WS2->WS1 follow/stay
+  roundtrips with frame/flag/focus checks pending
+  ([record](changes/windows-all-member-workspace-sends.md)).
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later
