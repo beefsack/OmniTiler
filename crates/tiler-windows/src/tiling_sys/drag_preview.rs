@@ -425,7 +425,7 @@ pub(super) fn prepare_cross_singleton_event(
     preview: bool,
 ) -> Option<CoreEvent> {
     let current = observed.iter().find(|w| w.token == settle.mover_token)?;
-    let (hints, _) = min_hint_for(current, hint_cx);
+    let hints = min_hint_for(current, hint_cx).hints;
     let (dest_domain, dest_key) = workspace_domain_for(
         &settle.dest_output,
         &settle.dest_workspace,

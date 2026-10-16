@@ -136,7 +136,7 @@ pub fn allow_match(entry: &AllowEntry, observed: &ObservedTarget) -> bool {
 /// - `transient`: a failed setter API call. Retried with bounded backoff
 ///   (500ms doubling, capped at 5s); any intent/observation change re-arms
 ///   immediately, so transient failures always recover.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RefusedTracker {
     clamp: HashMap<String, (Rect, Rect)>,
     transient: HashMap<String, TransientEntry>,
@@ -232,6 +232,24 @@ impl RefusedTracker {
             .retain(|token, _| live_tokens.contains(&token.as_str()));
         self.transient
             .retain(|token, _| live_tokens.contains(&token.as_str()));
+    }
+
+    /// App-clamp lane pair for one token, if any. Pure diagnostic read: lets
+    /// the per-window summary explain suppression (`identical-clamp`) and
+    /// re-arm (`desired-changed` / `observed-changed` / `exact-match`)
+    /// without touching tracker behavior.
+    #[must_use]
+    pub fn clamp_pair(&self, token: &str) -> Option<(Rect, Rect)> {
+        self.clamp.get(token).copied()
+    }
+
+    /// Transient-lane intent pair for one token, if any (timing excluded).
+    /// Same diagnostic read contract as [`Self::clamp_pair`].
+    #[must_use]
+    pub fn transient_pair(&self, token: &str) -> Option<(Rect, Rect)> {
+        self.transient
+            .get(token)
+            .map(|entry| (entry.desired, entry.observed))
     }
 }
 

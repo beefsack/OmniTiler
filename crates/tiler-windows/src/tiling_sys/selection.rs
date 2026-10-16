@@ -327,6 +327,8 @@ pub(super) fn workspace_do_select(
                     state.member_rects.remove(&token);
                     state.float_rects.remove(&token);
                     state.hint_logged.remove(&token);
+                    state.hint_fallback_uses.remove(&token);
+                    drop_diag_sample(state, &token);
                 }
                 if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
                     state.restore_wake = None;
@@ -335,6 +337,7 @@ pub(super) fn workspace_do_select(
                 state.floated.remove(key);
                 state.member_identity.remove(key);
                 state.member_tags.remove(key);
+                state.hint_last_good.remove(key);
                 state.workspaces.remove_window(key);
             }
             Ok(_) => {

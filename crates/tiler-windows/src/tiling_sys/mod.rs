@@ -86,6 +86,14 @@ use self::cross_drag::{
     assemble_cross_drag_rows, cross_topology_fresh, fresh_cross_areas, resolve_drop_destination,
     settle_cross_drag_drop, snapshot_cross_drag,
 };
+use self::diag::{
+    WindowDiagSample, diag_identity_broke, diag_identity_rebound, drop_diag_sample,
+    flush_window_diag, stage_hint_samples, stage_no_plan, stage_write_samples,
+};
+#[cfg(test)]
+use self::diag::{
+    clear_diag_classes, clear_diag_pids, diag_class_cached, inject_diag_class, inject_diag_pid,
+};
 use self::directional_cross::run_directional_cross;
 use self::directional_resolution::{
     chord_output, directional_arrival_verified, directional_live, directional_outputs_from_areas,
@@ -127,9 +135,12 @@ use self::group_underlay::{
     chord_held_now, classify_move_size_start, hide_preview, hide_underlay, live_outer_rect,
     refresh_group_underlay,
 };
-use self::hints::{HintCx, HintOutcome, HintStats};
+use self::hints::{
+    HintCx, HintFallbackUse, HintOutcome, HintStats, LastGoodHint, hint_now, invalidate_last_good,
+    note_last_good, timeout_candidate,
+};
 #[cfg(test)]
-use self::hints::{clear_test_hints, inject_test_hints};
+use self::hints::{clear_test_hints, inject_hint_now, inject_test_hints, inject_test_outcome};
 use self::history::{
     log_workspace_action, move_float_to_output, move_overlay_to_output, remap_placement_to_output,
     workspace_history_tick, workspace_log,
@@ -149,7 +160,7 @@ use self::migration::{migrate_rows_for, workspace_migrate_one};
 #[cfg(test)]
 use self::migration_run::migration_follow_tail;
 use self::migration_run::run_workspace_migrate;
-use self::minmax::{fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
+use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
 use self::observation::{cursor_pos, enumerate_hwnds};
@@ -639,6 +650,54 @@ struct TileLoop {
     /// dropped immediately with member state. Float, born-hold, hidden-fresh,
     /// minimized, and cloaked rows never reuse it.
     hint_logged: HashMap<String, WindowSizeHints>,
+    /// Last successful declared-hint state per live member key: the
+    /// behavioral fallback for a later native query Timeout on that same
+    /// live member, with no time bound. Separate behavioral state from the
+    /// `hint_logged` diagnostics cache above (which row assembly overwrites
+    /// per row): fresh usable queries store (replacing immediately),
+    /// successful-but-empty queries clear, and unperformed, failed, Timeout,
+    /// and budget-skipped queries leave it untouched. Keyed by full member
+    /// identity plus the opaque token/tag lifecycle; dropped only with member
+    /// state, reveal retirement, or a moved native identity. Domain release
+    /// and float toggles never drop it.
+    hint_last_good: HashMap<crate::workspace::WindowKey, LastGoodHint>,
+    /// Lightweight per-token Timeout-reuse report (`reused`, entry age, tick)
+    /// for minimum-hint diagnostics. Written on every fresh-query lane row;
+    /// pruned with membership. No log lines here.
+    hint_fallback_uses: HashMap<String, HintFallbackUse>,
+    /// Latest per-window diagnostic sample per member token (hint lane from
+    /// row assembly, write lane from geometry application). Completed samples
+    /// stay flush-eligible across ticks until they emit. Pruned with
+    /// membership like the hint caches above.
+    diag_pending: HashMap<String, WindowDiagSample>,
+    /// Last emitted per-window sample per token: the stable-change dedupe
+    /// baseline (advisory timing and labels excluded). Dropped on identity
+    /// breaks (stale window, not comparable). Pruned with membership.
+    diag_emitted: HashMap<String, WindowDiagSample>,
+    /// Emission-time window class per token, resolved once per member
+    /// lifetime and only for entries that actually emit. An identity break
+    /// marks it unknown (empty) until a trustworthy query re-binds. Pruned
+    /// with membership.
+    diag_class: HashMap<String, String>,
+    /// Last wall time a `window-diag` event emitted (test-pinned hint clock
+    /// in unit tests, live time in production). `None` until the first emit.
+    diag_last_emit: Option<Instant>,
+    /// Fair emission order: per-token sequence of last emission (0/absent
+    /// means never emitted). Never-emitted and oldest-emitted tokens emit
+    /// first so a flapping head cannot starve the tail. Pruned with
+    /// membership.
+    diag_emit_seq: HashMap<String, u64>,
+    /// Monotonic clock for [`TileLoop::diag_emit_seq`].
+    diag_emit_clock: u64,
+    /// Tokens merged by throttled rounds since the last emission (unique:
+    /// a token counts once no matter how many rounds it waits through).
+    /// Reported as `coalesced`, cleared on emit, pruned with membership.
+    diag_coalesced: HashSet<String>,
+    /// Latest row-assembly hint-query elapsed milliseconds: advisory timing
+    /// for the whole assembly across every domain in the operation, carried
+    /// on the next `window-diag` event. Per-window native cost rides each
+    /// entry (`timeout_ms`, `query_us`) instead.
+    diag_query_ms: u64,
     /// Prompt-restore wake armed by one async restore dispatch, cleared only
     /// after a gated reconcile consumes it, on expiry, or on member loss.
     restore_wake: Option<RestoreWake>,
@@ -946,6 +1005,8 @@ mod output_send;
 
 mod cross_drag;
 
+mod diag;
+
 mod restart;
 
 mod assignments;
@@ -1078,6 +1139,14 @@ mod preview_tests;
 #[cfg(test)]
 #[path = "tests_rmax03.rs"]
 mod rmax03_adapter_tests;
+
+#[cfg(test)]
+#[path = "tests_timeout_fallback.rs"]
+mod timeout_fallback_tests;
+
+#[cfg(test)]
+#[path = "tests_window_diag.rs"]
+mod window_diag_tests;
 
 #[cfg(test)]
 #[path = "tests_d23_minimize.rs"]

@@ -301,6 +301,21 @@ pub(super) fn prune_float_state(state: &mut TileLoop) {
         .born_first_exit
         .retain(|key| state.member_tokens.contains_key(key));
     state
+        .hint_last_good
+        .retain(|key, _| state.member_tokens.contains_key(key));
+    state
+        .hint_fallback_uses
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
+    state
+        .diag_pending
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
+    state
+        .diag_emitted
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
+    state
+        .diag_class
+        .retain(|token, _| state.member_tokens.values().any(|live| live == token));
+    state
         .overlay_now
         .retain(|token, _| state.member_tokens.values().any(|live| live == token));
 }
@@ -314,6 +329,8 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
         state.member_rects.remove(&token);
         state.float_rects.remove(&token);
         state.hint_logged.remove(&token);
+        state.hint_fallback_uses.remove(&token);
+        drop_diag_sample(state, &token);
         state.overlay_now.remove(&token);
     }
     if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
@@ -330,6 +347,7 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
     state.sticky.remove(key);
     state.member_identity.remove(key);
     state.member_tags.remove(key);
+    state.hint_last_good.remove(key);
     state.workspaces.remove_window(key);
 }
 
@@ -391,6 +409,110 @@ pub(super) fn desired_entries(reply: &CoreReply) -> Option<Vec<DesiredEntry>> {
     crate::workspace_owner::planned_writes(reply)
 }
 
+/// Record one fresh-query lane Timeout-reuse decision: whether this row's
+/// hints rode the last-good fallback, the reused entry's age, the deciding
+/// tick, and the lane reason. Read by minimum-hint and per-window
+/// diagnostics.
+fn note_fallback_use(
+    state: &mut TileLoop,
+    token: &str,
+    reused: bool,
+    age_ms: u64,
+    reason: &'static str,
+) {
+    let tick = state.tick;
+    state.hint_fallback_uses.insert(
+        token.to_owned(),
+        HintFallbackUse {
+            reused,
+            age_ms,
+            tick,
+            reason,
+        },
+    );
+}
+
+/// Fresh declared-hint query for one live member with unbounded Timeout
+/// reuse: a fresh usable hint stores immediately (replacing any previous
+/// entry); a successful query with no usable hint clears the stored entry so
+/// a later Timeout cannot revive it; unperformed queries (`Invalid`),
+/// failures, and budget skips stay unknown without touching the entry; a
+/// Timeout reuses the last-good entry while still bound to the live member
+/// (token/tag lifecycle plus live lifetime tag, so HWND reuse or a new member
+/// never inherits), with no time bound. The native lifetime-tag read runs only
+/// when a bound entry exists: absent or identity-moved entries resolve unknown
+/// with no extra native read. The returned outcome still reports the fresh
+/// query result (a reused Timeout stays Timeout); only the carried hints may
+/// ride the fallback. Retained-overlay rows never pass through here, so they
+/// neither store nor refresh.
+fn fresh_member_hint(
+    state: &mut TileLoop,
+    key: &crate::workspace::WindowKey,
+    token: &str,
+    fresh: FreshHint,
+    now: Instant,
+) -> (WindowSizeHints, HintOutcome) {
+    let FreshHint { hints, outcome, .. } = fresh;
+    match outcome {
+        HintOutcome::Hint => {
+            let tag = state.member_tags.get(key).cloned().unwrap_or_default();
+            note_last_good(&mut state.hint_last_good, key, token, &tag, hints, now);
+            note_fallback_use(state, token, false, 0, "fresh");
+            diag_identity_rebound(state, token);
+            (hints, outcome)
+        }
+        HintOutcome::NoHint => {
+            invalidate_last_good(&mut state.hint_last_good, key);
+            note_fallback_use(state, token, false, 0, "no-hint");
+            diag_identity_rebound(state, token);
+            (WindowSizeHints::none(), outcome)
+        }
+        HintOutcome::Invalid => {
+            note_fallback_use(state, token, false, 0, "invalid");
+            (WindowSizeHints::none(), outcome)
+        }
+        HintOutcome::Timeout => {
+            let stored_tag = state.member_tags.get(key).cloned().unwrap_or_default();
+            // Lifecycle-moved entries drop inside the candidate lookup: an
+            // entry that existed but no longer binds this token/tag means the
+            // member moved on, so the old diagnostic identity breaks too.
+            let had_entry = state.hint_last_good.contains_key(key);
+            let candidate =
+                timeout_candidate(&mut state.hint_last_good, key, token, &stored_tag, now);
+            match candidate {
+                Ok((cached, age_ms)) => {
+                    let live = live_member_tag(key.hwnd);
+                    if crate::workspace_owner::visible_lifetime_ok(&stored_tag, live.as_deref()) {
+                        note_fallback_use(state, token, true, age_ms, "reused");
+                        diag_identity_rebound(state, token);
+                        (cached, outcome)
+                    } else {
+                        invalidate_last_good(&mut state.hint_last_good, key);
+                        note_fallback_use(state, token, false, 0, "identity");
+                        diag_identity_broke(state, token);
+                        (WindowSizeHints::none(), outcome)
+                    }
+                }
+                Err(reason) => {
+                    note_fallback_use(state, token, false, 0, reason);
+                    if had_entry {
+                        diag_identity_broke(state, token);
+                    }
+                    (WindowSizeHints::none(), outcome)
+                }
+            }
+        }
+        HintOutcome::Failed => {
+            note_fallback_use(state, token, false, 0, "failed");
+            (WindowSizeHints::none(), outcome)
+        }
+        HintOutcome::Budget => {
+            note_fallback_use(state, token, false, 0, "budget");
+            (WindowSizeHints::none(), outcome)
+        }
+    }
+}
+
 /// Assemble complete Engine rows for one `(output, workspace)` domain: the
 /// union of eligible visible members, retained-occupancy members with fresh
 /// frames, frame-less retained members with last-known snapshots, and hidden
@@ -434,8 +556,16 @@ pub(super) fn assemble_domain_rows(
         observed.iter().map(|w| (w.token.as_str(), w)).collect();
     let mut views = Vec::new();
     let query_start = Instant::now();
+    // One clock read per assembly: every last-good store shares the pre-query
+    // tick time, which feeds diagnostic age only and never expires anything.
+    let now = hint_now();
     let mut stats = HintStats::default();
     let mut reasons: HashMap<String, &'static str> = HashMap::new();
+    // Actual native-query cost per token, recorded from the query seam
+    // itself (offered timeout recomputed at the native call, elapsed around
+    // the call only): zeroed when budget, identity, or measurement prework
+    // refuses before any native query.
+    let mut costs: HashMap<String, QueryCost> = HashMap::new();
     // Intentional-float tokens in this domain session: slotless floating
     // rows on the live native frame, no tiled writes, `member_rects` frozen
     // while `float_rects` tracks the draggable frame.
@@ -504,7 +634,9 @@ pub(super) fn assemble_domain_rows(
                 .or_else(|| retained.iter().find(|r| r.key == *key).and_then(|r| r.rect));
             if let (Some(token), Some(rect)) = (token, rect) {
                 let is_float = float_tokens.contains(&token);
-                let (hints, outcome) = hidden_hint_for(state, key, hint_cx);
+                let fresh = hidden_hint_for(state, key, hint_cx);
+                costs.insert(token.clone(), fresh.cost);
+                let (hints, outcome) = fresh_member_hint(state, key, &token, fresh, now);
                 stats.note(outcome);
                 reasons.insert(token.clone(), outcome.as_str());
                 // R-SPC-04 D5: a first exit rides tiled (`floating = false`)
@@ -574,11 +706,13 @@ pub(super) fn assemble_domain_rows(
                 identity.user_sid = window.identity.user_sid.clone();
                 identity.session_id = window.identity.session_id;
             }
-            let (hints, outcome) = if hint_cx.over_budget() {
-                (WindowSizeHints::none(), HintOutcome::Budget)
+            let fresh = if hint_cx.over_budget() {
+                FreshHint::unperformed(HintOutcome::Budget)
             } else {
                 min_hint_for(window, hint_cx)
             };
+            costs.insert(token.clone(), fresh.cost);
+            let (hints, outcome) = fresh_member_hint(state, key, &token, fresh, now);
             stats.note(outcome);
             reasons.insert(token.clone(), outcome.as_str());
             views.push(crate::workspace_owner::MemberView {
@@ -685,9 +819,11 @@ pub(super) fn assemble_domain_rows(
                 .is_some_and(|live| live == &row.token);
             let (hints, reason) =
                 if first_exit || (row.maximized && !state.hint_logged.contains_key(&row.token)) {
-                    let (fresh, outcome) = hidden_hint_for(state, key, hint_cx);
+                    let fresh = hidden_hint_for(state, key, hint_cx);
+                    costs.insert(row.token.clone(), fresh.cost);
+                    let (hints, outcome) = fresh_member_hint(state, key, &row.token, fresh, now);
                     stats.note(outcome);
-                    (fresh, outcome.as_str())
+                    (hints, outcome.as_str())
                 } else {
                     let retained = crate::tiling::retained_overlay_hint(
                         state.hint_logged.get(&row.token).copied(),
@@ -786,6 +922,20 @@ pub(super) fn assemble_domain_rows(
     let mut rows = crate::workspace_owner::domain_rows(&required, &views)?;
     rows.sort_by(|a, b| a.token.cmp(&b.token));
     let elapsed = query_start.elapsed();
+    let output_token = state.workspaces.output_token(output);
+    let workspace_token = state.workspaces.workspace_token(output, workspace);
+    stage_hint_samples(
+        state,
+        &output_token,
+        &workspace_token,
+        op,
+        correlation,
+        &rows,
+        &reasons,
+        &costs,
+        observed,
+        elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+    );
     log_min_hint_summary(
         state,
         op,
@@ -847,11 +997,19 @@ fn log_min_hint_summary(
     }
     // Prune by actual live membership identity across all domains, not by the
     // current domain's rows: multi-output ticks and send source/target pairs
-    // must not evict (and re-log) each other's unchanged hints.
+    // must not evict (and re-log) each other's unchanged hints. The
+    // Timeout-reuse cache and its per-token report prune the same way, so
+    // last-good state never outlives its live member.
     let live: HashSet<String> = state.member_tokens.values().cloned().collect();
     state
         .hint_logged
         .retain(|token, _| live.contains(token) || rows.iter().any(|row| row.token == *token));
+    state
+        .hint_last_good
+        .retain(|key, _| state.member_tokens.contains_key(key));
+    state
+        .hint_fallback_uses
+        .retain(|token, _| live.contains(token));
     changed.sort();
     if changed.is_empty() && !state.trace {
         return;

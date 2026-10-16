@@ -1,19 +1,20 @@
 # Windows launcher geometry fighting
 
-Status: diagnosis complete, behavior fix blocked on evidence and timeout-policy
-review; launcher physical acceptance pending. Reported 2026-10-16.
+Status: user-approved Windows fix and diagnostics delivered offline;
+four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
 
 ## Goal and scope
 
 - Converge without geometry fighting when Steam, Battle.net, Epic Games
   Launcher and Xbox share a tiled workspace. Preserve ordinary-app tiling.
-- Investigate minimum queries, native geometry and existing convergence before
-  adding learning, retries or app-specific rules. No such rule is selected here.
-- Acceptance: a regression reproduces the established request/observation
-  sequence; the four-launcher physical journey settles without continued
-  writes, and Notepad/Paint still redistribute feasible minimums correctly.
-- This change records diagnosis only. No product code, shared-core behavior,
-  admission predicate, geometry tolerance or selected overflow behavior changes.
+- Reuse the same live window's last successful declared hints on query timeout,
+  with no expiry; never learn limits from geometry or add app-specific rules.
+- Acceptance: a regression reproduces the log-derived hint outcome sequence
+  with explicitly synthetic geometry; the four-launcher physical journey
+  settles without continued writes, and Notepad/Paint still redistribute
+  feasible minimums correctly.
+- Windows adapter only. Shared-core/KDE/macOS behavior, admission-only policy,
+  geometry tolerance and selected overflow behavior remain unchanged.
 
 ## Evidence and timeline
 
@@ -53,7 +54,7 @@ review; launcher physical acceptance pending. Reported 2026-10-16.
   `WM_GETMINMAXINFO` completion cannot be separated. Chromium/CEF/Electron,
   WinUI or custom-chrome attribution is unsupported, not a diagnosis.
 
-## Why current convergence can miss this sequence
+## Why pre-fix convergence could miss this sequence
 
 - `tiling_sys/minmax.rs::query_outer_tracks` requests `WM_GETMINMAXINFO` waits
   of at most 10ms and the remaining aggregate deadline; scheduling/native work
@@ -87,55 +88,86 @@ review; launcher physical acceptance pending. Reported 2026-10-16.
   KDE projection/reassert isolation, not a Windows loop-breaking guarantee.
   [Learned limits](learned-size-limits.md) remain parked, not implemented.
 
-## Existing decisions and unselected options
+## Approved decision and delivery
 
 - [Placement](../decisions.md#placement-minimums-and-startup-adoption) already
   selects B6: keep slots, use tile origin plus declared minimum, permit last-
   resort overlap/overflow, no automatic float or alternative-axis optimizer.
   The incident does not establish whether these launchers were infeasible.
-- The same decision explicitly says failed/timed-out/invalid Windows queries
-  supply no hint. Last-known hints are selected only for retained tiled
-  maximized/fullscreen overlays. Extending that exception to normal visible
-  timeout queries is a behavior choice, not a silent cache repair.
+- User 2026-10-16 correction replaces the earlier timeout-means-no-hint rule:
+  retain last-good declared hints with **no time bound**, replace only on the
+  next successful query (including a successful no-hint result), and drop on
+  close/identity change. No timer or expiry. Failed/unperformed/budget-skipped
+  queries remain unknown without erasing the retained successful state.
 - [Fixed-size admission D2](../decisions.md#fixed-size-admission) is
   admission-only classification, not a ban on reacting to self-resizes or
   ordinary minimum changes. No min=max evidence implicates fixed admission.
 
-| Option | Consequence / recommendation |
-| --- | --- |
-| Bounded last-good declared hint on a visible member's timeout | Recommended for review after geometry confirmation: preserve allocation through transient missing evidence, without inferring a limit from refused geometry. Bound by the exact live member, replace on fresh usable evidence, clear on membership loss, define expiry and unknown-result handling explicitly. Changes the current timeout rule; not selected. |
-| Defer affected-domain geometry while a required query is unknown | Avoids projecting with a suddenly missing hint, but delays sibling layout/actions behind one slow app. No indefinite freeze or retry policy is selected. |
-| Broader geometry oscillation suppression or longer query waits | Additional state may suppress legitimate new intents; longer waits trade owner responsiveness for query success. Neither is justified by this log alone. |
+- `tiling_sys/hints.rs` stores last-good state separately from `hint_logged`.
+  The full member key, opaque token and verified live lifetime tag fence reuse;
+  a recycled HWND or new member cannot inherit. The timestamp measures age
+  for diagnostics only. Domain release and float toggles preserve a live
+  member's last-good state. Visible and verified-hidden fresh-query rows use
+  the same fallback; the existing retained-overlay exception remains intact.
+- `minmax.rs` distinguishes successful-empty `NoHint` (clears the old hint)
+  from unperformed `Invalid` (preserves it). Usable successful queries replace
+  immediately. Query timeouts/aggregate budget and native write gates are
+  unchanged; fallback adds no wait, retry or query.
+- `tests_timeout_fallback.rs` replays Hint -> Timeout -> Timeout -> Timeout ->
+  same Hint -> Timeout -> same Hint through real row assembly and Engine
+  projection, with synthetic minimum/frame values. Before the fix a 1000px
+  declared minimum projected four widths as 1000/298/299/299, then loss of the
+  hint projected 474/474/474/474. After the fix targets stay identical through
+  fallback; a fresh changed minimum still reallocates. This is a log-derived
+  outcome fixture, not a pixel-exact reconstruction of the incident.
+- Regression coverage includes hours-old reuse (no expiry), fresh successful
+  empty clearing, unsuccessful query preservation, hidden rows, close,
+  same-process HWND reuse, token/identity changes and domain release.
+- The existing successful-but-clamped lane already covers successful setters
+  with mismatched readback. The real `RefusedTracker` regression asserts that
+  the identical pair stays suppressed across fallback, a genuine new target
+  re-arms and a match clears it. No broader suppression/backoff change is
+  justified; write/readback facts in the diagnostic fixture are scripted,
+  not live `apply_geometry` evidence.
 
 - No automatic floating, learned client limits, persistent/app-wide floor,
   KDE/macOS convergence change or new overflow policy is implemented.
 - [Minimal discriminator](../spec/reference-outcomes.md#windows-minimum-query-timeout-discriminator)
-  leaves unsupported outcomes TBD. A replay with invented rectangles would
-  demonstrate a hypothesis, not reproduce this incident; no such regression
-  is claimed.
+  records the corrected selection; exact native/reference outcomes remain TBD.
 
-## Observability gap and next evidence
+## Normal diagnostics and remaining evidence gaps
 
-- Normal diagnostics violate end-to-end reconstructability for this case:
+- The original normal diagnostics could not reconstruct this case:
   hint values/reasons, requested/effective/readback rectangles and per-window
   skip/setter outcomes are trace-only or absent. There is no token-to-class/
   process join. Aggregate `query_ms` cannot distinguish a slow response from
   a shortened remaining deadline or changing frame conversion.
-- Before a definitive replay, capture correlated token, class and executable
-  basename (never titles/full paths), per-query outcome/offered timeout/elapsed
-  time, raw outer min/max, DPI and measured insets, converted hint, planned
-  rectangle, effective visible and requested outer rectangles, setter status,
-  post-write and next-poll visible rectangles, and clamp/backoff/skip reason.
-- Existing trace supplies `min-hints-detail` (minimum and reason), `plan`,
-  `write` (effective desired) and `readback-detail`. It does not supply all
-  identity, maximum, native conversion, timing or skip details above. A trace
-  alone cannot close those remaining gaps. Existing read-only `inventory`
-  supplies class/basename, but has no opaque-token join. Do not enable the
-  owned-helper-only proof/audit path on launchers to obtain that join.
-- Small diagnostic follow-up: enrich changed-hint and mismatched-readback
-  summaries with their per-token facts, plus a lifetime-bound class/basename
-  join and per-query timing/conversion facts. Reuse change/mismatch gates;
-  steady state stays quiet. No user content or behavior changes.
+- New normal `window-diag` entries join opaque token, class/executable
+  basename, actual offered query timeout and native round-trip microseconds,
+  raw outcome, carried min/max, fallback use/age/reason, planned/effective/
+  requested outer rectangles, observed outer/insets, visible pre/post frames,
+  write disposition and identical-clamp/transient-backoff/desired-changed/
+  observed-changed reasons. Each entry keeps its own operation, correlation,
+  tick and opaque domain identifiers, including when emitted later.
+- At most one batch per second globally, at most 16 entries per batch;
+  unchanged states stay quiet. Latest pending samples rotate fairly, including
+  off-current-domain recoveries. `omitted` counts pending entries beyond the
+  cap; `coalesced` counts unique tokens changed during throttling. This is
+  explicitly sampled evidence, not an exhaustive every-poll trace. The old
+  count-only `readback` line is subsumed; existing tick/min-hints summaries stay.
+- JSON serialization and lifetime-fenced native class lookup happen only on
+  emission; class is cached per member. No extra process opens, logging timers,
+  message queries or waits. Timing values do not defeat stable-state dedupe.
+  State is pruned with live membership. Idle/fullscreen cost is not physically
+  measured by these offline tests; the physical gate remains necessary.
+- Independent review corrected native-call timeout timing, native last-error
+  capture before elapsed-time measurement, cached-class lifetime invalidation,
+  capped-batch fairness and delayed-sample provenance/recovery.
+- Existing trace still supplies every-operation `min-hints-detail`, `plan`,
+  `write` and `readback-detail` when unsampled geometry is needed. Raw outer
+  min/max and query-time DPI are not added; if conversion remains suspect,
+  those need a focused diagnostic extension. The original incident's missing
+  identity/rectangles cannot be recovered retrospectively.
 
 ## Physical check plan (pending)
 
@@ -148,15 +180,16 @@ review; launcher physical acceptance pending. Reported 2026-10-16.
    and back; verify minimum redistribution, unchanged focus and quiet idle.
 3. In a separate tiled workspace open Steam, Battle.net, Epic Games Launcher
    and Xbox in that order, waiting 10 seconds after each. Run the user-owned
-   scoped `mise exec -- just dev trace` journey with the additional diagnostics
-   above. Do not start games, downloads or change launcher settings.
+   scoped `mise exec -- just dev trace` journey with `window-diag` enabled
+   at normal level as well. Do not start games, downloads or change launcher
+   settings.
 4. With all four present, physically resize one split smaller and restore it;
    idle 10 seconds; switch away and back once. Capture each correlated query,
    plan, effective write and subsequent frame. Identify apps by class/basename
    only. If bouncing begins, capture at most 10 polling ticks before stopping
    through the established recovery route, rather than leaving it fighting.
 5. Remove one launcher from that workspace and revisit the remaining three;
-   then repeat Notepad/Paint control. A future fix must stop unsolicited
+   then repeat Notepad/Paint control. The fix must stop unsolicited
    repeated writes, preserve supported minimum placement and still react to
    genuine native resize/valid hint changes. Existing B6 overlap is not itself
    a failure; silent floating or unexpected focus/workspace changes are.
@@ -169,11 +202,16 @@ review; launcher physical acceptance pending. Reported 2026-10-16.
 - Native four-package `cargo build --locked`, `cargo test --locked` and strict
   `cargo clippy --locked --all-targets -- -D warnings` pass through
   `mise exec --`; all-package fmt check passes. Toolchain: Rust/Cargo 1.99.0.
-  Tests: 2,210 passed / 0 failed / 1 ignored. No new tests or behavior fix.
+  Final tests: 2,235 passed / 0 failed / 1 ignored (25 added tests).
+- One full test run failed the unchanged input publication-fence callback
+  assertion; four later failures were its poisoned test-lock cascade. The
+  isolated test and two subsequent full four-package runs passed without a
+  source change. Parallel test-global interference is suspected, not proven;
+  no unrelated input behavior or synchronization was changed here.
 - The standard test suite includes invisible own-process Win32 fixture-window
   creation/destruction in `tests/product_hide.rs::native_topmost_hide`.
   These gate results are not launcher or tiler physical evidence.
-- Next: review timeout fallback choice, add the missing bounded diagnostics,
-  obtain the physical trace, then accept a sanitized geometry fixture before
-  implementing a behavior fix. Keep this record active until physical
-  acceptance; no decision is promoted by this diagnosis.
+- Next: run the physical launcher/control plan on the updated build and inspect
+  correlated sampled diagnostics plus trace. Keep this record active until
+  physical acceptance. Any remaining delayed self-resize/move fighting is a
+  separate evidenced follow-up, not a reason to silently broaden suppression.

@@ -836,7 +836,7 @@ pub(super) fn dispatch_directional_intent(
         // `move-float-refused-constraints` parity): an
         // incompatible half never fights the client. Maximum
         // track rides the same query; unknown stays unknown.
-        let (hints, _) = min_hint_for(subject, &hint_cx);
+        let hints = min_hint_for(subject, &hint_cx).hints;
         if !crate::tiling::half_snap_constraints_ok(half, hints) {
             state.snap_advance = None;
             log_json_at(

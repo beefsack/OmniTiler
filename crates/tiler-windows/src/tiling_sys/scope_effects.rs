@@ -70,7 +70,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{
     ActionCtx, ApplySummary, HintCx, MonitorArea, ObservedWindow, RetainedRow, SelectEffect,
-    TileLoop,
+    TileLoop, drop_diag_sample,
 };
 use crate::model::ProcessIdentity;
 use crate::storage::LedgerStore;
@@ -226,6 +226,8 @@ fn reveal_side_members(
                     state.member_rects.remove(&token);
                     state.float_rects.remove(&token);
                     state.hint_logged.remove(&token);
+                    state.hint_fallback_uses.remove(&token);
+                    drop_diag_sample(state, &token);
                 }
                 if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
                     state.restore_wake = None;
@@ -234,6 +236,7 @@ fn reveal_side_members(
                 state.floated.remove(key);
                 state.member_identity.remove(key);
                 state.member_tags.remove(key);
+                state.hint_last_good.remove(key);
                 state.workspaces.remove_window(key);
             }
             Ok(_) => {

@@ -155,9 +155,11 @@ decisions of 2026-09-24 are under
   roundtrips with frame/flag/focus checks pending
   ([record](changes/windows-all-member-workspace-sends.md)).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
-  with repeated four-window writes. Timeout fallback choice, bounded normal
-  diagnostics, geometry fixture and four-launcher plus Notepad/Paint physical
-  acceptance pending ([record](changes/windows-launcher-geometry-fighting.md)).
+  with repeated four-window writes. User-approved lifetime-bound declared-hint
+  reuse on timeout (no expiry), rate-limited per-window diagnostics and
+  log-derived synthetic regression delivered offline. Four-launcher plus
+  Notepad/Paint physical acceptance pending
+  ([record](changes/windows-launcher-geometry-fighting.md)).
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later

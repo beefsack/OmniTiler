@@ -110,7 +110,8 @@ pub(super) fn admission_clear_planned(
     if committed_ordinary_pin(state, &row.key, &row.token) {
         return true;
     }
-    let (hints, outcome) = hidden_hint_for(state, &row.key, hint_cx);
+    let fresh = hidden_hint_for(state, &row.key, hint_cx);
+    let (hints, outcome) = (fresh.hints, fresh.outcome);
     if outcome == HintOutcome::Budget {
         return false;
     }

@@ -1780,9 +1780,24 @@ platform API behavior.
   - Query fresh application-declared minimum track sizes and supply
     visible-frame physical-pixel hints to the shared minimum-aware projection
     (user 2026-10-02 option A). No learning; generic learned limits parked.
-    Failed, timed-out or invalid native queries supply no hint. Keep existing
-    refused-attempt suppression. Evidence:
+    Keep existing refused-attempt suppression. Evidence:
     [placement correctness](changes/archive/windows-placement-correctness.md).
+  - User 2026-10-16, corrected timeout fallback: retain each live window's
+    last-good application-declared hint with **no time bound**. On a query
+    timeout reuse that hint, never a limit inferred from geometry. Replace it
+    only on the next successful query, including a successful query reporting
+    no usable hint; drop it on close or identity change. No timer/expiry,
+    learned limits or app-wide/persistent floors. Failed, unperformed and
+    budget-skipped queries remain unknown without erasing last-good state.
+    This replaces the earlier Windows timeout-means-no-hint rule; KDE/macOS
+    and shared-core policy are unchanged. [Delivery and physical gate](changes/windows-launcher-geometry-fighting.md).
+  - User 2026-10-16: add bounded, rate-limited normal per-window diagnostics
+    joining class/executable basename (never titles/full paths/content), hint
+    query outcome/timeout/fallback, requested/readback rectangles and geometry
+    suppression/re-arm reasons. Keep normal logs cheap and readable; no extra
+    waits or live probes for diagnostics. Delivery samples changed/problem
+    states at most once per second, 16 entries per batch, with original
+    operation context, coalescing/omission counts and fair pending delivery.
   - Retained overlay minimums (user 2026-10-08): tiled maximized/fullscreen
     members retain last-known declared minimum hints, bound to the member's
     lifetime token and canonical slot, until normal fresh queries resume.

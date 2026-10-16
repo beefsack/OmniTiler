@@ -54,6 +54,27 @@ pub(super) fn audit_json(state: &TileLoop, value: serde_json::Value) {
     }
 }
 
+/// Effective requested visible rectangle for one planned write: the
+/// overconstrained min-clamped tile origin for admitted overconstrained
+/// writables, the planned rectangle otherwise. Single definition shared by
+/// the write pass, the readback pass, and diagnostics so clamping converges
+/// instead of retrying.
+pub(super) fn effective_rect(
+    state: &TileLoop,
+    entry: &crate::workspace_owner::PlannedWrite,
+) -> Rect {
+    if entry.overconstrained {
+        let hints = state
+            .hint_logged
+            .get(entry.window.0.as_str())
+            .copied()
+            .unwrap_or(WindowSizeHints::none());
+        crate::tiling::overconstrained_effective(entry.rect, hints)
+    } else {
+        entry.rect
+    }
+}
+
 pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Option<ApplySummary> {
     #[cfg(test)]
     if INJECTED_OBSERVE.with(|slot| slot.borrow().is_some()) {
@@ -117,6 +138,12 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                 "kind": outcome.1,
             }),
         );
+        // No plan: complete hint-staged samples honestly and flush so a
+        // problem row still reports instead of lingering half-staged.
+        stage_no_plan(state);
+        if let Some(line) = flush_window_diag(state) {
+            log_json_at(&log_path, line);
+        }
         return None;
     };
     let by_token: HashMap<&str, &ObservedWindow> =
@@ -124,6 +151,10 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
     let proof_mode = state.allowlist.is_some();
     let now = Instant::now();
+    // Pre-write suppression snapshot for per-window diagnostics: the
+    // in-loop skip decisions recompute faithfully against this, and lane
+    // transitions read as re-arm reasons after the readback below.
+    let refused_before = state.refused.clone();
     let mut applied = 0usize;
     // First veto diagnostic in this pass for the bounded action summary; the
     // per-window skip list keeps the existing `fullscreen-foreground` token.
@@ -132,6 +163,9 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
     // app-clamp lane on readback mismatch; failed or skipped setters keep
     // the transient/backoff lanes intact.
     let mut written: HashSet<String> = HashSet::new();
+    // Native outer targets for attempted setters, for per-window
+    // diagnostics (inserted only where the setter actually runs).
+    let mut outer_targets: HashMap<String, Rect> = HashMap::new();
     for entry in &desired {
         if entry.client_clamped {
             skipped.push((entry.window.0.clone(), "client-clamped".to_owned()));
@@ -150,16 +184,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
         // Overconstrained writables take the min-clamped tile origin instead
         // of skipping while reserving the tile. All checks below use the
         // effective target so clamping converges instead of retrying.
-        let effective = if entry.overconstrained {
-            let hints = state
-                .hint_logged
-                .get(entry.window.0.as_str())
-                .copied()
-                .unwrap_or(WindowSizeHints::none());
-            crate::tiling::overconstrained_effective(entry.rect, hints)
-        } else {
-            entry.rect
-        };
+        let effective = effective_rect(state, entry);
         let Some(expected) = by_token.get(entry.window.0.as_str()) else {
             skipped.push((entry.window.0.clone(), "vanished".to_owned()));
             continue;
@@ -254,6 +279,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             continue;
         }
         let hwnd = target.window.hwnd as isize as HWND;
+        outer_targets.insert(entry.window.0.clone(), outer);
         let ok = unsafe {
             SetWindowPos(
                 hwnd,
@@ -364,6 +390,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
     let reread = state.observe(me, &reread_fulls, &mut reread_skipped, &mut reread_retained);
     let mut mismatched = 0usize;
     let mut readback_ok = false;
+    let mut post_rects: HashMap<String, Rect> = HashMap::new();
     if let Some(reread) = reread {
         readback_ok = true;
         // Stable pre-gesture state follows the AFTER-actuation observation,
@@ -373,6 +400,10 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             .iter()
             .map(|w| (w.token.as_str(), w.visible))
             .collect();
+        post_rects = reread_by_token
+            .iter()
+            .map(|(token, rect)| ((*token).to_owned(), *rect))
+            .collect();
         for entry in &desired {
             if !writable.contains(entry.window.0.as_str()) {
                 // Retained rows never took writes: no readback verdict.
@@ -380,16 +411,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             }
             // Same effective target as the write pass so clamping reads back
             // as a match and refused tracking stays stable.
-            let effective = if entry.overconstrained {
-                let hints = state
-                    .hint_logged
-                    .get(entry.window.0.as_str())
-                    .copied()
-                    .unwrap_or(WindowSizeHints::none());
-                crate::tiling::overconstrained_effective(entry.rect, hints)
-            } else {
-                entry.rect
-            };
+            let effective = effective_rect(state, entry);
             match reread_by_token.get(entry.window.0.as_str()) {
                 Some(visible) => {
                     match readback_outcome(
@@ -428,16 +450,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                 .iter()
                 .map(|entry| {
                     let readback = reread_by_token.get(entry.window.0.as_str());
-                    let effective = if entry.overconstrained {
-                        let hints = state
-                            .hint_logged
-                            .get(entry.window.0.as_str())
-                            .copied()
-                            .unwrap_or(WindowSizeHints::none());
-                        crate::tiling::overconstrained_effective(entry.rect, hints)
-                    } else {
-                        entry.rect
-                    };
+                    let effective = effective_rect(state, entry);
                     serde_json::json!({
                         "window": entry.window.0,
                         "desired": [effective.x, effective.y, effective.w, effective.h],
@@ -459,17 +472,24 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
         }
     }
     skipped.extend(reread_skipped);
-    if mismatched > 0 {
-        log_json_at(
-            &log_path,
-            serde_json::json!({
-                "event": "readback",
-                "tick": tick,
-                "correlation": correlation,
-                "op": op,
-                "mismatched": mismatched,
-            }),
-        );
+    // Per-window mismatch detail rides the batched `window-diag` event below
+    // (which subsumes the old count-only line with strictly more evidence
+    // under a stricter cap); the tick summary below keeps the count.
+    // Per-window diagnostic lane: stage this pass over the structures above
+    // and flush one globally rate-capped batch. Steady ticks emit nothing.
+    stage_write_samples(
+        state,
+        &desired,
+        &skipped,
+        &written,
+        &outer_targets,
+        observed,
+        &post_rects,
+        &refused_before,
+        now,
+    );
+    if let Some(line) = flush_window_diag(state) {
+        log_json_at(&log_path, line);
     }
     // Routine zero-change ticks stay quiet; anything else logs one summary.
     // The dedupe signature carries no tick (stable-noop): an identical

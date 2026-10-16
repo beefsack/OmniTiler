@@ -41,12 +41,15 @@ pub(super) fn set_topmost_band(hwnd_u64: u64, top: bool) -> bool {
 
 /// Reset fixed-size admission lanes for one released domain (R-SPC-04 D6):
 /// the D4 automatic latch never survives a domain release, and last-known
-/// hints for the domain's members are dropped so retained rows re-query
-/// fresh instead of riding a stale pre-release bound. The next admission
-/// therefore classifies every candidate fresh from current hints (changed
+/// diagnostics hints for the domain's members are dropped so retained rows
+/// re-query fresh instead of riding a stale pre-release bound. The
+/// Timeout-reuse last-good cache survives the release: its entries are bound
+/// to the live member lifetime (not the Engine domain), so the next admission
+/// still classifies every candidate fresh from current hints (changed
 /// ordinary hints and formerly latched maxima included) before any
-/// maximize-clear. Explicit tile overrides, intentional floats, and sticky
-/// members are preserved: their lanes re-assert on the next observation
+/// maximize-clear, while a timing-out member keeps its declared hint.
+/// Explicit tile overrides, intentional floats, and sticky members are
+/// preserved: their lanes re-assert on the next observation
 /// (override set/marker, runtime intent, sticky map are untouched here).
 pub(super) fn reset_fixed_admission_for_domain(
     state: &mut TileLoop,
@@ -58,6 +61,8 @@ pub(super) fn reset_fixed_admission_for_domain(
         state.fixed_auto_seen.remove(key);
         if let Some(token) = state.member_tokens.get(key).cloned() {
             state.hint_logged.remove(&token);
+            state.hint_fallback_uses.remove(&token);
+            drop_diag_sample(state, &token);
         }
     }
 }
