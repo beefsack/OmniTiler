@@ -64,8 +64,13 @@ decisions of 2026-09-24 are under
   2026-10-15. [KDE-only tabs delivered](changes/archive/kde-settings-tabs.md):
   Tiling & Workspaces, Appearance, Shortcuts, Desktop Integration; settings
   build/CTest and staged native rendering/switching pass. Grouping and pre-0.1
-  timing are tentative, user review pending. Recommend shared Rust catalog
-  with checked-in generated artifacts post-0.1; route/timing remain pending.
+  timing are tentative, user review pending. User 2026-10-16: the Windows
+  Settings dialog has grown too tall to use; priority raised. Approved route
+  D (Rust core catalog with checked-in generated native descriptors) pre-0.1:
+  first slice builds the core catalog with tabs/sections and platform-specific
+  fields, messages and native panel slots, and Windows renders a tabbed dialog
+  from it using the KDE tab groups; KDE migration to the catalog follows as a
+  KDE-stream item.
 - P1 | Core update replies carry workspace state | User 2026-10-16: every
   change a platform reports to the core (window created/closed, workspace
   switch, send, output change) returns everything the platform must apply,
