@@ -213,3 +213,20 @@ compile-required `pub(super)` widenings (`InboxSender::invalidates`,
 file 1,429, max test file 1,568: every file within caps. Required gates
 pass with 2,115 / 0 / 1. Full layout and evidence:
 [remaining-split record](../../changes/archive/windows-remaining-module-split.md).
+
+## Windows module-size tail
+
+Tests-first extraction preserves all 70 qualified test paths: workspace
+1,156 lines, active-border 238, render-handoff 458. Render handoff production
+is then 1,057 lines and needs no further split. Settings UI was already
+split (largest production file 1,184) and stays unchanged.
+
+Four production rows preserve whole bodies, cfg gates and API paths:
+workspace parent 1,144 / outputs 624; active-border parent 1,107 / carrier
+654; product-hide parent 135 / native sys 1,429 / watcher 254; WinArrow
+parent 731 / native sys 1,026. Only the carrier's parent/test-facing private
+items gain `pub(super)`; existing crate-visible paths stay re-exported.
+No helper extraction or size-cap exception. Locked four-package build,
+tests and strict all-target clippy, workspace fmt and diff checks pass:
+2,313 passed / 0 failed / 1 ignored. Full before/after sizes and evidence:
+[tail-split record](../../changes/archive/windows-module-size-tail.md).

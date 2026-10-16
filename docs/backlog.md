@@ -714,11 +714,16 @@ decisions of 2026-09-24 are under
   `input_pump/native/core_tests.rs` 1,568; 124 tests, paths unchanged).
   Sizes are physical lines including blanks (nonblank alongside in the
   record). Gates green 2,115 / 0 / 1.
-  Remaining module-size work (out of that scope, not investigated): Windows
-  `workspace.rs` (2,918), `active_border_sys.rs` (1,986),
-  `product_hide.rs` (1,832), `settings_ui.rs` (1,832), `winarrow.rs`
-  (1,774), `render_handoff.rs` (1,515) physical lines; no Windows test
-  file exceeds 3,000 (max `tests_pending_drop.rs` 2,852). Core
+  Windows tail split complete 2026-10-17: tests-first row plus four production
+  rows reduce `workspace.rs` 2,918 -> 1,144 (outputs 624),
+  `active_border_sys.rs` 1,986 -> 1,107 (carrier 654), `product_hide.rs`
+  1,836 -> 135 (native 1,429 / watcher 254), `winarrow.rs` 1,774 -> 731
+  (native 1,026), `render_handoff.rs` 1,515 -> 1,057 (tests-only split).
+  Settings UI was already split (max production 1,184) and stays unchanged.
+  All 70 extracted tests keep their qualified paths; gates green 2,313 /
+  0 / 1. Sizes are physical lines including blanks; no oversized family
+  skipped. No Windows test file exceeds 3,000 (max `tests_pending_drop.rs`
+  2,852). Core
   engine.rs (8,491) and session.rs (7,239) still carry large inline test
   modules as the next test-extraction candidates. Shared crates and KDE files
   above still split with their work streams; no further plan.
@@ -726,7 +731,8 @@ decisions of 2026-09-24 are under
    [phase 1](changes/archive/windows-tiling-sys-split-phase1.md),
    [phase 2](changes/windows-tiling-sys-split-phase2.md),
    [owner/snapkey record](changes/archive/windows-owner-snapkey-split.md),
-   [remaining-split record](changes/archive/windows-remaining-module-split.md)).
+   [remaining-split record](changes/archive/windows-remaining-module-split.md),
+   [tail-split record](changes/archive/windows-module-size-tail.md)).
 - P2 | Windows handoff: shortcut settings dialogs | Match KDE's modal
   conflict preview and Apply/Revert success/error dialogs in
   `crates/tiler-windows`; use the short result wording in

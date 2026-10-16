@@ -1,5 +1,8 @@
 # Windows module-size tail
 
+COMPLETE (archived 2026-10-17). Tests-first row and all four required
+production rows are verified; all five pushed refactor commits have green CI.
+
 ## Goal and scope
 
 - Bring the remaining oversized Windows families within the approximate
@@ -83,3 +86,57 @@
   2,313 passed / 0 failed / 1 ignored.
 - Workspace CI `38904671333` passed all eight jobs, including native, with
   no KDE changes after the earlier native abort.
+
+## Commits and CI
+
+| Row | Commit | CI run | Result |
+| --- | --- | --- | --- |
+| Tests first | `c9177cf2` | `38904321670` | Green after native-only retry |
+| Workspace outputs | `4e8ade8d` | `38904671333` | Green |
+| Overlay carrier | `94b79acb` | `38905175324` | Green |
+| Product watcher | `e42de869` | `38905521146` | Green after native-only retry |
+| Native WinArrow | `f0227d70` | `38905770131` | Green |
+
+- All eight jobs pass on every listed run. The two initial native failures
+  were the unchanged KDE `native-effect-kcm-shortcut-selection` heap abort:
+  effect test 32/33 and settings test 25/26 respectively. Each failed job
+  passed on one retry with no source changes.
+- Final locked four-package build/test/strict all-target clippy, workspace
+  fmt check and diff check pass: 2,313 passed / 0 failed / 1 ignored.
+  Test count does not drop; no live testing was needed or performed.
+
+## Final layout
+
+Physical lines include blanks; nonblank lines contain non-whitespace text.
+Paths below are relative to `crates/tiler-windows/src/`.
+
+| File | Physical | Nonblank | Test attributes |
+| --- | ---: | ---: | ---: |
+| `workspace.rs` | 1,144 | 1,065 | 0 |
+| `workspace/outputs.rs` | 624 | 617 | 0 |
+| `workspace/tests.rs` | 1,156 | 1,103 | 47 |
+| `active_border_sys.rs` | 1,107 | 1,042 | 0 |
+| `active_border_sys/carrier.rs` | 654 | 628 | 0 |
+| `active_border_sys/tests.rs` | 238 | 228 | 8 |
+| `product_hide.rs` | 135 | 122 | 0 |
+| `product_hide/sys/mod.rs` | 1,429 | 1,373 | 0 |
+| `product_hide/sys/watcher.rs` | 254 | 246 | 0 |
+| `winarrow.rs` | 731 | 681 | 0 |
+| `winarrow/sys.rs` | 1,026 | 982 | 0 |
+| `render_handoff.rs` | 1,057 | 986 | 0 |
+| `render_handoff/tests.rs` | 458 | 439 | 15 |
+
+- Largest changed production file 1,429; largest extracted test file 1,156.
+  No cap exceptions. Settings UI is unchanged and already within caps.
+- Final full-body comparison covers every changed source file: original
+  slices plus exact dedent, necessary declarations/imports/visibility and
+  edition-2024 rustfmt only. All 70 moved tests and their paths are preserved;
+  product-hide and WinArrow integration test files are untouched.
+
+## Out-of-scope follow-up
+
+- `scripts/windows-hide-proof.ps1` has a fixed `$SOURCE_FILES` hash manifest
+  that names `product_hide.rs` but not its new native children. A separate
+  proof-harness maintenance change should include those children and reconcile
+  its older split paths (including `tiling.rs`). The Rust-only scope leaves
+  scripts unchanged; no live proof or source-manifest freshness is claimed.
