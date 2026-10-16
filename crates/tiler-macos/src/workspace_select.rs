@@ -35,6 +35,10 @@ impl SelectionSnapshot {
 
 pub trait SelectionBackend {
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String>;
+    /// Native display-row count for the product single-display rule (one
+    /// fresh read-only row query, no mutation). The explicit batch CLI
+    /// resolves its own display and never consults this.
+    fn display_count(&mut self) -> Result<usize, String>;
     fn empty(&mut self, sid: u64) -> Result<bool, String>;
     /// One create dispatch only; caller independently adopts an exact append.
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String>;
@@ -162,22 +166,129 @@ impl SelectionState {
     }
 }
 
-/// Select-only binding subset. Never adds send chords; the preview does not
-/// arm this subset until empty-Space eligibility and effect routing exist.
+/// Select-only product binding subset: exactly the 18 armed rows —
+/// numbered existing-Space selects `1..9`, the 8 relative-select rows, and
+/// the previous toggle. Never adds send chords; the trailing `index 0`
+/// select-or-create stays unarmed (no automatic trailing creation/deletion
+/// this milestone — occupancy unresolved), so it is excluded here even
+/// though the explicit `spaces-select` batch retains it. Driven by the
+/// catalogue `implemented` flags (single source with
+/// [`crate::workspace_input::is_armed_select`]); the preview arms this
+/// subset with no-focus dispatch and main-thread drain.
 #[must_use]
 pub fn bindings() -> Vec<crate::runtime_types::TileBinding> {
     crate::workspace_input::workspace_catalogue()
         .into_iter()
-        .filter(|row| {
-            matches!(
-                row.action,
-                InputSemanticAction::WorkspaceSelect { .. }
-                    | InputSemanticAction::WorkspaceRelative { .. }
-                    | InputSemanticAction::WorkspacePrevious
-            )
-        })
+        .filter(|row| row.implemented)
         .filter_map(|row| row.binding())
         .collect()
+}
+
+/// Live product select gates sampled by the main-thread tile controller
+/// immediately before draining one claimed select (plain booleans, no OS
+/// touch here). Any denial refuses the claimed action narrowly without
+/// replay and advances no history — exactly like topology drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectGates {
+    pub session_unlocked: bool,
+    pub secure_active: bool,
+    pub lock_screen: bool,
+}
+
+/// Drain one claimed product select through `backend` under `state`
+/// (offline-testable core of the product handoff: tests inject fake
+/// backends here; the tile controller injects the live backend through
+/// [`drain_live_claimed`]). Gates refuse first, then the unarmed and
+/// multi-display rules refuse before any effect leg; otherwise a single
+/// [`SelectionState::execute`] runs (single dispatch with asynchronous
+/// settle polling, never a replay; history advances only on verified
+/// arrival). The claim/release protocol around this call (not the slot
+/// itself) serializes concurrent presses: the slot stays claimed while
+/// this blocks, so engine enqueues refuse busy instead of overlapping.
+pub(crate) fn drain_claimed(
+    state: &mut SelectionState,
+    backend: &mut impl SelectionBackend,
+    action: InputSemanticAction,
+    gates: &SelectGates,
+) -> Result<SelectionEffect, String> {
+    if !gates.session_unlocked {
+        return Err("select gated: session not unlocked".to_owned());
+    }
+    if gates.secure_active {
+        return Err("select gated: Secure Input active".to_owned());
+    }
+    if gates.lock_screen {
+        return Err("select gated: lock screen".to_owned());
+    }
+    if !crate::workspace_input::is_armed_select(&action) {
+        return Err("product select refuses unarmed actions".to_owned());
+    }
+    // Product targeting rule: exactly ONE native display row. Zero or
+    // multiple rows refuse before any MC touch and advance no history —
+    // first-display guessing could switch the wrong display, so limited
+    // single-display support is the documented rule (multi-display
+    // per-display targeting is TBD). A display plugged/unplugged mid-drain
+    // is still caught by the exact-identifier drift checks inside execute.
+    match backend.display_count() {
+        Ok(1) => {}
+        Ok(n) => {
+            return Err(format!(
+                "product select refuses: expected exactly one native display, found {n}"
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "product select refuses: display count unreadable ({e})"
+            ));
+        }
+    }
+    state.execute(backend, action)
+}
+
+/// Product drain budget (seconds): 30 = the 15 s MC cleanup reserve (which
+/// main-phase legs must clear — a smaller budget would refuse every leg
+/// inside the reserve) plus a 15 s work window, which covers the worst-case
+/// single-goto wall time (~8 s action timeout + 0.3 s stabilize + press
+/// legs + 3 s effect settle ≈ 12 s) with margin while halving the previous
+/// 60 s main-pump stall exposure. No cleanup legs run in the product drain.
+const PRODUCT_DRAIN_BUDGET_SECS: u64 = 30;
+/// Caffeinate companion bound (seconds) around the product drain: covers
+/// the drain budget plus reap margin and self-terminates via `-t` even if
+/// the reaper wedges. The held child handle is signalled/waited by exact
+/// PID only (never by name); `Drop` is the backstop.
+const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
+
+/// Live product drain for one claimed armed select: builds the proven
+/// [`NativeSelection`] backend over the single native display row and runs
+/// [`drain_claimed`]. The single-display rule inside `drain_claimed`
+/// refuses zero/multiple rows before any MC touch, so `display: 0` names
+/// the only row — never a guess. Reuses the native selector, never
+/// duplicates it. Blocks the caller up to the [`PRODUCT_DRAIN_BUDGET_SECS`]
+/// budget plus the effect settle window under a bounded reaped
+/// caffeinate companion; the tap callback and the serial engine never
+/// block (they handed off asynchronously through the claim slot).
+/// Returns the verified effect plus whether the caffeinate companion
+/// reaped cleanly (arrival truth dominates: a verified effect still
+/// returns `Ok` when only the reaper failed).
+pub(crate) fn drain_live_claimed(
+    state: &mut SelectionState,
+    action: InputSemanticAction,
+    gates: &SelectGates,
+) -> Result<(SelectionEffect, bool), String> {
+    if !crate::workspace_input::is_armed_select(&action) {
+        return Err("product select refuses unarmed actions".to_owned());
+    }
+    let mut awake =
+        crate::mc_lifecycle::live::CaffeinateGuard::spawn(PRODUCT_DRAIN_CAFFEINATE_SECS)
+            .map_err(|e| format!("product select refuses: caffeinate unspawnable ({e})"))?;
+    let mut backend = NativeSelection {
+        display: 0,
+        budget: crate::mc_probe::ActionBudget::new(PRODUCT_DRAIN_BUDGET_SECS),
+        created: Vec::new(),
+    };
+    let effect = drain_claimed(state, &mut backend, action, gates);
+    let reaped = awake.stop();
+    effect.map(|effect| (effect, reaped))
 }
 
 /// After shell classification, zero-area candidate membership is ambiguous,
@@ -298,6 +409,11 @@ pub fn remove_empty(space: u64, allow_untested: bool) -> Result<String, (i32, St
 }
 
 impl SelectionBackend for NativeSelection {
+    fn display_count(&mut self) -> Result<usize, String> {
+        crate::mc_lifecycle::live::fresh_snapshot()
+            .map(|s| s.displays.len())
+            .map_err(|e| e.to_string())
+    }
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
         let all = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
         let row = all
@@ -376,6 +492,28 @@ impl SelectionBackend for NativeSelection {
         Ok(())
     }
     fn select(&mut self, before: &SelectionSnapshot, sid: u64) -> Result<(), String> {
+        // Fresh gates immediately pre-dispatch: a lock, Secure Input
+        // capture, or lock-screen foreground that closed after the drain
+        // sampled its gates refuses here instead of pressing into it.
+        // Cheap read-only calls (session/Secure Input are any-thread C
+        // calls; the frontmost model-object read carries the reviewed
+        // off-main justification); unknown session denies. No atomicity is
+        // promised past this point — a transition mid-press is still
+        // refused without replay by the drift and readback checks below
+        // (the MC legs re-gate session/trust at every leg boundary too).
+        match crate::ffi::session_state().lock {
+            crate::ffi::SessionLock::Unlocked => {}
+            _ => return Err("select refused: session not unlocked pre-dispatch".to_owned()),
+        }
+        if crate::ffi::secure_input_known() == Some(true) {
+            return Err("select refused: Secure Input active pre-dispatch".to_owned());
+        }
+        if crate::ffi::frontmost_app()
+            .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
+            .unwrap_or(true)
+        {
+            return Err("select refused: lock screen pre-dispatch".to_owned());
+        }
         if self.snapshot()? != *before {
             return Err("pre-select topology drift".to_owned());
         }

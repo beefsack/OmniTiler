@@ -11,7 +11,7 @@
 use std::io::Write;
 
 fn usage() -> &'static str {
-    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join]"
+    "usage: tiler-macos-probe-target --nonce HEX [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--defer-window-ms MS] [--close-window-ms MS] [--regular-policy] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join] [--origin X Y]"
 }
 
 fn main() {
@@ -37,6 +37,7 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let mut transient_panel_ms = 0u64;
     let mut transient_sheet_ms = 0u64;
     let mut space_join = false;
+    let mut origin: Option<(f64, f64)> = None;
     let mut i = 1;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -109,6 +110,22 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
             "--space-join" => {
                 space_join = true;
             }
+            "--origin" => {
+                i += 1;
+                let x = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<f64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+                i += 1;
+                let y = argv
+                    .get(i)
+                    .ok_or((2, usage().to_owned()))?
+                    .parse::<f64>()
+                    .map_err(|_| (2, usage().to_owned()))?;
+                tiler_macos::probe_target::validate_origin(x, y).map_err(|e| (2, e))?;
+                origin = Some((x, y));
+            }
             other => return Err((2, format!("unknown arg '{other}\n{usage}", usage = usage()))),
         }
         i += 1;
@@ -116,13 +133,18 @@ fn real_main(argv: &[String]) -> Result<(), (i32, String)> {
     let nonce = nonce.ok_or((2, usage().to_owned()))?;
     let spec = tiler_macos::probe_target::ProbeTargetSpec::new(&nonce, hung_ms, slow_ms, seconds)
         .map(|s| {
-            s.with_fixed_size(fixed_size)
+            let mut s = s
+                .with_fixed_size(fixed_size)
                 .with_defer_window_ms(defer_window_ms)
                 .with_close_window_ms(close_window_ms)
                 .with_regular_policy(regular_policy)
                 .with_transient_panel_ms(transient_panel_ms)
                 .with_transient_sheet_ms(transient_sheet_ms)
-                .with_space_join(space_join)
+                .with_space_join(space_join);
+            if let Some((x, y)) = origin {
+                s = s.with_origin(x, y);
+            }
+            s
         })
         .map_err(|e| (2, e))?;
     run_target(&spec).map_err(|e| (1, e))
@@ -166,6 +188,7 @@ fn run_target(spec: &tiler_macos::probe_target::ProbeTargetSpec) -> Result<(), S
         spec.transient_panel_ms,
         spec.transient_sheet_ms,
         spec.space_join,
+        spec.origin,
         &|| {
             println!("{}", serde_json::json!({"ready": true}));
             let _ = std::io::stdout().flush();

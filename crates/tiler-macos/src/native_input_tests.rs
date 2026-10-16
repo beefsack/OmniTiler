@@ -582,3 +582,54 @@ fn fresh_guard_reinstall_reuses_the_exact_same_chords() {
     assert_eq!(replay.len(), 30);
     assert_eq!(tap_specs_for(ProbeModifier::Ctrl, &compatible), replay);
 }
+
+#[test]
+fn tap_specs_carry_select_category_per_action() {
+    // Wiring boundary: every spec names its gate category from the action
+    // (single home with `is_armed_select`) so the tap callback intercepts
+    // exactly the armed selects on the select cache and everything else on
+    // the basic cache. Basic tables carry no select chords at all.
+    use crate::workspace_input::is_armed_select;
+    for binding in tile_catalogue() {
+        assert!(!is_armed_select(&binding.action));
+    }
+    let specs = tap_specs_for(ProbeModifier::Ctrl, &tile_catalogue());
+    assert!(!specs.iter().any(|s| s.select));
+    let mut product = tile_catalogue();
+    product.extend(crate::workspace_select::bindings());
+    let specs = tap_specs_for(ProbeModifier::Ctrl, &product);
+    assert_eq!(specs.len(), 52);
+    assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
+    for (spec, binding) in specs.iter().zip(product.iter()) {
+        assert_eq!(spec.select, is_armed_select(&binding.action));
+        assert_eq!(spec.key_code, binding.key_code);
+    }
+    // Full catalogue: only the 18 armed rows flag select (sends, stays,
+    // outputs, and trailing select-0 stay basic-gated, refused downstream).
+    let specs = tap_specs_for(
+        ProbeModifier::Ctrl,
+        &crate::workspace_input::workspace_bindings(),
+    );
+    assert_eq!(specs.len(), 45);
+    assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
+}
+
+#[test]
+fn factory_wires_two_distinct_caches() {
+    // Both caches start ineligible on the normal path (distinct handles —
+    // publishing one never moves the other); the fixture gate arms both.
+    let tap = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue()).unwrap();
+    assert!(!tap.eligibility().is_eligible());
+    assert!(!tap.eligibility_select().is_eligible());
+    assert!(!Arc::ptr_eq(&tap.eligibility(), &tap.eligibility_select()));
+    tap.eligibility().publish(true, 4242);
+    assert!(tap.eligibility().is_eligible());
+    assert!(!tap.eligibility_select().is_eligible());
+    let gate = TapTileFactory::new(ProbeModifier::Ctrl, tile_catalogue())
+        .unwrap()
+        .with_unrestricted_test_gate();
+    assert!(gate.eligibility().is_unrestricted());
+    assert!(gate.eligibility_select().is_unrestricted());
+    assert!(gate.eligibility().is_eligible());
+    assert!(gate.eligibility_select().is_eligible());
+}

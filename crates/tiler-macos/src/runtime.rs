@@ -226,6 +226,13 @@ pub(crate) struct Shared {
     /// [`RuntimeHandle::invalidate_topology`]), so a topology update
     /// mid-plan fences the very next leg — not just the next command.
     pub(crate) native_cell: NativeContextCell,
+    /// One pending product select claim (armed select-only actions): set by
+    /// the engine without blocking, claimed and drained by the main-thread
+    /// tile controller. `select_busy` marks a drain in progress so
+    /// concurrent presses serialize/refuse instead of overlapping; both are
+    /// short critical sections only (never held across the blocking effect).
+    pub(crate) select_pending: Option<InputSemanticAction>,
+    pub(crate) select_busy: bool,
     /// Main-thread-supplied global focus evidence (workspace-frontmost PID
     /// plus bundle, plain IDs — never AX reads: the main thread performs no
     /// AX under any cadence). The AX focused leg (`ax_focus`) is NOT read on
@@ -471,6 +478,8 @@ impl Runtime {
                 topology: None,
                 topology_revision: 0,
                 native_context: None,
+                select_pending: None,
+                select_busy: false,
                 native_cell: NativeContextCell::new(),
                 focus_evidence: None,
                 zombies: Vec::new(),
@@ -511,6 +520,8 @@ impl Runtime {
             topology: None,
             topology_revision: 0,
             native_context: None,
+            select_pending: None,
+            select_busy: false,
             native_cell: NativeContextCell::new(),
             focus_evidence: None,
             zombies: Vec::new(),
@@ -1564,6 +1575,40 @@ impl RuntimeHandle {
             return false;
         }
         rx.recv_timeout(timeout).is_ok()
+    }
+
+    /// Claim one pending product select for the main-thread drain: takes the
+    /// pending action and marks the slot busy so concurrent engine enqueues
+    /// serialize/refuse instead of overlapping (`None` when nothing is
+    /// pending or a drain is already in progress). Short critical section
+    /// only — never held across the blocking effect. Pair every `Some`
+    /// with [`RuntimeHandle::release_select_after_drain`].
+    pub fn claim_select_for_drain(&self) -> Option<InputSemanticAction> {
+        let mut guard = lock_shared(&self.shared);
+        if guard.select_busy || guard.select_pending.is_none() {
+            return None;
+        }
+        guard.select_busy = true;
+        guard.select_pending.take()
+    }
+
+    /// Release the select claim after the main-thread drain settles
+    /// (success, gate refusal, drift, or no effect — every path releases
+    /// exactly once; a sent press is never replayed).
+    pub fn release_select_after_drain(&self) {
+        lock_shared(&self.shared).select_busy = false;
+    }
+
+    /// Drop a pending (unclaimed) product select without dispatching: the
+    /// lock/secure/stale-topology paths refuse narrowly instead of running
+    /// a switch under an unsafe context. Returns whether one was dropped.
+    /// Never touches a drain in progress.
+    pub fn discard_select_pending(&self) -> bool {
+        let mut guard = lock_shared(&self.shared);
+        if guard.select_busy {
+            return false;
+        }
+        guard.select_pending.take().is_some()
     }
 
     /// Drain queued focus requests (dispatched, never verified). Freshness

@@ -638,11 +638,158 @@ mod live_impl {
                 );
             }
         };
+        // Discriminator evidence: the exact SLS order plus the selected
+        // keycodes ride the report, so a no-effect leg distinguishes a
+        // wrong-arrow setup from an ineffective chord without a rerun.
+        notes.push(format!(
+            "arrow selection: SLS order {:?} on display {display}, outward keycode {out_key} return keycode {back_key}",
+            live_topology.displays[display].spaces
+        ));
+
+        // Owned-helper spawn placement (fixture correction): the helper's
+        // legacy spawn origin sits under the protected terminal on this
+        // desktop, so every titlebar candidate hit-tests foreign. Read the
+        // single display's visible frame (main-thread AppKit, no AX) plus a
+        // fresh normal-layer layout, fit the spawn-size rect outside every
+        // onscreen same-layer rect, and have the helper create its own
+        // window there (self-action at creation; the controller never writes
+        // frames). Above-normal chrome never enters the avoid set: the menu
+        // bar is outside the visible frame and the spanning Dock surface is
+        // not an input occluder (input-identity finding, not a name
+        // exemption). Any shortfall refuses with zero synthetic posts.
+        let ((place_cg_x, place_cg_y), (appkit_x, appkit_y)) = {
+            let ns = match crate::ffi::ns_display_snapshot() {
+                Ok(s) => s,
+                Err(e) => fail_gate!(
+                    "helper-place",
+                    McError::Unsupported(format!("display snapshot unavailable: {e}")),
+                    temp_resident
+                ),
+            };
+            if ns.len() != 1 || snap0.displays.len() != 1 {
+                fail_gate!(
+                    "helper-place",
+                    McError::Blocked(format!(
+                        "helper placement needs exactly one display (screens={}, snapshot displays={}); refusing multi-display guess",
+                        ns.len(),
+                        snap0.displays.len()
+                    )),
+                    temp_resident
+                );
+            }
+            let primary_h = match crate::topology::primary_height(&ns) {
+                Some(h) => h,
+                None => fail_gate!(
+                    "helper-place",
+                    McError::Blocked(
+                        "primary display height unknown; refusing placement guess".to_owned()
+                    ),
+                    temp_resident
+                ),
+            };
+            let visible = match crate::topology::join_displays(&ns)[0].visible {
+                Some(v) => v,
+                None => fail_gate!(
+                    "helper-place",
+                    McError::Blocked(
+                        "visible frame unconvertible; refusing placement guess".to_owned()
+                    ),
+                    temp_resident
+                ),
+            };
+            let all = match crate::ffi::cg_window_list_basic() {
+                Ok(a) => a,
+                Err(e) => fail_gate!(
+                    "helper-place",
+                    McError::System(format!("CG list unreadable for placement: {e}")),
+                    temp_resident
+                ),
+            };
+            if all.len() >= crate::config::MAX_WINDOWS {
+                fail_gate!(
+                    "helper-place",
+                    McError::Blocked(
+                        "CG snapshot completeness unknown; refusing placement".to_owned()
+                    ),
+                    temp_resident
+                );
+            }
+            let avoid: Vec<(f64, f64, f64, f64)> = all
+                .iter()
+                .filter(|w| w.onscreen && w.layer == 0)
+                .map(|w| (w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h))
+                .collect();
+            // Search the slack-expanded rect (content plus titlebar headroom
+            // above): the spawn argument positions the AppKit *content*
+            // origin exactly, while the settled frame adds host chrome above
+            // it. The content origin sits one slack below the expanded
+            // origin, so the settled frame stays inside the verified rect.
+            let search_h = crate::space_drag_transfer::HELPER_SPAWN_H
+                + crate::space_drag_transfer::TITLEBAR_SLACK;
+            let origin = crate::space_drag_transfer::uncovered_helper_origin(
+                (visible.x, visible.y, visible.w, visible.h),
+                &avoid,
+                crate::space_drag_transfer::HELPER_SPAWN_W,
+                search_h,
+            );
+            let (ex, ey) = match origin {
+                Some(o) => o,
+                None => fail_gate!(
+                    "helper-place",
+                    McError::Blocked(format!(
+                        "no uncovered {}x{search_h:.0} rect inside visible {}x{}@{:.0},{:.0} over {} same-layer rects; refusing (never Ghostty, never guessed)",
+                        crate::space_drag_transfer::HELPER_SPAWN_W,
+                        visible.w,
+                        visible.h,
+                        visible.x,
+                        visible.y,
+                        avoid.len()
+                    )),
+                    temp_resident
+                ),
+            };
+            let (ox, oy) = (ex, ey + crate::space_drag_transfer::TITLEBAR_SLACK);
+            notes.push(format!(
+                "helper placement: content origin ({ox:.0},{oy:.0}) from expanded ({ex:.0},{ey:.0}) over {} same-layer rects in visible {:.0}x{:.0}@{:.0},{:.0}",
+                avoid.len(),
+                visible.w,
+                visible.h,
+                visible.x,
+                visible.y
+            ));
+            // Controller-side AppKit origin for the helper's self-positioning
+            // spawn argument (pure inverse of the AppKit->CG conversion,
+            // same snapshot row as the placement above).
+            match crate::space_drag_transfer::cg_top_left_to_appkit_origin(
+                ox,
+                oy,
+                crate::space_drag_transfer::HELPER_SPAWN_W,
+                crate::space_drag_transfer::HELPER_SPAWN_H,
+                primary_h,
+            ) {
+                Some(o) => {
+                    notes.push(format!(
+                        "helper placement: AppKit spawn origin ({:.0},{:.0})",
+                        o.0, o.1
+                    ));
+                    ((ox, oy), o)
+                }
+                None => fail_gate!(
+                    "helper-place",
+                    McError::Blocked("origin conversion refused; never guessed".to_owned()),
+                    temp_resident
+                ),
+            }
+        };
 
         // Spawn the owned regular-policy helper with the self-join poll.
         let nonce = crate::probe_target::mint_nonce().map_err(|e| (1, format!("nonce: {e}")))?;
         let spec = crate::probe_target::ProbeTargetSpec::new(&nonce, 0, 0, seconds)
-            .map(|s| s.with_regular_policy(true).with_space_join(true))
+            .map(|s| {
+                s.with_regular_policy(true)
+                    .with_space_join(true)
+                    .with_origin(appkit_x, appkit_y)
+            })
             .map_err(|e| (2, e))?;
         let mut raw = crate::probe_target::start_helper_process(&spec)
             .map_err(|e| (1, format!("helper spawn failed: {e}")))?;
@@ -776,6 +923,91 @@ mod live_impl {
             ),
             Err(e) => fail_child!("baseline-membership", McError::System(e.to_string())),
         }
+        // Placement postcondition (not dead reckoning): the helper's LIVE
+        // rects (CG bounds plus AX frame, freshly read) must not overlap any
+        // onscreen Ghostty rect. AX/CG/content spaces differ by host
+        // window-chrome metrics, so exact equality with the requested origin
+        // is the wrong check; requested-vs-actual is logged for diagnosis
+        // only. Any overlap is a fixture fault with zero synthetic posts.
+        {
+            let live_entry = match crate::cg::verify_wid_owned_by_pid(pid, wid) {
+                Ok(e) => e,
+                Err(e) => {
+                    fail_child!("helper-place-readback", McError::Ownership(e.to_string()))
+                }
+            };
+            let live_ax = match crate::ax::read_window_owned(&owned, pid, wid) {
+                Ok(r) => match r.ax_frame {
+                    Some(f) => f,
+                    None => fail_child!(
+                        "helper-place-readback",
+                        McError::System("placed AX frame unreadable; refusing".to_owned())
+                    ),
+                },
+                Err(e) => fail_child!("helper-place-readback", McError::System(e.to_string())),
+            };
+            let ghostly = match crate::mc_lifecycle::snapshot_ghostty_windows() {
+                Ok(g) => g,
+                Err(e) => fail_child!(
+                    "helper-place-readback",
+                    McError::System(format!("Ghostty snapshot unreadable: {e}"))
+                ),
+            };
+            let onscreen_ghostly: Vec<(f64, f64, f64, f64)> = ghostly
+                .iter()
+                .filter(|g| g.onscreen)
+                .map(|g| (g.x, g.y, g.w, g.h))
+                .collect();
+            let live_rects = [
+                (
+                    "CG",
+                    (
+                        live_entry.bounds.x,
+                        live_entry.bounds.y,
+                        live_entry.bounds.w,
+                        live_entry.bounds.h,
+                    ),
+                ),
+                ("AX", (live_ax.x, live_ax.y, live_ax.w, live_ax.h)),
+            ];
+            for (name, (lx, ly, lw, lh)) in live_rects {
+                let live_rect = crate::topology::PointsRect {
+                    x: lx,
+                    y: ly,
+                    w: lw,
+                    h: lh,
+                };
+                for g in &onscreen_ghostly {
+                    let ghostly_rect = crate::topology::PointsRect {
+                        x: g.0,
+                        y: g.1,
+                        w: g.2,
+                        h: g.3,
+                    };
+                    if live_rect.overlap_area(&ghostly_rect) > 0.0 {
+                        fail_child!(
+                            "helper-place-readback",
+                            McError::Blocked(format!(
+                                "helper {name} rect ({lx:.0},{ly:.0} {lw:.0}x{lh:.0}) overlaps onscreen Ghostty ({:.0},{:.0} {:.0}x{:.0}); refusing misplaced fixture (zero synthetic posts)",
+                                g.0, g.1, g.2, g.3
+                            ))
+                        );
+                    }
+                }
+            }
+            notes.push(format!(
+                "helper placed CG ({:.0},{:.0} {:.0}x{:.0}) AX ({:.0},{:.0} {:.0}x{:.0}), requested content ({place_cg_x:.0},{place_cg_y:.0}); no overlap over {} onscreen Ghostty rects",
+                live_entry.bounds.x,
+                live_entry.bounds.y,
+                live_entry.bounds.w,
+                live_entry.bounds.h,
+                live_ax.x,
+                live_ax.y,
+                live_ax.w,
+                live_ax.h,
+                onscreen_ghostly.len()
+            ));
+        }
         let baseline_frame = match crate::ax::read_window_owned(&owned, pid, wid) {
             Ok(r) => match r.ax_frame {
                 Some(f) => f,
@@ -852,6 +1084,65 @@ mod live_impl {
         // main budget inside per-leg setup; no unbounded waits).
         if let Err(e) = focus_helper(pid, wid) {
             fail_child!("transfer-focus", McError::Blocked(e));
+        }
+        // Pre-synthetic input-identity gate (read-only): BOTH native
+        // hit-tests must already join the exact helper at the titlebar
+        // center after the self-join recovery, before any post. A mismatch
+        // is a fixture observation fault (zero posts), never a transfer
+        // attempt. Each synthetic leg re-proves this in its own setup.
+        // Fresh authorization (never the baseline identity): LaunchServices
+        // may publish the bundled-helper bundle mid-run, rebinding the live
+        // bundle from the probe one to the dedicated helper one — the
+        // established per-leg re-authorization pattern.
+        {
+            let fresh_owned = match crate::ax::authorize_owned_action(pid, &nonce) {
+                Ok(o) => o,
+                Err(e) => fail_child!("transfer-identity", McError::Ownership(e.to_string())),
+            };
+            let frame = match crate::ax::read_window_owned(&fresh_owned, pid, wid) {
+                Ok(r) => match r.ax_frame {
+                    Some(f) => f,
+                    None => fail_child!(
+                        "transfer-identity",
+                        McError::System("transfer AX frame unreadable; refusing".to_owned())
+                    ),
+                },
+                Err(e) => fail_child!("transfer-identity", McError::System(e.to_string())),
+            };
+            let point = match crate::space_drag_transfer::titlebar_grab_point(frame) {
+                Ok(p) => p,
+                Err(e) => fail_child!("transfer-identity", McError::Blocked(e)),
+            };
+            let entry = match crate::cg::verify_wid_owned_by_pid(pid, wid) {
+                Ok(e) => e,
+                Err(e) => fail_child!("transfer-identity", McError::Ownership(e.to_string())),
+            };
+            let all = match crate::ffi::cg_window_list_basic() {
+                Ok(a) => a,
+                Err(e) => fail_child!("transfer-identity", McError::System(e.to_string())),
+            };
+            let hit = match crate::ffi::ax_hit_test_owner(point.0, point.1) {
+                Ok(h) => h,
+                Err(e) => fail_child!("transfer-identity", McError::System(e)),
+            };
+            let input_wid = match crate::ffi::sls_window_at_point(point.0, point.1) {
+                Ok(w) => w,
+                Err(e) => fail_child!("transfer-identity", McError::System(e)),
+            };
+            match crate::space_drag_transfer::hit_test_input_grab(point, &entry, &all, hit, input_wid)
+            {
+                Ok(()) => notes.push(format!(
+                    "transfer-identity: AX owner=({},{}) SLS wid={} both join helper at ({:.0},{:.0}); synthetic legs follow",
+                    hit.0, hit.1, input_wid, point.0, point.1
+                )),
+                Err(e) => fail_child!(
+                    "transfer-identity",
+                    McError::Blocked(format!(
+                        "pre-synthetic input identity refuses at ({:.0},{:.0}): AX owner=({},{}) SLS wid={input_wid}: {e} (zero synthetic posts)",
+                        point.0, point.1, hit.0, hit.1
+                    ))
+                ),
+            }
         }
         let t = std::time::Instant::now();
         let (roundtrip, drag_end) = {

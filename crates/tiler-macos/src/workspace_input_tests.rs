@@ -36,7 +36,7 @@ fn row_by_id(id: &str) -> WorkspaceRow {
 }
 
 #[test]
-fn catalogue_shape_is_63_rows_45_armed() {
+fn catalogue_shape_is_63_rows_45_defaulted_18_implemented() {
     let catalogue = workspace_catalogue();
     assert_eq!(catalogue.len(), 63);
     assert_eq!(workspace_bindings().len(), 45);
@@ -59,9 +59,48 @@ fn catalogue_shape_is_63_rows_45_armed() {
         );
         assert!(action_keys.insert(key), "duplicate action+key {}", row.id);
     }
-    // No product execution yet: every row reports unimplemented (flipping
-    // any flag without the native switch/send routes would fake support).
-    assert!(catalogue.iter().all(|row| !row.implemented));
+    // Select-only arming: exactly the 18 select rows report implemented
+    // (numbered existing-Space 1-9, the 8 relative selects, the previous
+    // toggle); everything else stays unimplemented (trailing select-0, all
+    // sends/stays, all outputs — honestly refused, never faked).
+    let implemented: HashSet<&str> = catalogue
+        .iter()
+        .filter(|row| row.implemented)
+        .map(|row| row.id)
+        .collect();
+    let expected: HashSet<&str> = [
+        "workspace-select-1",
+        "workspace-select-2",
+        "workspace-select-3",
+        "workspace-select-4",
+        "workspace-select-5",
+        "workspace-select-6",
+        "workspace-select-7",
+        "workspace-select-8",
+        "workspace-select-9",
+        "workspace-prev-h",
+        "workspace-prev-k",
+        "workspace-prev-left-arrow",
+        "workspace-prev-up-arrow",
+        "workspace-next-j",
+        "workspace-next-l",
+        "workspace-next-down-arrow",
+        "workspace-next-right-arrow",
+        "workspace-previous",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(implemented, expected, "armed select-only subset");
+    assert!(
+        !catalogue
+            .iter()
+            .find(|row| row.id == "workspace-select-0")
+            .expect("select-0 exists")
+            .implemented,
+        "trailing select-0 stays unarmed"
+    );
+    // The product subset exposes exactly those 18 as bindings.
+    assert_eq!(crate::workspace_select::bindings().len(), 18);
     // Family counts: 10 select + 10 send + 10 stay + 8 + 8 + 8 relative +
     // 1 previous + 8 output.
     let selects = catalogue
@@ -637,9 +676,10 @@ fn tap_tuning_matches_exact_aux_chords() {
 
 #[test]
 fn unsupported_refusal_names_the_seam_per_family() {
-    // Basic actions execute (no refusal); every workspace family refuses
-    // with a distinct static token and a reason naming its exact missing
-    // route — never a fake dispatch.
+    // Basic actions execute (no refusal), and the armed select-only subset
+    // dispatches (no refusal); every other workspace family refuses with a
+    // distinct static token and a reason naming its exact missing route —
+    // never a fake dispatch.
     for action in [
         InputSemanticAction::FocusStep {
             direction: InputDirection::Left,
@@ -647,19 +687,33 @@ fn unsupported_refusal_names_the_seam_per_family() {
         InputSemanticAction::ToggleFloat,
         InputSemanticAction::ToggleOrientation,
     ] {
-        assert_eq!(workspace_unsupported_outcome(action), None);
-        assert_eq!(workspace_unsupported_reason(action), None);
+        assert_eq!(workspace_unsupported_outcome(action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_reason(action), None, "{action:?}");
+        assert!(!is_armed_select(&action), "{action:?}");
     }
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSelect { index: 1 })
-        .expect("select refuses");
-    assert!(reason.contains("switch_space_status"), "{reason}");
-    let reason =
-        workspace_unsupported_reason(InputSemanticAction::WorkspaceRelative { prev: true })
-            .expect("relative refuses");
-    assert!(reason.contains("switch_space_status"), "{reason}");
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspacePrevious)
-        .expect("previous refuses");
-    assert!(reason.contains("switch_space_status"), "{reason}");
+    for action in [
+        InputSemanticAction::WorkspaceSelect { index: 1 },
+        InputSemanticAction::WorkspaceSelect { index: 9 },
+        InputSemanticAction::WorkspaceRelative { prev: true },
+        InputSemanticAction::WorkspaceRelative { prev: false },
+        InputSemanticAction::WorkspacePrevious,
+    ] {
+        assert_eq!(workspace_unsupported_outcome(action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_reason(action), None, "{action:?}");
+        assert!(is_armed_select(&action), "{action:?}");
+    }
+    // The trailing select-0 stays unarmed: automatic trailing creation is
+    // unresolved (occupancy unproven), so it refuses with the switch token.
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSelect { index: 0 })
+        .expect("trailing select refuses");
+    assert!(reason.contains("trailing"), "{reason}");
+    assert_eq!(
+        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSelect { index: 0 }),
+        Some("refused-workspace-switch-unsupported")
+    );
+    assert!(!is_armed_select(&InputSemanticAction::WorkspaceSelect {
+        index: 0
+    }));
     let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSend {
         index: 0,
         follow: false,
@@ -679,10 +733,6 @@ fn unsupported_refusal_names_the_seam_per_family() {
     .expect("output refuses");
     assert!(reason.contains("cross-display"), "{reason}");
     assert_eq!(
-        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSelect { index: 1 }),
-        Some("refused-workspace-switch-unsupported")
-    );
-    assert_eq!(
         workspace_unsupported_outcome(InputSemanticAction::WorkspaceSend {
             index: 1,
             follow: true
@@ -696,6 +746,31 @@ fn unsupported_refusal_names_the_seam_per_family() {
         }),
         Some("refused-workspace-output-unsupported")
     );
+    // Sends, stays, and outputs are never armed selects.
+    for action in [
+        InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: false,
+        },
+        InputSemanticAction::WorkspaceSendRelative {
+            prev: true,
+            follow: true,
+        },
+        InputSemanticAction::WorkspaceSendRelative {
+            prev: false,
+            follow: false,
+        },
+        InputSemanticAction::WorkspaceOutput {
+            direction: InputDirection::Left,
+            follow: true,
+        },
+    ] {
+        assert!(!is_armed_select(&action), "{action:?}");
+    }
 }
 
 #[test]
@@ -722,4 +797,100 @@ fn numbered_index_validates_0_to_9() {
         index: 16,
         follow: true
     }));
+}
+
+#[test]
+fn product_select_matrix_is_duplicate_free_with_exact_arms() {
+    // Product tap table: 34 basic chords plus the 18 armed selects (52).
+    // Duplicate-free under every usable Meta/preset; Compatible under Ctrl
+    // leaves the 9 numbered selects plus the 4 unshifted arrow basics to
+    // macOS (39 = 30 basic + 9 aux), the numbers still switching natively
+    // via Switch to Desktop N. Alt/Shift Metas collapse arms and refuse
+    // validation rather than arming a colliding tap.
+    fn product() -> Vec<TileBinding> {
+        let mut out = tile_catalogue();
+        out.extend(crate::workspace_select::bindings());
+        out
+    }
+    assert_eq!(tile_catalogue().len(), 34);
+    assert_eq!(crate::workspace_select::bindings().len(), 18);
+    assert_eq!(product().len(), 52);
+    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
+        let authentic = effective_bindings(InputPreset::Authentic, modifier, &product());
+        assert_eq!(authentic.len(), 52, "{modifier:?}");
+        let config = crate::runtime_types::RuntimeConfig {
+            modifier,
+            tile_bindings: Some(authentic),
+            ..crate::runtime_types::RuntimeConfig::default()
+        };
+        assert!(config.validate().is_ok(), "{modifier:?}");
+    }
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &product());
+    assert_eq!(compatible.len(), 39, "30 basic + 9 aux selects");
+    assert!(
+        compatible
+            .iter()
+            .all(|b| !matches!(b.action, InputSemanticAction::WorkspaceSelect { .. })),
+        "Compatible/Ctrl leaves numbered selects to native Switch to Desktop N"
+    );
+    assert_eq!(
+        compatible
+            .iter()
+            .filter(|b| matches!(b.action, InputSemanticAction::WorkspaceRelative { .. }))
+            .count(),
+        8,
+        "all 8 relative-select rows stay armed"
+    );
+    assert!(
+        compatible
+            .iter()
+            .any(|b| matches!(b.action, InputSemanticAction::WorkspacePrevious)),
+        "previous toggle stays armed"
+    );
+    // No sends, stays, outputs, or trailing select-0 enter the product
+    // table under any preset.
+    for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+        for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
+            let armed = effective_bindings(preset, modifier, &product());
+            assert!(
+                armed.iter().all(|b| {
+                    is_armed_select(&b.action)
+                        || matches!(
+                            b.action,
+                            InputSemanticAction::FocusStep { .. }
+                                | InputSemanticAction::MoveStep { .. }
+                                | InputSemanticAction::ResizeStep { .. }
+                                | InputSemanticAction::ToggleFloat
+                                | InputSemanticAction::ToggleOrientation
+                        )
+                }),
+                "{preset:?}/{modifier:?}"
+            );
+            assert!(
+                armed.iter().all(|b| !matches!(
+                    b.action,
+                    InputSemanticAction::WorkspaceSelect { index: 0 }
+                )),
+                "trailing select-0 never armed: {preset:?}/{modifier:?}"
+            );
+        }
+    }
+    let config = crate::runtime_types::RuntimeConfig {
+        modifier: ProbeModifier::Ctrl,
+        tile_bindings: Some(compatible),
+        ..crate::runtime_types::RuntimeConfig::default()
+    };
+    assert!(config.validate().is_ok());
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Meta, &product());
+    assert_eq!(compatible.len(), 52);
+    for modifier in [ProbeModifier::Alt, ProbeModifier::Shift] {
+        for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+            let config = crate::runtime_types::RuntimeConfig {
+                modifier,
+                tile_bindings: Some(effective_bindings(preset, modifier, &product())),
+                ..crate::runtime_types::RuntimeConfig::default()
+            };
+            assert!(config.validate().is_err(), "{preset:?}/{modifier:?}");
+        }
+    }
 }

@@ -194,14 +194,11 @@ impl TileRequest {
         }
         self.selection().validate()?;
         // Defensive: a preset must never arm an empty chord set (Compatible
-        // only removes known-conflicting arrows, so this is unreachable
-        // today, but an empty tap would silently intercept nothing).
-        if crate::input_policy::effective_bindings(
-            self.preset,
-            self.modifier,
-            &crate::native_input::tile_catalogue(),
-        )
-        .is_empty()
+        // only removes known-conflicting arrows/digits, so this is
+        // unreachable today, but an empty tap would silently intercept
+        // nothing).
+        if crate::input_policy::effective_bindings(self.preset, self.modifier, &product_catalogue())
+            .is_empty()
         {
             return Err("preset disables every chord; refusing an empty tap".to_owned());
         }
@@ -234,6 +231,17 @@ impl TileRequest {
     }
 }
 
+/// Product chord catalogue: the basic tiling chords plus the armed
+/// select-only workspace subset (18 rows: numbered existing-Space `1..9`,
+/// the 8 relative selects, the previous toggle). Sends, stays, outputs,
+/// and the trailing select-0 never enter the tap table (the engine refuses
+/// them as the backstop even if configured).
+#[must_use]
+pub fn product_catalogue() -> Vec<crate::runtime_types::TileBinding> {
+    let mut catalogue = crate::native_input::tile_catalogue();
+    catalogue.extend(crate::workspace_select::bindings());
+    catalogue
+}
 /// Whether a discovered (pid, bundle) may be launched under a scoped
 /// allowlist: exact membership at the effect gate (Ghostty, own bundle,
 /// protected terminals, and unknown bundles never pass), never the process
@@ -293,6 +301,11 @@ pub struct TileOutcome {
     pub input_forwarded: u64,
     pub input_ignored: u64,
     pub input_refused_no_focus: u64,
+    /// Armed select-only actions handed to the main-thread drain.
+    pub input_select_enqueued: u64,
+    /// Armed select-only actions refused before enqueue (no topology yet,
+    /// or a select already claimed/pending).
+    pub input_select_refused: u64,
     pub observations_published: u64,
     pub observation_failures: u64,
     pub note: String,
@@ -332,6 +345,8 @@ impl TileOutcome {
             input_forwarded: 0,
             input_ignored: 0,
             input_refused_no_focus: 0,
+            input_select_enqueued: 0,
+            input_select_refused: 0,
             observations_published: 0,
             observation_failures: 0,
             note: "no effects ran; no restoration performed".to_owned(),
@@ -424,7 +439,7 @@ mod native {
     use std::time::{Duration, Instant};
 
     use crate::input_policy::effective_bindings;
-    use crate::native_input::{OffTileFactory, TapTileFactory, interception_gate, tile_catalogue};
+    use crate::native_input::{OffTileFactory, TapTileFactory, interception_gate};
     use crate::native_tile_backend::ScopedAxFactory;
     use crate::runtime::{FocusEvidence, Runtime, RuntimeConfig, TopologyMode, WorkerReadiness};
     use crate::runtime_backend::InputSourceFactory;
@@ -573,9 +588,12 @@ mod native {
 
         let selection = request.selection();
         // Effective chord set under the selected preset: Authentic arms the
-        // whole supported catalogue, Compatible leaves known conflicting
-        // chords to macOS (unarmed, passing through natively).
-        let catalogue = effective_bindings(request.preset, request.modifier, &tile_catalogue());
+        // whole product catalogue (basic plus the 18 armed selects),
+        // Compatible leaves known conflicting chords to macOS (unarmed,
+        // passing through natively — under the Ctrl role that is the 4
+        // unshifted arrow basics plus the 9 numbered selects, the latter
+        // still switching Spaces natively via Switch to Desktop N).
+        let catalogue = effective_bindings(request.preset, request.modifier, &product_catalogue());
         let active_chords = catalogue.len();
         // Shared per-PID eligibility facts: each per-app AX owner publishes
         // only its own PID from snapshot data it already read; the input
@@ -736,6 +754,10 @@ mod native {
             .map_err(|reason| (1, format!("display guard refused: {reason}")))?;
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
+        // Durable per-runtime product select history: one two-view memory
+        // per display identifier, advancing only on verified arrivals for
+        // the whole run lifetime (never persisted, never guessed).
+        let mut select_state = crate::workspace_select::SelectionState::default();
         // Bounded runs end at the soft deadline (the watchdog above is the
         // hard lifetime); unbounded product runs loop until owner exit or
         // exact-PID stop.
@@ -884,6 +906,9 @@ mod native {
                 crate::ffi::SessionLock::Unlocked => {}
                 crate::ffi::SessionLock::Locked => {
                     lock_stops += 1;
+                    // A locked session never dispatches a switch: drop any
+                    // pending select without replay.
+                    handle.discard_select_pending();
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
@@ -897,6 +922,9 @@ mod native {
             match crate::ffi::frontmost_app() {
                 Some((_, bundle)) if crate::focus::is_loginwindow_bundle(&bundle) => {
                     lock_stops += 1;
+                    // Lock-screen foreground: same refusal as a locked
+                    // session (no switch under the lock screen, no replay).
+                    handle.discard_select_pending();
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
@@ -910,6 +938,9 @@ mod native {
             }
             if matches!(crate::ffi::secure_input_known(), Some(true)) {
                 secure_active_seen += 1;
+                // Secure Input capture never dispatches a switch (the tap
+                // gate already released interception; this is the backstop).
+                handle.discard_select_pending();
             }
 
             // Topology: observer events plus bounded fallback polling both
@@ -936,6 +967,9 @@ mod native {
                     facts_store.invalidate_context();
                     poll = TopologyPoll::new();
                     topology_failures += 1;
+                    // Stale topology never dispatches: drop any pending
+                    // select instead of switching under unreadable rows.
+                    handle.discard_select_pending();
                 }
             }
 
@@ -953,6 +987,48 @@ mod native {
                 frontmost_bundle: frontmost.map(|(_, bundle)| bundle),
                 ax_focus: None,
             });
+
+            // Product select drain: one claimed pending select runs the
+            // proven native switch with fresh topology/readback on this
+            // (main) thread — the tap callback and the serial engine handed
+            // off asynchronously and never block. The drain refuses unless
+            // exactly one native display row exists (no first-display
+            // guessing), rechecks session/Secure Input/lock-screen
+            // immediately pre-dispatch (the MC legs re-gate session/trust
+            // at every leg boundary; no atomicity past the recheck is
+            // promised), and runs under a 30 s budget plus a bounded reaped
+            // caffeinate companion. Verified arrival advances the
+            // per-display previous history; every refusal (gates, unarmed,
+            // display count, drift, no effect) clears without replay and
+            // advances nothing. A claim still held at shutdown is dropped,
+            // never dispatched.
+            if let Some(action) = handle.claim_select_for_drain() {
+                let gates = crate::workspace_select::SelectGates {
+                    session_unlocked: matches!(
+                        crate::ffi::session_state().lock,
+                        crate::ffi::SessionLock::Unlocked
+                    ),
+                    secure_active: matches!(crate::ffi::secure_input_known(), Some(true)),
+                    lock_screen: crate::ffi::frontmost_app()
+                        .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
+                        .unwrap_or(true),
+                };
+                let outcome =
+                    crate::workspace_select::drain_live_claimed(&mut select_state, action, &gates);
+                handle.release_select_after_drain();
+                let id = crate::workspace_input::workspace_action_id(&action)
+                    .unwrap_or("unknown-select");
+                match outcome {
+                    Ok((effect, reaped)) => eprintln!(
+                        "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
+                        id, effect.changed, reaped,
+                    ),
+                    Err(reason) => eprintln!(
+                        "tiler-macos dev select action={} refused reason={} complete=false",
+                        id, reason,
+                    ),
+                }
+            }
 
             // Discovery: running scoped apps bind launchDate/exe/bundle and
             // launch async (never blocking AppKit); vanished apps terminate
@@ -1082,6 +1158,8 @@ mod native {
             input_forwarded: diagnostics.input_forwarded,
             input_ignored: diagnostics.input_ignored,
             input_refused_no_focus: diagnostics.input_refused_no_focus,
+            input_select_enqueued: diagnostics.input_select_enqueued,
+            input_select_refused: diagnostics.input_select_refused,
             observations_published: diagnostics.observations_published,
             observation_failures: diagnostics.observation_failures,
             note: "stop leaves windows in place; no restoration performed".to_owned(),

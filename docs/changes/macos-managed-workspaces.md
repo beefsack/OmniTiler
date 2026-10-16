@@ -1,5 +1,145 @@
 # macOS managed native workspaces
 
+## Select-only fallback handover (2026-10-17)
+
+**Transfer remains parked; only existing-Space selection is armed in the bounded
+tiling preview.** The clear-helper fixture resolved the earlier positional
+identity blocker without weakening either hit-test. Two synthetic outward
+attempts then reported **NoEffect**. Numbered transfer, TextEdit transfer,
+send-follow and send-stay are not proven or enabled. This supersedes the next
+action and unarmed-select status in the earlier checkpoints below.
+
+### Accepted outcome and evidence limits
+
+- The helper now positions itself at creation outside the protected terminal's
+  rectangle. Live CG and AX frame readbacks verify the placement; after public
+  self-join O→T→O, positional AX and WindowServer hit-tests both joined the helper
+  at the titlebar. No terminal move was needed. Placement search and chrome slack
+  are diagnostic-fixture policy, not production window-placement policy.
+- Two initial zero-post fixture refusals exposed content-versus-frame chrome and
+  a stale pre-Mission-Control helper identity. Frame readback and fresh exact
+  authorization repaired those faults before the synthetic attempts.
+- Both subsequent outward attempts posted one mouse-down/up and one key-down/up,
+  then read original membership/current instead of the temporary target. The
+  second explicitly corroborated native Space ordering and right-arrow keycode
+  124. **No inverse ran.** These are two NoEffect observations, not two successful
+  round trips and not proof of a SIP or native-route limitation. Further synthetic
+  transfer tuning is stopped; chord effectiveness versus held-drag interaction
+  remains the precise unresolved discriminator.
+- Surviving terminal-history excerpts report exact one-Space/current restoration,
+  helper frame and pointer restoration, unchanged protected frame/membership,
+  helper exact stop/reap/absence and display-sleep-child reap for both attempts.
+  Separate read-only signed-bundle inspection subsequently corroborated one Space,
+  Mission Control absent, unlocked/trusted session, unchanged protected frame and
+  no probe/helper residue. No settings writes occurred in these runs.
+- **Evidence gap:** raw transfer JSON was removed after cleanup; only parsed
+  terminal-history excerpts survive. Its latency arrays were not retained, so
+  there is **no end-to-end transfer timing claim** and no physical visual-jank
+  acceptance. Final unsuccessful-transfer main artifact SHA-256:
+  `8a156840d034515fc1f0e491fa4b148c4acf60e7f43dc18d78dafc4f7a14538e`.
+
+### Delivered fallback
+
+- Exactly 18 product workspace bindings: existing numbered Spaces 1–9, eight
+  relative-select rows and previous toggle. Numbered actions keep Meta (default
+  Ctrl); auxiliary actions use Ctrl+Cmd with default Ctrl Meta. Compatible keeps
+  established native unshifted Ctrl digits/arrows as pass-through; Authentic uses
+  the MC AX controller. Index 0/trailing, all sends/stays/output sends and
+  migration remain capability-disabled. Send-stay remains unbound in the
+  catalogue, but executable bindability is still outstanding.
+- A serialized engine-to-main-thread claim reuses the native selector, keeps
+  per-display previous history for the preview lifetime, and advances it only on
+  verified arrival. Busy, stale topology, unknown gates and failed effects refuse
+  narrowly without action replay. Native drain refuses unless exactly one display
+  is observed; it never guesses the first of several displays.
+- Select eligibility does not require a focused window. Separate per-chord
+  basic/select caches prevent basic-chord suppression or hidden-window dispatch
+  on empty Spaces. Existing session, scope, Secure Input and lock protections
+  remain; fresh gates run before native dispatch and at MC leg boundaries.
+  A 30-second effect budget preserves the existing 15-second MC cleanup reserve;
+  a bounded display-sleep child is reaped by its exact process handle.
+- Existing off-current domain retention is reused, not redesigned. Regression
+  coverage adds empty-Space arrival/return with exact retained layout and zero
+  hidden writes. Automatic trailing creation/deletion and current-empty
+  classification remain unaccepted and are not armed.
+- Independent review found and corrected shared-cache basic-chord interception,
+  first-display guessing and stale pre-dispatch gates before accepting the bounded
+  select test route. Final review found no serious unresolved issue. Atomicity
+  across host state changes is not promised; the main pump may block within the
+  bounded native effect while the tap and engine remain independent.
+- No live tap→engine→drain selection proof is claimed. Existing guarded synthetic
+  producers cannot emit an untagged armed select chord, so no new fixture was
+  built merely to replace a physical check. Read-only signed-bundle preflight,
+  topology and membership evidence was retained separately. The physical procedure
+  below is the next acceptance action, not a completed result.
+
+### Verification and remaining differences
+
+- Local macOS gates: **670 tests** (536 library plus eight integration suites),
+  strict all-target macOS crate clippy, workspace format, signed app build and
+  separate verification pass. Independent review reran all 536 library tests and
+  all 26 scoped-tile tests. Unsafe blocks **102 → 102**, confined to `ffi.rs`;
+  no dependency or shared-core change.
+- Publication and hosted-CI results are recorded below when available; local
+  passing gates alone do not establish hosted or physical acceptance.
+- Differences from KDE/Windows and Tier 1 tilers: select-only bounded preview,
+  not a complete managed workspace manager; no send/follow/stay/output/migration
+  execution; no trailing lifecycle; one-display-only product selection; explicit
+  Ctrl+Cmd auxiliary arm; visible MC transitions rather than a proven lower-jank
+  route; history lasts one preview run, not restarts; explicit session-effective
+  Desktop-N Apply/Revert rather than automatic settings takeover. The intended
+  native send-follow and send-stay switch-back remain unimplemented. Cross-display,
+  fullscreen, minimum-release and physical shortcut/jank acceptance remain TBD.
+
+### User physical select-only procedure
+
+This is **not** the final send/follow/stay dogfood script: those actions remain
+unsupported. Use disposable TextEdit windows, one display, an unlocked session,
+no Secure Input or game/fullscreen context, and two native user Spaces. Start
+TextEdit on Desktop 1; leave Desktop 2 empty. Create the second Space manually in
+Mission Control if necessary; remember which empty Space to remove afterward.
+Run each shell-neutral line separately, inspecting its JSON before continuing:
+
+```text
+mise exec -- just preflight-app
+mise exec -- just launch -- spaces-desktop-status
+mise exec -- just launch -- spaces-desktop-apply --count 2
+mise exec -- just launch -- spaces-desktop-status
+mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 60
+```
+
+During the bounded run press **Ctrl+2** (empty Desktop 2), **Ctrl+Cmd+J**
+(wrap to Desktop 1), **Ctrl+Cmd+Tab** (previous Desktop 2), then **Ctrl+1**
+(return). Wait for each transition and inspect the `dev select` outcome and
+`caffeinate_reaped` readback. Report visible MC jank, unexpected focus/input,
+failed empty-Space navigation and any shortcut conflict. Do not try send chords
+as acceptance tests: they are unarmed. Wait for the 60-second preview teardown
+and inspect terminal JSON; stopping its wrapper does not stop the signed child.
+Always finish, including after a failed selection:
+
+```text
+mise exec -- just launch -- spaces-desktop-revert
+mise exec -- just launch -- spaces-desktop-status
+mise exec -- just launch -- spaces-diagnose
+```
+
+Revert must restore the owned preimages and remove the recovery preimage. If it
+does not, retain its JSON and recovery data; do not delete them or repeatedly
+Apply. Return to Desktop 1 and manually remove only the disposable empty Space;
+rerun `spaces-diagnose` to verify the original single-Space layout. Do not remove
+an occupied Space. Send-stay switch-back jank cannot be judged yet; that question
+remains parked with transfer rather than silently accepted.
+
+### Exact continuation
+
+Run the physical select-only procedure and assess its empty-Space navigation and
+MC transition cost. Transfer stays parked unless new evidence distinguishes
+native chord delivery from the held-drag interaction; do not repeat the same
+Ctrl+arrow fixture. Numbered/helper/TextEdit transfer proof, send integration,
+trailing lifecycle, multi-display attribution and the final full dogfood script
+remain open. The whole managed-workspaces item is **not** awaiting final physical
+acceptance; only the select-only fallback is awaiting its physical check.
+
 ## Current discriminator and continuation (2026-10-17)
 
 The display-spanning layer-20 Dock surface is **not an input occluder at

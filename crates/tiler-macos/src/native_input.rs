@@ -164,7 +164,9 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
 
 /// Tap specs for one catalogue: exact `(want, mask)` per chord with the
 /// Shift, Alt, and auxiliary workspace arms folded into `want` under the
-/// same mask.
+/// same mask. `select` marks armed workspace-select chords so the tap
+/// callback gates them on the select eligibility cache instead of the
+/// basic one (single home with [`crate::workspace_input::is_armed_select`]).
 #[must_use]
 pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<TapChordSpec> {
     bindings
@@ -185,6 +187,7 @@ pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<T
                 flags_mask,
                 want_code: i64::from(binding.key_code),
                 key_code: binding.key_code,
+                select: crate::workspace_input::is_armed_select(&binding.action),
             }
         })
         .collect()
@@ -264,57 +267,70 @@ fn creation_gate() -> Result<(), String> {
     }
 }
 
-/// Attest scoped input eligibility from cheap live reads OUTSIDE the
-/// callback plus a plain [`EligibilityFactsStore`] snapshot, and publish to
-/// the cache (input owner thread only, never the callback, never the
-/// production main which performs no AX). Cheap legs: session verdict,
-/// Secure Input, workspace frontmost, SLPS front (all thread-safe C calls
-/// plus the justified off-main workspace query — no AX, no SLS, no logging).
-/// Per-app facts (bundle, focused window, selected agreement, Space
-/// membership, show state, revision, freshness) arrive via the store, which
-/// each per-app AX owner publishes from snapshot data it ALREADY read on
-/// its own thread — a hung app's record simply goes stale and denies
-/// without ever stalling this gate. Unknown/stale denies. Throttled to
-/// [`crate::input_eligibility::ATTEST_CADENCE`] via `last_attest`; the
-/// callback enforces the [`crate::input_eligibility::STALE_AFTER`] bound
-/// lock-free. Returns the fresh verdict.
+/// Attest both scoped input eligibilities from cheap live reads OUTSIDE
+/// the callback and publish each to its own cache: the focused-window
+/// verdict to `basic_cache` (basic chords) and the no-focus select verdict
+/// to `select_cache` (armed select chords on empty Spaces). Returns true
+/// when EITHER attests (the owner parks the tap only while neither does);
+/// the tap callback still gates every chord on exactly its own category,
+/// so basic chords pass through wherever only selects attest. Unsafe
+/// contexts deny both and release all interception.
 pub fn attest_tile_eligibility(
     scope: &TileScope,
-    cache: &EligibilityCache,
+    basic_cache: &EligibilityCache,
+    select_cache: &EligibilityCache,
     store: Option<&Arc<EligibilityFactsStore>>,
     allow_fullscreen: bool,
     last_attest: &mut Option<Instant>,
 ) -> bool {
-    if cache.is_unrestricted() {
-        return cache.is_eligible();
+    use crate::input_eligibility::{attest_verdict, select_attest_verdict};
+    if basic_cache.is_unrestricted() {
+        return basic_cache.is_eligible();
     }
     if let Some(last) = *last_attest
         && last.elapsed() < crate::input_eligibility::ATTEST_CADENCE
     {
-        return cache.is_eligible();
+        return basic_cache.is_eligible() || select_cache.is_eligible();
     }
     *last_attest = Some(Instant::now());
     let now = crate::input_eligibility::now_ms();
-    let eligible = attest_live(scope, store, allow_fullscreen, now).is_ok();
-    // Owner PID for the cache: the live frontmost when readable, else 0
+    let snapshot = match attest_live(scope, store, allow_fullscreen, now) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            // Unreadable facts deny both caches (unknown/stale denies).
+            let pid = crate::ffi::frontmost_app()
+                .map(|(pid, _)| if pid > 1 { pid as u32 } else { 0 })
+                .unwrap_or(0);
+            basic_cache.publish(false, pid);
+            select_cache.publish(false, pid);
+            return false;
+        }
+    };
+    // Owner PID for the caches: the live frontmost when readable, else 0
     // (unknown denies downstream anyway).
     let pid = crate::ffi::frontmost_app()
         .map(|(pid, _)| if pid > 1 { pid as u32 } else { 0 })
         .unwrap_or(0);
-    cache.publish(eligible, pid);
-    eligible
+    let basic = attest_verdict(&snapshot).is_ok();
+    let select = select_attest_verdict(&snapshot).is_ok();
+    basic_cache.publish(basic, pid);
+    select_cache.publish(select, pid);
+    basic || select
 }
 
-/// One cheap live attest (owner thread only, never the callback): session,
-/// Secure Input, workspace frontmost, SLPS front, exact scope, plus one
-/// plain store read. No AX, no SLS, no logging anywhere on this path.
+/// One cheap live attest snapshot (owner thread only, never the callback):
+/// session, Secure Input, workspace frontmost, SLPS front, exact scope,
+/// plus one plain store read. No verdict here — the caller applies the
+/// focused-window verdict to the basic cache and the no-focus select
+/// verdict to the select cache. No AX, no SLS, no logging anywhere on
+/// this path.
 fn attest_live(
     scope: &TileScope,
     store: Option<&Arc<EligibilityFactsStore>>,
     allow_fullscreen: bool,
     now_ms: u64,
-) -> Result<(), String> {
-    use crate::input_eligibility::{AttestSnapshot, attest_verdict};
+) -> Result<crate::input_eligibility::AttestSnapshot, String> {
+    use crate::input_eligibility::AttestSnapshot;
     let session_unlocked = matches!(
         crate::ffi::session_state().lock,
         crate::ffi::SessionLock::Unlocked
@@ -341,7 +357,7 @@ fn attest_live(
     let pid = frontmost_pid.ok_or_else(|| "frontmost-unknown".to_owned())?;
     let record = store.snapshot_for(pid);
     let record_updated_ms = record.as_ref().map(|r| r.updated_ms).unwrap_or(0);
-    attest_verdict(&AttestSnapshot {
+    Ok(AttestSnapshot {
         session_unlocked,
         secure_active,
         lock_screen,
@@ -369,9 +385,10 @@ fn attest_live(
 /// enabled readback that disagrees with a Held pump turn) is a logged
 /// recoverable state — the same tap re-enables when it verifies, otherwise
 /// a fresh tap installs over the same chords — and only a hard creation
-/// denial refuses. Scoped eligibility gates BEFORE suppression (callback
-/// Keep/noForward while ineligible); the owner recreates its guard on
-/// return to eligible to avoid a user-disabled sticky cycle.
+/// denial refuses. Scoped eligibility gates BEFORE suppression per chord
+/// category (basic chords on the basic cache, armed selects on the select
+/// cache; an ineligible hit Keeps/noForwards); the owner recreates its
+/// guard on return to any-eligible to avoid a user-disabled sticky cycle.
 pub struct TapTileFactory {
     modifier: ProbeModifier,
     bindings: Vec<TileBinding>,
@@ -429,9 +446,13 @@ pub struct TapTileFactory {
     /// Product selection for eligibility (scoped allowlist or unscoped
     /// ordinary apps; disabled = never eligible until set).
     scope: TileScope,
-    /// Lock-free cached eligibility (starts ineligible until attested;
+    /// Lock-free cached basic eligibility (starts ineligible until attested;
     /// fixture unrestricted gate starts eligible with per-edge oracle).
     eligibility: Arc<EligibilityCache>,
+    /// Lock-free cached select eligibility for armed workspace-select
+    /// chords (starts ineligible until attested; the tap callback gates
+    /// each chord on exactly its own category).
+    eligibility_select: Arc<EligibilityCache>,
     /// Shared per-PID publisher facts (each per-app AX owner publishes only
     /// its own PID from already-read snapshots; `None` until the tile wires
     /// it — unknown reads deny). No AX crosses into the input owner through
@@ -469,6 +490,7 @@ impl TapTileFactory {
             disable_once_fault: Arc::new(AtomicBool::new(false)),
             scope: TileScope::scoped_disabled(),
             eligibility: Arc::new(EligibilityCache::new_scoped()),
+            eligibility_select: Arc::new(EligibilityCache::new_scoped()),
             facts: None,
         })
     }
@@ -495,13 +517,21 @@ impl TapTileFactory {
     #[must_use]
     pub fn with_unrestricted_test_gate(mut self) -> Self {
         self.eligibility = Arc::new(EligibilityCache::new_unrestricted_test_gate());
+        self.eligibility_select = Arc::new(EligibilityCache::new_unrestricted_test_gate());
         self
     }
 
-    /// Lock-free cached eligibility (owner-published, callback-read).
+    /// Lock-free cached basic eligibility (owner-published, callback-read).
     #[must_use]
     pub fn eligibility(&self) -> Arc<EligibilityCache> {
         Arc::clone(&self.eligibility)
+    }
+
+    /// Lock-free cached select eligibility (owner-published, callback-read
+    /// for armed workspace-select chords only).
+    #[must_use]
+    pub fn eligibility_select(&self) -> Arc<EligibilityCache> {
+        Arc::clone(&self.eligibility_select)
     }
 
     /// Opt in to the fixture-only one-shot callback stall (see field docs).
@@ -609,8 +639,14 @@ impl InputSourceFactory for TapTileFactory {
             TapSource::create_stall_once(&specs, true, &tx, self.stall_once_ms)
                 .map_err(|e| e.to_string())?
         } else {
-            TapSource::create_scoped(&specs, true, &tx, Arc::clone(&self.eligibility))
-                .map_err(|e| e.to_string())?
+            TapSource::create_scoped(
+                &specs,
+                true,
+                &tx,
+                Arc::clone(&self.eligibility),
+                Arc::clone(&self.eligibility_select),
+            )
+            .map_err(|e| e.to_string())?
         };
         Ok(Box::new(TapTileSource {
             tap,
@@ -635,6 +671,7 @@ impl InputSourceFactory for TapTileFactory {
             holding_direct: false,
             scope: self.scope.clone(),
             eligibility: Arc::clone(&self.eligibility),
+            eligibility_select: Arc::clone(&self.eligibility_select),
             facts: self.facts.clone(),
             last_attest: None,
             was_ineligible: false,
@@ -669,13 +706,14 @@ struct TapTileSource {
     holding_direct: bool,
     scope: TileScope,
     eligibility: Arc<EligibilityCache>,
+    eligibility_select: Arc<EligibilityCache>,
     facts: Option<Arc<EligibilityFactsStore>>,
     last_attest: Option<Instant>,
-    /// True while the last attest read ineligible (interception released via
-    /// callback Keep). On return to eligible the owner drops the old guard
-    /// and installs a FRESH scoped source on this same thread (new epoch)
-    /// to avoid a disabled sticky cycle; a recorded hard refusal is never
-    /// masked and fails closed instead.
+    /// True while the last attest read NEITHER category eligible
+    /// (interception released via callback Keep). On return to any-eligible
+    /// the owner drops the old guard and installs a FRESH scoped source on
+    /// this same thread (new epoch) to avoid a disabled sticky cycle; a
+    /// recorded hard refusal is never masked and fails closed instead.
     was_ineligible: bool,
 }
 
@@ -754,6 +792,7 @@ impl TapTileSource {
         drop(old);
         self.holding_direct = false;
         self.eligibility.bump_epoch();
+        self.eligibility_select.bump_epoch();
         self.publish_report();
         self.publish_direct_enabled();
     }
@@ -770,15 +809,20 @@ impl TapTileSource {
             return Ok(false);
         }
         let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
-        let new_tap =
-            match TapSource::create_scoped(&self.specs, true, &tx, Arc::clone(&self.eligibility)) {
-                Ok(tap) => tap,
-                Err(reason) => {
-                    let cause = format!("explicit re-arm refused: {reason}");
-                    self.note_refusal(cause.clone());
-                    return Err(cause);
-                }
-            };
+        let new_tap = match TapSource::create_scoped(
+            &self.specs,
+            true,
+            &tx,
+            Arc::clone(&self.eligibility),
+            Arc::clone(&self.eligibility_select),
+        ) {
+            Ok(tap) => tap,
+            Err(reason) => {
+                let cause = format!("explicit re-arm refused: {reason}");
+                self.note_refusal(cause.clone());
+                return Err(cause);
+            }
+        };
         self.swap_fresh_guard(new_tap, rx);
         self.direct_hold.store(false, Ordering::SeqCst);
         self.rearm_epoch.fetch_add(1, Ordering::SeqCst);
@@ -786,15 +830,20 @@ impl TapTileSource {
     }
 
     /// Install a FRESH scoped source on this same owner thread (same chords,
-    /// same placement, same eligibility cache), dropping the old guard
+    /// same placement, same eligibility caches), dropping the old guard
     /// WITHOUT a same-tap re-enable. A recreation refusal (for example
     /// revoked Accessibility consent) returns `Err` — never masked, never a
     /// fake callback. Shared by scope-return and disable recovery; callers
     /// add their own refusal context.
     fn install_fresh_scoped(&mut self) -> Result<(), crate::ffi::TapSetupError> {
         let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
-        let new_tap =
-            TapSource::create_scoped(&self.specs, true, &tx, Arc::clone(&self.eligibility))?;
+        let new_tap = TapSource::create_scoped(
+            &self.specs,
+            true,
+            &tx,
+            Arc::clone(&self.eligibility),
+            Arc::clone(&self.eligibility_select),
+        )?;
         self.swap_fresh_guard(new_tap, rx);
         Ok(())
     }
@@ -929,18 +978,22 @@ impl InputSource for TapTileSource {
                 continue;
             }
             // Scoped eligibility BEFORE suppression (cheap live reads plus a
-            // plain store snapshot; unknown/stale denies): out-of-scope/
-            // fullscreen/wrong-Space callbacks Keep/noForward via the cached
-            // atomic (no suppress, no forward). The owner parks gated here;
-            // on return to eligible it drops the old guard and installs a
-            // FRESH scoped source (new epoch) to avoid a disabled sticky
-            // cycle. A recorded hard refusal still fails closed and is never
+            // plain store snapshot; unknown/stale denies): chords whose own
+            // category cache reads ineligible Keep/noForward via the cached
+            // atomics (no suppress, no forward) — basic chords pass through
+            // wherever only selects attest, so an empty Space navigates
+            // without ever forwarding a stale hidden focus. The owner parks
+            // released here while NEITHER category attests; on return to
+            // any-eligible it drops the old guard and installs a FRESH
+            // scoped source (new epoch) to avoid a disabled sticky cycle.
+            // A recorded hard refusal still fails closed and is never
             // auto-overridden. No AX runs on this thread: per-app facts
             // arrive via the shared store from each AX owner's already-read
             // snapshots.
             if !attest_tile_eligibility(
                 &self.scope,
                 &self.eligibility,
+                &self.eligibility_select,
                 self.facts.as_ref(),
                 false,
                 &mut self.last_attest,
@@ -1065,6 +1118,7 @@ impl InputSource for TapTileSource {
                     if !attest_tile_eligibility(
                         &self.scope,
                         &self.eligibility,
+                        &self.eligibility_select,
                         self.facts.as_ref(),
                         false,
                         &mut self.last_attest,

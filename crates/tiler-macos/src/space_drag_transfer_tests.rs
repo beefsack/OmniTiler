@@ -883,3 +883,78 @@ fn occluder_detail_names_ids_and_geometry_without_exempting() {
     // Clear point: no occluder, passes.
     assert!(occluder_detail(point, &owned, &[], &[ghostty(0.0, 0.0, 10.0, 10.0)]).is_none());
 }
+
+#[test]
+fn uncovered_origin_dodges_left_avoid_for_spawn_size() {
+    // Recon-shaped setup: left avoid rect, wide visible frame. The spawn
+    // rect must land fully inside visible with no overlap.
+    let visible = (0.0, 30.0, 2240.0, 1230.0);
+    let avoid = [(8.0, 38.0, 1108.0, 1123.0)];
+    let (ox, oy) = uncovered_helper_origin(visible, &avoid, HELPER_SPAWN_W, HELPER_SPAWN_H)
+        .expect("fits right");
+    assert!(ox + HELPER_SPAWN_W <= visible.0 + visible.2);
+    assert!(oy + HELPER_SPAWN_H <= visible.1 + visible.3);
+    assert!(ox >= visible.0 && oy >= visible.1);
+    // No strict overlap with the avoid rect.
+    assert!(ox >= 8.0 + 1108.0 || ox + HELPER_SPAWN_W <= 8.0);
+}
+
+#[test]
+fn uncovered_origin_refuses_without_guessing() {
+    let visible = (0.0, 0.0, 1000.0, 800.0);
+    // Full cover: no placement.
+    assert!(uncovered_helper_origin(visible, &[(0.0, 0.0, 1000.0, 800.0)], 480.0, 320.0).is_none());
+    // Helper larger than visible: no placement.
+    assert!(uncovered_helper_origin(visible, &[], 2000.0, 320.0).is_none());
+    // Degenerate inputs: no placement.
+    assert!(uncovered_helper_origin((0.0, 0.0, 0.0, 800.0), &[], 480.0, 320.0).is_none());
+    assert!(uncovered_helper_origin((f64::NAN, 0.0, 1000.0, 800.0), &[], 480.0, 320.0).is_none());
+    assert!(uncovered_helper_origin(visible, &[], f64::INFINITY, 320.0).is_none());
+    // Degenerate avoid entries never poison the search.
+    let degenerate = [(0.0, 0.0, 0.0, 0.0), (f64::NAN, 0.0, 10.0, 10.0)];
+    assert!(uncovered_helper_origin(visible, &degenerate, 480.0, 320.0).is_some());
+    // Edge-touching avoid is not overlap: placement may abut it.
+    let abut = uncovered_helper_origin(
+        (0.0, 0.0, 1000.0, 800.0),
+        &[(484.0, 0.0, 516.0, 800.0)],
+        480.0,
+        320.0,
+    );
+    assert!(abut == Some((4.0, 4.0)));
+}
+
+#[test]
+fn slack_expanded_search_keeps_settled_frame_inside_visible() {
+    // Runner composition: search the slack-expanded rect, shift the content
+    // origin down by the slack. The settled frame (content plus up-to-slack
+    // chrome above) stays inside the verified expanded rect.
+    let visible = (0.0, 30.0, 2240.0, 1130.0);
+    let avoid = [(8.0, 38.0, 1108.0, 1123.0)];
+    let (ex, ey) = uncovered_helper_origin(
+        visible,
+        &avoid,
+        HELPER_SPAWN_W,
+        HELPER_SPAWN_H + TITLEBAR_SLACK,
+    )
+    .expect("expanded rect fits right");
+    // Expanded rect is fully inside visible ...
+    assert!(ex >= 0.0 && ey >= 30.0);
+    assert!(ex + HELPER_SPAWN_W <= 2240.0 && ey + HELPER_SPAWN_H + TITLEBAR_SLACK <= 1160.0);
+    // ... so the content origin below it is too, with headroom above for
+    // the real titlebar chrome.
+    let (cx, cy) = (ex, ey + TITLEBAR_SLACK);
+    assert!(cy - TITLEBAR_SLACK >= 30.0);
+    assert!(cx + HELPER_SPAWN_W <= 2240.0 && cy + HELPER_SPAWN_H <= 1160.0);
+}
+
+#[test]
+fn cg_to_appkit_origin_round_trips_with_topology() {
+    // Inverse of `appkit_to_cg_y`: CG top-left (200,740,480x320) on a
+    // 1260pt primary becomes AppKit origin (200,200).
+    let app = cg_top_left_to_appkit_origin(200.0, 740.0, 480.0, 320.0, 1260.0).unwrap();
+    assert_eq!(app, (200.0, 200.0));
+    let back = crate::topology::appkit_to_cg_y(app.1, 320.0, 1260.0).unwrap();
+    assert_eq!(back, 740.0);
+    assert!(cg_top_left_to_appkit_origin(f64::NAN, 0.0, 1.0, 1.0, 1260.0).is_none());
+    assert!(cg_top_left_to_appkit_origin(0.0, 0.0, 1.0, 1.0, f64::INFINITY).is_none());
+}

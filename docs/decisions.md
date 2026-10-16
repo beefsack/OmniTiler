@@ -327,8 +327,19 @@ platform API behavior.
      while transfer is parked. Retain shared ordinal/relative/previous semantics;
      batch history is deliberately not persisted or represented as the product
      manager. Do not arm workspace shortcuts until empty-Space eligibility and
-     main-thread effect routing are coherent; no lower-jank gesture choice or
-     complete trailing lifecycle is inferred from the measured readbacks.
+      main-thread effect routing are coherent; no lower-jank gesture choice or
+      complete trailing lifecycle is inferred from the measured readbacks.
+   - **Tentative (pending user review), 2026-10-17 — select-only preview fallback:**
+     while synthetic transfer remains unproven, arm only existing-Space selects
+     1–9, relative selection and previous toggle in the bounded preview. Reuse MC
+     AX rather than introduce another unmeasured route; refuse native product
+     selection unless exactly one display is observed. Keep basic/select input
+     eligibility separate so empty-Space navigation never enables basic window
+     actions. Previous history lasts one preview run. Leave trailing lifecycle,
+     all sends and migration disabled rather than infer safety from diagnostic
+     creation or failed transfer. This satisfies the earlier integration
+     prerequisite, not physical acceptance or complete manager parity.
+     [Outcome and physical check](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
 
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues

@@ -138,6 +138,32 @@ pub struct TapDecision {
     pub suppress: bool,
 }
 
+/// Pure per-category tap gate over already-read eligibility bits — the
+/// testable core of the tap callback's scoped gate. `select_hit` is the
+/// probe's match category (pure: `decide_tap_event`'s `matched` never
+/// depends on pending bits, so the probe agrees with the match loop);
+/// `basic_eligible` is the basic cache read; `select_eligible` is the
+/// select cache read (`None` falls back to the basic bit for tables
+/// without select chords). A select hit passes only on the select bit —
+/// basic chords on an empty Space therefore pass through to the app and
+/// can never forward stale hidden focus — while a basic hit passes only
+/// on the basic bit. Unmatched events are decided downstream, never here.
+#[must_use]
+pub const fn tap_category_allowed(
+    select_hit: bool,
+    basic_eligible: bool,
+    select_eligible: Option<bool>,
+) -> bool {
+    if select_hit {
+        match select_eligible {
+            Some(eligible) => eligible,
+            None => basic_eligible,
+        }
+    } else {
+        basic_eligible
+    }
+}
+
 pub fn decide_tap_event(
     kind: TapKeyKind,
     flags: u64,
@@ -588,5 +614,70 @@ mod tests {
             SWITCH_CTRL_BIT,
             0x04
         ));
+    }
+}
+
+#[cfg(test)]
+mod category_gate_tests {
+    use super::*;
+
+    #[test]
+    fn matched_output_never_depends_on_pending_bits() {
+        // The tap callback probes the match category with dummy pending
+        // bits before the real match loop: sound only because `matched`
+        // is pending-independent. Pin it across kinds, arms, and both
+        // pending states (only `suppress` may differ).
+        let tunings = [
+            TapTuning {
+                want_flags: 0x0004_0000,
+                flags_mask: 0x001E_0000,
+                want_code: 0x12,
+            },
+            TapTuning {
+                want_flags: 0x0014_0000,
+                flags_mask: 0x001E_0000,
+                want_code: 0x30,
+            },
+        ];
+        for tuning in tunings {
+            for kind in [TapKeyKind::KeyDown, TapKeyKind::KeyUp, TapKeyKind::Other] {
+                for flags in [0x0004_0000u64, 0x0014_0000, 0x0000_0000] {
+                    for code in [0x12i64, 0x30, 0x04] {
+                        for suppress_armed in [false, true] {
+                            let mut a = false;
+                            let mut b = true;
+                            let ra =
+                                decide_tap_event(kind, flags, code, tuning, suppress_armed, &mut a);
+                            let rb =
+                                decide_tap_event(kind, flags, code, tuning, suppress_armed, &mut b);
+                            assert_eq!(
+                                ra.matched, rb.matched,
+                                "pending must not move matched: {kind:?} {flags:#x} {code:#x} armed={suppress_armed}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn category_gate_matrix() {
+        // Basic hits pass only on the basic bit (an empty Space passes
+        // them through to the app — never forwarded, never stale hidden
+        // focus); select hits pass only on the select bit; a missing
+        // select cache falls back to the basic bit for select tables.
+        assert!(tap_category_allowed(false, true, Some(true)));
+        assert!(tap_category_allowed(false, true, Some(false)));
+        assert!(!tap_category_allowed(false, false, Some(true)));
+        assert!(!tap_category_allowed(false, false, Some(false)));
+        assert!(!tap_category_allowed(false, false, None));
+        assert!(tap_category_allowed(false, true, None));
+        assert!(tap_category_allowed(true, false, Some(true)));
+        assert!(tap_category_allowed(true, true, Some(true)));
+        assert!(!tap_category_allowed(true, true, Some(false)));
+        assert!(!tap_category_allowed(true, false, Some(false)));
+        assert!(tap_category_allowed(true, true, None));
+        assert!(!tap_category_allowed(true, false, None));
     }
 }

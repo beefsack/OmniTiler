@@ -412,7 +412,7 @@ pub fn help_text() -> String {
              \x20 cg-inspect (read-only unfiltered title-free window snapshot)\n\
              \x20 mc-remove-empty --space SID --allow-untested (one exact noncurrent empty user SID, no broad cleanup)\n\
              \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
-             \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; no product hotkeys)\n\
+             \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; the product tile arms the 18 existing-Space selects as hotkeys, trailing select-0 stays explicit-only)\n\
              \x20 spaces-grab-diagnose (bounded owned helper, unfiltered CG/AX/input hit snapshots before/after MC; zero synthetic posts)\n\
              \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested\n\
             \x20 \x20 (bounded owned titlebar-drag transfer, default 120s,\n\

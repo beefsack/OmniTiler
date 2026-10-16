@@ -53,20 +53,24 @@
 //!   friends) are real but outside the repo-established set, so they are
 //!   reported here, never silently disabled under Compatible.
 //!
-//! Execution capability: NONE yet. Every row carries `implemented: false`.
-//! The chords parse, tune, match exactly, and forward as typed
-//! [`crate::runtime_types::InputSemanticAction`] values, and the engine
-//! recognizes and honestly refuses them (counted, static log token — see
-//! [`workspace_unsupported_reason`]). Arming seam (not taken here): native
-//! single-shot Space switch is unimplemented
-//! ([`crate::spaces::switch_space_status`]), the native window Space move is
-//! experimental direct-SLS only with an explicit `--allow-untested`
-//! prerequisite and never runs from the product tile, and cross-display
-//! transfer is TBD (the Tier-2 move path gates same-display only). When
-//! those routes land, flip the row flags, dispatch in the engine, and arm
-//! via [`crate::input_policy::effective_bindings`] over the basic plus
-//! workspace bindings (matrix-tested below for duplicate-freedom under
-//! every Meta).
+//! Execution capability: SELECT-ONLY subset armed. The 18 select rows
+//! (numbered existing-Space `1..9`, the 8 relative-select rows, and the
+//! previous toggle) carry `implemented: true` and dispatch through the
+//! product tile without a focused-window subject (empty Spaces navigate).
+//! Everything else stays `implemented: false` and is honestly refused by
+//! the engine (see [`workspace_unsupported_reason`]): the trailing
+//! `index 0` select-or-create (automatic creation/deletion unresolved —
+//! occupancy unproven, so no trailing append this milestone), all numbered
+//! and relative sends (transfer PARKED), all send-and-stay rows (bindable
+//! but unbound AND unarmed), all output sends (cross-display TBD), and
+//! whole-workspace migration (no approved form). Arming seam for the armed
+//! subset: native single-shot Space switch via the proven
+//! [`crate::mc_lifecycle::goto_sid_verified`] MC AX route, reused through
+//! [`crate::workspace_select`] (never duplicated); the engine enqueues one
+//! pending select without blocking and the main-thread tile controller
+//! drains it with fresh topology/readback, advancing per-display previous
+//! history only on verified arrival (stale/drift fails narrow without
+//! replay, concurrent presses serialize/refuse).
 
 use crate::config::ProbeModifier;
 use crate::input_policy::{KEY_DOWN, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_RIGHT, KEY_UP};
@@ -289,6 +293,10 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
     let mut rows = Vec::with_capacity(63);
     for index in [1, 2, 3, 4, 5, 6, 7, 8, 9, 0] {
         let key_code = digit_keycode(index).expect("numbered index has a digit leg");
+        // Select-only arming: existing Spaces 1-9 dispatch; the trailing
+        // index-0 select-or-create stays unarmed (no automatic trailing
+        // creation/deletion this milestone — occupancy unresolved).
+        let select_armed = index != 0;
         rows.push(WorkspaceRow {
             id: select_id(index).expect("numbered index has a select id"),
             text: select_text(index).expect("numbered index has a select text"),
@@ -300,7 +308,7 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: false,
             }),
             unbound_key: None,
-            implemented: false,
+            implemented: select_armed,
         });
         rows.push(WorkspaceRow {
             id: send_id(index).expect("numbered index has a send id"),
@@ -346,7 +354,9 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
                 aux: true,
             }),
             unbound_key: None,
-            implemented: false,
+            // Armed: relative select dispatches with no focused-window
+            // subject (empty Spaces navigate).
+            implemented: true,
         });
     }
     for (id, key_code, prev) in REL_SEND_ROWS {
@@ -396,7 +406,9 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
             aux: true,
         }),
         unbound_key: None,
-        implemented: false,
+        // Armed: the two-view toggle dispatches with no focused-window
+        // subject; history advances only on verified arrival.
+        implemented: true,
     });
     for (id, key_code, direction) in OUTPUT_ROWS {
         rows.push(WorkspaceRow {
@@ -419,9 +431,14 @@ pub fn workspace_catalogue() -> Vec<WorkspaceRow> {
     rows
 }
 
-/// Armed bindings for the rows with default chords (45 rows): numbered
+/// Default-chord bindings for the rows with defaults (45 rows): numbered
 /// selects/sends, relative selects/sends, the previous toggle, and the
 /// output sends. Stay rows contribute nothing (bindable, unbound).
+/// Defaulted is not armed: the product tile arms the basic catalogue plus
+/// the implemented select-only subset ([`crate::workspace_select::bindings`],
+/// 18 rows) via [`crate::input_policy::effective_bindings`]; every other
+/// defaulted row (trailing select-0, all sends, all outputs) stays refused
+/// engine-side (see [`workspace_unsupported_reason`]).
 #[must_use]
 pub fn workspace_bindings() -> Vec<TileBinding> {
     workspace_catalogue()
@@ -454,12 +471,34 @@ pub fn workspace_action_id(action: &InputSemanticAction) -> Option<&'static str>
         .map(|row| row.id)
 }
 
+/// True only for the armed select-only subset: numbered existing-Space
+/// selects `1..9`, both relative selects, and the previous toggle. The
+/// trailing `index 0` select-or-create, every send/stay/output action, and
+/// every basic action are NOT armed selects (index 0 and transfers refuse
+/// with [`workspace_unsupported_reason`]; basics execute elsewhere).
+/// Single home for what the engine dispatches without a focused-window
+/// subject and what [`crate::workspace_select::bindings`] arms.
+#[must_use]
+pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
+    match *action {
+        InputSemanticAction::WorkspaceSelect { index } => index >= 1 && index <= 9,
+        InputSemanticAction::WorkspaceRelative { .. } | InputSemanticAction::WorkspacePrevious => {
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Honest engine refusal reason for one semantic action (`None` for the
-/// basic actions, which execute). Every workspace action is recognized but
-/// undispatched today; the reason names the exact missing execution seam
+/// basic actions, which execute, and for the armed select-only subset,
+/// which dispatches). Every other workspace action is recognized but
+/// undispatched; the reason names the exact missing execution seam
 /// rather than faking support.
 #[must_use]
 pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'static str> {
+    if is_armed_select(&action) {
+        return None;
+    }
     match action {
         InputSemanticAction::FocusStep { .. }
         | InputSemanticAction::MoveStep { .. }
@@ -469,10 +508,11 @@ pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'sta
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some(
-            "single-shot native Space switch unimplemented (spaces::switch_space_status: \
-             Dock injection, synthetic gestures, AX Mission Control automation, or posted \
-             system chords — none implemented; bounded spaces-switch-probe only; \
-             own-synthetic Ctrl+digit posting not yet implemented despite the input_match bypass)",
+            "trailing select-or-create unarmed: automatic trailing Space \
+             creation/deletion is unresolved (occupancy unproven — zero-area \
+             candidates are unknown, never an append trigger), so no trailing \
+             append runs from the product tile; the explicit spaces-select \
+             batch retains its own trailing diagnostics",
         ),
         InputSemanticAction::WorkspaceSend { .. }
         | InputSemanticAction::WorkspaceSendRelative { .. } => Some(
@@ -488,11 +528,15 @@ pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'sta
 }
 
 /// Static log outcome token for one refused workspace action (`None` for
-/// basic actions). The engine counts under
-/// `input_refused_unsupported` and emits this token; the seam detail rides
-/// [`workspace_unsupported_reason`] (docs/tests, never guessed at runtime).
+/// basic actions and for the armed select-only subset, which dispatches).
+/// The engine counts under `input_refused_unsupported` and emits this
+/// token; the seam detail rides [`workspace_unsupported_reason`]
+/// (docs/tests, never guessed at runtime).
 #[must_use]
 pub fn workspace_unsupported_outcome(action: InputSemanticAction) -> Option<&'static str> {
+    if is_armed_select(&action) {
+        return None;
+    }
     match action {
         InputSemanticAction::FocusStep { .. }
         | InputSemanticAction::MoveStep { .. }

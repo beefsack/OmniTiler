@@ -882,6 +882,109 @@ pub fn hit_test_input_grab(
     Ok(())
 }
 
+/// Owned-helper content size at spawn (points): the placement search fits
+/// exactly this rect, so the titlebar fractions stay valid wherever it lands.
+pub const HELPER_SPAWN_W: f64 = 480.0;
+pub const HELPER_SPAWN_H: f64 = 320.0;
+/// Titlebar slack for the placement search (points): the helper's spawn
+/// argument positions its AppKit *content* origin exactly, but the live
+/// frame adds host titlebar chrome above it (32pt measured on the dev
+/// desktop, so 64pt carries 2x headroom). The runner searches the
+/// slack-expanded rect and shifts the content origin down by the slack, so
+/// whatever the real chrome (within the slack) the settled frame stays
+/// inside the verified rect. The live postcondition gate verifies the
+/// settled rects regardless, so an over/under-sized slack can only refuse,
+/// never silently misplace.
+pub const TITLEBAR_SLACK: f64 = 64.0;
+/// Placement scan step and inside-visible inset (points).
+const PLACE_STEP: f64 = 20.0;
+const PLACE_MARGIN: f64 = 4.0;
+
+/// Pure uncovered-origin search over plain data (no OS touch): first origin
+/// in a deterministic scan (rows top-to-bottom, columns left-to-right)
+/// placing a `helper_w` x `helper_h` rect fully inside `visible` (with a
+/// small inset) without strictly overlapping any `avoid` rect. All rects are
+/// `(x, y, w, h)` in CG/AX top-left points. Degenerate `avoid` entries are
+/// ignored (never poison the search); degenerate `visible`/helper inputs or
+/// a helper that cannot fit yield `None`. Returns the top-left origin;
+/// `None` refuses (never a clamped, guessed, or partially covered
+/// placement). The live runner still proves both input identities at the
+/// grab points afterwards; this only picks a probably-clear setup.
+pub fn uncovered_helper_origin(
+    visible: (f64, f64, f64, f64),
+    avoid: &[(f64, f64, f64, f64)],
+    helper_w: f64,
+    helper_h: f64,
+) -> Option<(f64, f64)> {
+    let (vx, vy, vw, vh) = visible;
+    for v in [vx, vy, vw, vh, helper_w, helper_h] {
+        if !v.is_finite() {
+            return None;
+        }
+    }
+    if vw <= 0.0 || vh <= 0.0 || helper_w <= 0.0 || helper_h <= 0.0 {
+        return None;
+    }
+    if helper_w + 2.0 * PLACE_MARGIN > vw || helper_h + 2.0 * PLACE_MARGIN > vh {
+        return None;
+    }
+    let clean: Vec<(f64, f64, f64, f64)> = avoid
+        .iter()
+        .copied()
+        .filter(|(x, y, w, h)| {
+            x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0
+        })
+        .collect();
+    let overlaps = |ox: f64, oy: f64| {
+        clean.iter().any(|r| {
+            let (ax, ay, aw, ah) = *r;
+            ox < ax + aw && ax < ox + helper_w && oy < ay + ah && ay < oy + helper_h
+        })
+    };
+    let x_start = vx + PLACE_MARGIN;
+    let y_start = vy + PLACE_MARGIN;
+    let x_end = vx + vw - PLACE_MARGIN - helper_w;
+    let y_end = vy + vh - PLACE_MARGIN - helper_h;
+    let mut y = y_start;
+    while y <= y_end + 1e-9 {
+        let mut x = x_start;
+        while x <= x_end + 1e-9 {
+            let (ox, oy) = (x.min(x_end), y.min(y_end));
+            if !overlaps(ox, oy) {
+                return Some((ox, oy));
+            }
+            if x >= x_end {
+                break;
+            }
+            x = (x + PLACE_STEP).min(x_end);
+        }
+        if y >= y_end {
+            break;
+        }
+        y = (y + PLACE_STEP).min(y_end);
+    }
+    None
+}
+
+/// Pure CG/AX top-left origin to AppKit bottom-left origin over plain data
+/// (the inverse of [`crate::topology::appkit_to_cg_y`], for the helper's
+/// self-positioning spawn argument): `None` on any non-finite input
+/// (refused, never guessed).
+pub fn cg_top_left_to_appkit_origin(
+    x_top: f64,
+    y_top: f64,
+    w: f64,
+    h: f64,
+    primary_h: f64,
+) -> Option<(f64, f64)> {
+    for v in [x_top, y_top, w, h, primary_h] {
+        if !v.is_finite() {
+            return None;
+        }
+    }
+    Some((x_top, primary_h - y_top - h))
+}
+
 /// Pure pointer-restore decision over plain data: restore the baseline
 /// cursor position only when the cursor still sits where the drag left it
 /// (the grab point -- all synthetic mouse posts share one coordinate).

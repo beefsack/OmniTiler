@@ -66,7 +66,7 @@ pub enum TargetMode {
     Slow,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProbeTargetSpec {
     pub nonce: String,
     pub mode: TargetMode,
@@ -123,6 +123,14 @@ pub struct ProbeTargetSpec {
     /// Default off; enabled via `--space-join` (probe binary and
     /// `probe-spawn`). No foreign windows, no SLS, no synthetic events.
     pub space_join: bool,
+    /// Owned spawn origin fixture: when `Some`, the helper creates its own
+    /// window at this AppKit bottom-left origin (points) instead of the
+    /// fixed default, keeping the standard content size. The helper moves
+    /// only itself at creation (same self-action class as the Space-join
+    /// poll); the controller never writes frames. Default `None` (all other
+    /// holders keep the legacy origin). Enabled via `--origin X Y` (probe
+    /// binary) and [`ProbeTargetSpec::with_origin`] (holder-only fixture).
+    pub origin: Option<(f64, f64)>,
 }
 
 impl ProbeTargetSpec {
@@ -153,6 +161,7 @@ impl ProbeTargetSpec {
             transient_panel_ms: 0,
             transient_sheet_ms: 0,
             space_join: false,
+            origin: None,
         })
     }
 
@@ -205,6 +214,15 @@ impl ProbeTargetSpec {
         self
     }
 
+    /// Opt in to the owned spawn-origin fixture (see field docs). Builder;
+    /// holder-only fixture. Stores the origin unchecked; [`validate_origin`]
+    /// gates it at argv/spawn time and the helper gates it again at creation,
+    /// so a non-finite origin fails closed on both sides, never guessed.
+    pub fn with_origin(mut self, x: f64, y: f64) -> Self {
+        self.origin = Some((x, y));
+        self
+    }
+
     /// argv fragment for spawning the helper (no shell; exact args).
     pub fn argv(&self) -> Vec<String> {
         let mut args = vec![
@@ -240,7 +258,28 @@ impl ProbeTargetSpec {
         if self.space_join {
             args.push("--space-join".to_owned());
         }
+        if let Some((x, y)) = self.origin
+            && validate_origin(x, y).is_ok()
+        {
+            // An invalid origin is refused at spawn time (see
+            // `start_helper_process`), never silently defaulted here: no
+            // `--origin` flag means the spec asked for the default.
+            args.push("--origin".to_owned());
+            args.push(x.to_string());
+            args.push(y.to_string());
+        }
         args
+    }
+}
+
+/// Pure spawn-origin gate over plain data (no OS touch): both components
+/// must be finite. The helper re-validates at creation; a failure on either
+/// side refuses, never a guessed or clamped position.
+pub fn validate_origin(x: f64, y: f64) -> Result<(f64, f64), String> {
+    if x.is_finite() && y.is_finite() {
+        Ok((x, y))
+    } else {
+        Err("helper origin refused: non-finite AppKit origin".to_owned())
     }
 }
 
@@ -463,6 +502,37 @@ mod tests {
             .with_space_join(true);
         assert!(joined.space_join);
         assert!(joined.argv().contains(&"--space-join".to_owned()));
+    }
+
+    #[test]
+    fn origin_is_opt_in_and_reaches_helper_argv() {
+        let plain = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        assert_eq!(plain.origin, None);
+        assert!(!plain.argv().contains(&"--origin".to_owned()));
+        let placed = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10)
+            .unwrap()
+            .with_origin(1300.0, 200.0);
+        assert_eq!(placed.origin, Some((1300.0, 200.0)));
+        let argv = placed.argv();
+        let flag = argv
+            .iter()
+            .position(|a| a == "--origin")
+            .expect("flag present");
+        assert_eq!(argv[flag + 1], "1300");
+        assert_eq!(argv[flag + 2], "200");
+    }
+
+    #[test]
+    fn invalid_origin_fails_closed_before_spawn() {
+        assert!(validate_origin(f64::NAN, 0.0).is_err());
+        assert!(validate_origin(0.0, f64::INFINITY).is_err());
+        assert!(validate_origin(10.0, 20.0).is_ok());
+        // An invalid stored origin never reaches argv (no silent default
+        // placement) and refuses at the spawn gate before any process starts.
+        let mut spec = ProbeTargetSpec::new("0123456789abcdef", 0, 0, 10).unwrap();
+        spec.origin = Some((f64::NAN, 0.0));
+        assert!(!spec.argv().contains(&"--origin".to_owned()));
+        assert!(start_helper_process(&spec).is_err());
     }
 
     #[test]
@@ -1153,6 +1223,11 @@ pub struct UnreadySpawn {
 pub const HELPER_LINE_QUEUE_BOUND: usize = 512;
 
 pub fn start_helper_process(spec: &ProbeTargetSpec) -> Result<UnreadySpawn, String> {
+    // An explicitly requested but invalid spawn origin refuses before any
+    // spawn (never a silent default placement, never a guessed position).
+    if let Some((x, y)) = spec.origin {
+        validate_origin(x, y)?;
+    }
     let helper = if spec.regular_policy {
         helper_binary_for_regular_policy()?
     } else {

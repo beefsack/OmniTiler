@@ -752,13 +752,42 @@ fn process_job(
             );
         }
         EngineJob::InputAction { action } => {
-            // Workspace actions are recognized but undispatched: no native
-            // switch/send/output-transfer route runs from the product tile
-            // yet (see `workspace_unsupported_reason` for the exact seam).
-            // Counted and logged with a static token, never faked.
+            // Unarmed workspace actions (trailing select-0, every send/stay,
+            // every output) are recognized but undispatched: no trailing
+            // create, no transfer, no output-send route runs from the
+            // product tile (see `workspace_unsupported_reason` for the exact
+            // seam). Counted and logged with a static token, never faked.
             if let Some(outcome) = crate::workspace_input::workspace_unsupported_outcome(action) {
                 lock_shared(shared).diagnostics.input_refused_unsupported += 1;
                 emit(shared, 0, 0, 0, "input", outcome, 0);
+                return;
+            }
+            // Armed select-only actions dispatch with no focused-window
+            // subject (empty Spaces navigate): enqueue one pending claim
+            // for the main-thread tile drain without blocking and without
+            // touching the core (no plans, no frames, no focus — non-current
+            // windows stay tracked and hidden domains never actuate here).
+            // No published native topology, or an already-claimed/pending
+            // select, refuses narrowly (concurrent presses serialize/refuse
+            // instead of overlapping); a sent press is never replayed.
+            if crate::workspace_input::is_armed_select(&action) {
+                let mut guard = lock_shared(shared);
+                if guard.native_context.is_none() {
+                    guard.diagnostics.input_select_refused += 1;
+                    drop(guard);
+                    emit(shared, 0, 0, 0, "input", "refused-select-no-topology", 0);
+                    return;
+                }
+                if guard.select_busy || guard.select_pending.is_some() {
+                    guard.diagnostics.input_select_refused += 1;
+                    drop(guard);
+                    emit(shared, 0, 0, 0, "input", "refused-select-busy", 0);
+                    return;
+                }
+                guard.select_pending = Some(action);
+                guard.diagnostics.input_select_enqueued += 1;
+                drop(guard);
+                emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
                 return;
             }
             // The subject is observed truth, never planned focus.
@@ -825,8 +854,8 @@ fn process_job(
                     },
                     "toggle-orientation",
                 ),
-                // Recognized but undispatched: the guard above refuses every
-                // workspace action before dispatch, so these arms are
+                // Unarmed workspace actions refuse in the guard above and
+                // armed selects enqueue there too, so these arms are
                 // unreachable here (adding an action variant fails the
                 // guard's exhaustive match first).
                 InputSemanticAction::WorkspaceSelect { .. }

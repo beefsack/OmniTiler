@@ -20,15 +20,21 @@
 //! - The input owner (which already owns its tap guard) attests from
 //!   cheap live reads OUTSIDE the callback (session verdict, Secure Input,
 //!   workspace frontmost, SLPS front) plus a plain store snapshot, and
-//!   publishes to a lock-free [`EligibilityCache`].
+//!   publishes the focused-window verdict to the basic
+//!   [`EligibilityCache`] and the no-focus select verdict
+//!   ([`select_attest_verdict`]) to a separate select cache.
 //! - The tap callback reads ONLY atomics plus the monotonic clock (no
-//!   `Mutex`, no allocation, no OS/AX/NS calls, no logging) and
-//!   Keeps/noForwards while ineligible.
+//!   `Mutex`, no allocation, no OS/AX/NS calls, no logging), probes each
+//!   event's chord category first, and Keeps/noForwards on exactly that
+//!   category's cache while ineligible — basic chords pass through
+//!   wherever only selects attest (empty Spaces), so a stale hidden focus
+//!   can never be forwarded from the tap.
 //! - The tap owner drops its old guard and installs a
-//!   FRESH guard on return to eligible (new epoch) to avoid a disabled
+//!   FRESH guard on return to any-eligible (new epoch) to avoid a disabled
 //!   sticky cycle. A recorded hard creation denial still fails closed and
 //!   is never auto-overridden; transient disable notifications recover
-//!   (see [`crate::input_policy`]).
+//!   (see [`crate::input_policy`]). Disable notifications are control
+//!   events: the callback records them regardless of scoped eligibility.
 //! - Scoped sources start ineligible until attested facts. The
 //!   `input-session` fixture uses an explicit unrestricted test gate for its
 //!   known post targets (strict per-edge oracle still enforced in
@@ -425,6 +431,46 @@ pub fn attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     })
 }
 
+/// Select-only attest verdict over one snapshot: the no-focus eligibility
+/// for the armed select chords. Same session/Secure Input/lock-screen,
+/// frontmost-known, foreground-agreement, and scope gates as
+/// [`attest_verdict`], plus at least one current user Space — but NO
+/// per-PID publisher record, NO focused-window/Space-membership join, and
+/// NO show-state legs. That is the whole point: an empty Space has no
+/// focused window on it, yet must still navigate; publisher staleness (a
+/// hung app) must never wedge Space switching. Unsafe contexts still deny
+/// (locked/unknown session, Secure Input, lock screen, unreadable or
+/// disagreeing foreground, out-of-scope frontmost, or zero user currents —
+/// e.g. a fullscreen game current — release interception so those keys pass
+/// through untouched). Denials carry the same static tokens suffixed
+/// `-select` so basic vs select causation stays distinguishable.
+pub fn select_attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
+    if !s.session_unlocked {
+        return Err("session-not-unlocked-select".to_owned());
+    }
+    if s.secure_active == Some(true) {
+        return Err("secure-input-active-select".to_owned());
+    }
+    if s.lock_screen {
+        return Err("lock-screen-select".to_owned());
+    }
+    let frontmost = s
+        .frontmost_pid
+        .ok_or_else(|| "frontmost-unknown-select".to_owned())?;
+    if frontmost <= 1 {
+        return Err("frontmost-unknown-select".to_owned());
+    }
+    if s.workspace_pid != Some(frontmost) || s.slps_pid != Some(frontmost) {
+        return Err("foreground-disagreement-select".to_owned());
+    }
+    if !s.scope_allowed {
+        return Err("out-of-scope-select".to_owned());
+    }
+    if s.context_currents.is_empty() {
+        return Err("no-current-user-space-select".to_owned());
+    }
+    Ok(())
+}
 /// Lock-free cached eligibility published by the input owner from fresh
 /// attests and read by the tap callback. Starts ineligible until attested.
 /// `unrestricted_test_gate` (input-session fixture only) bypasses
@@ -848,5 +894,83 @@ mod tests {
         assert_eq!(store.context(), (vec![11, 22], 9));
         store.invalidate_context();
         assert_eq!(store.context(), (Vec::new(), 9));
+    }
+}
+
+#[cfg(test)]
+mod select_attest_tests {
+    use super::*;
+
+    fn empty_space_snapshot(now_ms: u64) -> AttestSnapshot {
+        // Empty Space: no focused window on the current Space, so no
+        // publisher record authorizes — yet select chords must navigate.
+        AttestSnapshot {
+            session_unlocked: true,
+            secure_active: Some(false),
+            lock_screen: false,
+            frontmost_pid: Some(4242),
+            frontmost_bundle: Some("com.apple.TextEdit".to_owned()),
+            slps_pid: Some(4242),
+            workspace_pid: Some(4242),
+            scope_allowed: true,
+            record: None,
+            record_updated_ms: 0,
+            context_currents: vec![11],
+            context_revision: 9,
+            allow_fullscreen: false,
+            now_ms,
+        }
+    }
+
+    #[test]
+    fn select_allows_empty_space_without_record_or_showstate() {
+        // No record, stale record, wrong-Space record, and fullscreen
+        // showstate all still attest for selects: Space switching actuates
+        // no window, so window-scoped facts must not gate it.
+        let mut s = empty_space_snapshot(10_000);
+        assert!(select_attest_verdict(&s).is_ok());
+        // A hung publisher (stale record) never wedges Space switching.
+        s.record_updated_ms = 0;
+        assert!(select_attest_verdict(&s).is_ok());
+        // Multi-display currents attest too.
+        s.context_currents = vec![11, 22];
+        assert!(select_attest_verdict(&s).is_ok());
+        // Secure Input unknown proceeds (known-active denies below).
+        s.secure_active = None;
+        assert!(select_attest_verdict(&s).is_ok());
+    }
+
+    #[test]
+    fn select_denies_unsafe_contexts() {
+        // Locked/unknown session, Secure Input, lock screen, unreadable or
+        // disagreeing foreground, out-of-scope frontmost, and zero user
+        // currents (e.g. a fullscreen game current) all release
+        // interception so those keys pass through untouched.
+        for name in [
+            "session",
+            "secure",
+            "lock",
+            "frontmost-none",
+            "frontmost-low",
+            "slps",
+            "workspace",
+            "scope",
+            "currents",
+        ] {
+            let mut s = empty_space_snapshot(10_000);
+            match name {
+                "session" => s.session_unlocked = false,
+                "secure" => s.secure_active = Some(true),
+                "lock" => s.lock_screen = true,
+                "frontmost-none" => s.frontmost_pid = None,
+                "frontmost-low" => s.frontmost_pid = Some(1),
+                "slps" => s.slps_pid = Some(9999),
+                "workspace" => s.workspace_pid = Some(9999),
+                "scope" => s.scope_allowed = false,
+                "currents" => s.context_currents.clear(),
+                _ => unreachable!("select denial case"),
+            }
+            assert!(select_attest_verdict(&s).is_err(), "{name}");
+        }
     }
 }

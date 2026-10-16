@@ -867,11 +867,21 @@ pub struct RuntimeDiagnostics {
     pub input_forwarded: u64,
     pub input_ignored: u64,
     pub input_refused_no_focus: u64,
-    /// Recognized workspace actions refused for missing product execution
-    /// (no native switch/send/output-transfer route yet — see
+    /// Recognized-but-unarmed workspace actions refused for missing product
+    /// execution (trailing select-0, all sends/stays, all outputs — see
     /// [`crate::workspace_input::workspace_unsupported_reason`]). Counted,
-    /// never dispatched.
+    /// never dispatched. The armed select-only subset enqueues instead (see
+    /// `input_select_enqueued`).
     pub input_refused_unsupported: u64,
+    /// Armed select-only workspace actions accepted by the engine without a
+    /// focused-window subject and handed to the main-thread tile controller
+    /// (one pending claim; no core contact, no plans).
+    pub input_select_enqueued: u64,
+    /// Armed select-only actions refused before enqueue (no published
+    /// native topology yet, or a select already claimed/pending — concurrent
+    /// presses serialize/refuse instead of overlapping). Counted with
+    /// static log tokens, never dispatched, never replayed.
+    pub input_select_refused: u64,
     /// Backend-generated observations published to the engine by app workers
     /// (startup, streaming, and readback handoffs).
     pub observations_published: u64,

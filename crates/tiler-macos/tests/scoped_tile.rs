@@ -2382,3 +2382,313 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
     );
     shutdown_clean(&fixture);
 }
+
+// -- Select-only product arming --------------------------------------------------
+
+/// Product tap table for select tests: the basic chords plus the 18 armed
+/// selects under Authentic/Ctrl.
+fn select_product_bindings() -> Vec<tiler_macos::runtime::TileBinding> {
+    let mut catalogue = tiler_macos::native_input::tile_catalogue();
+    catalogue.extend(tiler_macos::workspace_select::bindings());
+    tiler_macos::input_policy::effective_bindings(
+        tiler_macos::input_policy::InputPreset::Authentic,
+        ProbeModifier::Ctrl,
+        &catalogue,
+    )
+}
+
+fn select_config(bindings: Vec<tiler_macos::runtime::TileBinding>) -> RuntimeConfig {
+    RuntimeConfig {
+        topology_mode: TopologyMode::Native,
+        tile_bindings: Some(bindings),
+        ..RuntimeConfig::default()
+    }
+}
+
+/// One display with two user Spaces, 11 current (12 empty): the arrival
+/// target for the no-focus select legs below.
+fn two_space_snapshot() -> topology::TopologySnapshot {
+    topology::build_snapshot(
+        &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+        &[row(Some("uuid-1"), &[11, 12], Some(11))],
+        Some(true),
+    )
+}
+
+fn send_select_chord(
+    fixture: &Fixture,
+    bindings: &[tiler_macos::runtime::TileBinding],
+    action: tiler_macos::runtime::InputSemanticAction,
+) {
+    let binding = bindings
+        .iter()
+        .find(|b| b.action == action)
+        .expect("select chord armed");
+    let flags = tiler_macos::workspace_input::effective_flags_for(ProbeModifier::Ctrl, binding);
+    fixture
+        .input_tx
+        .send(RawKeyEvent {
+            kind: TapKeyKind::KeyDown,
+            flags,
+            key_code: binding.key_code,
+        })
+        .expect("send select chord");
+}
+
+fn log_has(handle: &RuntimeHandle, kind: &str, outcome: &str) -> bool {
+    handle
+        .log_snapshot()
+        .iter()
+        .any(|e| e.kind == kind && e.outcome == outcome)
+}
+
+#[test]
+fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
+    // No apps, no observations, no focused window anywhere: an armed
+    // numbered select still enqueues for the main-thread drain (empty
+    // Spaces navigate), without contacting the core; a second press while
+    // claimed refuses busy instead of overlapping — never replayed.
+    use tiler_macos::runtime::InputSemanticAction as Action;
+    let bindings = select_product_bindings();
+    assert_eq!(bindings.len(), 52, "34 basic + 18 armed selects");
+    let fixture = start(select_config(bindings.clone()));
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 1,
+        "no-focus select enqueued",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let diagnostics = fixture.handle.diagnostics();
+    assert_eq!(
+        diagnostics.input_forwarded, 0,
+        "selects never reach the core"
+    );
+    assert_eq!(diagnostics.input_select_refused, 0);
+    assert!(log_has(&fixture.handle, "input", "select-enqueued"));
+    // Concurrent press while the claim is held: refused busy, first claim kept.
+    send_select_chord(
+        &fixture,
+        &bindings,
+        Action::WorkspaceRelative { prev: false },
+    );
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_refused == 1,
+        "concurrent select refused busy",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let diagnostics = fixture.handle.diagnostics();
+    assert_eq!(diagnostics.input_select_enqueued, 1, "no second enqueue");
+    assert_eq!(diagnostics.input_forwarded, 0);
+    assert!(log_has(&fixture.handle, "input", "refused-select-busy"));
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn unarmed_workspace_rows_refuse_without_dispatch() {
+    // Test-only over-arming (the product never arms these): trailing
+    // select-0 and numbered sends still refuse engine-side with their
+    // honest tokens and never enqueue — the engine is the backstop.
+    use tiler_macos::runtime::InputSemanticAction as Action;
+    let mut bindings = select_product_bindings();
+    bindings.extend(
+        tiler_macos::workspace_input::workspace_catalogue()
+            .into_iter()
+            .filter(|row| row.id == "workspace-select-0" || row.id == "workspace-send-1")
+            .filter_map(|row| row.binding()),
+    );
+    let fixture = start(select_config(bindings.clone()));
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 0 });
+    wait_diagnostics(
+        &fixture.handle,
+        |d| {
+            d.input_refused_unsupported == 1
+                && log_has(
+                    &fixture.handle,
+                    "input",
+                    "refused-workspace-switch-unsupported",
+                )
+        },
+        "trailing select-0 refused",
+    );
+    send_select_chord(
+        &fixture,
+        &bindings,
+        Action::WorkspaceSend {
+            index: 1,
+            follow: true,
+        },
+    );
+    wait_diagnostics(
+        &fixture.handle,
+        |d| {
+            d.input_refused_unsupported == 2
+                && log_has(
+                    &fixture.handle,
+                    "input",
+                    "refused-workspace-send-unsupported",
+                )
+        },
+        "numbered send refused",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let diagnostics = fixture.handle.diagnostics();
+    assert_eq!(
+        diagnostics.input_select_enqueued, 0,
+        "unarmed rows never enqueue"
+    );
+    assert_eq!(diagnostics.input_forwarded, 0);
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn select_refuses_without_published_topology() {
+    use tiler_macos::runtime::InputSemanticAction as Action;
+    let bindings = select_product_bindings();
+    let fixture = start(select_config(bindings.clone()));
+    // No topology published: refuse instead of resolving against nothing.
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
+    wait_diagnostics(
+        &fixture.handle,
+        |d| {
+            d.input_select_refused == 1
+                && log_has(&fixture.handle, "input", "refused-select-no-topology")
+        },
+        "select without topology refused",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(fixture.handle.diagnostics().input_select_enqueued, 0);
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn arrival_on_empty_space_retains_hidden_layout_without_writes() {
+    // Display 1 knows Spaces 11+12; one window tiles on 11. Simulating the
+    // post-select arrival (current flips to the empty 12): the hidden
+    // window takes no frames and no focus, its session survives, and
+    // switching back resumes the exact layout — selection stays usable
+    // after arrival on an empty target Space.
+    let fixture = start(scoped_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let first = wait_applied(&fixture, "1001_1");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Arrival: current flips to the empty 12; the window stays homed on
+    // hidden 11 and is simply absent from the current view.
+    let mut arrived = two_space_snapshot();
+    arrived.rows[0].current = Some(12);
+    arrived.revision =
+        topology::fingerprint_snapshot(&arrived.displays, &arrived.rows, arrived.separate_spaces);
+    let revision = fixture.handle.update_topology_with(arrived, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            11,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        fixture
+            .applied_rx
+            .recv_timeout(Duration::from_millis(300))
+            .is_err(),
+        "hidden window takes no writes on the empty arrival Space"
+    );
+    // Return trip: the retained layout resumes exactly.
+    let mut back = two_space_snapshot();
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            12,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let resumed = wait_applied_to(&fixture, "1001_1", first.3, "return trip");
+    assert_eq!(
+        resumed.3, first.3,
+        "hidden session survives the empty arrival"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn select_claim_release_discard_protocol() {
+    // The claim slot serializes the tap/engine/main handoff offline: an
+    // empty slot claims/drops nothing; a claim takes the pending action
+    // and blocks a second claim while held (concurrent presses refuse
+    // busy); release frees the claim with nothing left pending; discard
+    // drops a fresh pending without dispatch and never touches a drain
+    // in progress. No live tap, no Spaces, no desktop effect.
+    use tiler_macos::runtime::InputSemanticAction as Action;
+    let bindings = select_product_bindings();
+    let fixture = start(select_config(bindings.clone()));
+    assert!(fixture.handle.claim_select_for_drain().is_none());
+    assert!(!fixture.handle.discard_select_pending());
+    fixture
+        .handle
+        .update_topology_with(two_space_snapshot(), &user_space);
+    send_select_chord(&fixture, &bindings, Action::WorkspaceSelect { index: 2 });
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 1,
+        "select enqueued for claim",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert_eq!(
+        fixture.handle.claim_select_for_drain(),
+        Some(Action::WorkspaceSelect { index: 2 })
+    );
+    assert!(fixture.handle.claim_select_for_drain().is_none());
+    assert!(
+        !fixture.handle.discard_select_pending(),
+        "discard never touches a drain in progress"
+    );
+    fixture.handle.release_select_after_drain();
+    assert!(fixture.handle.claim_select_for_drain().is_none());
+    send_select_chord(&fixture, &bindings, Action::WorkspacePrevious);
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_select_enqueued == 2,
+        "second select enqueued",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(fixture.handle.discard_select_pending());
+    assert!(!fixture.handle.discard_select_pending());
+    assert!(fixture.handle.claim_select_for_drain().is_none());
+    shutdown_clean(&fixture);
+}
