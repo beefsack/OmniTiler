@@ -3566,7 +3566,11 @@ decisions of 2026-09-24 are under
      Desktop-N with Revert; per-display mapping, independent layouts, KDE/Windows
      workspace actions and bindings.
   2. Input consume-first parity with Windows (user 2026-10-16, may change).
-  3. Effects: active border, group underlay.
+  3. Effects (KDE/Windows parity): active border, group underlay, drag/drop
+     overlays.
+  4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by
+     AeroSpace's all-workspaces-visible numbered mode; explore showing app icons
+     per workspace within the limited space.
   Small follow-ups: `just launch` exits nonzero on successful probes;
   Up/Down Mission Control chords, multi-display and the macOS 15 floor remain
   unexercised; review the `ffi.rs` unsafe surface.
