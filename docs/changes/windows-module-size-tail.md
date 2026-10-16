@@ -48,3 +48,8 @@
   2,313 passed / 0 failed / 1 ignored.
 - Render handoff is now under the cap; no production row is needed, keeping
   its coherent transport and lifecycle contract together.
+- Workspace production row complete: `workspace.rs` 1,762 -> 1,144;
+  `workspace/outputs.rs` 624. Seven output swap, displacement, reconnect and
+  migration methods move byte-for-byte into an inherent impl in the child.
+  State and private helpers stay in the parent with no visibility widening.
+  All five local gates pass: 2,313 passed / 0 failed / 1 ignored.
