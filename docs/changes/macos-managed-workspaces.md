@@ -108,6 +108,14 @@ Numbered/relative bindings must still be compared with KDE/Windows before
 enabling them. Per-display numbering/chord attribution, native fullscreen and
 multi-display transfer outcomes remain TBD, not inferred from this fixture.
 
+One actual default-binding question needs a user choice: KDE/Windows relative
+workspace actions add Ctrl to Meta/Win; macOS default Meta is already Ctrl, so
+literal modifier union collides with basic focus/move. An auxiliary modifier
+must not be silently invented. The
+[minimal discriminator](../spec/reference-outcomes.md#macos-native-workspace-discriminator)
+keeps the outcome TBD. The already-approved independent layouts, per-display
+mapping, trailing lifecycle and send-stay route do not need to be re-decided.
+
 ### Verification
 
 - macOS crate: 456 library tests and all eight integration suites pass; strict
