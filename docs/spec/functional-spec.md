@@ -37,7 +37,7 @@ Table A predicate rows carry literal status `OPEN (Table A R-xxx)`, unless a
 recorded user selection for that predicate is normative (then Status is
 NORMATIVE and Source cites the selection).
 
-Draft totals: 138 NORMATIVE, 28 OPEN, 0 PROVISIONAL (166 requirement rows);
+Draft totals: 138 NORMATIVE, 30 OPEN, 0 PROVISIONAL (168 requirement rows);
 all nine prior PROVISIONAL rows ratified NORMATIVE User 2026-10-08
 (REQ-FLT-06, REQ-START-01/02, REQ-MIN-01b, REQ-CTL-01/02/03b/05/06).
 Selected additions carry remaining KDE/Windows implementation gaps; KDE
@@ -98,7 +98,7 @@ defaults; selected D26 (b) lists cross-login intentional-float memory loss as a
 outcomes remain pending.
 Windows wiring and item-2/3/4/5/Q4 native journeys
 pending. The macOS
-adapter gap counts once platform-wide. Coverage: 156 scenarios (R-WS-27 added User decision 2026-10-09), 24 Table A predicates.
+adapter gap counts once platform-wide. Coverage: 158 scenarios (R-WS-27 added User decision 2026-10-09; R-MIN-04 and R-INS-09 added as OPEN evidence rows, nothing selected), 24 Table A predicates.
 
 Windows verification-only evidence, 2026-10-13 (D27 updated 2026-10-14)
 ([record and exact physical journeys](../changes/archive/windows-item22-verification.md)):
@@ -134,6 +134,7 @@ Hooks (real matrix names; PROVISIONAL indexing, not chosen configuration): V-INS
 | REQ-INS-07 | [R-INS-07](reference-outcomes/insertion.md#r-ins-07-open-with-a-destination-rule-into-an-inactive-workspaceoutput) open into inactive workspace | No switch, no visibility/focus steal on tiling startup/open/move into inactive workspace | current: no-switch/no-steal | current: no-switch/no-steal | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#window-state-float-sticky-maximize-fullscreen) background tiling approved 2026-09-16 |
 | REQ-INS-07b | [R-INS-07](reference-outcomes/insertion.md#r-ins-07-open-with-a-destination-rule-into-an-inactive-workspaceoutput) exact routing | Pending: exact inactive-workspace routing/admission detail | current: TBD | current: TBD | behavior OPEN; implementation absent | OPEN | Table U R-INS-07 routing |
 | REQ-INS-08 | [R-INS-08](reference-outcomes/insertion.md#r-ins-08-admission-under-an-explicit-preselected-split-direction) preselected direction | No preselection verb or concept selected | n/a | n/a | applicability OPEN | OPEN | Table C; no selection |
+| REQ-INS-09 | [R-INS-09](reference-outcomes/insertion.md#r-ins-09-burst-of-maps-versus-roster-delivered-together) burst ordering | Pending burst-ordering choice; existing START fit/seed selection unaffected | current: fit-first fresh adoption, otherwise deterministic spatial seed order with focus last and per-Admit projection refusal (`S(S-ours-admission-capacity)` @15faf1e4); native coalescing TBD | current: same shared-Engine leg; native TBD | behavior OPEN; implementation absent | OPEN | [matrix evidence](reference-outcomes.md#evidence-tags) S-ours-admission-capacity; no new selection |
 
 <a id="focus"></a>
 ## 2. Focus ([R-FOC](reference-outcomes/focus.md#focus-reference-outcomes))
@@ -319,6 +320,7 @@ Hooks: V-START-MIN selects B6, no setting. V-START-SEED selects the sequential l
 | REQ-MIN-03 | [R-MIN-03](reference-outcomes/minimum-size.md#r-min-03-oversized-sole-minimum) oversized sole minimum | Same minimum-aware B6 origin+minimum policy, no setting; no automatic floating fallback | delivered offline: sole tile writes origin+minimum, overflow settles quietly ([adapter](../../kwin/src/plan-adapter.ts) `overconstrainedEffective`, `writeGeometries`; [fixtures](../../kwin/tests/workspace-send-engine-fixture.test.ts)); live TBD | current: journey TBD | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#placement-minimums-and-startup-adoption) B6 2026-10-05, confirmed 2026-10-07 |
 | REQ-MIN-01b | [R-MIN-01](reference-outcomes/minimum-size.md#r-min-01-newcomer-minimum-exceeds-shares) overlay min-hint retention | Tiled maximized/fullscreen members retain last-known declared minimum hints bound to lifetime token and canonical slot until fresh queries resume; floating/born-slotless/minimized/cloaked rows do not reuse hints. The existing-pump two-second restore wake is an observation window, not hint expiry or a latency guarantee; physical timing user-owned | applicability OPEN | current: lifetime+slot retention; exact fixture/physical timing TBD | applicability OPEN | NORMATIVE | [decisions](../decisions.md#placement-minimums-and-startup-adoption) retained Windows overlay minimums User 2026-10-08 |
 | REQ-MIN-V | [R-MIN-01](reference-outcomes/minimum-size.md#r-min-01-newcomer-minimum-exceeds-shares) + [R-MIN-02](reference-outcomes/minimum-size.md#r-min-02-shrink-makes-members-infeasible) + [R-MIN-03](reference-outcomes/minimum-size.md#r-min-03-oversized-sole-minimum) no-enforce variant | Keep minimum-aware allocation plus B6; do not offer a no-enforce setting despite 7/8 references ignoring minima | current: B6, no setting | current: B6, no setting | same target; implementation gap (adapter absent) | NORMATIVE | [decisions](../decisions.md#placement-minimums-and-startup-adoption) R-MIN-01..03 USER 2026-10-07 |
+| REQ-MIN-04 | [R-MIN-04](reference-outcomes/minimum-size.md#r-min-04-pure-geometry-exhaustion) geometry exhaustion without minima | Pending exhaustion choice (B6/START unaffected); no policy selected | current: focused-leaf wrap, projection refuses when gaps plus positive child pixels cannot fit; no alternative search (`S(S-ours-admission-capacity)` @15faf1e4) | current: same shared-Engine leg; native TBD | behavior OPEN; implementation absent | OPEN | [matrix evidence](reference-outcomes.md#evidence-tags) S-ours-admission-capacity; no selection |
 
 <a id="close"></a>
 ## 11. Close ([R-CLOSE](reference-outcomes/close.md#close--reflow-reference-outcomes))
@@ -581,7 +583,7 @@ out-of-recording-output-scope previous IDs clear.
 All OPEN requirement IDs (grouped with spec section links; Table A items
 marked with literal status in-row):
 
-- [Insertion](#insertion): REQ-INS-07b, REQ-INS-08.
+- [Insertion](#insertion): REQ-INS-07b, REQ-INS-08, REQ-INS-09.
 - [Focus](#focus): REQ-FOC-01, REQ-FOC-02, REQ-FOC-03, REQ-FOC-04.
 - [Move](#move): REQ-MOV-02, REQ-MOV-05.
 - [Resize](#resize): REQ-RSZ-04.
@@ -590,6 +592,7 @@ marked with literal status in-row):
 - [Floating](#floating): none.
 - [Maximize](#maximize): no OPEN requirement row; KDE fullscreen carry is NORMATIVE under REQ-MAX-09b (D28 (b)). REQ-MAX-09 maximize/Windows carry and REQ-MAX-08 remain NORMATIVE.
 - [Minimize](#minimize): none.
+- [Minimum size](#minimum): REQ-MIN-04.
 - [Close](#close): none.
 - [Output](#output): none.
 - [Activation](#activation): REQ-ACT-02.

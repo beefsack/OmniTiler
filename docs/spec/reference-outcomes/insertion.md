@@ -345,3 +345,67 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
 - Then Ours KDE: TBD (no preselection concept evidenced at `9241c94`; not claimed absent).
 - Then Ours Windows: TBD, same as Ours KDE.
 - Variant hook: V-INS-AXIS.
+
+<a id="r-ins-09-burst-of-maps-versus-roster-delivered-together"></a>
+### R-INS-09: burst of maps versus roster delivered together
+
+- Given (tree profiles): empty workspace plus roster C,D,E (ordinary
+  resizable, no rules, scale 1). Two independently reset legs: (a) burst leg:
+  three separate map events in order C,D,E with no refocus between; (b)
+  together leg: the same roster delivered in one observation/batch where the
+  host permits (where no batch verb is evidenced, only the burst leg runs).
+- Given (column profiles): empty strip plus roster C,D,E at shipped defaults;
+  viewport recorded. Same two legs with the same batch-verb qualifier.
+- When: deliver leg (a) as three maps; deliver leg (b) as one batch.
+  Native verbs/config: same ordinary-open verbs as R-INS-03 per profile.
+- Observe: admission order/anchors (event order versus collective
+  optimization); per-map recalculation versus single layout; native
+  event-order settlement. First-leg policy reuses R-INS-01/R-INS-04; the
+  enable/adoption path (frozen MRU) is R-START-01..03 only, never ordinary maps.
+- Then COSMIC: each ordinary map runs one `map_to_tree` plus one
+  `update_positions` plus one push per `map_internal` call, serially; each
+  leg anchors at the focus MRU with newcomer focus; the `set_tiling` serial
+  loop over `floating_layer.mapped()` holding the frozen focus stack is the
+  separate enable path (reuse/qualify R-START-01..03, not this row); no batch
+  admission verb in the traced path; exact frames TBD.
+  `S(S-cos-geometry)` + `S(S-cos-seq)` + `S(S-cos-last)` + `S(S-cos-axis)` +
+  `S(S-cos-newgroup)` + `S(S-cos-mapfocus)`
+- Then Hyprland/Dwindle: each map runs `addTarget` plus recalculation
+  serially; each leg anchors per the ordinary active-tiled/closest rule with
+  newcomer focus; no batch admission verb in the traced path; per-leg sides
+  TBD (pointer half). `S(S-hyp-ins)` + `S(S-hyp-newfocus)` + `S(S-hyp-defaults)`
+- Then bspwm: TBD (burst ancestry unresearched; no claim)
+- Then i3: each manage admits serially after the focus-stack tiling head with
+  newcomer focus; cold-start `manage_existing_windows` iterates X query-tree
+  children serially, so that order follows the server listing, distinct from
+  a user burst order; exact frames TBD. `S(S-i3-ins)` + `S(S-i3-geometry)`;
+  queued
+- Then xmonad/Tall+Navigation2D: TBD (burst ancestry unresearched; no claim).
+  `S(S-xmo-layout)`
+- Then sway: each map admits serially after the focus-inactive newcomer with
+  ordinary newcomer focus; no batch verb in the cited path; exact frames TBD.
+  `S(S-sway-ins)`; queued
+- Then qtile/Columns: TBD (burst ancestry unresearched; no claim)
+- Then awesome/tile: TBD (burst ancestry unresearched; no claim)
+- Then niri: TBD (burst ancestry unresearched; no claim)
+- Then PaperWM: TBD (burst ancestry unresearched; no claim)
+- Then karousel/Lazy: TBD (burst ancestry unresearched; no claim)
+- Then paneru: TBD (burst ancestry unresearched; no claim)
+- Then Ours KDE: each newcomer admits via one `Admit` propose through the
+  retained lifecycle with the projection gate (`MalformedTopology` refusal on
+  invalid/degenerate geometry, no mutation); rebuild/seed order is the
+  deterministic spatial `(y,x,h,w)` sort with focus last (stable on ties),
+  not raw native event order - adapter observations can coalesce, so
+  arrival-order claims stay TBD; `seed_admit_step` advances one revision per
+  member. Fresh whole-roster admission first attempts the geometry-derived
+  recursive-cut fit; clean/tolerance-valid minimum-feasible fits preserve
+  placement, otherwise the deterministic long-edge seed runs (R-START-01..03).
+  This is not a balanced batch optimizer.
+  `S(S-ours-admission-capacity)` + `S(S-ours-ins)` @15faf1e4; native
+  event-order/timing TBD, no universal cap
+- Then Ours Windows: same one-Admit-per-newcomer/projection-gate/deterministic
+  seed-order leg as Ours KDE via the shared Engine.
+  `S(S-ours-admission-capacity)` + `S(S-ours-ins)` @15faf1e4; native
+  event-order/timing TBD, no universal cap
+- Variant hook: none (OPEN; user decision required for any burst-ordering
+  policy, nothing selected).

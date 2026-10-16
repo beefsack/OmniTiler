@@ -161,3 +161,84 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then Ours KDE: Core projects the sole leaf and flags its violated minimum; writable KDE raises the violated extent at tile origin (B6), allowing overflow. Offline oversized sole-leaf/offset-domain journey settles quietly. Code: [adapter](../../../kwin/src/plan-adapter.ts) `overconstrainedEffective`, `writeGeometries`; [real-engine fixtures](../../../kwin/tests/workspace-send-engine-fixture.test.ts). Floating cannot make this minimum fit the work area; exact native journey TBD, `D(D-min-games)`.
 - Then Ours Windows: Core projects the sole leaf and flags its violated minimum; writable Windows raises width at tile origin. Floating cannot make this minimum fit the work area; exact native journey TBD, `D(D-min-games)`.
 - Variant hook: V-START-MIN.
+
+<a id="r-min-04-pure-geometry-exhaustion"></a>
+### R-MIN-04: pure geometry exhaustion (no client minima)
+
+- Given (tree profiles): `H[A,V[B*,C]]` with B focused, gap `g>0`,
+  both of B's allocated extents smaller than `g+2`, and room elsewhere:
+  A is wide enough to split; C has most of the nested parent's height.
+  Retain the unequal shares before opening N (a synthetic exhaustion
+  fixture, not an observed pixel layout).
+  All windows ordinary resizable with zero declared minima (no min/max hints
+  anywhere); B6 never triggers here. The 800x600/gap-8/13-14-window report is
+  a user-supplied motivating instance, not verified legacy behavior and not a
+  universal cap.
+- Given (column profiles): `COL[C1[A],C2[B]]` narrow viewport with newcomer C
+  at shipped defaults; viewport recorded. A strip may absorb narrowness by
+  scrolling, so tree-style infeasibility is never assumed here.
+- When: Open newcomer N with B still focused (tree leg) / open C (column
+  leg). Native verbs/config: same ordinary-open verbs as R-MIN-03 per profile.
+- Observe: the nested parent's extent unchanged versus growth stealing from A;
+  degenerate tiny/zero allocation versus floors; alternative-arrangement
+  search versus none; focus.
+- Then COSMIC: N admits at the MRU anchor B; `new_group` wraps B only (C keeps
+  its slot, A untouched, the `V[B,C]` parent extent does not grow);
+  `update_positions` subtracts gaps with no floor, so degenerate tiny geometry
+  is possible. The ordinary-window path floors configured height at zero
+  after subtracting any server decoration, but not width; no capacity
+  refusal and no alternative-arrangement search in
+  the traced path; exact settled frames and client/native settlement TBD (L).
+  `S(S-cos-geometry)` + `S(S-cos-last)` + `S(S-cos-axis)` + `S(S-cos-newgroup)`
+- Then Hyprland/Dwindle: ordinary active-tiled anchor B (same workspace under
+  `use_active_for_splits`), else closest node; the new parent wraps B only
+  (no outside share steal, A untouched); the MAXSIZE-predicted float diversion
+  is max-hint only, distinct from exhaustion; no minimum/geometric admission
+  check in the traced path; `recalcSizePosRecursive` applies a `.noNegativeSize`
+  zero floor to pre-gap node boxes. Final tiled sizing subtracts gaps and
+  reserved decoration space without a floor; zero/negative target sizes can
+  result (not a min-20 admission floor; the tiled `MIN_WINDOW_SIZE` clamp is
+  opt-in, default off). Exact degenerate
+  frames TBD. `S(S-hyp-geometry)` + `S(S-hyp-ins)` + `S(S-hyp-min)`
+- Then bspwm: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then i3: N inserts after the focused tiling sibling B within the existing
+  parent `V[B,C]` (`tree_open_con` + `_con_attach`); `con_fix_percent`
+  assigns each zero-percent newcomer the mean of the existing percents, then
+  renormalizes the same parent only (N can take room from C, but B does
+  not grow; no parent growth or ancestor steal);
+  no exhausted-size check in the traced path; render floors client/frame
+  dimensions at >=1 via `rect_sanitize_dimensions`; exact fixture frames and
+  native response TBD. `S(S-i3-geometry)` + `S(S-i3-ins)` + `S(S-i3-min)`
+- Then xmonad/Tall+Navigation2D: fixture-inapplicable (flat master/stack Tall
+  cannot construct this retained nested-share fixture); no geometry asserted here.
+  `S(S-xmo-layout)`
+- Then sway: N anchors after the focus-inactive tiling sibling B within
+  `V[B,C]` with ordinary newcomer focus; arrange fraction-normalizes the same
+  parent (N takes a share from B/C, no parent growth or alternative search);
+  `total_gap=min(inner*(n-1),max(0,parent-MIN_SANE*n))`
+  with `MIN_SANE` W100/H60 is a gap budget only, not tile minima; after
+  dimension calculation `w<10||h<10` zeroes both (both bounds live in
+  `arrange.c`, `node.h` defines `MIN_SANE` only); no explicit numeric capacity
+  bound in the traced Tier 1 admission/allocation paths (path-scoped only, no
+  global no-limits claim); exact fixture frames and native response TBD.
+  `S(S-sway-geometry)` + `S(S-sway-ins)` + `S(S-sway-min)`
+- Then qtile/Columns: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then awesome/tile: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then niri: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then PaperWM: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then karousel/Lazy: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then paneru: TBD (exact nested-tiny ancestry unresearched; no claim)
+- Then Ours KDE: ordinary admission proposes structurally (`insert_tiled`
+  wrap of B, A/C untouched), but projection reserves one pixel per child
+  after gaps: along the split axis, `extent-gap*(n-1)>=n` must hold.
+  Projection rejects unrepresentable geometry (projection error or
+  any leaf rect `w<=0||h<=0` refuses `MalformedTopology` with no mutation, so
+  the outside parent never grows by silent steal); positive tiny shares still
+  project. `S(S-ours-admission-capacity)` + `S(S-ours-ins)` + `S(S-ours-admit)`
+  @15faf1e4; exact tiny-share geometry and native settlement TBD, no
+  universal cap
+- Then Ours Windows: same propose-with-projection-gate leg as Ours
+  KDE via the shared Engine. `S(S-ours-admission-capacity)` +
+  `S(S-ours-ins)` + `S(S-ours-admit)` @15faf1e4; exact geometry and native
+  settlement TBD, no universal cap
+- Variant hook: none (OPEN; user decision required, nothing selected).

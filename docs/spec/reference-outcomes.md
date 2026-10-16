@@ -15,6 +15,18 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### Admission and geometric capacity (source audit 2026-10-16)
+
+- Ordinary focused anchors: reuse [R-INS-01/04](reference-outcomes/insertion.md).
+- Exhausted anchor, room elsewhere, no client minima:
+  [R-MIN-04](reference-outcomes/minimum-size.md#r-min-04-pure-geometry-exhaustion).
+- Serial maps versus a whole roster:
+  [R-INS-09](reference-outcomes/insertion.md#r-ins-09-burst-of-maps-versus-roster-delivered-together).
+- Enable/adoption ordering and geometry preservation: reuse
+  [R-START-01..03](reference-outcomes/restart-persistence.md#r-start-01-enable-over-a-2x2-float-field);
+  the neighboring toggle/layout-switch/restart/reload discriminators are in
+  that section. No new policy selected; existing B6/startup decisions stand.
+
 ### Full-state reply settlement discriminators
 
 Architecture candidates, not selected native behavior.
@@ -864,6 +876,19 @@ Legend:
   `restart` verb) and sway/commands/reload.c:15-34,54-71 (in-place config
   reload, not a process restart)
   @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+- `S-sway-geometry` sway:sway/tree/view.c:848-901 (anchor is the seat
+  focus-inactive tiling node, spliced after via `container_add_sibling`) and
+  sway/tree/arrange.c:15-52,100-137 (newcomer fraction 0 takes the mean,
+  renormalized in the same parent; no parent growth, no alternative search)
+  and :70-97,155-180 (`total_gap=min(inner*(n-1),max(0,parent-MIN_SANE*n))`
+  is a gap budget only) plus include/sway/tree/node.h:8-9 (`MIN_SANE` W100/H60
+  definition only) and arrange.c:91-95,177-180 (`w<10||h<10` zeroes both) and
+  sway/tree/container.c:990-1025 (unfloat after focus-inactive tiling,
+  fractions reset) @1652c54b73f67df17b7b4ab0b0f7048204aa8104
+  ([view.c](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/tree/view.c),
+  [arrange.c](https://github.com/swaywm/sway/blob/1652c54b73f67df17b7b4ab0b0f7048204aa8104/sway/tree/arrange.c))
+  (no explicit numeric capacity bound in the traced Tier 1 admission/allocation
+  paths; path-scoped only, no global no-limits claim)
 - `S-sway-bind` sway:sway/commands.c:47,50,94,97
   (`bindsym`/`bindcode`/`unbindsym`/`unbindcode` registration) and
   sway/commands/bind.c:579-594 (bind/unbind definition dispatch)
@@ -1289,6 +1314,21 @@ Legend:
   skipped, otherwise unconditional `set_geometry` plus configure)
   and src/shell/layout/mod.rs:17-55 @3d55cba06c9cf6f27609cdefb520f7857dba20af
   (tile allocation/cropping without minimum enforcement; fixed-size admission floats)
+- `S-cos-geometry` cosmic-comp:src/shell/layout/tiling/mod.rs:407-436
+  (one `map_to_tree` plus one `update_positions` plus one push per
+  `map_internal` call) and :2898-2937 (`new_group` wraps only the anchor,
+  preserving outside siblings) and :2998-3131 (`update_positions` subtracts
+  gaps with no floor; degenerate geometry possible, client/native settlement
+  TBD) and src/shell/element/window.rs:250-258 (ordinary-window configure
+  height floored at zero after decoration subtraction; width unfloored) and
+  src/shell/element/surface.rs:293-316 (pending surface size/configure) and
+  src/shell/workspace.rs:1440-1452 (`set_tiling` maps floaters
+  sequentially holding the frozen focus stack; ordinary-map focus still
+  advances per `S(S-cos-mapfocus)`) and :1491-1519 (per-window toggle is fresh
+  admission) @3d55cba06c9cf6f27609cdefb520f7857dba20af
+  ([mod.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/shell/layout/tiling/mod.rs),
+  [workspace.rs](https://github.com/pop-os/cosmic-comp/blob/3d55cba06c9cf6f27609cdefb520f7857dba20af/src/shell/workspace.rs))
+  (serial admission geometry; no admission capacity/refusal/alternative search)
 - `S-cos-bornmax` cosmic-comp:src/shell/mod.rs:3001-3022,4461-4500
   and src/shell/workspace.rs:1002-1043 @3d55cba06c9cf6f27609cdefb520f7857dba20af
   (newcomer tiles then requested maximum overlays retained slot;
@@ -1296,6 +1336,22 @@ Legend:
 - `S-hyp-min` Hyprland:src/layout/target/WindowTarget.cpp:236-247
   and src/config/values/ConfigValues.cpp:604 @19fb395d45314960e6f79f17994a84094f1cd4f6
   (tiled size limits default off; opt-in size clamp/recenter, not auto-float)
+- `S-hyp-geometry` Hyprland:src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:63-107
+  (ordinary active-tiled same-workspace anchor, else closest; NOT feasibility)
+  and :109-116 (MAXSIZE-predicted float diversion is max-hint only, distinct
+  from exhaustion) and :236-251 (new parent wraps the anchor only, no outside
+  share steal) and :48-54 (`recalcSizePosRecursive` `.noNegativeSize` zero
+  floor on pre-gap node boxes) and src/layout/target/WindowTarget.cpp:148-256
+  (final tiled size subtracts gaps/reserved extents, no floor by default;
+  opt-in `size_limits_tiled` clamp only) and
+  src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp:251-259 (recalc per
+  map, serial) @19fb395d45314960e6f79f17994a84094f1cd4f6
+  ([DwindleAlgorithm.cpp](https://github.com/hyprwm/Hyprland/blob/19fb395d45314960e6f79f17994a84094f1cd4f6/src/layout/algorithm/tiled/dwindle/DwindleAlgorithm.cpp))
+  (no minimum/geometric admission check; no workspace tiling toggle per
+  `S(S-hyp-wsrule)`; dwindle/master switch moves tiled targets in list order
+  via remove/newTarget with unhide safeguard and conditional refocus per
+  `src/layout/algorithm/Algorithm.cpp:196-221`, float membership untouched: algorithm switch, not
+  a floating-to-tiling toggle)
 - `S-hyp-bornmax` Hyprland:src/desktop/view/window/Window.cpp:883-897,1230-1233,1527-1562
   @19fb395d45314960e6f79f17994a84094f1cd4f6
   (pending client maximum consumed/applied at map)
@@ -1395,6 +1451,22 @@ Legend:
   containers only; tiled containers get no re-admission)
   @903bcd518df32b0e055b17f5da3f988a0187fd3d
   (post-admission hint changes never re-float tiles)
+- `S-i3-geometry` i3:src/tree.c:149-181 (`tree_open_con` inserts after the
+  focused tiling sibling within the existing parent, not a forced binary
+  split) and src/con.c:165-205 (after-focus sibling attachment) and
+  :1140-1180 (`con_fix_percent` assigns each zero-percent
+  newcomer the mean of the existing percents, then renormalizes the same
+  parent only; no parent growth) and
+  src/render.c:91-124,176 (tiled render ignores hints) plus src/util.c:53-57
+  (`rect_sanitize_dimensions` floors client/frame dimensions at >=1) and
+  src/manage.c:44-68 (startup iterates X query-tree children serially via
+  `manage_window`: fresh adoption, not geometry preservation) and
+  src/commands.c:1668-1687 (`reload` is config-only, no adoption)
+  @903bcd518df32b0e055b17f5da3f988a0187fd3d
+  ([tree.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/tree.c),
+  [con.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/con.c),
+  [manage.c](https://github.com/i3/i3/blob/903bcd518df32b0e055b17f5da3f988a0187fd3d/src/manage.c))
+  (no exhausted-size check; no ancestor steal; no alternative search)
 - `S-i3-admit` i3:src/manage.c:139-143,402-421 and src/con.c:428-474,
   src/x.c:834-864 @903bcd518df32b0e055b17f5da3f988a0187fd3d
   (fullscreen atom admission; maximize flags derived from layout)
@@ -2272,6 +2344,31 @@ Legend:
   fixture) plus the `float-focus-admission` KWin wire characterization,
   under the unchanged admission policy; native observation/activation
   journey pending (live TBD, user-owned).
+- `S-ours-admission-capacity` omnitiler:crates/tiler-core/src/seed.rs:360-409
+  (`order_spatial_with_focus_last`: deterministic spatial `(y,x,h,w)` stable
+  sort with the focused window last; ties preserve adapter observation order;
+  tied non-focused rects fail closed on non-admission rebuilds) and :91-100,103-358
+  (`try_recursive_cut_fit[_with_centre_count]`: geometry-ordered
+  recursive-cut fit first, declining to the sequential seed) and :531-603
+  (`seed_admit_step`: one admit per revision through the retained
+  `SessionCommand::Admit` lifecycle) and :614-657 (`seed_session`: spatial
+  order in with focus last, one revision per member) and
+  crates/tiler-core/src/engine.rs:1449-1510 (fit-before-seed: centre-split or
+  minimum-infeasible fit declines to the sequential long-edge seed; the fitted
+  path commits via `propose_fitted_admit`) and :1768-1809 (ordinary admit
+  rebuilds in seed order, then one `Admit` propose) and
+  crates/tiler-core/src/session/fit.rs:30-179 (`propose_fitted_admit` stages
+  the complete tree through the normal lifecycle; projection failure or empty
+  geometry refuses `MalformedTopology` with no mutation) and
+  crates/tiler-core/src/session/ops/lifecycle.rs:415-425 (normal `Admit`:
+  projection error or any leaf rect `w<=0||h<=0` refuses
+  `MalformedTopology`; `PendingDesired` never staged) and
+  crates/tiler-core/src/session.rs:3022-3068 (`project_output_geometry`
+  validation) and crates/tiler-core/src/geometry.rs:154-249 (`project` gates:
+  positive bounds/shares, `avail >= shares.len()`, gap budget; negative
+  segment errors) @15faf1e46ba82ac462fa7b8deefa33e650825fca
+  (insert proposal structure versus projection refusal; the 13/14-window
+  report is user-supplied, not verified legacy behavior; no universal cap)
 - `S-nir-ins` niri:src/layout/scrolling.rs:903-923 (`add_tile` always wraps
   the tile in a new column) and :999-1017 (`add_column`: index defaults to
   active+1, 0 on an empty strip; the new column activates when told to) and
@@ -5156,12 +5253,14 @@ Legend:
 
 ## Coverage accounting
 
-- 156 scenarios: 58 historical plus 67 expansion additions (125), 14
+- 158 scenarios: 58 historical plus 67 expansion additions (125), 14
   discriminators for USER selections 2026-10-07 (items 1-5, including 1.5;
   R-WS-15..20, R-MOV-09..13, R-LAY-05/06, R-OUT-07), 8 Q2 discriminators
   R-SPC-06..13, 2 Q3 restart research discriminators, 6 Q4 migration
   discriminators R-WS-21..26, and R-WS-27 two-candidate migration selection
-  (User decision 2026-10-09, reference outcomes TBD): 58+67+14+8+2+6+1 = 156.
+  (User decision 2026-10-09, reference outcomes TBD), plus 2 OPEN
+  admission-geometry evidence rows (R-MIN-04, R-INS-09, nothing selected):
+  58+67+14+8+2+6+1+2 = 158.
   Their 196 Then bullets distinguish selected targets (with delivery evidence where available)
   from reference outcomes that were TBD at addition. Established source-fill
   legs now vote under the ordinary evidence rule; current counts are in the
@@ -5186,7 +5285,7 @@ Legend:
 - 522 historical wide-table cells at baseline `e160894` (eight references
   plus combined Ours per row) are migrated to GWT without retrospectively
   assigning the new status classes. Present form: 58 historical scenarios
-  x 14 profiles = 812 Then bullets; 156 scenarios x 14 = 2184 Then bullets
+  x 14 profiles = 812 Then bullets; 158 scenarios x 14 = 2212 Then bullets
   (+28 explicit-swap-leg bullets). Expansion record's total coverage count
   remains 1720 as baseline provenance; baseline assessed cells were not a
   uniform 125x14 grid. Baseline semantic-status totals above exclude the 22
@@ -5208,16 +5307,17 @@ only: 125 expansion-baseline scenarios, plus 14 decision discriminators
 2026-10-07, 8 Q2 fixed-size discriminators, 2 Q3 restart research
 discriminators and 6 Q4 workspace migration discriminators 2026-10-08:
 156 scenarios total (R-WS-27 two-candidate migration selection added User
-decision 2026-10-09 with reference outcomes TBD).
+decision 2026-10-09 with reference outcomes TBD), plus OPEN R-MIN-04 and
+R-INS-09 (158 total, nothing selected).
 This index retains purpose, row-addition rule, notation,
-profiles, evidence tags/legend, variant hooks, and deferred. All 156
+profiles, evidence tags/legend, variant hooks, and deferred. All 158
 scenarios use the GWT form below; no wide-table rows remain.
 Areas follow the approved priority order; column mechanics follows, and
 minimum-size stays a supplemental file (not nested in resize).
 
 | Area | File | Scenarios | Candidates |
 |---|---|---|---|
-| Insertion | [insertion.md](reference-outcomes/insertion.md) | R-INS-01..08 (8) | none (R-INS-03..08 landed in piece B1) |
+| Insertion | [insertion.md](reference-outcomes/insertion.md) | R-INS-01..09 (9) | R-INS-09 burst-vs-together ordering (OPEN, nothing selected); R-INS-03..08 landed in piece B1 |
 | Focus | [focus.md](reference-outcomes/focus.md) | R-FOC-01..04 (4) | none (landed in piece B2) |
 | Move | [move.md](reference-outcomes/move.md) | R-MOV-01..13 (13) | R-MOV-09..13 added 2026-10-07; reference source legs filled, unsupported legs TBD; KDE items 3/5 delivered offline; Windows item 3 delivered 2026-10-11 (`755aab8`), native Settings/no-rebuild observed, physical moves pending; Windows item 5 pending |
 | Resize | [resize.md](reference-outcomes/resize.md) | R-RSZ-01..04 (4) | none (landed in piece B4) |
@@ -5232,9 +5332,9 @@ minimum-size stays a supplemental file (not nested in resize).
 | Mouse | [mouse.md](reference-outcomes/mouse.md) | R-DRAG-01..08 + R-MOU-01..03 (11) | none (R-MOU-01..03 landed with scrolling backfill) |
 | Special windows | [special-windows.md](reference-outcomes/special-windows.md) | R-SPC-01..13 (13) | R-SPC-04/06..13 KDE and Windows implemented offline under selected D1-D8/G-05; Windows prerequisite a41fcb5 plus runtime delivery 2026-10-11. R-SPC-11/12 lifecycle/enable and R-SPC-13 fixed-origin maximized restart discriminate readings; Windows hydrated-override overlay route tentative. Native and unsupported reference outcomes TBD |
 | Activation | [activation.md](reference-outcomes/activation.md) | R-ACT-01..02 (2) | none (landed; no backfill: no prior rows) |
-| Restart / persistence | [restart-persistence.md](reference-outcomes/restart-persistence.md) | R-START-01..03 + R-CTL-01..07 + R-RST-01..04 (14) | Q3 KDE intentional membership implemented offline under user-selected NORMATIVE D1-D4 (User 2026-10-08; fixed-window tile-override persistence pending); R-RST-03/04 cover frame drift and automatic-vs-intent origin; native, Windows and unsupported reference legs TBD |
+| Restart / persistence | [restart-persistence.md](reference-outcomes/restart-persistence.md) | R-START-01..03 + R-CTL-01..07 + R-RST-01..04 (14) | Q3 KDE intentional membership implemented offline under user-selected NORMATIVE D1-D4 (User 2026-10-08; fixed-window tile-override persistence pending); R-RST-03/04 cover frame drift and automatic-vs-intent origin; startup-vs-restart-vs-reload discriminator table added (no new scenario); native, Windows and unsupported reference legs TBD |
 | Column mechanics | [column-mechanics.md](reference-outcomes/column-mechanics.md) | R-COL-01..10 (10) | none (landed) |
-| Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..03 (3) | none (piece B4; R-MNZ icon-minimize is separate) |
+| Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..04 (4) | R-MIN-04 pure geometry exhaustion (OPEN, B6 unchanged, nothing selected); R-MIN-01..03 piece B4; R-MNZ icon-minimize is separate |
 
 ## Scrolling column notation
 
