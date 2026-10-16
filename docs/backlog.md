@@ -3503,8 +3503,10 @@ decisions of 2026-09-24 are under
      workspace actions and bindings.
   2. Input consume-first parity with Windows (user 2026-10-16, may change).
   3. Effects: active border, group underlay.
-  Small follow-ups: remove the Carbon diagnostic route (proposed for Simplicity,
-  awaiting user confirmation); `just launch` exits nonzero on successful probes;
+  Small follow-ups: remove the Carbon hotkey code entirely (user 2026-10-16,
+  Simplicity; the tap is the sole route): `RegisterEventHotKey` path, Carbon
+  `ffi.rs` symbols/unsafe, `input-register` probe and options, tests, recipes and
+  live instructions, keeping historical evidence; `just launch` exits nonzero on successful probes;
   Up/Down Mission Control chords, multi-display and the macOS 15 floor remain
   unexercised; review the `ffi.rs` unsafe surface.
   Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
