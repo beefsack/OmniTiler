@@ -250,6 +250,9 @@ it predates the later retained-layout changes.
   helper. The causal repair uses portable standard-library locking while
   preserving Unix no-follow/private-mode safeguards; the same fake-backed
   ownership assertions run unchanged, rather than being skipped.
+  Follow-up `8d445ba1` passes Windows tests too; its Windows strict clippy
+  requires explicitly non-truncating lock-file opens. Both platform branches
+  now state that existing lock-file contents are preserved.
 - Unsafe blocks in the existing FFI module: **96 → 100** (four narrowly scoped
   dynamic hotkey SPI resolution/read/enable blocks); no unsafe elsewhere and no
   new dependency. Standard-library locking avoided an additional unsafe block.

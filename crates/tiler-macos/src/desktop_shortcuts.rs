@@ -741,6 +741,7 @@ pub(crate) fn lock_leaf_file(path: &std::path::Path) -> Result<std::fs::File, Lo
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
@@ -755,6 +756,7 @@ pub(crate) fn lock_leaf_file(path: &std::path::Path) -> Result<std::fs::File, Lo
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)
             .map_err(|e| LockRefusal::Refused(format!("lock open: {e}")))?
     };
