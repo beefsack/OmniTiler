@@ -15,6 +15,9 @@ Project principles, approved by the user.
   solution that delivers the requirements within our constraints.
 - This matters most in complex areas with uncontrolled elements and multiple
   failure modes, where added machinery multiplies the ways things can fail.
+- Add no timeout, expiry, retry cap or other limit unless it solves a
+  specific, identified problem or provides tangible value; state that reason
+  where the limit is defined. Otherwise it is just complexity.
 
 ## Consistency
 
