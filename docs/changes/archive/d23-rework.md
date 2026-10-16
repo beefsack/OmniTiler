@@ -43,6 +43,11 @@ Behavioral ambiguity receives a minimal discriminator in the reference matrix;
 unsupported reference and native outcomes stay TBD. No settings or saved-slot
 persistence are added.
 
+- User-approved 2026-10-16 D23 item 6 process: source-slot lifetime after
+  membership rehoming while minimized is NOT decided. Research Tier 1
+  references first, then decide for consistency; earlier option B preference
+  is context only. This delivery selected no source cleanup policy.
+
 ## Delivered outcome (2026-10-13)
 
 - Shared core: exact restoration remains a fast path. Otherwise a surviving

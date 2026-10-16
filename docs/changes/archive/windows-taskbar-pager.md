@@ -93,7 +93,7 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
   from app-icon crowding, which never changes pager layout.
 - User-approved 2026-10-16 icon sizing and retry/queue cleanup are recorded
   in the [icon record](../windows-taskbar-pager-icons.md) and
-  [review delivery](../windows-review-decisions-2026-10-16.md).
+  [review delivery](windows-review-decisions-2026-10-16.md).
 - Initial repository state was clean.
 
 ## Remaining validation and scope

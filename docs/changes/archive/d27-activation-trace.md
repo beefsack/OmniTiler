@@ -12,7 +12,9 @@
   no tiler guard. Valid-token/FromTool/allowed-X11 switches + focuses;
   missing/stale-token demand-attention. Never intercept/revert/suppress.
   Alternatives are complex hacks, maintenance burden and jank. Windows default
-  Mark urgent only and guard unchanged; setting KDE applicability at design.
+  Mark urgent only is unchanged. User-approved 2026-10-16 Windows 5b now honors
+  OS-permitted Switch and focus over fullscreen/games, implementation pending;
+  this changes no KDE behavior. Setting KDE applicability remains for design.
 - Evidence: KWin trace at 8438567a + v6.6.3; OmniTiler convergence check at
   15aa5e3. [Full trace](../../research/d27-kwin-activation-trace.md),
   [decision](../../decisions.md#activation-requests).

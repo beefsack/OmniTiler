@@ -51,6 +51,10 @@
   shared/KDE behavior, with destination fresh admission. No new source cleanup
   policy was inferred; the [minimal discriminator](../../spec/reference-outcomes.md#d23-best-effort-restore-and-close-discriminators)
   leaves source keep/forget intent and native outcomes TBD.
+- User-approved 2026-10-16 D23 item 6 follow-up: research Tier 1 reference-WM
+  behavior first, then decide consistently with it. The earlier lean toward
+  forgetting the source slot is context, not approval. No new research or
+  source-slot policy change is delivered here.
 
 ## Pending physical acceptance
 

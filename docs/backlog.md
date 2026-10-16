@@ -63,8 +63,8 @@ decisions of 2026-09-24 are under
   [Options and recommendation](research/shared-settings-schema.md) delivered
   2026-10-15. [KDE-only tabs delivered](changes/archive/kde-settings-tabs.md):
   Tiling & Workspaces, Appearance, Shortcuts, Desktop Integration; settings
-  build/CTest and staged native rendering/switching pass. Grouping and pre-0.1
-  timing are tentative, user review pending. User 2026-10-16: the Windows
+  build/CTest and staged native rendering/switching pass. Windows grouping
+  and pre-0.1 route/timing are user-approved 2026-10-16. The Windows
   Settings dialog has grown too tall to use; priority raised. Approved route
   D (Rust core catalog with checked-in generated native descriptors) pre-0.1:
   first slice builds the core catalog with tabs/sections and platform-specific
@@ -74,6 +74,10 @@ decisions of 2026-09-24 are under
   implemented: 17 portable fields, four Windows-only fields, four native tabs,
   persistent feedback and scrollable long notes; physical size/keyboard/
   accessibility and save/reload checks remain pending.
+  User-approved placement: Tiling & Workspaces (gaps, workspace defaults/scope,
+  move/admission/refill); Appearance (border/underlay); Shortcuts (takeover,
+  Win+L, presets, bindings, Xbox/Game Bar); Desktop Integration (mouse Snap,
+  taskbar pager). CI 38876735949 passed all eight jobs.
 - P1 | KDE Settings core-catalog migration | Migrate the existing native
   Settings tabs to the shared Rust catalog using an exporter, checked-in
   generated descriptors and a CI drift check. Preserve KConfig keys, tolerant
@@ -167,8 +171,14 @@ decisions of 2026-09-24 are under
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
   Authentic keeps Win+G/F11 with cached read-only per-user `GamingHomeApp`
   configuration and supported current-user Game Bar package-query evidence.
-  Unknown Xbox state retains conservative amber/tray/Settings warnings;
-  Game Bar package absence retains a residual shortcut check. Resolve buttons
+  User-confirmed 2026-10-16: unknown/absent/unreadable GamingHomeApp retains
+  conservative Xbox amber/tray/Settings warnings. Approved correction B,
+  NOT YET IMPLEMENTED: detected Game Bar installation warns; successful package
+  absence clears all Win+G warnings, notes and conflict rows, including static
+  binding-list and selected OS text (not just probe-derived details/badges).
+  Add presence/absence/failure and effective-rebound-chord regressions.
+  Query failure is not absence; current explicit unknown/query-failed warning
+  remains, with that handling for review. Resolve buttons
   open Settings only, explaining capture/managed-app-data loss and Store
   reinstall limits; no tiler uninstall or registry/policy writes.
   [Active record and physical plan](changes/windows-gaming-coexistence.md),
@@ -176,27 +186,12 @@ decisions of 2026-09-24 are under
   Pending physical acceptance: both Ctrl chords route only to tiler actions,
   Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
   hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
-- P1 | Windows all-member workspace sends physical acceptance |
-  Settings/floating-fixed/maximized/fullscreen WS1->WS2->WS1 follow/stay
-  roundtrips with frame/flag/focus checks pending
-  ([record](changes/windows-all-member-workspace-sends.md)).
 - P1 | Windows launcher geometry fighting | Hint/timeout flap correlates
   with repeated four-window writes. User-approved lifetime-bound declared-hint
   reuse on timeout (no expiry), rate-limited per-window diagnostics and
   log-derived synthetic regression delivered offline. Four-launcher plus
   Notepad/Paint physical acceptance pending
   ([record](changes/windows-launcher-geometry-fighting.md)).
-- P1 | Windows physical acceptance batch (2026-10-16 deliveries) | One
-  desktop session covers all offline-delivered Windows changes awaiting
-  native checks: trailing workspace after admission into the last empty
-  workspace, both pagers
-  ([record](changes/archive/windows-admission-trailing-workspace.md));
-  pager app icons ([record](changes/windows-taskbar-pager-icons.md)); Xbox
-  conflict handling ([record](changes/windows-gaming-coexistence.md));
-  all-member sends ([record](changes/windows-all-member-workspace-sends.md));
-  launcher geometry fighting
-  ([record](changes/windows-launcher-geometry-fighting.md)); tabbed Settings
-  from the core catalog ([record](changes/shared-settings-catalog-windows-tabs.md)).
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later
@@ -387,7 +382,7 @@ decisions of 2026-09-24 are under
   | D23 | delivered offline on KDE and Windows; native verification pending | COSMIC `3d55cba0` source gate passed. Shared best-effort neighbor rejoin and additive `closed_windows` serve both adapters. Windows delivered 2026-10-13: retained-allocation divergence replaced with release/reflow/MRU, no-focus restore, sole null focus and hidden-domain close cleanup; session-only. Native gates 1,845 passed, 0 failed, 1 ignored; native journeys pending. [Shared/KDE evidence](changes/archive/d23-rework.md), [Windows evidence](changes/archive/windows-d23-restore-close.md), [decision](decisions.md#window-state-float-sticky-maximize-fullscreen). |
   | D25 | approved (a); verification-only | Keep host-owned set; re-observe host membership, no moves; focus only where provable; rebuild layout by re-adoption, no saved-layout restore; intentional floats stay floating via existing restart store; no setting. Generic fresh snapshot/rebuild/converge supports membership/provable focus (`kwin/src/plan-adapter-entry.ts:2186-2300`, `crates/tiler-core/src/session/world.rs:746-799` at `fafcd31`, revision-bound). Native dogfood/live checks will assess orderly restart; outcomes pending. [Decision](decisions.md#restart-persistence). |
   | D26 | approved (b); verification-only, no code | Restore already-persisted owned gaps/settings; re-observe host set/membership/maximize, no invented layout restore. Gaps/settings reload exists (`kwin/src/domain-gap.ts:90` at `fafcd31`); intent cannot cross login/bus/KWin namespace (`crates/omnitiler/src/float_intent_store.rs:11,30-34`). Listed 0.1 known limitation: intentional-float memory lost on logout/login, reopened apps new identities; unchanged REQ-RST-01d lifetime. Revisit after 0.1 with shared restart store. Native dogfood/live checks will assess; outcomes pending. [Decision](decisions.md#restart-persistence). |
-  | D27 | KDE verification-only; no longer BLOCKED. Windows partial verification; classification/presentation open | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows 2026-10-14 `f4b9f41`: fresh background current/hidden calls denied with no switch/focus change; shell flash observed, visible urgency unproven. Permitted activation from previously attached caller converges; no product request classifier/marker. Mark urgent only/guard unchanged; clean permitted/helper-originated route, visual mark/clear, game and physical selection TBD ([Windows evidence/options](changes/archive/windows-d27-activation-verification.md)). Setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
+  | D27 | KDE verification-only; no longer BLOCKED. Windows partial verification; approved 5b implementation pending | User 2026-10-13 accepts native KWin host exception: valid-token/FromTool/allowed-X11 switches + focuses, missing/stale-token demand-attention; converge without intercept/revert/suppress. No KDE gaming guard; rely on native input freshness. Real-game active and idle/paused check must pass; reopen only on actual active-play switch-away. Windows 2026-10-14 `f4b9f41`: fresh background current/hidden calls denied with no switch/focus change; shell flash observed, visible urgency unproven. Previously attached caller converges; no product classifier/marker. User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus over fullscreen/games, no urgency-only downgrade; default Mark urgent only/non-permitted unchanged. Not yet implemented; clean permitted route, mark/clear and game evidence TBD ([Windows evidence/options](changes/archive/windows-d27-activation-verification.md)). Setting KDE applicability deferred to design ([research](research/d27-kwin-activation-trace.md); [decision](decisions.md#activation-requests)). |
   | D28 | delivered offline, including born-fullscreen option (a); native/game verification pending | Explicit numbered/relative follow/stay carries retained fullscreen tiles and never-tiled slotless members. Shared MoveDeferred rehomes the initial hold without tree mutation, source admission or geometry setters; D5 first exit admits on the destination. Fullscreen flag and existing send fences retained. Native KDE journey including a real game is must-pass; stop if KWin drops/corrupts fullscreen. No setting; native outcome TBD ([record](changes/archive/kde-fullscreen-activation-and-send.md); [decision](decisions.md#window-state-float-sticky-maximize-fullscreen)). |
 
   - D16 verification queue: ordinary and approved floating+fullscreen/maximized
@@ -445,8 +440,11 @@ decisions of 2026-09-24 are under
   D09/D10 with two options each; functional names/options/WM tooltips are in
   [Move decisions](decisions.md#move-layout-and-output-commands).
   Approved D27 `Activation request`: `Mark urgent only` (default; tooltip
-  Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad), Windows
-  gaming guard in both modes. KDE applicability is reviewed when the setting
+  Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad). User-approved
+  2026-10-16 Windows amendment: Switch and focus honors OS-permitted activation
+  even over fullscreen/games, no urgency-only downgrade; default/non-permitted
+  unchanged. Implement that behavior and help text; no activation setting is
+  currently shipped. KDE applicability is reviewed when the setting
   is designed; no decision now. Functional names/options; WM names only in tooltips.
   Qualifies via COSMIC Tier 1 plus xmonad Tier 2 under the
   [tier rule](decisions.md#reference-tiers); [activation decision](decisions.md#activation-requests).
@@ -487,15 +485,23 @@ decisions of 2026-09-24 are under
     regressions; user physical recheck passed 2026-10-14 (fullscreen Notepad
     kept focus across workspace follow sends) ([decision](decisions.md#window-state-float-sticky-maximize-fullscreen)).
   - Windows review follow-ups (User 2026-10-14):
-    - 5b open: does OS-permitted activation switch+focus override the D27
-      fullscreen/game urgency-only guard (decisions.md D27)? User leans
-      toward keeping the guard as an exception (Gaming Compatibility); to be
-      confirmed during dogfooding.
+    - 5b / correction C APPROVED user 2026-10-16, NOT YET IMPLEMENTED:
+      Windows Switch and focus honors OS-permitted activation even with a
+      fullscreen/game foreground; no urgency-only downgrade. Default Mark urgent
+      only and non-permitted requests unchanged. Windows itself permits this;
+      an extra tiler game-protection override risks suppressing legitimate requests.
+      Accepted consequence: workspace switch hides the game's workspace; later
+      real-game evidence pending. First establish the request/permission seam:
+      no dedicated classifier or activation setting is shipped. Keep Windows-only;
+      stop if shared-core work would alter KDE. Tests must cover permitted
+      Switch and focus over fullscreen/game, unchanged default and denied requests;
+      include the new behavior in future setting help. [Decision](decisions.md#activation-requests).
     - Reconcile `tick` skipped count without identities accepted for now.
-    - (6) D23 source slot after a minimized window is rehomed elsewhere: user
-      leans option B (forget the source slot; later return uses ordinary send
-      admission). Check Tier 1 reference behavior before deciding; shared-core
-      change affecting KDE, low priority.
+    - (6) D23 source slot after a minimized window is rehomed elsewhere:
+      NOT DECIDED. User-approved 2026-10-16: research Tier 1 reference WM behavior
+      first, then decide for consistency. Earlier lean to option B (forget the
+      source slot) is context only. Research remains pending; shared-core change
+      would affect KDE, low priority.
     - (8) Linux KDE `just dev` streaming/teardown check remains pending;
       [entry-point record](changes/dev-entry-point.md) stays active until it passes.
     - (13f) Research Tier 1 fixed-size durable-override born-maximized behavior,
@@ -1010,8 +1016,10 @@ decisions of 2026-09-24 are under
     in the indicator, cleared on visit. Native shell flash was heard for hidden
     owned helpers, but visible urgency was not established and no product
     observer/marker exists. [Evidence](changes/archive/windows-d27-activation-verification.md).
-    Appearance and permitted request-versus-selection handling remain
-    unselected; approved Mark urgent only/fullscreen-game guard unchanged.
+    Appearance and technical request-versus-selection classification remain
+    unselected. User-approved 2026-10-16 Windows 5b target: OS-permitted Switch
+    and focus over fullscreen/games, no urgency-only downgrade; implementation
+    pending, default Mark urgent only and non-permitted requests unchanged.
 - P1 | KDE follow-ups from the Windows port | Audit 2026-10-05
   ([note](research/cross-platform-core/post-windows-audit.md)); user order
   B1/B2, B3-B5, B7, B8. B1/B2 stale maximize/sticky attempted-state
@@ -1271,7 +1279,7 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Windows additive schema-v1 config, UI Apply/Revert and live runtime/scoped MRU delivered offline 2026-10-14 with item 14 ([record](changes/archive/windows-workspace-output-migration.md)); native journeys pending. Shared core/KDE delivered offline 2026-10-10. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. Urgent-only/guard unchanged; clean permitted/helper-originated requests, visible mark/clear, game and physical selection TBD; presentation/classification decision open. [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
+  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. User-approved 2026-10-16 Windows 5b implementation pending: OS-permitted Switch and focus honors activation over fullscreen/games; default urgency-only/non-permitted unchanged. Clean permitted requests, mark/clear and game outcomes TBD; presentation/technical classification unresolved. D23 source keep/forget remains undecided pending Tier 1 research. [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
   | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including tentative hydrated fixed-override maximize routing. Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
   | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |
@@ -3413,12 +3421,14 @@ decisions of 2026-09-24 are under
     refresh/automatic close fanout. Locked native gates: 1,845 passed, 0 failed,
     1 ignored; no native journeys performed. Source-slot lifetime after send
     elsewhere remains shared behavior with a TBD reference discriminator.
-    No setting. Approved D27
-    needs supported activation-request/urgency observation, default Mark urgent
-    only (no workspace/focus change) and a fullscreen/game-focused urgency-only
-    guard in both modes; explicit Alt+Tab/taskbar selection is separate.
+    No setting. Approved D27 needs supported activation-request/urgency
+    observation and default Mark urgent only (no workspace/focus change).
+    User-approved 2026-10-16 Windows 5b: OS-permitted Switch and focus requests
+    switch/focus even over fullscreen/game foreground, no urgency-only downgrade;
+    default and non-permitted requests unchanged. Implementation pending;
+    explicit Alt+Tab/taskbar selection is separate.
     KDE's native-activation exception and no-guard decision are host-specific,
-    not Windows evidence; Windows default/guard policy unchanged. Offline
+    not Windows evidence; do not change KDE behavior for Windows 5b. Offline
     verification 2026-10-13 found only foreground observation, no dedicated
     Windows activation-request classifier or urgency observer/marker; it does
     not prove implemented urgency-only behavior. D01/D03/D09/D10/D12/D13/D22/

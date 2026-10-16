@@ -1,6 +1,7 @@
 # Shared settings catalog and Windows tabs
 
-- Status: implementation and offline review complete; CI and physical acceptance pending.
+- Status: implementation, offline review and CI complete; tab placement
+  user-approved 2026-10-16; physical acceptance pending.
 - Goal: replace the over-tall Windows Settings page with four native tabs
   rendered from a small shared settings catalog (approved route D, 2026-10-16).
 - Scope: portable field/tab/section/type/default/bounds/token/label/help/timing
@@ -38,7 +39,7 @@
 4. Durable decisions/research status and a KDE-stream follow-up for exporter,
    checked-in descriptors and CI drift check.
 
-## Implemented presentation (user review pending)
+## Implemented presentation (user-approved 2026-10-16)
 
 | Tab | Sections and Windows-only placement |
 | --- | --- |
@@ -120,5 +121,6 @@
 - Final Windows offline gates pass with Rust/Cargo 1.99.0: locked build and
   tests for the four listed packages (2,276 passed, zero failed, one existing
   ignored test), all-target strict clippy, workspace rustfmt and
-  `git diff --check`. Shared-platform CI remains pending.
+  `git diff --check`. Shared-platform CI 38876735949 (`bfc3ccbd`) passed all
+  eight jobs; follow-up documentation CI 38876893770 (`8df22a01`) also passed.
 - Physical checks remain pending; this record stays active until acceptance.

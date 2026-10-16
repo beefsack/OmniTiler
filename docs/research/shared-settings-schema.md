@@ -7,6 +7,11 @@
   superseding the post-0.1 recommendation below. Windows implementation and
   pending physical acceptance are tracked in the
   [active record](../changes/shared-settings-catalog-windows-tabs.md).
+  User-approved 2026-10-16 tab placement: Tiling & Workspaces (gaps,
+  workspace defaults/scope, move/admission/refill), Appearance (border,
+  underlay), Shortcuts (takeover, Win+L, presets, bindings, Xbox/Game Bar),
+  Desktop Integration (mouse Snap, taskbar pager). Placement is accepted;
+  physical layout/accessibility acceptance remains pending.
   KDE-only tabs were [delivered independently](../changes/archive/kde-settings-tabs.md).
   Estimates below are historical engineering assessments, not commitments.
 - Evidence snapshot: `6564e671ebe7995b32a48d50f0c356516f483d77`. Repository

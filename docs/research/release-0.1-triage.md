@@ -55,7 +55,12 @@ REQ-MAX-09b. User 2026-10-12 promotes seventeen rows: current spec
   for unsolicited activation from an existing hidden-workspace window, with
   no workspace switch or focus change. This reverses tentative `Switch and
   focus`: Hyprland, i3 and sway (all Tier 1) agree against COSMIC under the
-  tier rule. Fullscreen/game-focused requests are urgency-only in both modes.
+  tier rule. User-approved 2026-10-16 Windows amendment: `Switch and focus`
+  honors OS-permitted activation even over fullscreen/game foreground; do not
+  downgrade it to urgency-only. Default and non-permitted requests are unchanged.
+  Implementation is pending. Windows already allows this activation; a tiler
+  game-protection override risks suppressing legitimate requests. Switching
+  hides the game's workspace, an accepted consequence awaiting real-game evidence.
   Post-0.1 `Activation request` setting: `Mark urgent only` (default; tooltip
   Hyprland, i3, sway) / `Switch and focus` (tooltip COSMIC, xmonad); the
   alternative qualifies via COSMIC Tier 1 plus xmonad Tier 2. Functional
@@ -170,6 +175,8 @@ unchanged; source observations are not marked as approved.
 - D27 proposed default Switch and focus plus a fullscreen/game-focused
   urgency-only guard. User 2026-10-12 selected Mark urgent only after tier
   rescoring, retaining the guard in both modes and a two-option post-0.1 setting.
+  User 2026-10-16 supersedes that Windows guard for OS-permitted Switch and focus
+  requests; the amendment is approved, not yet implemented.
 - D16 proposed retain float as a 7/8 cross-family majority exception. User
   2026-10-12 approved retention of float/size and untouched destination tiles
   under the tier rule for follow/stay and numbered/relative sends, no setting;

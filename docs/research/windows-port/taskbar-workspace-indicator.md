@@ -18,7 +18,8 @@ implementation blocker; child-parenting failures themselves remain unexplained.
 - Dependency surface: [crates/tiler-windows/Cargo.toml](../../../crates/tiler-windows/Cargo.toml)
   (windows-sys 0.61 incl. Shell/Gdi/HiDpi).
 - Urgency decisions: [decisions.md#activation-requests](../../decisions.md#activation-requests)
-  (D27 mark-urgent-only default, fullscreen/game urgency-only guard, 5a
+  (D27 mark-urgent-only default; user-approved 2026-10-16 Switch and focus
+  honors OS-permitted activation over fullscreen/games, implementation pending; 5a
   workspace-urgent-cleared-on-visit; no observer/classifier exists).
 - Related independent decision: [alt-tab-hidden-workspaces.md](./alt-tab-hidden-workspaces.md).
 - Apply [principles](../../principles.md): active/occupied/urgent state and

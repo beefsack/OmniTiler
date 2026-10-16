@@ -8,7 +8,12 @@
   empty REG_SZ off; absent/unreadable/unrecognised means unknown with warning
   and Settings navigation. Game Bar uses current-user package registration.
   Resolve actions open Settings pages only; no uninstall or registry/policy
-  writes. The conservative unknown fallback is selected, not acknowledgement.
+  writes. The conservative Xbox unknown fallback is confirmed, not acknowledgement.
+  User-approved 2026-10-16 Game Bar correction (not yet implemented): successful
+  absence clears all Win+G conflict warnings/notes/rows; detected installation
+  warns. "Just in case" checks would logically require warning for every chord.
+  Query failure remains distinct from absence; preserving the current explicit
+  unknown/query-failed warning is reported for review, not newly approved.
   [Decisions](../../decisions.md#shortcuts-conflicts-and-presets) and
   [implementation/physical acceptance](../../changes/windows-gaming-coexistence.md)
   are current; descriptions of disabled Compatible chords and open choices
@@ -232,12 +237,12 @@
   external pages or uninstall packages in a batch.
 - Rebinding away, disabling or takeover off still removes the relevant active
   chord warning. Clearing an OS conflict must depend on its own evidence, not
-  successful navigation. Successful package absence can clear the package
-  presence reason, but does not prove Win+G suppression; preserve a distinct
-  unresolved shortcut-check reason until physical outcome is established.
-  Reinstallation/query errors must not falsely clear it. Xbox enabled-state
+  successful navigation. User-approved 2026-10-16 supersedes the proposed
+  residual shortcut-check reason: successful package absence clears the whole
+  Win+G conflict, with no check note or warning row. Implementation is pending.
+  Query errors must not be converted to absence. Xbox enabled-state
   unknown must not masquerade as confirmed enabled or disabled. Exact
-  acknowledgment/physical-check persistence policy needs user review.
+  acknowledgment is not selected; query-failure warning handling remains for review.
 
 ## 5. Recommended implementation slices and estimate
 

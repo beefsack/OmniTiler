@@ -605,8 +605,11 @@ platform API behavior.
     refusal/last-good, KDE keys and tolerant decoding, and distinct
     saved/requested/confirmed state. Startup-only and next-admission notes
     must describe actual adoption, not imply Save confirms an effect.
-  - Windows uses Tiling & Workspaces, Appearance, Shortcuts and Desktop
-    Integration tabs, with persistent status/conflict feedback and scrolling
+  - User-approved 2026-10-16 Windows placement: Tiling & Workspaces contains
+    gaps, workspace defaults/scope, move, admission and refill; Appearance
+    contains border and underlay; Shortcuts contains takeover, Win+L, presets,
+    bindings and Xbox/Game Bar; Desktop Integration contains mouse Snap and
+    taskbar pager. Preserve persistent status/conflict feedback and scrolling
     for long notes. Windows-only fields and native operation panels stay in
     its adapter; a generic field setter never invokes takeover/remediation,
     presets, conflict operations or KDE Fix/Force/Revert.
@@ -1413,6 +1416,10 @@ platform API behavior.
 
 ## Reference Matrix and Spec Authority
 
+- User-approved 2026-10-16 recordkeeping: remove backlog entries whose only
+  purpose is tracking user physical checks. Keep physical-acceptance-pending
+  notes in change records and substantive backlog work; removing a tracker
+  does not establish acceptance.
 - The 2026-10-11 tentative triage units D01, D03, D09,
   D10, D12, D13, D16, D22, D23, D25, D26, D27 and D28 are now user-decided 2026-10-12.
   [Triage authority](research/release-0.1-triage.md#user-decisions-2026-10-12).
@@ -1594,7 +1601,14 @@ platform API behavior.
   Xbox configuration detection uses the undocumented per-user `GamingHomeApp`
   registry value read-only; log its source and categorical outcome. Absent,
   unreadable or unrecognised values are unknown and retain a conservative
-  warning with Settings navigation. Game Bar detection uses supported
+  warning with Settings navigation, confirmed user-approved 2026-10-16.
+  User-approved 2026-10-16 Game Bar rule: warn for detected installation;
+  successful package-query absence must produce no Win+G warning, residual
+  "check Win+G" note or conflict row. A speculative warning for this chord
+  would equally justify warnings for every chord. This correction is approved,
+  not yet implemented. Query failure is not absence: existing handling keeps
+  an explicit unknown/query-failed warning; retaining that handling needs
+  review and is not a new approved absence exception. Game Bar detection uses supported
   current-user Appx package registration queries, not capture switches.
   Probes stay cheap, cached and outside the tile/input hot paths; failure never
   disables tiling. Resolve actions only open `ms-settings:gaming-fullscreen`
@@ -2585,8 +2599,18 @@ platform API behavior.
   This reverses the tentative `Switch and focus` default:
   Hyprland, i3 and sway (all Tier 1) agree against COSMIC under the
   [reference tier rule](#reference-tiers).
-- Windows: while a fullscreen/game window is focused, requests are urgency-only
-  in both modes; its guard decision is unchanged. Explicit user selection
+- User-approved 2026-10-16, Windows D27 item 5b: in `Switch and focus`, honor
+  OS-permitted activation even while a fullscreen window/game is foreground;
+  no tiler gaming guard may downgrade it to urgency-only. This supersedes
+  the earlier Windows guard-in-both-modes wording for OS-permitted requests.
+  Rationale: Windows itself permits this activation; going beyond Windows
+  to protect games risks suppressing legitimate activation. Accepted consequence:
+  switching workspace hides the game's workspace, more than plain Windows does;
+  a later real-game check remains required, not established evidence.
+  `Mark urgent only` (default) and non-permitted requests are unchanged.
+  Approved, not yet implemented; the setting and dedicated request classifier
+  are not currently shipped. This is Windows-only; KDE's native exception
+  and no-guard policy below are unchanged. Explicit user selection
   (Alt+Tab/taskbar) is separate from
   unsolicited activation. INS-07 no-steal covers tiling admission into
   inactive workspaces only; it is not an existing-window activation rule.
@@ -2598,20 +2622,25 @@ platform API behavior.
   activate a hidden target and trigger foreground workspace convergence; this
   is not clean background/helper self-request or physical selection evidence.
   No dedicated product request/urgency observer, marker or classifier exists.
-  Default/guard unchanged; native-permitted/helper-originated requests, visible
+  Historical evidence does not implement the 2026-10-16 policy;
+  native-permitted/helper-originated requests, visible
   marking/clearing, fullscreen/game and explicit selection remain TBD
   ([delivery and options](changes/archive/windows-d27-activation-verification.md),
   [earlier assessment](changes/archive/windows-item22-verification.md)).
 - User 2026-10-14 (5a): hidden-window urgency marks the workspace urgent
   in the planned workspace indicator, cleared on visit; designed within Windows
   workspace presentation research; until then native Windows behavior only.
-- Tentative, pending user review (2026-10-14): request-versus-selection handling
-  remains unselected; no Windows native-switch exception or new UI is adopted.
+- Request-versus-selection technical classification remains unresolved; the
+  OS-permitted `Switch and focus` policy is approved 2026-10-16 above, not
+  an open product choice. No new urgency UI is adopted here.
 - Post-0.1 setting `Activation request` has two options: `Mark urgent only`
   (default; tooltip Hyprland, i3, sway) and `Switch and focus` (tooltip
   COSMIC, xmonad). The alternative qualifies via COSMIC (Tier 1) plus xmonad
   (Tier 2). Functional names/options; WM names only in tooltips. Retained in
   P2 `0.1 triage settings follow-up` alongside D09/D10.
+  Help must explain the approved Windows OS-permitted fullscreen/game behavior,
+  unchanged default and non-permitted requests. No existing shipped activation
+  tooltip needs editing; include this text when the setting is implemented.
   Review this setting's KDE applicability when it is designed; no KDE setting
   applicability decision is made here.
 - User decision 2026-10-13, option 1: accept KWin native activation as a KDE
@@ -2687,6 +2716,10 @@ platform API behavior.
   fanout without geometry/focus writes. Native journeys remain in item 22.
   Source-slot lifetime after send elsewhere is unchanged shared behavior, with
   a TBD discriminator; no adapter-specific exception or cleanup policy added.
+  User-approved 2026-10-16 process for D23 item 6: research Tier 1 reference-WM
+  behavior first, then decide source keep/forget consistently with that evidence.
+  The behavior itself is NOT decided; the earlier lean toward option B (forget)
+  is context only. No reference research or source-slot change is delivered here.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
   R-MAX-09, option (b): KDE fullscreen carry ships in 0.1. An explicit send

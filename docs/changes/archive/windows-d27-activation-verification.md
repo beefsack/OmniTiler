@@ -1,5 +1,10 @@
 # Windows D27 activation-request verification
 
+- User-approved 2026-10-16 amendment supersedes the historical guard policy:
+  Windows `Switch and focus` honors OS-permitted activation even over a
+  fullscreen/game foreground. Default `Mark urgent only` and non-permitted
+  requests are unchanged. Implementation remains pending; evidence below is
+  historical, not proof of the new policy. KDE behavior is unchanged.
 ## Goal and acceptance
 
 - Establish current and hidden-workspace activation-request behavior against
@@ -75,8 +80,9 @@
 
 ## Gap assessment and options for review
 
-- Approved Windows `Mark urgent only` default and fullscreen/game guard remain
-  unchanged. No native-switch exception is selected for Windows.
+- At this verification's 2026-10-14 baseline, the Windows default and
+  guard-in-both-modes policy were unchanged. The 2026-10-16 amendment above
+  now selects OS-permitted Switch and focus over fullscreen/games.
 - Removing `poll_foreground_workspace` switching indiscriminately would also
   break explicit external selection. Existing foreground/shell activation
   signals identify the activated HWND, not a reliable request-versus-selection

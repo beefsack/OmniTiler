@@ -2,6 +2,21 @@
 
 ## Approved Xbox shortcut-conflict implementation (2026-10-16)
 
+- User review 2026-10-16 confirms conservative Xbox warnings for absent,
+  unreadable or unrecognised `GamingHomeApp`. Game Bar differs: successful
+  package-query absence must clear all Win+G warnings, notes and conflict rows;
+  warn on detected installation, not speculative activation prompts. The user
+  rejected "just in case" reasoning because it would apply to every chord.
+  This Game Bar correction is approved, not yet implemented. Current code still
+  shows the residual check described in the historical delivery below.
+- Query-failure handling for review: the existing explicit unknown/query-failed
+  warning remains; only a successful query can establish absence. No new
+  query-failure product decision is claimed. Future correction must cover tray,
+  badge, selected detail/actions and static binding-list/OS conflict text;
+  clearing only probe-derived rows leaves stale catalog warnings visible.
+- Windows D27 5b review is recorded in [activation decisions](../decisions.md#activation-requests):
+  OS-permitted Switch and focus requests are not downgraded over games/fullscreen.
+  Implementation remains pending; real-game evidence is not claimed.
 - Goal: Compatible keeps float/fullscreen usable through Ctrl+Win+G and
   Ctrl+Win+F11; Authentic retains Win+G/F11 with configuration evidence and
   Settings-only guidance in the existing amber tray/conflict/Settings surfaces.
@@ -40,8 +55,9 @@
 - Game Bar queries count registrations of the exact current-user family
   `Microsoft.XboxGamingOverlay_8wekyb3d8bbwe` through
   `GetPackagesByPackageFamily`; no package inventory, subprocess or capture
-  configuration probe. Absence still leaves a residual Win+G shortcut check
-  because Windows activation prompts/nonactivation are not established.
+  configuration probe. Delivered behavior leaves a residual Win+G shortcut
+  check on absence; the user-approved 2026-10-16 correction above supersedes
+  that policy but is not yet implemented.
 - Cached asynchronous probes run at startup, settings revision changes,
   explicit Recheck and at most a five-minute idle cadence. A slow probe cannot
   create an interval refresh storm; explicit requests coalesce. Spawn/probe

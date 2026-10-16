@@ -154,9 +154,12 @@ sandboxed route exposes the workspace-level marker only.
   Helper-originated/native-permitted clean requests, visual mark/clear,
   fullscreen/game and explicit selection remain TBD
   ([record/options](../../changes/archive/windows-d27-activation-verification.md)).
-  `S(S-ours-act)`; default Mark urgent only and fullscreen/game urgency-only
-  guard unchanged; post-0.1 two-option setting, queued. KDE exception is not
-  Windows evidence.
+  `S(S-ours-act)`; default Mark urgent only unchanged. User-approved 2026-10-16:
+  Windows Switch and focus honors OS-permitted activation over fullscreen/games,
+  with no urgency-only downgrade; non-permitted requests unchanged. Switching
+  hides the game's workspace, an accepted consequence awaiting real-game evidence.
+  This amendment and the post-0.1 two-option setting are not yet implemented.
+  KDE exception is unchanged and is not Windows evidence.
 - Variant hook: provisional/TBD (activation-routing hook, to discuss).
 
 ### R-ACT-02: urgency marker set, then user focuses the window
