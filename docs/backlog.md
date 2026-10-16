@@ -172,11 +172,12 @@ decisions of 2026-09-24 are under
   Authentic keeps Win+G/F11 with cached read-only per-user `GamingHomeApp`
   configuration and supported current-user Game Bar package-query evidence.
   User-confirmed 2026-10-16: unknown/absent/unreadable GamingHomeApp retains
-  conservative Xbox amber/tray/Settings warnings. Approved correction B,
-  NOT YET IMPLEMENTED: detected Game Bar installation warns; successful package
+  conservative Xbox amber/tray/Settings warnings. Correction B delivered offline:
+  detected Game Bar installation warns; successful package
   absence clears all Win+G warnings, notes and conflict rows, including static
   binding-list and selected OS text (not just probe-derived details/badges).
-  Add presence/absence/failure and effective-rebound-chord regressions.
+  Presence/absence/failure, disabled-row and effective-rebound-chord regressions
+  pass; locked native gates: 2,286 passed, 0 failed, 1 ignored.
   Query failure is not absence; current explicit unknown/query-failed warning
   remains, with that handling for review. Resolve buttons
   open Settings only, explaining capture/managed-app-data loss and Store

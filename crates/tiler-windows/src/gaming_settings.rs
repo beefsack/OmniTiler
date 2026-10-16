@@ -11,8 +11,8 @@
 //! never the OS.
 
 use crate::gaming::{
-    APP_SETTINGS_URI, GAMEBAR_SETTINGS_URI, GamingConflict, GamingConflictKind, GamingSnapshot,
-    XBOX_SETTINGS_URI, XboxConfig, gamebar_app_settings_uri, gaming_conflicts,
+    APP_SETTINGS_URI, GAMEBAR_SETTINGS_URI, GameBarPackage, GamingConflict, GamingConflictKind,
+    GamingSnapshot, XBOX_SETTINGS_URI, XboxConfig, gamebar_app_settings_uri, gaming_conflicts,
     is_allowed_navigation_uri, is_gamebar_note, is_xbox_mode_note, tray_warning_conflicts,
     xbox_evidence,
 };
@@ -90,8 +90,8 @@ pub const fn gaming_actions_for(kind: GamingConflictKind) -> &'static [GamingSet
 /// a live Game Bar or Xbox mode note under the draft plus takeover.
 /// Takeover off, Compatible rebinds/disables, per-binding disable/rebind-away
 /// and the Win+L opt-in warning (never a gaming kind) all yield `None`.
-/// Recognised Xbox off clears the Xbox row; Game Bar package absence keeps a
-/// residual `Win+G` check row.
+/// Recognised Xbox off clears the Xbox row; successful Game Bar package
+/// absence clears the Game Bar row; query failure keeps its explicit warning.
 #[must_use]
 pub fn selected_gaming_conflict(
     settings: &Settings,
@@ -130,8 +130,10 @@ pub fn gaming_detail_text(conflict: &GamingConflict) -> String {
 /// (every chord passes through natively, so there is no interception to
 /// conflict with). Returns `None` for inactive/unbound rows, non-gaming
 /// notes, and rows the caller already reports as active conflicts (check
-/// [`selected_gaming_conflict`] first). Package absence never clears: the
-/// residual `Win+G` check stays an active conflict, not this note.
+/// [`selected_gaming_conflict`] first). A successful Game Bar package absence
+/// is not a cleared note: it hides the static ownership text entirely (see
+/// [`visible_os_note`]), so the row reads as having no known OS conflict.
+/// Query failure never clears: it stays an active conflict, not this note.
 pub const TAKEOVER_OFF_GAMING_NOTE: &str =
     "keyboard takeover off: chords pass through natively, no interception conflict";
 
@@ -161,15 +163,30 @@ pub fn cleared_gaming_note(
     None
 }
 
+/// Static catalog note actually shown for one row: a successful Game Bar
+/// package absence hides the Game Bar ownership text, so the list row and the
+/// selected `OS:` line read as having no known conflict instead of stale
+/// catalog warnings. Applies to every row carrying the note (active,
+/// disabled, or ineffective); every other note passes through unchanged, and
+/// query failure keeps its warning downstream. Callers show their generic
+/// text when this returns `None`.
+#[must_use]
+pub fn visible_os_note(note: Option<&str>, gamebar: GameBarPackage) -> Option<&str> {
+    match note {
+        Some(text) if is_gamebar_note(text) && gamebar == GameBarPackage::Absent => None,
+        other => other,
+    }
+}
+
 /// Badge counts over every effective row for the Settings global badge:
 /// `(conflicts, warnings)`. Mirrors the tray warnings exactly
 /// ([`tray_warning_conflicts`]): known-incomplete gaming containment plus
 /// the Win+L opt-in warning while its chord stays effective, across all
 /// rows (never just the selection) and all owner kinds (never just
-/// gaming). Recognised Xbox off clears the Xbox row and takeover off
-/// silences everything (pass-through by user choice), matching
-/// [`cleared_gaming_note`]. Gaming containment notes count as conflicts;
-/// the Win+L opt-in counts as a warning.
+/// gaming). Recognised Xbox off and successful Game Bar absence clear their
+/// rows and takeover off silences everything (pass-through by user choice),
+/// matching [`cleared_gaming_note`] and [`visible_os_note`]. Gaming
+/// containment notes count as conflicts; the Win+L opt-in counts as a warning.
 #[must_use]
 pub fn badge_conflict_counts(
     settings: &Settings,
@@ -289,14 +306,10 @@ mod tests {
 
     #[test]
     fn gamebar_detail_states_inspection_limits_loss_and_store_limits() {
-        for gamebar in [
-            GameBarPackage::Registered,
-            GameBarPackage::Absent,
-            GameBarPackage::Unknown,
-        ] {
+        for gamebar in [GameBarPackage::Registered, GameBarPackage::Unknown] {
             let snapshot = snapshot_with(XboxConfig::Unknown, gamebar);
             let conflict = selected_gaming_conflict(&authentic(), true, &snapshot, "toggle-float")
-                .expect("float always warns");
+                .expect("float warns unless absence is proved");
             let detail = gaming_detail_text(&conflict);
             assert!(detail.contains(gamebar_evidence(gamebar)), "{gamebar:?}");
             assert!(detail.contains(GAMEBAR_MANUAL_PATH));
@@ -311,14 +324,29 @@ mod tests {
             assert!(detail.contains(APP_SETTINGS_URI));
             assert!(!detail.contains("ms-windows-store://"));
         }
+        // Query failure keeps the exact unknown warning, never absence.
+        let failed = unknown_snapshot();
+        let conflict =
+            selected_gaming_conflict(&authentic(), true, &failed, "toggle-float").expect("warns");
+        assert_eq!(
+            conflict.evidence,
+            "Game Bar registration unknown (query failed); check required"
+        );
     }
 
     #[test]
-    fn package_absence_keeps_residual_float_check() {
+    fn package_absence_clears_float_selected_row() {
         let snapshot = snapshot_with(XboxConfig::Disabled, GameBarPackage::Absent);
-        let conflict = selected_gaming_conflict(&authentic(), true, &snapshot, "toggle-float")
-            .expect("absence keeps the residual Win+G check");
-        assert!(gaming_detail_text(&conflict).contains("still unproven"));
+        assert!(selected_gaming_conflict(&authentic(), true, &snapshot, "toggle-float").is_none());
+        assert!(
+            selected_gaming_conflict(&authentic(), true, &snapshot, "toggle-fullscreen").is_none()
+        );
+        // Xbox unknown still warns while Game Bar absence clears float.
+        let mixed = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
+        assert!(selected_gaming_conflict(&authentic(), true, &mixed, "toggle-float").is_none());
+        assert!(
+            selected_gaming_conflict(&authentic(), true, &mixed, "toggle-fullscreen").is_some()
+        );
     }
 
     #[test]
@@ -447,6 +475,13 @@ mod tests {
             cleared_gaming_note(true, true, Some(xbox_note), true, XboxConfig::Disabled),
             Some(xbox_evidence(XboxConfig::Disabled))
         );
+        // Game Bar absence adds no cleared note: the static ownership text
+        // hides entirely (see `visible_os_note`), so no extra Gaming status
+        // line appears for it either.
+        assert_eq!(
+            cleared_gaming_note(true, true, Some(gamebar_note), true, XboxConfig::Unknown),
+            None
+        );
         // Takeover off clears either gaming row as pass-through.
         for note in [xbox_note, gamebar_note] {
             assert_eq!(
@@ -489,9 +524,40 @@ mod tests {
     }
 
     #[test]
-    fn cleared_composition_matches_tray_for_off_and_takeover_off() {
+    fn visible_os_note_hides_only_absent_gamebar() {
+        let gamebar_note =
+            "Xbox Game Bar owns Win+G; the hook cannot fully contain the OS override";
+        let xbox_note = "Xbox mode owns Win+F11; containment is incomplete";
+        let other_note = "Snap owns Win+Left; override needs takeover";
+        // Successful absence hides the Game Bar ownership text, whatever the
+        // Xbox state; everything else passes through unchanged.
+        for gamebar in [GameBarPackage::Registered, GameBarPackage::Unknown] {
+            assert_eq!(
+                visible_os_note(Some(gamebar_note), gamebar),
+                Some(gamebar_note)
+            );
+        }
+        assert_eq!(
+            visible_os_note(Some(gamebar_note), GameBarPackage::Absent),
+            None
+        );
+        assert_eq!(
+            visible_os_note(Some(xbox_note), GameBarPackage::Absent),
+            Some(xbox_note)
+        );
+        assert_eq!(
+            visible_os_note(Some(other_note), GameBarPackage::Absent),
+            Some(other_note)
+        );
+        assert_eq!(visible_os_note(None, GameBarPackage::Absent), None);
+        assert_eq!(visible_os_note(None, GameBarPackage::Unknown), None);
+    }
+
+    #[test]
+    fn cleared_composition_matches_tray_for_off_absence_and_takeover_off() {
         // Xbox off: fullscreen cleared with evidence, float keeps its active
-        // residual conflict; the cleared note never fires for the active row.
+        // conflict when Game Bar is registered; the cleared note never fires
+        // for an active row.
         let off = snapshot_with(XboxConfig::Disabled, GameBarPackage::Registered);
         assert!(selected_gaming_conflict(&authentic(), true, &off, "toggle-fullscreen").is_none());
         let rows = crate::settings::effective_bindings(&authentic());
@@ -516,6 +582,29 @@ mod tests {
                 true,
                 off.xbox
             ),
+            None
+        );
+        // Game Bar absence: no selected float conflict, no cleared note for
+        // it (the static text hides via `visible_os_note`, leaving the
+        // ordinary generic row), while fullscreen keeps its Xbox warning.
+        let absent = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
+        assert!(selected_gaming_conflict(&authentic(), true, &absent, "toggle-float").is_none());
+        assert!(
+            selected_gaming_conflict(&authentic(), true, &absent, "toggle-fullscreen").is_some()
+        );
+        assert_eq!(
+            cleared_gaming_note(
+                float.active,
+                float.effective,
+                float.conflict,
+                true,
+                absent.xbox,
+            ),
+            None
+        );
+        assert_eq!(visible_os_note(float.conflict, absent.gamebar), None);
+        assert_eq!(
+            cleared_gaming_note(row.active, row.effective, row.conflict, true, absent.xbox,),
             None
         );
         // Takeover off: no active conflicts, both gaming rows cleared.
@@ -545,12 +634,32 @@ mod tests {
             badge_conflict_counts(&authentic(), true, true, &unknown),
             (2, 1)
         );
-        // Recognised Xbox off clears only the fullscreen conflict; the
-        // Game Bar residual and the Win+L warning stay badged.
+        // Recognised Xbox off clears only the fullscreen conflict when Game
+        // Bar is registered; the Win+L warning stays badged.
         let off = snapshot_with(XboxConfig::Disabled, GameBarPackage::Registered);
         assert_eq!(
             badge_conflict_counts(&authentic(), true, true, &off),
             (1, 1)
+        );
+        // Successful Game Bar absence clears float as well: only Win+L stays.
+        let absent = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, false, &absent),
+            (1, 0)
+        );
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, true, &absent),
+            (1, 1)
+        );
+        // Both clear together: nothing badged without Win+L.
+        let both = snapshot_with(XboxConfig::Disabled, GameBarPackage::Absent);
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, false, &both),
+            (0, 0)
+        );
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, true, &both),
+            (0, 1)
         );
         // Takeover off silences everything: pass-through is user choice.
         assert_eq!(

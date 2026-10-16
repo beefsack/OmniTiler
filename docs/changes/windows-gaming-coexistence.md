@@ -7,13 +7,13 @@
   package-query absence must clear all Win+G warnings, notes and conflict rows;
   warn on detected installation, not speculative activation prompts. The user
   rejected "just in case" reasoning because it would apply to every chord.
-  This Game Bar correction is approved, not yet implemented. Current code still
-  shows the residual check described in the historical delivery below.
+  Correction B is now delivered offline; the residual check in the historical
+  delivery below is superseded.
 - Query-failure handling for review: the existing explicit unknown/query-failed
   warning remains; only a successful query can establish absence. No new
-  query-failure product decision is claimed. Future correction must cover tray,
-  badge, selected detail/actions and static binding-list/OS conflict text;
-  clearing only probe-derived rows leaves stale catalog warnings visible.
+  query-failure product decision is claimed. Open review point: retain or revise
+  this existing unknown/query-failed warning. Correction B covers tray, badge,
+  selected detail/actions and static binding-list/OS conflict text.
 - Windows D27 5b review is recorded in [activation decisions](../decisions.md#activation-requests):
   OS-permitted Switch and focus requests are not downgraded over games/fullscreen.
   Implementation remains pending; real-game evidence is not claimed.
@@ -41,7 +41,28 @@
   The separately reported KDE `native-effect-kcm-shortcut-selection`
   heap-corruption abort is not reproduced by that run and remains KDE-owned.
 
-### Delivered offline and verified
+### Correction B delivered offline (2026-10-16)
+
+- Detected Game Bar registration still warns; successful current-user package
+  absence clears all Win+G conflict surfaces. Binding-list and selected `OS:`
+  text use ordinary no-known-conflict copy, including disabled rows; no Game
+  Bar-specific cleared-status note or Settings actions remain on absence.
+- Query failure preserves the exact existing unknown/query-failed warning and
+  is never treated as absence. Xbox unknown/absent/unreadable fallback and
+  recognised-off behavior are unchanged. Effective chord ownership, not binding
+  ID, determines warnings; Compatible Ctrl+Win+G / Ctrl+Win+F11 remain silent.
+- Regression first reproduced the stale Win+G row on absence. Coverage now
+  distinguishes presence/absence/query failure across tray, badge, selected
+  conflict and static OS-note projection, plus disabled and rebound rows. Review
+  removed an absence-specific status note in favor of ordinary no-conflict text;
+  independent review accepted the final projection and unchanged Xbox behavior.
+- Locked four-package Windows build/test: **2,286 passed, 0 failed, 1 ignored**.
+  Full rustfmt, strict all-target clippy and `git diff --check` pass; Rust/Cargo
+  1.99.0, MSVC target. Hosted CI result is reported with delivery. No live tests,
+  physical shortcut-containment acceptance, KDE or macOS behavior changes are
+  claimed. This record stays active for the existing wider gaming work.
+
+### Earlier delivery: offline and verified
 
 - Compatible now has 39 disabled known conflicts plus two explicit Ctrl
   rebinds. Full-modifier remaps handle same-key rebinds; float/fullscreen
@@ -55,9 +76,8 @@
 - Game Bar queries count registrations of the exact current-user family
   `Microsoft.XboxGamingOverlay_8wekyb3d8bbwe` through
   `GetPackagesByPackageFamily`; no package inventory, subprocess or capture
-  configuration probe. Delivered behavior leaves a residual Win+G shortcut
-  check on absence; the user-approved 2026-10-16 correction above supersedes
-  that policy but is not yet implemented.
+  configuration probe. The earlier delivery left a residual Win+G shortcut
+  check on absence; delivered correction B above supersedes that policy.
 - Cached asynchronous probes run at startup, settings revision changes,
   explicit Recheck and at most a five-minute idle cadence. A slow probe cannot
   create an interval refresh storm; explicit requests coalesce. Spawn/probe

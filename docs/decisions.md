@@ -1605,8 +1605,9 @@ platform API behavior.
   User-approved 2026-10-16 Game Bar rule: warn for detected installation;
   successful package-query absence must produce no Win+G warning, residual
   "check Win+G" note or conflict row. A speculative warning for this chord
-  would equally justify warnings for every chord. This correction is approved,
-  not yet implemented. Query failure is not absence: existing handling keeps
+  would equally justify warnings for every chord. Correction B is delivered
+  offline, including static binding-list and selected OS text.
+  Query failure is not absence: existing handling keeps
   an explicit unknown/query-failed warning; retaining that handling needs
   review and is not a new approved absence exception. Game Bar detection uses supported
   current-user Appx package registration queries, not capture switches.

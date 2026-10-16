@@ -9,7 +9,7 @@
   and Settings navigation. Game Bar uses current-user package registration.
   Resolve actions open Settings pages only; no uninstall or registry/policy
   writes. The conservative Xbox unknown fallback is confirmed, not acknowledgement.
-  User-approved 2026-10-16 Game Bar correction (not yet implemented): successful
+  User-approved 2026-10-16 Game Bar correction (delivered offline): successful
   absence clears all Win+G conflict warnings/notes/rows; detected installation
   warns. "Just in case" checks would logically require warning for every chord.
   Query failure remains distinct from absence; preserving the current explicit
@@ -239,7 +239,8 @@
   chord warning. Clearing an OS conflict must depend on its own evidence, not
   successful navigation. User-approved 2026-10-16 supersedes the proposed
   residual shortcut-check reason: successful package absence clears the whole
-  Win+G conflict, with no check note or warning row. Implementation is pending.
+  Win+G conflict, with no check note or warning row. Correction B is delivered
+  offline, including static binding-list and selected OS text.
   Query errors must not be converted to absence. Xbox enabled-state
   unknown must not masquerade as confirmed enabled or disabled. Exact
   acknowledgment is not selected; query-failure warning handling remains for review.
