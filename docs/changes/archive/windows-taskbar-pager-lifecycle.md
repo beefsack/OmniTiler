@@ -38,8 +38,10 @@
   Workspace format and diff checks passed. Strict all-target clippy initially
   found two ignored must-use results in a new test; explicit discard repaired
   them and the full clippy command passed. Targeted pager tests: 48 passed.
-  Final integration gates and CI remain pending. Auto-hide/lifecycle delivery
-  is independent of the open Calculator appearance finding below.
+  After integration, all gates passed again: 2,448 passed, zero failed, one
+  ignored; the additional tests came from concurrent upstream changes.
+  Implementation `2eac653e` passed all eight CI jobs
+  ([run](https://github.com/beefsack/OmniTiler/actions/runs/38925659945)).
 - Native auto-hide on/off passed using a test-only AppBar state helper: the
   overlay disappeared with `taskbar-autohide`, stayed absent while auto-hide
   remained enabled, and returned when disabled. Original AppBar state restored
@@ -56,13 +58,21 @@
 - Graceful stop and independent restore completed; no owner, pager window or
   recovery ledger remained. Shell and unrelated terminal remained running.
 
-## Appearance finding requiring resolution
+## Calculator finding resolved without a code change
 
-- Calculator was managed and icon lookups reported misses; exact packaged
-  artwork remains deferred. A synchronous `PrintWindow` capture showed only
-  numbered cells, with no miniature rectangle, despite icon requests requiring
-  a drawable miniature. This discrepancy is not yet classified as a product
-  defect. Appearance acceptance remains open independently of the verified
-  auto-hide, shell recovery and settings lifecycle behavior.
+- The earlier missing-miniature report was an image-analysis error, not a
+  product defect. Independent pixel census of the original `PrintWindow`
+  capture found 34 colors and 3,162 miniature-fill pixels, forming one rectangle.
+  A subsequent owner-bound capture contained the same painted rectangle.
+- A scoped Calculator/Notepad run confirmed managed membership. After closing
+  Notepad, the remaining Calculator host frame had a plain gray miniature;
+  packaged icon lookup missed as expected. ApplicationFrameHost executable
+  artwork is intentionally omitted. Exact packaged artwork remains deferred.
+- The transient two-application paint observation was not retained as a distinct
+  image, so no two-miniature pixel proof is claimed. Synchronous GDI repaint
+  captures establish paint output, not physical compositor/eyeball acceptance.
 - Screen-band capture evidence was discarded because repeated captures were
   stale; it is not used to claim physical appearance or pixel-exact recovery.
+- Investigation required no source fix or product decision. Test applications
+  and owner exited; restore cleared the ledger and overlay. Original settings
+  and AppBar state remained unchanged; shell and unrelated terminal survived.

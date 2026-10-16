@@ -995,9 +995,10 @@ decisions of 2026-09-24 are under
     fresh geometry; auto-hide on/off and live shared-settings opt-out passed
     with original settings restored. Tentative auto-hide behavior hides the
     pager throughout auto-hide, retaining the tray number/menu. Resource counts
-    plateaued over several minutes. Calculator capture showed numbered cells
-    without a miniature despite drawable-miniature icon requests; investigation
-    remains pending ([record](changes/windows-taskbar-pager-lifecycle.md)).
+    plateaued over several minutes. Calculator paints a plain gray miniature
+    without packaged artwork; an earlier missing-miniature report was an
+    image-analysis error, not a source defect
+    ([record](changes/archive/windows-taskbar-pager-lifecycle.md)).
     Remaining: secondary taskbar tray anchors and physical multi-output;
     physical mouse/game/anti-cheat acceptance; DPI reconfiguration;
     non-bottom taskbars; accessibility/theme/cost checks.

@@ -86,11 +86,12 @@
 - Implementation is ready for native appearance acceptance, not live-accepted.
   Keep this record active until that evidence exists.
 - Native 2026-10-17 resource samples plateaued over 5.5 minutes (GDI 17, USER
-  29, process handles settling to 204). Calculator lookup missed, and a
-  synchronous overlay capture showed no miniature rectangle despite drawable
-  icon requests. Appearance remains unaccepted pending investigation; exact
-  packaged artwork remains deferred. See the
-  [lifecycle evidence](windows-taskbar-pager-lifecycle.md).
+  29, process handles settling to 204). Calculator lookup missed as expected;
+  its hosted window paints a plain gray miniature. An earlier missing-miniature
+  report was corrected by independent pixel census of the original capture;
+  no source defect was found. Physical appearance acceptance and exact packaged
+  artwork remain pending. See the
+  [lifecycle evidence](archive/windows-taskbar-pager-lifecycle.md).
 
 ## Pending user-run native acceptance
 
