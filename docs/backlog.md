@@ -517,15 +517,17 @@ decisions of 2026-09-24 are under
       [entry-point record](changes/dev-entry-point.md) stays active until it passes.
     - (13f) Research Tier 1 fixed-size durable-override born-maximized behavior,
       then decide shared policy for all targets; [current tentative](decisions.md#fixed-size-admission).
-    - (13g) Research safe Win32 wrappers against hooks, window procs, DWM/cloak,
-      layered windows/GDI, tray, SPI, ToolHelp, tokens, WTS and accessibility,
-      under the [unsafe principle](principles.md#unsafe-code). User expects
-      `winsafe` may fail the popularity/battle-hardened bar; verify whether
-      `windows` and `windows-sys` expose the required calls only as `unsafe fn`.
-      If so, compare one minimal FFI module on either crate: conveniences versus
-      simplicity, compile cost, migration churn and runtime overhead; recommend
-      a route to the user. Follow through with default-forbid lints, narrow
-      module opt-in and a CI check against other `allow(unsafe_code)` sites.
+    - (13g) Research delivered 2026-10-16:
+      [safe Win32 wrappers](research/windows-port/safe-win32-wrappers.md).
+      Recommend one safe FFI boundary atop current `windows-sys`; both Microsoft
+      bindings expose the checked native families as unsafe. `winsafe` has
+      substantial downloads but concentrated maintenance and coverage gaps;
+      battle-hardening for this surface is not established. Route decision
+      PARKED: retain `windows-sys`, migrate to `windows` for ergonomics, or use
+      a partial `winsafe` hybrid. No production changes. Default-forbid lints,
+      narrow module opt-in and the CI allowlist check remain pending under
+      P1 Windows unsafe FFI consolidation / Rust unsafe policy and the
+      [guardrail](decisions.md#rust-unsafe-guardrail).
   - User 2026-10-14: the Windows taskbar workspace indicator is now high
     priority and blocks Windows dogfooding (tiling otherwise close to dogfood
     ready, apart from the parked Win+G/Win+F11 Xbox prompts). Pull the
