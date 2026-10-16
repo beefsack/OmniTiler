@@ -22,8 +22,13 @@
 //! - The overlay may overlap applications but NEVER the tray: the strip is
 //!   refused unless it fits fully left of the tray area with a 2px gap, fully
 //!   inside the taskbar rect, and fully inside the monitor rect (this also
-//!   fails closed for auto-hidden/off-screen taskbars, whose rects move
+//!   fails closed for hidden/off-screen taskbars, whose rects move
 //!   off-screen when hidden).
+//! - The overlay never shows while the taskbar auto-hides
+//!   (`SHAppBarMessage(ABM_GETSTATE)` reports `ABS_AUTOHIDE`): the strip is
+//!   refused throughout, including while the bar slides into view, because
+//!   any parked position would either cover the tray on reveal or float over
+//!   applications while hidden.
 //! - Only a horizontal bottom-docked taskbar is served; top/left/right
 //!   taskbars refuse with a reason instead of guessing an anchor.
 //! - Secondary taskbars (`Shell_SecondaryTrayWnd`) refuse with
@@ -101,14 +106,17 @@ pub struct OutputGeometry {
 }
 
 /// One discovered taskbar: its rect, the tray-area left edge when proven
-/// (`None` when the tray area is unknown), its kind, live visibility, and
-/// the live taskbar DPI (96 only when the native query fails).
+/// (`None` when the tray area is unknown), its kind, live visibility, the
+/// live auto-hide switch (`SHAppBarMessage(ABM_GETSTATE)` reports
+/// `ABS_AUTOHIDE`), and the live taskbar DPI (96 only when the native query
+/// fails).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskbarFacts {
     pub rect: Rect,
     pub tray_left: Option<i32>,
     pub kind: TaskbarKind,
     pub visible: bool,
+    pub autohide: bool,
     pub dpi: u32,
 }
 
@@ -124,6 +132,7 @@ pub enum TaskbarKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PagerRefusal {
     TaskbarHidden,
+    TaskbarAutohide,
     SecondaryTrayUnproven,
     NotBottomDocked,
     TrayUnknown,
@@ -138,6 +147,7 @@ impl PagerRefusal {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TaskbarHidden => "taskbar-hidden",
+            Self::TaskbarAutohide => "taskbar-autohide",
             Self::SecondaryTrayUnproven => "secondary-tray-unproven",
             Self::NotBottomDocked => "not-bottom-docked",
             Self::TrayUnknown => "tray-unknown",
@@ -181,14 +191,23 @@ pub struct OutputPager {
 /// `tray_left` is the proven tray-area left edge; the strip ends
 /// `PAGER_TRAY_GAP` physical px left of it. Cell width and strip height scale
 /// with the taskbar DPI. Returns the refusal instead of guessing when the
-/// taskbar is hidden, not bottom-docked, the tray edge is unknown or outside
-/// the bar, the bar is too short for a legible strip, the cells do not fit
-/// left of the tray, or the strip would leave the monitor or the bar.
+/// taskbar auto-hides, is hidden, is not bottom-docked, the tray edge is
+/// unknown or outside the bar, the bar is too short for a legible strip,
+/// the cells do not fit left of the tray, or the strip would leave the
+/// monitor or the bar.
 pub fn strip_for_taskbar(
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
     cell_count: usize,
 ) -> Result<Rect, PagerRefusal> {
+    // Auto-hide refuses first and throughout: the bar slides off-screen
+    // while hidden (so geometry alone would refuse) but slides into view on
+    // hover (so geometry alone would accept and park pixels over the reveal
+    // path). Refusing on the switch itself keeps one honest reason in both
+    // poses with no slide-in/out tracking.
+    if taskbar.autohide {
+        return Err(PagerRefusal::TaskbarAutohide);
+    }
     if !taskbar.visible {
         return Err(PagerRefusal::TaskbarHidden);
     }
@@ -566,6 +585,7 @@ mod tests {
             tray_left: Some(1700),
             kind: TaskbarKind::Primary,
             visible: true,
+            autohide: false,
             dpi: PAGER_BASE_DPI,
         }
     }
@@ -618,6 +638,125 @@ mod tests {
             strip_for_taskbar(full(), &bottom_bar(), 30),
             Err(PagerRefusal::NoRoom)
         );
+    }
+
+    #[test]
+    fn autohide_refuses_throughout_and_reanchors_when_off() {
+        // Auto-hide enabled refuses even on a visible bottom-docked bar
+        // (the slide-into-view pose): no parked pixels over the reveal path.
+        let mut bar = bottom_bar();
+        bar.autohide = true;
+        assert!(bar.visible);
+        assert_eq!(
+            strip_for_taskbar(full(), &bar, 2),
+            Err(PagerRefusal::TaskbarAutohide)
+        );
+        // Hidden pose under auto-hide keeps the same honest reason (the
+        // switch, not the transient visibility).
+        bar.visible = false;
+        assert_eq!(
+            strip_for_taskbar(full(), &bar, 2),
+            Err(PagerRefusal::TaskbarAutohide)
+        );
+        // Disabling re-anchors the same geometry: enabled/disabled flips
+        // only this refusal, never the tray edge or the menu path.
+        bar.autohide = false;
+        bar.visible = true;
+        let strip = strip_for_taskbar(full(), &bar, 2).expect("re-anchors");
+        assert_eq!(right(strip), 1700 - PAGER_TRAY_GAP);
+        // Non-bottom and secondary refusals survive alongside the new one.
+        let mut side = bottom_bar();
+        side.autohide = true;
+        side.kind = TaskbarKind::Secondary;
+        assert_eq!(
+            strip_for_taskbar(full(), &side, 2),
+            Err(PagerRefusal::TaskbarAutohide)
+        );
+        side.autohide = false;
+        assert_eq!(
+            strip_for_taskbar(full(), &side, 2),
+            Err(PagerRefusal::SecondaryTrayUnproven)
+        );
+    }
+
+    #[test]
+    fn autohide_disable_reanchors_fresh_geometry_and_dpi() {
+        use std::collections::BTreeMap;
+        // Stale pre-autohide frame under the old resolution/scale.
+        let stale = strip_for_taskbar(full(), &bottom_bar(), 2).expect("old fits");
+        // Resolution + scale change while auto-hide hides everything: the
+        // switch still refuses against the new facts, never a stale strip.
+        let new_full = Rect {
+            x: 0,
+            y: 0,
+            w: 2560,
+            h: 1440,
+        };
+        let mut bar = bottom_bar();
+        bar.autohide = true;
+        assert_eq!(
+            strip_for_taskbar(new_full, &bar, 2),
+            Err(PagerRefusal::TaskbarAutohide)
+        );
+        // Disable with all-new facts (taller bar, moved tray edge, 144 DPI):
+        // the fresh frame follows the new facts, never the stale ones.
+        bar.autohide = false;
+        bar.dpi = 144;
+        bar.rect = Rect {
+            x: 0,
+            y: 1440 - 60,
+            w: 2560,
+            h: 60,
+        };
+        bar.tray_left = Some(2300);
+        let fresh = strip_for_taskbar(new_full, &bar, 2).expect("re-anchors fresh");
+        assert_eq!(fresh.w, 2 * dpi_cell_w(144));
+        assert_eq!(right(fresh), 2300 - PAGER_TRAY_GAP);
+        assert!(fresh.y >= 1440 - 60 && bottom(fresh) <= 1440);
+        // No stale coordinates survive: position and scale both differ from
+        // the old frame, so laying out from remembered facts would misplace.
+        assert_ne!(fresh, stale);
+        assert_ne!(fresh.w, stale.w);
+        let frame = build_output_pager(
+            &spaces_with_output(),
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            "mon-a",
+            new_full,
+            &bar,
+        )
+        .expect("frames fresh");
+        assert_eq!(frame.dpi, 144);
+        assert_eq!(frame.cells[0].rect.w, dpi_cell_w(144));
+        assert_eq!(right(frame.strip), 2300 - PAGER_TRAY_GAP);
+    }
+
+    #[test]
+    fn autohide_refusal_reaches_frames_with_tray_edge_intact() {
+        use std::collections::BTreeMap;
+        // The frame refuses (never a guessed strip) while the proven tray
+        // edge stays staged, so the tray number/menu path is untouched.
+        let mut bar = bottom_bar();
+        bar.autohide = true;
+        assert_eq!(
+            build_output_pager(
+                &spaces_with_output(),
+                &HashMap::new(),
+                &BTreeMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "mon-a",
+                full(),
+                &bar,
+            )
+            .expect_err("autohide never frames"),
+            PagerRefusal::TaskbarAutohide
+        );
+        assert_eq!(bar.tray_left, Some(1700), "tray proof retained");
     }
 
     #[test]

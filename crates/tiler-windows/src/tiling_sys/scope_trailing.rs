@@ -1720,6 +1720,7 @@ mod tests {
                 tray_left: Some(700),
                 kind: crate::pager::TaskbarKind::Primary,
                 visible: true,
+                autohide: false,
                 dpi: 96,
             };
             let pager = crate::pager::build_output_pager(

@@ -85,6 +85,12 @@
   reasons, never window titles, executable paths or other application content.
 - Implementation is ready for native appearance acceptance, not live-accepted.
   Keep this record active until that evidence exists.
+- Native 2026-10-17 resource samples plateaued over 5.5 minutes (GDI 17, USER
+  29, process handles settling to 204). Calculator lookup missed, and a
+  synchronous overlay capture showed no miniature rectangle despite drawable
+  icon requests. Appearance remains unaccepted pending investigation; exact
+  packaged artwork remains deferred. See the
+  [lifecycle evidence](windows-taskbar-pager-lifecycle.md).
 
 ## Pending user-run native acceptance
 

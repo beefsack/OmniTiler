@@ -72,7 +72,7 @@ pub(super) fn sync_taskbar_pager(
         overlays.hide_all();
         state.pager_suppress_last = Some("stale-facts".to_owned());
     }
-    // Fresh primary facts every pump (four reads, no enumeration): a tray
+    // Fresh primary facts every pump (five reads, no enumeration): a tray
     // expansion, auto-hide slide, or Explorer disappearance is visible on
     // the very next pump, never up to 5s late. Explorer restarts and the
     // slow timer only retry this same read; layouts never use older facts.
@@ -92,6 +92,7 @@ pub(super) fn sync_taskbar_pager(
                 "outcome": outcome,
                 "proven": state.pager_primary.as_ref().is_some_and(|bar| bar.tray_left.is_some()),
                 "visible": state.pager_primary.as_ref().is_some_and(|bar| bar.visible),
+                "autohide": state.pager_primary.as_ref().is_some_and(|bar| bar.autohide),
             }),
         );
     }

@@ -1022,18 +1022,24 @@ decisions of 2026-09-24 are under
     hide/return, synthetic TaskbarCreated and exact cleanup passed
     ([record](changes/archive/windows-taskbar-pager.md),
     [research](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
+    Native 2026-10-17: actual Explorer restart recovered the tray and pager from
+    fresh geometry; auto-hide on/off and live shared-settings opt-out passed
+    with original settings restored. Tentative auto-hide behavior hides the
+    pager throughout auto-hide, retaining the tray number/menu. Resource counts
+    plateaued over several minutes. Calculator capture showed numbered cells
+    without a miniature despite drawable-miniature icon requests; investigation
+    remains pending ([record](changes/windows-taskbar-pager-lifecycle.md)).
     Remaining: secondary taskbar tray anchors and physical multi-output;
-    actual Explorer restart; physical mouse/game/anti-cheat acceptance;
-    DPI/auto-hide reconfiguration; non-bottom taskbars; accessibility/theme/cost
-    checks. Whole-strip overcapacity behavior confirmed 2026-10-16: no pager
+    physical mouse/game/anti-cheat acceptance; DPI reconfiguration;
+    non-bottom taskbars; accessibility/theme/cost checks.
+    Whole-strip overcapacity behavior confirmed 2026-10-16: no pager
     drawn, reason logged, tray number/menu remain. Physical proof pending.
-    Live opt-out remains
-    untested against shared settings (offline covered). Miniature icons are now
+    Miniature icons are now
     implemented through asynchronous window/class/executable lookup, with
     user-approved 2026-10-16 DPI-aware 16/8 logical px sizing and omission when
     missing or too small. Limits cleanup delivered offline: fixed five-second
     creation/spawn retries, uncapped deduplicated icon queues, latest click only.
-    Native appearance/resource stability remain pending; exact packaged/UWP
+    Native appearance remains pending; exact packaged/UWP
     artwork is deferred until the user has seen Calculator physically
     ([active record](changes/windows-taskbar-pager-icons.md)). Urgency
     acquisition remains separate. Secondary/non-bottom/invalid

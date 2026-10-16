@@ -9,8 +9,10 @@
 //! PMv2 coordinates (PMv2 is ensured before registration, like the loop).
 //!
 //! What this module never does: no injection or hooks into Explorer, no
-//! AppBar messages, no placeholder or Start-button manipulation, no
-//! taskbar resize, and no synthetic input. Clicks hit-test the stored
+//! AppBar registration, no placeholder or Start-button manipulation, no
+//! taskbar resize, and no synthetic input. The single AppBar read is
+//! `SHAppBarMessage(ABM_GETSTATE)`: a stateless auto-hide switch query, never
+//! a registration or a state change. Clicks hit-test the stored
 //! portable frame and stage the latest [`SelectScope`](crate::tray_pager)
 //! for the cell; the loop thread drains the slot and dispatches through the
 //! existing `workspace_do_select` resolver. WinEvent out-of-context delivery
@@ -462,11 +464,36 @@ unsafe extern "system" fn secondary_enum(hwnd: HWND, state: LPARAM) -> i32 {
 }
 
 /// Read the primary taskbar fresh: `Shell_TrayWnd` rect and visibility plus
-/// the `TrayNotifyWnd` tray edge and the live taskbar DPI. Cheap enough for
-/// every pump (four reads, no enumeration); `None` when Explorer is gone or
-/// any read fails, which the host treats as unknown facts (hide, never lay
+/// the `TrayNotifyWnd` tray edge, the `ABM_GETSTATE` auto-hide switch, and
+/// the live taskbar DPI. Cheap enough for every pump (five reads, no
+/// enumeration); `None` when Explorer is gone or any geometry read fails,
+/// which the host treats as unknown facts (hide, never lay
 /// out from memory). 96 DPI is only the fallback when `GetDpiForWindow`
-/// itself fails, never an assumption about the monitor.
+/// itself fails, never an assumption about the monitor. A failed
+/// `ABM_GETSTATE` query reads as not-auto-hiding (fail-open on the switch
+/// only): geometry/visibility refusals still fail closed, and a positive
+/// auto-hide bit always refuses.
+/// Stateless `ABS_AUTOHIDE` test for one `ABM_GETSTATE` result: only a
+/// positive auto-hide bit hides. Zero (query failed or switch off) reads as
+/// not-auto-hiding; unrelated state bits never hide.
+#[must_use]
+pub fn autohide_from_state(state: usize) -> bool {
+    use windows_sys::Win32::UI::Shell::ABS_AUTOHIDE;
+    (state as u32 & ABS_AUTOHIDE) != 0
+}
+
+/// Query the live auto-hide switch via `SHAppBarMessage(ABM_GETSTATE)`.
+/// Read-only: `cbSize`-only `APPBARDATA`, no window handle, no callback, no
+/// registration, never `ABM_SETSTATE`.
+#[must_use]
+pub fn taskbar_autohide_enabled() -> bool {
+    use windows_sys::Win32::UI::Shell::{ABM_GETSTATE, APPBARDATA, SHAppBarMessage};
+    let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
+    data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) };
+    autohide_from_state(state)
+}
+
 #[must_use]
 pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
@@ -496,6 +523,7 @@ pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
         tray_left,
         kind: TaskbarKind::Primary,
         visible: unsafe { IsWindowVisible(tray) } != 0,
+        autohide: taskbar_autohide_enabled(),
         dpi: if dpi == 0 {
             crate::pager::PAGER_BASE_DPI
         } else {
@@ -526,6 +554,7 @@ pub fn discover_secondaries() -> Vec<TaskbarFacts> {
                 tray_left: None,
                 kind: TaskbarKind::Secondary,
                 visible: unsafe { IsWindowVisible(hwnd) } != 0,
+                autohide: false,
                 dpi: crate::pager::PAGER_BASE_DPI,
             });
         }
@@ -900,6 +929,32 @@ mod tests {
             last_zassert: None,
             last_hash: 0,
         }
+    }
+
+    #[test]
+    fn autohide_bit_is_the_only_hide_signal() {
+        use windows_sys::Win32::UI::Shell::ABS_AUTOHIDE;
+        assert!(!autohide_from_state(0), "failed query never hides");
+        assert!(autohide_from_state(ABS_AUTOHIDE as usize));
+        assert!(autohide_from_state(u32::MAX as usize));
+        assert!(
+            !autohide_from_state(0x02),
+            "unrelated state bits never hide"
+        );
+    }
+
+    #[test]
+    fn stale_hide_flag_hides_once_and_requests_rediscover() {
+        // Drain any residue so the consume-once assertion is hermetic (no
+        // other test in this module touches these flags).
+        let _ = take_stale_hide();
+        let _ = take_rediscover();
+        // The calibration-broadcast path sets both: the host hides every
+        // strip at once, then revalidates from fresh facts on the next pump.
+        want_stale_hide();
+        assert!(take_stale_hide(), "host must observe the hide once");
+        assert!(!take_stale_hide(), "hide never replays a second pump");
+        assert!(take_rediscover(), "revalidation still follows the hide");
     }
 
     #[test]
