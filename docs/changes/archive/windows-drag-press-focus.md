@@ -114,3 +114,16 @@
   gates are hosted evidence; local native gates passed before publication.
 - Exact next implementation action: none for scoped item7 delivery; pending
   user-owned/native edge checks and tentative review are listed above.
+
+## Records reconciliation 2026-10-17
+
+- Delivery already present at `5d953e98` (`9bb2b6f`, gate follow-up
+  `f794cf96`); no implementation or regression changes needed. Source review
+  confirms press/drop focus, refusal fences, cancel, native title-bar and
+  inactive resize behavior preserved after the `tiling_sys` module split.
+- Locked four-package build/test, fmt, strict all-target clippy and diff check
+  passed: 2,448 passed, 0 failed, 1 ignored; doc-tests had no cases. No new live
+  desktop run. The accepted 2026-10-11 primary journeys above remain applicable;
+  the optional title-bar whole-run failure and pending checks remain unchanged.
+- Corrected the stale backlog implementation-gap claim and linked the delivery
+  in the handoff table and Windows spec/matrix cells. No new product decision.

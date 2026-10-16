@@ -386,8 +386,10 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then paneru: FFM focuses B on pointer entry before the press;
   press delivery and drop-side focus TBD. `S(S-pan-mouse)`; queued.
 - Then Ours KDE: exact focus timing TBD
-- Then Ours Windows: press-focus delivered and agent-observed 2026-10-11,
-  base `9d12c7f` plus [delivery record](../../changes/archive/windows-drag-press-focus.md):
+- Then Ours Windows: press-focus delivered `9bb2b6f` and agent-observed 2026-10-11
+  ([delivery record](../../changes/archive/windows-drag-press-focus.md)); offline
+  revalidated 2026-10-17 at `5d953e98`, native gates passed (2,448 passed,
+  0 failed, 1 ignored), no new live run:
   unfocused B becomes exact foreground before movement/Up; no-move and Esc
   retain focus with stable frames and no drop plan. Moving drop keeps source
   and siblings stationary during preview, lands on the preview allocation,

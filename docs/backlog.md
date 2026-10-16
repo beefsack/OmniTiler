@@ -841,8 +841,9 @@ decisions of 2026-09-24 are under
   (`1b9bf7b` title-bar drag, `7dc6aa3` Win+left drag, `b68d490` preview; CI
   green; [evidence](changes/archive/windows-mouse-drag.md)); selected:
   title-bar stays native, Win+drag keeps the source frame and moves only the
-  preview. Move-drag press-focus is selected; current drop activation is an
-  implementation gap (handoff item 7); inactive resize keeps focus. Physical feel checks
+  preview. Move-drag press-focus delivered 2026-10-11 (`9bb2b6f`,
+  [handoff item 7](changes/archive/windows-drag-press-focus.md)); drop-only
+  activation is retired; inactive resize keeps focus. Physical feel checks
   user-owned; underlay C stays parked (needs extra machinery).
   (9) multi-output foundation delivered offline `2c05ee5` + D23 compile fix
   `f2169d6`: local move first, then Win+Shift+direction transfer all four ways
@@ -1278,7 +1279,7 @@ decisions of 2026-09-24 are under
   | 4 | Item 4 orientation action | Reuse input/catalog/live settings infrastructure. |
   | 5 | Multi-output foundation `2c05ee5` + `f2169d6`; explicit output send delivered offline `fda618f` 2026-10-14 | Local-first all-four transfer, horizontal cross-focus and pointer drops retained. Explicit Win+Ctrl+Alt+arrows/HJKL follow, four unbound stay rows, ordinary admission to target current workspace, floating-boundary tiled-side reflow and commit-last fences now wired. Native gates: 1,892 passed, 0 failed, 1 ignored ([send record](changes/archive/windows-explicit-output-send.md), [foundation and physical steps](changes/windows-multi-output-foundation.md)). Physical two-output/mixed-DPI/suppression pending; non-local modes, items 12/14/19, migration selection, hotplug and ordinary-float transfer remain separate. |
   | 6 | Keyboard resize R-RSZ-01 (parity d) | Independent; needs fresh Alt-capable trigger plus dedicated resize intent. No dependency on items 1-5 except shared modifier routing. |
-  | 7 | Press-focus R-DRAG-08 | Independent of items 1-5; touches Win-drag arm only. Keep R-DRAG-07 stationary-source/moving-preview split intact. |
+  | 7 | Press-focus R-DRAG-08 delivered `9bb2b6f` 2026-10-11 | Win-drag arm only; R-DRAG-07 stationary-source/moving-preview split retained. Offline revalidated 2026-10-17 at `5d953e98`; native gates passed (2,448 passed, 0 failed, 1 ignored). [Delivery and accepted primary live evidence](changes/archive/windows-drag-press-focus.md); physical input/feel and native edge checks remain pending. |
   | 8 | Restart R-RST-01/R-FLT-05 sticky/intentional persistence | Independent of items 1-5; KDE Q3 plus D7 tile-override store delivered offline. Ordinary/sticky intent must remain distinct from automatic fixed origin and recovery authority; Windows mechanism selected 2026-10-10 (prefixed on-window markers, item 8 below). REQ-RST-01c is NORMATIVE D25 (User 2026-10-12), membership/set/focus native acceptance pending. Coordinate D7 membership with item 13. |
   | 9 | Fullscreen send R-MAX-09 (Windows carry; NOT the parity-queue multi-output foundation) | Depends on handoff item 2 follow/stay wiring only; same-output workspace carry, no cross-output claim. |
   | 10 | Float/half-snap parity (a) R-FLT-07..11 | Windows delivered offline; ordinary focus/half-snaps physically user-accepted 2026-10-12, scoped single-output normal owner Notepad/Paint. Tie/sticky/clamp/preset/fixed/game/DPI pending; cross-output item 5. [Record](changes/archive/windows-floating-directional-navigation.md). |
