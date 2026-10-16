@@ -48,3 +48,16 @@
   and presentation/classification decisions. No urgency feature was inferred.
 - D23 source-slot lifetime after membership rehoming while minimized is the
   unchanged shared behavior and a separate TBD reference discriminator.
+
+## Agent-live follow-up (2026-10-17)
+
+- D25 ordinary-app set/membership, provable return focus and marked floats were
+  observed across two clean centered restart runs. Intermittent first-tick
+  adoption rejection also produced tiled writes to floats; broader restart
+  acceptance is not complete. [Receipts and parked investigation](windows-restart-intent.md#agent-live-follow-up-2026-10-17).
+- D16 float + maximized send/destination-exit passed; D23 basic reflow/rejoin and
+  minimized process close passed with internal-slot/sole/hidden-domain gaps.
+  See the dated [D16](windows-d16-floating-transfer.md#agent-live-follow-up-2026-10-17)
+  and [D23](windows-d23-restore-close.md#agent-live-follow-up-2026-10-17) evidence.
+- Fullscreen follow-send was skipped to avoid Xbox activation. No physical
+  feel, real-game, cross-output or D26 end-session acceptance was added.

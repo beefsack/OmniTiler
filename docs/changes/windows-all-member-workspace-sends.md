@@ -92,3 +92,24 @@
   geometry/state writes, focus changes or overlays. Explicit fullscreen sends
   must preserve fullscreen; stop and report corruption rather than retrying.
 - Physical outcomes remain unverified.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output, medium-integrity run at `dffdf871`, with explicit application
+  scope including the separate own-Settings process: Settings remained slotless
+  and frame-stable through numbered follow to an occupied target, roundtrip,
+  relative next/previous, stay to an empty target, and hide/reveal. Sticky send
+  refused with `send-refused-sticky`; owner/control windows remained excluded.
+- Settings is the automatic fixed-size fixture, using its delivered equal-track
+  hint contract; Calculator tiled normally and is not evidence of automatic
+  floating. No second automatic fixed-size application was established.
+- An earlier `unmanaged` reply was caused by omitting the Settings executable
+  from the explicit test scope, not by a product admission defect. Evidence:
+  `sendunit-j1/20261017-064537-23500`, run `01dd5da6ef04b65d` and its provenance
+  sidecar. Ordinary numbered follow/stay and relative previous also succeeded.
+- Unrelated-tile immobility was checked on selected legs, not every matrix cell.
+  Both-pager interactions, comprehensive survivor checks and fullscreen remain
+  unverified. Fullscreen was skipped to avoid the Xbox prompt; physical feel
+  and shortcut delivery are not established by these scripted checks.
+- Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored; build,
+  fmt, strict all-target clippy and diff check passed. No source change.

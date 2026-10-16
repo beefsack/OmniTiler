@@ -76,3 +76,21 @@
   convention rather than mixing DPI-virtualized and physical rectangles.
 - All owners and fixtures were cleaned up with unchanged saved settings and
   restored Mouse Snap. No new D16 product defect or physical acceptance claimed.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output scoped native run at `dffdf871`: float + maximized numbered
+  follow, relative previous and stay to an empty target succeeded. Maximized
+  frame/flag survived transfer and hide/reveal; a genuine native restore on
+  the destination recovered the exact remembered floating frame. Two unrelated
+  survivor frames were unchanged on the measured follow leg.
+- Evidence: `sendunit-j3/20261017-065321-20144`, run `01dd5da800257958`.
+  A plain-float relative stay succeeded frame-preserving; its numbered probe
+  was a same-target `no-op`, not a demonstrated numbered transfer. The full
+  ordinary-float matrix therefore remains partial alongside earlier evidence.
+- Fullscreen was skipped to avoid the Xbox prompt; no fullscreen follow-focus
+  or physical-input claim. Restart fidelity has an intermittent failure in the
+  [restart follow-up](windows-restart-intent.md#agent-live-follow-up-2026-10-17);
+  passing send/exit legs do not clear it.
+- Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored; build,
+  fmt, strict all-target clippy and diff check passed. No source change.

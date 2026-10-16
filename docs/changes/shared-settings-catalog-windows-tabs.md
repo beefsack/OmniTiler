@@ -124,3 +124,19 @@
   `git diff --check`. Shared-platform CI 38876735949 (`bfc3ccbd`) passed all
   eight jobs; follow-up documentation CI 38876893770 (`8df22a01`) also passed.
 - Physical checks remain pending; this record stays active until acceptance.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output native Settings at `dffdf871`: all four tabs selected by mouse;
+  four Ctrl+Tab steps wrapped forward and four Ctrl+Shift+Tab steps reversed.
+  Per-tab edits (inner gap, border radius, takeover and taskbar pager) survived
+  tab changes; Apply saved all four and close/reopen reloaded them correctly.
+- Revert discarded a further edit through its confirmation/result path; Escape
+  with an unsaved edit left the saved file unchanged. Unsaved/conflict feedback
+  remained visible outside the selected page. Evidence: `settings-tabs-proof`
+  report and `sendunit-j1/20261017-064537-23500` for Settings workspace sends.
+- Original settings bytes and SPI values were restored. These checks do not
+  prove the full scale/layout/accessibility matrix, every traversal control,
+  stale-edit validation, all close methods or physical shortcut feel.
+- Locked four-package build/test, fmt, strict all-target clippy and diff check
+  passed: 2,458 passed, 0 failed, 1 ignored. No source change.

@@ -86,6 +86,10 @@ decisions of 2026-09-24 are under
   move/admission/refill); Appearance (border/underlay); Shortcuts (takeover,
   Win+L, presets, bindings, Xbox/Game Bar); Desktop Integration (mouse Snap,
   taskbar pager). CI 38876735949 passed all eight jobs.
+  Agent-live 2026-10-17: four-tab draft/save/reload, Ctrl+Tab/reverse,
+  Revert and Escape no-save passed; original settings bytes restored.
+  Full scale/accessibility/traversal and physical feel remain unverified;
+  [dated evidence](changes/shared-settings-catalog-windows-tabs.md#agent-live-follow-up-2026-10-17).
 - P1 | KDE Settings core-catalog migration | Migrate the existing native
   Settings tabs to the shared Rust catalog using an exporter, checked-in
   generated descriptors and a CI drift check. Preserve KConfig keys, tolerant
@@ -177,6 +181,9 @@ decisions of 2026-09-24 are under
   2,313 passed, 0 failed, 1 ignored
   ([record](changes/archive/windows-visibility-diagnostics.md),
   [incident diagnosis](changes/windows-gaming-coexistence.md)).
+  Agent-live 2026-10-17 normal-level switches: final log 10 hide/10 reveal/15
+  visibility transitions, no malformed hide/reveal rows; overflow/exception
+  stress and Xbox recovery not claimed. [Evidence](changes/archive/windows-visibility-diagnostics.md#agent-live-follow-up-2026-10-17).
 
 - Next implementation order (user review 2026-10-13): D23 best-effort restore
   rework plus close cleanup delivered offline ([evidence](changes/archive/d23-rework.md));
@@ -375,6 +382,10 @@ decisions of 2026-09-24 are under
     no setting. Windows adapter delivered offline 2026-10-13
     ([record](changes/archive/windows-d16-floating-transfer.md)); native acceptance
     remains in item 22.
+    Agent-live Windows 2026-10-17: float + maximized numbered/relative
+    follow/stay and native destination unmaximize preserved the remembered
+    float frame. Plain-float matrix remains partial; fullscreen skipped for
+    Xbox prompt risk. [Evidence](changes/archive/windows-d16-floating-transfer.md#agent-live-follow-up-2026-10-17).
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
@@ -389,6 +400,10 @@ decisions of 2026-09-24 are under
     ([record](changes/archive/windows-d23-restore-close.md)); native journeys
     remain in item 22. Source-slot lifetime after send elsewhere remains TBD
     in the reference discriminator, with shared behavior unchanged.
+    Agent-live Windows 2026-10-17: minimize/reflow/restore recovered measured
+    frames; minimized Paint exited and survivors reflowed. Internal slot
+    retirement remains unproven; attempted sole leg invalid; minimized restart
+    iconic retention observed only. [Evidence](changes/archive/windows-d23-restore-close.md#agent-live-follow-up-2026-10-17).
   - D27 KDE verification queue: native valid-token switch convergence,
     missing/stale-token mark-only without interference; FromTool/allowed-X11
     native behavior. Must-pass real-game active play and idle/paused check,
@@ -1499,6 +1514,10 @@ decisions of 2026-09-24 are under
       inventory. Extend `tests/snapkey.rs` / `tests/settings.rs` for exact
       Ctrl/Tab routing, extra modifiers, held live rebind/disable, queue/mask,
       duplicate modifiers and Compatible vs Authentic rows.
+    - Agent-live 2026-10-17 admission: filling workspace 2 exposed spare 3,
+      then filling 3 exposed spare 4; idle did not grow the ring. Follow-send
+      pruned the emptied source and renumbered positions correctly. Both
+      rendered pager sets remain unverified; [evidence and provenance limits](changes/archive/windows-admission-trailing-workspace.md#agent-live-follow-up-2026-10-17).
     - [ ] Windows-only: owner selection/foreground/CLI producers, native
       hook release/suppression and settings Keep/Disable/Rebind Apply/Revert.
       Local-only delivery must explicitly keep non-local/multi-output pending.
@@ -1550,6 +1569,12 @@ decisions of 2026-09-24 are under
     Native gates passed; scoped CLI/MRU/null/floating/>9 and UI outcomes
     agent-observed. Physical chords/presets and non-local/multi-output pending.
     Shared core/KDE offline delivery retained. Historical handoff:
+
+    Agent-live 2026-10-17 [all-member sends](changes/windows-all-member-workspace-sends.md#agent-live-follow-up-2026-10-17):
+    own Settings (automatic fixed-size fixture) passed numbered/relative,
+    follow/stay, occupied/empty, hide/reveal and sticky refusal with its
+    executable explicitly scoped. Second fixed-size application, both-pager
+    interactions and comprehensive survivor/fullscreen matrix unverified.
 
     #### Item 2 behavior and shared contract
 
@@ -2278,6 +2303,13 @@ decisions of 2026-09-24 are under
     D7 fixed-origin marker now delivered offline with item 13
     ([record](changes/archive/windows-fixed-size-admission.md)). Stronger names and exact-owner float/sticky
     CLI are tentative, pending user review. Historical checklist follows.
+    Agent-live 2026-10-17: two centered-start restarts preserved both sticky
+    origins, intentional float, set/membership and provable return focus.
+    FAIL parked: another restart rejected three adoptions with `duplicate-window`
+    on tick 1, wrote tile frames, then recovered intent on tick 2 without
+    geometry repair. Trigger isolation inconclusive; no core change selected.
+    Full restart acceptance and initial-desktop restoration are not established;
+    [receipts, cleanup limitations and next discriminator](changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17).
     Restart R-RST-01 plus R-FLT-05 sticky persistence. User
     decisions 2026-10-07 (R-FLT-05, R-RST-01 float identity;
     [decisions](decisions.md#restart-persistence)): sticky floats stay

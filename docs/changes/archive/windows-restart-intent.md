@@ -117,3 +117,46 @@
   ignored, no elevation or product-gate changes. Native four-package tests,
   fmt and strict clippy passed again; production artifact/live evidence above
   remains current. Follow-up CI outcome is reported after publication.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output scoped ordinary-app sweep at `dffdf871`: two fresh centered
+  restart journeys preserved both sticky origins, ordinary float intent,
+  markers and exact frames at pre-stop, owner-dead, post-independent-restore,
+  first new-owner observation and settlement. Workspace switches verified the
+  sticky visible set and ordinary float/tile membership; return focus matched
+  the observed member. New-owner tick 1 adopted all three with zero writes.
+  Evidence: `sendunit-j2r/20261017-071531-23728` and
+  `sendunit-j2r/20261017-072700-13132`.
+- FAIL, parked: an earlier centered-start restart at the same revision moved
+  all three floats into tile-shaped frames. Run `01dd5da7a422aac2`, tick 1:
+  two `sticky-adopt` and one `float-adopt` returned
+  `candidate-rejected duplicate-window`, followed by four tiled writes. Tick 2
+  adopted intent without repairing the frames. A quadrant-start repeat also
+  rejected adoption initially but masked the geometry change. Passing fresh
+  runs do not erase these failure receipts; restart acceptance remains partial.
+- Rollback in `crates/tiler-windows/src/tiling_sys/restart.rs` and fresh/retained
+  Engine admission are implicated, not conclusively rooted. Static branch
+  isolation was inconclusive; a temporary reconstructed-input Engine probe
+  reportedly adopted cleanly, but no retained probe artifact independently
+  confirms that result. No fix or
+  shared-core/KDE behavior change was made. Options: capture the rejected
+  candidate's full bounded facts, then add a failing regression; consider
+  Windows-only hydration hardening only with that regression. Root trigger and
+  rejection handling remain parked; no new layout-restoration policy selected.
+- Post-restart un-stick observations remain just observations: tiled-origin
+  became tiled, float-origin retained ordinary float intent. The existing TBD
+  policy is unchanged. The [minimal discriminator](../../spec/reference-outcomes.md#windows-restart-hydration-discriminator)
+  separates clean hydration from rejected first-observation adoption.
+- Final cleanup stopped all owners, removed the recovery ledger, restored saved
+  settings bytes and SPI/Snap values, and closed identified disposable fixtures.
+  The protected terminal's apparent frame discrepancy was mixed-DPI readback,
+  not a move; one consistent convention confirmed its identity/frame unchanged.
+  Calculator's float marker was cleared to the captured zero baseline, but its
+  original geometry was not recoverable and was left unchanged at cleanup.
+  One Notepad window absent from the fixture roster was closed in a known test
+  process without proving that window's origin; another unclaimed Notepad was
+  left untouched. Full initial-desktop restoration is therefore not established.
+- Locked build/test for core/protocol/FFI/Windows passed: 2,458 passed, 0 failed,
+  1 ignored. Workspace fmt, strict all-target clippy and diff check passed.
+  No production or regression-test changes accompanied this evidence update.

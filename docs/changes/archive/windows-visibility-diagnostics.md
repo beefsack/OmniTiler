@@ -94,3 +94,20 @@
   `git diff --check` pass. Windows-only source changes; no core/KDE/macOS changes,
   dependencies, live hook runs or desktop mutations. Hosted CI accompanies the
   delivery commit. Xbox recovery and physical gaming acceptance remain unclaimed.
+
+## Agent-live follow-up (2026-10-17)
+
+- Scoped single-output ordinary-app switches at normal logging level, without
+  trace, emitted verified `workspace-hide`/`workspace-reveal` rows with opaque
+  token, tick, action correlation, categorical outcome and elapsed milliseconds.
+  Visibility transitions distinguished visible observations from hidden claims.
+- Final run `01dd5d9ee3d0f724`: 10 hide, 10 reveal and 15 visibility-transition
+  rows; no malformed hide/reveal payloads. Earlier counts of 10/9/14 were a
+  mid-run harvest, superseded by the final post-stop log. The managed-token set
+  matched the two identity-verified ordinary-app claims. Initial capture lacks
+  a complete artifact provenance sidecar; normal-level emission is directly
+  evidenced, not every live acceptance condition.
+- Bounds/overflow and exception transitions were not stressed by this sample;
+  offline coverage remains their evidence. No Xbox reproduction or recovery
+  claim. Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored;
+  build, fmt, strict all-target clippy and diff check passed. No source change.

@@ -1,7 +1,7 @@
 # Windows admission trailing workspace
 
-Windows owner correction delivered offline, 2026-10-16. Native launch and
-pager acceptance remains pending.
+Windows owner correction delivered offline, 2026-10-16. Native owner-ring
+checks passed 2026-10-17; rendered pager acceptance remains pending.
 
 ## Goal and scope
 
@@ -69,3 +69,21 @@ pager acceptance remains pending.
   sets after each step. Close only test windows and restore the initial state.
   Physical launcher-shortcut delivery is a separate user-run leg if required;
   this correction is not specific to browser or launcher shortcuts.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output scoped ordinary-app run at `dffdf871`: selecting workspace 3
+  refused before B's admission into empty workspace 2 and succeeded afterward;
+  C's admission into workspace 3 exposed workspace 4. After six seconds idle,
+  workspace 5 still refused: repeated observation did not grow the ring.
+- Follow-send into the trailing empty succeeded with foreground readback on the
+  mover. The emptied invisible source was pruned and numbered positions shifted;
+  expecting a spare at position 5 was a harness error, not a product defect.
+  Minimize/restore retained the same window lifetime, and foreground activation
+  selected its workspace.
+- Evidence: runs `01dd5d9e29eef3df` and `01dd5d9ee3d0f724`; these initial captures
+  lack complete artifact provenance sidecars. Neither run
+  directly inspected the rendered taskbar and tray workspace sets: that native
+  acceptance condition remains open, not replaced by CLI ring discrimination.
+- Final four-package locked gates passed: 2,458 passed, 0 failed, 1 ignored;
+  build, fmt, strict all-target clippy and diff check passed. No source change.

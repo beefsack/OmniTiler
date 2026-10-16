@@ -93,3 +93,21 @@
 - Final owners/fixtures were absent, ledger/request/pointer clean, settings
   byte-identical and Mouse Snap restored. No new D23 product defect or physical
   acceptance is claimed.
+
+## Agent-live follow-up (2026-10-17)
+
+- Single-output scoped ordinary-app run at `dffdf871`: minimizing B reflowed
+  siblings; after an intervening focus change, restoring B recovered all four
+  measured pre-minimize frames exactly. Closing minimized Paint exited its
+  exact process and survivors reflowed. Evidence:
+  `sendunit-j4/20261017-065934-24144`.
+- A minimized member stayed iconic across orderly stop/restore/relaunch;
+  restoring afterward produced a different, fresh-admission-shaped slot.
+  This is one observation, not complete session-expiry acceptance.
+- The attempted sole-window leg used an unavailable numbered target and
+  received `unknown-target`; it did not isolate the member and is rejected as
+  sole/null-focus evidence. Internal stored-slot cleanup, identity reuse,
+  hidden-domain bursts and the broader changed-neighborhood matrix remain open.
+  Process exit and absent close log lines do not prove internal slot retirement.
+- Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored; build,
+  fmt, strict all-target clippy and diff check passed. No source change.

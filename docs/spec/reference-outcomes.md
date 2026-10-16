@@ -381,6 +381,12 @@ lifetime, linking existing fixtures:
 | Windows OS-permitted activation over fullscreen/game (D27 5b) | With a game/fullscreen window foreground on WS1 and B hidden on WS2, request B activation with established OS permission; repeat in Switch and focus and Mark urgent only, then with a denied request | User-approved 2026-10-16: Switch and focus plus OS permission switches to WS2 and focuses B, even though WS1/game becomes hidden; default Mark urgent only and denied requests unchanged. No extra tiler game-protection override. Approved target, implementation/tests pending | Clean permission discriminator and real-game active/idle outcomes TBD; no new live evidence or KDE behavior change |
 | New-login intentional-float memory (D26) | End session; start a new login and observe owned intent | Selected (b) listed 0.1 known limitation: intentional-float memory does not survive logout/login under unchanged session-scoped REQ-RST-01d; reopened apps have new identities. Revisit after 0.1 with shared restart store ([decision](../decisions.md#restart-persistence), User 2026-10-12) | Ours TBD; ref/native TBD beyond linked R-RST-02; native dogfood/live check pending, verification-only |
 
+### Windows restart hydration discriminator
+
+| Variant | Minimal action sequence | Observed evidence | Unsupported outcome / next discriminator |
+| --- | --- | --- | --- |
+| First-observation rejection of marked floats | Settle a tiled-origin sticky, float-origin sticky and ordinary intentional float at centered frames with a tiled control; stop, independently restore and relaunch with apps alive; inspect first and second observations | Native 2026-10-17 at `dffdf871`: two fresh runs adopt all three on tick 1 with zero writes and preserved frames/set/membership. An earlier run rejects all three with `duplicate-window`, writes tile geometry on tick 1, then adopts markers on tick 2 without frame repair. Existing contract hydrates classification before tiling; D25 does not select saved-layout restoration. [Receipts](../changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17) | Trigger and supported rejection handling TBD; reconstructed-input probe did not reproduce. Capture exact rejected-candidate facts before selecting a repair; no new shared-core policy or post-restart un-stick outcome selected. Reference outcomes TBD |
+
 ### D01 native-activation discriminators (selected 2026-10-12)
 
 Source-only [D01 research](../research/d01-fullscreen-admission.md) informed the
