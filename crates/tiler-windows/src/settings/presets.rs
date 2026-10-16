@@ -9,14 +9,16 @@ pub enum Preset {
     /// Authentic minus every known OS-conflicting chord: all focus rows (Win+H
     /// voice, Win+J recall, Win+K cast, Win+L lock, arrows Snap/maximize/
     /// minimize), all move-arrow rows (Win+Shift+arrows monitor-move/stretch),
-    /// float (Win+G Game Bar), maximize (Win+M minimize-all), fullscreen
-    /// (Win+F11 Xbox mode), orientation (Win+O orientation lock), workspace
+    /// maximize (Win+M minimize-all),
+    /// orientation (Win+O orientation lock), workspace
     /// tiling (Win+Y Mixed Reality), both
     /// launchers (Win+B notification-area focus, Win+T taskbar cycle), all
     /// workspace digits (Win[/Shift]+digits
     /// taskbar launch/new-instance), and the two item 1 history arrows
     /// (Win+Ctrl+Left/Right native virtual-desktop switch, ownership
-    /// unverified in repository) are disabled. What stays is exactly the
+    /// unverified in repository) are disabled. Float (Win+G Game Bar) and
+    /// fullscreen (Win+F11 Xbox mode) rebind to the Compatible Ctrl arms
+    /// (Win+Ctrl+G, Win+Ctrl+F11) instead of disabling. What stays is exactly the
     /// undocumented set: letter moves (Win+Shift+H/J/K/L) and sticky
     /// (Win+Shift+G) carry no documented owner in the official list, plus
     /// the seven kept history rows (Tab/letters/Up/Down with the honest
@@ -33,8 +35,9 @@ pub enum Preset {
     /// no invented stock holder); the four output stay rows stay unbound
     /// under both presets.
     /// Applies as a deterministic reset: all overrides are
-    /// dropped first, then the conflicts disable. Manual rebinding stays
-    /// available afterwards; no replacement defaults are invented. The Win+L
+    /// dropped first, then the conflicts disable and the two Compatible Ctrl
+    /// rebinds apply. Manual rebinding stays
+    /// available afterwards; no other replacement defaults are invented. The Win+L
     /// opt-in is preserved.
     Compatible,
 }
@@ -54,7 +57,8 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
         Preset::Compatible => {
             // Deterministic reset to the known safe set: drop every override
             // first (a stale rebound pointing at an OS-owned chord must not
-            // survive the preset), then disable the conflicts.
+            // survive the preset), then disable the conflicts and rebind the
+            // two Xbox chords to their Compatible Ctrl arms.
             for def in binding_catalog() {
                 if settings.bindings.remove(def.id).is_some() {
                     changed.push(def.id);
@@ -70,6 +74,16 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
                 );
                 changed.push(id);
             }
+            for (id, chord) in compatible_rebinds() {
+                settings.bindings.insert(
+                    id.to_owned(),
+                    BindingSetting {
+                        state: BindingState::Rebind,
+                        chord: Some(chord.to_owned()),
+                    },
+                );
+                changed.push(id);
+            }
         }
     }
     settings.revision = settings.revision.saturating_add(1);
@@ -77,13 +91,14 @@ pub fn apply_preset(settings: &mut Settings, preset: Preset) -> Vec<&'static str
 }
 
 /// Preset decision helper: the ids the compatible preset disables (every
-/// known OS-conflicting implemented row; resize rows keep their defaults
+/// known OS-conflicting implemented row except the two Xbox chords, which
+/// rebind to [`compatible_rebinds`] instead; resize rows keep their defaults
 /// under both presets since Windows Alt-chord ownership is unverified, and
 /// item 5 output follow rows keep theirs since Windows Ctrl+Alt ownership is
 /// unknown;
 /// see [`Preset::Compatible`]).
 #[must_use]
-pub const fn compatible_disabled_ids() -> [&'static str; 41] {
+pub const fn compatible_disabled_ids() -> [&'static str; 39] {
     [
         "focus-left",
         "focus-left-arrow",
@@ -97,9 +112,7 @@ pub const fn compatible_disabled_ids() -> [&'static str; 41] {
         "move-down-arrow",
         "move-up-arrow",
         "move-right-arrow",
-        "toggle-float",
         "toggle-maximize",
-        "toggle-fullscreen",
         "toggle-orientation",
         "toggle-workspace-tiling",
         "launch-browser",
@@ -126,5 +139,17 @@ pub const fn compatible_disabled_ids() -> [&'static str; 41] {
         "workspace-send-0",
         "workspace-prev-left-arrow",
         "workspace-next-right-arrow",
+    ]
+}
+
+/// Preset decision helper: the Compatible Ctrl rebinds replacing the two
+/// Xbox chords (authentic Win+G float and Win+F11 fullscreen). Canonical
+/// render order (`Win+Ctrl+G`, `Win+Ctrl+F11`); both validate through the
+/// float/fullscreen alternate arm in [`binding_modifiers_ok`].
+#[must_use]
+pub const fn compatible_rebinds() -> [(&'static str, &'static str); 2] {
+    [
+        ("toggle-float", "Win+Ctrl+G"),
+        ("toggle-fullscreen", "Win+Ctrl+F11"),
     ]
 }

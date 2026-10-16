@@ -115,27 +115,19 @@ decisions of 2026-09-24 are under
   not migrated in the same change. Repeated replies must not churn
   workspaces.
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
-  direction, after [incident diagnosis and options](changes/windows-gaming-coexistence.md):
-  Compatible preset rebinds the tiler actions on these chords to unused
-  combinations; Authentic keeps the authentic chords and reports Xbox mode
-  and Game Bar as configuration conflicts in the warning/action-required
-  system, recommending disabling Xbox mode and removing Game Bar, with a
-  per-conflict resolve action only where research shows it is safe and
-  reversible (official setting, per-user registry value, or standard
-  uninstall). Compatible alternate rule: first try the authentic chord plus
-  Ctrl (Ctrl+Win+G does not open Game Bar), used only when Windows does not
-  already use the result (for example Ctrl+Win+Left/Right/D are virtual
-  desktop chords); otherwise another sensible unused chord. Game Bar's
-  shortcut settings only add shortcuts; PowerToys Keyboard Manager remapping
-  did not suppress them (user tests 2026-10-16). Research resolve actions and
-  proposed Compatible chords for user review before implementation.
-  [Research and proposal](research/windows-port/xbox-shortcut-conflicts.md)
-  delivered 2026-10-16: float `Ctrl+Win+G`, fullscreen `Ctrl+Win+F11`
-  proposed, no default-catalog or documented Windows-list collision found;
-  Ctrl+Win+F11 Xbox nonactivation pending. Recommend official Settings
-  navigation and current-user package-presence query; documented Xbox
-  enabled-state getter not established. Registry writes/direct uninstall not selected; exact
-  alternates, unknown-state warning semantics and resolve UX await review.
+  approved choices implemented offline: Compatible float `Ctrl+Win+G`,
+  fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
+  Authentic keeps Win+G/F11 with cached read-only per-user `GamingHomeApp`
+  configuration and supported current-user Game Bar package-query evidence.
+  Unknown Xbox state retains conservative amber/tray/Settings warnings;
+  Game Bar package absence retains a residual shortcut check. Resolve buttons
+  open Settings only, explaining capture/managed-app-data loss and Store
+  reinstall limits; no tiler uninstall or registry/policy writes.
+  [Active record and physical plan](changes/windows-gaming-coexistence.md),
+  [research limits](research/windows-port/xbox-shortcut-conflicts.md).
+  Pending physical acceptance: both Ctrl chords route only to tiler actions,
+  Ctrl+Win+F11 invokes no Windows function, Ctrl+Win+G does not open Game Bar,
+  hold/release/plain-Win behavior, conflict rows and Settings-page navigation.
 - P3 | Windows visibility diagnostics | Normal logs lack per-window
   reveal/hide results, visibility/cloak transitions, exception reasons and
   timing, which left the Xbox-mode incident's hidden window and later

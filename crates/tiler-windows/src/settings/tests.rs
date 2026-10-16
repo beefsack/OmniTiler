@@ -1106,10 +1106,21 @@ fn presets_restore_defaults_and_preserve_win_l_opt_in() {
     assert!(settings.bindings.is_empty());
     assert!(settings.core.keyboard.allow_win_l);
     assert!(validate_settings(&settings).is_ok());
-    // Compatible disables every OS-conflicting row (41), preserving the
-    // opt-in. From empty state the change is exactly the disable list.
+    // Compatible disables 39 OS-conflicting rows and rebinds the two Xbox
+    // chords to Win+Ctrl+G / Win+Ctrl+F11, preserving the
+    // opt-in. From empty state the change is exactly the disable list plus
+    // the two rebinds.
     let changed = apply_preset(&mut settings, Preset::Compatible);
-    assert_eq!(changed, compatible_disabled_ids());
+    assert_eq!(
+        changed.len(),
+        compatible_disabled_ids().len() + compatible_rebinds().len()
+    );
+    for id in compatible_disabled_ids() {
+        assert!(changed.contains(&id), "{id}");
+    }
+    for (id, _) in compatible_rebinds() {
+        assert!(changed.contains(&id), "{id}");
+    }
     assert!(changed.contains(&"focus-left"));
     assert!(changed.contains(&"focus-left-arrow"));
     assert!(changed.contains(&"toggle-float"));
@@ -1121,7 +1132,21 @@ fn presets_restore_defaults_and_preserve_win_l_opt_in() {
     assert!(!changed.contains(&"workspace-prev-h"));
     assert_eq!(
         settings.bindings.get("toggle-float").map(|b| &b.state),
-        Some(&BindingState::Disabled)
+        Some(&BindingState::Rebind)
+    );
+    assert_eq!(
+        settings
+            .bindings
+            .get("toggle-float")
+            .and_then(|b| b.chord.clone()),
+        Some("Win+Ctrl+G".to_owned())
+    );
+    assert_eq!(
+        settings
+            .bindings
+            .get("toggle-fullscreen")
+            .and_then(|b| b.chord.clone()),
+        Some("Win+Ctrl+F11".to_owned())
     );
     assert!(!settings.bindings.contains_key("move-left"));
     assert!(!settings.bindings.contains_key("toggle-sticky"));
@@ -1137,9 +1162,18 @@ fn presets_restore_defaults_and_preserve_win_l_opt_in() {
             || row.id == "move-up"
             || row.id == "move-right"
             || row.id == "toggle-sticky"
+            || row.id == "toggle-float"
+            || row.id == "toggle-fullscreen"
         {
             assert!(row.active && row.effective, "{}", row.id);
         }
+    }
+    for (id, chord) in [
+        ("toggle-float", "Win+Ctrl+G"),
+        ("toggle-fullscreen", "Win+Ctrl+F11"),
+    ] {
+        let row = effective.iter().find(|row| row.id == id).expect("row");
+        assert_eq!(row.chords, vec![chord.to_owned()], "{id}");
     }
     assert!(settings.core.keyboard.allow_win_l);
     assert!(validate_settings(&settings).is_ok());

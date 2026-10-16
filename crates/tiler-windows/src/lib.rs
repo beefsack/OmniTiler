@@ -1,6 +1,8 @@
 pub mod active_border;
 #[cfg(windows)]
 pub mod active_border_sys;
+pub mod gaming;
+pub mod gaming_settings;
 pub mod group_underlay;
 pub mod input_handoff;
 pub mod input_health;

@@ -1183,8 +1183,9 @@ pub fn binding_wants_shift(def: &BindingDef) -> bool {
 /// ride Win+Ctrl+Alt([+Shift] for a shifted stay rebind); item 14 migration
 /// rows ride Win+Ctrl+Alt+Shift; every other
 /// implemented arm rides without Ctrl by default. Numbered stay additionally
-/// accepts the Win+Ctrl+Shift backlog arm via [`binding_modifiers_ok`]; this
-/// default stays Ctrl-free so plain Win+Shift stay rebinds keep working.
+/// accepts the Win+Ctrl+Shift backlog arm via [`binding_modifiers_ok`], and
+/// the float/fullscreen toggles additionally accept the Compatible Win+Ctrl
+/// arm there; those defaults stay Ctrl-free so plain Win rebinds keep working.
 /// Carried through routing, duplicate detection, canonical hold slots, and
 /// release pins so unbound stay actions reuse the plumbing without rework.
 #[must_use]
@@ -1202,8 +1203,10 @@ pub fn binding_wants_ctrl(def: &BindingDef) -> bool {
 /// arms. Every binding rides exactly its [`binding_wants_shift`] /
 /// [`binding_wants_ctrl`] / [`binding_wants_alt`] arm, except numbered stay,
 /// which additionally accepts the Win+Ctrl+Shift backlog example arm
-/// (Shift required, Alt never), and output stay, which additionally accepts
-/// Win+Ctrl+Alt+Shift (Shift optional, Ctrl+Alt always). Item 14 migration
+/// (Shift required, Alt never), output stay, which additionally accepts
+/// Win+Ctrl+Alt+Shift (Shift optional, Ctrl+Alt always), and the float /
+/// fullscreen toggles, which additionally accept the Compatible Win+Ctrl arm
+/// (unshifted, no Alt) alongside the authentic Win arm. Item 14 migration
 /// rows accept only their exact Win+Ctrl+Alt+Shift arm. Digit follow and all
 /// other arms are untouched: Ctrl stays refused there.
 #[must_use]
@@ -1217,6 +1220,17 @@ pub fn binding_modifiers_ok(def: &BindingDef, shift: bool, ctrl: bool, alt: bool
     if matches!(def.family, BindingFamily::WorkspaceStay { .. }) && shift && ctrl && !alt {
         return true;
     }
+    if matches!(
+        def.family,
+        BindingFamily::Toggle {
+            kind: ToggleKind::Float | ToggleKind::Fullscreen,
+        }
+    ) && !shift
+        && ctrl
+        && !alt
+    {
+        return true;
+    }
     matches!(
         def.family,
         BindingFamily::WorkspaceOutput { follow: false, .. }
@@ -1225,13 +1239,21 @@ pub fn binding_modifiers_ok(def: &BindingDef, shift: bool, ctrl: bool, alt: bool
         && shift
 }
 
-/// Native modifier-arm text for rebind errors: the single arm, or both stay
+/// Native modifier-arm text for rebind errors: the single arm, both stay
 /// arms (`Win+Shift or Win+Ctrl+Shift`; output stay `Win+Ctrl+Alt or
-/// Win+Ctrl+Alt+Shift`).
+/// Win+Ctrl+Alt+Shift`), or both float/fullscreen arms (`Win or Win+Ctrl`).
 #[must_use]
 pub fn binding_arm_text(def: &BindingDef) -> &'static str {
     if matches!(def.family, BindingFamily::WorkspaceStay { .. }) {
         return "Win+Shift or Win+Ctrl+Shift";
+    }
+    if matches!(
+        def.family,
+        BindingFamily::Toggle {
+            kind: ToggleKind::Float | ToggleKind::Fullscreen,
+        }
+    ) {
+        return "Win or Win+Ctrl";
     }
     if matches!(
         def.family,

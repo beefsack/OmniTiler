@@ -1,6 +1,18 @@
 # Windows Xbox shortcut conflicts: research and proposal
 
-- Research date: 2026-10-16. Status: proposal for review, no implementation.
+- Research date: 2026-10-16. Status: research snapshot; the implementation
+  choices below are superseded by the approved decisions immediately below.
+- Approved 2026-10-16: Compatible uses Ctrl+Win+G (float) and Ctrl+Win+F11
+  (fullscreen); Authentic keeps Win+G/F11. Read-only Xbox detection uses the
+  undocumented per-user `GamingHomeApp` mapping: exact Xbox AUMID on, present
+  empty REG_SZ off; absent/unreadable/unrecognised means unknown with warning
+  and Settings navigation. Game Bar uses current-user package registration.
+  Resolve actions open Settings pages only; no uninstall or registry/policy
+  writes. The conservative unknown fallback is selected, not acknowledgement.
+  [Decisions](../../decisions.md#shortcuts-conflicts-and-presets) and
+  [implementation/physical acceptance](../../changes/windows-gaming-coexistence.md)
+  are current; descriptions of disabled Compatible chords and open choices
+  below document the pre-implementation research, not current product policy.
 - Approved direction: Compatible rebinds the two tiler actions; Authentic keeps
   the authentic chords and recommends disabling Xbox mode and removing Game Bar.
   Resolve actions must be safe and reversible. Try authentic plus Ctrl first,

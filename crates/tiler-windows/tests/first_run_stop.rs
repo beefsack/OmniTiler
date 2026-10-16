@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 use tiler_windows::settings::{
-    LiveSettings, LoadOutcome, SETTINGS_FILE_NAME, Settings, compatible_disabled_ids,
-    load_from_dir, validate_settings,
+    BindingState, LiveSettings, LoadOutcome, SETTINGS_FILE_NAME, Settings, compatible_disabled_ids,
+    compatible_rebinds, load_from_dir, validate_settings,
 };
 use tiler_windows::tiling::{CliOverrides, tile_options_defaults};
 use tiler_windows::tiling_sys::resolve_first_run_outcome;
@@ -171,7 +171,7 @@ fn authentic_choice_publishes_through_production_path() {
 }
 
 #[test]
-fn compatible_choice_publishes_disabled_preset_through_production_path() {
+fn compatible_choice_publishes_rebound_preset_through_production_path() {
     let temp = Temp::new("publish-compatible");
     let resolved = run_outcome(
         &temp.path,
@@ -188,7 +188,15 @@ fn compatible_choice_publishes_disabled_preset_through_production_path() {
     match load_from_dir(&temp.path) {
         LoadOutcome::Loaded(settings) => {
             assert!(validate_settings(&settings).is_ok());
-            assert_eq!(settings.bindings.len(), compatible_disabled_ids().len());
+            assert_eq!(
+                settings.bindings.len(),
+                compatible_disabled_ids().len() + compatible_rebinds().len()
+            );
+            for (id, chord) in compatible_rebinds() {
+                let entry = settings.bindings.get(id).expect("rebind entry");
+                assert_eq!(entry.state, BindingState::Rebind, "{id}");
+                assert_eq!(entry.chord.as_deref(), Some(chord), "{id}");
+            }
             assert!(unresolved_conflicts(&settings, true, false).is_empty());
             assert!(unresolved_conflicts(&settings, true, true).is_empty());
         }

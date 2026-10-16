@@ -36,6 +36,8 @@
 //! zero `hWnd`/`uID` from a later same-user process removes the stale
 //! registration (the sample's `DeleteNotificationIcon` does exactly this).
 
+pub mod gaming;
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};

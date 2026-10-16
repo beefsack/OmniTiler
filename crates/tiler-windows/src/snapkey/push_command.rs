@@ -651,16 +651,20 @@ impl SnapClassify {
         }
     }
 
-    /// Fullscreen-toggle half of the unified classifier (Win+F11, KDE Meta+F11
-    /// parity): same Win/Ctrl/Alt/armed-hold/gate/mask contract as the
-    /// maximize arm. Any held Shift (or Ctrl/Alt, or missing Win) passes a
+    /// Fullscreen-toggle half of the unified classifier (Win+F11 authentic,
+    /// Win+Ctrl+F11 Compatible, KDE Meta+F11 parity): same Win/Shift/Alt/
+    /// armed-hold/gate/mask contract as the
+    /// maximize arm, except Ctrl selects the Compatible arm. Any held Shift
+    /// (or Alt, or missing Win) passes a
     /// fresh F11 through untracked and the paired key-up also passes. A
     /// consumed hold stays swallowed across later transitions until its
     /// matching up. Only the down dispatches:
     /// held repeats are swallowed (mask stays armed) instead of re-toggling.
     /// Ups close the pair. Fresh downs consume iff takeover is on with the
     /// shortcut gate active; the owner rechecks fresh identity/scope/
-    /// elevation/fullscreen/gesture before any action.
+    /// elevation/fullscreen/gesture before any action. Fresh Ctrl+Win+F11
+    /// without an explicit rebind never arrives here: `direct_action` refuses
+    /// Ctrl, so only the rebound chord routes via the remap table.
     pub(super) fn push_fullscreen(
         &mut self,
         is_up: bool,
@@ -724,7 +728,10 @@ impl SnapClassify {
                     }))
                 }
             } else {
-                if self.ctrl || self.alt || self.shift || !(self.win_l || self.win_r) {
+                // Compatible Ctrl arm: Ctrl rides the rebound chord via the
+                // remap table (direct Ctrl+F11 still refuses in
+                // `direct_action`, so fresh unbound Ctrl stays unowned).
+                if self.alt || self.shift || !(self.win_l || self.win_r) {
                     return None;
                 }
                 self.fullscreen_down = true;
@@ -754,11 +761,12 @@ impl SnapClassify {
         }
     }
 
-    /// Shared G-key dispatcher (Win+G float, Win+Shift+G sticky, KDE
+    /// Shared G-key dispatcher (Win+G float authentic, Win+Ctrl+G float
+    /// Compatible via its explicit rebind, Win+Shift+G sticky, KDE
     /// Meta+G / Meta+Shift+G parity). The op is fixed at down time from the
     /// Shift state, so releasing Shift before the key-up cannot flip float
     /// into sticky (or vice versa); repeats ride the armed hold regardless of
-    /// later Shift. Ctrl/Alt or a missing Win passes through untracked.
+    /// later Shift. Direct Ctrl/Alt or a missing Win passes through untracked.
     /// Ups close whichever hold is armed; untracked ups return `None`.
     pub(super) fn push_g(
         &mut self,
@@ -787,13 +795,17 @@ impl SnapClassify {
         self.push_g_arm(GArm::Float, is_up, foreground, route_live)
     }
 
-    /// Shared G-key arm (float and sticky halves): same Win/Ctrl/Alt/
-    /// armed-hold/gate/mask contract as the maximize arm. A fresh down routes
-    /// by Shift; held repeats ride the armed hold regardless of later Shift.
-    /// Only the down dispatches: held repeats are swallowed (mask stays
-    /// armed) instead of re-toggling. Ups close the pair. Fresh downs consume
-    /// iff takeover is on with the shortcut gate active; the owner rechecks
-    /// fresh identity/scope/elevation/fullscreen/gesture before any action.
+    /// Shared G-key arm (float and sticky halves): same Win/Alt/
+    /// armed-hold/gate/mask contract as the maximize arm, except the float
+    /// half additionally accepts the Compatible Win+Ctrl arm. A fresh down
+    /// routes by Shift; held repeats ride the armed hold regardless of later
+    /// Shift/Ctrl. Only the down dispatches: held repeats are swallowed (mask
+    /// stays armed) instead of re-toggling. Ups close the pair. Fresh downs
+    /// consume iff takeover is on with the shortcut gate active; the owner
+    /// rechecks fresh identity/scope/elevation/fullscreen/gesture before any
+    /// action. Fresh Ctrl+Win+G without an explicit rebind never arrives
+    /// here: `direct_action` refuses Ctrl, so only the rebound chord routes
+    /// via the remap table. The sticky half still refuses Ctrl.
     fn push_g_arm(
         &mut self,
         arm: GArm,
@@ -876,12 +888,17 @@ impl SnapClassify {
                     Some(intent(SnapEdge::Repeat, false, false))
                 }
             } else {
-                if self.ctrl || self.alt || !(self.win_l || self.win_r) {
+                if self.alt || !(self.win_l || self.win_r) {
                     return None;
                 }
                 if shift != sticky {
                     // The other arm owns this Shift state: the dispatcher
                     // routes fresh downs there, never here.
+                    return None;
+                }
+                if sticky && self.ctrl {
+                    // No shifted Ctrl sticky arm: Win+Ctrl+Shift+G passes
+                    // through untracked.
                     return None;
                 }
                 *down = true;

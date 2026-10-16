@@ -101,8 +101,12 @@ pub fn effective_bindings(settings: &Settings) -> Vec<EffectiveBinding> {
 
 /// Build the live classifier remap from validated settings: one full-modifier
 /// entry per effective rebind (Shift/Ctrl/Alt matching the binding's native
-/// arm, resize included). The rebound chord alone routes; the binding's old
-/// default chords pass through via [`build_disabled`]. Unbound stay rows
+/// arm, resize included, float/fullscreen Ctrl alternates included). The rebound chord alone routes; the binding's old
+/// default chords pass through via [`build_disabled`]. A keep-equivalent
+/// rebind (custom chord exactly equal to one of the row's own defaults)
+/// claims nothing new and emits no entry; a same-key modifier-only rebind
+/// (Compatible Win+Ctrl+G over Win+G, Win+Ctrl+F11 over Win+F11) still emits
+/// its full-modifier entry so the new arm routes. Unbound stay rows
 /// route into their canonical slot (shared with the follow arm on the same
 /// key) through the explicit stay action; item 14 migration rows route into
 /// their canonical letter slot through the explicit migrate action; rebound
@@ -138,7 +142,15 @@ pub fn build_remap(settings: &Settings) -> Vec<ChordRemap> {
         let Some(to_vk) = binding_canonical_vk(def) else {
             continue;
         };
-        if parsed.vk == to_vk {
+        // Keep-equivalent rebinds (custom chord exactly equals one of the
+        // row's own defaults) route natively with no entry. Same-key
+        // modifier-only rebinds (Compatible Ctrl+G/F11 over Win+G/Win+F11)
+        // still route: only the exact chord match skips.
+        let own_default = def
+            .defaults
+            .iter()
+            .any(|default| parse_chord(default).ok() == Some(parsed));
+        if own_default {
             continue;
         }
         out.push(ChordRemap {

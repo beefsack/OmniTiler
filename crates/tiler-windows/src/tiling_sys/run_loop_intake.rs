@@ -39,6 +39,7 @@ pub(super) fn pump_intake(
     windrag_available: bool,
     snap_want: &mut bool,
     tray: &mut Option<crate::tray_sys::TrayOwner>,
+    gaming: &mut Option<crate::gaming::GamingMonitor>,
     trace_last_turns: &mut u64,
     trace_last_offers: &mut u64,
     trace_windrag_offers: &mut u64,
@@ -145,18 +146,39 @@ pub(super) fn pump_intake(
     if poll_live_settings(state, dir, me, store, snap_want) {
         woke = true;
     }
+    // Cached gaming facts (normal owner only; proof owners carry no
+    // monitor): a changed settings revision re-arms detection, otherwise an
+    // infrequent bounded interval covers Settings-made changes. The worker
+    // holds at most one pass and is never waited on here.
+    if let Some(monitor) = gaming.as_mut() {
+        let revision = state
+            .settings_live
+            .as_ref()
+            .map(|live| live.settings.revision);
+        monitor.maybe_refresh(revision);
+        // Owner-pump drain of completed worker lines (single-writer log:
+        // the worker queues, only this pump writes).
+        for line in monitor.drain_logs() {
+            log_json_at(log_path, line);
+        }
+    }
     // Tray follows live settings on the same pump: badge and tooltip
     // track the validated effective bindings under the runtime
     // keyboard policy (takeover plus the runtime Win+L opt-in), and a
     // pending add retries through the state gate (no duplicate
     // icons). `sync` itself is change-gated.
     if let Some(tray) = tray.as_mut() {
+        let snapshot = gaming
+            .as_ref()
+            .map(|monitor| monitor.snapshot())
+            .unwrap_or_else(crate::gaming::GamingSnapshot::unknown);
         let (conflict_empty, settings_status) = match state.settings_live.as_ref() {
             Some(live) => (
-                crate::tray::unresolved_conflicts(
+                crate::gaming::tray_warning_conflicts(
                     &live.settings,
                     state.keyboard.takeover,
                     state.keyboard.allow_win_l,
+                    &snapshot,
                 )
                 .is_empty(),
                 live.status.clone(),

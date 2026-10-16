@@ -424,10 +424,14 @@ pub(super) fn run_tile_loop(
     } else {
         let (conflict_empty, settings_status) = match state.settings_live.as_ref() {
             Some(live) => (
-                crate::tray::unresolved_conflicts(
+                // Startup seeding is chord-driven (unknown cached facts): the
+                // gaming worker below refreshes on its own pass and the pump
+                // re-evaluates with cached facts from the first intake.
+                crate::gaming::tray_warning_conflicts(
                     &live.settings,
                     state.keyboard.takeover,
                     state.keyboard.allow_win_l,
+                    &crate::gaming::GamingSnapshot::unknown(),
                 )
                 .is_empty(),
                 live.status.clone(),
@@ -477,6 +481,30 @@ pub(super) fn run_tile_loop(
                 None
             }
         }
+    };
+    // Read-only gaming detection (normal owner only; proof owners stay
+    // deterministic with no worker thread): cached Xbox/Game Bar facts seed
+    // one startup pass on a detached worker (at most one in flight, never
+    // waited on), then re-arm on settings changes plus a bounded interval
+    // inside `pump_intake`. Completed lines queue in the monitor and drain
+    // onto the owner log on the pump below (the worker never writes the
+    // log); probe/spawn failures keep conservative unknown facts and never
+    // stop tiling. Only categorical source/outcome/state reaches the log,
+    // never raw values or inventories.
+    let mut gaming: Option<crate::gaming::GamingMonitor> = if proof {
+        None
+    } else {
+        let monitor = crate::gaming::GamingMonitor::new(std::sync::Arc::new(
+            crate::tray_sys::gaming::probe_all,
+        ));
+        monitor.request_refresh(crate::gaming::RefreshReason::Startup);
+        monitor.sync_revision(
+            state
+                .settings_live
+                .as_ref()
+                .map(|live| live.settings.revision),
+        );
+        Some(monitor)
     };
     // Product keyboard takeover on the loop thread: the callback runs during
     // pump_wait on this same thread, so install/uninstall bracket the loop
@@ -816,6 +844,7 @@ pub(super) fn run_tile_loop(
                 windrag_hook.is_some(),
                 &mut snap_want,
                 &mut tray,
+                &mut gaming,
                 &mut trace_last_turns,
                 &mut trace_last_offers,
                 &mut trace_windrag_offers,

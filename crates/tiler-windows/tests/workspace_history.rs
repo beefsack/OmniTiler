@@ -109,10 +109,11 @@ fn presets_authentic_keeps_all_and_compatible_disables_only_arrows() {
         let row = effective.iter().find(|row| row.id == id).expect("row");
         assert!(row.active && row.effective, "{id}");
     }
-    // Compatible disables only the two recorded virtual-desktop arrows.
+    // Compatible disables only the two recorded virtual-desktop arrows
+    // (39 disabled rows total) and rebinds float/fullscreen to Win+Ctrl.
     let mut settings = Settings::default();
     apply_preset(&mut settings, Preset::Compatible);
-    assert_eq!(compatible_disabled_ids().len(), 41);
+    assert_eq!(compatible_disabled_ids().len(), 39);
     for id in ["workspace-prev-left-arrow", "workspace-next-right-arrow"] {
         assert!(compatible_disabled_ids().contains(&id), "{id} disabled");
         assert_eq!(

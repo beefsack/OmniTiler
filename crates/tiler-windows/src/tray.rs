@@ -471,16 +471,17 @@ pub fn first_run_body() -> String {
      Win+G (float) and Win+F11 (fullscreen). Windows also owns those chords \
      for Xbox Game Bar and Xbox mode, and the tiler cannot fully contain \
      the OS handlers there.\n\n\
-     Compatible disables every OS-conflicting chord instead and invents no \
-     replacement shortcuts; rows can be re-enabled or rebound later in \
+     Compatible disables every other OS-conflicting chord and rebinds float \
+     to Win+Ctrl+G and fullscreen to Win+Ctrl+F11; rows can be re-enabled or rebound later in \
      Settings.\n\n\
      Choose Authentic or Compatible."
         .to_owned()
 }
 
 /// Validated settings for one first-run choice. Authentic is the catalog
-/// defaults; compatible is the deterministic reset disabling the 41
-/// OS-conflicting rows (Win+L opt-in preserved in both).
+/// defaults; compatible is the deterministic reset disabling the 39
+/// OS-conflicting rows and rebinding float/fullscreen to Win+Ctrl+G /
+/// Win+Ctrl+F11 (Win+L opt-in preserved in both).
 #[must_use]
 pub fn settings_for_choice(choice: FirstRunChoice) -> Settings {
     let mut settings = Settings::default();
@@ -1146,11 +1147,26 @@ mod tests {
             Settings::default()
         );
         let compatible = settings_for_choice(FirstRunChoice::Compatible);
-        assert_eq!(compatible.bindings.len(), compatible_disabled_ids().len());
+        assert_eq!(
+            compatible.bindings.len(),
+            compatible_disabled_ids().len() + crate::settings::compatible_rebinds().len()
+        );
         for id in compatible_disabled_ids() {
             assert_eq!(
                 compatible.bindings.get(id).map(|b| &b.state),
                 Some(&BindingState::Disabled),
+                "{id}"
+            );
+        }
+        for (id, chord) in crate::settings::compatible_rebinds() {
+            assert_eq!(
+                compatible.bindings.get(id).map(|b| &b.state),
+                Some(&BindingState::Rebind),
+                "{id}"
+            );
+            assert_eq!(
+                compatible.bindings.get(id).and_then(|b| b.chord.as_deref()),
+                Some(chord),
                 "{id}"
             );
         }
@@ -1169,6 +1185,8 @@ mod tests {
     fn first_run_discloses_xbox_chords() {
         assert!(first_run_body().contains("Win+G"));
         assert!(first_run_body().contains("Win+F11"));
+        assert!(first_run_body().contains("Win+Ctrl+G"));
+        assert!(first_run_body().contains("Win+Ctrl+F11"));
         assert!(first_run_body().contains("Choose Authentic or Compatible"));
     }
 

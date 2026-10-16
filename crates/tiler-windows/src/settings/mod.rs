@@ -56,7 +56,7 @@ pub use persistence::{
     LiveSettings, LoadOutcome, PollOutcome, load_from_dir, poll_for_change, save_to_dir,
     settings_file_path,
 };
-pub use presets::{Preset, apply_preset, compatible_disabled_ids};
+pub use presets::{Preset, apply_preset, compatible_disabled_ids, compatible_rebinds};
 pub use schema::{
     BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_OVERLAY_LABEL, BORN_MAXIMIZED_OVERLAY_TIP,
     BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_TILE_LABEL, BORN_MAXIMIZED_TILE_TIP, BindingSetting,

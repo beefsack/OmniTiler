@@ -1,5 +1,103 @@
 # Windows gaming coexistence
 
+## Approved Xbox shortcut-conflict implementation (2026-10-16)
+
+- Goal: Compatible keeps float/fullscreen usable through Ctrl+Win+G and
+  Ctrl+Win+F11; Authentic retains Win+G/F11 with configuration evidence and
+  Settings-only guidance in the existing amber tray/conflict/Settings surfaces.
+- Approved detection: read-only, per-user undocumented `GamingHomeApp` Xbox
+  configuration value; supported current-user Game Bar package-family query.
+  Log categorical source/outcome, never registry contents or package inventories.
+  Absent, unreadable or unrecognised Xbox values mean unknown and retain a
+  conservative warning plus Settings button. Detection failure never stops tiling.
+- Scope: exact modifier validation/remapping and consumed-hold routing; cached
+  off-loop detection at startup/settings changes; existing conflict presentation
+  and allowlisted Settings navigation. No uninstall, registry/policy writes,
+  runtime Xbox-mode pause/recovery or stronger OS-containment claim.
+- Units: Compatible routing and regression coverage; read-only detector and
+  cached conflict policy; Settings integration; independent boundary review and
+  native/hosted verification. Physical acceptance remains pending below.
+- Acceptance: exact enabled chords drive conflicts; Compatible has neither
+  Xbox conflict; Authentic preserves unknown-state warnings; Settings navigation
+  never claims resolution; hold/repeat/release and unbound-chord behavior stays
+  consistent; locked native gates and pushed CI pass.
+- Baseline hosted CI: [38819090626](https://github.com/beefsack/OmniTiler/actions/runs/38819090626)
+  for `ca1fb56` passed all eight jobs, including native, Windows and macOS.
+  The separately reported KDE `native-effect-kcm-shortcut-selection`
+  heap-corruption abort is not reproduced by that run and remains KDE-owned.
+
+### Delivered offline and verified
+
+- Compatible now has 39 disabled known conflicts plus two explicit Ctrl
+  rebinds. Full-modifier remaps handle same-key rebinds; float/fullscreen
+  validation allows only the additional unshifted Ctrl arm. Fresh unbound
+  Ctrl chords remain native. First-run copy and publication tests agree.
+- Xbox reads accept only the exact Xbox AUMID
+  `Microsoft.GamingApp_8wekyb3d8bbwe!Microsoft.Xbox.App` or a present empty
+  REG_SZ. Missing, denied, wrong-type, malformed UTF-16 or unrecognised data
+  remains unknown. The empty-off mapping is third-party/undocumented, not a
+  supported Windows runtime-mode contract.
+- Game Bar queries count registrations of the exact current-user family
+  `Microsoft.XboxGamingOverlay_8wekyb3d8bbwe` through
+  `GetPackagesByPackageFamily`; no package inventory, subprocess or capture
+  configuration probe. Absence still leaves a residual Win+G shortcut check
+  because Windows activation prompts/nonactivation are not established.
+- Cached asynchronous probes run at startup, settings revision changes,
+  explicit Recheck and at most a five-minute idle cadence. A slow probe cannot
+  create an interval refresh storm; explicit requests coalesce. Spawn/probe
+  failure replaces stale evidence with unknown and never disables tiling.
+  Owner-pump logging stays single-writer and categorical, with the undocumented
+  Xbox source identified. Settings uses its own cached evidence without writing
+  the owner's log.
+- Existing amber tray overlay/conflict row and binding details are reused;
+  per-kind buttons open Xbox mode, Game Bar or Game Bar app Settings only.
+  Unknown keeps warning/action-required; recognised recipe-off clears Xbox
+  warning. Effective rebinding, disable and takeover-off drive both tray and
+  Settings consistently. Navigation never clears warning by itself.
+- Regression evidence includes pre-fix Ctrl-remap failures, strict registry
+  byte fixtures, package success/absence/failure, rebound conflict ownership,
+  slow/stale-clock probe gating, coalesced recheck, thread-spawn failure after
+  prior off, and caught probe panic. The latter cases exposed and corrected
+  stale cleared evidence and interval reruns before acceptance.
+- Final locked Windows build/test for `tiler-core`, `tiler-protocol`,
+  `tiler-kwin-effect-ffi`, `tiler-windows`: **2,199 passed, 0 failed, 1 ignored**
+  (baseline 2,158/0/1). Full rustfmt, strict all-target four-package clippy and
+  `git diff --check` pass. Independent boundary review accepted the corrected
+  monitor and native read/navigation fences. Native detector/navigation paths
+  are compile-checked, not live-accepted. All changed Rust files are under
+  approximately 1,500 lines after cohesive UI/test splits.
+- Status: implementation delivered offline; hosted CI and physical acceptance
+  are recorded separately. This record stays active for physical acceptance
+  and the wider parked containment/runtime-recovery work.
+
+### Physical acceptance plan (pending)
+
+1. Follow [live Windows testing](../live-windows-testing.md); use disposable
+   ordinary windows outside any game/capture, establish stop/restore and preserve
+   the user's original tiler settings. Record source/artifact identity.
+2. Select Compatible and apply. Physically press Ctrl+Win+G: float toggles once
+   and Game Bar does not open. Physically press Ctrl+Win+F11: tiler fullscreen
+   toggles once and no Windows function/Xbox prompt or mode is activated, including
+   when Xbox mode is enabled by the user before the check.
+3. For both chords, hold/repeat, release Ctrl before the action key, release Win
+   before the action key, and vary modifier press order. Confirm no repeat toggle,
+   stuck key, unintended action or late Windows activation. Plain Win still opens
+   Start; fresh unbound Ctrl chords and takeover-off chords remain native.
+4. Select Authentic and apply. Confirm the amber tray warning and conflict menu
+   row open the existing Settings window; float and fullscreen show separate
+   Game Bar/Xbox evidence and Settings actions. Unknown/query-failure evidence
+   must not claim enabled, disabled or resolved. Compatible, per-binding disable,
+   rebind-away and takeover-off remove the corresponding active conflict.
+5. Click Xbox mode Settings: verify `ms-settings:gaming-fullscreen` opens the
+   intended page. Click Game Bar Settings/app settings: verify the intended
+   Game Bar page and app identity. A missing/redirected/blocked page must leave
+   the warning unresolved with a manual path, not claim remediation.
+6. Review capture/widgets/controller feature-loss and Microsoft Store reinstall
+   explanation without uninstalling. If the user separately changes Xbox mode
+   or package registration, recheck/reopen Settings and verify refreshed evidence;
+   no successful navigation alone clears a conflict. Restore original tiler
+   settings, stop cleanly and verify normal desktop/window state.
+
 ## Shortcut-conflict proposal delivered (2026-10-16)
 
 - [Research and proposal](../research/windows-port/xbox-shortcut-conflicts.md)
