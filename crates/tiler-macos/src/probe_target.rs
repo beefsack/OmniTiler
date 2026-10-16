@@ -1114,29 +1114,7 @@ pub fn check_handshake_identity(
 /// `probe-stop` AND every owned read/write path; caller claims and the
 /// historical stdout handshake alone never authorize control.
 pub fn load_verified_record(pid: u32, nonce: &str) -> Result<SpawnRecord, String> {
-    validate_nonce(nonce)?;
-    if pid <= 1 {
-        return Err(format!("refusing reserved pid {pid}"));
-    }
-    ensure_private_session_dir()?;
-    let path = session_record_path(pid);
-    let raw = read_record_file(&path)?;
-    let record: SpawnRecord =
-        serde_json::from_str(&raw).map_err(|_| "spawn record corrupt; refusing".to_owned())?;
-    if record.pid != pid || record.nonce != nonce {
-        return Err("spawn record mismatch (pid/nonce); refusing".to_owned());
-    }
-    // Constrain the recorded exe to a trusted helper: the direct sibling or
-    // the bundled helper `.app` executable. A record pointing anywhere else
-    // (even inside the session dir) is refused.
-    let expected = expected_helper_canonicals();
-    let recorded_canon = std::path::Path::new(&record.helper_path)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|_| "recorded helper path unresolvable; refusing".to_owned())?;
-    if !expected.contains(&recorded_canon) {
-        return Err("spawn record helper differs from expected probe helper; refusing".to_owned());
-    }
+    let record = read_record_matched(pid, nonce)?;
     // Live revalidation before any signal or write: owned bundle when the
     // helper has a LaunchServices entry, otherwise the expected executable
     // path plus liveness (direct-spawn helpers have no bundle entry).
@@ -1183,6 +1161,123 @@ pub fn verify_record_unchanged(
         );
     }
     Ok(current)
+}
+
+/// File-only spawn-record equality against the `original` entry snapshot
+/// (pid, nonce, helper executable): no liveness, no title proof. The AX
+/// worker pairs this with its own live checks (live executable plus a fresh
+/// CG owner-PID/window join) at every write boundary, so a restarted or
+/// reused PID still fails closed there. Used ONLY by the held-Child
+/// fullscreen-exit path, where the window server withholds the title proof
+/// while the helper is fullscreen.
+pub fn verify_record_file_unchanged(
+    original: &SpawnRecord,
+    pid: u32,
+    nonce: &str,
+) -> Result<SpawnRecord, String> {
+    let current = read_record_matched(pid, nonce)?;
+    if current != *original {
+        return Err(
+            "spawn record changed since command entry (pid/nonce/exe); refusing write on a stale baseline"
+                .to_owned(),
+        );
+    }
+    Ok(current)
+}
+
+/// Read the spawn record file and check pid/nonce equality plus the
+/// trusted-helper executable constraint (canonical path in the expected
+/// set). No liveness, no title proof: callers add their own live binding.
+fn read_record_matched(pid: u32, nonce: &str) -> Result<SpawnRecord, String> {
+    validate_nonce(nonce)?;
+    if pid <= 1 {
+        return Err(format!("refusing reserved pid {pid}"));
+    }
+    ensure_private_session_dir()?;
+    let path = session_record_path(pid);
+    let raw = read_record_file(&path)?;
+    let record: SpawnRecord =
+        serde_json::from_str(&raw).map_err(|_| "spawn record corrupt; refusing".to_owned())?;
+    if record.pid != pid || record.nonce != nonce {
+        return Err("spawn record mismatch (pid/nonce); refusing".to_owned());
+    }
+    // Constrain the recorded exe to a trusted helper: the direct sibling or
+    // the bundled helper `.app` executable. A record pointing anywhere else
+    // (even inside the session dir) is refused.
+    let expected = expected_helper_canonicals();
+    let recorded_canon = std::path::Path::new(&record.helper_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|_| "recorded helper path unresolvable; refusing".to_owned())?;
+    if !expected.contains(&recorded_canon) {
+        return Err("spawn record helper differs from expected probe helper; refusing".to_owned());
+    }
+    Ok(record)
+}
+
+/// Authenticate a HELD helper session without the live window-nonce title
+/// proof: record-file match (pid/nonce, trusted helper exe) plus live
+/// executable revalidation plus the exact held `Child` handle.
+///
+/// The held handle must name exactly `pid` (`child.id()`) and report the
+/// child still unreaped (`try_wait` == `None`). An unreaped child reserves
+/// its PID in the OS, so PID reuse across the authorized write is
+/// impossible — strictly stronger than title currency against reuse, which
+/// is why this path is sound exactly where titles are unavailable: native
+/// fullscreen, where the window server withholds `kCGWindowName` (and the
+/// AX title fallback reads no matching nonce either).
+///
+/// Entry into fullscreen still requires the full title proof
+/// ([`load_verified_record`]); only the exit back out — issued from the
+/// same holder that proved entry — may use this path. Cross-command uses
+/// without a `Child` handle keep the title-proof path unchanged.
+pub fn load_held_record(
+    pid: u32,
+    nonce: &str,
+    child: &mut Child,
+    helper_path: &str,
+) -> Result<SpawnRecord, String> {
+    let record = read_record_matched(pid, nonce)?;
+    // Live executable binding before any handle proof (same live check as
+    // the title path; the bundle/exe verdict is title-independent).
+    crate::ownership::verify_live_process(pid, Some(&record.helper_path))?;
+    // The handle must be OUR child for exactly this PID and still unreaped:
+    // a reaped or exited child (or a handle for another PID) refuses, so no
+    // unrelated process can ever authorize through this path.
+    if child.id() != pid {
+        return Err(format!(
+            "held child handle names pid {} (not owned {pid}); refusing",
+            child.id()
+        ));
+    }
+    match child.try_wait() {
+        Ok(None) => {}
+        Ok(Some(status)) => {
+            return Err(format!(
+                "held child for pid {pid} already exited ({status}); refusing without title proof"
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "held child liveness unreadable for pid {pid} ({e}); refusing"
+            ));
+        }
+    }
+    // The caller's expected helper path must equal the recorded one (both
+    // canonicalized): the handle liveness above plus this binding tie the
+    // exact spawn to the exact executable.
+    let recorded_canon = std::path::Path::new(&record.helper_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|_| "recorded helper path unresolvable; refusing".to_owned())?;
+    let expected_canon = std::path::Path::new(helper_path)
+        .canonicalize()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|_| "held helper path unresolvable; refusing".to_owned())?;
+    if recorded_canon != expected_canon {
+        return Err("held helper path differs from the spawn record; refusing".to_owned());
+    }
+    Ok(record)
 }
 
 /// Verified spawn session: the OS `Child` handle (exact identity, no PID

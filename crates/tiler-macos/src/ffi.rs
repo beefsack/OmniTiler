@@ -4470,6 +4470,7 @@ mod macos {
                 Some(event) => {
                     if count {
                         count_key_event(&event);
+                        count_mouse_event(&event);
                     }
                     app.sendEvent(&event)
                 }
@@ -4546,6 +4547,59 @@ mod macos {
             .lock()
             .map(|counts| *counts)
             .unwrap_or(KeyCounts::zero())
+    }
+
+    /// Downstream mouse-delivery counters for the owned helper's own button
+    /// events (click-receipt fixture only): left-button down/up arrivals as
+    /// delivered to this process's AppKit event stream. Process-local and
+    /// cumulative; content-free by construction (no positions, no titles).
+    /// The holder diffs successive snapshots around one guarded click to
+    /// prove the click passed through the click-through carrier above.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct MouseCounts {
+        pub left_down: u64,
+        pub left_up: u64,
+    }
+
+    impl MouseCounts {
+        const fn zero() -> Self {
+            Self {
+                left_down: 0,
+                left_up: 0,
+            }
+        }
+    }
+
+    static MOUSE_COUNTS: std::sync::Mutex<MouseCounts> = std::sync::Mutex::new(MouseCounts::zero());
+
+    fn count_mouse_event(event: &objc2_app_kit::NSEvent) {
+        use objc2_app_kit::NSEventType;
+        let raw = event.r#type().0 as u64;
+        let down = raw == NSEventType::LeftMouseDown.0 as u64;
+        let up = raw == NSEventType::LeftMouseUp.0 as u64;
+        if !down && !up {
+            return;
+        }
+        let Ok(mut counts) = MOUSE_COUNTS.lock() else {
+            return;
+        };
+        if down {
+            counts.left_down += 1;
+        } else {
+            counts.left_up += 1;
+        }
+    }
+
+    /// Cumulative downstream mouse-delivery snapshot for this process (the
+    /// owned helper's own AppKit arrivals; the controller never enables
+    /// counting so its snapshot stays zero). The holder diffs successive
+    /// snapshots around each guarded click.
+    #[must_use]
+    pub fn mouse_counts_snapshot() -> MouseCounts {
+        MOUSE_COUNTS
+            .lock()
+            .map(|counts| *counts)
+            .unwrap_or(MouseCounts::zero())
     }
 
     /// One owned Space-join self-action poll. Returns a stdout marker when a
@@ -4946,7 +5000,7 @@ mod macos {
                     .unwrap_or(usize::MAX);
                 println!(
                     "{}",
-                    serde_json::json!({"closed": true, "windows": own_windows, "visible": window.isVisible(), "key_counts": key_counts_snapshot()})
+                    serde_json::json!({"closed": true, "windows": own_windows, "visible": window.isVisible(), "key_counts": key_counts_snapshot(), "mouse_counts": mouse_counts_snapshot()})
                 );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
@@ -4995,7 +5049,7 @@ mod macos {
                 last_snapshot = Instant::now();
                 println!(
                     "{}",
-                    serde_json::json!({"key_counts": key_counts_snapshot()})
+                    serde_json::json!({"key_counts": key_counts_snapshot(), "mouse_counts": mouse_counts_snapshot()})
                 );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }
@@ -5270,6 +5324,17 @@ mod macos {
             self.panel.orderFront(None);
             self.panel
                 .orderWindow_relativeTo(objc2_app_kit::NSWindowOrderingMode::Above, target_wid);
+        }
+
+        /// Frontmost within the panel level (public `orderFront:`, never
+        /// activation, never relative to a foreign window). A fresh panel
+        /// normally arrives frontmost, but a later `show_above` pinning it
+        /// just above a low foreign window — or a newer foreign window —
+        /// can leave it buried; this recovers the front without naming any
+        /// foreign window. The caller still reads back the global CG order:
+        /// frontmost is verified, never assumed.
+        pub fn show_front(&self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderFront(None);
         }
 
         /// Move and/or restyle the carrier: frame set plus ring restyle and
@@ -6815,7 +6880,7 @@ mod macos {
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
     BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
-    DisplayRect, HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer,
+    DisplayRect, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer,
     SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow,
     SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, activate_app,
     activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
@@ -6830,14 +6895,15 @@ pub use macos::{
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
     drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled,
     hotkey_spi_available, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
-    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
-    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
-    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
+    macos_major, mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid,
+    ns_display_snapshot, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
+    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point,
+    terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -7577,6 +7643,21 @@ mod stub {
         }
     }
 
+    /// Stub downstream mouse-delivery counters (always zero off-macOS).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct MouseCounts {
+        pub left_down: u64,
+        pub left_up: u64,
+    }
+
+    #[must_use]
+    pub fn mouse_counts_snapshot() -> MouseCounts {
+        MouseCounts {
+            left_down: 0,
+            left_up: 0,
+        }
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct SlpsPsn {
         pub high: u32,
@@ -7609,7 +7690,7 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
-    DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay,
+    DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
     Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
     SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
     activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
@@ -7624,11 +7705,11 @@ pub use stub::{
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
     frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
     install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
+    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
+    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
     sls_spaces_for_windows, terminate_process, warp_cursor_position,

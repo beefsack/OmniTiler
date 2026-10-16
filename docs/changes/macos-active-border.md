@@ -2,11 +2,13 @@
 
 ## Current outcome (2026-10-17)
 
-Implemented and offline gates pass; acceptance is incomplete. In particular, the
-required cross-Space switch has not been observed. Keep this note active. The
-[bounded physical procedure](archive/macos-dogfood-hardening.md#6-active-border-appearance-and-space-check-pending-2026-10-17)
-covers appearance, click delivery, fullscreen return and switching without window
-transfer. Group underlay and drop overlays have not been implemented.
+Implemented and published. Live checks now prove empty-Space hiding and return,
+native fullscreen entry/exit and border return, and synthetic mouse-down delivery
+through a painted border region to an owned window underneath. The
+[bounded physical procedure](archive/macos-dogfood-hardening.md#6-active-border-appearance-check-pending-2026-10-17)
+is now only for appearance/perceived tracking. Group underlay and drop overlays
+have not been implemented; broader float/zoom, multi-display and real-game
+acceptance remains separate.
 
 ## Goal and scope
 
@@ -67,7 +69,7 @@ restoration; do not repeat that oracle. Correct the fixture to use an independen
 owned helper process and explicit final teardown/membership readbacks, and extract
 the reusable create/update/hide carrier API before production wiring. The measured
 approximately 54 ms included a deliberate 50 ms event-pump wait and is not display
-latency. Physical appearance and input acceptance remain separate.
+latency. Physical appearance remains separate from input-delivery readbacks.
 
 The corrected foreign-process fixture passed twice with globally observed carrier
 ordering above its target, unchanged foreign focus after showing, fullscreen
@@ -118,12 +120,16 @@ Windows (width 0–32, gap/radius 0–64).
 
 ## Final evidence and remaining gaps
 
-Final verification on base `c5e7c392` plus implementation diff: 711 macOS tests
-passed, strict locked all-target clippy, package formatting, signed development
-app build and `just verify` passed. Bundle identity:
+Initial verification on base `c5e7c392` plus implementation diff passed 711 macOS
+tests, strict locked all-target clippy, package formatting, signed development
+app build and `just verify`. The implementation was published as `7c45cadd`,
+followed by portable-stub fixes `162785d6` and `cd4c7652`. Hosted CI on `cd4c7652`
+passed Rust, Windows, macOS, KWin, native, licenses and notices; only the unchanged
+pre-existing Shell KWin API guard failure remained. The live follow-up on
+`cd4c7652` plus fixture changes passed 714 macOS tests, strict clippy and fmt.
+Bundle identity:
 `io.github.omnitiler.macos.probe`. Pre-notarization Gatekeeper rejection is an
-expected development diagnostic, not a bypass or shipping claim. Hosted CI has
-not evaluated this diff.
+expected development diagnostic, not a bypass or shipping claim.
 
 Existing raw fixture reports and production logs were independently inspected
 after the live work. Global carrier/target indices were 3/28 and 0/5; showing
@@ -139,11 +145,51 @@ Two float-input discriminators posted and merged inputs but did not establish a
 successful float or a maximize transition. Their artifacts cannot distinguish a
 refusal from actual floating; do not repeat the same discriminator or infer a
 border defect. Pure float/zoom coverage passes. `spaces-move` no-effect concerns
-transfer, not selection, and does not prove the required switch. `spaces-select`
-exists, but no confirmed disposable Space pair was available for this acceptance.
-Fullscreen entry/hide and final teardown are proved; normal exit/return is not.
-Physical appearance/perceived lag, click delivery, fullscreen return, successful
-float/zoom, Space switching, multiple displays and real games remain unproven.
+transfer, not selection; the later switch check below uses native selection and
+does not depend on that parked transfer primitive.
+
+### Live follow-up: native switching, fullscreen return and input delivery
+
+- **Production Space switch:** a scoped, input-off product run showed the border
+  on an owned helper. Native selection created a temporary empty Space and
+  switched there. The carrier was absent with no eligible focused target;
+  transition logs reported `revision-stale`, then `out-of-scope` on the repeat.
+  Selecting the original Space and focusing the owned helper restored its carrier
+  with `reorder=true`. Both runs completed cleanly with zero border errors. This
+  exercises the native selection command path, not physical tap-to-select input.
+  Per-switch arrival/carrier readbacks were retained in the execution transcript;
+  product transition logs and outcomes are file-backed.
+- **Fullscreen exit/return:** the foreign-helper fixture entered native fullscreen,
+  hid its carrier, exited with AX fullscreen readback false, and returned to a
+  visible carrier and the exact focused helper. Original membership was restored.
+  The exit now uses the same-holder unreaped `Child`, executable/record identity,
+  fresh CG joins and post-write liveness; it does not weaken the title-proof path
+  used by unrelated commands. This replaces the title-withheld refusal, not the
+  rejected synchronous fullscreen-Space equality oracle.
+- **Synthetic click:** a sample in the painted straight border band had the
+  carrier above an owned receipt window in unfiltered CG order. Fresh AX and
+  WindowServer point hits joined that receipt window; a guarded HID down/up pair
+  produced its mouse-down count delta +1 (baseline 1, then 2), proving delivery
+  beneath the ring rather than merely successful posting. A foreign-window pixel
+  candidate was refused without clicking. The prior count's origin is unknown;
+  only the controlled delta is claimed. The mouse-up edge was posted but its
+  received count was not retained in this report; later reports expose both
+  counters. Pointer restoration passed. No event tap or capture grant was needed.
+- **Restoration:** temporary Space removal completed. Fresh final readbacks
+  corroborated exactly one original Space/current Space, Mission Control absent,
+  no owned windows/processes, and unchanged protected-window geometry/membership.
+  Each bounded display-awake child was reaped; unrelated stale records were left
+  untouched. Helpers and their records were removed; zero onscreen owned carrier
+  residue remained.
+
+The independently inspected fullscreen/click report has SHA-256
+`70d13e2d2597e5b10c99ded80595a5b52584fb1ba73294e38b63d545b776c532`.
+Input-receipt and held-exit instrumentation is fixture-only. The fixture also
+observed that cross-process relative ordering can leave a panel buried: its
+click leg uses front ordering plus mandatory actual CG-order checks. Production
+already uses front plus relative ordering; this is not a claim that all foreign
+stacking variants are solved. Appearance/perceived lag, successful float/zoom,
+multiple displays, stacking variants and real games remain follow-up coverage.
 
 ## Host differences and review
 
@@ -164,9 +210,8 @@ found no remaining code blocker, separately from the acceptance gaps above.
 
 ## Exact next action
 
-Run the linked short physical procedure, especially cross-Space absence/eligible
-return, and record each cell independently. If no adjacent Space exists, first
-establish a disposable owned pair with an already-verified lifecycle fixture
-rather than retrying transfer. Any float follow-up must observe an actual
-successful core verdict, not merely input-post/merged counters. After acceptance,
-refresh offline gates and hosted CI on the integrated source and close this note.
+Run the linked appearance-only procedure and record the visual verdict. Any
+separate float follow-up must observe an actual successful core verdict rather
+than merely input-post/merged counters. Group underlay and drop overlays remain
+subsequent effects; native switch/fullscreen/input proof no longer awaits a
+physical procedure.

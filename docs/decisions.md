@@ -26,8 +26,8 @@ Historical implementation detail is recoverable in Git history.
   `just dev-stop` requests bounded teardown through an exact-run control directory;
   a clean owner result, not process termination or stderr silence, proves stop.
   Scoped finite runs remain available for focused verification. Active-border
-  implementation and owned-fixture evidence are now available, with Space-switch
-  and physical acceptance pending; see the macOS active-border decision below.
+  implementation and owned-fixture Space/fullscreen/input evidence are available;
+  visual appearance remains pending. See the macOS active-border decision below.
   Other effects remain later work.
   [Preview guide and evidence](changes/macos-dogfood-preview.md).
 - User 2026-10-14: Windows `just dev` user-accepted (including tray Stop and
@@ -2245,9 +2245,11 @@ platform API behavior.
   scoped runs; native macOS accent/point coordinates; normal-level panel above
   the target rather than KDE/Windows below-target rendering and Windows band
   matching. Transient/accessory/own-app targets are excluded by the macOS
-  classifier. Physical appearance, input pass-through, fullscreen exit/return,
-  successful float/zoom suppression, Space-switch behavior, multiple displays
-  and actual games remain unproven. See
+  classifier. Owned-fixture native switching to an empty Space/back, fullscreen
+  exit/return and synthetic border-region mouse-down receipt now pass. Selection
+  used the native command path, not physical tap input. Foreign stacking variants,
+  physical appearance, successful float/zoom suppression, multiple displays and
+  actual games remain follow-ups. See
   [implementation and evidence](changes/macos-active-border.md).
 - Group underlay (user decision 2026-10-02, accepted for now):
   `changes/group-underlay-move-trigger.md` on Windows. Show for Win+Shift hold

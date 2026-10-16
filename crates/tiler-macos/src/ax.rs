@@ -650,6 +650,32 @@ fn revalidate_entry(entry: &crate::probe_target::SpawnRecord) -> Result<(), AxEr
         .map_err(AxError::Ownership)
 }
 
+/// Revalidate the entry snapshot inside the AX worker WITHOUT the live
+/// window-nonce title proof: record-file equality plus live executable
+/// binding plus a fresh CG owner-PID/window join. Used ONLY by the
+/// held-Child fullscreen-exit path, where the window server withholds
+/// titles while the helper is fullscreen. The caller-thread held-Child
+/// proof (unreaped exact handle for the same PID, checked before the
+/// worker spawns and again after it joins) is what excludes PID reuse
+/// across the write; this worker-side check excludes restarts and window
+/// reuse at each boundary. Thread affinity as above.
+#[cfg(target_os = "macos")]
+fn revalidate_entry_held(
+    entry: &crate::probe_target::SpawnRecord,
+    pid: u32,
+    wid: u32,
+) -> Result<(), AxError> {
+    crate::probe_target::verify_record_file_unchanged(entry, entry.pid, &entry.nonce)
+        .map(|_| ())
+        .map_err(AxError::Ownership)?;
+    crate::ownership::verify_live_process(pid, Some(&entry.helper_path))
+        .map(|_| ())
+        .map_err(AxError::Ownership)?;
+    crate::cg::verify_wid_owned_by_pid(pid, wid)
+        .map(|_| ())
+        .map_err(|e| AxError::Ownership(e.to_string()))
+}
+
 /// Live [`FrameTxOps`] over one AX window element. Constructed, used, and
 /// dropped on the dedicated per-app AX worker only; the entry snapshot is
 /// owned plain data revalidated at every write boundary. The AX element
@@ -1250,6 +1276,12 @@ pub struct FullscreenReport {
 /// the readback; the boolean setter is the single write. Spelling follows
 /// the reader: `AXFullScreen` (yabai) first, `AXFullscreen` (rift) fallback
 /// on service failures only.
+///
+/// `held` selects the fullscreen-exit revalidation: `false` is the standard
+/// title-proof path; `true` uses [`revalidate_entry_held`] (record file
+/// plus live executable plus fresh CG join, no title proof) for the exit
+/// back out of native fullscreen, where the window server withholds the
+/// title proof. The caller proves held-Child ownership around the worker.
 #[cfg(target_os = "macos")]
 /// `live_bundle` is caller-resolved plain data (see
 /// `set_frame_persistent_on_worker`): workers never read the table.
@@ -1260,27 +1292,63 @@ fn set_fullscreen_on_worker(
     target_pid: u32,
     wid: u32,
     want: bool,
+    held: bool,
 ) -> Result<FullscreenReport, AxError> {
     use crate::ffi::{AxElement, ax_window_id};
     gate_owned_frame(owned, target_pid, live_bundle)?;
-    revalidate_entry(entry)?;
+    if held {
+        revalidate_entry_held(entry, target_pid, wid)?;
+    } else {
+        revalidate_entry(entry)?;
+    }
     let app = AxElement::application(target_pid as i32)
         .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
     let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
-    let windows = app
-        .windows()
-        .map_err(|code| AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code))))?;
+    // Join the exact window, polling boundedly: a fullscreen transition
+    // animates asynchronously, so the hierarchy can momentarily omit or
+    // unjoin the window right after entry. Reads only until the join
+    // holds; the refusal below names the final shape (counts/statuses
+    // only, never titles) instead of the first miss.
+    let join_deadline = std::time::Instant::now() + std::time::Duration::from_millis(5000);
+    let windows = loop {
+        let windows = app.windows().map_err(|code| {
+            AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code)))
+        })?;
+        if windows.iter().any(|w| ax_window_id(w) == Some(wid)) {
+            break windows;
+        }
+        if std::time::Instant::now() >= join_deadline {
+            let mut joined = 0usize;
+            let mut unjoined = 0usize;
+            let mut fullscreen_true = 0usize;
+            for w in &windows {
+                if ax_window_id(w).is_some() {
+                    joined += 1;
+                } else {
+                    unjoined += 1;
+                }
+                if crate::ffi::ax_fullscreen_state(w).ok() == Some(true) {
+                    fullscreen_true += 1;
+                }
+            }
+            return Err(AxError::Ownership(format!(
+                "wid {wid} not joined to owned pid {target_pid} after the bounded join poll (ax_windows={} joined={joined} unjoined={unjoined} fullscreen_true={fullscreen_true})",
+                windows.len()
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
     let window = windows
         .iter()
         .find(|w| ax_window_id(w) == Some(wid))
-        .ok_or_else(|| {
-            AxError::Ownership(format!(
-                "wid {wid} not joined to owned pid {target_pid} (identity join failed)"
-            ))
-        })?;
+        .expect("bounded join poll held the window join");
     let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
     let was = crate::ffi::ax_fullscreen_state(window).ok();
-    revalidate_entry(entry)?;
+    if held {
+        revalidate_entry_held(entry, target_pid, wid)?;
+    } else {
+        revalidate_entry(entry)?;
+    }
     crate::cg::verify_wid_owned_by_pid(target_pid, wid).map_err(|e| {
         AxError::Ownership(format!("CG rejoin before fullscreen write refused: {e}"))
     })?;
@@ -1373,6 +1441,7 @@ pub fn set_fullscreen_owned(
                     target_pid,
                     wid,
                     want,
+                    false,
                 );
                 let _ = done_tx.send(outcome);
             })
@@ -1388,6 +1457,94 @@ pub fn set_fullscreen_owned(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (entry, want);
+        Err(AxError::Unsupported(
+            "AX fullscreen is macOS-only".to_owned(),
+        ))
+    }
+}
+
+/// Exit (or enter) native fullscreen on one HELD owned window without the
+/// live window-nonce title proof.
+///
+/// New-hypothesis control for the exact failure the title-proof path cannot
+/// pass: while the helper is in native fullscreen the window server
+/// withholds `kCGWindowName`, so [`load_verified_record`] (and its AX
+/// title fallback) refuse the exit write even though the same holder proved
+/// entry moments earlier. This path replaces the title proof with the exact
+/// held `Child` handle: [`load_held_record`] requires the handle to name
+/// exactly `target_pid` and still be unreaped, which excludes PID reuse
+/// across the write (an unreaped child reserves its PID); the worker still
+/// revalidates the record file, the live executable, and a fresh CG
+/// owner-PID/window join at each boundary. Entry into fullscreen keeps the
+/// title-proof [`set_fullscreen_owned`]; cross-command uses without a
+/// `Child` are unchanged.
+///
+/// Threading mirrors [`set_fullscreen_owned`]: gates on the caller, then a
+/// dedicated per-app AX worker with a bounded wait, plus a post-join
+/// held-Child liveness check proving the same process survived the write.
+pub fn set_fullscreen_owned_held(
+    owned: &OwnedIdentity,
+    child: &mut std::process::Child,
+    helper_path: &str,
+    target_pid: u32,
+    wid: u32,
+    want: bool,
+) -> Result<FullscreenReport, AxError> {
+    if wid == 0 {
+        return Err(AxError::Ownership("refusing window id 0".to_owned()));
+    }
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    let entry = crate::probe_target::load_held_record(target_pid, &owned.nonce, child, helper_path)
+        .map_err(AxError::Ownership)?;
+    crate::cg::verify_wid_owned_by_pid(target_pid, wid).map_err(|e| {
+        AxError::Ownership(format!("CG join before held fullscreen write refused: {e}"))
+    })?;
+    #[cfg(target_os = "macos")]
+    {
+        let owned_send = owned.clone();
+        let bundle_send = live_bundle.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<FullscreenReport, AxError>>();
+        std::thread::Builder::new()
+            .name(format!("ax-fullscreen-held-{target_pid}"))
+            .spawn(move || {
+                let outcome = set_fullscreen_on_worker(
+                    &owned_send,
+                    &entry,
+                    &bundle_send,
+                    target_pid,
+                    wid,
+                    want,
+                    true,
+                );
+                let _ = done_tx.send(outcome);
+            })
+            .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
+        let report = match done_rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(report) => report,
+            Err(_) => {
+                return Err(AxError::Timeout {
+                    pid: target_pid,
+                    timeout_ms: 20_000,
+                });
+            }
+        };
+        // Post-write held proof: the exact child is still unreaped, so the
+        // PID above could not have been reused across the worker write —
+        // the write provably reached our helper.
+        match child.try_wait() {
+            Ok(None) => report,
+            Ok(Some(status)) => Err(AxError::Ownership(format!(
+                "held child for pid {target_pid} exited during the fullscreen write ({status}); effect unprovable"
+            ))),
+            Err(e) => Err(AxError::Ownership(format!(
+                "held child liveness unreadable after the fullscreen write ({e}); effect unprovable"
+            ))),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (entry, child, helper_path, want);
         Err(AxError::Unsupported(
             "AX fullscreen is macOS-only".to_owned(),
         ))

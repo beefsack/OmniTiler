@@ -175,11 +175,128 @@ impl OwnedPostTarget {
     }
 }
 
+/// One posted synthetic mouse click: target, CG point, and the dispatch
+/// latencies measured around each post call itself (never delivery).
+/// Delivery is proven harness-side by the owned helper's own AppKit
+/// `mouse_counts` snapshot delta, never this dispatch receipt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostedClick {
+    pub pid: u32,
+    pub point: (f64, f64),
+    /// Microseconds around the down-post call (dispatch cost, not delivery).
+    pub down_latency_us: u64,
+    /// Microseconds around the up-post call (dispatch cost, not delivery).
+    pub up_latency_us: u64,
+}
+
+/// Validate a click point before any OS touch. Non-finite or negative
+/// coordinates refuse here rather than at the post boundary.
+pub(crate) fn validate_click_point(point: (f64, f64)) -> Result<(), String> {
+    if !point.0.is_finite() || !point.1.is_finite() {
+        return Err("refusing synthetic click at a non-finite point".to_owned());
+    }
+    if point.0 < 0.0 || point.1 < 0.0 {
+        return Err("refusing synthetic click at a negative point".to_owned());
+    }
+    Ok(())
+}
+
+/// Single shared guarded click boundary: one synthetic left-button
+/// down/up pair at `point` (CG top-left points) through the HID event tap,
+/// untagged (plain synthetic, like tile-catalogue posts — no tap passes or
+/// consumes clicks). Enforces [`boundary_gate`] immediately BEFORE each OS
+/// post (down and up separately), so a stale target (focus moved between
+/// the edges) still refuses the second edge at the boundary.
+///
+/// Never a Ghostty (or any foreign) event target. The click carries no
+/// key content; only the owned helper's own downstream `mouse_counts`
+/// delta proves receipt.
+pub(crate) fn post_mouse_click_guarded(
+    target: &OwnedPostTarget,
+    point: (f64, f64),
+) -> Result<PostedClick, String> {
+    validate_click_point(point)?;
+    let (pid, wid) = (target.pid(), target.wid());
+    boundary_gate(pid, wid)?;
+    let down_latency_us = raw_post_mouse_event(pid, true, point)?;
+    // Re-gate before the up edge: focus may have moved on the down edge.
+    boundary_gate(pid, wid)?;
+    let up_latency_us = raw_post_mouse_event(pid, false, point)?;
+    Ok(PostedClick {
+        pid,
+        point,
+        down_latency_us,
+        up_latency_us,
+    })
+}
+
+/// Raw HID mouse post (crate-private): only [`post_mouse_click_guarded`]
+/// calls this, after owned proof plus the fresh oracle plus bundle refusal.
+/// Untagged plain synthetic. Returns the dispatch latency around the post.
+fn raw_post_mouse_event(pid: u32, down: bool, point: (f64, f64)) -> Result<u64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{
+            CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton,
+        };
+        let ty = if down {
+            CGEventType::LeftMouseDown
+        } else {
+            CGEventType::LeftMouseUp
+        };
+        let event = CGEvent::new_mouse_event(
+            None,
+            ty,
+            objc2_core_foundation::CGPoint {
+                x: point.0,
+                y: point.1,
+            },
+            CGMouseButton::Left,
+        )
+        .ok_or_else(|| "CGEventCreateMouseEvent returned null".to_owned())?;
+        CGEvent::set_flags(Some(&event), CGEventFlags(0));
+        let start = Instant::now();
+        // Session-tap delivery note: with no tap installed this posts
+        // straight through HID; the boundary above already proved the
+        // owned target, so no tap routing is needed for the proof.
+        let _ = pid;
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        Ok(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, down, point);
+        Err("synthetic mouse posts are macOS-only".to_owned())
+    }
+}
+
+/// Current cursor position via a null-source event (read-only; its
+/// location stamps the live cursor). `None` when non-finite or off-macOS.
+/// Pointer-restore baseline only: restoring uses the eventless
+/// [`crate::ffi::warp_cursor_position`], never a synthesized move.
+pub(crate) fn cursor_position() -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::CGEvent;
+        let event = CGEvent::new(None)?;
+        let point = CGEvent::location(Some(&event));
+        if point.x.is_finite() && point.y.is_finite() {
+            Some((point.x, point.y))
+        } else {
+            None
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
 /// Shared per-post boundary gate: the static [`validate_post_target`]
 /// floor, the protected/Ghostty bundle refusal over the FRESH live bundle,
 /// and the FRESH selected oracle naming exactly `(pid, wid)`. Every actual
 /// CG post in this crate flows through here — the keyboard path via
-/// [`post_guarded`], and non-key synthetic posts (gesture pairs) call this
+/// [`post_guarded`], the click path via [`post_mouse_click_guarded`],
+/// and non-key synthetic posts (gesture pairs) call this
 /// directly before EACH post, so both paths enforce the identical refusal.
 pub(crate) fn boundary_gate(pid: u32, wid: u32) -> Result<(), String> {
     validate_post_target(pid)?;
@@ -423,7 +540,14 @@ mod tests {
 
     #[test]
     fn posted_event_shape_is_dispatch_only() {
-        // Portable shape check: a posted event records its own dispatch
+        // Click-point validation is pure (no OS touch): finite
+        // non-negative points pass; NaN/infinite/negative refuse.
+        assert!(validate_click_point((100.0, 200.0)).is_ok());
+        assert!(validate_click_point((0.0, 0.0)).is_ok());
+        assert!(validate_click_point((f64::NAN, 1.0)).is_err());
+        assert!(validate_click_point((1.0, f64::INFINITY)).is_err());
+        assert!(validate_click_point((-1.0, 1.0)).is_err());
+        assert!(validate_click_point((1.0, -0.5)).is_err()); // Portable shape check: a posted event records its own dispatch
         // cost, never a delivery claim. Construction is pure (no OS touch:
         // unit tests never post — live posting happens only in the bounded
         // fixtures after owned proof plus oracle).
