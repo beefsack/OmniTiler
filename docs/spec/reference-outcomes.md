@@ -15,6 +15,19 @@ behavior or ambiguity (reference WMs disagree, or our behavior is undecided).
 Reuse existing coverage rather than duplicating a scenario with a
 trivially different start state.
 
+### Full-state reply settlement discriminators
+
+Architecture candidates, not selected native behavior.
+[Combined core/workspace design](../changes/core-full-state-replies.md).
+
+| Variant | Minimal action sequence | Established evidence / candidate distinction | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| New input before reply | Dispatch a layout report for A/B; start dragging B before its reply returns; deliver that reply before the next report is dispatched | Existing stale-snapshot checks do not provide a global input watermark. Candidate checks the latest local invalidation, not just the latest dispatched request | Exact native/reference ordering and drag outcome TBD; no stale geometry write or command replay policy selected by this row |
+| Lost transfer reply versus refusal | Send B to another workspace; withhold the reply before native assignment; deliver a fresh full observation. Separately deliver the reply but refuse native assignment | Distinguishes retained desired assignment and explicit refusal settlement from today's one-shot transfer/observation-wins model; [D3](../changes/core-full-state-replies.md#decisions-needed) is unselected | Retry/hold/abandon, follow and exact native/reference outcome TBD; no automatic transfer replay authorized |
+| Workspace selection without Planner | With two existing workspaces, make Planner unavailable; select the other, then request trailing creation | Existing synchronous KDE dependency constraint is documented in [AR6](../changes/architecture-review-ar6-workspaces.md#integration-route-and-blocker); distinguishes service-only policy from a synchronous bridge/mirror | Future unavailable/latency behavior and exact native/reference outcome TBD; existing behavior is not changed by this row |
+| Repeated state after manual focus | Directionally focus overlapping B once; manually focus A; deliver another otherwise identical desired-state snapshot | Distinguishes one-shot focus/raise from continuously enforcing active/stacking state | Native focus/raise/stack settlement and reference outcomes TBD; persistent focus enforcement is not selected |
+| Silent final notification loss | Settle A/B; suppress the final native change notification for B; generate no further input | Distinguishes event-driven recovery from a periodic full audit, independently of dropped transport reports | Detection latency, idle cost and native/reference outcomes TBD; no polling interval or new polling behavior selected |
+
 ### Windows Xbox return discriminator
 
 | Variant | Minimal action sequence | Observed evidence | Unsupported outcome / next discriminator |
