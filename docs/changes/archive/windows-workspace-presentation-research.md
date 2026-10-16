@@ -39,6 +39,20 @@
   process exit and invalidated HWND were independently verified. Owned
   helpers were absent after cleanup; no remaining changed test state.
 - Independent review resolved stale citations, overly final recommendation
-  wording, recovery overclaims and unlabeled inference. Documentation scope
-  and `git diff --check` passed after corrections; final record verification
-  and publication remain pending.
+  wording, recovery overclaims and unlabeled inference. Documentation scope,
+  relative links, parked status and `git diff --check` passed after corrections
+  and again after rebasing publication.
+
+## Outcome
+
+- Research delivered 2026-10-17; mechanism and switch-versus-pull selection
+  remain PARKED. No product behavior or API policy changed.
+- Research publication: `ade0da4c`; pushed after rebase.
+- [CI run 38932773273](https://github.com/beefsack/OmniTiler/actions/runs/38932773273):
+  Windows, macOS, native, Rust, KWin, notices and licenses passed. Shell failed
+  in the known `kwin-66-api-guard` suite on unaudited
+  `fullscreen|maximized|sticky` symbols and its missing clean marker. No other
+  stream failed; the unrelated guard was not changed.
+- Remaining product action: choose the presentation mechanism and
+  switch-versus-pull policy; obtain native shell visual/accessibility and
+  option-specific recovery evidence before adopting a different backend.

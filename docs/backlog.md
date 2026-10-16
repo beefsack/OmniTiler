@@ -962,7 +962,9 @@ decisions of 2026-09-24 are under
   comparison, owned-helper live visibility baseline, and reference-outcome
   discriminators ([note](research/windows-port/alt-tab-hidden-workspaces.md)).
   Mechanism plus switch-versus-pull selection stays PARKED for user decision;
-  shell visuals stay user-observed TBD. Non-native inputs:
+  shell visuals stay user-observed TBD.
+  [Delivery evidence](changes/archive/windows-workspace-presentation-research.md).
+  Non-native inputs:
   [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
   [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [evidence](changes/archive/non-native-tiler-host-interaction.md).
