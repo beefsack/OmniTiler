@@ -509,14 +509,25 @@ decisions of 2026-09-24 are under
       include the new behavior in future setting help. [Decision](decisions.md#activation-requests).
     - Reconcile `tick` skipped count without identities accepted for now.
     - (6) D23 source slot after a minimized window is rehomed elsewhere:
-      NOT DECIDED. User-approved 2026-10-16: research Tier 1 reference WM behavior
-      first, then decide for consistency. Earlier lean to option B (forget the
-      source slot) is context only. Research remains pending; shared-core change
-      would affect KDE, low priority.
+      [Tier 1 research delivered 2026-10-17](research/d23-minimized-rehome.md).
+      COSMIC removes the source entry and discards its restore anchor on a
+      minimized-window move; Hyprland/i3/sway have no native counterpart and
+      do not vote. Recommend B, forget on confirmed window rehome, not omission
+      or whole-workspace migration. OPEN user decision, PARKED: keep, forget,
+      or clear only for explicit sends; no shared-core/KDE change selected.
+      Earlier lean to B remains context, not approval.
     - (8) Linux KDE `just dev` streaming/teardown check remains pending;
       [entry-point record](changes/dev-entry-point.md) stays active until it passes.
-    - (13f) Research Tier 1 fixed-size durable-override born-maximized behavior,
-      then decide shared policy for all targets; [current tentative](decisions.md#fixed-size-admission).
+    - (13f) [Tier 1 research delivered 2026-10-17](research/fixed-override-born-maximized.md).
+      No exact durable-override/restart/maximize counterpart in Tier 1. Proposed
+      shared policy A: durable explicit tile keeps a reserved base beneath
+      maximize under either born-maximized setting, including hint loss;
+      automatic fixed D4 unchanged. Preserves native maximize and durable tile
+      intent; not Tier 1 consensus. Setting-led maximize clearing can also
+      preserve the durable tiled base.
+      OPEN user decision, PARKED: A, born-maximized setting takes precedence,
+      or automatic fixed classification takes precedence. All targets including
+      KDE affected by any future change; [Windows interim unchanged](decisions.md#fixed-size-admission).
     - (13g) Research delivered 2026-10-16:
       [safe Win32 wrappers](research/windows-port/safe-win32-wrappers.md).
       Recommend one safe FFI boundary atop current `windows-sys`; both Microsoft
@@ -1298,7 +1309,7 @@ decisions of 2026-09-24 are under
   | 18 | G-06 maximized directional focus/move | Windows delivered offline; tiled focus fence and clear-before-tiled-move/float-four-halves physically user-accepted 2026-10-12, scoped single output. Failure/race/preset/fixed/game/DPI pending. [Record](changes/archive/windows-maximized-directional-navigation.md). |
   | 19 | G-37 migration source-refill setting | Windows additive schema-v1 config, UI Apply/Revert and live runtime/scoped MRU delivered offline 2026-10-14 with item 14 ([record](changes/archive/windows-workspace-output-migration.md)); native journeys pending. Shared core/KDE delivered offline 2026-10-10. |
   | 20 | G-D2 maximized send carry | Windows same-output numbered/relative follow/stay verified agent-observed 2026-10-11 with item 2; KDE offline. Physical/cross-output pending; item 5 foundation required. |
-  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. User-approved 2026-10-16 Windows 5b implementation pending: OS-permitted Switch and focus honors activation over fullscreen/games; default urgency-only/non-permitted unchanged. Clean permitted requests, mark/clear and game outcomes TBD; presentation/technical classification unresolved. D23 source keep/forget remains undecided pending Tier 1 research. [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
+  | 22 | D16 ordinary/combo sends and D23 best-effort restore/close cleanup | Windows D16 and D23 adapters delivered offline 2026-10-13; native carry/exit, minimize/restore/close checks pending. D27 2026-10-14 at `f4b9f41`: fresh background current/hidden requests denied without focus/workspace switch; native shell flash heard, visible urgency unproven. Previously attached caller's permitted activation converged; no product classifier/marker. User-approved 2026-10-16 Windows 5b implementation pending: OS-permitted Switch and focus honors activation over fullscreen/games; default urgency-only/non-permitted unchanged. Clean permitted requests, mark/clear and game outcomes TBD; presentation/technical classification unresolved. D23 source keep/forget remains OPEN and parked after [Tier 1 research](research/d23-minimized-rehome.md). [D27 evidence/options](changes/archive/windows-d27-activation-verification.md), [Windows D16](changes/archive/windows-d16-floating-transfer.md), [Windows D23](changes/archive/windows-d23-restore-close.md), [verification and exact journeys](changes/archive/windows-item22-verification.md). |
   | 23 | Born-maximized shared policy | Windows delivered offline 2026-10-13: core parsing/default/clear-keep policy consumed directly, shared fixture conformance; behavior, labels, schema and subsequent-admission semantics preserved, including tentative hydrated fixed-override maximize routing. Native gates 1,847 passed, 0 failed, 1 ignored; existing user-owned native journeys pending. [Record](changes/archive/windows-born-maximized-shared-policy.md). |
   | 24 | Underlay default `#662a82da` | Windows render/settings and CLI/proof mirrors delivered offline 2026-10-13, matching KDE candidate C (40% accent blue, for now). Explicit saved/CLI colors preserved; schema v1, no migration. Native gates pass (1,792 passed, one ignored); user black/white/grey visual check at 100%/150% pending. [Record](changes/archive/windows-underlay-default.md). |
   | Later | Unsafe FFI consolidation | Required after current Windows release-gate work (timing tentative); one dedicated minimal FFI module per crate, forbid elsewhere. |

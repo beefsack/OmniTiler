@@ -906,12 +906,25 @@ All fresh variants below reset the client and WM state independently.
   native Ours outcomes remain TBD.
 - Windows marker discriminator: explicitly tile fixed E and an intentional
   resizable float N; remove E's maximum hints, natively maximize both, restart
-  the owner, then disable/enable tiling. Observe override hydration, automatic
+  the owner, then disable/enable tiling. Repeat under both
+  `core.born_maximized` values with hint loss; N must keep generic non-fixed
+  maximize routing in every leg. Observe override hydration, automatic
   origin, reserved-slot versus maximize-clear routing, and native writes.
   Reference outcomes and Ours Windows observed outcomes remain TBD; Windows
   fixed-origin marker coverage and retained-maximized hydration are implemented
   offline; fixed-override reserved-overlay routing under both born-maximized
   values is tentative ([record](../../changes/archive/windows-fixed-size-admission.md)).
+  Exact Tier 1 intersection (durable marker plus owner restart with live
+  clients plus maximize under both born modes) has no counterpart in these
+  four pinned Tier 1 references (COSMIC `3d55cba0`, Hyprland `19fb395d`, i3
+  `903bcd51`, sway `1652c54b`):
+  COSMIC and Hyprland have no owner-restart-with-live-clients journey, i3
+  and sway have no maximize verb. Supported analogues only, not votes:
+  COSMIC original-layer retain beneath maximize for ordinary tiled windows;
+  Hyprland refusal-free explicit toggle plus pending-maximize-at-map; i3
+  whole-tree restart placeholders plus `floating_disable` surviving later
+  observation; sway explicit `container_set_floating` surviving observation
+  ([findings](../../research/fixed-override-born-maximized.md)).
 - Observe: fixed classification at adoption vs open-only classification;
   previous explicit tile override vs recomputed automatic identity.
   Reference outcomes for the unavailable-store variant are TBD.

@@ -1349,6 +1349,12 @@ platform API behavior.
     beneath maximize under both `core.born_maximized` values, including hint
     loss. Generic non-fixed maximize routing remains unchanged; the R-SPC-13
     native discriminator stays TBD.
+    [Tier 1 research 2026-10-17](research/fixed-override-born-maximized.md)
+    finds no exact durable-override/restart/maximize counterpart. Proposed
+    shared precedence preserves durable tile intent and native maximize;
+    setting-led maximize clearing could also respect D3/D7. Neither is
+    reference consensus. Shared choice remains OPEN and parked; this
+    research selects no KDE or other target change.
   - D8 no-touch: automatic fixed floats are membership-only: no
     geometry, focus, stacking or keep-above writes. Manual floats
     retain keep-above because intentional floats stay above windowed
@@ -2767,7 +2773,11 @@ platform API behavior.
   User-approved 2026-10-16 process for D23 item 6: research Tier 1 reference-WM
   behavior first, then decide source keep/forget consistently with that evidence.
   The behavior itself is NOT decided; the earlier lean toward option B (forget)
-  is context only. No reference research or source-slot change is delivered here.
+  is context only. [Tier 1 research 2026-10-17](research/d23-minimized-rehome.md)
+  finds COSMIC forgets the source entry/anchor on a minimized-window move;
+  Hyprland/i3/sway lack a native counterpart and do not vote. Recommendation:
+  forget on confirmed window rehome, not omission or whole-workspace migration.
+  OPEN user decision, parked; no source-slot behavior change is delivered.
   [Approval](research/release-0.1-triage.md#user-decisions-2026-10-12).
 - User decision 2026-10-12, D28 / REQ-MAX-09 fullscreen leg / REQ-MAX-09b /
   R-MAX-09, option (b): KDE fullscreen carry ships in 0.1. An explicit send
