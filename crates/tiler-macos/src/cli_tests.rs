@@ -1513,3 +1513,60 @@ fn mc_restore_frontmost_couples_exact_target_and_may_mutate() {
         .is_err()
     );
 }
+#[test]
+fn grab_diagnose_is_explicit_mutation_and_takes_no_arguments() {
+    let args = vec!["probe".to_owned(), "spaces-grab-diagnose".to_owned()];
+    let request = crate::cli::parse_args(&args).unwrap();
+    assert_eq!(request.command, crate::cli::Command::SpacesGrabDiagnose);
+    assert!(request.may_mutate); // Helper focus and Mission Control cycle.
+    let mut extra = args;
+    extra.push("--ignored".to_owned());
+    assert!(crate::cli::parse_args(&extra).is_err());
+}
+
+#[test]
+fn select_batch_requires_explicit_select_ids_and_rejects_send() {
+    assert!(parse_args(&argv(&["spaces-select"])).is_err());
+    assert!(parse_args(&argv(&["spaces-select", "--action", "workspace-send-1"])).is_err());
+    let r = parse_args(&argv(&[
+        "spaces-select",
+        "--action",
+        "workspace-select-0",
+        "--action",
+        "workspace-previous",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(r.command,Command::SpacesSelect {display:0,actions} if actions.len() == 2));
+    let cg = parse_args(&argv(&["cg-inspect"])).unwrap();
+    assert!(!cg.may_mutate);
+}
+
+#[test]
+fn empty_removal_needs_explicit_nonzero_sid_and_opt_in() {
+    assert!(
+        parse_args(&argv(&[
+            "mc-remove-empty",
+            "--space",
+            "0",
+            "--allow-untested"
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["mc-remove-empty", "--space", "2"])).is_err());
+    let r = parse_args(&argv(&[
+        "mc-remove-empty",
+        "--space",
+        "2",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::McRemoveEmpty {
+            space: 2,
+            allow_untested: true
+        }
+    ));
+}

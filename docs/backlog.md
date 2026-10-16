@@ -3575,6 +3575,17 @@ decisions of 2026-09-24 are under
      synthetic title-bar drag plus switch chord transfer, Authentic-enabled
      Desktop-N with Revert; per-display mapping, independent layouts, KDE/Windows
      workspace actions and bindings.
+     **2026-10-17 checkpoint:** Dock backing is transparent to both AX and
+     WindowServer helper hit-tests; transfer is parked on post-self-join focus
+     agreement versus protected-terminal positional identity (zero posts, no
+     TextEdit/relative/numbered proof). Explicit MC AX select-only batches now
+     execute numbered/relative selects, batch-local previous toggle and trailing
+     create (652–677 ms selects, about 1.16–1.18 s create/select), with exact-SID
+     empty cleanup. Repeated active-empty reuse remains unaccepted; zero-area
+     candidate refusal is offline-only. Product workspace bindings remain unarmed
+     pending empty-Space eligibility/main-thread routing. Not awaiting final
+     physical acceptance; next resolve the changed clear-helper discriminator and
+     native current-empty classification. [Current record](changes/macos-managed-workspaces.md#current-discriminator-and-continuation-2026-10-17).
   2. Input consume-first parity with Windows (user 2026-10-16, may change).
   3. Effects (KDE/Windows parity): active border, group underlay, drag/drop
      overlays.

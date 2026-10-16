@@ -845,11 +845,41 @@ pub fn hit_test_identity(hit: (u32, u32), want: (u32, u32)) -> Result<(), String
     if hit == want {
         Ok(())
     } else {
-        Err(
-            "hit-test refused: element at the grab point belongs to a foreign window (never the drag target)"
-                .to_owned(),
-        )
+        Err(format!(
+            "hit-test refused: element at the grab point belongs to a foreign window {hit:?}, want {want:?} (never the drag target)"
+        ))
     }
+}
+
+/// Input-reaching proof, not rectangle stacking. Both independent native
+/// hit-tests must join the exact target. Transparent compositor backing and
+/// windows behind the target are not input occluders; no owner-name exemption
+/// is made. Unknown/mismatched AX or WindowServer identity always refuses.
+pub fn hit_test_input_grab(
+    point: (f64, f64),
+    owned: &crate::ffi::CgWindow,
+    all: &[crate::ffi::CgWindowBasic],
+    ax_owner: (u32, u32),
+    input_wid: u32,
+) -> Result<(), String> {
+    // Retain the owned normal-layer/onscreen/containment gates, without
+    // treating unrelated rectangles as evidence of input interception.
+    hit_test_grab(point, owned, &[], &[])?;
+    if all.len() >= crate::config::MAX_WINDOWS {
+        return Err("input hit-test refused: CG snapshot completeness unknown".to_owned());
+    }
+    hit_test_identity(ax_owner, (owned.pid, owned.wid))?;
+    if input_wid != owned.wid
+        || !all
+            .iter()
+            .any(|w| w.wid == input_wid && w.pid == owned.pid && w.onscreen && w.layer == 0)
+    {
+        return Err(
+            "input hit-test refused: WindowServer hit does not join the exact owned window"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 /// Pure pointer-restore decision over plain data: restore the baseline

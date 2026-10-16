@@ -1,5 +1,104 @@
 # macOS managed native workspaces
 
+## Current discriminator and continuation (2026-10-17)
+
+The display-spanning layer-20 Dock surface is **not an input occluder at
+the tested owned-helper titlebar points**. Unfiltered, title-free CG lists
+show the membership-less surface before MC and after closing it; both
+`AXUIElementCopyElementAtPosition` (titlebar static-text element joined to
+the helper window) and `SLSFindWindowAndOwner` return the exact helper at
+all five points. Input-reaching identity, not rectangle stacking, is the
+appropriate guard; no Dock-name exemption is justified.
+
+Transfer is nevertheless **parked, not proven**. After independent helper
+self-join O→T→O, focus agreement names the helper but positional AX identity
+names the protected terminal at all five points. A bounded read-only settle
+did not change it; an exact-helper AXRaise before SLPS dispatch did not change
+it either (the product's dispatch-then-raise sequence was not tested here). All
+legs made zero synthetic posts. Do not repeat these approaches. Next transfer
+question: why does the recovery self-join produce a helper with exact membership
+and focus agreement but no input-reaching titlebar, and can a user-arranged
+helper outside that rectangle demonstrate the synthetic route without changing
+the focus/identity guard? No TextEdit or numbered-transfer proof is claimed.
+
+MC AX disappearance precedes CG thumbnail-transform settlement: immediate
+snapshots changed protected bounds with zero posts, while later read-only
+snapshots returned exactly to baseline. A bounded read-only exact-restoration
+wait repairs this observation gap; a persistent mismatch still refuses.
+The final refusal restored original single-Space/current topology, exact helper
+frame, protected frame/membership, pointer and full foreground agreement; exact
+helper exit/reap/record removal, absence and bounded display-sleep-child reap
+all passed. No protected-window writes occurred.
+
+Delivered a select-only, explicit MC AX controller/CLI: numbered/relative
+selection, previous toggle and trailing creation, keeping send routes
+unsupported. Product bindings remain unarmed: the preview's foreground/window
+eligibility gate cannot navigate back from an empty Space, and no main-thread
+workspace-effect handoff exists. The 19-row select-only binding subset is exposed
+without claiming interception or empty-Space product support. Full managed
+trailing cleanup and physical select/send dogfooding remain outstanding.
+
+### Select-only checkpoint and verification
+
+- `spaces-select --display N --action ID [--action ID ...]` executes existing
+  numbered selects, wrapping relative selects and previous toggle. History is
+  per display for one controller/batch lifetime, advances only on verified
+  arrival and is not persisted across CLI launches. Index 0 creates or selects
+  trailing through shared minimum/ordinal/reuse helpers. Exact topology drift,
+  unknown membership and unverified effects refuse without action replay.
+  Requested creation/selection persists; adopted SIDs and final layout are
+  reported even on partial failure. This is not an automatic managed lifecycle.
+- A native seven-action batch proved two-view toggle, numbered selection and
+  relative wrap with exact current-SID readback: selection **652–677 ms**;
+  create-and-select **1158/1181 ms**. These are native readback timings, not
+  physical visual-jank acceptance or a gesture comparison.
+- The second trailing request appended another SID rather than reusing the
+  apparently empty current Space. Its occupancy cause was not captured at the
+  decision boundary. The scanner's conservative candidate treatment remains;
+  a new zero-area/unreadable-candidate refusal prevents that class from becoming
+  an append trigger. This refusal is **offline-covered only**. Active empty-Space
+  classification/reuse and complete trailing cleanup remain open, not accepted.
+- `mc-recover` correctly refused the three-Space shape instead of broadening its
+  original two-Space contract. New `mc-remove-empty --space SID --allow-untested`
+  exposes existing exact-SID, noncurrent/nonlast user-Space, complete-emptiness
+  and exact-removal readback guards for explicitly requested cleanup. It never
+  selects, guesses ownership, replays a removal or removes an occupied Space.
+  Both created SIDs were independently removed; protected bounds/membership and
+  the original one-Space/current layout read back exactly restored. No settings
+  writes occurred; final status has no enabled digit holders or recovery preimage.
+- `cg-inspect` provides a title-free, unfiltered read-only snapshot;
+  `spaces-grab-diagnose` owns a bounded disposable helper and compares AX plus
+  WindowServer input hit identity before/after MC without synthetic posts.
+  Source precedent: [yabai input hit-test](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L961-L975)
+  and [AeroSpace AX point query](https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/mouse/focusFollowsMouse.swift#L55-L64).
+  Neither source establishes a blanket Dock-rectangle occlusion rule.
+- Final local gates: **648 tests** (519 library plus eight integration suites),
+  strict all-target macOS crate clippy, workspace format, signed build and
+  separate verification pass. Unsafe blocks **100 → 102**, all in `ffi.rs`:
+  optional hit-test symbol resolution and its checked call. No new dependency
+  or shared-core change. Final signed main SHA-256:
+  `d1a592b40cfe0599617eaef256e41d704bd91cdba1b28b52781dac2416a24072`.
+  This artifact includes the later offline-only zero-area refusal; it is not a
+  successful live-transfer artifact.
+- Read-only final inspection independently confirms one original Space/current,
+  Mission Control absent, trusted/unlocked session, no settings preimage and no
+  enabled digit holders. No helper, probe or display-sleep companions remain.
+- Consistency limitations: defaults retain Ctrl Meta and Ctrl+Cmd auxiliary
+  arms, but no workspace shortcut is intercepted. Batch-only history and
+  explicit select/create/cleanup are development seams, unlike KDE/Windows'
+  integrated persistent workspace manager. MC AX has visible transitions;
+  lower-jank gesture selection is not selected on unmeasured evidence. Native
+  drag-follow/send-stay switch-back and session-effective Desktop-N ownership
+  remain the previously documented host differences; no transfer ships here.
+  Fullscreen/cross-display/floor acceptance and physical jank remain TBD.
+
+The final physical select/send/follow/stay/Ctrl+Cmd/enable-Revert script is not
+written: those product actions are not executable yet. This item is **parked on
+transfer input identity and select-only integration**, not awaiting final physical
+acceptance. Next: resolve the post-self-join focus-versus-input mismatch with a
+changed, independently accepted helper setup; separately diagnose current-empty
+occupancy before arming empty-Space selection or implementing automatic deletion.
+
 ## Goal and acceptance
 
 Implement the approved native-Space route with SIP enabled, no scripting

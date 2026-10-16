@@ -2852,6 +2852,55 @@ mod macos {
         Some(unsafe { (table.connection)() })
     }
 
+    /// WindowServer input hit-test, matching yabai's unfiltered
+    /// `window_manager_find_window_at_point` call. No rectangle/stack guess.
+    /// Resolve separately so an absent optional diagnostic cannot disable reads.
+    pub fn sls_window_at_point(x: f64, y: f64) -> Result<u32, String> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err("input hit-test needs finite coordinates".to_owned());
+        }
+        type Find = unsafe extern "C" fn(
+            i32,
+            u32,
+            i32,
+            i32,
+            *const objc2_core_foundation::CGPoint,
+            *mut objc2_core_foundation::CGPoint,
+            *mut u32,
+            *mut i32,
+        ) -> i32;
+        static FIND: OnceLock<Option<Find>> = OnceLock::new();
+        let find = FIND
+            .get_or_init(|| {
+                // SAFETY: fixed framework/symbol and yabai's pinned signature;
+                // null checked, handle retained for the function's lifetime.
+                unsafe {
+                    let h = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                    if h.is_null() {
+                        return None;
+                    }
+                    let s = libc::dlsym(h, c"SLSFindWindowAndOwner".as_ptr());
+                    if s.is_null() {
+                        return None;
+                    }
+                    Some(std::mem::transmute::<*mut std::ffi::c_void, Find>(s))
+                }
+            })
+            .ok_or("SLSFindWindowAndOwner unavailable")?;
+        let cid = sls_main_connection_id().ok_or("SLS connection unavailable")?;
+        let point = objc2_core_foundation::CGPoint { x, y };
+        let mut local = objc2_core_foundation::CGPoint { x: 0.0, y: 0.0 };
+        let mut wid = 0;
+        let mut owner = 0;
+        // SAFETY: live stack in/out values; resolved signature; status gates read.
+        let status = unsafe { find(cid, 0, 1, 0, &point, &mut local, &mut wid, &mut owner) };
+        if status != 0 || wid == 0 {
+            Err(format!("SLSFindWindowAndOwner status {status}, wid {wid}"))
+        } else {
+            Ok(wid)
+        }
+    }
+
     const MAX_DISPLAYS: usize = 64;
     const MAX_SPACES_PER_DISPLAY: usize = 256;
     const MAX_MEMBERSHIP_WINDOWS: usize = 16;
@@ -6352,7 +6401,7 @@ pub use macos::{
     slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, terminate_process, warp_cursor_position,
+    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]

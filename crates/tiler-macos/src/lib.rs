@@ -86,6 +86,7 @@ pub mod space_drag_live;
 pub mod space_drag_transfer;
 #[cfg(test)]
 mod space_drag_transfer_tests;
+pub mod space_grab_diagnose;
 pub mod space_join;
 pub mod space_recovery;
 pub mod space_switch_edges;
@@ -101,6 +102,9 @@ pub mod watchdog;
 pub mod workspace_input;
 #[cfg(test)]
 mod workspace_input_tests;
+pub mod workspace_select;
+#[cfg(test)]
+mod workspace_select_tests;
 
 /// Stable probe bundle identity. Fixed across runs for TCC stability.
 pub const BUNDLE_ID: &str = "io.github.omnitiler.macos.probe";

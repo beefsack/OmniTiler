@@ -313,7 +313,22 @@ platform API behavior.
      Meta (Ctrl by default), with Shift for sends; send-stay stays unbound and
      bindable. The catalogue avoids the known Ctrl+Cmd+F/Q/Space/D system
      chords; common-app and customized global shortcuts still need physical
-     acceptance. Catalogue delivery does not establish native execution.
+      acceptance. Catalogue delivery does not establish native execution.
+   - **Tentative (pending user review), 2026-10-17 — native drag input identity:**
+     require both the positional AX `(PID, window ID)` and WindowServer input
+     hit-test to join the exact target, retaining current ownership, normal-layer,
+     onscreen, geometry and per-post focus gates. Do not infer input interception
+     from covering CG rectangles or exempt Dock by name. Unfiltered native
+     snapshots showed display-spanning Dock backing while both hit-tests reached
+     the owned helper; genuine terminal hits subsequently refused without posts.
+     [Evidence and parked transfer](changes/macos-managed-workspaces.md#current-discriminator-and-continuation-2026-10-17).
+   - **Tentative (pending user review), 2026-10-17 — select-only development seam:**
+     use the already-proven MC AX route for explicit bounded selection batches
+     while transfer is parked. Retain shared ordinal/relative/previous semantics;
+     batch history is deliberately not persisted or represented as the product
+     manager. Do not arm workspace shortcuts until empty-Space eligibility and
+     main-thread effect routing are coherent; no lower-jank gesture choice or
+     complete trailing lifecycle is inferred from the measured readbacks.
 
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues

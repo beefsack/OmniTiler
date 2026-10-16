@@ -10,8 +10,8 @@
 //! the tap passes our own switch chords while consuming the user's).
 //! Every window-targeted post re-proves session gates, the exact held
 //! Child, and the shared bundle/oracle boundary; positional proof is the
-//! per-leg setup (fresh owned AX frame, grab point, CG join, order-free
-//! hit-test, actual AX element-at-position identity) PLUS a fresh geometry
+//! per-leg setup (fresh owned AX frame, grab point, CG join, WindowServer
+//! input hit-test and AX element-at-position identity) PLUS a fresh geometry
 //! re-proof immediately before mouse-down and mouse-dragged at the identical
 //! point. Mouse-up releases at that same proven point, never a retargeted
 //! coordinate. Cursor baseline/restore uses the eventless warp only (never
@@ -123,9 +123,9 @@ mod live_impl {
         /// Fresh owned AX frame plus the FIRST provably clear titlebar point
         /// (up to five fractions across the bar), run once per leg before any
         /// post (refusing here posts nothing). Each candidate must pass BOTH
-        /// the conservative CG occlusion check and the fresh AX
-        /// element-at-position identity against the exact held `(pid, wid)`;
-        /// unrelated chrome is never exempted — an occluded candidate is
+        /// WindowServer input identity and fresh AX element-at-position
+        /// identity against the exact held `(pid, wid)`;
+        /// no owner-name exemptions are made — a genuinely occluded candidate is
         /// skipped, and no clear candidate refuses the leg. The per-post
         /// oracle in `prove` is unchanged (focus/identity bar); the
         /// geometry/z bar below is never a duplicate of it.
@@ -145,29 +145,27 @@ mod live_impl {
                 .map_err(|e| format!("{leg} CG join refused: {e}"))?;
             let all = crate::ffi::cg_window_list_basic()
                 .map_err(|e| format!("{leg} CG list unreadable: {e}"))?;
-            let ghostty = crate::mc_lifecycle::snapshot_ghostty_windows()
-                .map_err(|e| format!("{leg} Ghostty snapshot unreadable: {e}"))?;
             let mut last_err = String::from("no candidate evaluated");
             for point in candidates {
-                if let Err(e) =
-                    crate::space_drag_transfer::hit_test_grab(point, &entry, &all, &ghostty)
-                {
-                    last_err = e;
-                    continue;
-                }
-                match crate::ffi::ax_hit_test_owner(point.0, point.1) {
+                let hit = match crate::ffi::ax_hit_test_owner(point.0, point.1) {
                     Err(e) => {
                         last_err = format!("AX hit-test unreadable: {e}");
                         continue;
                     }
-                    Ok(hit) => {
-                        if let Err(e) =
-                            crate::space_drag_transfer::hit_test_identity(hit, (self.pid, self.wid))
-                        {
-                            last_err = e;
-                            continue;
-                        }
+                    Ok(hit) => hit,
+                };
+                let input_wid = match crate::ffi::sls_window_at_point(point.0, point.1) {
+                    Ok(wid) => wid,
+                    Err(e) => {
+                        last_err = e;
+                        continue;
                     }
+                };
+                if let Err(e) = crate::space_drag_transfer::hit_test_input_grab(
+                    point, &entry, &all, hit, input_wid,
+                ) {
+                    last_err = e;
+                    continue;
                 }
                 self.point = point;
                 self.last_point = point;
@@ -179,11 +177,10 @@ mod live_impl {
         }
 
         /// Positional re-proof at the CURRENT grab point (no recompute, no
-        /// retarget): fresh CG join, the order-free hit-test (owned onscreen
-        /// at the point, no chrome, no same-layer foreign occluder, no
-        /// Ghostty -- list order is unreliable per rift, so topmost is never
-        /// inferred), then the actual AX element-at-position owner required
-        /// to equal the exact held `(pid, wid)`. Runs at per-leg setup via
+        /// retarget): fresh CG join and two input-reaching identities, both
+        /// required to equal the exact held `(pid, wid)`. CG rectangles alone
+        /// cannot distinguish transparent backing from input occlusion.
+        /// Runs at per-leg setup via
         /// [`Self::refresh_grab`] and again immediately before mouse-down
         /// and mouse-dragged; mouse-up releases at this same proven point.
         fn reprove_point(&self, leg: &str) -> Result<(), String> {
@@ -192,13 +189,10 @@ mod live_impl {
                 .map_err(|e| format!("{leg} CG join refused: {e}"))?;
             let all = crate::ffi::cg_window_list_basic()
                 .map_err(|e| format!("{leg} CG list unreadable: {e}"))?;
-            let ghostty = crate::mc_lifecycle::snapshot_ghostty_windows()
-                .map_err(|e| format!("{leg} Ghostty snapshot unreadable: {e}"))?;
-            crate::space_drag_transfer::hit_test_grab(point, &entry, &all, &ghostty)
-                .map_err(|e| format!("{leg} {e}"))?;
             let hit = crate::ffi::ax_hit_test_owner(point.0, point.1)
                 .map_err(|e| format!("{leg} AX hit-test unreadable: {e}"))?;
-            crate::space_drag_transfer::hit_test_identity(hit, (self.pid, self.wid))
+            let input_wid = crate::ffi::sls_window_at_point(point.0, point.1)?;
+            crate::space_drag_transfer::hit_test_input_grab(point, &entry, &all, hit, input_wid)
                 .map_err(|e| format!("{leg} {e}"))?;
             Ok(())
         }
@@ -847,6 +841,9 @@ mod live_impl {
             Err(e) => fail_child!("recover-original", e),
         };
         let _ = snap_o;
+        if let Err(e) = crate::mc_observe::await_ghostty_restored(&ghostty_before) {
+            fail_child!("recover-settle", e);
+        }
         notes.push(
             "independent self-join recovery O->T->O proven; synthetic legs follow".to_owned(),
         );
@@ -1277,6 +1274,9 @@ mod live_impl {
         }
         // Caffeinate stops after the last mutation (temp removal above, if
         // any); read-only verification follows.
+        if let Err(e) = crate::mc_observe::await_ghostty_restored(&ghostty_before) {
+            notes.push(format!("final transition settle: {e}"));
+        }
         let reaped = caffeinate.stop();
         let snap_final = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| {
             fail(

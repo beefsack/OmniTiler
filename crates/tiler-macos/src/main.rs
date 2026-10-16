@@ -32,6 +32,18 @@ fn main() {
 fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
     match request.command {
         Command::Help => Ok(tiler_macos::cli::help_text()),
+        Command::SpacesGrabDiagnose => tiler_macos::space_grab_diagnose::run(),
+        Command::McRemoveEmpty {
+            space,
+            allow_untested,
+        } => tiler_macos::workspace_select::remove_empty(space, allow_untested),
+        Command::SpacesSelect { display, actions } => {
+            tiler_macos::workspace_select::run(display, &actions)
+        }
+        Command::CgInspect => {
+            let windows = tiler_macos::ffi::cg_window_list_basic().map_err(|e| (1, e))?;
+            Ok(serde_json::json!({"windows":windows,"session":tiler_macos::ffi::session_state(),"mutates":false}).to_string())
+        }
         Command::Preflight => preflight(),
         Command::AxEnumerate { max_windows } => {
             let counts =

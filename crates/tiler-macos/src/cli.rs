@@ -170,6 +170,16 @@ pub enum Command {
         allow_untested: bool,
     },
     McInspect,
+    SpacesGrabDiagnose,
+    CgInspect,
+    McRemoveEmpty {
+        space: u64,
+        allow_untested: bool,
+    },
+    SpacesSelect {
+        display: usize,
+        actions: Vec<crate::runtime_types::InputSemanticAction>,
+    },
     McLifecycle {
         seconds: u64,
         display: usize,
@@ -399,7 +409,12 @@ pub fn help_text() -> String {
             \x20 \x20 edge) and the yabai began/ended gesture pair (same display,\n\
             \x20 \x20 no warp/click); creates/destroys no Space, performs no SLS\n\
             \x20 \x20 move, posts no tap input; explicit opt-in per invocation)\n\
-            \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested\n\
+             \x20 cg-inspect (read-only unfiltered title-free window snapshot)\n\
+             \x20 mc-remove-empty --space SID --allow-untested (one exact noncurrent empty user SID, no broad cleanup)\n\
+             \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
+             \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; no product hotkeys)\n\
+             \x20 spaces-grab-diagnose (bounded owned helper, unfiltered CG/AX/input hit snapshots before/after MC; zero synthetic posts)\n\
+             \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested\n\
             \x20 \x20 (bounded owned titlebar-drag transfer, default 120s,\n\
             \x20 \x20 minimum 60s: one owned helper, independent public\n\
             \x20 \x20 self-join recovery proven first, then a synthetic\n\
@@ -1706,6 +1721,83 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 allow_untested,
             }
         }
+        "mc-remove-empty" => {
+            let mut space = None;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--space" => {
+                        j += 1;
+                        space = Some(parse_u64(
+                            args.get(j).ok_or("--space needs a value")?,
+                            "--space",
+                        )?);
+                    }
+                    "--allow-untested" => allow_untested = true,
+                    other => return Err(format!("mc-remove-empty: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            let space = space
+                .filter(|sid| *sid != 0)
+                .ok_or("mc-remove-empty needs nonzero --space")?;
+            if !allow_untested {
+                return Err("mc-remove-empty needs --allow-untested".to_owned());
+            }
+            Command::McRemoveEmpty {
+                space,
+                allow_untested,
+            }
+        }
+        "spaces-select" => {
+            let mut display = 0;
+            let mut actions = Vec::new();
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u32(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--action" => {
+                        j += 1;
+                        let id = args.get(j).ok_or("--action needs a value")?;
+                        let action = crate::workspace_input::parse_workspace_action(id)
+                            .ok_or("unknown workspace action ID")?;
+                        if !matches!(
+                            action,
+                            crate::runtime_types::InputSemanticAction::WorkspaceSelect { .. }
+                                | crate::runtime_types::InputSemanticAction::WorkspaceRelative { .. }
+                                | crate::runtime_types::InputSemanticAction::WorkspacePrevious
+                        ) {
+                            return Err("spaces-select refuses non-select actions".to_owned());
+                        }
+                        actions.push(action);
+                    }
+                    other => return Err(format!("spaces-select: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            if actions.is_empty() || actions.len() > 16 {
+                return Err("spaces-select needs 1..=16 --action IDs".to_owned());
+            }
+            Command::SpacesSelect { display, actions }
+        }
+        "cg-inspect" => {
+            if !args.is_empty() {
+                return Err("cg-inspect takes no arguments".to_owned());
+            }
+            Command::CgInspect
+        }
+        "spaces-grab-diagnose" => {
+            if !args.is_empty() {
+                return Err("spaces-grab-diagnose takes no arguments".to_owned());
+            }
+            Command::SpacesGrabDiagnose
+        }
         "scope-inspect" => {
             // Read-only scoped metadata for named apps: non-empty --scope
             // allowlist mandatory; no writes on any path.
@@ -1736,6 +1828,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::SpacesBindings
             | Command::SpacesDesktopStatus
             | Command::CgOwnedWindows { .. }
+            | Command::CgInspect
             | Command::OwnedFrame { .. }
             | Command::ScopeInspect { .. }
             | Command::McInspect

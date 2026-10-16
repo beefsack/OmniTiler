@@ -356,6 +356,55 @@ fn hit_test_needs_owned_visible_unoccluded_point() {
 }
 
 #[test]
+fn input_grab_requires_both_exact_hits_not_rectangle_stacking() {
+    let owned = CgWindow {
+        wid: 7,
+        pid: 4242,
+        layer: 0,
+        onscreen: true,
+        bounds: CgBounds {
+            x: 200.0,
+            y: 200.0,
+            w: 480.0,
+            h: 320.0,
+        },
+        title: None,
+    };
+    let point = (440.0, 208.0);
+    let own = basic(7, 4242, 0, 200.0, 200.0, 480.0, 320.0);
+    let backing = basic(9, 77, 20, 0.0, 0.0, 2000.0, 1200.0);
+    let behind = basic(10, 88, 0, 0.0, 0.0, 2000.0, 1200.0);
+    let all = [backing, behind, own];
+    assert!(hit_test_input_grab(point, &owned, &all, (4242, 7), 7).is_ok());
+    // A genuine occluder, including protected terminal or native chrome,
+    // cannot pass either a foreign AX hit or a foreign WindowServer hit.
+    for hit in [(77, 9), (88, 10), (4242, 8), (0, 0)] {
+        assert!(hit_test_input_grab(point, &owned, &all, hit, 7).is_err());
+    }
+    for wid in [0, 9, 10] {
+        assert!(hit_test_input_grab(point, &owned, &all, (4242, 7), wid).is_err());
+    }
+    assert!(hit_test_input_grab(point, &owned, &[], (4242, 7), 7).is_err());
+    assert!(hit_test_input_grab((0.0, 0.0), &owned, &all, (4242, 7), 7).is_err());
+    assert!(
+        hit_test_input_grab(
+            point,
+            &CgWindow {
+                onscreen: false,
+                ..owned.clone()
+            },
+            &all,
+            (4242, 7),
+            7
+        )
+        .is_err()
+    );
+    assert!(
+        hit_test_input_grab(point, &CgWindow { layer: 20, ..owned }, &all, (4242, 7), 7).is_err()
+    );
+}
+
+#[test]
 fn hit_test_refuses_same_layer_foreign_occluder() {
     // The order-free hole: an unrelated same-layer nonfocused window over
     // the grab point must refuse (list order never proves topmost), while

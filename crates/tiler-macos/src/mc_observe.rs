@@ -172,6 +172,25 @@ pub(crate) fn snapshot_ghostty_windows() -> Result<Vec<GhosttyWindow>, McError> 
     Ok(out)
 }
 
+/// MC's AX group disappears before its CG thumbnail transforms settle.
+/// Observe exact protected-window restoration for up to three seconds; never
+/// write/focus those windows. A persistent difference remains a hard refusal.
+pub(crate) fn await_ghostty_restored(before: &[GhosttyWindow]) -> Result<(), McError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let after = snapshot_ghostty_windows()?;
+        if crate::mc_probe::ghostty_stable_across_switch(before, &after) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(McError::Blocked(
+                "protected CG frame/membership did not return after MC transition".to_owned(),
+            ));
+        }
+        crate::ffi::pump_runloop_once(50);
+    }
+}
+
 /// Selected-oracle focus legs (read-only): workspace frontmost, SLPS front
 /// PID, and the direct per-app focused-window read when the two agree.
 /// Unknown legs stay unknown; callers (not this capture) decide.
