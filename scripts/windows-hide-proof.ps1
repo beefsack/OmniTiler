@@ -70,8 +70,6 @@ function New-HideProofRunDir {
 
 $SOURCE_FILES = @(
   "crates/tiler-windows/src/product_hide.rs",
-  "crates/tiler-windows/src/tiling_sys/mod.rs",
-  "crates/tiler-windows/src/tiling.rs",
   "crates/tiler-windows/src/test_window.rs",
   "crates/tiler-windows/src/lifecycle.rs",
   "crates/tiler-windows/src/main.rs",
@@ -85,9 +83,28 @@ $SOURCE_FILES = @(
   "justfile",
   "just/windows.just"
 )
+# Split module families: hashed by stable recursive expansion so leaf splits
+# stay covered without manifest edits (one row per file, ordinal sort).
+$SOURCE_DIRS = @(
+  "crates/tiler-windows/src/product_hide",
+  "crates/tiler-windows/src/tiling",
+  "crates/tiler-windows/src/tiling_sys"
+)
 function Get-SourceHashes {
+  $rels = New-Object System.Collections.Generic.List[string]
+  foreach ($rel in $SOURCE_FILES) { $rels.Add($rel) }
+  foreach ($dir in $SOURCE_DIRS) {
+    $full = Join-Path $Repo $dir
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { throw "source missing: $dir" }
+    $leaves = New-Object System.Collections.Generic.List[string]
+    foreach ($f in (Get-ChildItem -LiteralPath $full -Recurse -File)) {
+      $leaves.Add(($f.FullName.Substring($Repo.Length + 1) -replace "\\", "/"))
+    }
+    $leaves.Sort([System.StringComparer]::Ordinal)
+    foreach ($leaf in $leaves) { $rels.Add($leaf) }
+  }
   $rows = @()
-  foreach ($rel in $SOURCE_FILES) {
+  foreach ($rel in $rels) {
     $full = Join-Path $Repo $rel
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "source missing: $rel" }
     $rows += "$rel=$((Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash)"
