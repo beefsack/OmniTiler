@@ -114,6 +114,21 @@ decisions of 2026-09-24 are under
   are accepted pre-0.1; the core change adds follow-up items for each platform
   not migrated in the same change. Repeated replies must not churn
   workspaces.
+- P2 | Research: stateless core with caller-owned state | User 2026-10-16
+  asks whether the core can hold no state between calls: each call takes the
+  caller-held core state (tiling tree, shares, groups, remembered slots,
+  focus history, workspace ordering - not derivable from observation), the
+  complete observed host state (windows, workspaces, focused window and
+  workspace), the event and the current time, and returns the new core state
+  plus the full desired state. The core becomes a library used directly by
+  single-process platforms, wrapped in a service only where a platform needs
+  one (KDE KWin script plus C++ effect). Compare per platform (Windows
+  in-process today; KDE via planner service; macOS process model to confirm)
+  against the current stateful `Engine`: reliability, replay/testability,
+  restart recovery, persistence, per-call cost and migration churn; relate to
+  the full-state reply and revision item above. Deliver options and a
+  recommendation for user review; coordinate with the KDE and macOS streams
+  before any change.
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;
