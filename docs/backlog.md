@@ -92,54 +92,14 @@ decisions of 2026-09-24 are under
   fallback, both KCM identities, settings-only packaging and native shortcut/
   conflict operations; no generic setter may invoke Fix/Force/Revert. Follow
   the [approved boundary](research/shared-settings-schema.md#recommended-boundary-and-compatibility).
-- P1 | Core update replies carry workspace state | User 2026-10-16: every
-  change a platform reports to the core (window created/closed, workspace
-  switch, send, output change) returns everything the platform must apply,
-  both window/tiling state and workspace state (workspaces to create or
-  remove, including the trailing empty workspace). Platforms apply the reply
-  instead of separately deciding when to run workspace lifecycle policy.
-  The reply is the full desired window and workspace state, not a delta:
-  each platform diffs it against its observed host state and applies the
-  differences, so a dropped or failed update is corrected by the next reply
-  (user 2026-10-16). Each full-state reply carries one monotonic state
-  revision under the core generation; a platform ignores a reply older than
-  the newest it has applied, and a generation change resets the ordering.
-  Existing ordering is partial: per-domain tiling `base_revision`,
-  owner/generation identity, request-side `StaleRevision` refusal and
-  per-correlation stale-reply handling in the KDE adapter; workspace
-  lifecycle state has no revision.
-  The reply structure must be extensible so the core can later return more
-  optional presentation state for platforms to apply, for example active
-  border, drop-target overlay and group underlay geometry, as more shared
-  logic moves into the core (user 2026-10-16).
-  Gaps requiring investigation before design:
-  - Input staleness: a newer reply can still predate the platform's latest
-    report (for example a user drag) and revert it; replies should identify
-    the platform report they are based on.
-  - Lost reports: full-state replies do not repair a dropped platform report;
-    consider full observed-state reports, at least periodically and after
-    anomalies.
-  - Intent versus state: focus, raise and stacking must not be re-applied on
-    every diff or they fight user actions; they need one-shot semantics.
-  - Host refusal: fixed-size windows, minimum sizes and host rounding can make
-    desired state unreachable; define tolerance, backoff and constraint
-    feedback so diffs do not churn.
-  - Unmanaged windows: full state must mark floating, excluded and game
-    windows as untouched.
-  - Workspace removal: platforms remove only workspaces they observe empty
-    (KDE desktop removal moves windows).
-  - Generation bootstrap: after a core restart the platform sends a full
-    snapshot first; an empty initial state is never applied as removal.
-  - Reply size: the current 64 KiB `PLAN_MAX_REPLY_BYTES` bound may not hold
-    full state with hundreds of windows.
-  Motivation: missed trailing-workspace creation/removal on individual event
-  paths in KDE dynamic workspaces and Windows admission
-  ([Windows record](changes/archive/windows-admission-trailing-workspace.md));
-  the core already owns the planning (`plan_trailing`, `resolve_trailing`,
-  `scoped_trailing_facts`). Breaking changes to the core/platform interface
-  are accepted pre-0.1; the core change adds follow-up items for each platform
-  not migrated in the same change. Repeated replies must not churn
-  workspaces.
+- P1 | Core update replies carry workspace state | Core and KDE delivered
+  offline 2026-10-17 under selected D1-D5: complete world reports/replies,
+  generation/revision/input-watermark fences, Planner-owned workspace policy,
+  retained transfer/view/property targets, explicit holds and a bounded 4 MiB
+  transport. [Contract, measurements and live checks](changes/archive/core-full-state-replies.md).
+  User-owned live KDE acceptance remains pending; Windows/macOS adoption is
+  tracked separately below. Geometric exhaustion preserves topology with
+  complete recoverable constraint-held rows, not an admission fallback.
 - P1 (next after full-state replies) | Best-effort admission when space runs
   out | The full-state change returns a recoverable hold when a domain's
   projection cannot give every tile a positive extent after gaps (14 fresh
@@ -157,23 +117,32 @@ decisions of 2026-09-24 are under
   Investigate current Windows behavior (may already float), interaction with
   B6 origin+minimum overlap and startup clean-fit adoption, defaults, and
   recovery when space returns; propose for user review before implementing.
-- P1 | Research: stateless core with caller-owned state | User 2026-10-16
-  is unsure this is sensible since the stateful core is already efficient;
-  weigh testability and reliability wins against cost. User 2026-10-16
-  asks whether the core can hold no state between calls: each call takes the
-  caller-held core state (tiling tree, shares, groups, remembered slots,
-  focus history, workspace ordering - not derivable from observation), the
-  complete observed host state (windows, workspaces, focused window and
-  workspace), the event and the current time, and returns the new core state
-  plus the full desired state. The core becomes a library used directly by
-  single-process platforms, wrapped in a service only where a platform needs
-  one (KDE KWin script plus C++ effect). Compare per platform (Windows
-  in-process today; KDE via planner service; macOS process model to confirm)
-  against the current stateful `Engine`: reliability, replay/testability,
-  restart recovery, persistence, per-call cost and migration churn; relate to
-  the full-state reply and revision item above. Deliver options and a
-  recommendation for user review; coordinate with the KDE and macOS streams
-  before any change.
+- P1 | Research: stateless core with caller-owned state | Resolved by user
+  D1 (2026-10-16): retain the stateful Engine with a full world boundary and
+  explicit deterministic replay tests; no caller-owned/serialized core state.
+  A pure typed transition is optional only for a demonstrated later need.
+  [Comparison, selected decisions and delivery](changes/archive/core-full-state-replies.md).
+- P1 | Windows: adopt full world-state core replies | Replace
+  adapter-triggered trailing policy and per-op application with complete
+  observed world reports and host diffs; move scope/history/mapping policy
+  into the world state; preserve recovery ledger/window properties/native
+  safety and D16/D23/overlay semantics. Adapt `TileLoop`,
+  `tiling_sys/admission.rs`, `tiling_sys/scope_trailing.rs` and workspace
+  owner/effect/send paths; remove direct session-state policy queries where
+  the reply replaces them. Cover bootstrap/order, stable creation identities,
+  lifetime/gesture fences, refused targets, partial transfer and follow proof
+  in all workspace modes. Native acceptance remains separately required.
+  The legacy domain API remains compiling, not behaviorally migrated.
+- P1 | macOS: adopt full world-state core replies | Replace per-domain reply
+  concatenation/cursors with world revision and input watermark, preserving
+  AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
+  slots, observed-focus authority and native Space capability refusals.
+  Adapt `runtime_core.rs`, `runtime_native.rs`, `runtime_thread.rs`; include
+  full lifetime/completeness/hold facts and per-property feedback. Represent
+  observed Spaces without inventing Windows/KDE logical creation or ordinary
+  window-transfer capability. Native Space operations remain capability-gated
+  until separately established. The legacy domain API remains compiling,
+  not behaviorally migrated.
 - P1 | Windows Xbox shortcut conflicts (Win+G, Win+F11) | User 2026-10-16
   approved choices implemented offline: Compatible float `Ctrl+Win+G`,
   fullscreen `Ctrl+Win+F11`, exact Ctrl-arm routing and hold/release coverage;

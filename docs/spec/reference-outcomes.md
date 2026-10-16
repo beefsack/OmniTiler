@@ -29,16 +29,17 @@ trivially different start state.
 
 ### Full-state reply settlement discriminators
 
-Architecture candidates, not selected native behavior.
-[Combined core/workspace design](../changes/core-full-state-replies.md).
+Selected core/KDE contract, delivered offline; native/reference outcomes
+remain TBD unless separately established.
+[Combined core/workspace contract](../changes/archive/core-full-state-replies.md).
 
 | Variant | Minimal action sequence | Established evidence / candidate distinction | Unsupported outcome / decision |
 | --- | --- | --- | --- |
-| New input before reply | Dispatch a layout report for A/B; start dragging B before its reply returns; deliver that reply before the next report is dispatched | Existing stale-snapshot checks do not provide a global input watermark. Candidate checks the latest local invalidation, not just the latest dispatched request | Exact native/reference ordering and drag outcome TBD; no stale geometry write or command replay policy selected by this row |
-| Lost transfer reply versus refusal | Send B to another workspace; withhold the reply before native assignment; deliver a fresh full observation. Separately deliver the reply but refuse native assignment | Distinguishes retained desired assignment and explicit refusal settlement from today's one-shot transfer/observation-wins model; [D3](../changes/core-full-state-replies.md#decisions-needed) is unselected | Retry/hold/abandon, follow and exact native/reference outcome TBD; no automatic transfer replay authorized |
-| Workspace selection without Planner | With two existing workspaces, make Planner unavailable; select the other, then request trailing creation | Existing synchronous KDE dependency constraint is documented in [AR6](../changes/architecture-review-ar6-workspaces.md#integration-route-and-blocker); distinguishes service-only policy from a synchronous bridge/mirror | Future unavailable/latency behavior and exact native/reference outcome TBD; existing behavior is not changed by this row |
-| Repeated state after manual focus | Directionally focus overlapping B once; manually focus A; deliver another otherwise identical desired-state snapshot | Distinguishes one-shot focus/raise from continuously enforcing active/stacking state | Native focus/raise/stack settlement and reference outcomes TBD; persistent focus enforcement is not selected |
-| Silent final notification loss | Settle A/B; suppress the final native change notification for B; generate no further input | Distinguishes event-driven recovery from a periodic full audit, independently of dropped transport reports | Detection latency, idle cost and native/reference outcomes TBD; no polling interval or new polling behavior selected |
+| New input before reply | Dispatch a layout report for A/B; start dragging B before its reply returns; deliver that reply before the next report is dispatched | Selected watermark checks the latest synchronous invalidation; offline tests prove zero stale setters and observation-only catch-up without replay | Exact native/reference ordering and visual drag outcome TBD |
+| Lost transfer reply versus refusal | Send B to another workspace; withhold the reply before native assignment; deliver a fresh full observation. Separately deliver the reply but refuse native assignment | D3 retains an unattempted assignment under a stable identity; confirmed refusal settles; possibly-executed ambiguity holds without blind repeat | Native follow/arrival/refusal and reference outcomes TBD; no repeat without fresh unambiguous proof |
+| Workspace selection without Planner | With two existing workspaces, make Planner unavailable; select the other, then request trailing creation | D2 selects Planner-only workspace policy and narrow refusal while unavailable, superseding [AR6](../changes/architecture-review-ar6-workspaces.md#integration-route-and-blocker); native observation/safety remain independent | Native responsiveness and reference outcome TBD |
+| Repeated state after manual focus | Directionally focus overlapping B once; manually focus A; deliver another otherwise identical desired-state snapshot | D3 selects at-most-once focus/raise/stack effects; repeated snapshots do not restore active/stacking state | Native focus/raise/stack settlement and reference outcomes TBD |
+| Silent final notification loss | Settle A/B; suppress the final native change notification for B; generate no further input | D5 selects event-driven full reports and dirty/ack recovery, no idle audit; a missed final event needs a later trigger | Exact native/reference notification-loss outcome TBD |
 
 ### Windows minimum-query timeout discriminator
 

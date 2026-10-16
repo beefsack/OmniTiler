@@ -836,6 +836,33 @@ platform API behavior.
 
 ## Workspaces
 
+- User 2026-10-16, full-state replies D2/D3: KDE Planner is the sole
+  workspace-policy authority, including scoped rings/history, trailing
+  lifecycle, tiling modes, selection, sends, mapping, hotplug displacement
+  and return. This supersedes AR6's synchronous no-Planner workspace-policy
+  behavior: unavailable Planner narrowly refuses policy-changing requests;
+  native observation, safety and already-observed host state remain usable.
+  There is no silent TypeScript policy fallback. The effect remains a renderer.
+- Transfer/view targets have stable identities and remain outstanding until
+  observed confirmation, explicit newer external input or proven native refusal.
+  Adapters arm possibly-executed feedback before dispatch, hold ambiguous
+  causality and never repeat a possibly-executed transfer without fresh,
+  unambiguous proof. Native setter returns are not confirmation. Focus, raise
+  and stacking are at-most-once attempts, not persistent conditions. Partial
+  multi-window application is reported honestly; follow remains
+  arrival-proof-before-switch and switch-proof-before-focus. This supersedes
+  older strictly one-shot transfer settlement, not the safety fences.
+- User 2026-10-16, capacity option B: preserve topology when projection cannot
+  allocate positive tile extents after gaps. Publish a narrow, recoverable
+  `constraint-clamp` domain hold with complete held lifetime rows; unaffected
+  domains continue. Keep the classification in one replaceable core policy
+  location. No admission fallback is selected here; "Best-effort admission
+  when space runs out" remains separate work, grounded in R-MIN-04/R-INS-09.
+- Core plus KDE delivered offline 2026-10-17
+  ([contract, evidence and live checks](changes/archive/core-full-state-replies.md)).
+  Windows/macOS behavioral adoption remains separate; their transitional
+  domain API remains available.
+
 - User 2026-10-15 approved: Windows item 12
   stores `core.workspace.mode` in additive settings schema v1, using KDE's
   `per-output-local` (default), `global-unique`, and `shared` tokens. Missing
@@ -1918,6 +1945,46 @@ platform API behavior.
 
 ## Engine Architecture and Convergence
 
+- User 2026-10-16, full-state replies D1: retain the stateful, side-effect-free
+  `Engine` behind a world-level report/reply boundary. Deterministic typed
+  replay remains explicit. No caller-owned or serialized core state crosses
+  KDE D-Bus; the stateless-core research question is resolved. A pure typed
+  transition is optional later only for a demonstrated need. Desired output
+  is not a restorable snapshot of trees, shares, MRU or minimized history.
+- Every accepted full observation publishes one globally monotonic world
+  revision while independent domain sessions/revisions remain independent.
+  Reports include topology, logical/native bindings, settings, hidden and
+  minimized lifetimes, explicit closes, unreadable holds and actuation
+  feedback. Replies include complete workspace/output/window desires,
+  per-property authority, retained targets, correlated operation results and
+  one-shot effects. Held or untouched scope omission authorizes no write or
+  retirement. Optional future presentation state remains unimplemented.
+- Discovery binds authenticated KWin-owner/adapter identity to a fresh core
+  generation and returns not-ready with no applicable state. A complete report
+  precedes ready application. Process restart, Engine replacement and poison
+  recovery establish a fresh generation; old effects and commands never replay.
+  Duplicate latest requests return the same reply/revision only for identical
+  input; reused input sequences refuse, older requests supersede, and monotonic
+  command high-watermarks prevent re-execution. Global counters are bounded
+  decimal `u64` strings on JSON, not JavaScript numbers.
+- The adapter invalidates its observation watermark synchronously, including
+  during a flight and before debounce. Apply requires exact adapter/request/
+  generation binding, a newer world revision and the current local watermark;
+  repeat lifetime, gesture and safety checks before setters. Stale replies
+  release their flight and schedule observation-only catch-up, never command
+  replay. Desired-revision acceptance is separate from observed actuation proof.
+- User 2026-10-16, D4/D5: one bounded 4 MiB request/reply budget. Validate
+  conservative complete bounds before convergence and commit only after exact
+  bounded encoding; oversize returns no applicable partial state and mutates
+  no candidate state. Event-driven full reports, dirty/ack retention and anomaly
+  rescans recover transport loss; no idle polling. A silently missed final
+  native notification cannot be detected until another trigger.
+- Delivered offline 2026-10-17
+  ([evidence](changes/archive/core-full-state-replies.md)). These choices
+  supersede older no-world-sequence, KDE `DescribePlan` and 1 MiB/64 KiB
+  boundary decisions for the migrated KDE path. The legacy domain interface
+  and its bounds remain transitional for Windows/macOS, not a KDE fallback.
+
 - Core extraction (user 2026-09-30): portable core completed through K1
   (visual policy in `tiler-core::visual`) under KDE first, with KWin fixtures
   and applicable live checks. K2 settings/action intent and K3 difference
@@ -2012,8 +2079,8 @@ platform API behavior.
   unsupported paths fail closed. KWin direct geometry remains sequential and
   non-atomic; the adapter minimizes visible intermediate frames and records
   applied-versus-acknowledged divergence without claiming atomicity. The
-  current KWin adapter uses one session-D-Bus `DescribePlan` route to a
-  pinned unique Planner owner, with same-UID caller checks; this selects no
+  current KWin adapter uses session-D-Bus `DiscoverWorld`/`DescribeWorld`
+  routes with same-UID and current-KWin-owner caller checks; this selects no
   generic cross-platform IPC abstraction. A KWin fork or patch remains
   rejected. Retain JavaScript for discrete window add/remove management.
   Group behavior, inactive borders, Steam-specific handling, and complete

@@ -2,22 +2,22 @@
 
 ## Status, goal and scope
 
-- 2026-10-16: investigation complete; architecture proposals below are not selected or implemented.
+- 2026-10-17: core and KDE delivered offline under selected D1-D5 and capacity option B. Live KDE acceptance and Windows/macOS behavioral adoption remain separate.
 - Covers the two P1 backlog items "Core update replies carry workspace state" and "Research: stateless core with caller-owned state" together.
-- Goal: one full desired window/workspace snapshot after each accepted platform report, with safe ordering, recovery and future presentation extensions; choose the state ownership model before changing the interface.
-- Non-goals: new tiling/workspace behavior, persistence across restarts, new platform capabilities, native experiments, or interface implementation in this phase.
-- Research acceptance: ground all listed gaps in current code; compare ownership options by platform; specify a coherent proposed contract and its unresolved tradeoffs; identify core+KDE migration and separate native-platform follow-ups. Evidence is source inspection and independent design review, not performance or native acceptance.
+- Goal: one full desired window/workspace snapshot after each accepted platform report, with safe ordering, recovery and a retained stateful Engine.
+- Non-goals: persistence across restarts, new platform capabilities, native experiments, and Windows/macOS behavioral adoption.
+- Implementation acceptance: the full world report/reply contract below is implemented together in core, protocol and KDE, with deterministic offline recovery/safety coverage, bounded transport measurements and native-platform follow-up boundaries. Live KDE acceptance remains outstanding until separately tested.
 
 ## Recommendation
 
 - Retain the stateful, side-effect-free `Engine`. Add a world-level report/reply boundary around its independent domain sessions and the shared workspace policy. Do not serialize caller-owned core state over KDE D-Bus.
 - Send a complete normalized observation on every reported update, not just the affected domain. Return a single globally ordered full desired snapshot, not a touched-domain result or a set of independently applicable pages.
 - Separate persistent desired properties from one-shot effects. Fresh host observation remains authoritative for external user actions and safety; an unreachable desired property must become an explicit hold/accepted-host result, not an infinite setter loop.
-- Preserve current native behavior until the decisions below are selected. In particular, full-state delivery does not silently authorize transfer replay, idle polling, or making synchronous KDE workspace shortcuts depend on Planner.
+- D1-D5 below select the changed Planner dependency and transfer settlement contract explicitly; idle polling and blind transfer replay remain excluded.
 
-## Current evidence
+## Investigation baseline
 
-Source locations describe the inspected code; proposed names/shapes below are illustrative, not existing APIs.
+Source locations below describe the pre-implementation investigation. The implemented entry points and final evidence are recorded under Verification and outcome.
 
 | Area | Current implementation and implication |
 | --- | --- |
@@ -48,7 +48,7 @@ Source locations describe the inspected code; proposed names/shapes below are il
 - Full desired state is an output projection, not a restorable core snapshot. Shares, MRU, minimized neighborhoods and mapping history cannot be recovered from it. Export/import and restart persistence remain separate work.
 - Current core needs no time argument. If future shared deadlines require one, pass explicit monotonic logical time; keep native timers outside core. Do not add unused time or persistence machinery here.
 
-## Proposed world report and reply
+## World report and reply contract
 
 ### Shape
 
@@ -85,7 +85,7 @@ Reply {
 - Every known scope has an explicit status. Object-list omission means desired absence only inside a completely enumerated, controlled inventory and subject to property authority/removal gates; omission inside a held or untouched scope authorizes no write or retirement. A hold is never encoded by an empty list alone.
 - No tree, shares, core focus history or serialized Engine belongs in this reply. Flattened allocations/effective targets suffice for host application; future presentation data can supply its own derived geometry.
 - `existence` is desired presence, not an imperative append/remove list. Desired absence applies only to explicitly managed inventory, never arbitrary host objects. Logical creation identities survive repeated snapshots until binding or cancellation; uncreated logical IDs cannot be used as native IDs.
-- Persistent view/membership authority versus one-shot workspace switching/transfers is conditional on decision D3 below. Observed active focus may be included as informational state; its presence is never a command to focus.
+- D3 selects retained view/membership targets, distinct from one-shot effects. Observed active focus is informational state, never a command to focus.
 - Optional presentation sections are independent, versioned and capability-negotiated. For a negotiated full section, empty means clear and omitted means unsupported/not controlled, never "reuse the previous geometry". Unknown required versions refuse before actuation. Initial migration reserves this envelope only; it does not implement border/preview/underlay policy moves.
 
 ### Ordering and freshness
@@ -124,9 +124,16 @@ Reply {
 
 - A lost geometry/lifecycle snapshot is repaired by diffing the next complete desired snapshot, subject to current input/safety/refusal gates. A lost observation is repaired only after a later full observation actually reaches the core.
 - Focus/raise/stacking are deliberately at-most-once attempts, not persistent conditions. Their loss is not repaired by stealing focus on the next unrelated report.
-- Window transfer/view selection is the material boundary case: the current core converges observed membership and commits send plans immediately, while adapters never replay native transfers. Simply wrapping current per-op results does not retain an unattempted desired transfer across the next observation. D3 must select its ownership/settlement model before claiming those dropped updates are repaired.
+- Window transfer/view selection requires retained intent, not merely wrapping an operation-specific result: D3 keeps an unattempted desired target across the next full observation, while explicit attempt/result feedback holds possibly-executed transfers without blind replay.
 
-## Decisions needed
+## Selected decisions (2026-10-16)
+
+- D1=A: retain the stateful Engine, with explicit deterministic replay tests; no caller-owned or serialized core state. A pure typed transition remains optional only for a demonstrated need.
+- D2=A: Planner alone owns KDE workspace policy. This supersedes AR6's synchronous no-Planner policy behavior where necessary; native observation and safety remain independent, with no TypeScript fallback policy. Measure offline response/catch-up latency; live acceptance is separate.
+- D3=A: retain transfer/view targets until confirmation, newer external user input or native refusal. Stable operation identities and explicit attempt/result feedback fence ambiguous outcomes; never repeat a possibly-executed transfer without fresh unambiguous proof. Focus/raise/stacking remain one-shot.
+- D4=A: one bounded 4 MiB request/reply budget, with actual size/latency/memory measurements and narrow recoverable overflow.
+- D5=A: event-driven full reports, dirty/ack recovery and anomaly rescans; no idle polling. A missed final native event remains undetectable until another wake.
+- Capacity B: preserve existing topology and publish a narrow, recoverable constraint hold with complete held lifetime rows when projection runs out of space. Keep the hold policy in one replaceable location. Admission fallback is explicitly separate work under "Best-effort admission when space runs out"; reference research is R-MIN-04/R-INS-09.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
@@ -136,7 +143,7 @@ Reply {
 | D4: transport budget | A fixed bounded 4 MiB global request/reply; B retain 64 KiB and add atomic chunk assembly with total bound, manifest/revision/checksum, timeout and no apply before complete; C an unbounded reply. B solves transport size but adds protocol/memory complexity and still needs a total bound; C is unacceptable. No candidate guarantees arbitrary window counts. | A. Validate actual bytes for hundreds/thousands of windows and measure latency/memory; 4 MiB is a proposed engineering budget, not a capacity/performance claim. Keep overflow narrow and recoverable after scope/size changes. |
 | D5: silent missed host notifications | A event-driven full reports plus dirty/ack recovery and anomaly rescans; B add a low-frequency complete audit while enabled. A preserves current no-idle-polling behavior but cannot detect a missed final native event without another wake. B detects that class but adds recurring enumeration/IPC cost, particularly with AX. | A initially, explicitly retaining that limit; select B only if eventual detection without subsequent input is required, with interval and platform cost measured separately. |
 
-- These are architecture/product choices, not selected behavior. Existing decisions remain in force until replaced. In particular the proposed global report sequence supersedes the earlier no-world-sequence restriction but does not merge per-domain session revisions.
+- These selected choices supersede conflicting earlier decisions, including the no-world-sequence restriction, without merging independent per-domain session revisions.
 - Minimal action-sequence discriminators are added to `docs/spec/reference-outcomes.md`; unsupported native/reference outcomes stay TBD. Existing R-WS-10 already covers ordinary empty-middle cleanup and is not duplicated.
 
 ## Migration plan and dependencies
@@ -152,12 +159,42 @@ Reply {
 
 - **P1 | Windows: adopt full world-state core replies.** Replace adapter-triggered trailing policy and per-op application with complete observed world reports and host diffs; move scope/history/mapping policy into the world state; preserve recovery ledger/window properties/native safety and D16/D23/overlay semantics. Adapt `TileLoop`, `tiling_sys/admission.rs`, `tiling_sys/scope_trailing.rs` and workspace owner/effect/send paths; remove direct session-state policy queries where the reply replaces them. Cover bootstrap/order, stable creation identities, lifetime/gesture fences, refused targets, partial transfer and follow proof in all workspace modes. Native acceptance remains separately required.
 - **P1 | macOS: adopt full world-state core replies.** Replace per-domain reply concatenation/cursors with world revision and input watermark, preserving AppKit/engine/AX thread ownership, per-app generations, latest-wins frame slots, observed-focus authority and native Space capability refusals. Adapt `runtime_core.rs`, `runtime_native.rs`, `runtime_thread.rs`; include full lifetime/completeness/hold facts and per-property feedback. Represent observed Spaces without inventing Windows/KDE logical creation or ordinary-window transfer capability. Native Space operations remain capability-gated until separately established.
-- These are handover text, not additions to `docs/backlog.md` in this investigation. Neither native platform needs a caller-owned-state migration if D1=A is selected.
+- These follow-ups are recorded in `docs/backlog.md`. Neither native platform needs a caller-owned-state migration under D1.
 
 ## Verification and outcome
 
-- Completed: current boundary/state/transport/platform source investigation, all listed gap analysis, pure-core comparison and conditional migration design. Independent design review verified source citations and accepted corrections for pre-convergence byte budgeting, bounded deduplication, duplicate revisions, explicit holds and transport-limit validation. Documentation whitespace checks passed. No interface code changed and no native tests ran. No performance result is claimed.
-- Before implementation acceptance: offline deterministic tests for out-of-order replies, input invalidated BEFORE dispatch, user drag during flight, dropped last report, service replacement under unchanged adapter binding, incomplete inventory, minimized-vs-closed, duplicate effects, refused setters, ambiguous creation, occupied removal race, all scope modes, and multi-domain partial failures. Full-snapshot equality/idempotence must prove no workspace churn.
-- Size gates: existing 800-window overflow scenario must succeed under the selected budget; test input/output exact-bound and over-bound cases with worst-case identifiers and many domains. Check actual D-Bus daemon/message limits and Qt/KWin delivery, not just application constants. Benchmark full report construction, core transition, JSON and D-Bus end-to-end cost separately; compare stateful versus typed-move/serialized-state alternatives only if those alternatives remain candidates.
-- Planned code gates: Rust fmt/check/clippy/tests for affected portable crates, KWin typecheck/tests/build and `just check-portable`; native crates' offline gates on their supported environments. No native timing/safety acceptance follows from these checks.
-- Current next action: choose D1-D5. Only then implement the fixture contract and core+KDE interface together; schedule the two follow-ups above.
+### Delivered implementation
+
+- Code commits: `8e29a0b4` (core/protocol/service and shared wire fixtures), `76c4185f` (KDE observer/actuator migration and portable-check regression gate).
+- Core: `WorldEngine` wraps the retained `Engine`; `world_report`, `world_sizing`, `world_publish`, `world_commands`, `world_sends`, `world_tiling_views` and `world_displacement` separate the contract, bounded encoding, projection and workspace policy. Cheap validation/budget gates precede a staged candidate; exact bounded encoding precedes commit. Candidate cloning is conditional on accepted preflight, not performed on rejected input. Native callers retain the transitional domain API; no native-platform sources changed.
+- Protocol/service: `tiler-protocol::world_protocol` and `omnitiler::world_service`; authenticated current-KWin-owner `DiscoverWorld`/`DescribeWorld` routes, fresh generations on construction/poison replacement, single-flight admission, bounded redacted ingress/egress summaries. Request counters are decimal strings. Latest duplicate identity uses full typed equality plus a digest pre-check; command consumption uses a high-watermark, not an evictable outcome ledger.
+- KDE: production `entry.ts` uses `world-entry`; observation, sequencing, actuation, drag, native toggles and shortcuts have separate modules. Complete reports carry minimized lifetimes, fixed predicate, default tiling, focused window, output geometry/primary facts and bindings. Planner owns all three workspace modes, tiling defaults/overrides, scoped selection/history, lifecycle, sends, migration and displacement/return. Legacy policy modules remain available to their existing offline tests, not as a production fallback.
+- Retained explicit float placement has a stable per-property token and repairs a dropped result without rewriting ordinary floats. Transfers/views and policy hotplug targets use unique per-intent identities; possibly-executed ambiguity holds, native read-back proves success, newer explicit input settles. Exact per-output view proof gates follow/focus. Operation results preserve core-derived preview/hover, float placement, group rendering and migration data; the effect remains renderer-only.
+- Capacity B is localized in `classify_sweep_hold`: 13 fresh windows in an 800x600 gap-8 domain project; 14 yield complete `constraint-clamp` held rows. Repeated held snapshots do not churn; fitting observations recover. No flattened layout, partial-report workaround or admission fallback was added.
+
+### Accepted offline evidence (2026-10-17)
+
+- At committed revision `76c4185f`, `cargo fmt --all -- --check`, workspace check/build/test and workspace clippy with warnings denied pass. Workspace tests: **2738 passed, 0 failed across 80 suites**. The upstream macOS-only dead-code lint issue was corrected separately before integration; no native-platform source was changed by this work. Workspace results include Linux compilation/testing of the untouched Windows/macOS crates, not their supported native targets.
+- KWin typecheck/build/full tests pass: **1703 tests, 248 suites**. `just check-portable` and scanner self-tests pass (4 cases). The scanner now ignores comment-only documentation mentions while still rejecting platform code and scan errors; no dependencies were added.
+- Shared fixtures contain exact bytes captured from production TypeScript reports; Rust decodes those bytes and regenerates result goldens consumed by the TypeScript parser/actuator. Coverage includes ordering/correlation, replay/dedup, bootstrap/poison, incomplete and minimized inventories, lost float/transfer replies, refusal and ambiguous attempts, creation binding, occupied removal, all workspace modes, floating boundaries, born-fullscreen slots, defaults, drag preview/drop arrival, migration, hotplug return and unique policy identities.
+- Independent review accepted the final three corrections: unique displacement/return identities, retaining third-frame float ambiguity, and updated strict service fixtures. A measured stale-flight wedge was reproduced then repaired: rejecting a consumed stale reply releases only that flight and dispatches observation-only catch-up. No known core/KDE offline acceptance gap remains. Final KDE responsibility splits keep every new production module below the source-size soft cap without changing fixture bytes or behavior.
+
+### Final size and cost measurements
+
+Release codec/core samples use fresh Engines (11 repetitions); sizes are exact compact UTF-8 bytes. Held workloads are not layout-success evidence.
+
+| Workload | Request / reply bytes | Result | Total median / p95 |
+| --- | --- | --- | --- |
+| 800 windows, 64 domains | 226911 / 178690 | 64 controlled scopes, 800 usable allocations | 97.36 / 103.07 ms |
+| 2000 windows, 128-byte IDs, 64 domains | 759891 / 634214 | 64 constraint-held scopes, 2000 complete held rows, zero usable allocations | 100.07 / 104.21 ms |
+
+- 800-window decode/core/encode medians: 2.45/94.35/0.33 ms; held-2000: 6.14/93.77/0.62 ms. Peak process resident high-water was approximately 50 MiB, measured through process status; these are spot offline costs, not live responsiveness acceptance.
+- Actual TypeScript entry construction medians: approximately 0.14 ms for two windows and 1.07 ms for 200; golden reply parse 0.018 ms; initial one-row apply 0.002 ms. Mocked-transport catch-up recovered 30/30 stale flights, with no command replay: approximately 0.010 ms handling plus the configured 120 ms debounce plus 0.058 ms report construction. A subsequent explicit command dispatches after acknowledgement. This is mock-time scheduling evidence, not D-Bus/native latency.
+- A legal-count 5000-window report padded to exactly 4194304 bytes is accepted; one additional byte refuses before mutation, and the previous request still duplicates at the same revision. An 11188-window payload below the byte cap instead refuses the separate count safety gate; raw byte fit is not semantic acceptance. Reply estimators cover exact encoding, including maximum identifiers and operation results.
+- Read-only session-daemon configuration shows a 1000000000-byte message maximum, above the application budget plus framing. Live Qt/KWin delivery and D-Bus end-to-end timing were not tested. No caller-owned-state alternative benchmark is needed under D1.
+
+### Remaining work and user-owned live checks
+
+- Follow the live-testing guide before any native run. Verify authenticated bootstrap/restart and unavailable-Planner behavior; exact 4 MiB Qt/KWin delivery and latency; two-output selection/history/global swaps/hotplug return; follow/stay/append and floating-boundary sends; migration partial refusal; continuous preview/drop/resize and late-reply cancellation; float/sticky/maximize/fullscreen/minimized/game safety; workspace creation/removal races and bounded client-clamp behavior. No live KWin/Plasma run was performed for this change.
+- Windows/macOS remain on their compiling legacy domain API. Their full-world behavioral migrations and supported-platform offline/native gates are separate backlog items. Admission fallback remains the separate best-effort-admission item. A missed final host notification still requires a later trigger under D5.
+- Exact next action: user-owned live KDE acceptance, then the separately scoped native migrations and admission fallback. Durable decisions are promoted to `docs/decisions.md`; backlog records distinguish offline delivery from those remaining checks.

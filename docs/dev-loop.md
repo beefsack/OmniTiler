@@ -149,18 +149,34 @@ just dev-off     # unload exact script, stop recorded Planner, re-enable package
   verified worktree Planner and loaded controller.
 
 Single engine: the worktree KWin bundle (`kwin/src/entry.ts` via
-`startPlanAdapterEntry` with owner `kwin-plan-adapter`, generation `plan-1`)
-is the only observer/actuator. Rust owns all tiling, order, membership, and
-rejection decisions through the stateless `DescribePlan` D-Bus route
+`startWorldAdapterEntry`, owner `kwin-world-adapter`) is the only
+observer/actuator. Authenticated `DiscoverWorld` binds its activation to the
+serving core generation; `DescribeWorld` sends complete foreground/hidden
+observations and returns the full desired window/workspace snapshot
 (`com.omnitiler.Planner` / `/com/omnitiler/Planner` /
-`com.omnitiler.Planner1`). Normal windows are observed in the active
-foreground domain and every other readable background `(output, workspace)`
-domain. Background replies write only their exact domain and never request
-native focus or desktop visibility changes; reply geometries use shared
-canonical grow-before-shrink order. There is no journal readiness wait and no
-second runtime: bring-up is proven by the strict `isScriptLoaded` envelope plus
-receipt-bound exact `Script<ID>` introspection, and teardown is receipt-bound
-exact unload.
+`com.omnitiler.Planner1`). Rust retains the Engine and owns workspace policy;
+the script applies authorized differences against fresh host observation.
+Unknown scopes hold. Stale replies cause observation-only catch-up, never
+command replay. Planner unavailability narrowly refuses policy changes; no
+script policy fallback exists. Request and reply budgets are each 4 MiB.
+There is no journal readiness wait or second runtime: bring-up is proven by
+the strict `isScriptLoaded` envelope plus receipt-bound exact `Script<ID>`
+introspection, and teardown is receipt-bound exact unload.
+
+Current world-route diagnostics:
+
+- `omnitiler:world:discovered gen=<generation>`: discovery only, not applied state.
+- `omnitiler:world:dispatch req=<request> obs=<watermark> cmd=<operation|observe>`.
+- `omnitiler:world:applied rev=<revision> geom=<N> member=<N> views=<N> mk=<N> rm=<N> fx=<N> held=<N>`: snapshot accepted and partial actuator counts, not atomic native completion.
+- `omnitiler:world:stale reason=<token> recovery=catchup`: zero stale setters,
+  followed by an observation-only report.
+- Planner `omnitiler:world-summary direction=ingress|egress ...`: bounded
+  request/outcome correlation without raw payloads.
+
+The operation-specific `DescribePlan` journal forms retained below describe
+the legacy domain path and earlier acceptance evidence, not the current KDE
+transport. Use the [full-state live checklist](changes/archive/core-full-state-replies.md#remaining-work-and-user-owned-live-checks)
+for the migrated path; live runs remain separately authorized.
 
 ## Manual Fallback
 
@@ -251,8 +267,8 @@ from the receipt (`jq -r .pid <receipt>`) and open a journal cursor
 (`journalctl --user --show-cursor`). Use 3 Wayland-native normal resizable
 clients (for example 3 Konsole windows) on one output/workspace, then grow to
 4-6 during the journey. All geometry changes arrive as one complete
-`DescribePlan` reply applied in canonical grow-before-shrink order; focus
-changes arrive as the reply `desired_focus` applied after the writes.
+`DescribeWorld` snapshot applied under per-property authority; explicit focus
+changes arrive as one-shot effects after the required arrival/view proof.
 
 1. Add (3 -> 4 windows): open a fourth client.
    Expected visible outcome: all four windows retile at once to cover the
