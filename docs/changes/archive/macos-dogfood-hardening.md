@@ -217,6 +217,66 @@ Report focus result (including markers), gap appearance, idle logging, the two
 probe JSON results and the three transfer outcomes. The unscoped dogfood recheck
 is user-run.
 
+### 5. Consume-first parity (2026-10-17)
+
+Physical acceptance is pending. This is the current Windows-matching rule, not
+a final cross-platform policy: armed owned chords suppress even when their
+actions are refused. Do not test in a game or type test keys into the terminal.
+Use only disposable Calculator/TextEdit windows, focused by clicking them.
+
+Run setup from step 1, but **do not repeat its stall probe**. Require
+`ax_trusted:true`, an unlocked session and `secure_input:Inactive`. Record the
+disposable windows' original frames/current Space. Create a disposable TextEdit
+marker with the cursor at its end, and one Calculator window. Keep these windows
+on the same existing Desktop for the first leg.
+
+```sh
+mise exec -- just tile --user-start --scope com.apple.calculator --input tap --preset authentic --seconds 60
+```
+
+Once the run is active, click TextEdit and press **Ctrl+H once**. Require the
+marker unchanged, no focus/layout/Space change, and this stderr line:
+
+```text
+tiler-macos tile-tap: consumed-refused-basic (consumed-refused-basic=1 consumed-refused-select=0)
+```
+
+After bounded teardown, click the same document and press **Ctrl+H once**:
+exactly one marker character must now delete, proving native delivery has
+returned. Plain `h` is unarmed and should type normally; undo that test edit.
+Restore the marker and verify both windows' baseline frames/current Space before
+continuing. The refusal log is first/every-50th per category; terminal JSON has
+tap suppression counts but **no refusal totals**. Instruction/refusal stderr can
+make the wrapper exit nonzero: inspect `outcome` and `shutdown_clean`, not just
+the wrapper status. Wait for the bounded child teardown; Ctrl+C alone is not proof.
+
+For the isolated fullscreen leg, fullscreen only the disposable TextEdit window
+using its green button, then run:
+
+```sh
+mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 60
+```
+
+Click the fullscreen document, leave the cursor at the marker end, and press
+**Ctrl+H once**. Require `consumed-refused-basic`, marker unchanged, no tiling,
+focus or Space change. After teardown, exit fullscreen using its green button;
+verify the original Desktop, document membership and frame are restored. This
+tests a native fullscreen foreground, not a game or anti-cheat environment.
+
+For workspace coverage, reuse the
+[select-only procedure](../macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17)
+and its Apply/Revert/owned-Space cleanup. **Changed expectation:** on the empty
+Space, Ctrl+H is consumed/refused (not passed through), with no stale-focus
+actuation; armed numbered/relative selects still navigate. An ineligible select
+also suppresses first and reports `consumed-refused-select`.
+
+Lock, Secure Input or unknown session state release interception rather than
+refuse after suppression; stop/report if those gates appear. Unarmed chords
+always retain native delivery. Close only disposable documents/windows, undo
+test text, verify baseline geometry/membership and leave existing Spaces/settings
+untouched. These two basic/fullscreen legs do not Apply settings, so require no
+Revert. Report changed/unchanged text only, not document content.
+
 ## User physical results 2026-10-16
 
 User-run on one display, following the script above.

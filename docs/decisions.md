@@ -225,10 +225,12 @@ platform API behavior.
     [scoped-tile record](changes/macos-scoped-tile.md).
   - **Tentative scoped input eligibility, 2026-10-15:** intercept only an
     eligible foreground window in the explicit bundle scope/current-user
-    domain, never fullscreen/hidden/minimized or unknown/stale state. AX
+    domain, never fullscreen/hidden/minimized or unknown/stale state. Superseded
+    for interception by the consume-first rule below; these remain action
+    eligibility fences. AX
     owners publish per-PID plain facts; input attests at 250 ms and callbacks
     read an atomic gate (500 ms deadline, app-fact TTL about 2 s). Out-of-scope
-    input releases native registrations/guards. The 2026-10-16 recovery rule
+    input originally released native registrations/guards. The 2026-10-16 recovery rule
     below supersedes terminal refusal based solely on a user-input notification.
     This does not replace physical-input or game acceptance.
   - **Tentative preview input route, 2026-10-16:** the CGEventTap is the
@@ -239,8 +241,9 @@ platform API behavior.
     logged and recover through verified same-tap re-enable or fresh same-chord
     creation. An enabled-state health check on existing input pump turns
     separately detects disabled taps without a notification; this never counts
-    as a timeout. Lock, Secure Input, scope and foreground eligibility still
-    precede interception. Actual user-input notification/recovery and continued
+    as a timeout. Lock and Secure Input still precede interception; the
+    consume-first rule below moves scope/foreground eligibility after suppression.
+    Actual user-input notification/recovery and continued
     suppression are live-proven; actual OS timeout-notification recovery remains
     pending a physical-input discriminator.
   - **Tentative preview configuration, 2026-10-16:** startup reads validated
@@ -262,8 +265,8 @@ platform API behavior.
     with the Tier 1 input tilers is critical and a primary reason for the project;
     surface differences explicitly rather than silently adopting adapter behavior.
     The [dogfood comparison](changes/archive/macos-dogfood-hardening.md#consistency-review)
-    identifies current capability gaps, conditional input interception versus
-    Windows consume-first behavior, and unresolved classification outcomes.
+    identifies capability gaps and unresolved classification outcomes; its
+    conditional-interception gap is addressed by consume-first parity below.
   - **User testing direction 2026-10-16:** where automated live testing is hard,
     fiddly or unreliable, prefer user-run physical checks. Keep bounded probes and
     truthful readbacks; synthetic delivery and dispatch returns never substitute
@@ -279,7 +282,19 @@ platform API behavior.
     foregrounds so [game safety](principles.md#gaming-compatibility) stays
     consistent across platforms; lock and Secure Input still release
     interception. The final cross-platform rule is not settled and may be
-    revisited. Implementation pending.
+    revisited. Implemented 2026-10-17: fullscreen/game foregrounds do **not**
+    release armed chords to native delivery; they are consumed and unsafe
+    actions refused, as on Windows. Unarmed chords still pass through.
+    [Implementation, evidence and physical acceptance](changes/macos-consume-first-input.md).
+  - **Tentative (pending user review), 2026-10-17 — consume-first boundary:**
+    keep foreground eligibility out of the CGEventTap callback. After suppression,
+    the input owner reads the basic/select eligibility caches and drops ineligible
+    downs before Engine dispatch; ups still release holds. AX owners retain
+    their existing fact publication and freshness rules, and native effects
+    retain their fresh scope/Space/show-state fences. Rationale: match Windows'
+    consumption semantics without putting AX work or logging in a latency-critical
+    callback. Lock, Secure Input and unknown session state still release; tap
+    health recovery and own synthetic-switch provenance bypass stay unchanged.
   - **Tentative tap recovery route, 2026-10-16 (physical evidence):** under a
     real physical callback stall the OS disabled the tap without delivering a
     `kCGEventTapDisabledByTimeout` notification; the enabled-state health check

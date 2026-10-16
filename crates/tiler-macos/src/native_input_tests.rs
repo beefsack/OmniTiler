@@ -445,11 +445,11 @@ fn scoped_sources_start_ineligible_until_attested() {
 
 #[test]
 fn eligibility_cache_gates_and_rearms_on_flip() {
-    // While gated the owner holds no interception (dropping hits would NOT
-    // restore passthrough — only the guard release does). Pin the cache
-    // invariant explicitly: ineligible publishes deny, and re-enabling
-    // bumps the epoch so the owner re-arms rather than trusting a stale
-    // guard.
+    // Consume-first: an ineligible publish denies owner-side triage
+    // (consumed hits refuse without effects — dropping them never restores
+    // passthrough, which is exactly the point). Pin the cache invariant
+    // explicitly: ineligible publishes deny, and re-enabling bumps the
+    // epoch so the owner re-arms rather than trusting a stale guard.
     use crate::input_eligibility::EligibilityCache;
     let cache = EligibilityCache::new_unrestricted_test_gate();
     assert!(cache.is_eligible());
@@ -612,6 +612,176 @@ fn tap_specs_carry_select_category_per_action() {
     );
     assert_eq!(specs.len(), 45);
     assert_eq!(specs.iter().filter(|s| s.select).count(), 18);
+}
+
+#[test]
+fn consume_first_triage_refuses_ineligible_without_effects() {
+    // Consume-first parity: owned chords always consume in the callback;
+    // the owner triages each consumed hit here. Ineligible basics AND
+    // selects refuse (never become actions); eligible dispatch unchanged;
+    // unowned events forward (never swallowed here); ups always forward
+    // (hold release). Lock / Secure Input release is unchanged (see
+    // `gate_matrix`); the callback still suppresses exact pairs (see
+    // `paired_suppression_repeats_and_release`).
+    use crate::input_policy::aux_flag_for;
+    let basic_specs = tap_specs_for(ProbeModifier::Ctrl, &tile_catalogue());
+    let mut product = tile_catalogue();
+    product.extend(crate::workspace_select::bindings());
+    let product_specs = tap_specs_for(ProbeModifier::Ctrl, &product);
+    let (ctrl_flags, _) = cg_flag_bits(ProbeModifier::Ctrl);
+    // Ineligible basic down refuses as basic (fullscreen/game,
+    // out-of-scope, stale/unknown facts, zero user currents, and
+    // focus/Space mismatch all deny the basic cache).
+    assert_eq!(
+        triage_consumed_hit(&basic_specs, KEY_H, ctrl_flags, true, false, Some(false)),
+        "consumed-refused-basic"
+    );
+    // Eligible basic down dispatches unchanged (select-cache state is
+    // irrelevant for basics).
+    assert_eq!(
+        triage_consumed_hit(&basic_specs, KEY_H, ctrl_flags, true, true, Some(false)),
+        "dispatch"
+    );
+    // Select digit Ctrl+2: exact flags land in the select category.
+    let digit2 = crate::desktop_shortcuts::desktop_digit_keycode(2).unwrap();
+    assert_eq!(
+        consumed_hit_category(&product_specs, digit2, ctrl_flags),
+        Some(true)
+    );
+    assert_eq!(
+        triage_consumed_hit(&product_specs, digit2, ctrl_flags, true, false, Some(false)),
+        "consumed-refused-select"
+    );
+    // Select eligible while basic is not (empty Space): dispatches.
+    assert_eq!(
+        triage_consumed_hit(&product_specs, digit2, ctrl_flags, true, false, Some(true)),
+        "dispatch"
+    );
+    // Basic while only selects attest (empty Space): consumes yet refuses —
+    // never dispatches a stale hidden focus.
+    assert_eq!(
+        triage_consumed_hit(&product_specs, KEY_H, ctrl_flags, true, false, Some(true)),
+        "consumed-refused-basic"
+    );
+    // Relative-select (aux arm) triages as select too.
+    let aux = aux_flag_for(ProbeModifier::Ctrl);
+    assert_eq!(
+        consumed_hit_category(&product_specs, KEY_H, ctrl_flags | aux),
+        Some(true)
+    );
+    assert_eq!(
+        triage_consumed_hit(
+            &product_specs,
+            KEY_H,
+            ctrl_flags | aux,
+            true,
+            true,
+            Some(false)
+        ),
+        "consumed-refused-select"
+    );
+    // Unowned key passes through (never swallowed here).
+    assert_eq!(
+        triage_consumed_hit(&product_specs, 0x00, ctrl_flags, true, false, Some(false)),
+        "forward-unowned"
+    );
+    // Unarmed send shape (Ctrl+Shift+digit): no exact spec, forwards.
+    assert_eq!(
+        triage_consumed_hit(
+            &product_specs,
+            digit2,
+            ctrl_flags | CG_SHIFT_BIT,
+            true,
+            false,
+            Some(false)
+        ),
+        "forward-unowned"
+    );
+    // Ups always forward — both categories, any eligibility (hold release;
+    // dropping them would wedge the orientation hold).
+    assert_eq!(
+        triage_consumed_hit(&basic_specs, KEY_H, ctrl_flags, false, false, Some(false)),
+        "forward-up"
+    );
+    assert_eq!(
+        triage_consumed_hit(&product_specs, digit2, ctrl_flags, false, true, Some(true)),
+        "forward-up"
+    );
+}
+
+#[test]
+fn drain_wiring_never_escapes_refused_hits() {
+    // Production drain/channel wiring: a received channel hit flows through
+    // the real triage helper into the real drain mapping — the exact
+    // continue-vs-return `TapTileSource::next` applies after the pump.
+    // Refused hits map to `None` (the caller counts and keeps pumping, so
+    // they can never escape as actions); eligible downs and all ups map to
+    // the exact `RawKeyEvent` the input owner re-matches downstream.
+    use crate::ffi::TapHit;
+    use crate::runtime_backend::RawKeyEvent;
+    let basic_specs = tap_specs_for(ProbeModifier::Ctrl, &tile_catalogue());
+    let mut product = tile_catalogue();
+    product.extend(crate::workspace_select::bindings());
+    let product_specs = tap_specs_for(ProbeModifier::Ctrl, &product);
+    let (ctrl_flags, _) = cg_flag_bits(ProbeModifier::Ctrl);
+    let digit2 = crate::desktop_shortcuts::desktop_digit_keycode(2).unwrap();
+    let drain =
+        |specs: &[_], key_code: u32, flags: u64, down: bool, basic: bool, select: Option<bool>| {
+            let hit = TapHit {
+                key_code,
+                down,
+                flags,
+            };
+            let decision = triage_consumed_hit(specs, key_code, flags, down, basic, select);
+            (decision, drain_received_hit(&hit, decision))
+        };
+    // Refused basic down: no escape (fullscreen/out-of-scope/stale facts
+    // and every other basic denial).
+    let (decision, event) = drain(&basic_specs, KEY_H, ctrl_flags, true, false, Some(false));
+    assert_eq!(decision, "consumed-refused-basic");
+    assert_eq!(event, None);
+    // Refused select down: no escape.
+    let (decision, event) = drain(&product_specs, digit2, ctrl_flags, true, true, Some(false));
+    assert_eq!(decision, "consumed-refused-select");
+    assert_eq!(event, None);
+    // Eligible basic down escapes with the exact edge/flags/code.
+    let (decision, event) = drain(&basic_specs, KEY_H, ctrl_flags, true, true, Some(false));
+    assert_eq!(decision, "dispatch");
+    assert_eq!(
+        event,
+        Some(RawKeyEvent {
+            kind: TapKeyKind::KeyDown,
+            flags: ctrl_flags,
+            key_code: KEY_H,
+        })
+    );
+    // Eligible select down escapes too.
+    let (decision, event) = drain(&product_specs, digit2, ctrl_flags, true, false, Some(true));
+    assert_eq!(decision, "dispatch");
+    assert_eq!(
+        event,
+        Some(RawKeyEvent {
+            kind: TapKeyKind::KeyDown,
+            flags: ctrl_flags,
+            key_code: digit2,
+        })
+    );
+    // Ineligible up escapes as KeyUp (hold release downstream).
+    let (decision, event) = drain(&basic_specs, KEY_H, ctrl_flags, false, false, Some(false));
+    assert_eq!(decision, "forward-up");
+    assert_eq!(
+        event,
+        Some(RawKeyEvent {
+            kind: TapKeyKind::KeyUp,
+            flags: ctrl_flags,
+            key_code: KEY_H,
+        })
+    );
+    // Unowned down escapes (never swallowed here; the input owner
+    // re-matches exactly and ignores it).
+    let (decision, event) = drain(&product_specs, 0x00, ctrl_flags, true, false, Some(false));
+    assert_eq!(decision, "forward-unowned");
+    assert!(event.is_some());
 }
 
 #[test]

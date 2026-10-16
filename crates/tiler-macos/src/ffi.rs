@@ -5243,9 +5243,10 @@ mod macos {
 
     /// One exact chord in a continuous tap source: tap tuning plus the key
     /// code forwarded on exact match. Plain data; the callback owns matching.
-    /// `select` marks armed workspace-select chords, which gate on the
-    /// select eligibility cache instead of the basic one (empty Spaces
-    /// intercept selects only; basic chords pass through there).
+    /// `select` marks armed workspace-select chords, which the owner triages
+    /// on the select eligibility cache instead of the basic one (empty
+    /// Spaces dispatch selects without a focused-window subject; basics
+    /// there consume yet refuse).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct TapChordSpec {
         pub want_flags: u64,
@@ -5343,23 +5344,12 @@ mod macos {
         /// narrowly. The tap `enable()` wrapper has no disable leg, so the
         /// gate lives here instead of in the port state.
         gated: AtomicBool,
-        /// Scoped input eligibility (lock-free cached, owner-published from
-        /// fresh scope/foreground/Space/showstate facts outside the
-        /// callback): while ineligible the callback Keeps/noForwards every
-        /// chord (no suppress, no forward, no count). `None` means the
-        /// legacy unrestricted path (fixture/tests); `Some` is the normal
-        /// scoped tile path (starts ineligible until attested).
-        scoped_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
-        /// Select-chord eligibility (lock-free cached, owner-published from
-        /// the no-focus select verdict outside the callback): a matched
-        /// select chord Keeps/noForwards while THIS cache reads ineligible,
-        /// even when the basic cache reads eligible, and intercepts while
-        /// eligible even when the basic cache does not (empty Spaces
-        /// intercept selects only; basic chords pass through there and can
-        /// never forward stale hidden focus). `None` falls back to the
-        /// basic cache (tables without select chords); both `None` is the
-        /// legacy unrestricted path. Set only by `create_scoped`.
-        select_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
+        /// Consume-first note: scoped input eligibility (scope, foreground,
+        /// Space, showstate) is deliberately NOT consulted here. The
+        /// callback always consumes owned exact chords while interception
+        /// is held; the input owner refuses consumed hits after suppression
+        /// (see `consumed_refusal`). Only the global `gated` release above
+        /// passes events untouched from inside the callback.
         /// Fixture-only one-shot callback stall (milliseconds, 0 = off):
         /// the first exact-match KeyDown after creation sleeps this long
         /// INSIDE the tap callback to provoke a REAL OS
@@ -5409,34 +5399,25 @@ mod macos {
             suppress_armed: bool,
             tx: &SyncSender<TapHit>,
         ) -> Result<Self, TapSetupError> {
-            Self::create_inner(chords, suppress_armed, tx, 0, None, None)
+            Self::create_inner(chords, suppress_armed, tx, 0)
         }
 
-        /// Scoped tile tap over `chords` with lock-free cached eligibility:
-        /// a matched basic chord Keeps/noForwards while `eligibility`
-        /// reads ineligible; a matched select chord gates on
-        /// `select_eligibility` instead (empty Spaces intercept selects
-        /// only). Either gate releases BEFORE suppression (no suppress, no
-        /// forward, no count). The owner publishes both caches from fresh
-        /// scope/foreground/Space/showstate facts outside the callback;
-        /// unknown/stale denies. Normal tile path (both start ineligible
-        /// until attested); the fixture uses explicit unrestricted test
-        /// gates instead.
+        /// Scoped tile tap over `chords`: consume-first — an owned exact
+        /// chord always consumes (suppresses when armed, forwards the hit
+        /// to the owner) while interception is held, regardless of scoped
+        /// eligibility. The input owner attests fresh scope/foreground/
+        /// Space/showstate facts outside the callback and refuses consumed
+        /// hits without effects (see `consumed_refusal`); unknown/stale
+        /// denies there. Only the global lock / Secure Input / unknown-
+        /// session release passes events untouched from inside the callback.
+        /// Normal tile path; the fixture uses explicit unrestricted test
+        /// gates at the owner instead.
         pub fn create_scoped(
             chords: &[TapChordSpec],
             suppress_armed: bool,
             tx: &SyncSender<TapHit>,
-            eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
-            select_eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
         ) -> Result<Self, TapSetupError> {
-            Self::create_inner(
-                chords,
-                suppress_armed,
-                tx,
-                0,
-                Some(eligibility),
-                Some(select_eligibility),
-            )
+            Self::create_inner(chords, suppress_armed, tx, 0)
         }
 
         /// Fixture-only tap with a one-shot callback stall: identical to
@@ -5457,7 +5438,7 @@ mod macos {
                     "stall_ms must be 1..=2000, got {stall_ms}"
                 )));
             }
-            Self::create_inner(chords, suppress_armed, tx, stall_ms, None, None)
+            Self::create_inner(chords, suppress_armed, tx, stall_ms)
         }
 
         fn create_inner(
@@ -5465,8 +5446,6 @@ mod macos {
             suppress_armed: bool,
             tx: &SyncSender<TapHit>,
             stall_once_ms: u64,
-            scoped_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
-            select_eligibility: Option<std::sync::Arc<crate::input_eligibility::EligibilityCache>>,
         ) -> Result<Self, TapSetupError> {
             use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
             use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
@@ -5511,8 +5490,6 @@ mod macos {
                 user_disables: AtomicU32::new(0),
                 unnotified: AtomicU32::new(0),
                 gated: AtomicBool::new(false),
-                scoped_eligibility,
-                select_eligibility,
                 stall_once_ms: AtomicU64::new(stall_once_ms),
             });
             let callback_shared = shared.clone();
@@ -5532,18 +5509,17 @@ mod macos {
                     if callback_shared.gated.load(Ordering::SeqCst) {
                         return CallbackResult::Keep;
                     }
-                    // Per-chord-category scoped gate (lock-free cached reads
-                    // only, no blocking work): the owner publishes the basic
-                    // and select verdicts to separate caches, and the
-                    // callback probes the match category first (pure — see
-                    // below) so each chord gates on exactly its own cache.
-                    // An ineligible hit Keeps/noForwards fully invisibly (no
-                    // suppress, no forward, no count, no pending writes),
-                    // exactly like the old pre-match gate; basic chords on
-                    // an empty Space therefore pass through to the app while
-                    // armed selects still intercept. Dropping
-                    // already-consumed hits would NOT restore passthrough;
-                    // this gate prevents the consume itself.
+                    // Consume-first (Windows parity): scoped eligibility is
+                    // NEVER consulted inside the callback. Owned exact chords
+                    // always consume (suppress when armed, forward the hit)
+                    // while interception is held; the input owner refuses
+                    // consumed hits after suppression without effects (see
+                    // `consumed_refusal`), so fullscreen/game foregrounds
+                    // consume-then-refuse instead of passing through
+                    // natively. Only the global `gated` release above passes
+                    // untouched. Dropping already-consumed hits would NOT
+                    // restore passthrough; the owner drops them before they
+                    // become actions instead.
                     // Disable notifications are control events, not chords:
                     // record them regardless of scoped eligibility (an
                     // ineligible interval must never swallow a disable the
@@ -5574,8 +5550,7 @@ mod macos {
                     // user chords follow the normal match path below. The
                     // bypass sits BEFORE the deliveries count and the
                     // per-chord pending/match loop, so own chords are
-                    // invisible in the counters (like the gated/ineligible
-                    // paths), never arm suppression, never forward to the
+                    // invisible in the counters (like the gated path), never arm suppression, never forward to the
                     // engine, and never trigger the fixture stall.
                     if crate::input_match::is_own_switch_chord(
                         event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
@@ -5585,53 +5560,10 @@ mod macos {
                     ) {
                         return CallbackResult::Keep;
                     }
-                    // Per-chord-category scoped gate AFTER the global gate
-                    // and the control-event early-outs but BEFORE suppression
-                    // (lock-free cached reads plus one pure probe, no
-                    // blocking work): probe the match category first — pure,
-                    // because `decide_tap_event`'s `matched` never depends on
-                    // pending bits, so the probe agrees with the loop below
-                    // — then gate on exactly that category's cache. An
-                    // ineligible hit Keeps fully invisibly (no suppress, no
-                    // forward, no count, no pending writes). Unmatched events
-                    // and eligible hits continue on today's path bit-for-bit.
-                    // `None` scoped cache is the legacy unrestricted path
-                    // (fixtures): no gate. A select hit with no select cache
-                    // falls back to the basic cache (tables without select
-                    // chords never take that leg).
-                    if callback_shared.scoped_eligibility.is_some() {
-                        let mut hit_select = None;
-                        for (tuning, _, select) in callback_shared.chords.iter() {
-                            let mut probe_pending = false;
-                            if decide_tap_event(
-                                tap_kind,
-                                flags,
-                                code,
-                                *tuning,
-                                callback_shared.suppress_armed,
-                                &mut probe_pending,
-                            )
-                            .matched
-                            {
-                                hit_select = Some(*select);
-                                break;
-                            }
-                        }
-                        if let Some(select) = hit_select {
-                            let basic = callback_shared
-                                .scoped_eligibility
-                                .as_ref()
-                                .is_some_and(|c| c.is_eligible());
-                            let select_ok = callback_shared
-                                .select_eligibility
-                                .as_ref()
-                                .map(|c| c.is_eligible());
-                            if !crate::input_match::tap_category_allowed(select, basic, select_ok)
-                            {
-                                return CallbackResult::Keep;
-                            }
-                        }
-                    }
+                    // No scoped gate here (consume-first): the match loop
+                    // below consumes owned chords regardless of scoped
+                    // eligibility; the owner refuses afterwards without
+                    // effects.
                     if matches!(tap_kind, TapKeyKind::KeyDown | TapKeyKind::KeyUp) {
                         callback_shared.deliveries.fetch_add(1, Ordering::SeqCst);
                     }
@@ -6599,8 +6531,6 @@ mod stub {
             _chords: &[TapChordSpec],
             _suppress_armed: bool,
             _tx: &SyncSender<TapHit>,
-            _eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
-            _select_eligibility: std::sync::Arc<crate::input_eligibility::EligibilityCache>,
         ) -> Result<Self, TapSetupError> {
             Err(TapSetupError::Denied("event tap is macOS-only".to_owned()))
         }

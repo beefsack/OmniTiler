@@ -1,12 +1,16 @@
 #![forbid(unsafe_code)]
 
-//! Scoped input eligibility: lock-free cached gate before suppression.
+//! Scoped input eligibility: lock-free cached gate after suppression
+//! (consume-first, Windows parity).
 //!
-//! Normal `tile --input tap` must not suppress 17 chords globally when the
+//! Normal `tile --input tap` must not ACT on 17 chords globally when the
 //! foreground is outside the bundle scope or fullscreen. The fix is
-//! eligibility BEFORE suppression, not merely dropping already-consumed
-//! hits: out-of-scope/fullscreen callbacks Keep/noForward (dropping hits
-//! does NOT restore passthrough).
+//! eligibility AFTER suppression, with refusal owner-side before anything
+//! becomes an action: owned chords always consume while interception is
+//! held (out-of-scope/fullscreen hits suppress and forward to the owner,
+//! which drops them without effects — dropping already-consumed hits does
+//! NOT restore passthrough, and that is exactly the point: nothing native
+//! receives them either).
 //!
 //! Ownership and isolation (no new threads, no new channels):
 //! - Each per-app AX owner publishes ONLY its own PID's candidate facts to
@@ -23,16 +27,20 @@
 //!   publishes the focused-window verdict to the basic
 //!   [`EligibilityCache`] and the no-focus select verdict
 //!   ([`select_attest_verdict`]) to a separate select cache.
-//! - The tap callback reads ONLY atomics plus the monotonic clock (no
-//!   `Mutex`, no allocation, no OS/AX/NS calls, no logging), probes each
-//!   event's chord category first, and Keeps/noForwards on exactly that
-//!   category's cache while ineligible — basic chords pass through
-//!   wherever only selects attest (empty Spaces), so a stale hidden focus
-//!   can never be forwarded from the tap.
-//! - The tap owner drops its old guard and installs a
-//!   FRESH guard on return to any-eligible (new epoch) to avoid a disabled
-//!   sticky cycle. A recorded hard creation denial still fails closed and
-//!   is never auto-overridden; transient disable notifications recover
+//! - The tap callback consumes every owned exact chord while interception
+//!   is held (suppress when armed, forward the hit) without consulting
+//!   either cache; the input owner triages each consumed hit owner-side on
+//!   exactly its chord category and drops ineligible hits without effects
+//!   (see `consumed_refusal`) — basic chords on an empty Space therefore
+//!   consume yet never dispatch, so a stale hidden focus can never actuate
+//!   from the tap.
+//! - The tap owner refreshes both caches every loop (cadence-throttled)
+//!   and, after a global-release interval only, drops its old guard and
+//!   installs a FRESH guard on return to held interception (new epoch) to
+//!   avoid a disabled sticky cycle. Scoped ineligibility never releases
+//!   the tap (ineligible foregrounds consume, then refuse per-hit). A
+//!   recorded hard creation denial still fails closed and is never
+//!   auto-overridden; transient disable notifications recover
 //!   (see [`crate::input_policy`]). Disable notifications are control
 //!   events: the callback records them regardless of scoped eligibility.
 //! - Scoped sources start ineligible until attested facts. The
@@ -441,9 +449,10 @@ pub fn attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
 /// hung app) must never wedge Space switching. Unsafe contexts still deny
 /// (locked/unknown session, Secure Input, lock screen, unreadable or
 /// disagreeing foreground, out-of-scope frontmost, or zero user currents —
-/// e.g. a fullscreen game current — release interception so those keys pass
-/// through untouched). Denials carry the same static tokens suffixed
-/// `-select` so basic vs select causation stays distinguishable.
+/// e.g. a fullscreen game current — consume-then-refuse owner-side, never
+/// dispatch; lock / Secure Input / unknown-session additionally release
+/// interception via the global gate). Denials carry the same static tokens
+/// suffixed `-select` so basic vs select causation stays distinguishable.
 pub fn select_attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     if !s.session_unlocked {
         return Err("session-not-unlocked-select".to_owned());
@@ -472,17 +481,19 @@ pub fn select_attest_verdict(s: &AttestSnapshot) -> Result<(), String> {
     Ok(())
 }
 /// Lock-free cached eligibility published by the input owner from fresh
-/// attests and read by the tap callback. Starts ineligible until attested.
+/// attests and read back owner-side after suppression (the tap callback
+/// never touches these; only the owner thread and tests read them).
+/// Starts ineligible until attested.
 /// `unrestricted_test_gate` (input-session fixture only) bypasses
 /// scope/Space/showstate for known post targets with a strict per-edge
 /// oracle; normal tile never sets it.
 ///
-/// Callback contract: [`is_eligible`] performs atomics plus one monotonic
-/// clock read only — no `Mutex`, no allocation, no OS/AX/NS calls, no
-/// logging. Publish ordering is deny-first / release-last: revoking stores
-/// `eligible=false` BEFORE the deadline/PID, while granting stores the PID
-/// and deadline BEFORE `eligible=true`, so the callback never observes a
-/// torn eligible PID/epoch.
+/// Owner-triage contract: [`is_eligible`] performs atomics plus one
+/// monotonic clock read only — no `Mutex`, no allocation, no OS/AX/NS
+/// calls, no logging. Publish ordering is deny-first / release-last:
+/// revoking stores `eligible=false` BEFORE the deadline/PID, while granting
+/// stores the PID and deadline BEFORE `eligible=true`, so triage never
+/// observes a torn eligible PID/epoch.
 #[derive(Debug)]
 pub struct EligibilityCache {
     eligible: AtomicBool,
@@ -558,7 +569,7 @@ impl EligibilityCache {
         }
     }
 
-    /// Callback read at the current clock: eligible AND unexpired. Atomics
+    /// Owner-triage read at the current clock: eligible AND unexpired. Atomics
     /// plus one monotonic clock read only. The unrestricted test gate
     /// bypasses the deadline (fixture posts are per-edge oracle-gated).
     #[must_use]
@@ -567,7 +578,7 @@ impl EligibilityCache {
     }
 
     /// Eligibility read at an explicit millisecond clock (fake-clock
-    /// testable, no sleeps; the callback uses [`is_eligible`]).
+    /// testable, no sleeps; owner triage uses [`is_eligible`]).
     #[must_use]
     pub fn is_eligible_at_ms(&self, now_ms: u64) -> bool {
         if self.unrestricted_test_gate {
@@ -944,8 +955,10 @@ mod select_attest_tests {
     fn select_denies_unsafe_contexts() {
         // Locked/unknown session, Secure Input, lock screen, unreadable or
         // disagreeing foreground, out-of-scope frontmost, and zero user
-        // currents (e.g. a fullscreen game current) all release
-        // interception so those keys pass through untouched.
+        // currents (e.g. a fullscreen game current) all deny the select
+        // verdict: the owner refuses those consumed hits without effects
+        // (lock / Secure Input / unknown-session additionally release
+        // interception via the global gate, so those keys pass untouched).
         for name in [
             "session",
             "secure",

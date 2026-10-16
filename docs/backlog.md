@@ -3573,7 +3573,14 @@ decisions of 2026-09-24 are under
      acceptance. Sends/stay/output/migration and trailing lifecycle remain
      disabled; active-empty classification and multi-display attribution stay
      open. [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
-  2. Input consume-first parity with Windows (user 2026-10-16, may change).
+   2. Input consume-first parity with Windows (user 2026-10-16, may change):
+      **implemented 2026-10-17** for basic and select-only workspace chords;
+      fullscreen/out-of-scope/stale eligibility now refuses after consumption.
+      Synthetic suppression/release and actual user-disable/re-enable regressions
+      pass; **physical acceptance pending** for TextEdit native non-delivery,
+      fullscreen refusal and empty-Space select/basic distinction.
+      [Evidence](changes/macos-consume-first-input.md) and
+      [bounded procedure](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
   3. Effects (KDE/Windows parity): active border, group underlay, drag/drop
      overlays.
   4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by

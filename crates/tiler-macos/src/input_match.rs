@@ -138,16 +138,18 @@ pub struct TapDecision {
     pub suppress: bool,
 }
 
-/// Pure per-category tap gate over already-read eligibility bits — the
-/// testable core of the tap callback's scoped gate. `select_hit` is the
-/// probe's match category (pure: `decide_tap_event`'s `matched` never
-/// depends on pending bits, so the probe agrees with the match loop);
-/// `basic_eligible` is the basic cache read; `select_eligible` is the
-/// select cache read (`None` falls back to the basic bit for tables
-/// without select chords). A select hit passes only on the select bit —
-/// basic chords on an empty Space therefore pass through to the app and
-/// can never forward stale hidden focus — while a basic hit passes only
-/// on the basic bit. Unmatched events are decided downstream, never here.
+/// Pure per-category eligibility matrix over already-read eligibility bits.
+/// Under consume-first the tap callback never consults this (it always
+/// consumes owned exact chords while interception is held); the input owner
+/// applies it AFTER suppression via [`consumed_refusal`], so each consumed
+/// hit dispatches only on its own category and otherwise refuses without
+/// effects. `select_hit` is the hit's match category; `basic_eligible` is
+/// the basic cache read; `select_eligible` is the select cache read (`None`
+/// falls back to the basic bit for tables without select chords). A select
+/// hit passes only on the select bit — basic chords on an empty Space are
+/// therefore consumed yet refused (never dispatched, never stale hidden
+/// focus) — while a basic hit passes only on the basic bit. Unmatched
+/// events are decided downstream, never here.
 #[must_use]
 pub const fn tap_category_allowed(
     select_hit: bool,
@@ -161,6 +163,34 @@ pub const fn tap_category_allowed(
         }
     } else {
         basic_eligible
+    }
+}
+
+/// Consume-first owner refusal over already-read eligibility bits — the
+/// testable core of the owner-side gate AFTER suppression. The tap callback
+/// always consumes (suppresses + forwards) owned exact chords while
+/// interception is held, regardless of scoped eligibility; the input owner
+/// then drops the hit here without effects when its own category reads
+/// ineligible. `select_hit` is the hit's match category (from the armed
+/// spec table); `basic_eligible` is the basic cache read; `select_eligible`
+/// is the select cache read (`None` falls back to the basic bit for tables
+/// without select chords). Returns `None` when the hit dispatches, else the
+/// static refusal token for bounded logging (category only — never keys,
+/// flags, or content). Exactly the complement of [`tap_category_allowed`]:
+/// every allowed hit dispatches, every disallowed hit refuses after
+/// consumption.
+#[must_use]
+pub const fn consumed_refusal(
+    select_hit: bool,
+    basic_eligible: bool,
+    select_eligible: Option<bool>,
+) -> Option<&'static str> {
+    if tap_category_allowed(select_hit, basic_eligible, select_eligible) {
+        None
+    } else if select_hit {
+        Some("consumed-refused-select")
+    } else {
+        Some("consumed-refused-basic")
     }
 }
 
@@ -662,6 +692,57 @@ mod category_gate_tests {
     }
 
     #[test]
+    fn consumed_refusal_is_the_complement_of_allowed() {
+        // Consume-first: every disallowed hit consumes, then refuses here
+        // with a category-only token; every allowed hit dispatches (`None`).
+        // Basic ineligible (fullscreen/out-of-scope/stale facts, zero user
+        // currents, focus/Space mismatch) refuses as basic; select
+        // ineligible refuses as select; eligible dispatches unchanged.
+        assert_eq!(
+            consumed_refusal(false, false, Some(true)),
+            Some("consumed-refused-basic")
+        );
+        assert_eq!(
+            consumed_refusal(false, false, Some(false)),
+            Some("consumed-refused-basic")
+        );
+        assert_eq!(
+            consumed_refusal(false, false, None),
+            Some("consumed-refused-basic")
+        );
+        assert_eq!(consumed_refusal(false, true, Some(true)), None);
+        assert_eq!(consumed_refusal(false, true, Some(false)), None);
+        assert_eq!(consumed_refusal(false, true, None), None);
+        assert_eq!(consumed_refusal(true, false, Some(true)), None);
+        assert_eq!(consumed_refusal(true, true, Some(true)), None);
+        assert_eq!(
+            consumed_refusal(true, true, Some(false)),
+            Some("consumed-refused-select")
+        );
+        assert_eq!(
+            consumed_refusal(true, false, Some(false)),
+            Some("consumed-refused-select")
+        );
+        assert_eq!(consumed_refusal(true, true, None), None);
+        assert_eq!(
+            consumed_refusal(true, false, None),
+            Some("consumed-refused-select")
+        );
+        // Exhaustive complement check against the allow matrix.
+        for select_hit in [false, true] {
+            for basic in [false, true] {
+                for select in [None, Some(false), Some(true)] {
+                    assert_eq!(
+                        consumed_refusal(select_hit, basic, select).is_none(),
+                        tap_category_allowed(select_hit, basic, select),
+                        "refusal must complement allow: select_hit={select_hit} basic={basic} select={select:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn category_gate_matrix() {
         // Basic hits pass only on the basic bit (an empty Space passes
         // them through to the app — never forwarded, never stale hidden
@@ -679,5 +760,61 @@ mod category_gate_tests {
         assert!(!tap_category_allowed(true, false, Some(false)));
         assert!(tap_category_allowed(true, true, None));
         assert!(!tap_category_allowed(true, false, None));
+    }
+
+    #[test]
+    fn callback_match_consumes_without_eligibility_input() {
+        // The consume-first routing proof at the match layer: the callback
+        // decision takes no eligibility bits at all — an owned exact chord
+        // consumes (matched + suppressed when armed) for both a basic and a
+        // select shape, while unowned chords and own tagged switch chords
+        // pass. Eligibility only moves the hit owner-side afterwards (see
+        // `consumed_refusal_is_the_complement_of_allowed`).
+        let basic = TapTuning {
+            want_flags: SWITCH_CTRL_BIT,
+            flags_mask: SWITCH_FLAGS_MASK,
+            want_code: 0x04,
+        };
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            0x04,
+            0,
+            basic,
+            true,
+            &mut pending,
+        );
+        assert!(d.matched && d.suppress && pending);
+        // Select shape (Desktop-N digit): untagged user chord consumes too.
+        let digit = i64::from(crate::desktop_shortcuts::desktop_digit_keycode(2).unwrap());
+        let digit_tuning = TapTuning {
+            want_flags: SWITCH_CTRL_BIT,
+            flags_mask: SWITCH_FLAGS_MASK,
+            want_code: digit,
+        };
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            digit,
+            0,
+            digit_tuning,
+            true,
+            &mut pending,
+        );
+        assert!(d.matched && d.suppress && pending);
+        // Unowned chord passes with no match, no suppress, no pending.
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            0x05,
+            0,
+            basic,
+            true,
+            &mut pending,
+        );
+        assert!(!d.matched && !d.suppress && !pending);
     }
 }

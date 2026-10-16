@@ -42,14 +42,20 @@
 //! tap is the sole input route; off parks. No raw input is logged anywhere
 //! (counters only).
 //!
-//! Scoped eligibility (see [`crate::input_eligibility`]) gates BEFORE
-//! suppression: the owner attests fresh scope/foreground/Space/
-//! showstate facts outside the callback and publishes to a lock-free cache;
-//! the tap callback Keeps/noForwards while ineligible and the tap owner
-//! recreates its guard on return to eligible to avoid a user-disabled sticky
-//! cycle. Scoped sources start ineligible until attested; the
-//! `input-session` fixture uses an explicit unrestricted test gate for its
-//! known post targets (strict per-edge oracle still enforced).
+//! Scoped eligibility (see [`crate::input_eligibility`]) gates AFTER
+//! suppression (consume-first, Windows parity): the owner attests fresh
+//! scope/foreground/Space/showstate facts outside the callback and publishes
+//! to lock-free caches; the tap callback always consumes owned exact chords
+//! while interception is held, and the input owner refuses each consumed hit
+//! owner-side without effects while its own category reads ineligible.
+//! Fullscreen/game foregrounds consume-then-refuse instead of passing
+//! through natively. Only the global lock / Secure Input / unknown-session
+//! release passes events untouched from inside the callback. The tap owner
+//! recreates its guard on return from a global release to avoid a
+//! user-disabled sticky cycle. Scoped sources start ineligible until attested
+//! (hits refuse until then); the `input-session` fixture uses an explicit
+//! unrestricted test gate for its known post targets (strict per-edge oracle
+//! still enforced).
 
 use std::sync::{
     Arc, Mutex,
@@ -271,10 +277,10 @@ fn creation_gate() -> Result<(), String> {
 /// the callback and publish each to its own cache: the focused-window
 /// verdict to `basic_cache` (basic chords) and the no-focus select verdict
 /// to `select_cache` (armed select chords on empty Spaces). Returns true
-/// when EITHER attests (the owner parks the tap only while neither does);
-/// the tap callback still gates every chord on exactly its own category,
-/// so basic chords pass through wherever only selects attest. Unsafe
-/// contexts deny both and release all interception.
+/// when EITHER attests; the caller never parks on false — ineligible
+/// foregrounds consume, and each consumed hit refuses owner-side
+/// (`consumed_refusal`) without effects. Unsafe contexts deny both. No AX,
+/// no SLS, no logging anywhere on this path.
 pub fn attest_tile_eligibility(
     scope: &TileScope,
     basic_cache: &EligibilityCache,
@@ -385,10 +391,12 @@ fn attest_live(
 /// enabled readback that disagrees with a Held pump turn) is a logged
 /// recoverable state — the same tap re-enables when it verifies, otherwise
 /// a fresh tap installs over the same chords — and only a hard creation
-/// denial refuses. Scoped eligibility gates BEFORE suppression per chord
-/// category (basic chords on the basic cache, armed selects on the select
-/// cache; an ineligible hit Keeps/noForwards); the owner recreates its
-/// guard on return to any-eligible to avoid a user-disabled sticky cycle.
+/// denial refuses. Scoped eligibility gates AFTER suppression per chord
+/// category (consume-first: owned chords always consume while held; the
+/// owner refuses each consumed hit without effects while its own category
+/// cache reads ineligible — basic and select alike); the owner recreates
+/// its guard on return from a global release to avoid a user-disabled
+/// sticky cycle.
 pub struct TapTileFactory {
     modifier: ProbeModifier,
     bindings: Vec<TileBinding>,
@@ -639,14 +647,7 @@ impl InputSourceFactory for TapTileFactory {
             TapSource::create_stall_once(&specs, true, &tx, self.stall_once_ms)
                 .map_err(|e| e.to_string())?
         } else {
-            TapSource::create_scoped(
-                &specs,
-                true,
-                &tx,
-                Arc::clone(&self.eligibility),
-                Arc::clone(&self.eligibility_select),
-            )
-            .map_err(|e| e.to_string())?
+            TapSource::create_scoped(&specs, true, &tx).map_err(|e| e.to_string())?
         };
         Ok(Box::new(TapTileSource {
             tap,
@@ -675,6 +676,8 @@ impl InputSourceFactory for TapTileFactory {
             facts: self.facts.clone(),
             last_attest: None,
             was_ineligible: false,
+            consumed_refused_basic: 0,
+            consumed_refused_select: 0,
         }))
     }
 
@@ -709,12 +712,97 @@ struct TapTileSource {
     eligibility_select: Arc<EligibilityCache>,
     facts: Option<Arc<EligibilityFactsStore>>,
     last_attest: Option<Instant>,
-    /// True while the last attest read NEITHER category eligible
-    /// (interception released via callback Keep). On return to any-eligible
-    /// the owner drops the old guard and installs a FRESH scoped source on
-    /// this same thread (new epoch) to avoid a disabled sticky cycle; a
-    /// recorded hard refusal is never masked and fails closed instead.
+    /// True while the last loop observed the global release gate (lock
+    /// screen, Secure Input, unknown session) with interception released.
+    /// On return to the ordinary unlocked state the owner drops the old
+    /// guard and installs a FRESH scoped source on this same thread (new
+    /// epoch) to avoid a disabled sticky cycle; a recorded hard refusal
+    /// still fails closed and is never auto-overridden. Scoped
+    /// ineligibility never sets this: ineligible foregrounds consume, and
+    /// each consumed hit refuses owner-side below without effects.
     was_ineligible: bool,
+    /// Consumed-then-refused KeyDown hits per category (owner-side, after
+    /// suppression): bounded evidence that ineligible foregrounds consume
+    /// without effects. Rate-limited logging in `note_consumed_refusal`
+    /// (static tokens and counts only — never keys, flags, or content).
+    consumed_refused_basic: u64,
+    consumed_refused_select: u64,
+}
+
+/// Match one consumed hit back to its armed spec category (pure, no OS
+/// touch): `Some(select)` for an exact-chord hit, `None` for an event the
+/// callback should never have forwarded (drift: the caller forwards, never
+/// drops — the input owner re-matches exactly and ignores it, so an
+/// unowned key can never be swallowed here). Key code plus exact masked
+/// flags identify the chord, mirroring the callback's match loop (spec
+/// `want_code` equals the spec key code by construction).
+#[must_use]
+pub(crate) fn consumed_hit_category(
+    specs: &[crate::ffi::TapChordSpec],
+    key_code: u32,
+    flags: u64,
+) -> Option<bool> {
+    specs.iter().find_map(|spec| {
+        if spec.key_code == key_code && (flags & spec.flags_mask) == spec.want_flags {
+            Some(spec.select)
+        } else {
+            None
+        }
+    })
+}
+
+/// Pure drain decision for one consumed hit (no OS touch): exactly what
+/// `TapTileSource::next` applies after the pump. KeyUp hits always forward
+/// (they release held presses downstream — dropping them would wedge the
+/// orientation hold); unowned events forward, never drop (the input owner
+/// re-matches exactly and ignores them, so nothing unowned is swallowed
+/// here); KeyDown hits dispatch or refuse per category
+/// (`consumed-refused-basic` / `consumed-refused-select`). Returns the
+/// static outcome token; `dispatch` (plus both forwards) means the hit
+/// becomes a `RawKeyEvent`. Tokens only, never content.
+#[must_use]
+pub(crate) fn triage_consumed_hit(
+    specs: &[crate::ffi::TapChordSpec],
+    key_code: u32,
+    flags: u64,
+    down: bool,
+    basic_eligible: bool,
+    select_eligible: Option<bool>,
+) -> &'static str {
+    if !down {
+        return "forward-up";
+    }
+    let Some(select) = consumed_hit_category(specs, key_code, flags) else {
+        return "forward-unowned";
+    };
+    crate::input_match::consumed_refusal(select, basic_eligible, select_eligible)
+        .unwrap_or("dispatch")
+}
+
+/// Pure channel-drain mapping for one received hit (no OS touch, no
+/// logging): the exact continue-vs-return `TapTileSource::next` applies
+/// after triage. Refused tokens drop (`None`: the caller counts the refusal
+/// and keeps pumping), while `dispatch`, `forward-up`, and `forward-unowned`
+/// become the `RawKeyEvent` the input owner re-matches exactly downstream —
+/// so a refused channel input can never escape as an action, and eligible
+/// downs plus all ups always do.
+#[must_use]
+pub(crate) fn drain_received_hit(
+    hit: &crate::ffi::TapHit,
+    decision: &'static str,
+) -> Option<RawKeyEvent> {
+    match decision {
+        "dispatch" | "forward-up" | "forward-unowned" => Some(RawKeyEvent {
+            kind: if hit.down {
+                TapKeyKind::KeyDown
+            } else {
+                TapKeyKind::KeyUp
+            },
+            flags: hit.flags,
+            key_code: hit.key_code,
+        }),
+        _ => None,
+    }
 }
 
 /// Pure cumulative tap report: fold one retired guard's final snapshot into
@@ -775,11 +863,46 @@ impl TapTileSource {
             .unwrap_or_else(|poison| poison.into_inner()) = Some(reason);
     }
 
+    /// Owner-side triage for one consumed hit (owner thread only, never the
+    /// callback): fresh per-category cache bits through the pure
+    /// [`triage_consumed_hit`]. Only `dispatch`, `forward-up`, and
+    /// `forward-unowned` become `RawKeyEvent`s; both refusal tokens drop
+    /// without effects (counted in [`Self::note_consumed_refusal`]).
+    fn triage_drain_decision(&self, hit: &TapHit) -> &'static str {
+        triage_consumed_hit(
+            &self.specs,
+            hit.key_code,
+            hit.flags,
+            hit.down,
+            self.eligibility.is_eligible(),
+            Some(self.eligibility_select.is_eligible()),
+        )
+    }
+
+    /// Count one consumed-then-refused KeyDown hit with bounded logging:
+    /// the first sighting plus every 50th per category. Static tokens and
+    /// counts only — never keys, flags, bundles, or content.
+    fn note_consumed_refusal(&mut self, reason: &'static str) {
+        let count = if reason == "consumed-refused-select" {
+            self.consumed_refused_select += 1;
+            self.consumed_refused_select
+        } else {
+            self.consumed_refused_basic += 1;
+            self.consumed_refused_basic
+        };
+        if count == 1 || count % 50 == 0 {
+            eprintln!(
+                "tiler-macos tile-tap: {reason} (consumed-refused-basic={} consumed-refused-select={})",
+                self.consumed_refused_basic, self.consumed_refused_select,
+            );
+        }
+    }
+
     /// Swap in a freshly installed guard on this same owner thread: fold the
     /// retired guard's final snapshot into the cumulative counters FIRST
     /// (terminal evidence survives the recreation with kinds intact), then
     /// replace the guard and channel, bump the eligibility epoch, and
-    /// republish. Shared by every fresh-guard install (scope return,
+    /// republish. Shared by every fresh-guard install (gate return,
     /// timeout recovery, explicit re-arm) so no path resets the counters.
     fn swap_fresh_guard(&mut self, new_tap: TapSource, rx: mpsc::Receiver<TapHit>) {
         // Bounded overlap: the fresh guard installs before the old guard
@@ -809,13 +932,7 @@ impl TapTileSource {
             return Ok(false);
         }
         let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
-        let new_tap = match TapSource::create_scoped(
-            &self.specs,
-            true,
-            &tx,
-            Arc::clone(&self.eligibility),
-            Arc::clone(&self.eligibility_select),
-        ) {
+        let new_tap = match TapSource::create_scoped(&self.specs, true, &tx) {
             Ok(tap) => tap,
             Err(reason) => {
                 let cause = format!("explicit re-arm refused: {reason}");
@@ -830,20 +947,14 @@ impl TapTileSource {
     }
 
     /// Install a FRESH scoped source on this same owner thread (same chords,
-    /// same placement, same eligibility caches), dropping the old guard
-    /// WITHOUT a same-tap re-enable. A recreation refusal (for example
-    /// revoked Accessibility consent) returns `Err` — never masked, never a
-    /// fake callback. Shared by scope-return and disable recovery; callers
-    /// add their own refusal context.
+    /// same placement), dropping the old guard WITHOUT a same-tap re-enable.
+    /// A recreation refusal (for example revoked Accessibility consent)
+    /// returns `Err` — never masked, never a fake callback. Shared by
+    /// gate-return and disable recovery; callers add their own refusal
+    /// context.
     fn install_fresh_scoped(&mut self) -> Result<(), crate::ffi::TapSetupError> {
         let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
-        let new_tap = TapSource::create_scoped(
-            &self.specs,
-            true,
-            &tx,
-            Arc::clone(&self.eligibility),
-            Arc::clone(&self.eligibility_select),
-        )?;
+        let new_tap = TapSource::create_scoped(&self.specs, true, &tx)?;
         self.swap_fresh_guard(new_tap, rx);
         Ok(())
     }
@@ -886,15 +997,17 @@ impl TapTileSource {
         Ok(())
     }
 
-    /// Scoped return-to-eligible fresh guard (owner thread only): after an
-    /// out-of-scope/fullscreen/wrong-Space interval the old guard drops
-    /// WITHOUT a same-tap re-enable and a FRESH scoped source installs on
-    /// this same thread (same chords, same placement, same eligibility
-    /// cache), with the eligibility epoch bumped. A recorded hard refusal
-    /// (for example a denied recreation) is never masked: when a refusal is
-    /// already recorded this returns `Err` and the run fails closed instead
-    /// of auto-overriding it.
-    fn recreate_on_scope_return(&mut self) -> Result<(), String> {
+    /// Fresh guard after a global-release interval (owner thread only):
+    /// after a lock / Secure Input / unknown-session interval the old guard
+    /// drops WITHOUT a same-tap re-enable and a FRESH scoped source
+    /// installs on this same thread (same chords, same placement, same
+    /// eligibility caches), with the eligibility epoch bumped. A recorded
+    /// hard refusal (for example a denied recreation) is never masked: when
+    /// a refusal is already recorded this returns `Err` and the run fails
+    /// closed instead of auto-overriding it. Scoped ineligibility never
+    /// reaches this path (ineligible foregrounds consume, then refuse
+    /// per-hit without effects).
+    fn recreate_on_return_to_held(&mut self) -> Result<(), String> {
         if self
             .refusal
             .lock()
@@ -977,36 +1090,27 @@ impl InputSource for TapTileSource {
                 self.was_ineligible = true;
                 continue;
             }
-            // Scoped eligibility BEFORE suppression (cheap live reads plus a
-            // plain store snapshot; unknown/stale denies): chords whose own
-            // category cache reads ineligible Keep/noForward via the cached
-            // atomics (no suppress, no forward) — basic chords pass through
-            // wherever only selects attest, so an empty Space navigates
-            // without ever forwarding a stale hidden focus. The owner parks
-            // released here while NEITHER category attests; on return to
-            // any-eligible it drops the old guard and installs a FRESH
-            // scoped source (new epoch) to avoid a disabled sticky cycle.
-            // A recorded hard refusal still fails closed and is never
-            // auto-overridden. No AX runs on this thread: per-app facts
-            // arrive via the shared store from each AX owner's already-read
-            // snapshots.
-            if !attest_tile_eligibility(
+            // Scoped eligibility AFTER suppression (consume-first): refresh
+            // both caches from cheap live reads plus a plain store snapshot
+            // (cadence-throttled; unknown/stale denies) but never park or
+            // release here — ineligible foregrounds (out-of-scope,
+            // fullscreen/game, wrong Space, stale/unknown facts, zero user
+            // currents, focus mismatches) consume, and each consumed hit
+            // refuses owner-side below without effects. Only the global
+            // gate above releases interception. No AX runs on this thread:
+            // per-app facts arrive via the shared store from each AX
+            // owner's already-read snapshots.
+            attest_tile_eligibility(
                 &self.scope,
                 &self.eligibility,
                 &self.eligibility_select,
                 self.facts.as_ref(),
                 false,
                 &mut self.last_attest,
-            ) {
-                self.tap.set_enabled(false);
-                std::thread::park_timeout(std::time::Duration::from_millis(50));
-                self.gated_ms.fetch_add(50, Ordering::SeqCst);
-                self.was_ineligible = true;
-                continue;
-            }
+            );
             if self.was_ineligible {
                 self.was_ineligible = false;
-                if let Err(reason) = self.recreate_on_scope_return() {
+                if let Err(reason) = self.recreate_on_return_to_held() {
                     let _ = reason;
                     return None;
                 }
@@ -1096,13 +1200,15 @@ impl InputSource for TapTileSource {
                     // Logged recoverable state, never terminal by name
                     // alone: the notification name never proves consent
                     // revocation (the surveyed skhd tap-disabled restart
-                    // re-enables both kinds). The lock / Secure Input /
-                    // eligibility gates still release interception while
-                    // blocked — while gated the owner parks released and
+                    // re-enables both kinds). Recovery is
+                    // category-independent: the same tap re-enables with a
+                    // readback regardless of scoped eligibility (consumed
+                    // hits refuse per-hit without effects, so re-enabling
+                    // into an ineligible foreground is harmless), while the
+                    // lock / Secure Input gates still release interception —
+                    // while globally gated the owner parks released and
                     // retries later, so recovery never overrides trust or
-                    // privacy gates. When eligible the same tap re-enables
-                    // with a readback, else a fresh tap installs over the
-                    // same chords; only a hard creation denial refuses.
+                    // privacy gates. Only a hard creation denial refuses.
                     match disable_action(DisableKind::UserInput) {
                         DisableAction::ReenableSameTap => {}
                         DisableAction::RecreateFresh | DisableAction::RefuseUserDisabled => {
@@ -1113,20 +1219,6 @@ impl InputSource for TapTileSource {
                         self.tap.set_enabled(false);
                         std::thread::park_timeout(std::time::Duration::from_millis(50));
                         self.gated_ms.fetch_add(50, Ordering::SeqCst);
-                        continue;
-                    }
-                    if !attest_tile_eligibility(
-                        &self.scope,
-                        &self.eligibility,
-                        &self.eligibility_select,
-                        self.facts.as_ref(),
-                        false,
-                        &mut self.last_attest,
-                    ) {
-                        self.tap.set_enabled(false);
-                        std::thread::park_timeout(std::time::Duration::from_millis(50));
-                        self.gated_ms.fetch_add(50, Ordering::SeqCst);
-                        self.was_ineligible = true;
                         continue;
                     }
                     if let Err(reason) = self.recover_disabled("user-input", false) {
@@ -1151,15 +1243,21 @@ impl InputSource for TapTileSource {
             }
             match self.rx.try_recv() {
                 Ok(hit) => {
-                    return Some(RawKeyEvent {
-                        kind: if hit.down {
-                            TapKeyKind::KeyDown
-                        } else {
-                            TapKeyKind::KeyUp
-                        },
-                        flags: hit.flags,
-                        key_code: hit.key_code,
-                    });
+                    // Consume-first owner refusal: a consumed hit triages on
+                    // the fresh per-category caches and only `dispatch`,
+                    // `forward-up`, and `forward-unowned` become actions —
+                    // refused hits (fullscreen/game, out-of-scope,
+                    // stale/unknown facts, zero user currents, focus/Space
+                    // mismatch, basic and select alike) drop here without
+                    // effects (see `drain_received_hit`).
+                    let decision = self.triage_drain_decision(&hit);
+                    match drain_received_hit(&hit, decision) {
+                        Some(event) => return Some(event),
+                        None => {
+                            self.note_consumed_refusal(decision);
+                            continue;
+                        }
+                    }
                 }
                 Err(_) => {
                     // No hit this slice: pump again (the pump bound caps
