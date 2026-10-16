@@ -785,3 +785,52 @@ fn frame_mismatch_names_differing_fields() {
     c.h = 321.0;
     assert!(ax_frame_mismatch(a, c).unwrap().contains('h'));
 }
+
+#[test]
+fn occluder_detail_names_ids_and_geometry_without_exempting() {
+    let owned = CgWindow {
+        wid: 7,
+        pid: 4242,
+        layer: 0,
+        onscreen: true,
+        bounds: CgBounds {
+            x: 200.0,
+            y: 200.0,
+            w: 480.0,
+            h: 320.0,
+        },
+        title: None,
+    };
+    let point = (440.0, 208.0);
+    // Above-normal chrome names its WID/PID/layer/bounds, still refuses.
+    let chrome = basic(3, 100, 25, 400.0, 190.0, 300.0, 60.0);
+    let detail = occluder_detail(point, &owned, &[chrome], &[]).unwrap();
+    assert!(detail.contains("WID3/PID100"));
+    assert!(detail.contains("above-normal"));
+    assert!(
+        hit_test_grab(point, &owned, &[chrome], &[])
+            .unwrap_err()
+            .contains("WID3/PID100")
+    );
+    // Same-layer foreign window names its IDs, still refuses.
+    let flat = basic(8, 77, 0, 400.0, 190.0, 300.0, 60.0);
+    let detail = occluder_detail(point, &owned, &[flat], &[]).unwrap();
+    assert!(detail.contains("WID8/PID77"));
+    assert!(detail.contains("same-layer"));
+    assert!(
+        hit_test_grab(point, &owned, &[flat], &[])
+            .unwrap_err()
+            .contains("WID8/PID77")
+    );
+    // Ghostty names its IDs, still refuses.
+    let detail =
+        occluder_detail(point, &owned, &[], &[ghostty(400.0, 200.0, 300.0, 200.0)]).unwrap();
+    assert!(detail.contains("Ghostty"));
+    assert!(
+        hit_test_grab(point, &owned, &[], &[ghostty(400.0, 200.0, 300.0, 200.0)])
+            .unwrap_err()
+            .contains("Ghostty")
+    );
+    // Clear point: no occluder, passes.
+    assert!(occluder_detail(point, &owned, &[], &[ghostty(0.0, 0.0, 10.0, 10.0)]).is_none());
+}

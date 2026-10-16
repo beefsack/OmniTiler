@@ -308,7 +308,9 @@ mod live_impl {
 
     /// One independent-recovery leg: MC goto the goal current, public
     /// self-join through the held Child, exact membership poll. Any
-    /// shortfall refuses before any synthetic post.
+    /// shortfall refuses before any synthetic post. A goto close shortfall
+    /// is recorded (never swallowed): Mission Control left open would
+    /// overlay the later synthetic legs.
     #[allow(clippy::too_many_arguments)]
     fn recover_leg(
         from: &TopologySnapshot,
@@ -323,13 +325,18 @@ mod live_impl {
         join_leg: &'static str,
         budget: &mut ActionBudget,
         latencies: &mut Vec<LegLatency>,
+        notes: &mut Vec<String>,
     ) -> Result<TopologySnapshot, McError> {
         let t = std::time::Instant::now();
-        let (snap, _) = crate::mc_lifecycle::goto_sid_verified(from, display, goal, budget, false)?;
+        let (snap, close) =
+            crate::mc_lifecycle::goto_sid_verified(from, display, goal, budget, false)?;
         latencies.push(LegLatency {
             leg: goto_leg.to_owned(),
             ms: t.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         });
+        if let Some(c) = close {
+            notes.push(format!("{goto_leg} MC close shortfall: {c}"));
+        }
         let t = std::time::Instant::now();
         crate::space_recovery::run_join_leg_held(child, pid, nonce, helper_path, wid)?;
         latencies.push(LegLatency {
@@ -816,6 +823,7 @@ mod live_impl {
             "recover-join-temp",
             &mut budget,
             &mut latencies,
+            &mut notes,
         ) {
             Ok(s) => s,
             Err(e) => fail_child!("recover-temp", e),
@@ -833,6 +841,7 @@ mod live_impl {
             "recover-join-original",
             &mut budget,
             &mut latencies,
+            &mut notes,
         ) {
             Ok(s) => s,
             Err(e) => fail_child!("recover-original", e),
@@ -1079,9 +1088,17 @@ mod live_impl {
         // companion stays up through the last mutation (temp removal) and
         // stops after it.
         crate::mc_lifecycle::safe_close_mc(&mut notes);
-        let frame_after = crate::ax::read_window_owned(&owned, pid, wid)
-            .ok()
+        // Re-authorize as in per-leg setup: LaunchServices may publish the
+        // helper's bundle identity after spawn, invalidating the early
+        // snapshot. A refused fresh authorization remains unknown, never equal.
+        let fresh_owned = crate::ax::authorize_owned_action(pid, &nonce).ok();
+        let frame_after = fresh_owned
+            .as_ref()
+            .and_then(|o| crate::ax::read_window_owned(o, pid, wid).ok())
             .and_then(|r| r.ax_frame);
+        if fresh_owned.is_none() {
+            notes.push("helper final frame authorize refused; unknown, never equal".to_owned());
+        }
         let frame_exact = frame_after.is_some_and(|f| f == baseline_frame);
         match frame_after {
             None => notes.push("helper frame exact across run: false (final AX frame unreadable; unknown, never equal)".to_owned()),

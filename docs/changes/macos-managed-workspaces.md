@@ -294,3 +294,80 @@ Native switch behavior itself is not proven by these settings readbacks.
 The requested final real-app select/send-follow/send-stay/Ctrl+Cmd/jank procedure
 cannot truthfully be supplied until those product commands work. Backlog item 1
 remains active rather than awaiting final physical acceptance.
+
+## Native settings and occlusion diagnosis checkpoint (2026-10-16)
+
+**Incomplete: synthetic transfer remains unproven; workspace actions stay
+unarmed.** This checkpoint establishes session-effective Desktop-N ownership,
+not managed-workspace completion or physical shortcut acceptance.
+
+### Accepted evidence
+
+- Five fresh signed LaunchServices invocations performed status, Apply for two
+  Desktop-N holders, status, Revert and status. Both holders changed from disabled
+  to enabled with unchanged chords and successful SPI readback. The intervening
+  fresh process independently corroborated both enabled Ctrl+digit chords.
+- Revert restored both observed preimages, reported no failures or external
+  edits, and removed the preimage JSON. Final status matched the original
+  effective state. The symbolic-hotkey preferences were unchanged after Apply
+  and Revert: this proves persistence across processes in the same login session,
+  **not logout/reboot persistence or native chord delivery**. The empty lock file
+  remains intentionally; no recovery preimage remains.
+- The settings artifact SHA-256 was
+  `26ffc2521deb6f3600a451a6c93298241339271621217ba889a813afb770294e`.
+  The persistent probe/helper bundle IDs and designated requirements were
+  verified; every leg observed an unlocked session and reaped its bounded
+  display-sleep companion by exact PID.
+
+### Transfer invariant and failed hypotheses
+
+- The fixed helper spawn overlapped an ordinary terminal window. Moving only the
+  helper through alternative desktop positions did not produce an eligible grab:
+  an onscreen, display-spanning layer-20 Dock surface covered every candidate in
+  the conservative CG rectangle test. No foreign window was moved or exempted.
+- Explicit Mission Control closure followed by a bounded ten-second observation
+  did not resolve that condition: Mission Control AX reported absent while the
+  same Dock surface remained. Thus neither spatial arrangement nor waiting for a
+  presumed Mission Control tail solved the fixture. No further drag attempts
+  followed; **all three diagnostic runs made zero synthetic posts**.
+- A separate causal fixture fault was identified: LaunchServices can publish the
+  bundled helper identity after spawn, invalidating the early authorization
+  snapshot. Final frame observation now re-authorizes just like per-leg setup;
+  refusal still reports unknown, never frame equality. The corrected final-frame
+  path has not reached live acceptance because the synthetic legs remain blocked.
+- Retained source changes are limited to occluder IDs/layer/geometry in refusals,
+  reporting Mission Control close shortfalls and fresh final-frame authorization.
+  The unsuccessful arrangement search and overlay-wait heuristics are **not**
+  retained. Occlusion, exact ownership and input-release guards are unchanged.
+- The last transfer diagnostic artifact SHA-256 was
+  `303b3f4964af96c4bcb315873dc1a5b40a7e55dfe1b98a382e4ddbc068870cce`;
+  it includes those subsequently removed diagnostic heuristics. Its failure report
+  names the exact temporary SID; separate narrow recovery reports verify removal
+  after each run. Final readback shows the original single-Space layout/current,
+  Mission Control absent, unchanged protected-window frames/membership and full
+  foreground agreement. Helpers exited/reaped with records removed, and no probe
+  or display-sleep companions remain. No Ghostty input or window mutation occurred.
+
+### Verification and next discriminator
+
+- Final retained tree: **637 tests** (508 library plus eight integration suites),
+  strict all-target macOS crate clippy, workspace format, signed build and separate
+  verification pass. Unsafe blocks remain **100 → 100**, all in `ffi.rs`; no new
+  dependency or shared-core change. Final signed main SHA-256:
+  `a61315d83a3cff77bd51c9725f36f2ea075bf481cc0ea74a3f76cbdfde3d1871`.
+  This final trimmed artifact has no new live-transfer acceptance claim.
+- **Open technical question:** does the persistent Dock CG rectangle actually
+  intercept pointer input, or is it non-interactive/transparent backing? Current
+  observations cannot distinguish them. First obtain a read-only unfiltered CG
+  snapshot plus AX point identity before opening Mission Control, then compare
+  after closure. Membership-filtered snapshots omit membership-less surfaces and
+  cannot answer this. Do not add a Dock exemption or retry transfer unchanged.
+- Route choices remain unchanged: synthetic title-bar drag plus native chord for
+  transfer; MC AX or Dock gesture selection is not yet chosen. Create/remove stay
+  MC AX. No new tentative product decision. Existing host differences remain
+  Ctrl+Cmd auxiliary arms, native drag-follow and visible send-stay switch-back,
+  plus explicit session-effective Desktop-N Apply/Revert rather than plist writes.
+  Cross-display/fullscreen/floor acceptance and physical jank remain TBD.
+- Product select/send/follow/stay, trailing lifecycle and the final real-app
+  physical script remain outstanding; the settings-only procedure above is not
+  that script. Keep backlog item 1 active, not awaiting final physical acceptance.

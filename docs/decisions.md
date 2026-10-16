@@ -1559,9 +1559,12 @@ platform API behavior.
   for default numbered transfer. A private durable Application Support backup
   precedes mutation; Apply/Revert transactions use an OS-released file lock.
   No plist writes or automatic startup Apply. Session-effective enable is the
-  intended scope; logout/reboot persistence and native enable/readback remain
-  unverified. This adds an explicit ownership operation to the preview above,
-  not evidence that product workspace actions are ready.
+  intended scope. Native Apply/readback, fresh-process effective state and exact
+  Revert are now verified within one login session, with unchanged preferences;
+  logout/reboot persistence and native chord delivery remain unverified
+  ([evidence](changes/macos-managed-workspaces.md#native-settings-and-occlusion-diagnosis-checkpoint-2026-10-16)).
+  This adds an explicit ownership operation to the preview above, not evidence
+  that product workspace actions are ready.
 - Windows input and Snap (user 2026-10-01): `WH_KEYBOARD_LL` with `vkE8`
   menu-mask at Win key-up while Win held, consuming only approved catalog
   chords; `RegisterHotKey` rejected after all four chords returned 1409

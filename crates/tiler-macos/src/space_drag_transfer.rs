@@ -702,6 +702,55 @@ pub fn run_drag_roundtrip<B: DragBackend>(
     }
 }
 
+/// Pure occluder detail over plain data (no OS touch): names the first
+/// covering entry for `point` with IDs and geometry (never titles or
+/// content) so a refusal distinguishes transient chrome (e.g. a banner
+/// that disappears between candidates) from an ordinary persistent
+/// document frame. Returns `None` when no entry covers the point. This
+/// only describes; [`hit_test_grab`] still refuses every class below.
+#[must_use]
+pub fn occluder_detail(
+    point: (f64, f64),
+    owned: &crate::ffi::CgWindow,
+    all: &[crate::ffi::CgWindowBasic],
+    ghostty: &[crate::mc_probe::GhosttyWindow],
+) -> Option<String> {
+    if let Some(w) = all.iter().find(|w| {
+        w.onscreen
+            && w.layer > 0
+            && point_in_rect(
+                point.0, point.1, w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h,
+            )
+    }) {
+        return Some(format!(
+            "above-normal-layer WID{}/PID{} layer {} bounds {}x{}@{},{}",
+            w.wid, w.pid, w.layer, w.bounds.w, w.bounds.h, w.bounds.x, w.bounds.y
+        ));
+    }
+    if let Some(w) = all.iter().find(|w| {
+        w.onscreen
+            && w.layer == 0
+            && !(w.pid == owned.pid && w.wid == owned.wid)
+            && point_in_rect(
+                point.0, point.1, w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h,
+            )
+    }) {
+        return Some(format!(
+            "same-layer WID{}/PID{} bounds {}x{}@{},{}",
+            w.wid, w.pid, w.bounds.w, w.bounds.h, w.bounds.x, w.bounds.y
+        ));
+    }
+    ghostty
+        .iter()
+        .find(|g| g.onscreen && point_in_rect(point.0, point.1, g.x, g.y, g.w, g.h))
+        .map(|g| {
+            format!(
+                "Ghostty WID{}/PID{} bounds {}x{}@{},{}",
+                g.wid, g.pid, g.w, g.h, g.x, g.y
+            )
+        })
+}
+
 /// Pure order-free grab hit-test over plain data (the CG list order is
 /// unreliable per rift, so topmost is never inferred from position).
 /// The owned entry must be onscreen on the normal layer with its CG bounds
@@ -750,7 +799,11 @@ pub fn hit_test_grab(
                 point.0, point.1, w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h,
             )
     }) {
-        return Err("hit-test refused: above-normal-layer chrome covers the grab point".to_owned());
+        let detail =
+            occluder_detail(point, owned, all, ghostty).unwrap_or_else(|| "unknown".to_owned());
+        return Err(format!(
+            "hit-test refused: above-normal-layer chrome covers the grab point ({detail})"
+        ));
     }
     if all.iter().any(|w| {
         w.onscreen
@@ -760,18 +813,21 @@ pub fn hit_test_grab(
                 point.0, point.1, w.bounds.x, w.bounds.y, w.bounds.w, w.bounds.h,
             )
     }) {
-        return Err(
-            "hit-test refused: same-layer foreign window covers the grab point (order-free conservative bar; clear the desktop)"
-                .to_owned(),
-        );
+        let detail =
+            occluder_detail(point, owned, all, ghostty).unwrap_or_else(|| "unknown".to_owned());
+        return Err(format!(
+            "hit-test refused: same-layer foreign window covers the grab point ({detail}; order-free conservative bar; clear the desktop)"
+        ));
     }
     if ghostty
         .iter()
         .any(|g| g.onscreen && point_in_rect(point.0, point.1, g.x, g.y, g.w, g.h))
     {
-        return Err(
-            "hit-test refused: Ghostty chrome covers the grab point (never Ghostty)".to_owned(),
-        );
+        let detail =
+            occluder_detail(point, owned, all, ghostty).unwrap_or_else(|| "unknown".to_owned());
+        return Err(format!(
+            "hit-test refused: Ghostty chrome covers the grab point ({detail}; never Ghostty)"
+        ));
     }
     Ok(())
 }
