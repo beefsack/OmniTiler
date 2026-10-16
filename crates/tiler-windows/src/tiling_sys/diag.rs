@@ -44,7 +44,9 @@ use super::*;
 /// unverifiable read), and an identity break proven by the hint lane marks
 /// the class unknown until a performed query re-binds. The tag/pid/creation
 /// fences still guard every write separately.
+/// Reason: caps entries per batch to bound normal-log volume.
 pub(super) const WINDOW_DIAG_MAX_ENTRIES: usize = 16;
+/// Reason: spaces batches to bound normal-log volume.
 pub(super) const WINDOW_DIAG_INTERVAL: Duration = Duration::from_secs(1);
 
 /// One per-window sample; hint-lane fields stage in row assembly, write-lane
