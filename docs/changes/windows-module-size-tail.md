@@ -66,3 +66,11 @@
   `native-effect-kcm-shortcut-selection` aborted with
   `malloc_consolidate(): unaligned fastbin chunk detected` (32/33 passed).
   No KDE source changed; this external failure is not repaired here.
+- Product-hide production row complete: parent 1,836 -> 135;
+  `product_hide/sys/mod.rs` 1,429, `sys/watcher.rs` 254. Native admission,
+  identity, markers, durable hide/reveal stay together; watcher readiness,
+  owner wait and dead-residue recovery move as whole items into a child.
+  `sys` keeps its Windows cfg and module depth; six watcher APIs are explicitly
+  re-exported at their old paths. No visibility changes. All bodies match
+  exact dedent plus rustfmt and portable prefix is unchanged. All five local
+  gates pass: 2,313 passed / 0 failed / 1 ignored.
