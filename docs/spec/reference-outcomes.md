@@ -202,6 +202,20 @@ Variants of [R-MNZ-01..03](reference-outcomes/minimize.md#d23-restore-and-close-
 | --- | --- | --- | --- |
 | Already-active pager row | With two workspaces on the focused output, open the tray menu and click the already-active workspace number | Observed native 2026-10-15: `already-active` visibility no-op, visibility unchanged ([record](../changes/archive/windows-tray-menu-pager.md)) | Native focus/geometry settlement and exact reference-WM outcomes TBD; no geometry/history invariants measured; no in-taskbar visual pager behavior selected |
 
+### Windows hidden-workspace presentation discriminators (2026-10-17)
+
+Variant hooks: V-WS-SHELL-ACTIVATE (R-WS-07 Ours Windows cell). Presentation
+selection is PARKED for user decision; no mechanism or switch-versus-pull
+policy is selected. Full comparison and recommendation (not a selection):
+[hidden-workspace presentation research](../research/windows-port/alt-tab-hidden-workspaces.md).
+
+| Variant | Minimal action sequence | Established evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Hidden shell selection under SW_HIDE | Tile A on WS1 and B on WS2; product-hide WS2; tour Alt+Tab, Win+Tab/Task View, taskbar buttons and hover thumbnails; attempt to select B | Owned-helper live 2026-10-17: `SW_HIDE` reads `IsWindowVisible=false`, `DWMWA_CLOAKED=0`, geometry retained; `SW_SHOWNA` restores identical geometry. Omission from every shell surface follows the documented visible-window rule (inference, not a visual observation) | Actual Alt+Tab/Win+Tab/taskbar/thumbnail/Peek visuals; explicit-selection activation (nothing to select today); switch-versus-pull if a future backend lists B; reference outcomes TBD |
+| Minimized presentation instead of hide | Same setup with B minimized instead of hidden; same shell tour; restore B | Owned-helper live 2026-10-17: minimized snapshot stays `visible=true` at the iconic -32000 rect with nonactivating minimize/restore; listing inferred retained (not visually observed) | Shell visuals; D23 collision (minimize releases allocation and stores a restore slot, so minimization is recommended against as the hiding backend; that recommendation is PARKED with the presentation decision, not a final selection); reference outcomes TBD |
+| Parked presentation instead of hide | Same setup with B parked at an off-screen corner instead of hidden; same shell tour plus owner crash; restore B | No local evidence; Glaze `PlaceInCorner` source shape only. Crash residue, sliver clickability and geometry-restore behavior all TBD | Listing/selection visuals, parked-window detection, durable geometry ledger, monitor/DPI/maximize handling, crash-strand guarantee and reference outcomes TBD |
+| Hidden-workspace urgency marking (D27 5a) | With B product-hidden on WS2, deliver an unsolicited activation request for B; observe the workspace indicator, taskbar flash surface and focus/workspace | `FlashWindowEx` is documented to flash without changing activation ([MS docs](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-flashwindowex)). 2026-10-14: shell flash observed for hidden targets but the visible surface was not proven; planned workspace-urgent indicator unimplemented | Visible mark/clear behavior per backend (SW_HIDE has no visible caption/button to flash), screen-reader announcement and reference outcomes TBD |
+
 ### R-FLT-06 readings
 
 Minimal variants of [R-FLT-06](reference-outcomes/floating.md#r-flt-06-float-toggle-over-a-maximized-window), recorded with the [B9 delivery](../changes/archive/maximized-intentional-unfloat.md). These qualify the ordinary-float row without changing fullscreen or sticky policy.

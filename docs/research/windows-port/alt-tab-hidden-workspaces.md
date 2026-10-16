@@ -1,8 +1,14 @@
 # Alt+Tab and taskbar presence for hidden managed workspaces
 
 Research only. No product design selected, no code or host settings changed.
-Checked 2026-10-04. No live probe was performed. Documentation, pinned source,
-upstream reports and inference are distinguished below.
+Checked 2026-10-04; extended 2026-10-17 with an owned-helper live
+visibility baseline (no Alt+Tab/Task View visual observation) and a
+per-option presentation comparison. Documentation, pinned source,
+upstream reports, live readbacks and inference are distinguished below.
+
+Presentation selection is PARKED for explicit user decision. The
+recommendation below is a recommendation only; no mechanism or
+switch-versus-pull activation policy is selected in this survey.
 
 ## Pins
 
@@ -15,6 +21,51 @@ Pins: ours local `0df451e5`; GlazeWM
 `SW_HIDE`-hidden foreign windows in native Alt+Tab. Parking is a public-API
 candidate that preserves visibility. Private ApplicationView cloak has upstream
 evidence of cross-workspace Alt+Tab, but is outside the current API constraint.
+The 2026-10-17 owned-helper baseline confirms the `SW_HIDE` visibility facts
+below; shell listing itself remains documented-rule inference, not a current-PC
+visual observation.
+
+## Live visibility baseline 2026-10-17 (owned helper, not a shell listing proof)
+
+Owned `tiler-test-window.exe` (`target/debug`), PID 28764, HWND 2687672,
+driven by exact-HWND commands plus narrow P/Invoke `ShowWindowAsync` on that
+HWND only. All visibility, geometry and focus writes in the final leg landed
+on that owned HWND; no other window was hidden, moved, restyled or activated,
+and no setting or registry key was written. The helper was driven by inline
+shell commands (transcript only, no log file kept); the temp
+`ws-probe-hide.ps1` script is the earlier Notepad-leg template, not the
+executed helper transcript.
+
+- Base: `visible=true`, rect 200,200-840,680, `DWMWA_CLOAKED=0`.
+- `SW_HIDE` leg: `visible=false`, `DWMWA_CLOAKED=0` (plain hidden, not
+  cloaked), geometry retained in the snapshot. Omission from Alt+Tab/taskbar
+  follows from the Chen visible-window rule (inference); no Alt+Tab, Win+Tab
+  or taskbar visual was observed.
+- `SW_SHOWNA` restore: `visible=true`, identical geometry.
+- Helper `minimize` leg: snapshot `visible=true`, iconic rect at -32000
+  (standard iconic parking); foreground stayed on the other window
+  (nonactivating). Shell listing is inferred retained (visible per Chen rule);
+  not visually observed.
+- Helper `restore` leg: `visible=true`, original geometry back.
+- `close --tag`: helper process exited; verified absent afterward
+  (transcript `Get-Process` readback only).
+
+Earlier Notepad legs (same session, before the helper): self-spawned Notepad
+processes were started, but spawned-PID window attribution failed (Win11
+tabbed-Notepad singleton handoff), so no window handle was ever obtained and
+no visibility write was ever posted to any Notepad window. Those instances
+were closed by exact PID; the close readbacks exist in transcript only, with
+no preserved log files. One further Notepad (PID 37804, HWND 2163304,
+started inside the probe window, absent from the pre-probe sweep) was left
+running at first write-up; read-only UIA then established a single
+`Untitled. Unmodified` tab with zero document text, and it was closed by
+normal exact-PID `CloseMainWindow` with verified process exit and HWND
+invalidation (evidence files in approved temp, not the repo). No Notepad
+residue remains; the controlling terminal was never touched.
+
+Limitation: scripted probes establish visibility/cloak/geometry facts only.
+Actual Alt+Tab, Win+Tab/Task View, taskbar-button, thumbnail and Peek visuals
+still need user-observed native evidence on the user's desktop.
 
 ## Shell filtering background
 
@@ -58,7 +109,7 @@ can still apply. Complexity includes activation and recovery, not just API calls
 
 | Option | Status | Alt+Tab / taskbar | Recovery and complexity |
 | --- | --- | --- | --- |
-| Keep `SW_HIDE` | Public | Omitted / omitted | Existing identity-safe ledger and watcher; no added work |
+| Keep `SW_HIDE` | Public | Omitted / omitted (visibility facts live-proven 2026-10-17; listing is rule inference) | Existing identity-safe ledger and watcher; no added work |
 | `DWMWA_CLOAK` | Public; foreign writes reported denied | Neither shell result established for this path | Uncloak/preimage recovery needed; small setter, blocked applicability |
 | Native virtual desktops | Public manager has limited surface | Both governed by native all/current settings | Task View remains usable after crash; large model/lifecycle change |
 | Off-screen parking | Public geometry | Both expected to remain listed (inference) | Restore original geometry with identity fencing; medium complexity |
@@ -68,10 +119,12 @@ can still apply. Complexity includes activation and recovery, not just API calls
 
 Official. `SW_HIDE`: "Hides the window and activates another window":
 [ShowWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow).
-Ours posts `ShowWindowAsync` with pumped `IsWindowVisible` readback:
-`crates/tiler-windows/src/product_hide.rs:617-651`. Shell effect: window
+Ours posts `ShowWindowAsync` with pumped `IsWindowVisible` readback
+(`post_visibility`:
+`crates/tiler-windows/src/product_hide/sys/mod.rs:678-700`). Shell effect: window
 leaves Alt+Tab and the taskbar. Recovery is the strongest in-tree story
-(identity-gated ledger, stop file, watcher; `product_hide.rs:1-14,38-73`).
+(identity-gated ledger, watcher readiness and timeouts;
+`crates/tiler-windows/src/product_hide.rs:1-14,38-73`, verified current).
 Public API only; zero added complexity. No shell selection of an omitted window
 is available; workspace navigation remains the reveal path.
 
@@ -191,23 +244,85 @@ shell integration and version risk, not evidence of a ban or process injection.
 No game/anti-cheat testing was performed. Existing fullscreen/protected-window
 scope constraints remain relevant (prior comparison, section 7).
 
+## Per-option presentation comparison (2026-10-17)
+
+Pager presentation is already delivered and is not re-decided here. "Listed
+(inference)" means the Chen visible-window rule predicts listing; no current-PC
+shell visual was observed for any option.
+
+| Dimension | SW_HIDE (current) | Minimization | Off-screen parking | Native virtual desktops | Private cloak |
+| --- | --- | --- | --- | --- | --- |
+| Alt+Tab | Omitted (rule inference + live `visible=false`) | Listed (inference; live `visible=true` iconic) | Listed (inference) | Listed per native all/current setting | Global listing reported upstream, not proven here |
+| Win+Tab / Task View | Omitted (inference) | Listed (inference) | Listed (inference) | Native, per-desktop | Unknown |
+| Taskbar buttons | Omitted (inference) | Retained (inference from standard minimized-button behavior; unobserved visual) | Retained (inference) | Governed by native setting | Retained unless `DeleteTab` paired (Glaze shape) |
+| Thumbnails / Peek | None (no surface) | Standard minimized peek (inference; unobserved visual) | Live sliver composited; peek shows parked frame (inference; unobserved visual) | Native | DWM still composes (docs); shell peek TBD |
+| Explicit selection | Nothing to select; pager is the reveal path | Select restores/focuses per shell; workspace-switch policy TBD | Foreground of parked window is observable; switch-versus-pull TBD | Foreground switches desktop (Chen 2017) | Switch-to-workspace in both references (Glaze/komorebi) |
+| Urgency (D27 5a) | Workspace indicator is the planned surface; `FlashWindowEx` has no visible caption/button while hidden (mark/clear TBD) | `FlashWindowEx` flashes the retained taskbar button ([docs](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-flashwindowex)): "does not change the active state"; mark/clear TBD | Flash lands on a visible (sliver) window; may mislead (looks present); TBD | Native flashing + Task View badge; TBD visual | TBD; taskbar pairing decides the flash surface |
+| Unsolicited activation (D27 5b) | Mechanism-independent: OS-permitted `Switch and focus` switches even over fullscreen/game; denied/default unchanged | Same as SW_HIDE | Same, plus foregrounding a parked window may precede workspace switch; TBD | Same, via native desktop switch | Same, via uncloak + switch (komorebi reconcile shape) |
+| Crash / stop recovery | Strongest in-tree: identity-gated ledger plus same-executable watcher; the ledger records the restore obligation and `Uncertain` identities keep residue with no writes (`ProductTeardown::Uncertain`, `product_hide.rs:80-83`): a designed, readback-verified obligation, not a no-strand guarantee | Weaker: crash leaves windows minimized (visible in shell, recoverable by user) but tiler slot state (D23 `MinimizedSlot`) must distinguish hidden-workspace members from user-minimized ones; TBD | Weakest: crash leaves windows parked off-screen; needs durable geometry ledger + parked-window detection or windows strand out of view; must never strand invisible | Crash leaves windows on a non-current native desktop; Task View recoverable; needs desktop-ID ledger, deleted-desktop handling | Uncloak + `AddTab` restoration needed; private-COM drift risk (cf. Glaze `IApplicationViewCollection` crash report in prior survey); TBD |
+| Multi-output | Output-agnostic (per-window ledger) | Output-agnostic; restore rectangle per output TBD | Needs per-monitor preimage + DPI/maximize handling | Native per-desktop; interacts with per-output Task View; user-driven desktop changes complicate managed model | Output-agnostic per-HWND |
+| Accessibility | Hidden windows are expected to drop out of UIA enumeration (inference, untested); Narrator and exact UIA behavior unknown; taskbar `Win+T` path lost; pager is the keyboard alternative | Retained taskbar/keyboard path; exact screen-reader announcement TBD | Sliver remains hit-testable (a11y and click hazard); TBD | Native, best understood | TBD; cloak + `DeleteTab` removes both shell paths |
+| Performance | Cheapest: not composed | Cheap: iconic, not composed | Still composed (1px sliver rendered; full off-screen still composed) | Native composition per desktop | Still composed by DWM (documented) |
+| API support | Fully public (`ShowWindowAsync` + `IsWindowVisible` readback) | Fully public | Fully public (`SetWindowPos` geometry) | Public manager is lifecycle-incomplete (no create/enumerate/switch) | Undocumented COM; OS-version drift; outside current API constraint |
+| Anti-cheat / AV | No injection surface; no ban evidence; no game testing | Same as SW_HIDE | Geometry mutation of games is itself a risk; no ban evidence; no game testing | Desktop switches under games untested; no ban evidence | No injection, but unsupported shell integration + version risk; no ban evidence; no game testing |
+
+Gaming note (all options): no game or anti-cheat testing was performed for any
+option. Public-API use is not a compatibility guarantee. See also the
+[Gaming coexistence record](../changes/windows-gaming-coexistence.md).
+
+## Reference-tier comparison
+
+- Tier 1 (decide defaults/settings): COSMIC lists B and switches to WS1 with
+  membership unchanged on selection (R-WS-07). Hyprland, i3 and sway have no
+  Alt+Tab/listing counterpart in the profiled inventories, so they cast no
+  vote on listing or switch-versus-pull.
+- Tier 2 (tie-break only): awesome lists via its clients inventory and views
+  B's tags with membership unchanged (switch, not pull). qtile/xmonad have no
+  traced listing counterpart.
+- Tier 3 (context): niri default-All lists B and switches with membership
+  unchanged; PaperWM lists via native `live-alt-tab` only when the GNOME
+  `current-workspace-only` setting is off; karousel is owner-specific (KWin
+  TabBox owns listing, default switch, alternative pull).
+- KDE parity evidence (actual, not inferred): Task Switcher Virtual Desktops
+  filter and TabBox `activateWindow` with default switch-to-desktop, as cited
+  above. Our KDE adapter rides native desktop navigation, so native policy
+  applies automatically. No Windows option reproduces this without either
+  shell listing (parking/minimize/native/cloak) or a pager substitute (today).
+- D27 alignment: the user-selected default `Mark urgent only` plus planned
+  workspace-urgent indicator (5a) pairs with omission (SW_HIDE) without
+  contradiction; the approved OS-permitted `Switch and focus` over
+  fullscreen/game (5b) constrains every inclusion option's activation path.
+  Explicit user selection (Alt+Tab/taskbar/pager) is separate from unsolicited
+  activation per the recorded decision.
+
 ## Recommendation (not a design)
 
 Retain `SW_HIDE` and its omission for now (recommendation only). There is no simple
 documented mechanism to reinsert hidden foreign windows into native
 Alt+Tab: public cloak has an upstream-reported foreign-window access barrier;
 the native-desktop model has public-API lifecycle gaps; private cloak requires
-changing the API constraint. If demand justifies a future option, first evaluate
-public parking on disposable windows and use KDE's default switch-to-workspace
-as the parity candidate. Select no mechanism or activation policy in this survey.
+changing the API constraint. Minimization keeps shell presence but collides
+with D23 (minimize releases allocation and stores a restore slot; a
+hidden-workspace member is not a minimized tile), so it is recommended
+against as the hiding backend; that recommendation is PARKED with the overall
+presentation decision, not a final product selection. Parking is the only public inclusion candidate
+and stays the first evaluation target: evaluate it on disposable windows first,
+using KDE's default switch-to-workspace as the parity candidate. Select no mechanism or activation policy in this survey.
+
+PARKED for user decision: hidden-workspace presentation selection
+(mechanism plus switch-versus-pull on explicit shell selection). This survey
+recommends retaining `SW_HIDE` but does not select it; the user decides.
 
 ## Known uncertainties (explicit)
 
 - Current-PC listing/selection under private cloak + taskbar retention, public
   app-cloak shell behavior, parking races, and foreign `MoveWindowToDesktop`
   enforcement are untested. Native all-desktops filtering is documented, but
-  the settings journey was not exercised here. These gaps do not block the
-  recommendation to retain the existing mechanism.
+  the settings journey was not exercised here. Actual Alt+Tab, Win+Tab,
+  taskbar-button, thumbnail and Peek visuals are unobserved for every option;
+  the 2026-10-17 baseline proves visibility/cloak/geometry facts only.
+  Screen-reader and keyboard (`Win+T`) behavior per option is untested.
+  These gaps do not block the recommendation to retain the existing mechanism.
 
 ## Sources (audit trail, minimal)
 

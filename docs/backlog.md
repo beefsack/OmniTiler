@@ -942,8 +942,9 @@ decisions of 2026-09-24 are under
   on-window markers selected 2026-10-10) and package/update channel decision (short research refresh
   during Windows release planning; most obvious and unsurprising for users).
   Gaming and Windows presentation research run after multi-output,
-  before release; presentation produces options plus a recommendation for
-  the user. Non-native lessons and evidence stay linked:
+  before release; presentation research has produced options plus a
+  recommendation for the user. The parked selection decision remains open
+  and is distinct from release completion. Non-native lessons and evidence stay linked:
   [event/pump boundary](research/non-native-tiler-host-interaction.md#layer-layout-authority-events-and-reconciliation-dim-1),
   [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
   [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
@@ -957,7 +958,11 @@ decisions of 2026-09-24 are under
   keep SW_HIDE (no supported reinsertion); public off-screen parking is the
   only official candidate, with visibility/recovery costs; native desktops
   and private cloaking need separate API decisions. Activation behaviour
-  is matrix row R-WS-07. No presentation design selected. Non-native inputs:
+  is matrix row R-WS-07. Research deliverable complete 2026-10-17: per-option
+  comparison, owned-helper live visibility baseline, and reference-outcome
+  discriminators ([note](research/windows-port/alt-tab-hidden-workspaces.md)).
+  Mechanism plus switch-versus-pull selection stays PARKED for user decision;
+  shell visuals stay user-observed TBD. Non-native inputs:
   [workspaces/Alt+Tab](research/non-native-tiler-host-interaction.md#workspaces-monitors-overview-and-alttab-dim-4),
   [candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [evidence](changes/archive/non-native-tiler-host-interaction.md).
@@ -4497,6 +4502,7 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 - Windows workspace presentation: after multi-output, Windows options
   and recommendation for hidden-workspace Alt+Tab/taskbar semantics plus
   taskbar workspace indicator (parity 10), as a Windows release gate.
+  Research delivered with recommendation; selection parked, not selected.
   [note](research/windows-port/alt-tab-hidden-workspaces.md)
 - Other unselected behavior: the functional spec's
   [open-decisions index](spec/functional-spec.md#open-index) lists 28 OPEN
