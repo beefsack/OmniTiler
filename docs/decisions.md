@@ -744,8 +744,9 @@ platform API behavior.
     never the tray, and never shrinks or hides due to crowding. It is enabled
     by default with an opt-out setting; users avoiding overlap use the tray
     number plus menu pager.
-    Tentative implementation 2026-10-16: external nonactivating topmost
-    tool-window overlay over the taskbar, not an Explorer child. Native
+    User-approved 2026-10-16 hosting: external nonactivating topmost
+    tool-window overlay anchored left of the tray, not an Explorer
+    `Shell_TrayWnd` child. Native
     product rendering, click-to-switch, live window/workspace refresh and
     managed-fullscreen hide/return passed on one output. Child-parenting
     failures remain unexplained but no longer block this route
@@ -757,11 +758,25 @@ platform API behavior.
     Icons were omitted in the MVP. The 2026-10-16 icon extension adds centred
     obtainable window/class/executable artwork asynchronously, omitting missing
     or too-small icons without changing pager geometry. Exact packaged-app
-    artwork and native appearance acceptance remain pending
+    artwork is deferred until the user has seen Calculator physically;
+    native appearance acceptance remains pending
     ([record](changes/windows-taskbar-pager-icons.md)). Secondary tray anchors and non-bottom
     taskbars refuse unknown geometry rather than guessing; physical
     multi-output, games, actual Explorer restart, DPI/auto-hide changes and
-    physically over-wide workspace strips remain open, not accepted evidence.
+    physically over-wide workspace strips remain unverified, not accepted
+    evidence. User-approved 2026-10-16 whole-strip overcapacity behavior:
+    when fixed-width cells exceed the entire tray-left span, do not draw
+    the pager, log the reason, and retain the tray number and menu. This
+    is not app-icon crowding, which never hides or shrinks the pager.
+    User-approved 2026-10-16 icon sizing: 16 logical px cap, 8 logical px
+    minimum, DPI-scaled, with one physical border pixel plus one padding
+    pixel clear per side; omit unavailable or too-small icons.
+    User-approved 2026-10-16 limits cleanup: fixed five-second overlay and
+    icon-worker spawn retries, identity-deduplicated icon queues without
+    arbitrary entry caps, and keep only the latest pending click. Positive
+    artwork refresh stays ten seconds because Windows has no icon-change
+    event; negative retry stays five seconds because apps often set icons
+    after window creation.
   - An amber warning overlay and conflict row identify enabled effective
     Win+G/F11 chords with known incomplete containment, plus kept Win+L when
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,

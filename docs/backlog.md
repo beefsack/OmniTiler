@@ -975,8 +975,9 @@ decisions of 2026-09-24 are under
     default with an opt-out setting; users avoiding overlap use the tray
     number plus menu pager. MVP delivered 2026-10-16 on the primary bottom
     taskbar: numbered active/empty cells, real scaled window miniatures,
-    click-to-switch and live refresh. Tentative external nonactivating
-    topmost-overlay route bypasses unresolved child-parenting failures;
+    click-to-switch and live refresh. User-approved 2026-10-16 external
+    nonactivating topmost tool-window hosting, anchored left of the tray,
+    bypasses unresolved child-parenting failures;
     no injection, AppBar, placeholder icons or child manifest dependency.
     Default-on Settings opt-out, fresh tray-left geometry, DPI-scaled cells
     and fonts, retry/TaskbarCreated recovery, safe topmost reassert and
@@ -987,12 +988,17 @@ decisions of 2026-09-24 are under
     [research](research/windows-port/taskbar-workspace-indicator.md#product-overlay-2026-10-16)).
     Remaining: secondary taskbar tray anchors and physical multi-output;
     actual Explorer restart; physical mouse/game/anti-cheat acceptance;
-    DPI/auto-hide reconfiguration; non-bottom taskbars; whole-strip workspace
-    overcapacity; accessibility/theme/cost checks. Live opt-out remains
+    DPI/auto-hide reconfiguration; non-bottom taskbars; accessibility/theme/cost
+    checks. Whole-strip overcapacity behavior confirmed 2026-10-16: no pager
+    drawn, reason logged, tray number/menu remain. Physical proof pending.
+    Live opt-out remains
     untested against shared settings (offline covered). Miniature icons are now
     implemented through asynchronous window/class/executable lookup, with
-    DPI-aware sizing and omission when missing or too small; native appearance,
-    resource stability and exact packaged-app artwork remain pending
+    user-approved 2026-10-16 DPI-aware 16/8 logical px sizing and omission when
+    missing or too small. Limits cleanup delivered offline: fixed five-second
+    creation/spawn retries, uncapped deduplicated icon queues, latest click only.
+    Native appearance/resource stability remain pending; exact packaged/UWP
+    artwork is deferred until the user has seen Calculator physically
     ([active record](changes/windows-taskbar-pager-icons.md)). Urgency
     acquisition remains separate. Secondary/non-bottom/invalid
     geometry currently refuses safely and logs, never guesses a tray edge.

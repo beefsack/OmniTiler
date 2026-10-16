@@ -49,13 +49,20 @@
   executable. Borrowed handles are copied; all owned native handles are freed.
   ApplicationFrameHost executable artwork is deliberately omitted. Exact
   packaged-app artwork remains a follow-up, not a claimed Calculator result.
-- Sizing for review: cap 16 logical px, minimum 8 logical px, with one physical
+- User-approved 2026-10-16 sizing: cap 16 logical px, minimum 8 logical px, with one physical
   border pixel plus one physical padding pixel per side. The smallest square
   miniature showing an icon is 12 px at 96 DPI, 20 px at 192 DPI. Render once
   at 32 px and stretch to the DPI-aware slot; scales above 200% can upscale.
-- Positive cache entries refresh after 10 seconds, misses retry after 5 seconds.
-  Queues cap at 64 requests and 64 results; outstanding requests deduplicate
-  until drained. Only drawable miniatures on served outputs request artwork.
+- User-approved 2026-10-16: defer packaged/UWP package-artwork lookup until
+  the user has seen Calculator physically; no exact artwork claim is made.
+- User-approved 2026-10-16 limits cleanup delivered offline: positive cache
+  entries refresh after 10 seconds (no Windows icon-change event), misses
+  retry after 5 seconds (apps often set icons after window creation).
+  Overlay creation and worker spawn retry every 5 seconds without backoff,
+  recovering promptly without busy-looping. Removed arbitrary 64-entry caps:
+  requests deduplicate until results drain, with departed pending work pruned.
+  Pager input keeps only the latest pending click, never a stale-click queue.
+  Only drawable miniatures on served outputs request artwork.
   The idle worker waits on a condition variable, not a polling timer.
 - Suppression retires queued work and its result generation; no new lookup is
   requested while hidden. Already-started lookup can finish. Shutdown clears

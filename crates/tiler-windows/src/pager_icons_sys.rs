@@ -1,4 +1,4 @@
-//! Bounded background icon lookup (`cfg(windows)` only).
+//! Background icon lookup (`cfg(windows)` only).
 //!
 //! One worker thread serves the tile loop's [`IconChannel`]: it pops one
 //! [`WindowKey`](crate::workspace::WindowKey) at a time, resolves the
@@ -412,7 +412,7 @@ fn lookup_icon(key: &WindowKey) -> LookupOutcome {
     miss()
 }
 
-/// Shared worker state: the bounded channel plus its wake signal. The tile
+/// Shared worker state: the deduplicated channel plus its wake signal. The tile
 /// loop only locks briefly (never waits); the worker waits while idle.
 struct WorkerShared {
     channel: Mutex<IconChannel>,
@@ -466,7 +466,7 @@ fn worker_loop(shared: Arc<WorkerShared>, stop: Arc<AtomicBool>) {
     }
 }
 
-/// Owner of the single background lookup worker and its bounded queues.
+/// Owner of the single background lookup worker and its deduplicated queues.
 /// `Drop` clears the queue, raises the stop flag, and wakes the worker, so
 /// at most the current native call finishes; shutdown never waits for it
 /// (and the exe fallback's `ExtractIconExW` is not timeout-bounded, so no
@@ -478,7 +478,7 @@ pub struct PagerIconService {
 
 impl PagerIconService {
     /// Spawn the worker; `None` when the thread itself cannot start (the
-    /// host retries on a capped cadence and the pager stays icon-less).
+    /// host retries every five seconds and the pager stays icon-less).
     #[must_use]
     pub fn try_new() -> Option<Self> {
         let shared = Arc::new(WorkerShared {
@@ -495,8 +495,8 @@ impl PagerIconService {
         Some(Self { shared, stop })
     }
 
-    /// Queue lookup requests (deduped against queued and in-flight work,
-    /// bounded; overflow drops the newest) and wake the worker.
+    /// Queue lookup requests (deduped against queued and in-flight work) and
+    /// wake the worker.
     pub fn request(&self, keys: Vec<WindowKey>) {
         if keys.is_empty() {
             return;

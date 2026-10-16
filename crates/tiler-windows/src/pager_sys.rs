@@ -11,8 +11,8 @@
 //! What this module never does: no injection or hooks into Explorer, no
 //! AppBar messages, no placeholder or Start-button manipulation, no
 //! taskbar resize, and no synthetic input. Clicks hit-test the stored
-//! portable frame and queue one bounded [`SelectScope`](crate::tray_pager)
-//! per cell; the loop thread drains the queue and dispatches through the
+//! portable frame and stage the latest [`SelectScope`](crate::tray_pager)
+//! for the cell; the loop thread drains the slot and dispatches through the
 //! existing `workspace_do_select` resolver. WinEvent out-of-context delivery
 //! is not used here at all: only app-local window messages (paint, click,
 //! `TaskbarCreated`, display/DPI broadcasts).
@@ -25,7 +25,7 @@
 //! reasserted only while the host reports safe.
 //!
 //! Logging is sparse lifecycle only (counts and reasons, never HWNDs,
-//! paths, or titles); creation failures retry forever with a capped delay.
+//! paths, or titles); creation failures retry forever on a fixed delay.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,13 +54,16 @@ fn wide(text: &str) -> Vec<u16> {
 /// Overlay window class (distinct from tray/border/underlay/preview so
 /// residue audits count the carrier exactly).
 pub const PAGER_OVERLAY_CLASS: &str = "OmniTilerTaskbarPager";
-/// Bounded pending click queue (overflow drops the newest click).
-const MAX_PENDING_CLICKS: usize = 8;
-/// Topmost reassert cadence while safe (never over an unsafe turn).
+/// Latest pending pager click: overlay windows overwrite this, the loop
+/// thread drains it once. Only the newest click survives: a click rendered
+/// under an old frame is stale and must never replay after a newer one.
+pub type PendingClick = Arc<Mutex<Option<SelectScope>>>;
+/// Topmost reassert cadence while safe (never over an unsafe turn): 2s keeps
+/// the strip above later topmost windows without a `SetWindowPos` per pump.
 const ZASSERT_INTERVAL: Duration = Duration::from_secs(2);
-/// Creation-failure retry: 5s doubling, 60s cap, forever.
-const RETRY_BASE_SECS: u64 = 5;
-const RETRY_CAP_SECS: u64 = 60;
+/// Creation-failure retry: fixed 5s, forever. A fixed delay (no backoff)
+/// recovers promptly once Explorer returns while never busy-looping pumps.
+const RETRY_SECS: u64 = 5;
 
 static REDISCOVER: AtomicBool = AtomicBool::new(false);
 static TASKBAR_MSG: AtomicU32 = AtomicU32::new(0);
@@ -91,7 +94,7 @@ fn want_stale_hide() {
     want_rediscover();
 }
 
-/// Per-window painted frame plus the click queue (boxed into
+/// Per-window painted frame plus the latest click slot (boxed into
 /// `GWLP_USERDATA`, reclaimed by the owner on destroy).
 struct WindowState {
     ids: Vec<String>,
@@ -105,7 +108,7 @@ struct WindowState {
     /// Overlay DPI the frame was laid out for (icon sizing).
     dpi: u32,
     font: windows_sys::Win32::Graphics::Gdi::HFONT,
-    queue: Arc<Mutex<Vec<SelectScope>>>,
+    queue: PendingClick,
 }
 
 fn window_state_of(hwnd: HWND) -> *mut WindowState {
@@ -369,10 +372,10 @@ unsafe extern "system" fn pager_wnd_proc(
                 && let Some(workspace) = state.ids.get(index)
             {
                 let ordinal = index as u32 + 1;
-                if let Ok(mut queue) = state.queue.lock()
-                    && queue.len() < MAX_PENDING_CLICKS
-                {
-                    queue.push(SelectScope::new(&state.output, workspace, ordinal));
+                // Keep-latest only: overwrite any undrained click so a stale
+                // cell never replays after a newer one.
+                if let Ok(mut slot) = state.queue.lock() {
+                    *slot = Some(SelectScope::new(&state.output, workspace, ordinal));
                 }
             }
         }
@@ -419,6 +422,7 @@ fn rect_from_raw(raw: RECT) -> Option<Rect> {
     }
     let w = raw.right.saturating_sub(raw.left);
     let h = raw.bottom.saturating_sub(raw.top);
+    // 16384px sanity bound: rejects corrupt/off-screen rects before layout.
     if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
         return None;
     }
@@ -444,6 +448,8 @@ fn window_rect(hwnd: HWND) -> Option<Rect> {
 unsafe extern "system" fn secondary_enum(hwnd: HWND, state: LPARAM) -> i32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
     let out = unsafe { &mut *(state as *mut Vec<HWND>) };
+    // 64 wide chars: window class names are short (`Shell_SecondaryTrayWnd`
+    // is 22), so this always holds the full name for comparison.
     let mut name = [0u16; 64];
     let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
     if len > 0 {
@@ -528,14 +534,13 @@ pub fn discover_secondaries() -> Vec<TaskbarFacts> {
 }
 
 /// Live owner pager: one overlay window per served output plus the shared
-/// click queue the loop thread drains. The queue is owned by the loop (so
-/// suppression can drop it with no windows present); each window carries a
-/// clone for its click path.
+/// latest-click slot the loop thread drains. The slot is owned by the loop
+/// (so suppression can drop it with no windows present); each window carries
+/// a clone for its click path.
 pub struct PagerOverlays {
     windows: HashMap<String, (HWND, u32)>,
-    queue: Arc<Mutex<Vec<SelectScope>>>,
+    queue: PendingClick,
     log_path: Option<PathBuf>,
-    failures: u32,
     retry_at: Option<Instant>,
     last_zassert: Option<Instant>,
     last_hash: u64,
@@ -571,11 +576,8 @@ impl PagerOverlays {
     /// Register the overlay class and the `TaskbarCreated` broadcast.
     /// PMv2 must precede overlay creation; this ensures it first (the loop
     /// already did, so this is normally a no-op verification). `queue` is
-    /// the loop-owned click queue every window pushes into.
-    pub fn new(
-        log_path: Option<PathBuf>,
-        queue: &Arc<Mutex<Vec<SelectScope>>>,
-    ) -> Result<Self, DynError> {
+    /// the loop-owned latest-click slot every window overwrites.
+    pub fn new(log_path: Option<PathBuf>, queue: &PendingClick) -> Result<Self, DynError> {
         use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LoadCursorW, RegisterClassW, RegisterWindowMessageW,
@@ -608,7 +610,6 @@ impl PagerOverlays {
             windows: HashMap::new(),
             queue: Arc::clone(queue),
             log_path,
-            failures: 0,
             retry_at: None,
             last_zassert: None,
             last_hash: 0,
@@ -632,14 +633,12 @@ impl PagerOverlays {
     }
 
     fn note_failure(&mut self, now: Instant) {
-        self.failures = self.failures.saturating_add(1);
-        let backoff = (RETRY_BASE_SECS << self.failures.min(4)).min(RETRY_CAP_SECS);
-        self.retry_at = Some(now + Duration::from_secs(backoff));
+        self.retry_at = Some(now + Duration::from_secs(RETRY_SECS));
     }
 
     /// Present one pump's frames: create/move/show served outputs, destroy
     /// departed ones, repaint on frame change, and reassert topmost only on
-    /// the safe cadence. Creation failures back off with a capped delay and
+    /// the safe cadence. Creation failures retry on a fixed delay and
     /// retry forever. Steady-state visibility reads stay (correctness over
     /// syscall counting); moves and repaints are change-gated.
     pub fn sync(&mut self, pagers: &[OutputPager], now: Instant) {
@@ -719,10 +718,7 @@ impl PagerOverlays {
                 "retry_secs": self.retry_at.map(|at| at.saturating_duration_since(now).as_secs()),
             }));
         } else {
-            if self.failures > 0 {
-                self.failures = 0;
-                self.retry_at = None;
-            }
+            self.retry_at = None;
             if created > 0 {
                 self.log_line(serde_json::json!({
                     "event": "pager-window",
@@ -888,5 +884,39 @@ impl Drop for PagerOverlays {
             self.detach_and_destroy(hwnd);
         }
         self.windows.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_overlays() -> PagerOverlays {
+        PagerOverlays {
+            windows: HashMap::new(),
+            queue: Arc::new(Mutex::new(None)),
+            log_path: None,
+            retry_at: None,
+            last_zassert: None,
+            last_hash: 0,
+        }
+    }
+
+    #[test]
+    fn creation_retry_stays_fixed_without_backoff() {
+        let mut overlays = empty_overlays();
+        assert!(overlays.retry_due(Instant::now()));
+        // Repeated failures re-arm exactly 5s out each time: no growth.
+        for _ in 0..6 {
+            let now = Instant::now();
+            overlays.note_failure(now);
+            assert_eq!(
+                overlays.retry_at,
+                Some(now + Duration::from_secs(5)),
+                "retry must stay fixed at 5s"
+            );
+            assert!(!overlays.retry_due(now));
+            assert!(overlays.retry_due(now + Duration::from_secs(5)));
+        }
     }
 }

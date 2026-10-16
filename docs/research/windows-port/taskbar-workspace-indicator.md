@@ -602,9 +602,10 @@ or servicing-change cause is established.
 
 ## Product overlay 2026-10-16
 
-Tentative implementation choice: external, process-owned
+User-approved 2026-10-16 hosting: external, process-owned
 `WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE` popup, positioned over
-the taskbar with GDI painting. No Explorer parenting, injection, AppBar,
+the taskbar, anchored left of the tray, with GDI painting. No Explorer
+`Shell_TrayWnd` child parenting, injection, AppBar,
 placeholder icons or shell mutation. Unlike the child-layered candidate, this
 route needs no Windows-8 child-window compatibility manifest; runtime PMv2 is
 verified before geometry and window creation.
@@ -622,6 +623,9 @@ verified before geometry and window creation.
   are read every pump, not cached for seconds. Cells end two physical pixels
   left of the tray; app-button crowding never changes the layout. Invalid,
   off-screen or physically insufficient strip geometry refuses with a log.
+  User-approved 2026-10-16: if fixed-width cells exceed the entire tray-left
+  span, do not draw the pager; log the reason and retain the tray number/menu.
+  This is not hiding due to app-icon crowding; no alternate treatment is open.
 - Settings exposes default-on `core.taskbar_pager`, hot-applied. Cell geometry
   and fonts scale with DPI; display/settings/DPI broadcasts immediately hide
   stale pixels before fresh layout. Fullscreen, managed fullscreen, elevated
@@ -676,15 +680,20 @@ omitted icons rather than using generic substitutes. See the
   ExtractIconExW on the verified owning executable. Borrowed handles are copied,
   never destroyed directly. No shell extension/COM image lookup was added.
 - A process-held HWND/pid/creation check surrounds lookup. Cache entries prune
-  with membership, hits refresh after 10 seconds, misses after 5 seconds. Only
-  sufficiently large served miniatures enqueue work; bounded queues deduplicate
-  in-flight requests, idle workers sleep, and suppression rejects old results.
-- Icon sizing caps at 16 logical px and omits below 8 logical px, preserving a
+  with membership, hits refresh after 10 seconds (no Windows icon-change event),
+  misses after 5 seconds (apps often set icons after window creation). Only
+  sufficiently large served miniatures enqueue work; queues deduplicate
+  in-flight requests without arbitrary entry caps, idle workers sleep, and
+  suppression rejects old results. User-approved 2026-10-16 cleanup also uses
+  fixed five-second overlay/worker-spawn retries to recover without busy-looping,
+  and retains only the latest pending pager click rather than replaying old clicks.
+- User-approved 2026-10-16 icon sizing caps at 16 logical px and omits below 8 logical px, preserving a
   1px border plus 1px padding per side. Unavailable icons leave the rectangle
   unchanged. DPI-aware placement stretches a cached 32px raster; higher scales
   can upscale. Existing workspace labels remain painted last.
 - Packaged apps can work through obtainable window/class icons. Exact
-  ApplicationFrameHost child/AUMID/AppsFolder artwork is still unresolved;
+  ApplicationFrameHost child/AUMID/AppsFolder artwork is deferred by the user
+  2026-10-16 until Calculator has been seen physically;
   host exe fallback is omitted rather than mislabelled as the real app icon.
 - ExtractIconExW is not timeout-bounded and can stall the single artwork worker;
   it cannot block tiling/painting or shutdown. Same-process HWND reuse remains

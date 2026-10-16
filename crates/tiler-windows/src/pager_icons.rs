@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Pager miniature icons: portable sizing, cache, and bounded queues.
+//! Pager miniature icons: portable sizing, cache, and queues.
 //!
 //! The painter stays an opaque GDI surface (`crate::pager_sys`): icons are
 //! worker-produced owned pixel buffers, already flattened onto the miniature
@@ -21,27 +21,29 @@ use tiler_core::geometry::Rect;
 
 use crate::workspace::WindowKey;
 
-/// Maximum icon side at 96 DPI (logical px).
+/// Maximum icon side at 96 DPI (logical px): caps artwork so the miniature
+/// outline stays visible around it instead of filling the whole cell.
 pub const ICON_MAX_96: i32 = 16;
-/// Minimum legible icon side at 96 DPI (logical px).
+/// Minimum legible icon side at 96 DPI (logical px): smaller artwork is
+/// unreadable, so the miniature omits the icon and keeps the plain rectangle.
 pub const ICON_MIN_96: i32 = 8;
-/// Miniature border kept clear of artwork (physical px, never scaled).
+/// Miniature border kept clear of artwork (physical px, never scaled): keeps
+/// the 1px painted border visible at any DPI.
 pub const MINI_BORDER_PX: i32 = 1;
-/// Extra padding between the miniature border and the artwork (physical px).
+/// Extra padding between the miniature border and the artwork (physical px,
+/// never scaled): keeps the border distinct from the icon at any DPI.
 pub const MINI_PAD_PX: i32 = 1;
 /// Worker render size: icons are extracted once at this square size and
 /// downscaled by the blit. Large enough for the 16-logical-px cap at 200%.
 pub const ICON_RENDER_PX: u32 = 32;
 /// Miniature fill the worker flattens artwork onto (matches the painter).
 pub const MINI_GRAY: (u8, u8, u8) = (168, 168, 168);
-/// Negative (missing/unreadable) entries retry after this age.
+/// Negative (missing/unreadable) entries retry after this age: apps often set
+/// their icons after window creation, so a miss is re-looked-up promptly.
 pub const NEG_RETRY: Duration = Duration::from_secs(5);
-/// Positive entries refresh after this age (picks up `WM_SETICON`).
+/// Positive entries refresh after this age: there is no Windows event for
+/// icon changes, so periodic re-lookup picks up `WM_SETICON` updates.
 pub const POS_REFRESH: Duration = Duration::from_secs(10);
-/// Bound for queued lookup requests (overflow drops the newest request).
-pub const MAX_ICON_REQUESTS: usize = 64;
-/// Bound for queued lookup results (overflow drops the oldest result).
-pub const MAX_ICON_RESULTS: usize = 64;
 
 /// One worker-rendered icon: opaque top-down BGRA bytes (`width * height *
 /// 4`), artwork alpha already flattened onto [`MINI_GRAY`]. The final blit
@@ -70,7 +72,8 @@ impl IconImage {
         }
     }
 
-    /// True when the buffer shape matches its dimensions.
+    /// True when the buffer shape matches its dimensions. The 256px cap
+    /// rejects corrupt oversized buffers before they reach the painter.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.width > 0
@@ -190,20 +193,17 @@ impl PagerIconCache {
 
     /// Keys needing a worker lookup now: unknown keys, negative entries
     /// older than [`NEG_RETRY`], and positive entries older than
-    /// [`POS_REFRESH`]. Capped at `cap` (the queue bound); the rest wait
-    /// for a later pump.
+    /// [`POS_REFRESH`]. Uncapped: the caller only passes drawable live keys
+    /// and the channel dedupes them, so queued work never exceeds one entry
+    /// per distinct passed key.
     #[must_use]
     pub fn requests(
         &self,
         keys: impl IntoIterator<Item = WindowKey>,
         now: Instant,
-        cap: usize,
     ) -> Vec<WindowKey> {
         let mut out = Vec::new();
         for key in keys {
-            if out.len() >= cap {
-                break;
-            }
             match self.entries.get(&key) {
                 None => out.push(key),
                 Some(entry) => {
@@ -244,14 +244,15 @@ pub struct IconResult {
     pub generation: u64,
 }
 
-/// Bounded request/result queues between the tile loop and the single
+/// Unbounded request/result queues between the tile loop and the single
 /// background worker. Requests dedupe against both the queued set and the
-/// outstanding set (popped but result not yet drained); overflow drops the
-/// newest request. Results are drained every pump; overflow drops the oldest
-/// result so the bound holds under any worker burst. `clear` (suppression)
-/// bumps the generation: late pre-clear results are refused at push.
-/// All states stay bounded: pending and results by their caps, outstanding
-/// by one in-flight pop plus undrained results (at most the result cap).
+/// outstanding set (popped but result not yet drained), so queued work never
+/// exceeds one entry per distinct drawable key. No strict live-count claim:
+/// an already-started lookup may finish after its key departs (its result
+/// still passes the generation and liveness gates); the single worker holds
+/// at most one in-flight pop, and results drain every pump. `clear`
+/// (suppression) bumps the generation: late pre-clear results are refused
+/// at push.
 #[derive(Debug, Default)]
 pub struct IconChannel {
     pending: VecDeque<WindowKey>,
@@ -271,13 +272,9 @@ impl IconChannel {
         }
     }
 
-    /// Queue one request; false when already queued, already outstanding, or
-    /// dropped on overflow.
+    /// Queue one request; false when already queued or already outstanding.
     pub fn push_request(&mut self, key: WindowKey) -> bool {
         if self.pending.contains(&key) || self.outstanding.contains(&key) {
-            return false;
-        }
-        if self.pending.len() >= MAX_ICON_REQUESTS {
             return false;
         }
         self.pending.push_back(key);
@@ -293,15 +290,10 @@ impl IconChannel {
     }
 
     /// Queue one result; false (dropped) when the result predates the
-    /// current generation. Overflow drops the oldest result.
+    /// current generation.
     pub fn push_result(&mut self, result: IconResult) -> bool {
         if result.generation != self.generation {
             return false;
-        }
-        if self.results.len() >= MAX_ICON_RESULTS
-            && let Some(old) = self.results.pop_front()
-        {
-            self.outstanding.remove(&old.key);
         }
         self.results.push_back(result);
         true
@@ -435,15 +427,11 @@ mod tests {
         let a = key(1, "c1");
         let b = key(2, "c2");
         // Unknown keys request.
-        assert_eq!(cache.requests(vec![a.clone(), b.clone()], now, 64).len(), 2);
+        assert_eq!(cache.requests(vec![a.clone(), b.clone()], now).len(), 2);
         // Hits and misses land; fresh entries request nothing.
         cache.insert(a.clone(), Some(image(1)), now);
         cache.insert(b.clone(), None, now);
-        assert!(
-            cache
-                .requests(vec![a.clone(), b.clone()], now, 64)
-                .is_empty()
-        );
+        assert!(cache.requests(vec![a.clone(), b.clone()], now).is_empty());
         assert_eq!(cache.get(&a), Some(image(1)));
         assert!(cache.get(&b).is_none());
         // Negative entries wait out NEG_RETRY, then re-request.
@@ -452,12 +440,11 @@ mod tests {
                 .requests(
                     vec![b.clone()],
                     now + NEG_RETRY - std::time::Duration::from_millis(1),
-                    64
                 )
                 .is_empty()
         );
         assert_eq!(
-            cache.requests(vec![b.clone()], now + NEG_RETRY, 64),
+            cache.requests(vec![b.clone()], now + NEG_RETRY),
             vec![b.clone()]
         );
         // Positive entries wait out POS_REFRESH (WM_SETICON pickup).
@@ -466,17 +453,16 @@ mod tests {
                 .requests(
                     vec![a.clone()],
                     now + POS_REFRESH - std::time::Duration::from_millis(1),
-                    64
                 )
                 .is_empty()
         );
         assert_eq!(
-            cache.requests(vec![a.clone()], now + POS_REFRESH, 64),
+            cache.requests(vec![a.clone()], now + POS_REFRESH),
             vec![a.clone()]
         );
-        // The request list itself is capped.
+        // No arbitrary cap: every stale key requests (dedup bounds the work).
         let many: Vec<WindowKey> = (0..100).map(|n| key(100 + n, "cap")).collect();
-        assert_eq!(cache.requests(many, now, 64).len(), 64);
+        assert_eq!(cache.requests(many, now).len(), 100);
     }
 
     #[test]
@@ -498,27 +484,29 @@ mod tests {
     }
 
     #[test]
-    fn channel_dedupes_bounds_and_clears() {
+    fn channel_dedupes_without_caps_and_clears() {
         let mut channel = IconChannel::new();
         let a = key(1, "c1");
         assert!(channel.push_request(a.clone()));
         assert!(!channel.push_request(a.clone()));
+        // No arbitrary cap: every distinct key queues (dedup is the bound).
         for n in 2..200u64 {
-            channel.push_request(key(n, "fill"));
+            assert!(channel.push_request(key(n, "fill")));
         }
-        assert_eq!(channel.pending_len(), MAX_ICON_REQUESTS);
+        assert_eq!(channel.pending_len(), 199);
         let (next, generation) = channel.pop_request().expect("queued");
         assert_eq!(next, a);
         assert_eq!(generation, 0);
+        // No result cap: every result lands.
         for n in 0..200 {
-            channel.push_result(IconResult {
+            assert!(channel.push_result(IconResult {
                 key: key(n, "r"),
                 image: None,
                 source: IconSource::Miss,
                 generation,
-            });
+            }));
         }
-        assert_eq!(channel.results_len(), MAX_ICON_RESULTS);
+        assert_eq!(channel.results_len(), 200);
         channel.clear();
         assert!(channel.is_empty());
     }

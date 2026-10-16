@@ -11,14 +11,17 @@ use crate::pager_icons::IconImage;
 use crate::workspace::WindowKey;
 
 /// Slow secondary-taskbar enumeration cadence (the primary bar is re-read
-/// every pump; secondaries only feed refusal logging, never positions).
+/// every pump; secondaries only feed refusal logging, never positions):
+/// 5s notices added/removed monitors promptly without enumerating windows
+/// every pump.
 const PAGER_REVALIDATE_SECS: u64 = 5;
-/// Owner-creation retry when overlay registration fails (capped, forever).
+/// Owner-creation retry when overlay registration fails: fixed 5s, forever,
+/// so a failed registration retries promptly without busy-looping pumps.
 const PAGER_CREATE_RETRY_SECS: u64 = 5;
-/// Icon worker spawn retry (capped, forever): a failed spawn retries here,
-/// never busy every pump; the pager simply stays icon-less meanwhile.
-const PAGER_ICON_RETRY_BASE_SECS: u64 = 5;
-const PAGER_ICON_RETRY_CAP_SECS: u64 = 60;
+/// Icon worker spawn retry: fixed 5s, forever. A fixed delay (no backoff)
+/// recovers promptly once threads spawn again while never busy-looping
+/// pumps; the pager simply stays icon-less meanwhile.
+const PAGER_ICON_RETRY_SECS: u64 = 5;
 
 /// Fullscreen covering shared by the visibility sync and the click-dispatch
 /// poll: the raw suspend veto plus the managed-overlay exception, so both
@@ -35,11 +38,7 @@ fn drop_pager_clicks(state: &TileLoop) -> usize {
     state
         .pager_clicks
         .lock()
-        .map(|mut queue| {
-            let pending = queue.len();
-            queue.clear();
-            pending
-        })
+        .map(|mut slot| slot.take().is_some() as usize)
         .unwrap_or(0)
 }
 
@@ -47,7 +46,7 @@ fn pager_has_pending(state: &TileLoop) -> bool {
     state
         .pager_clicks
         .lock()
-        .map(|queue| !queue.is_empty())
+        .map(|slot| slot.is_some())
         .unwrap_or(false)
 }
 
@@ -124,7 +123,7 @@ pub(super) fn sync_taskbar_pager(
         unknown: areas.is_empty() || state.pager_primary.is_none(),
     };
     if let Some(reason) = pager_suppression(gate) {
-        // Suppression drops queued clicks: a click rendered under an old
+        // Suppression drops the staged click: a click rendered under an old
         // gate must never replay on a later safe turn.
         let dropped = drop_pager_clicks(state);
         // Suppression also clears queued icon work and stops future
@@ -260,8 +259,8 @@ pub(super) fn sync_taskbar_pager(
 }
 
 /// Spawn (or spawn-retry) the single icon worker on the safe path. A failed
-/// spawn logs once per backoff step and retries on a capped cadence, never
-/// busy every pump.
+/// spawn logs once per retry and retries on a fixed cadence, never busy
+/// every pump.
 fn ensure_icon_service(state: &mut TileLoop, log_path: &Path, now: Instant) {
     if state.pager_icon_service.is_some() {
         return;
@@ -273,19 +272,15 @@ fn ensure_icon_service(state: &mut TileLoop, log_path: &Path, now: Instant) {
         Some(service) => {
             state.pager_icon_service = Some(service);
             state.pager_icon_retry_at = None;
-            state.pager_icon_failures = 0;
         }
         None => {
-            state.pager_icon_failures = state.pager_icon_failures.saturating_add(1);
-            let backoff = (PAGER_ICON_RETRY_BASE_SECS << state.pager_icon_failures.min(4))
-                .min(PAGER_ICON_RETRY_CAP_SECS);
-            state.pager_icon_retry_at = Some(now + Duration::from_secs(backoff));
+            state.pager_icon_retry_at = Some(now + Duration::from_secs(PAGER_ICON_RETRY_SECS));
             log_json_at(
                 log_path,
                 serde_json::json!({
                     "event": "pager-icons",
                     "outcome": "worker-spawn-failed",
-                    "retry_secs": backoff,
+                    "retry_secs": PAGER_ICON_RETRY_SECS,
                 }),
             );
         }
@@ -293,7 +288,7 @@ fn ensure_icon_service(state: &mut TileLoop, log_path: &Path, now: Instant) {
 }
 
 /// Pump the icon cache: prune to live membership, drain finished worker
-/// lookups into the cache with one bounded outcome line per active batch,
+/// lookups into the cache with one outcome line per active batch,
 /// and return current artwork hits for the frame. Never queries or waits
 /// on foreign windows.
 fn drain_icon_cache(
@@ -381,11 +376,9 @@ fn request_drawable_icons(state: &mut TileLoop, pagers: &[OutputPager], now: Ins
         return;
     };
     service.prune_pending(&drawable);
-    let requests = state.pager_icon_cache.requests(
-        drawable.iter().cloned(),
-        now,
-        crate::pager_icons::MAX_ICON_REQUESTS,
-    );
+    let requests = state
+        .pager_icon_cache
+        .requests(drawable.iter().cloned(), now);
     service.request(requests);
 }
 
@@ -432,69 +425,68 @@ pub(super) fn poll_pager_select(
     fulls: &[Rect],
     areas: &[MonitorArea],
 ) {
-    let clicks = state
+    let click = state
         .pager_clicks
         .lock()
-        .map(|mut queue| std::mem::take(&mut *queue))
+        .map(|mut slot| slot.take())
         .unwrap_or_default();
-    for request in clicks {
-        let index = request.index.min(255) as u8;
-        state.tick += 1;
-        let tick = state.tick;
-        let start = Instant::now();
-        let gate = PagerGate {
-            enabled: state.taskbar_pager,
-            suspended: pager_is_covering(state, me, fulls),
-            elevated: foreground_elevated(me),
-            unknown: areas.is_empty(),
-        };
-        if let Some(reason) = pager_suppression(gate) {
-            log_json_at(
-                &state.log_path,
-                workspace_log(state, tick, "select", index, "pager", reason),
-            );
-            continue;
-        }
-        if !state.pager_served.contains(&request.output) {
-            let mut line =
-                workspace_log(state, tick, "select", index, "pager", "refused-not-served");
-            line["output"] =
-                serde_json::Value::from(state.workspaces.output_token(&request.output));
-            log_json_at(&state.log_path, line);
-            continue;
-        }
-        // Output-scoped fence: the rendered output must still be known and
-        // the rendered workspace still live on it. Focus is irrelevant: a
-        // click on an unfocused output's strip still selects there. The
-        // 1-based ordinal is logging only, never a positional fallback.
-        if !verify_output_scoped_select(&request, &state.workspaces) {
-            let mut line =
-                workspace_log(state, tick, "select", index, "pager", "refused-stale-scope");
-            line["output"] =
-                serde_json::Value::from(state.workspaces.output_token(&request.output));
-            line["workspace"] = serde_json::Value::from(
-                state
-                    .workspaces
-                    .workspace_token(&request.output, &request.workspace),
-            );
-            log_json_at(&state.log_path, line);
-            continue;
-        }
-        dispatch_verified_select(
-            state,
-            me,
-            store,
-            dir,
-            fulls,
-            areas,
-            &request.output,
-            &request.workspace,
-            index,
-            tick,
-            start,
-            "pager",
+    let Some(request) = click else {
+        return;
+    };
+    // The 1-based ordinal is logging-only (u8 log lane): clamp the bound so
+    // a corrupt index can never overflow the log field or retarget.
+    let index = request.index.min(255) as u8;
+    state.tick += 1;
+    let tick = state.tick;
+    let start = Instant::now();
+    let gate = PagerGate {
+        enabled: state.taskbar_pager,
+        suspended: pager_is_covering(state, me, fulls),
+        elevated: foreground_elevated(me),
+        unknown: areas.is_empty(),
+    };
+    if let Some(reason) = pager_suppression(gate) {
+        log_json_at(
+            &state.log_path,
+            workspace_log(state, tick, "select", index, "pager", reason),
         );
+        return;
     }
+    if !state.pager_served.contains(&request.output) {
+        let mut line = workspace_log(state, tick, "select", index, "pager", "refused-not-served");
+        line["output"] = serde_json::Value::from(state.workspaces.output_token(&request.output));
+        log_json_at(&state.log_path, line);
+        return;
+    }
+    // Output-scoped fence: the rendered output must still be known and
+    // the rendered workspace still live on it. Focus is irrelevant: a
+    // click on an unfocused output's strip still selects there. The
+    // 1-based ordinal is logging only, never a positional fallback.
+    if !verify_output_scoped_select(&request, &state.workspaces) {
+        let mut line = workspace_log(state, tick, "select", index, "pager", "refused-stale-scope");
+        line["output"] = serde_json::Value::from(state.workspaces.output_token(&request.output));
+        line["workspace"] = serde_json::Value::from(
+            state
+                .workspaces
+                .workspace_token(&request.output, &request.workspace),
+        );
+        log_json_at(&state.log_path, line);
+        return;
+    }
+    dispatch_verified_select(
+        state,
+        me,
+        store,
+        dir,
+        fulls,
+        areas,
+        &request.output,
+        &request.workspace,
+        index,
+        tick,
+        start,
+        "pager",
+    );
 }
 
 /// Shared select body for the tray menu ("tray") and the taskbar pager
@@ -682,18 +674,18 @@ mod pager_host_tests {
     }
 
     fn push_click(state: &mut super::TileLoop, output: &str, workspace: &str) {
-        state
+        *state
             .pager_clicks
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(SelectScope::new(output, workspace, 1));
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some(SelectScope::new(output, workspace, 1));
     }
 
     fn pending_clicks(state: &super::TileLoop) -> usize {
         state
             .pager_clicks
             .lock()
-            .map(|queue| queue.len())
+            .map(|slot| usize::from(slot.is_some()))
             .unwrap_or(usize::MAX)
     }
 
@@ -769,6 +761,46 @@ mod pager_host_tests {
             state.workspaces.active_id(&output).as_deref(),
             Some(active.as_str())
         );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn latest_click_overwrites_stale_click() {
+        let (mut state, _, _, _, output, _, target) = pager_rig();
+        // Stage two clicks without draining: only the newest survives, so a
+        // stale cell never replays after a newer one.
+        push_click(&mut state, &output, "ws-stale");
+        push_click(&mut state, &output, &target);
+        assert_eq!(pending_clicks(&state), 1);
+        let staged = state
+            .pager_clicks
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            staged,
+            Some(SelectScope::new(&output, &target, 1)),
+            "only the latest click survives"
+        );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn icon_spawn_retry_holds_fixed_delay() {
+        clear_pending_seams();
+        let mut state = test_state();
+        let log = std::path::PathBuf::from("NUL");
+        let now = std::time::Instant::now();
+        // Future gate: no spawn attempt, service stays absent.
+        state.pager_icon_retry_at = Some(now + std::time::Duration::from_secs(3600));
+        super::ensure_icon_service(&mut state, &log, now);
+        assert!(state.pager_icon_service.is_none());
+        // Due gate: spawns the worker thread only (no window operations);
+        // the gate clears on success.
+        state.pager_icon_retry_at = Some(now - std::time::Duration::from_secs(1));
+        super::ensure_icon_service(&mut state, &log, now);
+        assert!(state.pager_icon_service.is_some());
+        assert!(state.pager_icon_retry_at.is_none());
         clear_pending_seams();
     }
 

@@ -74,8 +74,9 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
 - Secondary tray anchors and non-bottom taskbars safely refuse unknown
   geometry. Physical multi-output, game, real Explorer-restart, auto-hide and
   display-reconfiguration checks remain pending. Icons are omitted.
-- Tentative hosting choice: external topmost, nonactivating tool window, not
-  Explorer child hosting. A native probe passed active/empty/border pixel
+- User-approved 2026-10-16 hosting: external topmost, nonactivating tool
+  window anchored left of the tray, not Explorer `Shell_TrayWnd` child
+  hosting. A native probe passed active/empty/border pixel
   samples, cell hit-testing, unchanged foreground, tray exclusion and exact
   overlay destruction. Child-host repeatability remains unresolved; no shell
   injection or dependency is needed for the overlay route.
@@ -86,9 +87,13 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
 - Icons are omitted: app/package identity lookup is not trivial. Live opt-out
   remains deferred because it would modify shared saved settings; schema,
   hot-apply and suppressed queued-click refusal have offline coverage.
-- Whole-strip overcapacity (more fixed-width cells than the entire tray-left
-  span) safely refuses; wrapping/another treatment needs product review. This
-  is distinct from app-icon crowding, which never changes pager layout.
+- User-approved 2026-10-16 whole-strip overcapacity: more fixed-width cells
+  than the entire tray-left span means no pager drawing, with the reason
+  logged and tray number/menu retained. No code change. This is distinct
+  from app-icon crowding, which never changes pager layout.
+- User-approved 2026-10-16 icon sizing and retry/queue cleanup are recorded
+  in the [icon record](../windows-taskbar-pager-icons.md) and
+  [review delivery](../windows-review-decisions-2026-10-16.md).
 - Initial repository state was clean.
 
 ## Remaining validation and scope
@@ -101,5 +106,6 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
   games/anti-cheat need separately scoped native validation. The existing
   synthetic/managed-fullscreen evidence is not a substitute.
 - Live opt-out requires an isolated settings route or a deliberate saved
-  setting change. Icons, accessibility/theme/cost measurement and infeasible
-  whole-strip overcapacity treatment remain open.
+  setting change. Icons were subsequently delivered; their native appearance
+  acceptance and accessibility/theme/cost measurement remain pending.
+  Whole-strip overcapacity behavior is approved above, not an open design.

@@ -59,7 +59,8 @@ pub const PAGER_CELL_W_96: i32 = 72;
 /// per pump; 96 is only the fallback when that query fails, never an
 /// assumption about the monitor.
 pub const PAGER_BASE_DPI: u32 = 96;
-/// Gap between the strip's right edge and the tray area (physical px).
+/// Gap between the strip's right edge and the tray area (physical px): keeps
+/// overlay pixels off the tray clock area with a visible margin.
 pub const PAGER_TRAY_GAP: i32 = 2;
 /// Minimum strip height at 96 DPI that still paints numbers legibly.
 pub const PAGER_MIN_STRIP_H_96: i32 = 24;
@@ -68,6 +69,7 @@ pub const PAGER_MAX_STRIP_H_96: i32 = 48;
 
 /// Scale one 96-DPI layout px to physical px at `dpi` (rounded). Gaps and
 /// 1px borders stay physical by construction (never passed through here).
+/// The 1..16384 clamp rejects zero/overflow geometry from corrupt DPI reads.
 #[must_use]
 pub fn dpi_scale(px_96: i32, dpi: u32) -> i32 {
     let dpi = dpi.max(1) as i64;

@@ -538,15 +538,18 @@ struct TileLoop {
     /// Live overlay owner (normal owner only). Created lazily on the first
     /// safe pump; RAII teardown covers every exit path.
     pager_overlays: Option<crate::pager_sys::PagerOverlays>,
-    /// Loop-owned pager click queue: overlay windows push here, the tick
-    /// dispatch drains once. Owned here (not by the overlays) so suppression
-    /// drops queued clicks even with no windows present, and tests can stage
-    /// clicks with no native windows at all.
-    pager_clicks: Arc<Mutex<Vec<crate::tray_pager::SelectScope>>>,
+    /// Loop-owned latest pager click slot: overlay windows overwrite it, the
+    /// tick dispatch drains it once. Owned here (not by the overlays) so
+    /// suppression drops a staged click even with no windows present, and
+    /// tests can stage clicks with no native windows at all. Only the newest
+    /// click survives, so a stale cell never replays after a newer one.
+    pager_clicks: Arc<Mutex<Option<crate::tray_pager::SelectScope>>>,
     /// Outputs with a currently served strip (last safe present): clicks
     /// naming any other output refuse as not-served, never dispatched.
     pager_served: Vec<String>,
-    /// Owner-registration retry gate for the pager overlays (capped, forever).
+    /// Owner-registration retry gate for the pager overlays: fixed 5s delay,
+    /// forever, so a failed registration retries promptly without
+    /// busy-looping pumps.
     pager_retry_at: Option<Instant>,
     /// Slow secondary-taskbar enumeration deadline plus the last topology
     /// fingerprint. The primary bar is re-read every pump; secondaries only
@@ -570,9 +573,10 @@ struct TileLoop {
     /// Single background icon lookup worker plus its bounded queues. Created
     /// lazily on the first safe pump; detached teardown (never joined).
     pager_icon_service: Option<crate::pager_icons_sys::PagerIconService>,
-    /// Icon worker spawn retry gate (capped backoff, forever).
+    /// Icon worker spawn retry gate (fixed 5s delay, forever): a failed
+    /// spawn retries promptly without busy-looping pumps while the pager
+    /// stays icon-less meanwhile.
     pager_icon_retry_at: Option<Instant>,
-    pager_icon_failures: u32,
     /// Last pager suppression outcome (`None` while showing): change-only
     /// `pager-suppress` logging.
     pager_suppress_last: Option<String>,
