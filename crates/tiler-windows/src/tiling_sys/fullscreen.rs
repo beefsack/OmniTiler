@@ -454,9 +454,12 @@ pub(super) fn holdable_key(
         return None;
     }
     let class = class_of(hwnd);
+    // Own Settings is an ordinary slotless member (never a dialog);
+    // generic unowned `#32770` dialogs still refuse here while owned
+    // windows (including owned dialogs) refuse at the owned gate below.
+    let owned_live = !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null();
     if is_shell_class(&class)
-        || class == DIALOG_CLASS
-        || crate::tiling::is_own_settings_window(&class, &live.exe_path, &me.exe_path)
+        || crate::tiling::workspace_dialog_refuses(&class, owned_live, &live.exe_path, &me.exe_path)
     {
         return None;
     }

@@ -399,14 +399,16 @@ pub(super) fn is_automatic_in(
 
 /// Whether one intentional-float mover may send tiled-to-tiled through the
 /// shared slotless deferred path (D16 ordinary plus approved
-/// floating+fullscreen / floating+maximized combos, 2026-10-13). Mirrors
+/// floating+fullscreen / floating+maximized combos, 2026-10-13; Windows
+/// automatic fixed-size floats as ordinary members, 2026-10-16). Mirrors
 /// the shared [`tiler_core::session::Session::deferred_send_eligible`]
 /// arms against adapter state: the mover must be an Engine exception in its
-/// source session, never sticky (checked by the caller), never
-/// automatic-fixed (retained Engine mark, D4 latch, or explicit tile
-/// suppress), and observed with exactly zero or one overlay from the live
-/// `overlay_now` snapshot. Dual overlays refuse. Pure in-memory read: no
-/// Engine mutation, no native calls.
+/// source session, never sticky (checked by the caller), and observed with
+/// exactly zero or one overlay from the live `overlay_now` snapshot. Dual
+/// overlays refuse. Automatic fixed-size origin (retained Engine mark or D4
+/// latch) admits like intentional floats; only an explicit tile override
+/// still refuses here. Pure in-memory read: no Engine mutation, no native
+/// calls.
 pub(super) fn float_send_admits(
     state: &TileLoop,
     mover_key: &crate::workspace::WindowKey,
@@ -415,12 +417,6 @@ pub(super) fn float_send_admits(
     token: &str,
 ) -> bool {
     if !engine_is_float(state, output, workspace, token) {
-        return false;
-    }
-    if engine_is_automatic_fixed(state, output, workspace, token) {
-        return false;
-    }
-    if state.fixed_auto_seen.contains(mover_key) {
         return false;
     }
     if state.fixed_tile_overrides.contains(mover_key) {

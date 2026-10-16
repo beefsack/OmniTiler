@@ -287,6 +287,32 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
     }
 }
 
+/// Fixed-size `WM_GETMINMAXINFO` tracks from the live outer size: equal
+/// min/max pins the current size on both axes, which the shared fixed-size
+/// classifier reads as fixed under both predicates once converted with the
+/// measured frame insets. `None` when the outer size is not a usable fixed
+/// answer (non-positive or beyond the shared carried-geometry bound); the
+/// production handler falls back to `DefWindowProcW` then.
+pub(super) fn fixed_minmax_tracks(outer_w: i32, outer_h: i32) -> Option<(i32, i32)> {
+    if (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_w)
+        && (1..=tiler_core::bounds::GEOMETRY_BOUND).contains(&outer_h)
+    {
+        Some((outer_w, outer_h))
+    } else {
+        None
+    }
+}
+
+/// Readiness for the explicit fixed-size `WM_GETMINMAXINFO` answer: the
+/// info pointer must be non-null and the window must have completed
+/// `WM_CREATE` initialization (nonzero user data, checked read-only and
+/// never dereferenced here). Anything earlier falls through to
+/// `DefWindowProcW`, so initial creation sizing is never constrained by
+/// this window's own advertisement.
+fn fixed_tracks_ready(user_data: isize, lparam: isize) -> bool {
+    user_data != 0 && lparam != 0
+}
+
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -295,7 +321,8 @@ unsafe extern "system" fn wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
-        PostQuitMessage, SetWindowLongPtrW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_TIMER,
+        GetWindowRect, MINMAXINFO, PostQuitMessage, SetWindowLongPtrW, WM_CLOSE, WM_COMMAND,
+        WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_TIMER,
     };
     match msg {
         WM_CREATE => {
@@ -304,6 +331,46 @@ unsafe extern "system" fn wnd_proc(
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
             }
             0
+        }
+        WM_GETMINMAXINFO => {
+            // Explicit fixed-size advertisement from the live outer size:
+            // this window is fixed-size by construction (no sizing
+            // border), so its min/max tracks pin the current size and the
+            // shared classifier observes equal bounds through the existing
+            // hint contract. No App state is dereferenced: this can
+            // arrive before WM_CREATE stores it, so the answer is gated
+            // on initialization readiness (nonzero user data, read-only)
+            // plus a null info-pointer check; anything earlier, an
+            // unreadable rect, or an invalid outer falls through to
+            // DefWindowProc.
+            let user_data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+            if !fixed_tracks_ready(user_data, lparam) {
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
+            let mut outer: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+            let read = unsafe { GetWindowRect(hwnd, &mut outer) } != 0;
+            let tracks = if read {
+                let w: Option<i32> = (i64::from(outer.right) - i64::from(outer.left))
+                    .try_into()
+                    .ok();
+                let h: Option<i32> = (i64::from(outer.bottom) - i64::from(outer.top))
+                    .try_into()
+                    .ok();
+                w.and_then(|w| h.and_then(|h| fixed_minmax_tracks(w, h)))
+            } else {
+                None
+            };
+            match tracks {
+                Some((w, h)) => {
+                    let info = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+                    info.ptMinTrackSize.x = w;
+                    info.ptMinTrackSize.y = h;
+                    info.ptMaxTrackSize.x = w;
+                    info.ptMaxTrackSize.y = h;
+                    0
+                }
+                None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            }
         }
         WM_COMMAND => {
             let id = (wparam & 0xffff) as u32;

@@ -106,6 +106,10 @@ pub struct Engine {
     /// default so Windows carriers keep exact current behavior; the Linux
     /// planner route enables it.
     maximized_focus_fence: bool,
+    /// Opt-in deferred send for automatic fixed-size floats (Windows
+    /// workspace sends). Off by default so KDE/macOS carriers keep exact
+    /// current behavior; the Windows route enables it.
+    fixed_send_admission: bool,
     /// R-SPC-04 D1 fixed-size admission predicate. Both-axes default
     /// (current delivered behavior). Changing it never reclassifies
     /// retained windows, only subsequent admissions.
@@ -407,6 +411,7 @@ impl Default for Engine {
             fixed_size_admission: false,
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             maximized_focus_fence: false,
+            fixed_send_admission: false,
             last_fixed_admission: None,
             last_migration: None,
             last_drag_preview_stage: None,
@@ -599,6 +604,23 @@ impl Engine {
         }
     }
 
+    /// Whether deferred sends for automatic fixed-size floats are enabled.
+    #[must_use]
+    pub fn fixed_send_admission(&self) -> bool {
+        self.fixed_send_admission
+    }
+
+    /// Enable or disable deferred sends for automatic fixed-size floats
+    /// (Windows workspace sends). Propagates to every retained session on
+    /// store; fresh sessions adopt it at creation. Never touches topology
+    /// or revision.
+    pub fn set_fixed_send_admission(&mut self, enabled: bool) {
+        self.fixed_send_admission = enabled;
+        for session in self.sessions.values_mut() {
+            session.set_fixed_send_admission(enabled);
+        }
+    }
+
     /// Current R-SPC-04 D1 fixed-size admission predicate. Both-axes
     /// default (current delivered behavior).
     #[must_use]
@@ -662,6 +684,7 @@ impl Engine {
         session.set_fixed_size_admission(self.fixed_size_admission);
         session.set_fixed_size_predicate(self.fixed_size_predicate);
         session.set_maximized_focus_fence(self.maximized_focus_fence);
+        session.set_fixed_send_admission(self.fixed_send_admission);
     }
 
     /// Predicate-selected candidate check for the retained Engine setting.

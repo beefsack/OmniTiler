@@ -275,6 +275,7 @@ pub(super) fn run_tile_loop(
     // last-good startup settings (both-axes default, proof owners included)
     // and later adopts live edits for subsequent admissions only.
     state.engine.set_fixed_size_admission(true);
+    state.engine.set_fixed_send_admission(true);
     state
         .engine
         .set_fixed_size_predicate(fixed_predicate_for(state.settings_live.as_ref()));

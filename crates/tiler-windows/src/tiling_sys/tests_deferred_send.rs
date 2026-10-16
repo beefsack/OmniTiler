@@ -467,12 +467,13 @@ fn combo_sends_defer_without_writes_on_unreadable_overlay() {
 
 #[test]
 fn ineligible_movers_refuse_without_transfer_or_writes() {
-    // Sticky / automatic-fixed (D4 latch, tile suppress) / dual overlay
-    // through the real dispatch: refusal vocabulary, zero applies, zero
-    // Engine contact, membership and Engine state untouched.
+    // Sticky / explicit tile override / dual overlay through the real
+    // dispatch: refusal vocabulary, zero applies, zero Engine contact,
+    // membership and Engine state untouched. The D4 automatic latch no
+    // longer refuses at dispatch (ordinary-member policy); it carries
+    // past the float gate like an intentional float (pinned below).
     for (name, expected, overlay) in [
         ("sticky", "send-refused-sticky", (false, false)),
-        ("latch", "send-refused-floating", (false, false)),
         ("suppress", "send-refused-floating", (false, false)),
         ("dual", "send-refused-floating", (true, true)),
     ] {
@@ -480,9 +481,6 @@ fn ineligible_movers_refuse_without_transfer_or_writes() {
         match name {
             "sticky" => {
                 rig.state.sticky.insert(rig.mover.clone(), false);
-            }
-            "latch" => {
-                rig.state.fixed_auto_seen.insert(rig.mover.clone());
             }
             "suppress" => {
                 rig.state.fixed_tile_overrides.insert(rig.mover.clone());
@@ -528,6 +526,58 @@ fn ineligible_movers_refuse_without_transfer_or_writes() {
         );
         clear_pending_seams();
     }
+}
+
+#[test]
+fn automatic_latch_carries_past_dispatch_like_ordinary() {
+    // D4-latched automatic fixed float through the real dispatch with the
+    // production opt-in mirrored: passes the float gate (never
+    // `send-refused-floating`), contacts the Engine, and transfers
+    // membership to the target. Native hide fails closed on the fake
+    // HWND, so only the pre-tail transfer is pinned here; the slotless
+    // Engine carry itself is pinned in
+    // `d16_automatic_fixed_carry_with_windows_send_opt_in`.
+    let (mut rig, mut observed, _) = send_fixture((false, false));
+    rig.state.fixed_auto_seen.insert(rig.mover.clone());
+    rig.state.engine.set_fixed_send_admission(true);
+    let ctx = action_ctx(&rig.state);
+    let effect = super::workspace_do_send(
+        &mut rig.state,
+        &rig.me,
+        &rig.store,
+        &rig.dir,
+        &rig.fulls,
+        &rig.areas,
+        &mut observed,
+        &[],
+        "mon-a",
+        SendTarget::Relative(1),
+        true,
+        rig.mover.hwnd,
+        "wF",
+        rig.mover.pid,
+        &rig.mover.creation,
+        &ctx,
+    );
+    assert_ne!(
+        effect.outcome, "send-refused-floating",
+        "latch passes the float gate"
+    );
+    let counters = pending_counters();
+    assert!(
+        counters.engine > 0,
+        "latch contacts the Engine, got {:?}",
+        counters
+    );
+    assert_eq!(
+        rig.state
+            .workspaces
+            .member_loc(&rig.mover)
+            .map(|loc| loc.workspace.clone()),
+        Some(rig.target.clone()),
+        "membership transfers to the target"
+    );
+    clear_pending_seams();
 }
 
 /// Drives one real `workspace_do_send` for the matrix tests:

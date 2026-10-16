@@ -287,3 +287,85 @@ fn workspace_mode_options_carry_functional_labels() {
         ]
     );
 }
+
+#[test]
+fn fixed_tracks_ready_needs_init_and_pointer() {
+    // The production `WM_GETMINMAXINFO` readiness gate: advertise only
+    // with a non-null info pointer once `WM_CREATE` stored user data.
+    // Zero user data (pre-creation query) or a null pointer falls back
+    // to `DefWindowProcW` in the handler.
+    assert!(super::fixed_tracks_ready(1, 0x1000));
+    assert!(super::fixed_tracks_ready(-1, 0x1000));
+    assert!(!super::fixed_tracks_ready(0, 0x1000));
+    assert!(!super::fixed_tracks_ready(1, 0));
+    assert!(!super::fixed_tracks_ready(0, 0));
+}
+
+#[test]
+fn fixed_minmax_tracks_pins_live_outer_on_both_axes() {
+    // The production `WM_GETMINMAXINFO` answer shape: a usable live outer
+    // size advertises equal min/max tracks, which the shared classifier
+    // reads as fixed under both predicates once converted with the
+    // measured frame insets (same subtraction both sides preserves
+    // equality while the remainder stays usable).
+    use tiler_core::size_hints::{FixedSizePredicate, is_fixed_size_with};
+    let insets = crate::tiling::FrameInsets {
+        left: 8,
+        top: 31,
+        right: 8,
+        bottom: 8,
+    };
+    for (outer_w, outer_h) in [(940, 1120), (1848, 2224), (200, 100)] {
+        let (w, h) = super::fixed_minmax_tracks(outer_w, outer_h).expect("usable outer pins");
+        assert_eq!((w, h), (outer_w, outer_h));
+        let hints = crate::tiling::hints_from_outer(Some((w, h)), Some((w, h)), insets);
+        assert!(
+            is_fixed_size_with(hints, FixedSizePredicate::BothAxes),
+            "fixed under both-axes at {outer_w}x{outer_h}"
+        );
+        assert!(
+            is_fixed_size_with(hints, FixedSizePredicate::EitherAxis),
+            "fixed under either-axis at {outer_w}x{outer_h}"
+        );
+    }
+}
+
+#[test]
+fn fixed_minmax_tracks_falls_back_on_unusable_outer() {
+    // Non-positive or out-of-bound outers carry no fixed claim: the
+    // production handler falls back to `DefWindowProcW` for these.
+    use tiler_core::bounds::GEOMETRY_BOUND;
+    for (outer_w, outer_h) in [
+        (0, 0),
+        (0, 600),
+        (800, 0),
+        (-32000, -32000),
+        (-8, 600),
+        (GEOMETRY_BOUND + 1, 600),
+        (800, GEOMETRY_BOUND + 1),
+        (i32::MAX, i32::MAX),
+    ] {
+        assert_eq!(
+            super::fixed_minmax_tracks(outer_w, outer_h),
+            None,
+            "no fixed claim at {outer_w}x{outer_h}"
+        );
+    }
+    // Boundary itself still pins.
+    assert_eq!(
+        super::fixed_minmax_tracks(GEOMETRY_BOUND, GEOMETRY_BOUND),
+        Some((GEOMETRY_BOUND, GEOMETRY_BOUND))
+    );
+    // A fallback-shaped conversion (unknown max side) never classifies,
+    // under either predicate.
+    use tiler_core::size_hints::{FixedSizePredicate, is_fixed_size_with};
+    let insets = crate::tiling::FrameInsets {
+        left: 8,
+        top: 31,
+        right: 8,
+        bottom: 8,
+    };
+    let hints = crate::tiling::hints_from_outer(Some((800, 600)), None, insets);
+    assert!(!is_fixed_size_with(hints, FixedSizePredicate::BothAxes));
+    assert!(!is_fixed_size_with(hints, FixedSizePredicate::EitherAxis));
+}

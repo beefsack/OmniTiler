@@ -32,7 +32,8 @@ pub fn shell_class_excluded(class: &str) -> bool {
 
 /// Generic dialog class: unowned top-level dialogs are never hide targets.
 /// The project's own Settings UI (own executable plus settings class, see
-/// [`crate::tiling::is_own_settings_window`]) refuses on the same gate.
+/// [`crate::tiling::workspace_dialog_refuses`]) is an ordinary slotless
+/// member and never refuses on this gate.
 pub const DIALOG_CLASS: &str = "#32770";
 
 /// Watcher readiness marker `watcher-<owner-creation>.ready`: three lines of
@@ -295,8 +296,9 @@ pub mod sys {
         if ex & WS_EX_NOACTIVATE != 0 {
             return Err(err("refuse: no-activate"));
         }
-        if class == super::DIALOG_CLASS
-            || crate::tiling::is_own_settings_window(&class, &ident.exe_path, &owner.exe_path)
+        // Own Settings is an ordinary slotless member (never a dialog);
+        // generic unowned `#32770` dialogs still refuse.
+        if crate::tiling::workspace_dialog_refuses(&class, false, &ident.exe_path, &owner.exe_path)
         {
             return Err(err("refuse: dialog"));
         }
@@ -981,8 +983,10 @@ pub mod sys {
         if ex & WS_EX_NOACTIVATE != 0 {
             return CandidateStatus::Refused("no-activate");
         }
-        if class == super::DIALOG_CLASS
-            || crate::tiling::is_own_settings_window(&class, &ident.exe_path, &owner.exe_path)
+        // Own Settings is an ordinary slotless member (never a dialog);
+        // generic unowned `#32770` dialogs still refuse. Owned windows
+        // already refused above, so `owned` reads false here.
+        if crate::tiling::workspace_dialog_refuses(&class, false, &ident.exe_path, &owner.exe_path)
         {
             return CandidateStatus::Refused("dialog");
         }

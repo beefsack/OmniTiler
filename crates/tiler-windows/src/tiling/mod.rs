@@ -25,10 +25,10 @@ mod reconcile;
 mod workspace;
 
 pub use classification::{
-    OWN_SETTINGS_WINDOW_CLASS, ObservedTargetRef, SkipReason, TokenMap, WindowFacts, classify,
-    fingerprint, float_toggle_refusal, is_own_settings_window, orientation_toggle_refusal,
-    overlay_refusal, sticky_directional_refusal, sticky_toggle_refusal,
-    unfloat_maximize_clear_eligible,
+    GENERIC_DIALOG_CLASS, OWN_SETTINGS_WINDOW_CLASS, ObservedTargetRef, SkipReason, TokenMap,
+    WindowFacts, classify, fingerprint, float_toggle_refusal, is_own_settings_window,
+    orientation_toggle_refusal, overlay_refusal, sticky_directional_refusal, sticky_toggle_refusal,
+    unfloat_maximize_clear_eligible, workspace_dialog_refuses,
 };
 pub use cli::{
     CaptureOptions, CliOverrides, HideProofOptions, ScopeHostChild, ShortcutProofOptions,

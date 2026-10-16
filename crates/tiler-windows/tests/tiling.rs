@@ -22,7 +22,7 @@ use tiler_windows::tiling::{
     verify_hide_proof_argv_consistency, verify_proof_argv_consistency,
     verify_resize_argv_consistency, verify_shortcut_proof_argv_consistency,
     verify_workspace_argv_consistency, verify_workspace_proof_argv_consistency,
-    visible_min_from_outer,
+    visible_min_from_outer, workspace_dialog_refuses,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -165,8 +165,9 @@ fn eligibility_exclusions() {
 #[test]
 fn own_settings_window_gate() {
     let owner_exe = "C:\\Program Files\\omnitiler\\tiler-windows.exe";
-    // Own executable plus the settings class refuses management through the
-    // existing dialog skip.
+    // Own executable plus the settings class is an ordinary slotless
+    // workspace member: the discriminator still matches, but the
+    // membership dialog gate never refuses it.
     assert!(is_own_settings_window(
         OWN_SETTINGS_WINDOW_CLASS,
         owner_exe,
@@ -178,9 +179,12 @@ fn own_settings_window_gate() {
         "c:/program files/omnitiler/tiler-windows.exe",
         owner_exe
     ));
-    let mut facts = eligible_facts();
-    facts.dialog = true;
-    assert_eq!(classify(&facts), Err(SkipReason::Dialog));
+    assert!(!workspace_dialog_refuses(
+        OWN_SETTINGS_WINDOW_CLASS,
+        false,
+        owner_exe,
+        owner_exe
+    ));
     // Same executable with any other class stays eligible.
     assert!(!is_own_settings_window("Notepad", owner_exe, owner_exe));
     assert!(!is_own_settings_window("#32770", owner_exe, owner_exe));
@@ -191,6 +195,75 @@ fn own_settings_window_gate() {
         "C:\\Windows\\System32\\notepad.exe",
         owner_exe
     ));
+    assert!(!workspace_dialog_refuses(
+        OWN_SETTINGS_WINDOW_CLASS,
+        false,
+        "C:\\Windows\\System32\\notepad.exe",
+        owner_exe
+    ));
+}
+
+#[test]
+fn workspace_dialog_gate_refuses_only_generic_unowned_dialogs() {
+    let owner_exe = "C:\\Program Files\\omnitiler\\tiler-windows.exe";
+    // Generic unowned `#32770` dialogs refuse membership.
+    assert!(workspace_dialog_refuses(
+        "#32770",
+        false,
+        "C:\\Windows\\System32\\notepad.exe",
+        owner_exe
+    ));
+    // Owned dialogs are owned-dialogs, never dialog-gate refusals.
+    assert!(!workspace_dialog_refuses(
+        "#32770",
+        true,
+        "C:\\Windows\\System32\\notepad.exe",
+        owner_exe
+    ));
+    // Ordinary windows never refuse here.
+    assert!(!workspace_dialog_refuses(
+        "Notepad",
+        false,
+        "C:\\Windows\\System32\\notepad.exe",
+        owner_exe
+    ));
+    // Own Settings never refuses here, owned or not: it is an ordinary
+    // slotless member (same-process windows still refuse via the callers'
+    // same-process gates, never here).
+    assert!(!workspace_dialog_refuses(
+        OWN_SETTINGS_WINDOW_CLASS,
+        false,
+        owner_exe,
+        owner_exe
+    ));
+    assert!(!workspace_dialog_refuses(
+        OWN_SETTINGS_WINDOW_CLASS,
+        true,
+        owner_exe,
+        owner_exe
+    ));
+}
+
+#[test]
+fn own_settings_observation_classifies_eligible() {
+    // Offline membership chain for the Settings UI: own executable plus
+    // the settings class passes the dialog gate (never a dialog), so the
+    // observation facts the native gate now produces classify eligible
+    // like any ordinary window. The fixed-size classifier then floats it
+    // automatic (pinned from its real construction in `settings_ui`),
+    // and sends plus switch-hides ride the ordinary member paths with
+    // the Windows send opt-in.
+    let owner_exe = "C:\\Program Files\\omnitiler\\tiler-windows.exe";
+    assert!(is_own_settings_window(
+        OWN_SETTINGS_WINDOW_CLASS,
+        owner_exe,
+        owner_exe
+    ));
+    let dialog = workspace_dialog_refuses(OWN_SETTINGS_WINDOW_CLASS, false, owner_exe, owner_exe);
+    assert!(!dialog, "own Settings is never a dialog");
+    let mut facts = eligible_facts();
+    facts.dialog = dialog;
+    assert!(classify(&facts).is_ok());
 }
 
 #[test]

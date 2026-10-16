@@ -244,7 +244,7 @@ use self::sends::workspace_do_send;
 use self::settings::apply_live_settings;
 use self::settings::{TileRun, poll_live_settings, suspend_read};
 use self::shell::{
-    DIALOG_CLASS, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, exe_file_name, is_border_shell_popup,
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, exe_file_name, is_border_shell_popup,
     is_shell_class, rect_from_win,
 };
 use self::trace::{log_engine_placement_trace, log_json_at, refresh_border_timed};

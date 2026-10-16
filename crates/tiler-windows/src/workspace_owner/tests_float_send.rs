@@ -227,6 +227,264 @@ fn d16_ordinary_and_combo_carry_deferred_without_geometry_writes() {
 }
 
 #[test]
+fn d16_automatic_fixed_carry_with_windows_send_opt_in() {
+    // Windows workspace-send policy: an automatic fixed-size float carries
+    // slotless MoveDeferred exactly like an intentional float once the
+    // `fixed_send_admission` opt-in is set, both follow and stay, with no
+    // mover geometry and both trees untouched. Without the opt-in the same
+    // wire still refuses (pinned by
+    // `d16_refusals_sticky_automatic_fixed_and_dual_overlay`).
+    use tiler_core::boundary::CoreReply;
+    use tiler_core::directional::WindowId;
+    let bounds = rect(0, 0);
+    let float_frame = d16_float_frame();
+    for follow in [true, false] {
+        let mut engine = tiler_core::engine::Engine::new();
+        let owner = OwnerId::parse("tiler-windows").expect("owner");
+        let generation = GenerationId::parse("aa").expect("generation");
+        engine.sync_binding(&owner, &generation);
+        engine.set_fixed_send_admission(true);
+        let source = workspace_domain("mon-a", "ws-1", bounds, 8);
+        let target = workspace_domain("mon-a", "ws-2", bounds, 8);
+        seed_d16_float_domains(
+            &mut engine,
+            &owner,
+            &generation,
+            &source,
+            &target,
+            bounds,
+            float_frame,
+        );
+        let tree_before_source = engine
+            .session(&source.1)
+            .map(|s| s.tree_for(&source.1).cloned());
+        let tree_before_target = engine
+            .session(&target.1)
+            .map(|s| s.tree_for(&target.1).cloned());
+        let revision = engine
+            .session(&source.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let mut event = d16_send_event(
+            &owner,
+            &generation,
+            revision,
+            &source,
+            &target,
+            bounds,
+            float_frame,
+            false,
+            false,
+            follow,
+        );
+        for entry in event
+            .windows
+            .iter_mut()
+            .chain(event.target_windows.iter_mut())
+        {
+            if entry.window.0 == "wF" {
+                entry.fixed_auto = true;
+            }
+        }
+        let mover = event
+            .windows
+            .iter()
+            .find(|w| w.window.0 == "wF")
+            .expect("mover row");
+        assert!(
+            engine
+                .session(&source.1)
+                .is_some_and(|s| d16_eligible(s, &source.1, mover)),
+            "automatic admits with the opt-in"
+        );
+        let reply = engine.handle(&event);
+        let CoreReply::SendWorkspace(plan) = reply else {
+            panic!("automatic follow={follow}: expected SendWorkspace, got {reply:?}");
+        };
+        assert!(
+            matches!(
+                plan.operation,
+                tiler_core::contract::LifecycleOperation::MoveDeferred { .. }
+            ),
+            "automatic plans slotless deferred"
+        );
+        assert_eq!(plan.follow, follow, "intent echoes");
+        assert_eq!(
+            engine
+                .session(&source.1)
+                .map(|s| s.tree_for(&source.1).cloned()),
+            tree_before_source,
+            "source tree untouched"
+        );
+        assert_eq!(
+            engine
+                .session(&target.1)
+                .map(|s| s.tree_for(&target.1).cloned()),
+            tree_before_target,
+            "target tree untouched"
+        );
+        assert!(
+            plan.geometry.iter().all(|g| g.window.0 != "wF"),
+            "slotless mover takes no allocation"
+        );
+        let session = engine.session(&target.1).expect("target session");
+        assert!(
+            session.is_exception(&WindowId("wF".to_owned())),
+            "mover stays floating on arrival"
+        );
+        assert_eq!(
+            session.floating_geometry(&WindowId("wF".to_owned())),
+            Some(float_frame),
+            "arrival frame exact"
+        );
+    }
+}
+
+#[test]
+fn d16_automatic_fixed_roundtrip_both_legs() {
+    // WS1 -> WS2 (follow) -> WS1 (stay) for a D4-latch automatic float
+    // (wire `fixed_auto`, the adapter stamp shape) with the Windows send
+    // opt-in: both legs plan slotless MoveDeferred with no mover geometry
+    // and neither tree mutating, and the arrival frame plus restart memory
+    // survive each leg verbatim.
+    use tiler_core::boundary::CoreReply;
+    use tiler_core::directional::WindowId;
+    let bounds = rect(0, 0);
+    let float_frame = d16_float_frame();
+    let mut engine = tiler_core::engine::Engine::new();
+    let owner = OwnerId::parse("tiler-windows").expect("owner");
+    let generation = GenerationId::parse("aa").expect("generation");
+    engine.sync_binding(&owner, &generation);
+    engine.set_fixed_send_admission(true);
+    let ws1 = workspace_domain("mon-a", "ws-1", bounds, 8);
+    let ws2 = workspace_domain("mon-a", "ws-2", bounds, 8);
+    seed_d16_float_domains(
+        &mut engine,
+        &owner,
+        &generation,
+        &ws1,
+        &ws2,
+        bounds,
+        float_frame,
+    );
+    let tree_before_ws1 = engine.session(&ws1.1).map(|s| s.tree_for(&ws1.1).cloned());
+    let tree_before_ws2 = engine.session(&ws2.1).map(|s| s.tree_for(&ws2.1).cloned());
+    // (source, target, source survivor, follow, leg)
+    for (source, target, survivor, follow, leg) in [
+        (&ws1, &ws2, "wS", true, "out"),
+        (&ws2, &ws1, "wT", false, "back"),
+    ] {
+        let revision = engine
+            .session(&source.1)
+            .map(|s| s.accepted_revision())
+            .unwrap_or(0);
+        let source_rows = vec![
+            OwnerRow {
+                token: survivor.to_owned(),
+                rect: bounds,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: false,
+            },
+            OwnerRow {
+                token: "wF".to_owned(),
+                rect: float_frame,
+                hints: tiler_core::size_hints::WindowSizeHints::none(),
+                floating: true,
+            },
+        ];
+        let home_survivor = if leg == "out" { "wT" } else { "wS" };
+        let target_rows = vec![OwnerRow {
+            token: home_survivor.to_owned(),
+            rect: bounds,
+            hints: tiler_core::size_hints::WindowSizeHints::none(),
+            floating: false,
+        }];
+        let correlation = CorrelationId::parse("tick-1").expect("correlation");
+        let mut event = build_send_event(
+            &owner,
+            &generation,
+            &correlation,
+            revision,
+            42,
+            source.clone(),
+            target.clone(),
+            &source_rows,
+            &target_rows,
+            "wF",
+            8,
+            follow,
+        )
+        .expect("event");
+        stamp_send_target(&mut event, &target.1);
+        super::super::stamp_send_float_overlay(&mut event, "wF", true, false);
+        for entry in event
+            .windows
+            .iter_mut()
+            .chain(event.target_windows.iter_mut())
+        {
+            if entry.window.0 == "wF" {
+                entry.fixed_auto = true;
+            }
+        }
+        let reply = engine.handle(&event);
+        let CoreReply::SendWorkspace(plan) = reply else {
+            panic!("automatic {leg}: expected SendWorkspace, got {reply:?}");
+        };
+        assert!(
+            matches!(
+                plan.operation,
+                tiler_core::contract::LifecycleOperation::MoveDeferred { .. }
+            ),
+            "automatic {leg}: slotless deferred leg"
+        );
+        assert_eq!(plan.follow, follow, "automatic {leg}: intent echoes");
+        assert!(
+            plan.geometry.iter().all(|g| g.window.0 != "wF"),
+            "automatic {leg}: slotless mover takes no allocation"
+        );
+        for row in source_rows.iter().chain(target_rows.iter()) {
+            if row.token == "wF" {
+                continue;
+            }
+            let entry = plan
+                .geometry
+                .iter()
+                .find(|g| g.window.0 == row.token)
+                .unwrap_or_else(|| panic!("automatic {leg}: survivor kept"));
+            assert_eq!(
+                entry.rect, bounds,
+                "automatic {leg}: survivor never reflows"
+            );
+        }
+        let session = engine.session(&target.1).expect("target session");
+        assert!(
+            session.is_exception(&WindowId("wF".to_owned())),
+            "automatic {leg}: still floating on arrival"
+        );
+        assert_eq!(
+            session.floating_geometry(&WindowId("wF".to_owned())),
+            Some(float_frame),
+            "automatic {leg}: exact arrival frame"
+        );
+        assert_eq!(
+            session.retained_float_geometry(&WindowId("wF".to_owned())),
+            Some(float_frame),
+            "automatic {leg}: restart memory follows"
+        );
+    }
+    assert_eq!(
+        engine.session(&ws1.1).map(|s| s.tree_for(&ws1.1).cloned()),
+        tree_before_ws1,
+        "ws-1 tree untouched across the roundtrip"
+    );
+    assert_eq!(
+        engine.session(&ws2.1).map(|s| s.tree_for(&ws2.1).cloned()),
+        tree_before_ws2,
+        "ws-2 tree untouched across the roundtrip"
+    );
+}
+
+#[test]
 fn d16_roundtrip_retains_float_both_legs() {
     // Ordinary/combo WS1 -> WS2 -> WS1 roundtrip: both legs plan
     // MoveDeferred and the arrival frame/flags survive each leg.

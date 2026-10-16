@@ -712,8 +712,8 @@ platform API behavior.
     runtime opt-in allows its unreliable lock override. Disable, rebind-away,
     Compatible or keyboard takeover off clears the warning; absence of a
     warning never establishes containment for other unproven chords.
-  - The own-executable Settings control window is unmanaged through existing
-    dialog gates.
+  - The own-executable Settings control window was unmanaged through dialog
+    gates; the user superseded this exclusion on 2026-10-16 below.
   - Status: synthetic native UI/Apply/Revert, geometry/border/SPI and cleanup
     proof passed; physical shortcut/Snap/Xbox and other DPI/output checks
     stay user-owned ([settings](changes/archive/windows-settings.md)).
@@ -770,6 +770,19 @@ platform API behavior.
   a floating window to another workspace keeps it floating on arrival and
   keeps its size; destination tiles are untouched. Applies to follow and stay,
   numbered and relative sends. No setting.
+- User 2026-10-16 approved: Windows ordinary workspace members remain sendable
+  when born floating/fixed-size, maximized or fullscreen, preserving their
+  floating/maximized/fullscreen state and established numbered/relative
+  follow/stay semantics. Automatic fixed-size floats send slotlessly like
+  intentional floats; this supersedes their Windows D16 refusal only.
+  The separate-process OmniTiler Settings dialog joins ordinary workspace
+  membership as a fixed-size float, hides when its workspace is not shown and
+  supports those sends without tiling. Its prior own-UI exclusion is superseded,
+  not the same-process owner/control, proof or generic owned-dialog fences.
+  Sticky refusals and fullscreen/game guards remain authoritative; the D28
+  explicit-command interpretation permits fullscreen carry without unsolicited
+  geometry/state writes. KDE/macOS behavior is unchanged. Delivered offline;
+  [physical acceptance remains pending](changes/windows-all-member-workspace-sends.md).
 - D16 [tier rule](#reference-tiers) basis: Hyprland, i3 and sway (Tier 1)
   plus xmonad, qtile and awesome (Tier 2) retain float against COSMIC fresh
   re-tile. COSMIC's alternative has no second Tier 1/2 reference, so it does

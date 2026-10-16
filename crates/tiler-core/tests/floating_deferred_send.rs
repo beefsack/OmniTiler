@@ -13,8 +13,9 @@
 //! memory follows with no rehoming step. The operation carries
 //! window plus source/target identities with NO leaf (never
 //! fabricated). Sticky movers (plain or combo) keep refusing as
-//! `NotTiled`, as do both-overlays-at-once and automatic-fixed combos;
-//! tiled sends still plan `MoveTiled`.
+//! `NotTiled`, as do both-overlays-at-once and automatic-fixed movers
+//! (the Windows `fixed_send_admission` opt-in lifts the automatic
+//! refusal only); tiled sends still plan `MoveTiled`.
 
 use std::collections::BTreeMap;
 
@@ -651,6 +652,224 @@ fn automatic_fixed_float_send_refuses_not_tiled() {
         )
         .expect_err("automatic send must refuse");
     assert_eq!(err.kind(), "not-tiled");
+}
+
+/// Automatic-float fixture with a real retained classifier mark: the
+/// intentional float adopts adapter-asserted automatic origin through
+/// observation convergence (the fixed-size classifier lane, e.g. a
+/// fixed-size Settings dialog), exactly like production. The wire flag is
+/// NOT carried on later observations: only the retained mark proves
+/// automatic origin, mirroring the adapter stamp (latch-only).
+fn automatic_fixture() -> Session {
+    let mut s = float_fixture();
+    s.set_fixed_size_admission(true);
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fixed_auto = true;
+    s.converge_observation(&obs(&s, windows), None)
+        .expect("adopt automatic origin");
+    assert!(
+        s.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
+        "classifier mark retained"
+    );
+    s
+}
+
+#[test]
+fn automatic_fixed_float_send_admits_with_opt_in() {
+    // Windows workspace-send opt-in: the same automatic mover that
+    // `automatic_fixed_float_send_refuses_not_tiled` refuses carries
+    // slotless MoveDeferred once `fixed_send_admission` is set, with
+    // flags and floating size preserved verbatim and no tree mutation.
+    // The explicit tile win (`fixed_suppress`) still refuses.
+    let mut s = automatic_fixture();
+    let source = key("out-1", "ws-a");
+    assert!(
+        !s.deferred_send_eligible(
+            &WindowId("win-f".to_owned()),
+            &source,
+            &live_observation(&s).windows,
+        ),
+        "automatic mover ineligible by default"
+    );
+    s.set_fixed_send_admission(true);
+    assert!(
+        s.deferred_send_eligible(
+            &WindowId("win-f".to_owned()),
+            &source,
+            &live_observation(&s).windows,
+        ),
+        "automatic mover eligible with the opt-in"
+    );
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: OutputId("out-1".to_owned()),
+                target_workspace: WorkspaceId("ws-b".to_owned()),
+                follow: true,
+            },
+            &live_observation(&s),
+            &corr("corr-float-automatic-opt-in"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("automatic send plans with the opt-in");
+    match &plan.dispatch.operation {
+        LifecycleOperation::MoveDeferred { window, .. } => assert_eq!(window.0, "win-f"),
+        other => panic!("expected MoveDeferred, got {other:?}"),
+    }
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "slotless mover takes no allocation"
+    );
+    // The explicit tile win still refuses under the opt-in.
+    let mut s = automatic_fixture();
+    s.set_fixed_send_admission(true);
+    let source = key("out-1", "ws-a");
+    let mut windows = live_observation(&s).windows;
+    windows
+        .iter_mut()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover observed")
+        .fixed_suppress = true;
+    assert!(
+        !s.deferred_send_eligible(&WindowId("win-f".to_owned()), &source, &windows),
+        "explicit tile win still ineligible"
+    );
+}
+
+#[test]
+fn automatic_fixed_float_roundtrip_retains_marker_and_frame() {
+    // WS1 -> WS2 (follow) -> WS1 (stay) for a retained-mark automatic
+    // float with the opt-in: both legs plan slotless MoveDeferred with no
+    // wire fixed-size signal, no tree mutation, and no mover allocation;
+    // the automatic marker, float flags, frame, and restart memory survive
+    // both legs verbatim.
+    let mut s = automatic_fixture();
+    s.set_fixed_send_admission(true);
+    let source = key("out-1", "ws-a");
+    let target = key("out-1", "ws-b");
+    let tree_before_a = s.tree_for(&source).cloned();
+    let tree_before_b = s.tree_for(&target).cloned();
+    // Leg one: ws-a -> ws-b (follow).
+    let plan = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: target.output.clone(),
+                target_workspace: target.workspace.clone(),
+                follow: true,
+            },
+            &live_observation(&s),
+            &corr("corr-auto-leg-one"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("automatic leg one plans");
+    assert!(
+        matches!(
+            &plan.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "leg one carries the deferred transfer"
+    );
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "leg one: slotless mover takes no allocation"
+    );
+    commit(
+        &mut s,
+        &plan.dispatch.preconditions,
+        &plan.dispatch.operation,
+        "corr-auto-leg-one",
+        300,
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-b", "leg one arrives on ws-b");
+    assert!(record.floating, "float retained on leg one");
+    assert!(
+        s.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
+        "automatic marker follows leg one"
+    );
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "leg one keeps the size"
+    );
+    assert_eq!(
+        s.retained_float_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "leg one keeps restart memory"
+    );
+    // Leg two: ws-b -> ws-a (stay).
+    let back = s
+        .propose(
+            &SessionCommand::MoveToWorkspace {
+                window: WindowId("win-f".to_owned()),
+                target_output: source.output.clone(),
+                target_workspace: source.workspace.clone(),
+                follow: false,
+            },
+            &live_observation(&s),
+            &corr("corr-auto-leg-two"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("automatic return leg plans");
+    assert!(
+        matches!(
+            &back.dispatch.operation,
+            LifecycleOperation::MoveDeferred { .. }
+        ),
+        "return leg also carries the deferred transfer"
+    );
+    assert!(
+        back.desired_geometry.iter().all(|g| g.window.0 != "win-f"),
+        "leg two: slotless mover takes no allocation"
+    );
+    commit(
+        &mut s,
+        &back.dispatch.preconditions,
+        &back.dispatch.operation,
+        "corr-auto-leg-two",
+        400,
+    );
+    let record = s
+        .exception_observed()
+        .into_iter()
+        .find(|w| w.window.0 == "win-f")
+        .expect("mover exception");
+    assert_eq!(record.workspace.0, "ws-a", "return leg arrives home");
+    assert!(record.floating, "float retained on the return leg");
+    assert!(
+        s.is_automatic_fixed_float(&WindowId("win-f".to_owned())),
+        "automatic marker follows the return leg"
+    );
+    assert_eq!(
+        s.floating_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "size kept across the roundtrip"
+    );
+    assert_eq!(
+        s.retained_float_geometry(&WindowId("win-f".to_owned())),
+        Some(float_rect()),
+        "restart memory follows across the roundtrip"
+    );
+    assert_eq!(
+        s.tree_for(&source).cloned(),
+        tree_before_a,
+        "source tree untouched across the roundtrip"
+    );
+    assert_eq!(
+        s.tree_for(&target).cloned(),
+        tree_before_b,
+        "target tree untouched across the roundtrip"
+    );
 }
 
 #[test]

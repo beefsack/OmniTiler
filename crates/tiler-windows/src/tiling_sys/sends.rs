@@ -84,9 +84,10 @@ pub(super) fn workspace_do_send(
     // explicit subject gate so a pruned-domain sticky still refuses.
     // Floating-source boundary sends skip this refusal (eligibility derives
     // from the actual source below): their movers ride the native route.
-    // D16 ordinary intentional floats and approved floating+fullscreen /
+    // D16 ordinary intentional floats, automatic fixed-size floats as
+    // ordinary members, and approved floating+fullscreen /
     // floating+maximized combos send tiled-to-tiled through the shared
-    // slotless deferred path; sticky and automatic-fixed floats keep
+    // slotless deferred path; sticky and explicit tile overrides keep
     // refusing here.
     if state.sticky.contains_key(&mover_key) {
         return fail("send-refused-sticky");
@@ -213,9 +214,10 @@ pub(super) fn workspace_do_send(
     let mover_observed = observed.iter().any(|w| w.hwnd == mover_hwnd);
     let (snap_overlay, fallback_fullscreen) = if mover_observed {
         if engine_is_float(state, &loc.output, &loc.workspace, origin_token) {
-            // D16 admitted float (the dispatch gate already refused sticky,
-            // automatic-fixed, and dual-overlay shapes): bind the exact live
-            // overlay snapshot so the post-plan fences compare like-for-like.
+            // Admitted float (the dispatch gate already refused sticky,
+            // explicit tile overrides, and dual-overlay shapes): bind the
+            // exact live overlay snapshot so the post-plan fences compare
+            // like-for-like.
             // A tiled (false, false) snapshot here would defer or refuse
             // every combo natively. The snapshot fullscreen doubles as the
             // unreadable-frame fallback, like the retained row below.

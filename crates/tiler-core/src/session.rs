@@ -660,6 +660,17 @@ pub struct Session {
     /// maximized (non-fullscreen) focused subject refuses as `Unchanged`
     /// with no plan and no pending. Cloned verbatim like `fixed_admission`.
     maximized_focus_fence: bool,
+    /// Opt-in deferred send for automatic fixed-size floats (Windows
+    /// workspace sends). Off by default so KDE/macOS carriers keep exact
+    /// current behavior; the Windows route enables it. When on, the
+    /// automatic-origin signals (`fixed_auto` observation flag and the
+    /// retained `automatic_fixed` marker) no longer refuse the slotless
+    /// deferred transfer: automatic floats send like intentional floats
+    /// with flags and floating size preserved verbatim and no geometry
+    /// writes. Sticky, dual overlays, exited movers, and explicit tile
+    /// wins (`fixed_suppress`) still refuse. Cloned verbatim like
+    /// `fixed_admission`.
+    fixed_send_admission: bool,
     /// Classifier-created automatic fixed floats (membership only, D8).
     /// Intentional floats (toggle-float, sticky) never land here (D6).
     automatic_fixed: BTreeSet<WindowId>,
@@ -775,6 +786,7 @@ impl Session {
             fixed_admission: false,
             fixed_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             maximized_focus_fence: false,
+            fixed_send_admission: false,
             automatic_fixed: BTreeSet::new(),
             fixed_tile_override: BTreeSet::new(),
             minimized_slots: BTreeMap::new(),
@@ -1126,6 +1138,7 @@ impl Session {
         pair.fixed_admission = source.fixed_admission;
         pair.fixed_predicate = source.fixed_predicate;
         pair.maximized_focus_fence = source.maximized_focus_fence;
+        pair.fixed_send_admission = source.fixed_send_admission;
         pair.automatic_fixed = source.automatic_fixed.clone();
         pair.fixed_tile_override = source.fixed_tile_override.clone();
         if let Some(target) = target {
@@ -1331,6 +1344,8 @@ impl Session {
         target.fixed_predicate = self.fixed_predicate;
         source.maximized_focus_fence = self.maximized_focus_fence;
         target.maximized_focus_fence = self.maximized_focus_fence;
+        source.fixed_send_admission = self.fixed_send_admission;
+        target.fixed_send_admission = self.fixed_send_admission;
         for id in &self.automatic_fixed {
             if source.windows.contains_key(id) || source.exceptions.contains_key(id) {
                 source.automatic_fixed.insert(id.clone());

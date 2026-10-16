@@ -184,11 +184,12 @@ pub(super) fn run_output_send(
         return "unmanaged";
     }
     // Subject eligibility (decisions 5.3/5.4): sticky movers never send,
-    // and intentional per-window float movers never send unless the D16
-    // admitted-float contract holds (`float_send_admits`: Engine exception,
-    // never sticky/automatic-fixed, exactly zero or one overlay from the
+    // and per-window float movers never send unless the admitted-float
+    // contract holds (`float_send_admits`: Engine exception, never sticky
+    // or explicit tile override, exactly zero or one overlay from the
     // live `overlay_now` snapshot) - independent of the source workspace
-    // mode. A tiled member of a floating workspace stays eligible and routes
+    // mode. Automatic fixed-size floats admit as ordinary members. A tiled
+    // member of a floating workspace stays eligible and routes
     // the native boundary path below.
     if state.sticky.contains_key(member_key) {
         log_send(
@@ -210,12 +211,12 @@ pub(super) fn run_output_send(
     // send): a retained maximized/fullscreen member resolves through its
     // retained row with a live flag recheck, never as an ordinary mover; an
     // observed mover rides the ordinary (false, false) expectation except
-    // D16 admitted floats, which bind their exact live overlay snapshot
+    // admitted floats, which bind their exact live overlay snapshot
     // from `overlay_now` (a tiled (false, false) snapshot here would defer
     // or refuse every combo). A tiled maximized/fullscreen member sends
     // (carry, never restore); a newly fullscreened ordinary mover refuses
-    // with no writes. Ordinary intentional floats never reach here (refused
-    // above for lack of D16 admission).
+    // with no writes. Unadmitted floats never reach here (refused above
+    // for lack of admission).
     let mover_hwnd = member_key.hwnd;
     let mover_observed = observed.iter().any(|w| w.hwnd == mover_hwnd);
     let (snap_overlay, _fallback_fullscreen) = if mover_observed {

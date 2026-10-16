@@ -88,10 +88,10 @@ pub struct WindowFacts {
     pub owned: bool,
     pub captionless_fullscreen: bool,
     pub no_activate: bool,
-    /// Generic Win32 dialog class (`#32770`) without an owner window, plus
-    /// the project's own Settings UI (own executable plus
-    /// [`OWN_SETTINGS_WINDOW_CLASS`], set by the native gates).
-    /// Owned dialogs are reported as `OwnedDialog` instead.
+    /// Generic Win32 dialog class (`#32770`) without an owner window. Owned
+    /// dialogs are reported as `OwnedDialog` instead. The project's own
+    /// Settings UI is an ordinary member (see [`workspace_dialog_refuses`]),
+    /// never a dialog.
     pub dialog: bool,
 }
 
@@ -106,8 +106,8 @@ pub enum SkipReason {
     Shell,
     Tool,
     OwnedDialog,
-    /// Unowned generic dialog (`#32770`) or the project's own Settings UI
-    /// (own executable plus settings class): never a tile target.
+    /// Unowned generic dialog (`#32770`): never a tile target. The
+    /// project's own Settings UI is an ordinary slotless member instead.
     Dialog,
     Fullscreen,
     NoActivate,
@@ -144,17 +144,44 @@ impl SkipReason {
 /// portable policy compiles everywhere).
 pub const OWN_SETTINGS_WINDOW_CLASS: &str = "OmniTilerSettings";
 
+/// Generic Win32 dialog class. Unowned top-level dialogs are never
+/// workspace members; owned ones are already excluded as owned dialogs.
+/// (Duplicated here so this portable policy compiles everywhere; native
+/// gates carry their own copy.)
+pub const GENERIC_DIALOG_CLASS: &str = "#32770";
+
 /// True when a top-level window is the project's own Settings UI: its class
 /// is the settings class and its executable matches the owner's exactly
 /// (slash/case-insensitive, same [`crate::lifecycle::exe_paths_equal`]
 /// identity the owner checks use). Class alone never excludes: a foreign app
 /// reusing the class name stays eligible, and our own executable with any
-/// other class stays eligible. Native gates classify this as a dialog so the
-/// existing skip/recovery fences keep it unmanaged.
+/// other class stays eligible.
 #[must_use]
 pub fn is_own_settings_window(class: &str, exe_path: &str, owner_exe_path: &str) -> bool {
     class == OWN_SETTINGS_WINDOW_CLASS
         && crate::lifecycle::exe_paths_equal(exe_path, owner_exe_path)
+}
+
+/// Workspace-membership dialog gate (Windows): true when the window refuses
+/// membership as a dialog. Only an unowned generic Win32 dialog
+/// (`#32770`) refuses here. The project's own Settings UI (own executable
+/// plus settings class, see [`is_own_settings_window`]) is an ordinary
+/// slotless workspace member: it never refuses on this gate, follows
+/// workspace visibility, and supports sends without being tiled. It runs as
+/// a separate Settings process (`tiler-windows settings`, detached from the
+/// owner tray), so the callers' same-process gates still refuse every
+/// same-process window and proof/control windows keep their own gates.
+#[must_use]
+pub fn workspace_dialog_refuses(
+    class: &str,
+    owned: bool,
+    exe_path: &str,
+    owner_exe_path: &str,
+) -> bool {
+    if is_own_settings_window(class, exe_path, owner_exe_path) {
+        return false;
+    }
+    !owned && class == GENERIC_DIALOG_CLASS
 }
 
 /// Eligibility gate. Terminal windows are ordinary tile targets (KDE

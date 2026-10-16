@@ -287,8 +287,8 @@ pub(super) fn window_identity(
         GetWindowThreadProcessId(hwnd, &mut pid);
     }
     // The owner never tiles its own process. Its separate-process Settings
-    // UI (same executable, settings class) is excluded at the dialog gate
-    // below, not here.
+    // UI (same executable, settings class) is an ordinary slotless member
+    // via the dialog gate below, not here.
     if pid == 0 || pid == me.pid {
         return None;
     }
@@ -496,8 +496,14 @@ pub(super) fn observe_window(
         owned,
         captionless_fullscreen: is_borderless_fullscreen(captionless, visible, fulls),
         no_activate: exstyle & WS_EX_NOACTIVATE != 0,
-        dialog: (!owned && class == DIALOG_CLASS)
-            || crate::tiling::is_own_settings_window(&class, &identity.exe_path, &me.exe_path),
+        // Own Settings rides the ordinary membership gate (never a
+        // dialog); generic unowned `#32770` dialogs still refuse.
+        dialog: crate::tiling::workspace_dialog_refuses(
+            &class,
+            owned,
+            &identity.exe_path,
+            &me.exe_path,
+        ),
     };
     Ok(ObservedWindow {
         hwnd: hwnd_u64,

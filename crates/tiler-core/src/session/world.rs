@@ -483,14 +483,20 @@ impl super::Session {
     /// Whether an exception member is eligible for the slotless deferred
     /// send transfer (D28 born-fullscreen carry, option (a); D16 ordinary
     /// intentional-float carry, option (a), no setting; D16 approved
-    /// floating+fullscreen / floating+maximized combo carry, 2026-10-13).
+    /// floating+fullscreen / floating+maximized combo carry, 2026-10-13;
+    /// Windows automatic fixed-size carry with the `fixed_send_admission`
+    /// opt-in).
     ///
     /// The retained record is always the floating-only shape; three
     /// observed shapes carry: the D28 held mover (never floating, still
     /// fullscreen), the ordinary float (still floating, no overlays), and
     /// the approved combos (still floating with exactly one overlay).
-    /// Sticky, both overlays at once, automatic fixed floats, and exited
-    /// movers refuse. Hints never gate; size travels in the retained
+    /// Sticky, both overlays at once, explicit tile wins
+    /// (`fixed_suppress`), and exited movers refuse. Automatic-origin
+    /// signals (`fixed_auto` observation flag, retained `automatic_fixed`
+    /// marker) refuse unless the `fixed_send_admission` opt-in is set, in
+    /// which case automatic floats carry exactly like intentional floats.
+    /// Hints never gate; size travels in the retained
     /// record. Overlays ride adapter-native with no geometry write.
     pub fn deferred_send_eligible(
         &self,
@@ -517,24 +523,33 @@ impl super::Session {
         if entry.output != source.output || entry.workspace != source.workspace {
             return false;
         }
+        // Automatic origin lifts only under the Windows send opt-in; the
+        // explicit tile win (`fixed_suppress`) refuses either way. With
+        // the opt-in off every arm keeps its exact prior refusal.
         // Held born-fullscreen arm (D28): the native send-route shape.
         if !entry.floating && entry.fullscreen && !entry.maximized && !entry.sticky {
+            if self.fixed_send_admission {
+                return !entry.fixed_suppress;
+            }
             return !entry.fixed_auto && !entry.fixed_suppress;
         }
         // Ordinary intentional-float arm (D16): still floating, no
-        // overlays, no fixed-size origin signals (observed flags or
-        // the retained automatic marker).
-        // Size travels in the retained record, never in the
+        // overlays. Size travels in the retained record, never in the
         // observation, so no geometry gates here.
         if entry.floating && !entry.fullscreen && !entry.maximized && !entry.sticky {
+            if self.fixed_send_admission {
+                return !entry.fixed_suppress;
+            }
             return !entry.fixed_auto
                 && !entry.fixed_suppress
                 && !self.automatic_fixed.contains(window);
         }
         // Approved combo arm (D16, 2026-10-13): still floating with
-        // exactly one overlay, never sticky, no fixed-size origin
-        // signals.
+        // exactly one overlay, never sticky.
         if entry.floating && !entry.sticky && (entry.fullscreen ^ entry.maximized) {
+            if self.fixed_send_admission {
+                return !entry.fixed_suppress;
+            }
             return !entry.fixed_auto
                 && !entry.fixed_suppress
                 && !self.automatic_fixed.contains(window);
@@ -616,6 +631,21 @@ impl super::Session {
     /// revision.
     pub fn set_maximized_focus_fence(&mut self, enabled: bool) {
         self.maximized_focus_fence = enabled;
+    }
+
+    /// Whether the opt-in deferred send for automatic fixed-size floats
+    /// is enabled (Windows workspace sends). Off by default; KDE/macOS
+    /// carriers keep exact current behavior while the Windows route
+    /// enables it.
+    #[must_use]
+    pub fn fixed_send_admission(&self) -> bool {
+        self.fixed_send_admission
+    }
+
+    /// Enable or disable deferred sends for automatic fixed-size floats.
+    /// Never touches topology, shares, membership, focus, or revision.
+    pub fn set_fixed_send_admission(&mut self, enabled: bool) {
+        self.fixed_send_admission = enabled;
     }
 
     /// Current R-SPC-04 D1 fixed-size admission predicate. Both-axes

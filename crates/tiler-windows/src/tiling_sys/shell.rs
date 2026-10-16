@@ -48,12 +48,6 @@ pub(super) fn exe_file_name(exe_path: &str) -> &str {
     exe_path.rsplit(['/', '\\']).next().unwrap_or(exe_path)
 }
 
-/// Generic Win32 dialog class. Unowned top-level dialogs are never tile
-/// targets; owned ones are already excluded as owned dialogs. The project's
-/// own Settings UI (own executable plus settings class) rides the same gate
-/// via [`crate::tiling::is_own_settings_window`].
-pub(super) const DIALOG_CLASS: &str = "#32770";
-
 pub(super) fn rect_from_win(rect: RECT) -> Option<Rect> {
     let w = (rect.right as i64 - rect.left as i64).try_into().ok()?;
     let h = (rect.bottom as i64 - rect.top as i64).try_into().ok()?;
