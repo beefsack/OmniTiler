@@ -94,3 +94,20 @@
   passing send/exit legs do not clear it.
 - Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored; build,
   fmt, strict all-target clippy and diff check passed. No source change.
+
+## Second agent-live sweep (2026-10-17)
+
+- Numbered ordinary-float follow roundtrip retained the mover frame with
+  slotless zero-application replies and unchanged source/destination tiles.
+  Sticky send refusal was reproduced without movement or focus writes.
+- A small floating frame entered genuine fullscreen, transferred slotlessly
+  by stay-send to an empty workspace and retained the fullscreen arrival frame
+  without sibling reflow. Destination exit exposed missing floating-frame
+  restoration; the Windows-local [fix](windows-floating-fullscreen-frame-restore.md)
+  restores the exact pre-fullscreen frame on direct and destination exit,
+  stable through later ticks. Return-send sibling frames remained unchanged.
+- Graceful stop/independent restore left no ledger or fullscreen residue;
+  settings and SPI were unchanged. Locked four-package gates: 2,469 passed,
+  zero failed, one ignored; build/fmt/strict all-target clippy/diff check passed.
+- Relative fullscreen forms, the comprehensive matrix, physical input,
+  cross-output and game acceptance remain pending; this is not full D16 closure.

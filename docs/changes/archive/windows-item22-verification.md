@@ -61,3 +61,16 @@
   and [D23](windows-d23-restore-close.md#agent-live-follow-up-2026-10-17) evidence.
 - Fullscreen follow-send was skipped to avoid Xbox activation. No physical
   feel, real-game, cross-output or D26 end-session acceptance was added.
+
+## Second agent-live sweep (2026-10-17)
+
+- D16 fullscreen combo transfer and a genuine destination exit were exercised
+  through CLI dispatch, without the native fullscreen shortcut. A small-frame
+  exit defect was reproduced and [fixed](windows-floating-fullscreen-frame-restore.md).
+- D23 resize-skewed rejoin, minimized close plus distinct fresh admission, and
+  sole iconic retention passed. Internal slot retirement combines native
+  non-reuse evidence with a targeted slot-absence regression; sole null focus,
+  hidden bursts and the broader matrix remain pending.
+- [D16](windows-d16-floating-transfer.md#second-agent-live-sweep-2026-10-17)
+  and [D23](windows-d23-restore-close.md#second-agent-live-sweep-2026-10-17)
+  retain the exact scope and limitations. No physical/game/cross-output claim.

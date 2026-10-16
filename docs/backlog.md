@@ -386,6 +386,11 @@ decisions of 2026-09-24 are under
     follow/stay and native destination unmaximize preserved the remembered
     float frame. Plain-float matrix remains partial; fullscreen skipped for
     Xbox prompt risk. [Evidence](changes/archive/windows-d16-floating-transfer.md#agent-live-follow-up-2026-10-17).
+    Second agent-live sweep 2026-10-17: numbered ordinary-float roundtrip and
+    fullscreen stay-carry passed; a small-frame destination-exit defect was
+    [fixed](changes/archive/windows-floating-fullscreen-frame-restore.md).
+    Direct/destination exits now restore the exact float frame; comprehensive
+    relative/physical/game matrix remains pending.
   - D22 verification queue: native R-FLT-03 float-out reflow live check remains
     pending; surviving siblings must preserve their relative shares. Shared
     removal already matches; verification-only, no setting.
@@ -404,6 +409,11 @@ decisions of 2026-09-24 are under
     frames; minimized Paint exited and survivors reflowed. Internal slot
     retirement remains unproven; attempted sole leg invalid; minimized restart
     iconic retention observed only. [Evidence](changes/archive/windows-d23-restore-close.md#agent-live-follow-up-2026-10-17).
+    Second agent-live sweep 2026-10-17: resize-skewed rejoin, minimized close
+    and distinct fresh admission passed; combined native non-reuse plus the
+    slot-absence regression supports internal cleanup. Sole iconic retention
+    passed, but internal null focus, hidden bursts and broader variants remain
+    open. [Evidence](changes/archive/windows-d23-restore-close.md#second-agent-live-sweep-2026-10-17).
   - D27 KDE verification queue: native valid-token switch convergence,
     missing/stale-token mark-only without interference; FromTool/allowed-X11
     native behavior. Must-pass real-game active play and idle/paused check,

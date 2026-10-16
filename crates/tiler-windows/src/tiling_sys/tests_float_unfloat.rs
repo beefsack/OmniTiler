@@ -1124,6 +1124,7 @@ fn owned_fullscreen_transition_post_clear_refuses() {
     script.meta_post = Some(super::FullscreenMeta {
         changed: 0,
         was_maximized: true,
+        frame: None,
     });
     let correlation = state.correlation();
     let err = super::unfloat_maximize_clear(
@@ -1202,6 +1203,7 @@ fn retry_after_metadata_absence_proves_fresh_admission() {
     refusing.meta_post = Some(super::FullscreenMeta {
         changed: 0,
         was_maximized: true,
+        frame: None,
     });
     let correlation = state.correlation();
     let err = super::unfloat_maximize_clear(
@@ -1312,6 +1314,7 @@ fn stale_restored_marker_retires_through_production_ordering() {
     script.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     script.meta_post = None;
     script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
@@ -1416,6 +1419,7 @@ fn captionless_noncover_transition_keeps_veto_without_removal() {
     script.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     script.meta_post = script.meta_pre;
     script.retire_style = Some(0);
@@ -1482,6 +1486,7 @@ fn live_cover_and_unreadable_and_identity_keep_veto() {
         script.meta_pre = Some(super::FullscreenMeta {
             changed: super::FULLSCREEN_STYLE_BITS,
             was_maximized: false,
+            frame: None,
         });
         script.meta_post = script.meta_pre;
         script.retire_style = style;
@@ -1541,6 +1546,7 @@ fn zero_changed_and_failed_removal_keep_veto() {
     script.meta_pre = Some(super::FullscreenMeta {
         changed: 0,
         was_maximized: false,
+        frame: None,
     });
     script.meta_post = script.meta_pre;
     script.retire_style = Some(0);
@@ -1575,6 +1581,7 @@ fn zero_changed_and_failed_removal_keep_veto() {
     script.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     script.meta_post = script.meta_pre;
     script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
@@ -1628,6 +1635,7 @@ fn retirement_race_after_proof_keeps_veto_without_removal() {
     let stale = || super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     };
     // Metadata changed between proof and pin.
     let (mut state, output, active, key, sib) = stage_floating_pair();
@@ -1638,6 +1646,7 @@ fn retirement_race_after_proof_keeps_veto_without_removal() {
     script.meta_cur_val = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: true,
+        frame: None,
     });
     script.meta_post = script.meta_cur_val;
     script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
@@ -1755,6 +1764,7 @@ fn retirement_guards_block_mutation_before_proof() {
     script.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     script.meta_post = script.meta_pre;
     script.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
@@ -1810,6 +1820,7 @@ fn refullscreen_after_completed_retirement_stays_protected() {
     first.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     first.meta_post = None;
     first.retire_style = Some(super::FULLSCREEN_STYLE_BITS);
@@ -1836,6 +1847,7 @@ fn refullscreen_after_completed_retirement_stays_protected() {
     second.meta_pre = Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     });
     second.meta_post = second.meta_pre;
     second.retire_style = Some(0);
@@ -1907,6 +1919,7 @@ fn sweep_retires_restored_marker_without_explicit_action() {
     let mut script = sweep_script(Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     }));
     super::sweep_retire_stale_fullscreen(
         &mut script,
@@ -1948,6 +1961,7 @@ fn sweep_retires_restored_marker_on_intentional_float() {
     let mut script = sweep_script(Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     }));
     super::sweep_retire_stale_fullscreen(
         &mut script,
@@ -1979,6 +1993,7 @@ fn sweep_transient_and_unreadable_keep_marker() {
         let mut script = sweep_script(Some(super::FullscreenMeta {
             changed: super::FULLSCREEN_STYLE_BITS,
             was_maximized: false,
+            frame: None,
         }));
         script.retire_style = style;
         script.retire_fullscreen = fullscreen;
@@ -2023,6 +2038,7 @@ fn sweep_guards_and_lifetime_block_mutation() {
     let mut script = sweep_script(Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     }));
     script.suspend_block = true;
     super::sweep_retire_stale_fullscreen(
@@ -2037,6 +2053,7 @@ fn sweep_guards_and_lifetime_block_mutation() {
     let mut script = sweep_script(Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     }));
     script.elevated = true;
     super::sweep_retire_stale_fullscreen(
@@ -2051,6 +2068,7 @@ fn sweep_guards_and_lifetime_block_mutation() {
     let mut script = sweep_script(Some(super::FullscreenMeta {
         changed: super::FULLSCREEN_STYLE_BITS,
         was_maximized: false,
+        frame: None,
     }));
     script.pid_current = false;
     super::sweep_retire_stale_fullscreen(

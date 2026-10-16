@@ -123,7 +123,10 @@ use self::focus_actuation::{
     same_axis_move_for,
 };
 #[cfg(test)]
-use self::fullscreen::{FULLSCREEN_STYLE_BITS, OwnedExitEffects, exit_fullscreen_owned_with};
+use self::fullscreen::{
+    FULLSCREEN_STYLE_BITS, OwnedExitEffects, decode_frame_value, encode_frame_value,
+    exit_fullscreen_owned_with,
+};
 use self::fullscreen::{
     FullscreenMeta, clear_fullscreen_meta, effective_stale_meta_via_effects, enter_fullscreen,
     exit_fullscreen_owned, holdable_key, live_style_for_retire, read_fullscreen_meta,

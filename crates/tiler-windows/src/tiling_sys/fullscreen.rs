@@ -18,25 +18,78 @@ const FULLSCREEN_STYLE_PROP: &str = "OmniTilerFullscreenStyle";
 /// Preexisting maximize state: 1 was normal, 2 was maximized. Absence means
 /// corrupt metadata, never a default.
 const FULLSCREEN_MAX_PROP: &str = "OmniTilerFullscreenMax";
+/// Pre-fullscreen outer frame for non-maximized entries, one biased `i32`
+/// per property (`stored = value + BIAS + 1`, so a missing property (NULL)
+/// stays distinguishable from any real coordinate, including negative
+/// multi-monitor origins). All four absent means a legacy preimage (style
+/// only); any present-but-undecodable or partial set is corrupt metadata.
+const FULLSCREEN_X_PROP: &str = "OmniTilerFullscreenX";
+const FULLSCREEN_Y_PROP: &str = "OmniTilerFullscreenY";
+const FULLSCREEN_W_PROP: &str = "OmniTilerFullscreenW";
+const FULLSCREEN_H_PROP: &str = "OmniTilerFullscreenH";
+/// Bias shifting the `i32` coordinate range to positive storage: stored
+/// values run `1..=2^32`, so NULL (0) is never a valid encoding.
+const FRAME_BIAS: i64 = 0x8000_0000;
 
 fn prop_wide(name: &str) -> Vec<u16> {
     name.encode_utf16().chain([0]).collect()
 }
 
 /// Owned restoration metadata for one project-toggled fullscreen window: the
-/// exact style bits cleared on entry plus whether the window was maximized
-/// before (fullscreen wins over maximize; exit reasserts it).
+/// exact style bits cleared on entry, whether the window was maximized
+/// before (fullscreen wins over maximize; exit reasserts it), and the
+/// pre-fullscreen outer frame for non-maximized entries (exit moves the
+/// window back to it; `None` is a legacy style-only preimage or a maximized
+/// entry, which reasserts maximize instead of restoring geometry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FullscreenMeta {
     pub(super) changed: u32,
     pub(super) was_maximized: bool,
+    pub(super) frame: Option<Rect>,
+}
+
+/// Pure codec for one biased frame coordinate (no HWND access): `encode`
+/// never yields 0 (NULL means absent), `decode` rejects 0 and anything
+/// outside the shifted `i32` range.
+pub(super) fn encode_frame_value(value: i32) -> usize {
+    ((i64::from(value) + FRAME_BIAS + 1) as u64) as usize
+}
+
+pub(super) fn decode_frame_value(stored: usize) -> Option<i32> {
+    let value = (stored as u64 as i64).checked_sub(FRAME_BIAS + 1)?;
+    i32::try_from(value).ok()
+}
+
+/// Read one frame coordinate property: `Ok(None)` when absent (legacy or
+/// maximized entry), `Ok(Some(v))` when valid, `Err(())` when present but
+/// undecodable (corrupt metadata, never guessed).
+fn get_frame_value(hwnd: HWND, name: &str) -> std::result::Result<Option<i32>, ()> {
+    let raw = unsafe { GetPropW(hwnd, prop_wide(name).as_ptr()) };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    decode_frame_value(raw as usize).map(Some).ok_or(())
+}
+
+fn set_frame_value(hwnd: HWND, name: &str, value: i32) -> bool {
+    let stored = unsafe {
+        SetPropW(
+            hwnd,
+            prop_wide(name).as_ptr(),
+            encode_frame_value(value) as _,
+        )
+    };
+    stored != 0
 }
 
 /// Read the owned fullscreen metadata. `None` means app-owned or absent:
-/// a missing marker, a wrong magic, any missing companion property, or a
-/// changed-bits value outside the owned mask all read as unowned, never as
+/// a missing marker, a wrong magic, any missing companion property, a
+/// changed-bits value outside the owned mask, or a present-but-undecodable
+/// (or partial/degenerate) frame set all read as unowned, never as
 /// a default preimage. Only bits in `FULLSCREEN_STYLE_BITS` are ever owned;
-/// arbitrary style bits are never trusted for restoration.
+/// arbitrary style bits are never trusted for restoration. A non-maximized
+/// entry with all four frame properties absent is a legacy style-only
+/// preimage (`frame: None`); maximized entries never carry a frame.
 pub(super) fn read_fullscreen_meta(hwnd_u64: u64) -> Option<FullscreenMeta> {
     let hwnd = hwnd_u64 as isize as HWND;
     if unsafe { IsWindow(hwnd) } == 0 {
@@ -63,29 +116,61 @@ pub(super) fn read_fullscreen_meta(hwnd_u64: u64) -> Option<FullscreenMeta> {
         2 => true,
         _ => return None,
     };
+    if was_maximized {
+        return Some(FullscreenMeta {
+            changed,
+            was_maximized,
+            frame: None,
+        });
+    }
+    let x = get_frame_value(hwnd, FULLSCREEN_X_PROP).ok()?;
+    let y = get_frame_value(hwnd, FULLSCREEN_Y_PROP).ok()?;
+    let w = get_frame_value(hwnd, FULLSCREEN_W_PROP).ok()?;
+    let h = get_frame_value(hwnd, FULLSCREEN_H_PROP).ok()?;
+    let frame = match (x, y, w, h) {
+        (None, None, None, None) => None,
+        (Some(x), Some(y), Some(w), Some(h)) if w > 0 && h > 0 => Some(Rect { x, y, w, h }),
+        _ => return None,
+    };
     Some(FullscreenMeta {
         changed,
         was_maximized,
+        frame,
     })
 }
 
 /// Remove one owned metadata property set best-effort. Used to clean partial
 /// `SetProp` writes so a failed entry never leaves a trusted-looking residue.
 fn remove_fullscreen_meta_props(hwnd: HWND) {
-    for name in [FULLSCREEN_PROP, FULLSCREEN_STYLE_PROP, FULLSCREEN_MAX_PROP] {
+    for name in [
+        FULLSCREEN_PROP,
+        FULLSCREEN_STYLE_PROP,
+        FULLSCREEN_MAX_PROP,
+        FULLSCREEN_X_PROP,
+        FULLSCREEN_Y_PROP,
+        FULLSCREEN_W_PROP,
+        FULLSCREEN_H_PROP,
+    ] {
         unsafe {
             RemovePropW(hwnd, prop_wide(name).as_ptr());
         }
     }
 }
 
-/// Store the owned metadata with readback: all three properties must read
+/// Store the owned metadata with readback: all properties must read
 /// back exactly, or the entry fails closed with no partial residue trusted.
 /// A partial `SetProp` sequence cleans up before returning false, so a later
-/// press never mistakes residue for an owned preimage.
+/// press never mistakes residue for an owned preimage. Non-maximized entries
+/// always carry their pre-fullscreen frame; maximized entries carry none.
 fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
     let hwnd = hwnd_u64 as isize as HWND;
     if unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    if !meta.was_maximized && meta.frame.is_none_or(|frame| frame.w <= 0 || frame.h <= 0) {
+        return false;
+    }
+    if meta.was_maximized && meta.frame.is_some() {
         return false;
     }
     let stored_bits = (meta.changed as usize).wrapping_add(1);
@@ -122,6 +207,15 @@ fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
         remove_fullscreen_meta_props(hwnd);
         return false;
     }
+    if let Some(frame) = meta.frame
+        && (!set_frame_value(hwnd, FULLSCREEN_X_PROP, frame.x)
+            || !set_frame_value(hwnd, FULLSCREEN_Y_PROP, frame.y)
+            || !set_frame_value(hwnd, FULLSCREEN_W_PROP, frame.w)
+            || !set_frame_value(hwnd, FULLSCREEN_H_PROP, frame.h))
+    {
+        remove_fullscreen_meta_props(hwnd);
+        return false;
+    }
     if read_fullscreen_meta(hwnd_u64).is_some_and(|back| back == *meta) {
         true
     } else {
@@ -138,11 +232,7 @@ pub(super) fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
     if unsafe { IsWindow(hwnd) } == 0 {
         return false;
     }
-    for name in [FULLSCREEN_PROP, FULLSCREEN_STYLE_PROP, FULLSCREEN_MAX_PROP] {
-        unsafe {
-            RemovePropW(hwnd, prop_wide(name).as_ptr());
-        }
-    }
+    remove_fullscreen_meta_props(hwnd);
     read_fullscreen_meta(hwnd_u64).is_none()
 }
 
@@ -240,7 +330,10 @@ pub(super) fn effective_stale_meta_via_effects(
 
 /// Enter project-owned fullscreen: store the restoration preimage first, then
 /// clear the frame bits and cover the monitor without activating. No blind
-/// input synthesis; the official style/frame APIs only. Re-entry never
+/// input synthesis; the official style/frame APIs only. The preimage keeps
+/// the pre-fullscreen outer frame for non-maximized windows (floats and
+/// tiled alike) so exit can move the window back; an unreadable frame fails
+/// closed before any write. Re-entry never
 /// overwrites an existing preimage: an owned frame always exits first, so an
 /// entry that finds metadata returns without a write. Returns the
 /// readback-settled outcome: `fullscreen` when the frame bits read back
@@ -258,9 +351,19 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
         return "dispatched";
     }
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let was_maximized = is_zoomed_now(hwnd_u64);
+    let frame = if was_maximized {
+        None
+    } else {
+        match live_outer_rect(hwnd_u64) {
+            Some(frame) => Some(frame),
+            None => return "threw",
+        }
+    };
     let meta = FullscreenMeta {
         changed: style & FULLSCREEN_STYLE_BITS,
-        was_maximized: is_zoomed_now(hwnd_u64),
+        was_maximized,
+        frame,
     };
     if !write_fullscreen_meta(hwnd_u64, &meta) {
         return "threw";
@@ -298,19 +401,22 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
 
 /// Exit project-owned fullscreen: restore exactly the owned mask bits
 /// (unrelated application style changes meanwhile are preserved), reapply
-/// the frame without moving (so externally moved frames still exit), reassert
+/// the frame without moving (so externally moved frames still exit), move a
+/// non-maximized window back to its pre-fullscreen frame, reassert
 /// a preexisting maximize, then drop the metadata. A failed restore keeps
 /// the metadata so a later press can retry; nothing is guessed and nothing
 /// retries automatically. `meta.changed` is already validated to the owned
-/// mask on read, so restoration never touches arbitrary bits.
+/// mask on read, so restoration never touches arbitrary bits. A legacy
+/// preimage without a frame restores style only (old behavior, no strand).
 pub(super) fn exit_fullscreen_owned(hwnd_u64: u64, meta: &FullscreenMeta) -> &'static str {
     exit_fullscreen_owned_with(&mut NativeOwnedExit, hwnd_u64, meta)
 }
 
 /// Native effects behind the project-owned fullscreen exit, split from the
 /// effect ordering so hermetic tests can substitute scripted answers while
-/// the production sequence (style restore, frame reapply, readback verify,
-/// maximize reassert, metadata removal) runs unchanged. [`NativeOwnedExit`]
+/// the production sequence (style restore, frame reapply, pre-fullscreen
+/// frame move, readback verify, maximize reassert, metadata removal) runs
+/// unchanged. [`NativeOwnedExit`]
 /// calls exactly the functions the inline code called; behavior is identical.
 /// Message-only owned windows cannot carry this path (never enumerated with
 /// live frames), so scripted stubs are the hermetic route.
@@ -320,6 +426,8 @@ pub(super) trait OwnedExitEffects {
     /// Exactly like `SetWindowLongW` plus `GetLastError`: `(prev, err)`.
     fn restore_style(&mut self, hwnd: u64, next: i32) -> (i32, u32);
     fn reapply_frame(&mut self, hwnd: u64) -> bool;
+    /// Move to the pre-fullscreen frame (non-maximized exits only).
+    fn restore_rect(&mut self, hwnd: u64, rect: Rect) -> bool;
     fn style_readback(&mut self, hwnd: u64) -> u32;
     fn reassert_maximize(&mut self, hwnd: u64) -> bool;
     fn clear_meta(&mut self, hwnd: u64) -> bool;
@@ -365,6 +473,21 @@ impl OwnedExitEffects for NativeOwnedExit {
         placed != 0
     }
 
+    fn restore_rect(&mut self, hwnd: u64, rect: Rect) -> bool {
+        let placed = unsafe {
+            SetWindowPos(
+                hwnd as isize as HWND,
+                std::ptr::null_mut(),
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        };
+        placed != 0
+    }
+
     fn style_readback(&mut self, hwnd: u64) -> u32 {
         let style = unsafe { GetWindowLongW(hwnd as isize as HWND, GWL_STYLE) };
         style as u32
@@ -382,8 +505,10 @@ impl OwnedExitEffects for NativeOwnedExit {
 
 /// Owned-exit effect ordering shared by the native wrapper and hermetic
 /// tests: metadata is removed only after the style restore, frame reapply,
-/// style readback, and maximize reassert all verify. Any failure keeps the
-/// metadata so a later explicit press can retry.
+/// pre-fullscreen frame move, style readback, and maximize reassert all
+/// verify. Any failure keeps the metadata so a later explicit press can
+/// retry. Maximized entries and legacy preimages without a frame skip the
+/// move and keep the old style-only path.
 pub(super) fn exit_fullscreen_owned_with(
     effects: &mut dyn OwnedExitEffects,
     hwnd_u64: u64,
@@ -399,6 +524,12 @@ pub(super) fn exit_fullscreen_owned_with(
         return "threw";
     }
     if !effects.reapply_frame(hwnd_u64) {
+        return "threw";
+    }
+    if !meta.was_maximized
+        && let Some(frame) = meta.frame
+        && !effects.restore_rect(hwnd_u64, frame)
+    {
         return "threw";
     }
     if effects.style_readback(hwnd_u64) & meta.changed != meta.changed {

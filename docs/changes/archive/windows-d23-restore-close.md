@@ -111,3 +111,20 @@
   Process exit and absent close log lines do not prove internal slot retirement.
 - Locked four-package gates passed: 2,458 passed, 0 failed, 1 ignored; build,
   fmt, strict all-target clippy and diff check passed. No source change.
+
+## Second agent-live sweep (2026-10-17)
+
+- Middle minimize released allocation and reflowed siblings; restore recovered
+  exact pre-minimize frames, including a resize-skewed unequal-neighborhood
+  variant. Sole minimize retained iconic state across workspace leave/return
+  and restored its frame. Native foreground on the iconic member does not
+  establish engine-internal null focus; that claim remains open.
+- A minimized newcomer was closed, survivors recovered their skewed frames,
+  and a fresh newcomer admitted beside a different anchor occupied a different
+  region rather than the closed member's slot. Combined with the passing
+  `minimized_close_reports_and_forgets_slot_until_acceptance` regression, this
+  supports stored-slot retirement; native geometry alone is not an internal
+  state oracle.
+- No new D23 defect. Settings/SPI restored, ledger clean, no tiler residue.
+  Hidden-domain bursts, session expiry and remaining changed-neighborhood
+  variants remain pending. Source-slot policy after send is unchanged.

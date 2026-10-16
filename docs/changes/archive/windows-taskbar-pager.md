@@ -98,6 +98,13 @@ Icons are optional. Never cover the tray or hide/shrink for app-icon crowding.
 
 ## Remaining validation and scope
 
+- Agent-live 2026-10-17: direct screenshot inspection on a single-output setup
+  confirmed numbered active/empty cells and window miniatures at baseline and
+  after ordinary-app admission. Send-follow created a new trailing empty cell;
+  closing an owned window removed its miniature while retaining that cell.
+  Graceful stop, independent restore, clean ledger and unchanged saved settings
+  and SPI state were verified. No broader shell or multi-output claim.
+
 - Next product work: inspect secondary tray boundaries on a physical
   multi-output setup, then implement a proven anchor rather than a guessed
   clock width. Current secondary refusal is an implementation gap, not a
