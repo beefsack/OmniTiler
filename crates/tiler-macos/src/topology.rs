@@ -357,6 +357,28 @@ fn home_display(
     }
 }
 
+/// Homed Space list plus current Space for one display, reusing the exact
+/// [`home_display`] homing (UUID-exact, never positional). Powers the
+/// multi-Space tile context: every retainable Space on the display becomes
+/// a retained core domain, with the current one actuated. Refusals match
+/// [`home_display`] exactly (unprovable homing, never a guessed row).
+#[must_use]
+pub(crate) fn homed_spaces(
+    snapshot: &TopologySnapshot,
+    cg_id: u32,
+) -> Option<(Vec<u64>, Option<u64>)> {
+    let display = snapshot.displays.iter().find(|d| d.cg_id == cg_id)?;
+    let single_positional = snapshot.displays.len() == 1 && snapshot.rows.len() == 1;
+    home_display(
+        display.uuid.as_deref(),
+        &snapshot.rows,
+        snapshot.separate_spaces,
+        single_positional,
+    )
+    .map(|homed| (homed.spaces, homed.current))
+    .ok()
+}
+
 /// One window's Space-membership evidence for selection: the live membership
 /// list for its window ID (via the existing `SLSCopySpacesForWindows` read
 /// path) plus its carried fullscreen flag plus its native frame in CG/AX

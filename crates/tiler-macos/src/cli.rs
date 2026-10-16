@@ -145,6 +145,11 @@ pub enum Command {
         probe_direct: bool,
     },
     SpacesBindings,
+    SpacesDesktopApply {
+        count: u32,
+    },
+    SpacesDesktopRevert,
+    SpacesDesktopStatus,
     SpacesSwitchProbe {
         original: u64,
         temp: u64,
@@ -370,6 +375,23 @@ pub fn help_text() -> String {
             \x20 \x20 CopySymbolicHotKeys: chord + enabled entries with NO symbolic\n\
             \x20 \x20 IDs (index is never an ID), plus Ctrl+Left/Right\n\
             \x20 \x20 corroboration; no settings reads or writes)\n\
+            \x20 spaces-desktop-apply [--count N]\n\
+            \x20 \x20 (explicit Authentic Desktop-N enable: enables Switch to\n\
+            \x20 \x20 Desktop 1..=N (default 9, max 10) session-effectively\n\
+            \x20 \x20 via SkyLight SPI with owned exact preimages; the durable\n\
+            \x20 \x20 preimage publishes before the first write and is never\n\
+            \x20 \x20 overwritten (a second Apply resumes); every write reads\n\
+            \x20 \x20 back; per-ID failures never block siblings; no plist is\n\
+            \x20 \x20 written and reboot persistence is unverified)\n\
+            \x20 spaces-desktop-revert\n\
+            \x20 \x20 (explicit conditional restore of the owned preimages:\n\
+            \x20 \x20 entries changed after Apply are preserved and reported,\n\
+            \x20 \x20 never overwritten; the preimage file is removed only on\n\
+            \x20 \x20 a clean full restore)\n\
+            \x20 spaces-desktop-status\n\
+            \x20 \x20 (read-only Desktop-N status: preimage presence plus\n\
+            \x20 \x20 effective Ctrl+digit corroboration; no settings reads\n\
+            \x20 \x20 or writes)\n\
             \x20 spaces-switch-probe --original SID --temp SID [--seconds N] --allow-untested\n\
             \x20 \x20 (bounded same-display switch comparison, default 120s, minimum\n\
             \x20 \x20 60s: two owned regular-policy helpers bracket arrow legs\n\
@@ -1272,6 +1294,36 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             }
             Command::SpacesBindings
         }
+        "spaces-desktop-apply" => {
+            // Explicit Authentic Desktop-N enable with owned preimages.
+            // --count selects Desktops 1..=N (default 9: numbered
+            // select/send); explicit per invocation, never at startup.
+            let mut count = crate::desktop_shortcuts::DEFAULT_APPLY_COUNT;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--count" => {
+                        j += 1;
+                        count = parse_u32(args.get(j).ok_or("--count needs a value")?, "--count")?;
+                    }
+                    other => return Err(format!("spaces-desktop-apply: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::SpacesDesktopApply { count }
+        }
+        "spaces-desktop-revert" => {
+            if !args.is_empty() {
+                return Err(format!("spaces-desktop-revert: unknown arg '{}'", args[0]));
+            }
+            Command::SpacesDesktopRevert
+        }
+        "spaces-desktop-status" => {
+            if !args.is_empty() {
+                return Err(format!("spaces-desktop-status: unknown arg '{}'", args[0]));
+            }
+            Command::SpacesDesktopStatus
+        }
         "spaces-switch-probe" => {
             // Bounded switch comparison over two EXISTING SIDs: never
             // creates or destroys a Space, performs no SLS move.
@@ -1682,6 +1734,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::SecureInput
             | Command::SpacesDiagnose { .. }
             | Command::SpacesBindings
+            | Command::SpacesDesktopStatus
             | Command::CgOwnedWindows { .. }
             | Command::OwnedFrame { .. }
             | Command::ScopeInspect { .. }

@@ -114,12 +114,8 @@ pub const MAX_WATCHDOG_ONLY_SECONDS: u64 = 5;
 pub(crate) const KEY_H: u32 = 0x04;
 /// `CGEventFlags` Shift bit (same mask space as [`cg_flag_bits`]).
 pub(crate) const CG_SHIFT_BIT: u64 = 0x0002_0000;
-/// `CGEventFlags` Control bit (used only when the Ctrl role is Shift).
-pub(crate) const CG_CTRL_BIT: u64 = 0x0004_0000;
 /// `CGEventFlags` Alternate bit (same mask space as [`cg_flag_bits`]).
 pub(crate) const CG_ALT_BIT: u64 = 0x0008_0000;
-/// `CGEventFlags` Command bit (extra-modifier probe under the Ctrl role).
-pub(crate) const CG_CMD_BIT: u64 = 0x0010_0000;
 /// Device-independent modifier mask (Shift|Ctrl|Alt|Cmd, same space as
 /// [`cg_flag_bits`]).
 pub(crate) const MOD_MASK: u64 = 0x001E_0000;
@@ -319,13 +315,14 @@ pub fn bucket_index(flags: u64) -> usize {
 }
 
 /// Exact-match tuning mirror for one catalogue chord (same construction as
-/// the input owner: Ctrl-role bit plus the Shift arm plus the Alt resize
-/// arm under the same mask).
+/// the input owner: Ctrl-role bit plus the Shift arm, the Alt resize arm,
+/// and the auxiliary workspace arm under the same mask).
 pub(crate) fn tuning_for(
     modifier: ProbeModifier,
     key_code: u32,
     shift: bool,
     alt: bool,
+    aux: bool,
 ) -> TapTuning {
     let (mut want_flags, flags_mask) = cg_flag_bits(modifier);
     if shift {
@@ -333,6 +330,9 @@ pub(crate) fn tuning_for(
     }
     if alt {
         want_flags |= CG_ALT_BIT;
+    }
+    if aux {
+        want_flags |= crate::input_policy::aux_flag_for(modifier);
     }
     TapTuning {
         want_flags,
@@ -356,14 +356,14 @@ pub(crate) fn tuning_for(
 ///   arm collapses onto focus/move, refused at validation);
 /// - Shift role: Ctrl (`Shift+Ctrl+H` matches nothing — the Shift role is
 ///   refused at validation like before).
+///
+/// This is the product auxiliary-bit contract: the workspace catalogue
+/// arms exactly this bit on its relative/previous/output chords (see
+/// [`crate::input_policy::aux_flag_for`], the single home this delegates
+/// to).
 #[must_use]
 pub fn extra_flag_for(modifier: ProbeModifier) -> u64 {
-    let (want, _) = cg_flag_bits(modifier);
-    if want == CG_CTRL_BIT {
-        CG_CMD_BIT
-    } else {
-        CG_CTRL_BIT
-    }
+    crate::input_policy::aux_flag_for(modifier)
 }
 
 // -- Dedicated input owner ---------------------------------------------------
@@ -423,7 +423,13 @@ fn owner_main(
         .enumerate()
         .map(|(index, binding)| {
             (
-                tuning_for(modifier, binding.key_code, binding.shift, binding.alt),
+                tuning_for(
+                    modifier,
+                    binding.key_code,
+                    binding.shift,
+                    binding.alt,
+                    binding.aux,
+                ),
                 index,
             )
         })

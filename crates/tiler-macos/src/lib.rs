@@ -33,6 +33,9 @@ pub mod cli;
 #[cfg(test)]
 mod cli_tests;
 pub mod config;
+pub mod desktop_shortcuts;
+#[cfg(test)]
+mod desktop_shortcuts_tests;
 pub mod dev_selection;
 pub mod engine;
 pub mod ffi;
@@ -95,6 +98,9 @@ pub mod synth;
 pub mod tile;
 pub mod topology;
 pub mod watchdog;
+pub mod workspace_input;
+#[cfg(test)]
+mod workspace_input_tests;
 
 /// Stable probe bundle identity. Fixed across runs for TCC stability.
 pub const BUNDLE_ID: &str = "io.github.omnitiler.macos.probe";

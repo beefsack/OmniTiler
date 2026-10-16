@@ -31,6 +31,18 @@ use crate::runtime_core::{
 use crate::runtime_thread::{MergedPlan, apply_merged, collect_reply, reply_kind};
 use crate::runtime_types::{FocusCommand, ScopedBackendSnapshot};
 
+/// Parked-display check for retirement: a known domain whose output still
+/// names a display the current context skipped (unprovable homing or
+/// geometry — never absence) is NOT retired. Its engine session, bounds
+/// record, and revision cursor stay parked with no views, no reconciles,
+/// and no effects until fresh evidence resumes the same key. A truly
+/// removed display appears in neither domains nor `skipped`, so its keys
+/// still release normally.
+pub(crate) fn is_parked_display(ctx: &NativeContext, key: &DomainKey) -> bool {
+    ctx.skipped
+        .iter()
+        .any(|skipped| key.output.0 == crate::topology::output_key(skipped.cg_id))
+}
 /// Base revision carried by a core reply (`None` for rejections, releases,
 /// and read-only resolutions, which advance no cursor).
 pub(crate) fn reply_base_revision(reply: &CoreReply) -> Option<u64> {
@@ -66,12 +78,23 @@ fn count_native_replies(
     }
 }
 
-/// Plan one native scoped observation across every current tile domain:
-/// retire vanished domains on revision drift, converge each domain's full
-/// membership independently, and merge all replies into one emission. Only
-/// current-user-Space members reach the engine; everything else omits
-/// (counted, never a close report). Snapshot drift (revision mismatch with
-/// the shared context) supersedes instead of planning.
+/// Plan one native scoped observation across every known tile domain:
+/// retire truly-vanished domains on revision drift, converge each current
+/// domain with actuation, and reconcile each hidden domain without frames
+/// or focus. Only exactly-homed retained-domain members reach the engine;
+/// everything else omits (counted, never a close report). Snapshot drift
+/// (revision mismatch with the shared context) supersedes instead of
+/// planning.
+///
+/// Retirement fires only for domains the new context no longer knows at
+/// all — a deleted Space, a removed display, or a Space that newly proves
+/// non-user. A merely unreadable type read retains hidden, and a display
+/// the new context skips (unprovable homing/geometry, still present)
+/// parks its sessions with no effects instead of releasing. A mere
+/// current-Space switch keeps the old Space as
+/// a hidden domain, so its independent core session and layout survive
+/// untouched until the user returns. Geometry-only drift retires nothing
+/// (keys persist).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_native_observation(
     engine: &mut Engine,
@@ -87,15 +110,23 @@ pub(crate) fn plan_native_observation(
     generation: u64,
     seq: u64,
 ) {
-    // Revision drift retires vanished domains FIRST: keys the new context
-    // no longer homes are released (their sessions removed with zero native
-    // writes) before any planning, so a Space change cannot strand frames
-    // for a dead domain. Geometry-only drift retires nothing (keys persist).
+    // Revision drift retires truly-vanished domains FIRST: keys the new
+    // context no longer knows at all (deleted Space, removed display, or
+    // a Space that newly proves non-user) are released (their sessions
+    // removed with zero native writes) before any planning. Keys parked
+    // on a still-present but skipped display (see `is_parked_display`)
+    // are excluded: unprovable homing or geometry parks with no views,
+    // no reconciles, and no effects — never a release. A mere
+    // current-Space switch keeps the old Space as a hidden domain,
+    // so its session and layout survive — never stranded, never reseeded.
+    // Geometry-only drift retires nothing (keys persist).
     if retained.native_revision != ctx.revision {
         let retired: Vec<DomainKey> = retained
             .known_domains
             .keys()
-            .filter(|key| !views.iter().any(|view| &view.key == *key))
+            .filter(|key| {
+                !views.iter().any(|view| &view.key == *key) && !is_parked_display(ctx, key)
+            })
             .cloned()
             .collect();
         for key in retired {
@@ -143,9 +174,13 @@ pub(crate) fn plan_native_observation(
     // (every app, not just the reporter — a partial observation must never
     // read as mass removal). Focused override names the global focus only
     // inside its own domain; every other domain converges focus-none so a
-    // foreign focus can never leak across domains.
+    // foreign focus can never leak across domains. Current domains merge
+    // into one emission (frames plus at most one focus dispatch); hidden
+    // domains converge silently (cursor advance only — never frames, never
+    // focus, never desired-geometry writes into an off-current Space).
     let predicate = engine.fixed_size_predicate();
     let mut handled: Vec<(DomainKey, CoreReply)> = Vec::with_capacity(views.len());
+    let mut hidden: Vec<(DomainKey, CoreReply)> = Vec::new();
     for view in views {
         let member_apps = domain_member_apps(retained, &view.key);
         let focused_override = match &retained.observed_focus {
@@ -176,11 +211,21 @@ pub(crate) fn plan_native_observation(
             predicate,
             revision,
         );
-        handled.push((view.key.clone(), engine.handle(&event)));
+        let reply = engine.handle(&event);
+        if ctx.is_current(&view.key) {
+            handled.push((view.key.clone(), reply));
+        } else {
+            hidden.push((view.key.clone(), reply));
+        }
     }
-    // Merge all domain replies into one emission and record each domain's
-    // cursor separately (sessions advance independently; a shared cursor
-    // would misreport every domain but one).
+    // Hidden sessions advance independently too: their cursors move with
+    // their own replies, so a return converges instead of diverging on a
+    // stale cursor. Counted under the same reconcile tokens (they are
+    // reconciles), but never merged into actuation.
+    // Merge all CURRENT domain replies into one emission and record each
+    // domain's cursor separately (sessions advance independently; a shared
+    // cursor would misreport every domain but one). Hidden replies advance
+    // their own cursors exactly the same way, without emission.
     let mut merged = MergedPlan::default();
     for (key, reply) in &handled {
         if let Some(base) = reply_base_revision(reply) {
@@ -188,7 +233,13 @@ pub(crate) fn plan_native_observation(
         }
         collect_reply(reply, &mut merged);
     }
+    for (key, reply) in &hidden {
+        if let Some(base) = reply_base_revision(reply) {
+            retained.domain_revisions.insert(key.clone(), base);
+        }
+    }
     count_native_replies(shared, &handled, "reconcile");
+    count_native_replies(shared, &hidden, "reconcile");
     apply_merged(
         merged,
         None,
@@ -333,8 +384,9 @@ pub(crate) fn handle_scoped_observation(
         return;
     }
     // Member partition by live Space membership (never geometry):
-    // only exactly-homed current-user-Space windows reach the
-    // engine. Omission is counted evidence, never destruction.
+    // only exactly-homed retained-domain windows reach the engine
+    // (current members actuate, hidden members reconcile silently).
+    // Omission is counted evidence, never destruction.
     let (members, omitted) = partition_scoped_members(&snapshot.windows, &snapshot.meta, &ctx);
     if omitted > 0 {
         emit(
@@ -380,14 +432,16 @@ pub(crate) fn handle_scoped_observation(
     let member_count = member_windows.len() as u64;
     entry.windows = member_windows;
     // Global-focus truth gate on the worker-stamped evidence: the
-    // app-local window promotes only on full workspace+AX+CG
-    // agreement. Anything else arrives unfocused (authoritative
-    // loss for exactly this PID when it previously held focus).
+    // app-local window promotes only on full workspace+AX+CG agreement AND
+    // current-domain membership (a hidden-Space window can never hold
+    // global focus: the user is looking at the current Space). Anything
+    // else arrives unfocused (authoritative loss for exactly this PID when
+    // it previously held focus).
     let candidate = match snapshot.focused_wid {
         Some(wid)
-            if members
-                .values()
-                .any(|windows| windows.iter().any(|w| w.wid == wid)) =>
+            if members.iter().any(|(key, windows)| {
+                ctx.is_current(key) && windows.iter().any(|w| w.wid == wid)
+            }) =>
         {
             snapshot.focus_evidence.and_then(|evidence| {
                 global_focus_agrees(

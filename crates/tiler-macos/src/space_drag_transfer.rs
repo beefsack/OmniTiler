@@ -179,6 +179,90 @@ pub fn titlebar_grab_point(frame: AxFrame) -> Result<(f64, f64), String> {
     Ok((frame.x + frame.w / 2.0, frame.y + TITLEBAR_OFFSET))
 }
 
+/// Pure candidate titlebar points across the owned AX frame (AX top-left
+/// origin): five fractions (0.2/0.35/0.5/0.65/0.8) at [`TITLEBAR_OFFSET`]
+/// below the frame top. The fixed center alone can sit under unrelated
+/// above-normal chrome while an edge stays provably clear; the live runner
+/// tries these in order and posts at the first point passing BOTH the
+/// conservative CG occlusion check and the fresh AX hit identity, refusing
+/// when none is clear (never exempting chrome). No live touch.
+pub fn candidate_grab_points(frame: AxFrame) -> Result<Vec<(f64, f64)>, String> {
+    if !frame.x.is_finite() || !frame.y.is_finite() || !frame.w.is_finite() || !frame.h.is_finite()
+    {
+        return Err("grab refused: non-finite frame".to_owned());
+    }
+    if frame.w < MIN_GRAB_W || frame.h < MIN_GRAB_H {
+        return Err(format!(
+            "grab refused: frame {}x{} below minimum {}x{} (no reliable titlebar hit)",
+            frame.w, frame.h, MIN_GRAB_W, MIN_GRAB_H
+        ));
+    }
+    const FRACTIONS: [f64; 5] = [0.2, 0.35, 0.5, 0.65, 0.8];
+    Ok(FRACTIONS
+        .iter()
+        .map(|f| (frame.x + frame.w * f, frame.y + TITLEBAR_OFFSET))
+        .collect())
+}
+
+/// Pure clear-point selector over plain data: first candidate passing the
+/// order-free CG [`hit_test_grab`] plus, when `hit_owner` is `Some`, the AX
+/// [`hit_test_identity`] against `want`. Returns the point; refuses when no
+/// candidate is provably clear (naming the tried count plus the last refusal,
+/// never exempting chrome). No live touch; the live runner supplies fresh
+/// snapshots and the actual AX owner per candidate.
+pub fn select_clear_grab_point(
+    frame: AxFrame,
+    owned: &crate::ffi::CgWindow,
+    all: &[crate::ffi::CgWindowBasic],
+    ghostty: &[crate::mc_probe::GhosttyWindow],
+    hit_owner: Option<(u32, u32)>,
+    want: (u32, u32),
+) -> Result<(f64, f64), String> {
+    let candidates = candidate_grab_points(frame)?;
+    let mut last_err = String::from("no candidate evaluated");
+    for point in candidates {
+        if let Err(e) = hit_test_grab(point, owned, all, ghostty) {
+            last_err = e;
+            continue;
+        }
+        if let Some(hit) = hit_owner
+            && let Err(e) = hit_test_identity(hit, want)
+        {
+            last_err = e;
+            continue;
+        }
+        return Ok(point);
+    }
+    Err(format!(
+        "grab refused: no provably clear titlebar point (tried 5; last: {last_err})"
+    ))
+}
+
+/// Pure AX-frame mismatch detail over plain data (no OS touch): `None` when
+/// exactly equal, else the differing fields with values. The live runner
+/// logs this when the exact-frame gate reads false, so a sub-point jitter or
+/// a real move is distinguishable without weakening the exact gate.
+#[must_use]
+pub fn ax_frame_mismatch(before: AxFrame, after: AxFrame) -> Option<String> {
+    if before == after {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if before.x != after.x {
+        parts.push(format!("x {} -> {}", before.x, after.x));
+    }
+    if before.y != after.y {
+        parts.push(format!("y {} -> {}", before.y, after.y));
+    }
+    if before.w != after.w {
+        parts.push(format!("w {} -> {}", before.w, after.w));
+    }
+    if before.h != after.h {
+        parts.push(format!("h {} -> {}", before.h, after.h));
+    }
+    Some(format!("frame differs: {}", parts.join(", ")))
+}
+
 /// Whether a point lies inside a rectangle (edges inclusive). Pure;
 /// shared by the grab-point containment and hit-test legs.
 #[must_use]

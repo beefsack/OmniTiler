@@ -21,9 +21,10 @@ use crate::runtime_thread::{EngineJob, Inbox};
 use crate::runtime_types::{InputSemanticAction, TileBinding};
 
 /// Exact-match tuning for one catalogue chord: the Ctrl-role modifier bit
-/// plus the Shift arm and the Alt (resize) arm when set, under the same
-/// mask (Caps/Fn bits stay outside the mask, so they neither match nor
-/// break a chord — the existing matcher contract).
+/// plus the Shift arm, the Alt (resize) arm, and the auxiliary workspace
+/// arm when set, under the same mask (Caps/Fn bits stay outside the mask,
+/// so they neither match nor break a chord — the existing matcher
+/// contract).
 fn tuning_for_binding(modifier: crate::config::ProbeModifier, binding: &TileBinding) -> TapTuning {
     let (mut want_flags, flags_mask) = cg_flag_bits(modifier);
     if binding.shift {
@@ -31,6 +32,9 @@ fn tuning_for_binding(modifier: crate::config::ProbeModifier, binding: &TileBind
     }
     if binding.alt {
         want_flags |= 0x0008_0000; // Alternate bit in `CGEventFlags` space.
+    }
+    if binding.aux {
+        want_flags |= crate::input_policy::aux_flag_for(modifier);
     }
     TapTuning {
         want_flags,

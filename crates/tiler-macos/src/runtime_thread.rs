@@ -56,7 +56,7 @@ pub(crate) enum EngineJob {
     },
     /// Native-mode scoped observation: per-window Space membership plus the
     /// context revision and worker-stamped focus evidence ride along, so the
-    /// engine admits exactly-homed current-user-Space members per domain
+    /// engine admits exactly-homed retained-domain members per domain
     /// without ever inferring Space from geometry.
     ScopedObservation {
         pid: u32,
@@ -752,6 +752,15 @@ fn process_job(
             );
         }
         EngineJob::InputAction { action } => {
+            // Workspace actions are recognized but undispatched: no native
+            // switch/send/output-transfer route runs from the product tile
+            // yet (see `workspace_unsupported_reason` for the exact seam).
+            // Counted and logged with a static token, never faked.
+            if let Some(outcome) = crate::workspace_input::workspace_unsupported_outcome(action) {
+                lock_shared(shared).diagnostics.input_refused_unsupported += 1;
+                emit(shared, 0, 0, 0, "input", outcome, 0);
+                return;
+            }
             // The subject is observed truth, never planned focus.
             let focused = retained.observed_focus.clone();
             let Some(window) = focused else {
@@ -816,6 +825,18 @@ fn process_job(
                     },
                     "toggle-orientation",
                 ),
+                // Recognized but undispatched: the guard above refuses every
+                // workspace action before dispatch, so these arms are
+                // unreachable here (adding an action variant fails the
+                // guard's exhaustive match first).
+                InputSemanticAction::WorkspaceSelect { .. }
+                | InputSemanticAction::WorkspaceSend { .. }
+                | InputSemanticAction::WorkspaceRelative { .. }
+                | InputSemanticAction::WorkspaceSendRelative { .. }
+                | InputSemanticAction::WorkspacePrevious
+                | InputSemanticAction::WorkspaceOutput { .. } => {
+                    unreachable!("workspace actions refuse before dispatch")
+                }
             };
             lock_shared(shared).diagnostics.input_forwarded += 1;
             emit(shared, 0, 0, 0, "input", op, 0);
@@ -834,6 +855,15 @@ fn process_job(
                 let Some(view) = views.iter().find(|v| v.key == key) else {
                     lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                     emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
+                    return;
+                };
+                // Hidden-domain subjects never dispatch: no input writes or
+                // focus moves into an off-current Space (game/fullscreen
+                // safety extends to every hidden layout). Counted with its
+                // own token, never faked as success.
+                if !ctx.is_current(&key) {
+                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
+                    emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
                     return;
                 };
                 let member_apps = domain_member_apps(retained, &key);

@@ -120,11 +120,15 @@ mod live_impl {
             Ok(target)
         }
 
-        /// Fresh owned AX frame plus grab point plus the positional
-        /// re-proof, run once per leg before any post (refusing here posts
-        /// nothing). The per-post oracle in `prove` is unchanged
-        /// (focus/identity bar); the geometry/z bar below is never a
-        /// duplicate of it.
+        /// Fresh owned AX frame plus the FIRST provably clear titlebar point
+        /// (up to five fractions across the bar), run once per leg before any
+        /// post (refusing here posts nothing). Each candidate must pass BOTH
+        /// the conservative CG occlusion check and the fresh AX
+        /// element-at-position identity against the exact held `(pid, wid)`;
+        /// unrelated chrome is never exempted — an occluded candidate is
+        /// skipped, and no clear candidate refuses the leg. The per-post
+        /// oracle in `prove` is unchanged (focus/identity bar); the
+        /// geometry/z bar below is never a duplicate of it.
         fn refresh_grab(&mut self, leg: &str) -> Result<(), String> {
             let owned = crate::ax::authorize_owned_action(self.pid, &self.nonce)
                 .map_err(|e| format!("{leg} ownership refused: {e}"))?;
@@ -135,11 +139,43 @@ mod live_impl {
                 .map_err(|e| format!("{leg} AX frame unreadable: {e}"))?
                 .ax_frame
                 .ok_or_else(|| format!("{leg} AX frame missing"))?;
-            let point = crate::space_drag_transfer::titlebar_grab_point(frame)
+            let candidates = crate::space_drag_transfer::candidate_grab_points(frame)
                 .map_err(|e| format!("{leg} {e}"))?;
-            self.point = point;
-            self.last_point = point;
-            self.reprove_point(leg)
+            let entry = crate::cg::verify_wid_owned_by_pid(self.pid, self.wid)
+                .map_err(|e| format!("{leg} CG join refused: {e}"))?;
+            let all = crate::ffi::cg_window_list_basic()
+                .map_err(|e| format!("{leg} CG list unreadable: {e}"))?;
+            let ghostty = crate::mc_lifecycle::snapshot_ghostty_windows()
+                .map_err(|e| format!("{leg} Ghostty snapshot unreadable: {e}"))?;
+            let mut last_err = String::from("no candidate evaluated");
+            for point in candidates {
+                if let Err(e) =
+                    crate::space_drag_transfer::hit_test_grab(point, &entry, &all, &ghostty)
+                {
+                    last_err = e;
+                    continue;
+                }
+                match crate::ffi::ax_hit_test_owner(point.0, point.1) {
+                    Err(e) => {
+                        last_err = format!("AX hit-test unreadable: {e}");
+                        continue;
+                    }
+                    Ok(hit) => {
+                        if let Err(e) =
+                            crate::space_drag_transfer::hit_test_identity(hit, (self.pid, self.wid))
+                        {
+                            last_err = e;
+                            continue;
+                        }
+                    }
+                }
+                self.point = point;
+                self.last_point = point;
+                return self.reprove_point(leg);
+            }
+            Err(format!(
+                "{leg} grab refused: no provably clear titlebar point (tried 5; last: {last_err})"
+            ))
         }
 
         /// Positional re-proof at the CURRENT grab point (no recompute, no
@@ -1043,11 +1079,17 @@ mod live_impl {
         // companion stays up through the last mutation (temp removal) and
         // stops after it.
         crate::mc_lifecycle::safe_close_mc(&mut notes);
-        let frame_exact = crate::ax::read_window_owned(&owned, pid, wid)
+        let frame_after = crate::ax::read_window_owned(&owned, pid, wid)
             .ok()
-            .and_then(|r| r.ax_frame)
-            .is_some_and(|f| f == baseline_frame);
-        notes.push(format!("helper frame exact across run: {frame_exact}"));
+            .and_then(|r| r.ax_frame);
+        let frame_exact = frame_after.is_some_and(|f| f == baseline_frame);
+        match frame_after {
+            None => notes.push("helper frame exact across run: false (final AX frame unreadable; unknown, never equal)".to_owned()),
+            Some(f) => match crate::space_drag_transfer::ax_frame_mismatch(baseline_frame, f) {
+                None => notes.push("helper frame exact across run: true".to_owned()),
+                Some(detail) => notes.push(format!("helper frame exact across run: false ({detail})")),
+            },
+        }
         let stop = crate::session::stop_exact_child(&mut child, pid);
         notes.push(format!(
             "helper exact-Child stop: exited={} reaped={} record_removed={}",
@@ -1256,6 +1298,13 @@ mod live_impl {
         })?;
         let ghostty_ok =
             crate::mc_probe::ghostty_stable_across_switch(&ghostty_before, &ghostty_after);
+        if let Some(detail) =
+            crate::mc_probe::ghostty_mismatch_detail(&ghostty_before, &ghostty_after)
+        {
+            notes.push(format!("ghostty stability: false ({detail})"));
+        } else {
+            notes.push("ghostty stability: true (onscreen excluded by design)".to_owned());
+        }
         let focus_after = crate::mc_lifecycle::capture_focus_legs();
         let natural_return = crate::mc_probe::focus_ghostty_returned(&focus_after);
         if !natural_return {

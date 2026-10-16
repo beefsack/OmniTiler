@@ -1062,3 +1062,30 @@ fn cross_space_stability_ignores_onscreen_but_pins_identity() {
     // Empty both sides is vacuously stable.
     assert!(ghostty_stable_across_switch(&[], &[]));
 }
+
+#[test]
+fn mismatch_detail_distinguishes_geometry_from_unknown_membership() {
+    let before = vec![stable_window(7, false, Some(vec![11]))];
+    let after = vec![stable_window(7, true, Some(vec![11]))];
+    // Onscreen-only flip: stable, no detail.
+    assert!(ghostty_mismatch_detail(&before, &after).is_none());
+    // Unreadable membership on one side: unknown, named as such.
+    let mut unknown = after.clone();
+    unknown[0].spaces = None;
+    let detail = ghostty_mismatch_detail(&before, &unknown).unwrap();
+    assert!(detail.contains("unreadable"));
+    // Real geometry drift: bounds named.
+    let mut moved = after.clone();
+    moved[0].x = 99.0;
+    assert!(
+        ghostty_mismatch_detail(&before, &moved)
+            .unwrap()
+            .contains("bounds")
+    );
+    // Count change named.
+    assert!(
+        ghostty_mismatch_detail(&before, &[])
+            .unwrap()
+            .contains("count")
+    );
+}

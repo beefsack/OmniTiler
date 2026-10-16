@@ -301,7 +301,19 @@ platform API behavior.
     switches back afterward, with visible transition cost to be judged in
     dogfooding. Supersedes the 2026-10-16 tentative capability boundary above
     for route selection; tier 2/SIP-enabled policy unchanged.
-    [Manual route results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16).
+     [Manual route results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16).
+   - **User-approved 2026-10-16 (auxiliary workspace modifier):** where
+     KDE/Windows use Meta+Ctrl / Win+Ctrl, default macOS Meta=Ctrl uses
+     Ctrl+Cmd: previous-workspace Ctrl+Cmd+Tab, relative select
+     Ctrl+Cmd+H/J/K/L/arrows, relative send-follow with Shift, and output
+     send-follow with Alt. This documented host difference preserves the basic
+     Ctrl focus/move arms rather than collapsing two modifier roles into one.
+     Technical detail: when configured Meta is not Ctrl, use the shared
+     Meta+Ctrl form. Numbered select/send and trailing select/append keep plain
+     Meta (Ctrl by default), with Shift for sends; send-stay stays unbound and
+     bindable. The catalogue avoids the known Ctrl+Cmd+F/Q/Space/D system
+     chords; common-app and customized global shortcuts still need physical
+     acceptance. Catalogue delivery does not establish native execution.
 
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
@@ -1539,6 +1551,17 @@ platform API behavior.
   are needed: stopping releases ownership without a preferences preimage or
   Revert write. A concrete need for settings mutation still requires owned
   preimages and Revert. [Guide and evidence](changes/macos-dogfood-preview.md).
+- **Tentative macOS native shortcut ownership, 2026-10-16:** explicit
+  `spaces-desktop-apply` enables Desktop-N holders through the session
+  SkyLight enable-only API used by Silica; `spaces-desktop-revert` conditionally
+  restores exact observed enabled/chord preimages, preserving later edits.
+  Apply never rewrites a user's chord, and flags nonstandard chords unusable
+  for default numbered transfer. A private durable Application Support backup
+  precedes mutation; Apply/Revert transactions use an OS-released file lock.
+  No plist writes or automatic startup Apply. Session-effective enable is the
+  intended scope; logout/reboot persistence and native enable/readback remain
+  unverified. This adds an explicit ownership operation to the preview above,
+  not evidence that product workspace actions are ready.
 - Windows input and Snap (user 2026-10-01): `WH_KEYBOARD_LL` with `vkE8`
   menu-mask at Win key-up while Win held, consuming only approved catalog
   chords; `RegisterHotKey` rejected after all four chords returned 1409

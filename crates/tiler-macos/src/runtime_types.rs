@@ -141,6 +141,14 @@ pub enum TopologyMode {
 /// `bounds` is the full display rect for reference. Both derive from the
 /// main-thread snapshot conversion; a display whose rects never converted
 /// never becomes a domain (refused, never guessed).
+///
+/// One domain exists per retainable Space on the display (not just the
+/// current one): proven user Spaces plus homed-but-unreadable ones (the
+/// latter hidden only, never actuated, never called user-typed). Manual
+/// native switches keep every per-(display, Space) core session alive
+/// with its own independent layout, and only the `current` domain
+/// actuates frames or focus. Proven non-user Spaces (fullscreen, system)
+/// never become domains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDomain {
     /// CG display ID (stable within the session).
@@ -151,10 +159,14 @@ pub struct NativeDomain {
     pub uuid: Option<String>,
     /// Core output identity (`macos-display-{cg_id}`).
     pub output: OutputId,
-    /// Core workspace identity (`space-{sid}` for the current user Space).
+    /// Core workspace identity (`space-{sid}` for the user Space).
     pub workspace: WorkspaceId,
-    /// Current user Space ID on this display.
+    /// User Space ID on this display (current or hidden).
     pub space: u64,
+    /// True only for the display's current user Space: the single domain
+    /// per display whose plans actuate. Hidden domains reconcile
+    /// membership without frames or focus.
+    pub current: bool,
     /// Full display rect in integer CG top-left points.
     pub bounds: Rect,
     /// Tiling work area in integer CG top-left points.
@@ -167,11 +179,20 @@ pub struct NativeDomain {
 /// owners and the engine read it through an `Arc`, never mutated in place.
 /// A new snapshot replaces the whole context, so readers always see one
 /// consistent revision.
+///
+/// `domains` holds every retainable Space per display (current plus
+/// hidden): each keeps its own independent core session and layout across
+/// manual native switches. Only `current` domains actuate; hidden domains
+/// reconcile without frames or focus, and retire only when their Space
+/// leaves the display (deleted Space, removed display, or a Space that
+/// newly proves non-user) — never on a mere current-Space switch or a
+/// transient unreadable type read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeContext {
     /// Snapshot fingerprint revision all domains were derived under.
     pub revision: u64,
-    /// Exactly-homed current-user-Space domains, in display order.
+    /// Exactly-homed user-Space domains (current plus hidden), in display
+    /// order (Spaces in row order within each display).
     pub domains: Vec<NativeDomain>,
     /// Displays skipped during derivation, with honest reasons. Skipped
     /// displays tile nothing; their windows never reach the engine.
@@ -191,11 +212,27 @@ impl NativeContext {
     /// Derive the tile context from a main-thread topology snapshot.
     /// `space_type` resolves a Space ID to its read-only type (`None` =
     /// unreadable); the live side injects the existing `sls_space_type`
-    /// read on the main thread, tests inject scripted types. Each display
-    /// is homed exactly like the selection path (empty membership set:
-    /// homing plus current-user-Space gating only); refused or degenerate
-    /// displays are skipped with reasons, never guessed into a domain.
-    /// Identical snapshots derive identical contexts (revision included).
+    /// read on the main thread, tests inject scripted types. Each SID is
+    /// resolved exactly once per derive: the snapshot is taken into a
+    /// local table first, so the current flag and the retain/omit decision
+    /// for one SID can never disagree on a transient read.
+    ///
+    /// Every homed Space that does not read non-user becomes one retained
+    /// core domain sharing the display's work area (Space switches never
+    /// move display geometry): the display's current user-typed Space
+    /// actuates, everything else reconciles without frames or focus so
+    /// independent layouts survive manual native switches. Proven non-user
+    /// Spaces (fullscreen, system) never become domains. A homed Space
+    /// whose type reads unreadable (`None`) is retained hidden and never
+    /// actuates — a transient read gap must not release its layout; only
+    /// actual deletion does. Deleted SIDs (absent from the row) and removed
+    /// displays retire through the existing absent-key release. Displays
+    /// whose rows cannot be homed exactly (or whose rects never converted)
+    /// are skipped with reasons, never guessed into a domain. When no
+    /// domain on the display is current, the display actuates nothing.
+    /// Domains keep native row order within each display (needed by
+    /// numbered mapping). Identical snapshots derive identical contexts
+    /// (revision included).
     pub fn derive(
         snapshot: &crate::topology::TopologySnapshot,
         space_type: &dyn Fn(u64) -> Option<crate::ffi::SlsSpaceType>,
@@ -204,9 +241,6 @@ impl NativeContext {
         let mut skipped = Vec::new();
         for display in &snapshot.displays {
             let domain = (|| {
-                let selected =
-                    crate::topology::select_domain(snapshot, display.cg_id, &[], space_type)
-                        .map_err(|e| e.to_string())?;
                 let geometry = snapshot
                     .displays
                     .iter()
@@ -220,18 +254,69 @@ impl NativeContext {
                     .visible
                     .and_then(|r| r.to_rect())
                     .ok_or_else(|| format!("display {} work area unusable", display.cg_id))?;
-                Ok::<NativeDomain, String>(NativeDomain {
-                    cg_id: display.cg_id,
-                    uuid: display.uuid.clone(),
-                    output: OutputId(selected.output),
-                    workspace: WorkspaceId(selected.workspace),
-                    space: selected.space,
-                    bounds,
-                    visible,
-                })
+                let (spaces, current) = crate::topology::homed_spaces(snapshot, display.cg_id)
+                    .ok_or_else(|| format!("display {} Space homing unprovable", display.cg_id))?;
+                // Snapshot one type verdict per SID: the actuation flag and
+                // the retain/omit decision below must agree even if the
+                // underlying read would flap mid-derive. Row order is kept
+                // (order-preserving dedup): numbered mapping needs native
+                // order, not sorted order.
+                let mut ordered: Vec<u64> = Vec::with_capacity(spaces.len() + 1);
+                for sid in &spaces {
+                    if !ordered.contains(sid) {
+                        ordered.push(*sid);
+                    }
+                }
+                if let Some(live) = current
+                    && !ordered.contains(&live)
+                {
+                    ordered.push(live);
+                }
+                let mut kinds: BTreeMap<u64, Option<crate::ffi::SlsSpaceType>> = BTreeMap::new();
+                for sid in ordered.iter().copied().chain(current) {
+                    kinds.entry(sid).or_insert_with(|| space_type(sid));
+                }
+                // The current Space actuates only on a proven user verdict;
+                // anything else (missing, unreadable, fullscreen/system)
+                // withholds actuation while retained SIDs stay hidden.
+                let current_user = current.filter(|sid| {
+                    kinds
+                        .get(sid)
+                        .is_some_and(|kind| matches!(kind, Some(crate::ffi::SlsSpaceType::User)))
+                });
+                let mut per_display = Vec::new();
+                for sid in ordered {
+                    let actuated = Some(sid) == current_user;
+                    match kinds.get(&sid) {
+                        // Proven non-user: never a domain (game safety).
+                        Some(Some(kind)) if !matches!(kind, crate::ffi::SlsSpaceType::User) => {
+                            continue;
+                        }
+                        // Proven user, or homed-but-unreadable (retained
+                        // hidden, never actuated — never called user-typed).
+                        _ => {}
+                    }
+                    per_display.push(NativeDomain {
+                        cg_id: display.cg_id,
+                        uuid: display.uuid.clone(),
+                        output: OutputId(crate::topology::output_key(display.cg_id)),
+                        workspace: WorkspaceId(crate::topology::workspace_key(sid)),
+                        space: sid,
+                        current: actuated,
+                        bounds,
+                        visible,
+                    });
+                }
+                if per_display.is_empty() {
+                    return Err(format!(
+                        "display {} has no retainable Spaces (all proven non-user)",
+                        display.cg_id
+                    ));
+                }
+                Ok::<Vec<NativeDomain>, String>(per_display)
             })();
             match domain {
-                Ok(domain) => domains.push(domain),
+                Ok(per_display) => domains.extend(per_display),
                 Err(reason) => skipped.push(SkippedDisplay {
                     cg_id: display.cg_id,
                     reason,
@@ -246,6 +331,29 @@ impl NativeContext {
             },
             skipped,
         )
+    }
+
+    /// Domain keys currently actuated (one per display at most): plans for
+    /// these emit frames and focus. Everything else in `domains` reconciles
+    /// membership without actuation.
+    #[must_use]
+    pub fn current_keys(&self) -> Vec<DomainKey> {
+        self.domains
+            .iter()
+            .filter(|d| d.current)
+            .map(|d| DomainKey {
+                output: d.output.clone(),
+                workspace: d.workspace.clone(),
+            })
+            .collect()
+    }
+
+    /// True when `key` names a currently-actuated domain.
+    #[must_use]
+    pub fn is_current(&self, key: &DomainKey) -> bool {
+        self.domains
+            .iter()
+            .any(|d| d.current && d.output == key.output && d.workspace == key.workspace)
     }
 }
 
@@ -397,6 +505,57 @@ pub enum InputSemanticAction {
     /// [`tiler_core::boundary::CoreCommand::ToggleOrientation`]. No additive
     /// core API.
     ToggleOrientation,
+    /// Numbered workspace select: `index` 1-9 selects that ordinal in the
+    /// scoped ring, `index` 0 selects-or-creates the trailing empty
+    /// workspace (Windows `workspace-select-N` / KDE
+    /// `omnitiler-workspace-N` parity, verified against
+    /// [`tiler_core::workspace::plan_trailing`]). No product execution yet:
+    /// recognized by the engine and honestly refused (see
+    /// [`crate::workspace_input::workspace_unsupported_reason`]).
+    WorkspaceSelect {
+        index: u8,
+    },
+    /// Numbered workspace send: `index` 1-9 sends the observed-focus
+    /// window there, `index` 0 appends a new workspace for it (Windows
+    /// `workspace-send-N` / KDE `omnitiler-move-workspace-N` parity).
+    /// `follow` pins the intent: true follows the mover (default-bound),
+    /// false stays on the source (bindable, unbound by default: Windows
+    /// `stay-workspace-N` / KDE `omnitiler-stay-workspace-N` parity). No
+    /// product execution yet: recognized and honestly refused.
+    WorkspaceSend {
+        index: u8,
+        follow: bool,
+    },
+    /// Relative workspace select: one ordinal step in the scoped ring,
+    /// never MRU (`prev` picks the direction; Windows `workspace-prev-*` /
+    /// `workspace-next-*` / KDE `omnitiler-workspace-prev-*` parity). No
+    /// product execution yet: recognized and honestly refused.
+    WorkspaceRelative {
+        prev: bool,
+    },
+    /// Relative workspace send: one ordinal step resolved once before
+    /// transfer (`prev` picks the direction, `follow` pins the intent;
+    /// stay rows bindable, unbound by default). No product execution yet:
+    /// recognized and honestly refused.
+    WorkspaceSendRelative {
+        prev: bool,
+        follow: bool,
+    },
+    /// Previous-view toggle: the two-view MRU flip (Windows
+    /// `workspace-previous` / KDE `omnitiler-workspace-previous` parity),
+    /// not ordinal traversal. No product execution yet: recognized and
+    /// honestly refused.
+    WorkspacePrevious,
+    /// Explicit directional output send: transfer to the adjacent output's
+    /// current workspace in `direction` (Windows `send-output-*` parity;
+    /// the chord form rides the approved auxiliary arm). `follow` pins the
+    /// intent (only follow has approved chords). No product execution yet —
+    /// cross-display transfer is TBD (see
+    /// [`crate::workspace_input::workspace_unsupported_reason`]).
+    WorkspaceOutput {
+        direction: InputDirection,
+        follow: bool,
+    },
 }
 
 /// Typed frame command to one app worker. `generation` fences PID reuse:
@@ -503,11 +662,19 @@ pub fn parse_window_id(value: &str) -> Option<(u32, u32)> {
 /// collapses the resize arm onto focus/move (same effective chord), so the
 /// validator below refuses that Meta for the full catalogue, exactly like
 /// the pre-existing Shift-as-Meta collapse.
+/// `aux` selects the workspace auxiliary arm (see
+/// [`crate::input_policy::aux_flag_for`]: the Command bit under the Ctrl
+/// role, else the Control bit): relative/previous/output workspace chords
+/// carry it so they stay disjoint from every basic chord under every Meta.
+/// Numbered workspace chords carry no auxiliary arm (plain Meta digits and
+/// Meta+Shift digits); they are disjoint from the basic set because the
+/// basic key set holds no digits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileBinding {
     pub key_code: u32,
     pub shift: bool,
     pub alt: bool,
+    pub aux: bool,
     pub action: InputSemanticAction,
 }
 
@@ -517,6 +684,17 @@ impl TileBinding {
             return Err(format!(
                 "tile chord key code {} out of range 0..=255",
                 self.key_code
+            ));
+        }
+        let index = match self.action {
+            InputSemanticAction::WorkspaceSelect { index }
+            | InputSemanticAction::WorkspaceSend { index, .. } => Some(index),
+            _ => None,
+        };
+        if index.is_some_and(|index| index > 9) {
+            return Err(format!(
+                "numbered workspace index {} out of range 0..=9 (1-9 plus trailing 0)",
+                index.unwrap_or(99)
             ));
         }
         Ok(())
@@ -629,6 +807,7 @@ impl RuntimeConfig {
             }
             let mut seen = std::collections::BTreeSet::new();
             let (modifier_flags, _) = crate::input::cg_flag_bits(self.modifier);
+            let aux_flags = crate::input_policy::aux_flag_for(self.modifier);
             for binding in bindings {
                 binding.validate()?;
                 let flags = modifier_flags
@@ -641,11 +820,12 @@ impl RuntimeConfig {
                         crate::native_input::CG_ALT_BIT
                     } else {
                         0
-                    };
+                    }
+                    | if binding.aux { aux_flags } else { 0 };
                 if !seen.insert((binding.key_code, flags)) {
                     return Err(format!(
-                        "tile_bindings duplicates effective chord key {} shift={} alt={}",
-                        binding.key_code, binding.shift, binding.alt
+                        "tile_bindings duplicates effective chord key {} shift={} alt={} aux={}",
+                        binding.key_code, binding.shift, binding.alt, binding.aux
                     ));
                 }
             }
@@ -687,6 +867,11 @@ pub struct RuntimeDiagnostics {
     pub input_forwarded: u64,
     pub input_ignored: u64,
     pub input_refused_no_focus: u64,
+    /// Recognized workspace actions refused for missing product execution
+    /// (no native switch/send/output-transfer route yet — see
+    /// [`crate::workspace_input::workspace_unsupported_reason`]). Counted,
+    /// never dispatched.
+    pub input_refused_unsupported: u64,
     /// Backend-generated observations published to the engine by app workers
     /// (startup, streaming, and readback handoffs).
     pub observations_published: u64,
@@ -885,9 +1070,139 @@ mod tests {
         assert_eq!(ctx.domains[0].space, 11);
         assert_eq!(ctx.domains[1].space, 21);
         assert_eq!(ctx.domains[0].uuid.as_deref(), Some("uuid-1"));
+        // Single-Space rows actuate their only domain.
+        assert!(ctx.domains[0].current);
+        assert!(ctx.domains[1].current);
+        assert_eq!(ctx.current_keys().len(), 2);
         // Identical snapshots derive identical contexts.
         let (again, _) = NativeContext::derive(&snapshot, &user_space);
         assert_eq!(ctx, again);
+    }
+
+    #[test]
+    fn derive_enumerates_every_user_space_with_only_current_actuated() {
+        // One display with two known user Spaces and a fullscreen Space:
+        // both user Spaces become retained domains sharing the display's
+        // work area, only the current one actuates, and the fullscreen
+        // Space never becomes a domain (game safety: nothing plans there).
+        let snapshot = topology::build_snapshot(
+            &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+            &[row(Some("uuid-1"), &[11, 12, 13], Some(12))],
+            Some(true),
+        );
+        let space_type = |sid: u64| {
+            Some(if sid == 13 {
+                SlsSpaceType::Fullscreen
+            } else {
+                SlsSpaceType::User
+            })
+        };
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &space_type);
+        assert!(skipped.is_empty());
+        assert_eq!(ctx.domains.len(), 2);
+        assert_eq!(ctx.domains[0].space, 11);
+        assert!(!ctx.domains[0].current);
+        assert_eq!(ctx.domains[1].space, 12);
+        assert!(ctx.domains[1].current);
+        // Both share the display's work area (Spaces never move displays).
+        assert_eq!(ctx.domains[0].visible, ctx.domains[1].visible);
+        assert_eq!(
+            ctx.domains[0].workspace.0.as_str(),
+            "space-11",
+            "per-(display, Space) DomainKeys stay distinct"
+        );
+        // An unreadable type read retains hidden (never actuated, never
+        // called user-typed): a transient gap must not release the layout.
+        let unknown_type = |sid: u64| {
+            if sid == 11 {
+                None
+            } else if sid == 13 {
+                Some(SlsSpaceType::Fullscreen)
+            } else {
+                Some(SlsSpaceType::User)
+            }
+        };
+        let (ctx, _) = NativeContext::derive(&snapshot, &unknown_type);
+        assert_eq!(ctx.domains.len(), 2);
+        assert_eq!(ctx.domains[0].space, 11);
+        assert!(
+            !ctx.domains[0].current,
+            "unreadable type never actuates: {ctx:?}"
+        );
+        assert_eq!(ctx.domains[1].space, 12);
+        assert!(ctx.domains[1].current);
+        assert_eq!(
+            ctx.current_keys().len(),
+            1,
+            "exactly the proven current actuates"
+        );
+        // A fullscreen current keeps hidden user domains but actuates
+        // nothing on the display (no writes under the overlay).
+        let fs_snapshot = topology::build_snapshot(
+            &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+            &[row(Some("uuid-1"), &[11, 12, 13], Some(13))],
+            Some(true),
+        );
+        let (ctx, _) = NativeContext::derive(&fs_snapshot, &space_type);
+        assert_eq!(ctx.domains.len(), 2);
+        assert!(
+            ctx.domains.iter().all(|d| !d.current),
+            "fullscreen current actuates nothing: {ctx:?}"
+        );
+        assert!(ctx.current_keys().is_empty());
+    }
+
+    #[test]
+    fn derive_preserves_row_order_and_retains_unreadable_current() {
+        // Nonascending native row order survives (numbered mapping needs
+        // native order, not sorted order), and a current Space whose type
+        // reads unreadable is retained hidden without actuating.
+        let snapshot = topology::build_snapshot(
+            &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+            &[row(Some("uuid-1"), &[22, 11], Some(22))],
+            Some(true),
+        );
+        let unknown_current = |sid: u64| {
+            if sid == 22 {
+                None
+            } else {
+                Some(SlsSpaceType::User)
+            }
+        };
+        let (ctx, skipped) = NativeContext::derive(&snapshot, &unknown_current);
+        assert!(skipped.is_empty());
+        assert_eq!(
+            ctx.domains.iter().map(|d| d.space).collect::<Vec<_>>(),
+            vec![22, 11],
+            "native row order, not sorted: {ctx:?}"
+        );
+        assert!(!ctx.domains[0].current);
+        assert!(
+            !ctx.domains[1].current,
+            "current unreadable actuates nothing"
+        );
+        assert!(ctx.current_keys().is_empty());
+        // Readable again: the same row actuates its proven current in the
+        // same position (no release-and-reseed across the gap).
+        let (again, _) = NativeContext::derive(&snapshot, &user_space);
+        assert_eq!(
+            again.domains.iter().map(|d| d.space).collect::<Vec<_>>(),
+            vec![22, 11]
+        );
+        assert!(again.domains[0].current);
+        assert!(!again.domains[1].current);
+        // An all-unreadable display still retains (never skips on type
+        // gaps alone): skipping would release every layout.
+        let all_unknown = topology::build_snapshot(
+            &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+            &[row(Some("uuid-1"), &[31], Some(31))],
+            Some(true),
+        );
+        let (ctx, skipped) = NativeContext::derive(&all_unknown, &|_| None);
+        assert!(skipped.is_empty());
+        assert_eq!(ctx.domains.len(), 1);
+        assert_eq!(ctx.domains[0].space, 31);
+        assert!(!ctx.domains[0].current);
     }
 
     #[test]

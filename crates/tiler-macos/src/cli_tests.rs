@@ -755,6 +755,33 @@ fn spaces_bindings_is_read_only_and_arg_free() {
 }
 
 #[test]
+fn spaces_desktop_commands_parse_with_explicit_intent() {
+    // Apply defaults to 9 (numbered select/send) and accepts --count;
+    // both are write-intent. Revert takes no args. Status is read-only.
+    let r = parse_args(&argv(&["spaces-desktop-apply"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDesktopApply { count: 9 }
+    ));
+    let r = parse_args(&argv(&["spaces-desktop-apply", "--count", "4"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDesktopApply { count: 4 }
+    ));
+    assert!(parse_args(&argv(&["spaces-desktop-apply", "--bogus"])).is_err());
+    let r = parse_args(&argv(&["spaces-desktop-revert"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(r.command, Command::SpacesDesktopRevert));
+    assert!(parse_args(&argv(&["spaces-desktop-revert", "--bogus"])).is_err());
+    let r = parse_args(&argv(&["spaces-desktop-status"])).unwrap();
+    assert!(!r.may_mutate, "spaces-desktop-status must not mutate");
+    assert!(matches!(r.command, Command::SpacesDesktopStatus));
+    assert!(parse_args(&argv(&["spaces-desktop-status", "--bogus"])).is_err());
+}
+
+#[test]
 fn spaces_switch_probe_parses_existing_sids_with_opt_in() {
     // Both existing SIDs mandatory (no Space is created); budget defaults
     // to the helper cap; explicit --allow-untested rides along.

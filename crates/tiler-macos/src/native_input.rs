@@ -26,9 +26,11 @@
 //! mirrors the Windows/KDE defaults chord-for-chord but lives here because
 //! no shared pure catalogue exists in `tiler-core` — the Windows
 //! `binding_catalog` and the KDE `planShortcutCatalog` are each local too).
-//! Digits, workspace selects/sends, maximize, fullscreen, sticky, and
-//! workspace-tiling toggles stay unbound: digits/workspace rows need managed
-//! workspaces (later work), and maximize/fullscreen/sticky need native
+//! Digits and workspace selects/sends/maximize, fullscreen, sticky, and
+//! workspace-tiling toggles stay out of THIS catalogue: numbered and
+//! auxiliary workspace rows live in [`crate::workspace_input`] (defined and
+//! exactly matchable, but with no product execution yet, so never armed
+//! here), and maximize/fullscreen/sticky need native
 //! state writes with no core command behind them (left for a native-state
 //! unit; fullscreen windows stay untouched by ordinary tiling per the
 //! selected product rule).
@@ -86,7 +88,8 @@ pub const CG_ALT_BIT: u64 = 0x0008_0000;
 /// (Alt+Shift arm, inwards), the float toggle, and the orientation toggle.
 /// The Ctrl-role modifier applies at tuning time ([`tap_specs_for`]), so the table itself is modifier-free.
 /// Duplicate-free by construction; validated by
-/// [`RuntimeConfig::validate`].
+/// [`RuntimeConfig::validate`]. No row carries the auxiliary workspace arm
+/// (workspace rows live in [`crate::workspace_input`]).
 #[must_use]
 pub fn tile_catalogue() -> Vec<TileBinding> {
     let mut out = Vec::with_capacity(34);
@@ -105,6 +108,7 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
             key_code,
             shift: false,
             alt: false,
+            aux: false,
             action: InputSemanticAction::FocusStep { direction },
         });
     }
@@ -113,6 +117,7 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
             key_code,
             shift: true,
             alt: false,
+            aux: false,
             action: InputSemanticAction::MoveStep { direction },
         });
     }
@@ -121,6 +126,7 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
             key_code,
             shift: false,
             alt: true,
+            aux: false,
             action: InputSemanticAction::ResizeStep {
                 direction,
                 mode: tiler_core::contract::ResizeMode::Outwards,
@@ -132,6 +138,7 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
             key_code,
             shift: true,
             alt: true,
+            aux: false,
             action: InputSemanticAction::ResizeStep {
                 direction,
                 mode: tiler_core::contract::ResizeMode::Inwards,
@@ -142,19 +149,22 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
         key_code: KEY_G,
         shift: false,
         alt: false,
+        aux: false,
         action: InputSemanticAction::ToggleFloat,
     });
     out.push(TileBinding {
         key_code: KEY_O,
         shift: false,
         alt: false,
+        aux: false,
         action: InputSemanticAction::ToggleOrientation,
     });
     out
 }
 
 /// Tap specs for one catalogue: exact `(want, mask)` per chord with the
-/// Shift and Alt arms folded into `want` under the same mask.
+/// Shift, Alt, and auxiliary workspace arms folded into `want` under the
+/// same mask.
 #[must_use]
 pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<TapChordSpec> {
     bindings
@@ -166,6 +176,9 @@ pub fn tap_specs_for(modifier: ProbeModifier, bindings: &[TileBinding]) -> Vec<T
             }
             if binding.alt {
                 want_flags |= CG_ALT_BIT;
+            }
+            if binding.aux {
+                want_flags |= crate::input_policy::aux_flag_for(modifier);
             }
             TapChordSpec {
                 want_flags,

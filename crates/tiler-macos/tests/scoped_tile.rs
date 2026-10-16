@@ -442,6 +442,40 @@ fn wait_applied(fixture: &Fixture, window: &str) -> AppliedRecord {
     }
 }
 
+/// Wait for the next applied frame for `window` whose rect equals
+/// `expected`: superseded records from pre-drain dispatches (same window,
+/// older geometry landing after the test's channel drain — flush fences
+/// engine jobs, not worker applies, so a slow worker's apply can arrive
+/// late under load) are skipped instead of poisoning exact-frame oracles.
+/// Bounded by WAIT like [`wait_applied`]; a genuine never-convergence
+/// times out loudly with the skip count instead of asserting on stale
+/// geometry.
+fn wait_applied_to(
+    fixture: &Fixture,
+    window: &str,
+    expected: (i32, i32, i32, i32),
+    what: &str,
+) -> AppliedRecord {
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut skipped = 0u32;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            panic!(
+                "no applied frame for {window} converging to {expected:?} ({what}; skipped {skipped} stale)"
+            );
+        }
+        match fixture.applied_rx.recv_timeout(remaining) {
+            Ok(record) if record.2 == window && record.3 == expected => return record,
+            Ok(record) if record.2 == window => skipped += 1,
+            Ok(_) => continue,
+            Err(_) => panic!(
+                "no applied frame for {window} converging to {expected:?} ({what}; skipped {skipped} stale)"
+            ),
+        }
+    }
+}
+
 fn wait_diagnostics(
     handle: &RuntimeHandle,
     wanted: impl Fn(&tiler_macos::runtime::RuntimeDiagnostics) -> bool,
@@ -826,10 +860,351 @@ fn display_change_mid_plan_supersedes_frames_and_queued_focus() {
 }
 
 #[test]
-fn space_change_retires_dead_domain_and_reseeds() {
-    // Display 1 moves from Space 11 to Space 12: the space-11 session must
-    // retire (ring evidence) and space-12 must seed fresh and tile inside
-    // display 1's actual work area. Display 2 (Space 21) is undisturbed.
+fn space_switch_preserves_hidden_layout_without_retirement() {
+    // Display 1 knows Spaces 11+12 (11 current); display 2 stays on 21.
+    // Two windows tile on 11 with a moved (nontrivial) layout; switching
+    // current to 12 tiles the newly-visible window there while 11 keeps
+    // its exact session (no retirement, no frames or focus into the
+    // hidden Space); switching back restores the exact moved frames.
+    let fixture = start(scoped_config());
+    let mut first = two_display_snapshot();
+    first.rows[0].spaces = vec![11, 12];
+    first.rows[0].current = Some(11);
+    first.revision =
+        topology::fingerprint_snapshot(&first.displays, &first.rows, first.separate_spaces);
+    let revision = fixture.handle.update_topology_with(first, &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    // A tiles three windows on 11 (a real tree, not a single split);
+    // B holds display 2's witness on 21.
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(9), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let _ = wait_applied(&fixture, "1001_1");
+    let _ = wait_applied(&fixture, "1001_2");
+    let _ = wait_applied(&fixture, "1001_4");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Nontrivial layout: focus the leftmost window and move it right.
+    // Leftmost-picked (never assumed order) so the move always has a
+    // right neighbor; with three windows grouping/swapping always
+    // reflows frames (a two-window group would be a geometry no-op).
+    let leftmost = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .filter(|f| f.window.starts_with("1001_"))
+        .min_by_key(|f| f.x)
+        .map(|f| f.window.clone())
+        .expect("three tiled windows");
+    let focus_wid: u32 = leftmost
+        .split('_')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("numeric wid");
+    let before: Vec<(String, (i32, i32, i32, i32))> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .filter(|f| f.window.starts_with("1001_"))
+        .map(|f| (f.window.clone(), (f.x, f.y, f.w, f.h)))
+        .collect();
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            11,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            Some(focus_wid),
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Fence the input thread's handoff first: its engine job can queue
+    // behind the flush barrier otherwise, and the flush below would prove
+    // nothing about the move.
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    let flags = cg_flag_bits(ProbeModifier::Ctrl).0;
+    fixture
+        .input_tx
+        .send(RawKeyEvent {
+            kind: TapKeyKind::KeyDown,
+            flags,
+            key_code: 0x05,
+        })
+        .expect("send move chord");
+    wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_forwarded > baseline,
+        "move chord forwarded",
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Expected frames read from engine state (deterministic post-barrier
+    // truth); the channel waits below converge to exactly these, skipping
+    // superseded pre-drain records from slow workers instead of poisoning
+    // the oracle with stale geometry.
+    let planned_by_window = |window: &str| {
+        fixture
+            .handle
+            .last_desired_geometry()
+            .iter()
+            .find(|f| f.window == window)
+            .map(|f| (f.x, f.y, f.w, f.h))
+            .expect("planned window")
+    };
+    let mut moved_plan: Vec<(String, (i32, i32, i32, i32))> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| (f.window.clone(), (f.x, f.y, f.w, f.h)))
+        .collect();
+    moved_plan.sort();
+    let m1 = wait_applied_to(
+        &fixture,
+        "1001_1",
+        planned_by_window("1001_1"),
+        "moved layout",
+    );
+    let m2 = wait_applied_to(
+        &fixture,
+        "1001_2",
+        planned_by_window("1001_2"),
+        "moved layout",
+    );
+    let m4 = wait_applied_to(
+        &fixture,
+        "1001_4",
+        planned_by_window("1001_4"),
+        "moved layout",
+    );
+    let mut moved_rects: Vec<(String, (i32, i32, i32, i32))> =
+        [m1, m2, m4].iter().map(|r| (r.2.clone(), r.3)).collect();
+    moved_rects.sort();
+    let mut before_sorted = before.clone();
+    before_sorted.sort();
+    assert_ne!(moved_rects, before_sorted, "move must rearrange the layout");
+    // Exact moved frames per window for the return-trip oracle below.
+    let moved_by_window = |window: &str| {
+        moved_rects
+            .iter()
+            .find(|(w, _)| w == window)
+            .map(|(_, r)| *r)
+            .expect("moved window")
+    };
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Switch display 1 to 12 (11 stays known): A reports its triple
+    // hidden plus a new window on 12; B is undisturbed.
+    let mut moved = two_display_snapshot();
+    moved.rows[0].spaces = vec![11, 12];
+    moved.rows[0].current = Some(12);
+    moved.revision =
+        topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
+    let revision2 = fixture.handle.update_topology_with(moved, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![
+                (win(1), vec![11]),
+                (win(2), vec![11]),
+                (win(4), vec![11]),
+                (win(3), vec![12]),
+            ],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            20,
+            vec![(win(9), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Only the current Space actuates: the newly-visible window tiles in
+    // display 1's work area; the hidden triple takes no writes.
+    let c = wait_applied(&fixture, "1001_3");
+    let areas = work_areas();
+    assert!(
+        within(c.3, areas[0]),
+        "switched-to Space tiles d1: {:?}",
+        c.3
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let mut hidden_writes = Vec::new();
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        // Generation-gated: only frames planned under the switched
+        // revision count — flush fences engine jobs, not worker applies,
+        // so superseded pre-switch records can land late under load.
+        if record.2.starts_with("1001_") && record.2 != "1001_3" && record.4 == revision2 {
+            hidden_writes.push(record);
+        }
+    }
+    assert!(
+        hidden_writes.is_empty(),
+        "hidden windows take no writes: {hidden_writes:?}"
+    );
+    assert!(
+        fixture.focus_rx.try_recv().is_err(),
+        "no focus dispatches around a switch"
+    );
+    // A mere switch retires nothing (the space-11 session survives).
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "switch must not retire the hidden domain"
+    );
+    // The desired plan covers exactly the current Spaces (hidden
+    // reconciles silently, never desired).
+    let mut desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    desired.sort();
+    assert_eq!(desired, vec!["1001_3".to_owned(), "1002_9".to_owned()]);
+    // Switch back to 11: the triple returns with its exact moved frames.
+    let mut back = two_display_snapshot();
+    back.rows[0].spaces = vec![11, 12];
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision3 = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            30,
+            vec![
+                (win(1), vec![11]),
+                (win(2), vec![11]),
+                (win(4), vec![11]),
+                (win(3), vec![12]),
+            ],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            30,
+            vec![(win(9), vec![21])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let r1 = wait_applied_to(
+        &fixture,
+        "1001_1",
+        moved_by_window("1001_1"),
+        "return converges to moved layout",
+    );
+    let r2 = wait_applied_to(
+        &fixture,
+        "1001_2",
+        moved_by_window("1001_2"),
+        "return converges to moved layout",
+    );
+    let r4 = wait_applied_to(
+        &fixture,
+        "1001_4",
+        moved_by_window("1001_4"),
+        "return converges to moved layout",
+    );
+    assert_eq!(
+        r1.3,
+        moved_by_window("1001_1"),
+        "return restores exact moved layout"
+    );
+    assert_eq!(
+        r2.3,
+        moved_by_window("1001_2"),
+        "return restores exact moved layout"
+    );
+    assert_eq!(
+        r4.3,
+        moved_by_window("1001_4"),
+        "return restores exact moved layout"
+    );
+    // Engine-state round-trip proof (channel-free): the return plan over
+    // the parked session is exactly the moved plan — same tree survived
+    // the switch, not a reseed. Compared on display 1's windows: the move
+    // plan snapshot covers only its own domain (last-writer-wins desired),
+    // while the return plan also carries display 2's undisturbed witness.
+    let display1_frames = |frames: Vec<(String, (i32, i32, i32, i32))>| {
+        let mut v: Vec<_> = frames
+            .into_iter()
+            .filter(|(w, _)| w.starts_with("1001_"))
+            .collect();
+        v.sort();
+        v
+    };
+    let returned_plan: Vec<(String, (i32, i32, i32, i32))> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| (f.window.clone(), (f.x, f.y, f.w, f.h)))
+        .collect();
+    assert_eq!(
+        display1_frames(returned_plan),
+        display1_frames(moved_plan),
+        "return plan equals moved plan: session survived the switch"
+    );
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "round trip retires nothing"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn deleted_space_retires_domain_and_reseeds() {
+    // Display 1's Space 11 is DELETED (row drops it, current becomes 12):
+    // the space-11 session must retire (ring evidence) and space-12 must
+    // seed fresh and tile inside display 1's actual work area. Display 2
+    // (Space 21) is undisturbed. Companion to the switch test above, which
+    // proves a mere current change retires nothing.
     let fixture = start(scoped_config());
     fixture
         .handle
@@ -852,7 +1227,7 @@ fn space_change_retires_dead_domain_and_reseeds() {
     while fixture.applied_rx.try_recv().is_ok() {}
 
     let mut moved = two_display_snapshot();
-    moved.rows[0].spaces = vec![11, 12];
+    moved.rows[0].spaces = vec![12];
     moved.rows[0].current = Some(12);
     moved.revision =
         topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
@@ -870,7 +1245,7 @@ fn space_change_retires_dead_domain_and_reseeds() {
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_A,
             gen_a,
-            2,
+            20,
             vec![(win(1), vec![12])],
             None,
             revision2
@@ -881,7 +1256,7 @@ fn space_change_retires_dead_domain_and_reseeds() {
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_B,
             gen_b,
-            2,
+            20,
             vec![(win(2), vec![21])],
             None,
             revision2
@@ -895,14 +1270,744 @@ fn space_change_retires_dead_domain_and_reseeds() {
     let areas = work_areas();
     assert!(within(a.3, areas[0]), "reseeded domain tiles d1: {:?}", a.3);
     assert!(within(b.3, areas[1]), "stable domain tiles d2: {:?}", b.3);
-    // Retirement evidence is on the ring (the space-11 session is gone).
+    // Retirement evidence is on the ring (the space-11 session is gone:
+    // its Space left the display, not merely the foreground).
     assert!(
         fixture
             .handle
             .log_snapshot()
             .iter()
             .any(|e| e.kind == "domain" && e.outcome == "retired"),
-        "domain retirement must be recorded"
+        "deleted Space must retire its domain"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn offcurrent_close_prunes_and_return_converges() {
+    // A window closed while its Space is hidden prunes from the hidden
+    // session without disturbing the current Space; returning converges
+    // the survivor (which now fills the domain alone).
+    let fixture = start(scoped_config());
+    let mut first = two_display_snapshot();
+    first.rows[0].spaces = vec![11, 12];
+    first.rows[0].current = Some(11);
+    first.revision =
+        topology::fingerprint_snapshot(&first.displays, &first.rows, first.separate_spaces);
+    let revision = fixture.handle.update_topology_with(first, &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11]), (win(2), vec![11]),],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(9), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let f1 = wait_applied(&fixture, "1001_1");
+    let _ = wait_applied(&fixture, "1001_2");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Switch to the empty Space 12: the hidden pair takes no writes and
+    // nothing retires.
+    let mut moved = two_display_snapshot();
+    moved.rows[0].spaces = vec![11, 12];
+    moved.rows[0].current = Some(12);
+    moved.revision =
+        topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
+    let revision2 = fixture.handle.update_topology_with(moved, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![(win(1), vec![11]), (win(2), vec![11]),],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            20,
+            vec![(win(9), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    std::thread::sleep(Duration::from_millis(300));
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        // Generation-gated like the switch test: only frames planned
+        // under the switched revision count as hidden writes.
+        if (record.2 == "1001_1" || record.2 == "1001_2") && record.4 == revision2 {
+            panic!("hidden pair takes no writes while on 12: {record:?}");
+        }
+    }
+    // Close window 2 while hidden (simply absent from its app's next
+    // snapshot — actual missing, not mere off-current).
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            30,
+            vec![(win(1), vec![11]),],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Return to 11: only the survivor converges, filling the domain alone.
+    let mut back = two_display_snapshot();
+    back.rows[0].spaces = vec![11, 12];
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision3 = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            40,
+            vec![(win(1), vec![11]),],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            30,
+            vec![(win(9), vec![21])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // Converge to the planned survivor frame (deterministic post-barrier
+    // truth): superseded half-width records can land late under load.
+    let survivor = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .find(|f| f.window == "1001_1")
+        .map(|f| (f.x, f.y, f.w, f.h))
+        .expect("planned survivor");
+    let r1 = wait_applied_to(&fixture, "1001_1", survivor, "sole survivor converges");
+    let areas = work_areas();
+    assert!(
+        within(r1.3, areas[0]),
+        "survivor converges on return: {:?}",
+        r1.3
+    );
+    assert_ne!(
+        r1.3, f1.3,
+        "sole survivor fills the domain (closed sibling never ghosts)"
+    );
+    let mut desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    desired.sort();
+    assert_eq!(desired, vec!["1001_1".to_owned(), "1002_9".to_owned()]);
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "close-while-hidden retires nothing"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn space_type_gap_retains_hidden_layout_without_release() {
+    // A transient unreadable Space type (not a deletion, not a proven
+    // non-user Space) must not release its layout: display 1 tiles on 11,
+    // switches to 12 while 11 reads unreadable (hidden, silent, retained),
+    // then returns to a readable 11 with the exact same frames and no
+    // retirement anywhere in between.
+    let fixture = start(scoped_config());
+    let mut first = two_display_snapshot();
+    first.rows[0].spaces = vec![11, 12];
+    first.rows[0].current = Some(11);
+    first.revision =
+        topology::fingerprint_snapshot(&first.displays, &first.rows, first.separate_spaces);
+    let revision = fixture.handle.update_topology_with(first, &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11]), (win(2), vec![11]),],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(9), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let f1 = wait_applied(&fixture, "1001_1");
+    let f2 = wait_applied(&fixture, "1001_2");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Switch to 12 while 11's type reads unreadable: the pair is hidden
+    // under the gap (retained, silent), the new window tiles current.
+    let mut moved = two_display_snapshot();
+    moved.rows[0].spaces = vec![11, 12];
+    moved.rows[0].current = Some(12);
+    moved.revision =
+        topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
+    let gap_type = |sid: u64| {
+        if sid == 11 { None } else { user_space(sid) }
+    };
+    let revision2 = fixture.handle.update_topology_with(moved, &gap_type);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(3), vec![12]),],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            20,
+            vec![(win(9), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let c = wait_applied(&fixture, "1001_3");
+    assert!(
+        within(c.3, work_areas()[0]),
+        "switched-to Space tiles d1: {:?}",
+        c.3
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        // Generation-gated: only frames planned under the gap revision
+        // count; superseded pre-gap records can land late under load.
+        if (record.2 == "1001_1" || record.2 == "1001_2") && record.4 == revision2 {
+            panic!("unreadable-typed hidden pair takes no writes: {record:?}");
+        }
+    }
+    assert!(
+        fixture.focus_rx.try_recv().is_err(),
+        "no focus dispatches around a type gap"
+    );
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "type gap must not retire the hidden domain"
+    );
+    // Readable again, back to 11: the exact pre-gap frames return.
+    let mut back = two_display_snapshot();
+    back.rows[0].spaces = vec![11, 12];
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision3 = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            30,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(3), vec![12]),],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            30,
+            vec![(win(9), vec![21])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let r1 = wait_applied(&fixture, "1001_1");
+    let r2 = wait_applied(&fixture, "1001_2");
+    assert_eq!(r1.3, f1.3, "readable return restores exact frames");
+    assert_eq!(r2.3, f2.3, "readable return restores exact frames");
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "gap round trip retires nothing"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn skipped_display_parks_layout_then_resumes_exact() {
+    // Display 1's SLS row goes unhomable (unknown identifier — still
+    // present, never absent): its sessions park with no views, no
+    // reconciles, and no effects instead of releasing. Fresh evidence for
+    // the same keys resumes the exact pre-gap frames with no retirement
+    // anywhere.
+    let fixture = start(scoped_config());
+    let mut first = two_display_snapshot();
+    first.rows[0].spaces = vec![11, 12];
+    first.rows[0].current = Some(11);
+    first.revision =
+        topology::fingerprint_snapshot(&first.displays, &first.rows, first.separate_spaces);
+    let revision = fixture.handle.update_topology_with(first, &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(9), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let f1 = wait_applied(&fixture, "1001_1");
+    let f2 = wait_applied(&fixture, "1001_2");
+    let f4 = wait_applied(&fixture, "1001_4");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Display 1's row identifier turns unknown: display 1 skips (still
+    // present, geometry intact) while display 2 homes normally.
+    let gap = topology::build_snapshot(
+        &[
+            ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0),
+            ns(2, "uuid-2", 1440.0, 0.0, 1440.0, 900.0),
+        ],
+        &[
+            row(Some("gone-uuid"), &[11, 12], Some(11)),
+            row(Some("uuid-2"), &[21], Some(21)),
+        ],
+        Some(true),
+    );
+    let revision2 = fixture.handle.update_topology_with(gap, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            20,
+            vec![(win(9), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    // The skip is recognized (not silent), and the parked triple takes
+    // no writes while display 2 keeps tiling alone.
+    assert!(
+        fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "topology" && e.outcome == "displays-skipped"),
+        "skipped display must be counted"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        // Generation-gated: only frames planned under the gap revision
+        // count; superseded pre-gap records can land late under load.
+        if record.2.starts_with("1001_") && record.4 == revision2 {
+            panic!("parked display takes no writes: {record:?}");
+        }
+    }
+    let desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    assert_eq!(desired, vec!["1002_9".to_owned()]);
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "skipped display must park, never release"
+    );
+    // Fresh evidence resumes the same keys: the exact pre-gap frames.
+    let mut back = two_display_snapshot();
+    back.rows[0].spaces = vec![11, 12];
+    back.rows[0].current = Some(11);
+    back.revision =
+        topology::fingerprint_snapshot(&back.displays, &back.rows, back.separate_spaces);
+    let revision3 = fixture.handle.update_topology_with(back, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            30,
+            vec![(win(1), vec![11]), (win(2), vec![11]), (win(4), vec![11]),],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            30,
+            vec![(win(9), vec![21])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let r1 = wait_applied(&fixture, "1001_1");
+    let r2 = wait_applied(&fixture, "1001_2");
+    let r4 = wait_applied(&fixture, "1001_4");
+    assert_eq!(r1.3, f1.3, "parked session resumes exact frames");
+    assert_eq!(r2.3, f2.3, "parked session resumes exact frames");
+    assert_eq!(r4.3, f4.3, "parked session resumes exact frames");
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "park round trip retires nothing"
+    );
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn skip_then_actual_removal_releases() {
+    // A skipped (still-present) display parks without release; removing
+    // it for real afterwards releases its domains normally while the
+    // surviving display is undisturbed.
+    let fixture = start(scoped_config());
+    fixture
+        .handle
+        .update_topology_with(two_display_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    let revision = fixture.handle.topology_revision().expect("revision");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(2), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let _ = wait_applied(&fixture, "1001_1");
+    let _ = wait_applied(&fixture, "1002_2");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Skip display 1 first (unhomable row, still present): parked, never
+    // released, no writes into it.
+    let gap = topology::build_snapshot(
+        &[
+            ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0),
+            ns(2, "uuid-2", 1440.0, 0.0, 1440.0, 900.0),
+        ],
+        &[
+            row(Some("gone-uuid"), &[11], Some(11)),
+            row(Some("uuid-2"), &[21], Some(21)),
+        ],
+        Some(true),
+    );
+    let revision2 = fixture.handle.update_topology_with(gap, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![(win(1), vec![11])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            20,
+            vec![(win(2), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    std::thread::sleep(Duration::from_millis(300));
+    while let Ok(record) = fixture.applied_rx.try_recv() {
+        // Generation-gated: only frames planned under the gap revision
+        // count; superseded pre-gap records can land late under load.
+        if record.2 == "1001_1" && record.4 == revision2 {
+            panic!("parked display takes no writes: {record:?}");
+        }
+    }
+    assert!(
+        !fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "skip parks without release"
+    );
+    // Display 1 actually unplugged (absent from geometry and rows, so not
+    // skipped): its parked domain releases normally; display 2 tiles on.
+    let single = topology::build_snapshot(
+        &[ns(2, "uuid-2", 0.0, 0.0, 1440.0, 900.0)],
+        &[row(Some("uuid-2"), &[21], Some(21))],
+        Some(true),
+    );
+    let revision3 = fixture.handle.update_topology_with(single, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            30,
+            vec![(win(2), vec![21])],
+            None,
+            revision3
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let b = wait_applied(&fixture, "1002_2");
+    assert!(
+        within(b.3, (0, 0, 1440, 900)),
+        "surviving display keeps tiling: {:?}",
+        b.3
+    );
+    assert!(
+        fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "actually-removed display must release"
+    );
+    let desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    assert_eq!(desired, vec!["1002_2".to_owned()]);
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn removed_display_retires_its_domains() {
+    // Two displays tile; removing display 2 retires exactly its domain
+    // while display 1 is undisturbed.
+    let fixture = start(scoped_config());
+    fixture
+        .handle
+        .update_topology_with(two_display_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    let gen_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    // Pin generations before the first revision fence below.
+    let revision = fixture.handle.topology_revision().expect("revision");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(2), vec![21])],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let _ = wait_applied(&fixture, "1001_1");
+    let _ = wait_applied(&fixture, "1002_2");
+    while fixture.applied_rx.try_recv().is_ok() {}
+    // Display 2 unplugged: single display, single row.
+    let single = topology::build_snapshot(
+        &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+        &[row(Some("uuid-1"), &[11], Some(11))],
+        Some(true),
+    );
+    let revision2 = fixture.handle.update_topology_with(single, &user_space);
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            20,
+            vec![(win(1), vec![11])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let a = wait_applied(&fixture, "1001_1");
+    assert!(
+        within(a.3, work_areas()[0]),
+        "surviving display keeps tiling: {:?}",
+        a.3
+    );
+    assert!(
+        fixture
+            .handle
+            .log_snapshot()
+            .iter()
+            .any(|e| e.kind == "domain" && e.outcome == "retired"),
+        "removed display must retire its domain"
+    );
+    let desired: Vec<String> = fixture
+        .handle
+        .last_desired_geometry()
+        .iter()
+        .map(|f| f.window.clone())
+        .collect();
+    assert_eq!(desired, vec!["1001_1".to_owned()]);
+    shutdown_clean(&fixture);
+}
+
+#[test]
+fn unknown_membership_never_adopts_current() {
+    // Unknown (empty), sticky (multi-Space), and foreign-Space windows
+    // never adopt the current domain even when their geometry sits inside
+    // its work area; only the exactly-homed member actuates.
+    let fixture = start(scoped_config());
+    let revision = fixture
+        .handle
+        .update_topology_with(two_display_snapshot(), &user_space);
+    let gen_a = fixture.handle.launch_app(APP_A).expect("launch");
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![
+                (win_at(1, 100, 100, 200, 200), vec![]),
+                (win_at(2, 100, 100, 200, 200), vec![11, 21]),
+                (win_at(3, 100, 100, 200, 200), vec![99]),
+                (win_at(4, 100, 100, 200, 200), vec![11]),
+            ],
+            None,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    let applied = wait_applied(&fixture, "1001_4");
+    assert_eq!(applied.2, "1001_4");
+    assert!(
+        fixture.applied_rx.try_recv().is_err(),
+        "unhomed windows must never actuate"
+    );
+    let desired = fixture.handle.last_desired_geometry();
+    assert_eq!(
+        desired
+            .iter()
+            .map(|f| f.window.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1001_4"]
     );
     shutdown_clean(&fixture);
 }

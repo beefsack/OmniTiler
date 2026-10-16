@@ -403,12 +403,16 @@ fn assemble_event(
 /// Native-mode member partition for one scoped observation: each observed
 /// window homes to exactly one context domain by live Space membership —
 /// never by geometry. A window is a member iff its membership is exactly
-/// `[space]` for some domain's current user Space; sticky, other-Space,
-/// unknown (empty/unreadable), and metadataless windows omit with a count
-/// (never a close report). When several domains share one current Space
-/// (unified span or mid-transition duplicates), membership alone cannot
-/// home: the observed rect arbitrates by greatest integer overlap with a
-/// unique-maximum rule (ties, zero overlap, and degenerate rects omit).
+/// `[space]` for some retained domain (proven user, current or hidden, or
+/// homed-but-unreadable and hidden);
+/// sticky, other-Space, unknown (empty/unreadable), metadataless, and
+/// non-user-Space windows omit with a count (never a close report).
+/// Current members actuate; hidden members reconcile without frames or
+/// focus so their layouts survive manual native switches. When several
+/// domains share one Space (unified span or mid-transition duplicates),
+/// membership alone cannot home: the observed rect arbitrates by greatest
+/// integer overlap with a unique-maximum rule (ties, zero overlap, and
+/// degenerate rects omit).
 /// Returns per-domain member windows plus the omitted count.
 pub(crate) fn partition_scoped_members(
     windows: &[ObservedWindow],
@@ -583,11 +587,13 @@ pub(crate) fn tile_domain_bounds(visible: Rect) -> Rect {
     tiler_core::geometry::inset_bounds(visible, PHASE1_OUTER_GAP).unwrap_or(visible)
 }
 
-/// Native-mode domain views from the shared context: every exactly-homed
-/// current-user-Space display becomes one core domain planned into its
-/// visible work area (menu/Dock-excluded integer units — never the
-/// skeleton bounds) minus the adapter-side outer-gap inset. Order follows
-/// the context (display order).
+/// Native-mode domain views from the shared context: every retainable Space
+/// per display becomes one core domain planned into its display's visible
+/// work area (menu/Dock-excluded integer units — never the skeleton
+/// bounds) minus the adapter-side outer-gap inset. Order follows the
+/// context (display order, Spaces in row order). Callers split current
+/// (actuate) from hidden (reconcile without emission) via
+/// [`NativeContext::is_current`].
 pub(crate) fn native_domain_views(
     ctx: &crate::runtime_types::NativeContext,
 ) -> Vec<NativeDomainView> {
@@ -1032,6 +1038,7 @@ mod tests {
                     output: OutputId("macos-display-1".to_owned()),
                     workspace: WorkspaceId("space-11".to_owned()),
                     space: 11,
+                    current: true,
                     bounds: Rect {
                         x: 0,
                         y: 0,
@@ -1051,6 +1058,7 @@ mod tests {
                     output: OutputId("macos-display-2".to_owned()),
                     workspace: WorkspaceId("space-21".to_owned()),
                     space: 21,
+                    current: true,
                     bounds: Rect {
                         x: 1440,
                         y: 0,

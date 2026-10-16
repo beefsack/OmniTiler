@@ -1386,7 +1386,11 @@ mod native {
             }
             let current = spaces[0];
             let ctx = self.live_context()?;
-            let domains: Vec<_> = ctx.domains.iter().filter(|d| d.space == current).collect();
+            let domains: Vec<_> = ctx
+                .domains
+                .iter()
+                .filter(|d| d.current && d.space == current)
+                .collect();
             if domains.len() != 1 {
                 return Err("current Space homed by != 1 domain; refusing".to_owned());
             }

@@ -17,11 +17,14 @@
 //! - Compatible leaves known conflicting chords to macOS by not arming them
 //!   (they pass through natively): under the Ctrl Meta that is the 4
 //!   unshifted no-Alt arrow chords (Mission Control Ctrl+arrows are the
-//!   repo-established expected conflict; `Ctrl+Alt+arrows` resize chords and
-//!   `Ctrl+Shift+arrows` move chords are distinct effective chords with no
-//!   established holder, so Compatible keeps them; there are no
-//!   digit/workspace bindings to conflict with Ctrl+digits by construction).
-//!   Other Metas have no repo-established conflicts, so Compatible keeps the
+//!   repo-established expected conflict) plus the 10 unshifted no-Alt digit
+//!   chords (the native Switch to Desktop N default Ctrl+digit holders,
+//!   established in-repo by [`crate::desktop_shortcuts`]); `Ctrl+Alt+arrows`
+//!   resize chords, `Ctrl+Shift+arrows` move chords, and `Ctrl+Shift+digits`
+//!   numbered-send chords are distinct effective chords with no established
+//!   holder, so Compatible keeps them; digits exist only in the workspace
+//!   catalogue ([`crate::workspace_input`]), never the basic set. Other
+//!   Metas have no repo-established conflicts, so Compatible keeps the
 //!   full set there rather than inventing holders. A `None` conflict answer
 //!   means "no established holder", never "proven conflict-free".
 //!
@@ -59,9 +62,11 @@ pub const KEY_RIGHT: u32 = 0x7C;
 pub const KEY_DOWN: u32 = 0x7D;
 pub const KEY_UP: u32 = 0x7E;
 
-/// The exact basic key set: HJKL letters, four arrows, G, and O. No digits,
-/// so no preset can swallow native Ctrl+digits (no workspace bindings
-/// exist).
+/// The exact basic key set: HJKL letters, four arrows, G, and O. No digits:
+/// the basic catalogue can never swallow native Ctrl+digits on its own —
+/// numbered chords live only in the workspace catalogue
+/// ([`crate::workspace_input`]), where Compatible drops the conflicting
+/// unshifted Ctrl+digit selects via [`conflict_reason_for`].
 const BASIC_KEYCODES: [u32; 10] = [
     KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP,
 ];
@@ -103,16 +108,23 @@ impl InputPreset {
 }
 
 /// Known native conflict for one EFFECTIVE chord, if any. Computed on the
-/// full effective chord (post `--ctrl` substitution plus the binding's Shift
-/// and Alt arms), never a hardcoded Ctrl or a blanket keycode assumption:
+/// full effective chord (post `--ctrl` substitution plus the binding's Shift,
+/// Alt, and auxiliary arms), never a hardcoded Ctrl or a blanket keycode
+/// assumption:
 /// only unshifted arrow chords conflict when the effective modifier is Ctrl
 /// WITHOUT the Alt arm (Mission Control Ctrl+arrows, the repo-established
 /// expected conflict — `Ctrl+Alt+arrows` resize chords and `Ctrl+Shift+arrows`
 /// move chords are distinct effective chords with no established holder, so
-/// Compatible keeps them). Letters, G, and O have no established native
-/// holder under any Meta, and non-Ctrl Metas have no established arrow
-/// conflict either — those return `None` ("no established holder", never a
-/// proven-conflict-free claim) rather than inventing a holder.
+/// Compatible keeps them), plus unshifted no-Alt digit chords under Ctrl
+/// (the native Switch to Desktop N default Ctrl+digit holders, established
+/// in-repo by [`crate::desktop_shortcuts`] — the shifted numbered-send arm
+/// is a distinct effective chord with no established holder, kept like the
+/// shifted move arm). Letters, G, and O have no established native
+/// holder under any Meta, and non-Ctrl Metas have no established arrow or
+/// digit conflict either — those return `None` ("no established holder",
+/// never a proven-conflict-free claim) rather than inventing a holder.
+/// Auxiliary (`aux`) workspace chords never reach this table: they carry no
+/// established holder under any Meta (see [`workspace_conflict_reason`]).
 #[must_use]
 pub fn conflict_reason_for(
     key_code: u32,
@@ -122,9 +134,56 @@ pub fn conflict_reason_for(
 ) -> Option<&'static str> {
     if modifier == ProbeModifier::Ctrl && !shift && !alt && ARROW_KEYCODES.contains(&key_code) {
         Some("Mission Control Ctrl+arrow; left to macOS under Compatible")
+    } else if modifier == ProbeModifier::Ctrl
+        && !shift
+        && !alt
+        && crate::desktop_shortcuts::is_digit_keycode(key_code)
+    {
+        Some("native Switch to Desktop N default Ctrl+digit holder; left to macOS under Compatible")
     } else {
         None
     }
+}
+
+/// Known native conflict for one workspace EFFECTIVE chord, if any: the
+/// auxiliary arm plus the basic table. Auxiliary chords (relative select /
+/// send, previous toggle, output send: Meta plus the [`aux_flag_for`] bit)
+/// carry no repo-established holder under any Meta — the known-taken
+/// Ctrl+Cmd keys (F/Q/Space/D) sit outside the workspace set by
+/// construction (pinned by the catalogue tests), and no other auxiliary
+/// chord holder is established in the local sources — so they return `None`
+/// ("no established holder", never a proven-conflict-free claim) rather
+/// than inventing one. Non-auxiliary workspace chords (numbered digits)
+/// fall through to [`conflict_reason_for`].
+#[must_use]
+pub fn workspace_conflict_reason(
+    key_code: u32,
+    shift: bool,
+    alt: bool,
+    aux: bool,
+    modifier: ProbeModifier,
+) -> Option<&'static str> {
+    if aux {
+        None
+    } else {
+        conflict_reason_for(key_code, shift, alt, modifier)
+    }
+}
+
+/// Auxiliary workspace modifier bit for one Ctrl-role modifier
+/// (`CGEventFlags` space): the Command bit under the Ctrl role, else the
+/// Control bit. The auxiliary arm keeps relative/previous/output workspace
+/// chords disjoint from every basic chord under every Meta (the basic set
+/// never carries both bits at once), and matches the fixture extra-bit
+/// contract ([`crate::input_session::extra_flag_for`], which delegates
+/// here). Shift is never the auxiliary bit: under the default Ctrl role it
+/// would alias the move arm.
+#[must_use]
+pub fn aux_flag_for(modifier: ProbeModifier) -> u64 {
+    const CONTROL: u64 = 0x0004_0000;
+    const COMMAND: u64 = 0x0010_0000;
+    let (want, _) = crate::input::cg_flag_bits(modifier);
+    if want == CONTROL { COMMAND } else { CONTROL }
 }
 
 /// The armed chord set for one product run: Authentic keeps the whole
@@ -144,8 +203,14 @@ pub fn effective_bindings(
         InputPreset::Compatible => catalogue
             .iter()
             .filter(|binding| {
-                conflict_reason_for(binding.key_code, binding.shift, binding.alt, modifier)
-                    .is_none()
+                workspace_conflict_reason(
+                    binding.key_code,
+                    binding.shift,
+                    binding.alt,
+                    binding.aux,
+                    modifier,
+                )
+                .is_none()
             })
             .copied()
             .collect(),
@@ -438,6 +503,7 @@ mod tests {
             key_code: KEY_H,
             shift: false,
             alt: false,
+            aux: false,
             action: InputSemanticAction::FocusStep {
                 direction: InputDirection::Left,
             },

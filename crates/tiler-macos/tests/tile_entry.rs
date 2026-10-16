@@ -136,9 +136,14 @@ fn start_catalogue() -> Fixture {
 }
 
 fn observe_focused(handle: &RuntimeHandle, generation: u64, wid: u32) {
-    // Sequence 2: the worker's own startup observation takes 1, so this
-    // superseedes it (either order converges: a later startup seq is stale
-    // and rejects, an earlier one is replaced by this).
+    // The worker's own startup observation takes sequence 1, so this
+    // superseeding sequence 2 must be QUEUED after it: the startup send
+    // happens after `launch_app` reports ready, so without this wait the
+    // seq-2 submit can win the inbox race, seq 1 is then rejected as
+    // out-of-order, and the focus arrives at admission (`tiled`) instead
+    // of as a focus projection — the geometry oracles below assume the
+    // projection path (focused tile parked top-right, interior left edge).
+    wait_startup_observation(handle);
     assert_eq!(
         handle.submit_observation(AxObservation {
             pid: APP,
@@ -176,6 +181,23 @@ fn send_key_up(fixture: &Fixture, flags: u64, key_code: u32) {
             key_code,
         })
         .expect("send key up");
+}
+
+fn wait_startup_observation(handle: &RuntimeHandle) {
+    // The worker publishes exactly one startup observation per launch;
+    // observing the publish (queued, FIFO) before submitting sequence 2
+    // pins the intended startup-then-focus order. Same bound/cadence as
+    // `wait_forwarded`, no production timeout touched.
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        if handle.diagnostics().observations_published >= 1 {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("worker startup observation never published");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn wait_forwarded(handle: &RuntimeHandle, baseline: u64) -> u64 {
@@ -523,12 +545,13 @@ fn catalogue_config_validates() {
     };
     assert!(empty.validate().is_err());
 
-    // Duplicate (key, shift, alt) refuses.
+    // Duplicate (key, shift, alt, aux) refuses.
     let mut duplicated = tile_catalogue();
     duplicated.push(tiler_macos::runtime::TileBinding {
         key_code: 0x04,
         shift: false,
         alt: false,
+        aux: false,
         action: tiler_macos::runtime::InputSemanticAction::FocusStep {
             direction: InputDirection::Left,
         },

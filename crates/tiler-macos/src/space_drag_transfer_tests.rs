@@ -712,3 +712,76 @@ fn temp_residue_hint_names_sid_and_narrow_recovery() {
     assert!(hint.contains('5'));
     assert!(hint.contains("mc-recover --temp 5 --original 1"));
 }
+
+#[test]
+fn candidate_points_span_titlebar_with_center_compat() {
+    let frame = AxFrame {
+        x: 200.0,
+        y: 200.0,
+        w: 480.0,
+        h: 320.0,
+    };
+    let points = candidate_grab_points(frame).unwrap();
+    assert_eq!(points.len(), 5);
+    // Center candidate matches the legacy single grab point.
+    assert!(points.contains(&titlebar_grab_point(frame).unwrap()));
+    for (x, y) in points {
+        assert!(x >= frame.x && x <= frame.x + frame.w);
+        assert_eq!(y, frame.y + 8.0);
+    }
+    assert!(candidate_grab_points(AxFrame { w: 10.0, ..frame }).is_err());
+}
+
+#[test]
+fn selector_skips_occluded_center_for_clear_edge() {
+    let owned = CgWindow {
+        wid: 7,
+        pid: 4242,
+        layer: 0,
+        onscreen: true,
+        bounds: CgBounds {
+            x: 200.0,
+            y: 200.0,
+            w: 480.0,
+            h: 320.0,
+        },
+        title: None,
+    };
+    let frame = AxFrame {
+        x: 200.0,
+        y: 200.0,
+        w: 480.0,
+        h: 320.0,
+    };
+    // Narrow above-normal chrome over the center only: the selector must
+    // land on a clear edge, never exempt the chrome.
+    let chrome = basic(3, 100, 25, 420.0, 200.0, 60.0, 30.0);
+    let point = select_clear_grab_point(frame, &owned, &[chrome], &[], None, (4242, 7)).unwrap();
+    assert_ne!(point, titlebar_grab_point(frame).unwrap());
+    assert!(hit_test_grab(point, &owned, &[chrome], &[]).is_ok());
+    // Full-bar chrome: refuse (tried count named, chrome never exempted).
+    let full = basic(3, 100, 25, 200.0, 200.0, 480.0, 30.0);
+    let err = select_clear_grab_point(frame, &owned, &[full], &[], None, (4242, 7)).unwrap_err();
+    assert!(err.contains("tried 5"));
+    // Foreign AX owner at every candidate refuses even when CG is clear.
+    let err =
+        select_clear_grab_point(frame, &owned, &[], &[], Some((77, 8)), (4242, 7)).unwrap_err();
+    assert!(err.contains("foreign"));
+}
+
+#[test]
+fn frame_mismatch_names_differing_fields() {
+    let a = AxFrame {
+        x: 200.0,
+        y: 200.0,
+        w: 480.0,
+        h: 320.0,
+    };
+    assert!(ax_frame_mismatch(a, a).is_none());
+    let mut b = a;
+    b.x = 200.5;
+    assert!(ax_frame_mismatch(a, b).unwrap().contains('x'));
+    let mut c = a;
+    c.h = 321.0;
+    assert!(ax_frame_mismatch(a, c).unwrap().contains('h'));
+}

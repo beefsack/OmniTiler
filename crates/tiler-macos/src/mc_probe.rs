@@ -1157,6 +1157,22 @@ pub fn error_json(report: &McErrorReport) -> (i32, String) {
 /// keeps exact equality (same-current restoration must read identical).
 #[must_use]
 pub fn ghostty_stable_across_switch(before: &[GhosttyWindow], after: &[GhosttyWindow]) -> bool {
+    ghostty_mismatch_detail(before, after).is_none()
+}
+
+/// Pure Ghostty mismatch detail over plain data (no OS touch): `None` when
+/// [`ghostty_stable_across_switch`] holds, else the first cause (count,
+/// identity, layer, bounds, or membership — naming unreadable membership as
+/// unknown, never as equal). `onscreen` is excluded by design (see above),
+/// so a visibility-only flip never reports a mismatch. The live runner logs
+/// this when the stability gate reads false, distinguishing a real geometry
+/// or membership change from an unreadable-membership artifact without
+/// weakening the exact gate.
+#[must_use]
+pub fn ghostty_mismatch_detail(
+    before: &[GhosttyWindow],
+    after: &[GhosttyWindow],
+) -> Option<String> {
     fn norm(spaces: &Option<Vec<u64>>) -> Option<Vec<u64>> {
         spaces.as_ref().map(|s| {
             let mut v = s.clone();
@@ -1166,22 +1182,49 @@ pub fn ghostty_stable_across_switch(before: &[GhosttyWindow], after: &[GhosttyWi
         })
     }
     if before.len() != after.len() {
-        return false;
+        return Some(format!(
+            "ghostty count {} -> {} (windows appeared/disappeared; onscreen excluded)",
+            before.len(),
+            after.len()
+        ));
     }
     let mut a: Vec<&GhosttyWindow> = before.iter().collect();
     let mut b: Vec<&GhosttyWindow> = after.iter().collect();
     a.sort_by_key(|g| g.wid);
     b.sort_by_key(|g| g.wid);
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        x.wid == y.wid
-            && x.pid == y.pid
-            && x.layer == y.layer
-            && x.x == y.x
-            && x.y == y.y
-            && x.w == y.w
-            && x.h == y.h
-            && norm(&x.spaces) == norm(&y.spaces)
-    })
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x.wid != y.wid || x.pid != y.pid {
+            return Some(format!(
+                "ghostty identity WID{}/PID{} -> WID{}/PID{}",
+                x.wid, x.pid, y.wid, y.pid
+            ));
+        }
+        if x.layer != y.layer {
+            return Some(format!(
+                "ghostty WID{} layer {} -> {}",
+                x.wid, x.layer, y.layer
+            ));
+        }
+        if x.x != y.x || x.y != y.y || x.w != y.w || x.h != y.h {
+            return Some(format!(
+                "ghostty WID{} bounds {}x{}@{},{} -> {}x{}@{},{}",
+                x.wid, x.w, x.h, x.x, x.y, y.w, y.h, y.x, y.y
+            ));
+        }
+        if norm(&x.spaces) != norm(&y.spaces) {
+            if x.spaces.is_none() || y.spaces.is_none() {
+                return Some(format!(
+                    "ghostty WID{} membership unreadable on one side ({:?} -> {:?}); unknown, never equal",
+                    x.wid, x.spaces, y.spaces
+                ));
+            }
+            return Some(format!(
+                "ghostty WID{} membership {:?} -> {:?}",
+                x.wid, x.spaces, y.spaces
+            ));
+        }
+    }
+    None
 }
 
 /// One Space's join in the live topology: display/index position, that

@@ -1,0 +1,725 @@
+//! Workspace catalogue tests: shape, parse round-trips, trailing-0
+//! semantics, exact modifier arms, preset matrix over every Meta, and the
+//! honest-execution refusal. No live touch on any path: every chord is
+//! plain data matched through the pure tap decision function.
+
+use std::collections::HashSet;
+
+use crate::config::ProbeModifier;
+use crate::desktop_shortcuts::{KEY_0, KEY_1};
+use crate::input::cg_flag_bits;
+use crate::input_match::{TapKeyKind, decide_tap_event};
+use crate::input_policy::{
+    InputPreset, aux_flag_for, effective_bindings, workspace_conflict_reason,
+};
+use crate::native_input::{tap_specs_for, tile_catalogue};
+use crate::runtime_types::{InputDirection, InputSemanticAction, TileBinding};
+use crate::workspace_input::*;
+
+const CTRL: u64 = 0x0004_0000;
+const CMD: u64 = 0x0010_0000;
+const SHIFT: u64 = 0x0002_0000;
+const ALT: u64 = 0x0008_0000;
+
+fn combined() -> Vec<TileBinding> {
+    let mut out = tile_catalogue();
+    out.extend(workspace_bindings());
+    out
+}
+
+fn row_by_id(id: &str) -> WorkspaceRow {
+    workspace_catalogue()
+        .iter()
+        .find(|row| row.id == id)
+        .copied()
+        .unwrap_or_else(|| panic!("workspace row missing: {id}"))
+}
+
+#[test]
+fn catalogue_shape_is_63_rows_45_armed() {
+    let catalogue = workspace_catalogue();
+    assert_eq!(catalogue.len(), 63);
+    assert_eq!(workspace_bindings().len(), 45);
+    // Ids unique; (action, key) pairs unique — relative/output letter and
+    // arrow rows intentionally share one action (canonical letter slot
+    // plus arrow alias, Windows parity), so actions alone are not unique.
+    let mut ids = HashSet::new();
+    for row in &catalogue {
+        assert!(ids.insert(row.id), "duplicate id {}", row.id);
+    }
+    let mut action_keys = HashSet::new();
+    for row in &catalogue {
+        let key = format!(
+            "{:?}:{}",
+            row.action,
+            row.default
+                .map(|chord| chord.key_code)
+                .or(row.unbound_key)
+                .unwrap_or(0)
+        );
+        assert!(action_keys.insert(key), "duplicate action+key {}", row.id);
+    }
+    // No product execution yet: every row reports unimplemented (flipping
+    // any flag without the native switch/send routes would fake support).
+    assert!(catalogue.iter().all(|row| !row.implemented));
+    // Family counts: 10 select + 10 send + 10 stay + 8 + 8 + 8 relative +
+    // 1 previous + 8 output.
+    let selects = catalogue
+        .iter()
+        .filter(|row| matches!(row.action, InputSemanticAction::WorkspaceSelect { .. }))
+        .count();
+    let sends = catalogue
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.action,
+                InputSemanticAction::WorkspaceSend { follow: true, .. }
+            )
+        })
+        .count();
+    let stays = catalogue
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.action,
+                InputSemanticAction::WorkspaceSend { follow: false, .. }
+            )
+        })
+        .count();
+    assert_eq!((selects, sends, stays), (10, 10, 10));
+}
+
+#[test]
+fn stay_rows_are_bindable_unbound_with_canonical_keys() {
+    // 10 numbered + 8 relative stay rows: no default chord (never armed),
+    // parseable ids, and the canonical key slot of the follow arm for a
+    // future rebind.
+    let catalogue = workspace_catalogue();
+    let stays: Vec<_> = catalogue
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.action,
+                InputSemanticAction::WorkspaceSend { follow: false, .. }
+                    | InputSemanticAction::WorkspaceSendRelative { follow: false, .. }
+            )
+        })
+        .collect();
+    assert_eq!(stays.len(), 18);
+    assert!(stays.iter().all(|row| row.default.is_none()));
+    assert!(stays.iter().all(|row| row.binding().is_none()));
+    for row in stays {
+        let follow = match row.action {
+            InputSemanticAction::WorkspaceSend { index, .. } => {
+                InputSemanticAction::WorkspaceSend {
+                    index,
+                    follow: true,
+                }
+            }
+            InputSemanticAction::WorkspaceSendRelative { prev, .. } => {
+                InputSemanticAction::WorkspaceSendRelative { prev, follow: true }
+            }
+            _ => unreachable!(),
+        };
+        let follow_row = catalogue
+            .iter()
+            .find(|candidate| {
+                candidate.action == follow
+                    && candidate.default.map(|chord| chord.key_code) == row.unbound_key
+            })
+            .expect("every stay shares its follow arm's key");
+        let follow_key = follow_row.default.expect("follow arm is bound").key_code;
+        assert_eq!(row.unbound_key, Some(follow_key), "{}", row.id);
+    }
+    // Defaulted rows carry no stay slot.
+    assert!(
+        catalogue
+            .iter()
+            .filter(|row| row.default.is_some())
+            .all(|row| row.unbound_key.is_none())
+    );
+}
+
+#[test]
+fn parse_maps_every_id_and_canonical_slots_reverse() {
+    // Forward: every row id parses to its action (the single source of
+    // truth is the catalogue: nothing else parses).
+    for row in workspace_catalogue() {
+        assert_eq!(
+            parse_workspace_action(row.id),
+            Some(row.action),
+            "{}",
+            row.id
+        );
+    }
+    // Reverse: actions shared by a letter row plus its arrow alias map to
+    // the canonical letter slot (Windows canonical-slot parity); numbered
+    // actions are bijective.
+    let canonical: [(InputSemanticAction, &str); 19] = [
+        (
+            InputSemanticAction::WorkspaceRelative { prev: true },
+            "workspace-prev-h",
+        ),
+        (
+            InputSemanticAction::WorkspaceRelative { prev: false },
+            "workspace-next-j",
+        ),
+        (
+            InputSemanticAction::WorkspaceSendRelative {
+                prev: true,
+                follow: true,
+            },
+            "send-prev-h",
+        ),
+        (
+            InputSemanticAction::WorkspaceSendRelative {
+                prev: false,
+                follow: true,
+            },
+            "send-next-j",
+        ),
+        (
+            InputSemanticAction::WorkspaceSendRelative {
+                prev: true,
+                follow: false,
+            },
+            "send-stay-prev-h",
+        ),
+        (
+            InputSemanticAction::WorkspaceSendRelative {
+                prev: false,
+                follow: false,
+            },
+            "send-stay-next-j",
+        ),
+        (
+            InputSemanticAction::WorkspaceOutput {
+                direction: InputDirection::Left,
+                follow: true,
+            },
+            "send-output-left",
+        ),
+        (
+            InputSemanticAction::WorkspaceOutput {
+                direction: InputDirection::Down,
+                follow: true,
+            },
+            "send-output-down",
+        ),
+        (
+            InputSemanticAction::WorkspaceOutput {
+                direction: InputDirection::Up,
+                follow: true,
+            },
+            "send-output-up",
+        ),
+        (
+            InputSemanticAction::WorkspaceOutput {
+                direction: InputDirection::Right,
+                follow: true,
+            },
+            "send-output-right",
+        ),
+        (
+            InputSemanticAction::WorkspaceSelect { index: 1 },
+            "workspace-select-1",
+        ),
+        (
+            InputSemanticAction::WorkspaceSelect { index: 9 },
+            "workspace-select-9",
+        ),
+        (
+            InputSemanticAction::WorkspaceSelect { index: 0 },
+            "workspace-select-0",
+        ),
+        (
+            InputSemanticAction::WorkspaceSend {
+                index: 1,
+                follow: true,
+            },
+            "workspace-send-1",
+        ),
+        (
+            InputSemanticAction::WorkspaceSend {
+                index: 0,
+                follow: true,
+            },
+            "workspace-send-0",
+        ),
+        (
+            InputSemanticAction::WorkspaceSend {
+                index: 1,
+                follow: false,
+            },
+            "stay-workspace-1",
+        ),
+        (
+            InputSemanticAction::WorkspaceSend {
+                index: 9,
+                follow: false,
+            },
+            "stay-workspace-9",
+        ),
+        (
+            InputSemanticAction::WorkspaceSend {
+                index: 0,
+                follow: false,
+            },
+            "stay-workspace-0",
+        ),
+        (InputSemanticAction::WorkspacePrevious, "workspace-previous"),
+    ];
+    for (action, id) in canonical.iter().take(19) {
+        assert_eq!(workspace_action_id(action), Some(*id), "{action:?}");
+    }
+    for id in [
+        "",
+        "focus-left",
+        "workspace-select-10",
+        "workspace-select-",
+        "workspace-send-11",
+        "stay-workspace-x",
+        "workspace-prev-h-extra",
+        "send-output",
+        "workspace-previous ",
+        "omnitiler-workspace-1",
+    ] {
+        assert_eq!(parse_workspace_action(id), None, "{id}");
+    }
+    // Basic actions have no workspace id; output send-and-stay has no
+    // approved id yet.
+    for action in [
+        InputSemanticAction::FocusStep {
+            direction: InputDirection::Left,
+        },
+        InputSemanticAction::ToggleFloat,
+        InputSemanticAction::ToggleOrientation,
+        InputSemanticAction::WorkspaceOutput {
+            direction: InputDirection::Left,
+            follow: false,
+        },
+    ] {
+        assert_eq!(workspace_action_id(&action), None, "{action:?}");
+    }
+}
+
+#[test]
+fn trailing_zero_matches_shared_core_semantics() {
+    // Index 0 is the trailing empty workspace on every platform: Windows
+    // `workspace-select-0` focuses-or-creates it, `workspace-send-0`
+    // appends for the mover, KDE index 0 is the append target, and the core
+    // trailing policy (`tiler_core::workspace::plan_trailing`) reuses or
+    // appends exactly that slot.
+    assert_eq!(
+        parse_workspace_action("workspace-select-0"),
+        Some(InputSemanticAction::WorkspaceSelect { index: 0 })
+    );
+    assert_eq!(
+        parse_workspace_action("workspace-send-0"),
+        Some(InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: true
+        })
+    );
+    assert_eq!(
+        parse_workspace_action("stay-workspace-0"),
+        Some(InputSemanticAction::WorkspaceSend {
+            index: 0,
+            follow: false
+        })
+    );
+    let select_0 = row_by_id("workspace-select-0");
+    assert!(select_0.text.contains("trailing"));
+    // The 0 leg is the `0` digit (Desktop 10 leg), 1 is the `1` digit.
+    assert_eq!(select_0.default.expect("select-0 is bound").key_code, KEY_0);
+    assert_eq!(
+        row_by_id("workspace-select-1")
+            .default
+            .expect("bound")
+            .key_code,
+        KEY_1
+    );
+    // 1-9 round-trip each.
+    for index in 1..=9u8 {
+        let id = format!("workspace-select-{index}");
+        assert_eq!(
+            parse_workspace_action(&id),
+            Some(InputSemanticAction::WorkspaceSelect { index })
+        );
+        let id = format!("workspace-send-{index}");
+        assert_eq!(
+            parse_workspace_action(&id),
+            Some(InputSemanticAction::WorkspaceSend {
+                index,
+                follow: true
+            })
+        );
+    }
+}
+
+#[test]
+fn numbered_chords_keep_plain_meta_digits() {
+    // Numbered rows carry no auxiliary arm: Meta+digit select,
+    // Meta+Shift+digit send — under Ctrl exactly the native Desktop-N
+    // default shape the Authentic ownership unit enables.
+    let select_1 = row_by_id("workspace-select-1").default.expect("bound");
+    assert_eq!(
+        (select_1.shift, select_1.alt, select_1.aux),
+        (false, false, false)
+    );
+    let send_1 = row_by_id("workspace-send-1").default.expect("bound");
+    assert_eq!((send_1.shift, send_1.alt, send_1.aux), (true, false, false));
+    assert_eq!(
+        effective_flags_for(
+            ProbeModifier::Ctrl,
+            &row_by_id("workspace-select-1").binding().unwrap()
+        ),
+        CTRL
+    );
+    assert_eq!(
+        effective_flags_for(
+            ProbeModifier::Ctrl,
+            &row_by_id("workspace-send-1").binding().unwrap()
+        ),
+        CTRL | SHIFT
+    );
+}
+
+#[test]
+fn auxiliary_chords_use_ctrl_cmd_under_ctrl_and_meta_ctrl_otherwise() {
+    // Approved user choice: Meta=Ctrl auxiliaries ride Ctrl+Cmd (never a
+    // Ctrl duplicate of the basic chords); any other Meta rides Meta+Ctrl.
+    let previous = row_by_id("workspace-previous").binding().unwrap();
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Ctrl, &previous),
+        CTRL | CMD
+    );
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Meta, &previous),
+        CMD | CTRL
+    );
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Alt, &previous),
+        ALT | CTRL
+    );
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Shift, &previous),
+        SHIFT | CTRL
+    );
+    // Exact key/mod per approved form: Tab previous; H/K/Left/Up previous;
+    // J/L/Down/Right next; +Shift sends; +Alt output sends.
+    let prev_h = row_by_id("workspace-prev-h").binding().unwrap();
+    assert_eq!(
+        (prev_h.key_code, prev_h.shift, prev_h.alt, prev_h.aux),
+        (crate::input_policy::KEY_H, false, false, true)
+    );
+    let send_next_l = row_by_id("send-next-l").binding().unwrap();
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Ctrl, &send_next_l),
+        CTRL | CMD | SHIFT
+    );
+    assert_eq!(send_next_l.key_code, crate::input_policy::KEY_L);
+    let output_left = row_by_id("send-output-left").binding().unwrap();
+    assert_eq!(
+        effective_flags_for(ProbeModifier::Ctrl, &output_left),
+        CTRL | CMD | ALT
+    );
+    assert_eq!(output_left.key_code, crate::input_policy::KEY_H);
+    // The auxiliary set avoids the known-taken Ctrl+Cmd F/Q/Space/D keys:
+    // Tab plus HJKL, arrows, and digits only (`kVK_ANSI_*` positions in
+    // `Events.h`: F 0x03, D 0x02, Q 0x0C, Space 0x31 — none armed here).
+    const KNOWN_TAKEN_AUX_KEYS: [u32; 4] = [0x03, 0x02, 0x0C, 0x31];
+    for binding in workspace_bindings() {
+        if binding.aux {
+            assert!(
+                !KNOWN_TAKEN_AUX_KEYS.contains(&binding.key_code),
+                "aux row on a known-taken key: {:#x}",
+                binding.key_code
+            );
+        }
+    }
+}
+
+#[test]
+fn aux_flag_matches_the_fixture_extra_bit_contract() {
+    // Single home: the product auxiliary bit equals the long-standing
+    // fixture extra-bit rule (Cmd under Ctrl, else Ctrl) for every Meta.
+    for modifier in [
+        ProbeModifier::Ctrl,
+        ProbeModifier::Meta,
+        ProbeModifier::Alt,
+        ProbeModifier::Shift,
+    ] {
+        assert_eq!(
+            aux_flag_for(modifier),
+            crate::input_session::extra_flag_for(modifier),
+            "{modifier:?}"
+        );
+    }
+    assert_eq!(aux_flag_for(ProbeModifier::Ctrl), CMD);
+    assert_eq!(aux_flag_for(ProbeModifier::Meta), CTRL);
+}
+
+#[test]
+fn preset_matrix_all_metas() {
+    // Authentic arms everything; Compatible drops only repo-established
+    // conflicts (unshifted Ctrl arrows + unshifted Ctrl digits); Alt/Shift
+    // Metas refuse validation exactly like the basic catalogue (arm
+    // collapse), never silently.
+    let basic = tile_catalogue();
+    assert_eq!(basic.len(), 34);
+    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
+        let authentic = effective_bindings(InputPreset::Authentic, modifier, &combined());
+        assert_eq!(authentic.len(), 79, "{modifier:?}");
+        let config = crate::runtime_types::RuntimeConfig {
+            modifier,
+            tile_bindings: Some(authentic),
+            ..crate::runtime_types::RuntimeConfig::default()
+        };
+        assert!(config.validate().is_ok(), "{modifier:?}");
+    }
+    // Compatible under Ctrl: 79 minus the 4 unshifted arrows minus the 10
+    // unshifted digit selects. Shifted digit sends, every aux row, and the
+    // output rows stay armed (no established holder).
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &combined());
+    assert_eq!(compatible.len(), 65);
+    assert!(
+        compatible
+            .iter()
+            .all(|b| !matches!(b.action, InputSemanticAction::WorkspaceSelect { .. })),
+        "Compatible/Ctrl leaves digit selects to macOS"
+    );
+    assert_eq!(
+        compatible
+            .iter()
+            .filter(|b| matches!(
+                b.action,
+                InputSemanticAction::WorkspaceSend { follow: true, .. }
+            ))
+            .count(),
+        10,
+        "shifted digit sends are distinct effective chords: kept"
+    );
+    assert!(
+        compatible
+            .iter()
+            .any(|b| matches!(b.action, InputSemanticAction::WorkspacePrevious)),
+        "previous toggle kept"
+    );
+    assert_eq!(
+        compatible
+            .iter()
+            .filter(|b| matches!(b.action, InputSemanticAction::WorkspaceOutput { .. }))
+            .count(),
+        8,
+        "output sends kept with the honest unknown-ownership standing"
+    );
+    let config = crate::runtime_types::RuntimeConfig {
+        modifier: ProbeModifier::Ctrl,
+        tile_bindings: Some(compatible),
+        ..crate::runtime_types::RuntimeConfig::default()
+    };
+    assert!(config.validate().is_ok());
+    // Compatible under Meta: no established holders, full set.
+    let compatible = effective_bindings(InputPreset::Compatible, ProbeModifier::Meta, &combined());
+    assert_eq!(compatible.len(), 79);
+    let config = crate::runtime_types::RuntimeConfig {
+        modifier: ProbeModifier::Meta,
+        tile_bindings: Some(compatible),
+        ..crate::runtime_types::RuntimeConfig::default()
+    };
+    assert!(config.validate().is_ok());
+    // Alt/Shift Metas collapse arms (pre-existing basic degeneracy plus the
+    // workspace aux arms landing on each other): validation refuses rather
+    // than arming a colliding tap.
+    for modifier in [ProbeModifier::Alt, ProbeModifier::Shift] {
+        for preset in [InputPreset::Authentic, InputPreset::Compatible] {
+            let config = crate::runtime_types::RuntimeConfig {
+                modifier,
+                tile_bindings: Some(effective_bindings(preset, modifier, &combined())),
+                ..crate::runtime_types::RuntimeConfig::default()
+            };
+            assert!(config.validate().is_err(), "{preset:?}/{modifier:?}");
+        }
+    }
+}
+
+#[test]
+fn workspace_bindings_are_duplicate_free_alone() {
+    // The workspace set never collides with itself under a usable Meta,
+    // and — critically — never with the basic chords (digits live only
+    // here, aux rows always carry the extra bit).
+    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
+        let config = crate::runtime_types::RuntimeConfig {
+            modifier,
+            tile_bindings: Some(workspace_bindings()),
+            ..crate::runtime_types::RuntimeConfig::default()
+        };
+        assert!(config.validate().is_ok(), "{modifier:?}");
+    }
+}
+
+#[test]
+fn conflict_table_covers_digits_and_aux() {
+    use crate::desktop_shortcuts::KEY_2;
+    // Unshifted Ctrl digits conflict (native Desktop-N holders); the
+    // shifted send arm, aux chords, and non-Ctrl Metas do not.
+    assert!(workspace_conflict_reason(KEY_1, false, false, false, ProbeModifier::Ctrl).is_some());
+    assert!(workspace_conflict_reason(KEY_2, true, false, false, ProbeModifier::Ctrl).is_none());
+    assert!(workspace_conflict_reason(KEY_2, false, false, true, ProbeModifier::Ctrl).is_none());
+    assert!(workspace_conflict_reason(KEY_1, false, false, false, ProbeModifier::Meta).is_none());
+    assert!(workspace_conflict_reason(KEY_TAB, false, false, true, ProbeModifier::Ctrl).is_none());
+    // Basic arrow rule unchanged through the workspace entry point.
+    assert!(
+        workspace_conflict_reason(
+            crate::input_policy::KEY_H,
+            false,
+            false,
+            false,
+            ProbeModifier::Ctrl
+        )
+        .is_none()
+    );
+    assert!(
+        workspace_conflict_reason(
+            crate::input_policy::KEY_LEFT,
+            false,
+            false,
+            false,
+            ProbeModifier::Ctrl
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn tap_tuning_matches_exact_aux_chords() {
+    // The armed spec for the previous toggle is exactly Ctrl+Cmd+Tab: the
+    // exact chord matches, a missing Cmd leg or an extra Shift leg fails.
+    let previous = row_by_id("workspace-previous").binding().unwrap();
+    let specs = tap_specs_for(ProbeModifier::Ctrl, &[previous]);
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].want_flags, CTRL | CMD);
+    let (_, mask) = cg_flag_bits(ProbeModifier::Ctrl);
+    assert_eq!(specs[0].flags_mask, mask);
+    let matched = |flags: u64| {
+        let mut pending = false;
+        decide_tap_event(
+            TapKeyKind::KeyDown,
+            flags,
+            i64::from(KEY_TAB),
+            crate::input_match::TapTuning {
+                want_flags: specs[0].want_flags,
+                flags_mask: specs[0].flags_mask,
+                want_code: i64::from(KEY_TAB),
+            },
+            true,
+            &mut pending,
+        )
+        .matched
+    };
+    assert!(matched(CTRL | CMD));
+    assert!(!matched(CTRL), "missing the auxiliary leg");
+    assert!(!matched(CTRL | CMD | SHIFT), "extra Shift leg fails");
+    assert!(!matched(CMD), "missing the Meta leg");
+    // Spec construction agrees with the single-home effective flags for
+    // every workspace binding under Ctrl and Meta.
+    for modifier in [ProbeModifier::Ctrl, ProbeModifier::Meta] {
+        let bindings = workspace_bindings();
+        let specs = tap_specs_for(modifier, &bindings);
+        assert_eq!(specs.len(), bindings.len());
+        for (spec, binding) in specs.iter().zip(bindings.iter()) {
+            assert_eq!(spec.want_flags, effective_flags_for(modifier, binding));
+            assert_eq!(spec.key_code, binding.key_code);
+        }
+    }
+}
+
+#[test]
+fn unsupported_refusal_names_the_seam_per_family() {
+    // Basic actions execute (no refusal); every workspace family refuses
+    // with a distinct static token and a reason naming its exact missing
+    // route — never a fake dispatch.
+    for action in [
+        InputSemanticAction::FocusStep {
+            direction: InputDirection::Left,
+        },
+        InputSemanticAction::ToggleFloat,
+        InputSemanticAction::ToggleOrientation,
+    ] {
+        assert_eq!(workspace_unsupported_outcome(action), None);
+        assert_eq!(workspace_unsupported_reason(action), None);
+    }
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSelect { index: 1 })
+        .expect("select refuses");
+    assert!(reason.contains("switch_space_status"), "{reason}");
+    let reason =
+        workspace_unsupported_reason(InputSemanticAction::WorkspaceRelative { prev: true })
+            .expect("relative refuses");
+    assert!(reason.contains("switch_space_status"), "{reason}");
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspacePrevious)
+        .expect("previous refuses");
+    assert!(reason.contains("switch_space_status"), "{reason}");
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSend {
+        index: 0,
+        follow: false,
+    })
+    .expect("stay refuses");
+    assert!(reason.contains("direct-SLS"), "{reason}");
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSendRelative {
+        prev: false,
+        follow: true,
+    })
+    .expect("relative send refuses");
+    assert!(reason.contains("direct-SLS"), "{reason}");
+    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceOutput {
+        direction: InputDirection::Right,
+        follow: true,
+    })
+    .expect("output refuses");
+    assert!(reason.contains("cross-display"), "{reason}");
+    assert_eq!(
+        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSelect { index: 1 }),
+        Some("refused-workspace-switch-unsupported")
+    );
+    assert_eq!(
+        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSend {
+            index: 1,
+            follow: true
+        }),
+        Some("refused-workspace-send-unsupported")
+    );
+    assert_eq!(
+        workspace_unsupported_outcome(InputSemanticAction::WorkspaceOutput {
+            direction: InputDirection::Left,
+            follow: true,
+        }),
+        Some("refused-workspace-output-unsupported")
+    );
+}
+
+#[test]
+fn numbered_index_validates_0_to_9() {
+    let ok = |action: InputSemanticAction| {
+        TileBinding {
+            key_code: KEY_1,
+            shift: false,
+            alt: false,
+            aux: false,
+            action,
+        }
+        .validate()
+        .is_ok()
+    };
+    assert!(ok(InputSemanticAction::WorkspaceSelect { index: 0 }));
+    assert!(ok(InputSemanticAction::WorkspaceSelect { index: 9 }));
+    assert!(ok(InputSemanticAction::WorkspaceSend {
+        index: 0,
+        follow: false
+    }));
+    assert!(!ok(InputSemanticAction::WorkspaceSelect { index: 10 }));
+    assert!(!ok(InputSemanticAction::WorkspaceSend {
+        index: 16,
+        follow: true
+    }));
+}

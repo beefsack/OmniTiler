@@ -1540,7 +1540,13 @@ mod tests {
             assert_eq!(extra & mask, extra);
             assert_eq!(extra & want, 0);
             for binding in tile_catalogue() {
-                let tuning = tuning_for(modifier, binding.key_code, binding.shift, binding.alt);
+                let tuning = tuning_for(
+                    modifier,
+                    binding.key_code,
+                    binding.shift,
+                    binding.alt,
+                    binding.aux,
+                );
                 let mut pending = false;
                 assert!(
                     !decide_tap_event(
@@ -1559,7 +1565,7 @@ mod tests {
                 );
             }
             // ...while the bare chord still matches its own arm.
-            let tuning = tuning_for(modifier, KEY_H, false, false);
+            let tuning = tuning_for(modifier, KEY_H, false, false, false);
             let mut pending = false;
             assert!(
                 decide_tap_event(
@@ -1580,10 +1586,10 @@ mod tests {
         // The owner-side mirror keys the full (code, shift-arm, alt-arm)
         // pair like the production source: focus, move, grow, and shrink
         // arms never alias.
-        let focus = tuning_for(ProbeModifier::Ctrl, KEY_H, false, false);
-        let moved = tuning_for(ProbeModifier::Ctrl, KEY_H, true, false);
-        let grown = tuning_for(ProbeModifier::Ctrl, KEY_H, false, true);
-        let shrunk = tuning_for(ProbeModifier::Ctrl, KEY_H, true, true);
+        let focus = tuning_for(ProbeModifier::Ctrl, KEY_H, false, false, false);
+        let moved = tuning_for(ProbeModifier::Ctrl, KEY_H, true, false, false);
+        let grown = tuning_for(ProbeModifier::Ctrl, KEY_H, false, true, false);
+        let shrunk = tuning_for(ProbeModifier::Ctrl, KEY_H, true, true, false);
         let (want, _) = cg_flag_bits(ProbeModifier::Ctrl);
         let matched = |flags: u64, tuning: TapTuning| {
             let mut pending = false;

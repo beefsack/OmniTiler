@@ -78,10 +78,12 @@ pub const SWITCH_CTRL_BIT: u64 = 0x0004_0000;
 pub const SWITCH_FLAGS_MASK: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000;
 
 /// Pure own-switch provenance over plain data: true only for the tiler's
-/// own tagged relative-switch chord shape -- exact tag, KeyDown/KeyUp, exact
-/// Ctrl with no extra masked modifier, Left/Right arrow keycode. Everything
+/// own tagged native Space-switch chord shape -- exact tag, KeyDown/KeyUp,
+/// exact Ctrl with no extra masked modifier, plus a switch keycode: the
+/// Left/Right arrows (relative switch) or the Desktop-N digits `1`-`9`
+/// (`0` for Desktop 10, exact enabled `Ctrl+digit` chords). Everything
 /// else (untagged user chords, untagged/tagged tile-catalogue chords that
-/// are not exactly this shape, FlagsChanged, digits) is NOT an own switch
+/// are not exactly this shape, FlagsChanged, letters) is NOT an own switch
 /// chord and follows the normal match path. No live touch.
 #[must_use]
 pub fn is_own_switch_chord(user_data: i64, kind: TapKeyKind, flags: u64, code: i64) -> bool {
@@ -94,7 +96,10 @@ pub fn is_own_switch_chord(user_data: i64, kind: TapKeyKind, flags: u64, code: i
     if (flags & SWITCH_FLAGS_MASK) != SWITCH_CTRL_BIT {
         return false;
     }
-    code == i64::from(SWITCH_KEY_LEFT) || code == i64::from(SWITCH_KEY_RIGHT)
+    if code == i64::from(SWITCH_KEY_LEFT) || code == i64::from(SWITCH_KEY_RIGHT) {
+        return true;
+    }
+    u32::try_from(code).is_ok_and(crate::desktop_shortcuts::is_digit_keycode)
 }
 
 /// Pure per-event tap decision with own-switch provenance. An own tagged
@@ -376,7 +381,8 @@ mod tests {
             SWITCH_CTRL_BIT,
             i64::from(SWITCH_KEY_RIGHT)
         ));
-        // Wrong tag, wrong key, extra modifier, FlagsChanged, digits: not ours.
+        // Wrong tag, wrong key, extra modifier, FlagsChanged, letters:
+        // not ours. (Desktop-N digits have their own test below.)
         assert!(!down(
             1,
             KeyDown,
@@ -491,5 +497,96 @@ mod tests {
             &mut pending,
         );
         assert!(d.matched && d.suppress && pending);
+    }
+
+    #[test]
+    fn own_tagged_desktop_digits_pass_while_user_digits_consume() {
+        // Exact enabled Desktop-N chords (Ctrl+1..9,0) carry the same
+        // provenance contract as the arrow legs: our tagged posts pass, the
+        // user's untagged identical chords consume per the catalogue.
+        let digit_tuning = |code: u32| TapTuning {
+            want_flags: SWITCH_CTRL_BIT,
+            flags_mask: SWITCH_FLAGS_MASK,
+            want_code: i64::from(code),
+        };
+        for desktop in 1..=10 {
+            let code = crate::desktop_shortcuts::desktop_digit_keycode(desktop).unwrap();
+            let t = digit_tuning(code);
+            // User digit (untagged), armed: consumes like any catalogue
+            // chord.
+            let mut pending = false;
+            let d = decide_tap_event_with_provenance(
+                TapKeyKind::KeyDown,
+                SWITCH_CTRL_BIT,
+                i64::from(code),
+                0,
+                t,
+                true,
+                &mut pending,
+            );
+            assert!(d.matched && d.suppress && pending, "desktop={desktop}");
+            // Own tagged digit pair: passes with no match, no suppress,
+            // never arms pending.
+            let mut pending = false;
+            for kind in [TapKeyKind::KeyDown, TapKeyKind::KeyUp] {
+                let d = decide_tap_event_with_provenance(
+                    kind,
+                    SWITCH_CTRL_BIT,
+                    i64::from(code),
+                    OWN_SWITCH_USER_DATA,
+                    t,
+                    true,
+                    &mut pending,
+                );
+                assert_eq!(
+                    d,
+                    TapDecision {
+                        matched: false,
+                        suppress: false,
+                    },
+                    "desktop={desktop} kind={kind:?}"
+                );
+                assert!(!pending);
+            }
+        }
+    }
+
+    #[test]
+    fn desktop_digit_provenance_needs_exact_shape() {
+        use TapKeyKind::{KeyDown, KeyUp, Other};
+        let digit = i64::from(crate::desktop_shortcuts::KEY_2);
+        // Extra modifier, FlagsChanged, missing Ctrl, or negative codes
+        // are never own-switch chords even when tagged.
+        assert!(!is_own_switch_chord(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            SWITCH_CTRL_BIT | 0x0002_0000,
+            digit
+        ));
+        assert!(!is_own_switch_chord(
+            OWN_SWITCH_USER_DATA,
+            Other,
+            SWITCH_CTRL_BIT,
+            digit
+        ));
+        assert!(!is_own_switch_chord(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            0,
+            digit
+        ));
+        assert!(!is_own_switch_chord(
+            OWN_SWITCH_USER_DATA,
+            KeyUp,
+            SWITCH_CTRL_BIT,
+            -1
+        ));
+        // Letters stay outside the switch shape even when tagged.
+        assert!(!is_own_switch_chord(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            SWITCH_CTRL_BIT,
+            0x04
+        ));
     }
 }

@@ -127,6 +127,13 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation() {
                 InputSemanticAction::ToggleFloat | InputSemanticAction::ToggleOrientation => {
                     InputDirection::Left
                 }
+                // The basic catalogue holds no workspace actions.
+                InputSemanticAction::WorkspaceSelect { .. }
+                | InputSemanticAction::WorkspaceSend { .. }
+                | InputSemanticAction::WorkspaceRelative { .. }
+                | InputSemanticAction::WorkspaceSendRelative { .. }
+                | InputSemanticAction::WorkspacePrevious
+                | InputSemanticAction::WorkspaceOutput { .. } => InputDirection::Left,
             })
     };
     assert_eq!(dir_of(KEY_H, false, false), Some(InputDirection::Left));

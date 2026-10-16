@@ -623,6 +623,18 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 tiler_macos::symbolic_hotkeys::read_bindings().map_err(|e| (1, e.to_string()))?;
             serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
         }
+        Command::SpacesDesktopApply { count } => {
+            // Explicit Authentic Desktop-N enable with owned preimages:
+            // session-effective SkyLight SPI writes with durable
+            // preimage-first ordering, per-ID readback, resume-safe
+            // backups, and conditional Revert. Startup and tile paths
+            // never apply. Fake-backed logic plus the checks above are
+            // proven offline; chord/effect/reboot proof needs the
+            // user-run physical check.
+            tiler_macos::desktop_shortcuts::run_apply(count)
+        }
+        Command::SpacesDesktopRevert => tiler_macos::desktop_shortcuts::run_revert(),
+        Command::SpacesDesktopStatus => tiler_macos::desktop_shortcuts::run_status(),
         Command::SpacesSwitchProbe {
             original,
             temp,

@@ -774,6 +774,177 @@ mod macos {
         Ok(out)
     }
 
+    // -- Session symbolic-hotkey enable (private SkyLight SPI; missing => Err) --
+    //
+    // Usage evidence (local checkout
+    // `Silica/Silica/Sources/SISystemWideElement.m`
+    // `eventForSwitchingToSpace:`): the Desktop-N holder ID is
+    // `(unsigned short)(118 + space - 1)`; the chord resolves through
+    // `CGSGetSymbolicHotKeyValue(hotKey, nil, &keyCode, &flags)` with
+    // AppKit `CGKeyCode`/`CGSModifierFlags` locals; the holder enables
+    // through `CGSSetSymbolicHotKeyEnabled(hotKey, true)`; the enabled leg
+    // reads through `CGSIsSymbolicHotKeyEnabled(hotKey)`. The CGSInternal
+    // header submodule carrying the exact declarations is absent from the
+    // checkout (empty dir plus dangling symlinks), so widths below are
+    // pinned to locally verified SDK types plus the usage site, with
+    // fail-closed tripwires:
+    // - `CGKeyCode` is `uint16_t` (local CLT
+    //   `CoreGraphics/CGRemoteOperation.h`); `CGError` is `int32_t`
+    //   (`CGError.h`); `CGEventFlags` is `uint64_t` (`CGEventTypes.h`).
+    // - The ID param is `u32`: the usage passes an `unsigned short`
+    //   value, and IDs are range-checked to 118-133 before any call
+    //   (mirroring the Desktop-N range; revalidated at the call
+    //   boundary), so the value is identical under any integer width of
+    //   16 bits or more on AArch64.
+    // - The reserved second get param receives null (the usage passes
+    //   `nil`); it is never populated.
+    // - Flags arrive in a zeroed `u64` buffer: a narrower writer stays
+    //   safe, and nonzero high 32 bits refuse (width tripwire, never
+    //   truncated or guessed).
+    // - The enabled predicate is truthiness-only over a `u8` return
+    //   (never Rust `bool` across the boundary: a wider C return width
+    //   would make a 1-byte `bool` read unsound — invalid-bool UB — while
+    //   any nonzero `u8` low byte reads `!= 0` soundly; a nonzero value
+    //   with a zero low byte would misread, which the physical check
+    //   proves rather than assumes).
+    // - The set param is `u32` carrying 0/1 (never Rust `bool` across
+    //   the boundary: identical low byte/register whether the callee
+    //   declares C `bool`, ObjC `BOOL`, or `int`; any wider callee width
+    //   reads the same value on AArch64 little-endian).
+    // No plist is touched on any path here: enable is session-effective,
+    // and logout/reboot persistence is unverified (callers report that
+    // honestly, never claimed).
+
+    /// Resolved session hotkey SPI handle. `Copy`: resolution is a
+    /// read-only symbol lookup; calls through it are explicit per op.
+    #[derive(Debug, Clone, Copy)]
+    pub struct HotkeySpi {
+        get_value: unsafe extern "C" fn(u32, RawConstRef, *mut u16, *mut u64) -> i32,
+        is_enabled: unsafe extern "C" fn(u32) -> u8,
+        set_enabled: unsafe extern "C" fn(u32, u32) -> i32,
+    }
+
+    static HOTKEY_SPI: OnceLock<Option<HotkeySpi>> = OnceLock::new();
+
+    /// Read-only SPI resolution: all three symbols or nothing. Never
+    /// executes hotkey code; a missing symbol fails the table closed.
+    pub fn resolve_hotkey_spi() -> Option<HotkeySpi> {
+        *HOTKEY_SPI.get_or_init(|| {
+            // SAFETY: every symbol null-checked before transmuting (same
+            // shape as the SLS/Carbon tables above); the widths follow the
+            // pinned note above; a missing symbol fails closed.
+            unsafe {
+                let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                if handle.is_null() {
+                    return None;
+                }
+                let sym = |name: &str| {
+                    let cname = CString::new(name).expect("static");
+                    libc::dlsym(handle, cname.as_ptr())
+                };
+                let get_value = sym("CGSGetSymbolicHotKeyValue");
+                let is_enabled = sym("CGSIsSymbolicHotKeyEnabled");
+                let set_enabled = sym("CGSSetSymbolicHotKeyEnabled");
+                if get_value.is_null() || is_enabled.is_null() || set_enabled.is_null() {
+                    return None;
+                }
+                Some(HotkeySpi {
+                    get_value: std::mem::transmute::<
+                        *mut std::ffi::c_void,
+                        unsafe extern "C" fn(u32, RawConstRef, *mut u16, *mut u64) -> i32,
+                    >(get_value),
+                    is_enabled: std::mem::transmute::<
+                        *mut std::ffi::c_void,
+                        unsafe extern "C" fn(u32) -> u8,
+                    >(is_enabled),
+                    set_enabled: std::mem::transmute::<
+                        *mut std::ffi::c_void,
+                        unsafe extern "C" fn(u32, u32) -> i32,
+                    >(set_enabled),
+                })
+            }
+        })
+    }
+
+    /// Whether the full session hotkey SPI resolved. Read-only lookup, no
+    /// hotkey call.
+    pub fn hotkey_spi_available() -> bool {
+        resolve_hotkey_spi().is_some()
+    }
+
+    /// One holder's SPI-observable session state: chord keycode, raw
+    /// modifier flags (event-flags domain, as posted), and enabled. The ID
+    /// range is validated before any call; every OS refusal or
+    /// out-of-range value is `Err`, never guessed. At most one holder is
+    /// read per call.
+    pub fn hotkey_read(spi: HotkeySpi, symbolic_id: u32) -> Result<(u32, u64, bool), String> {
+        if !(118..=133).contains(&symbolic_id) {
+            return Err(format!(
+                "symbolic id {symbolic_id} outside Desktop-N 118-133; refusing"
+            ));
+        }
+        let mut keycode: u16 = 0;
+        let mut flags: u64 = 0;
+        // SAFETY: resolved non-null symbols; ID range-checked above; both
+        // out-pointers are live zeroed stack locals; a nonzero status
+        // returns `Err` with no use of the out values.
+        let status = unsafe {
+            (spi.get_value)(
+                symbolic_id,
+                std::ptr::null(),
+                std::ptr::addr_of_mut!(keycode),
+                std::ptr::addr_of_mut!(flags),
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "CGSGetSymbolicHotKeyValue status {status} for id {symbolic_id}"
+            ));
+        }
+        if flags & 0xFFFF_FFFF_0000_0000 != 0 {
+            return Err(format!(
+                "hotkey id {symbolic_id} flags out of 32-bit range; refusing rather than truncating"
+            ));
+        }
+        let keycode_u32 = u32::from(keycode);
+        if keycode_u32 > 255 {
+            return Err(format!(
+                "hotkey id {symbolic_id} keycode {keycode_u32} out of range 0..=255; refusing"
+            ));
+        }
+        // SAFETY: resolved non-null predicate; the `u8` return is always
+        // a valid value (no invalid-bool UB); truthiness-only use (a
+        // nonzero value with a zero low byte would misread — proven by
+        // the physical check, never assumed).
+        let raw = unsafe { (spi.is_enabled)(symbolic_id) };
+        Ok((keycode_u32, flags, raw != 0))
+    }
+
+    /// Session enable flip for one holder. Range-validated; a nonzero
+    /// status is `Err`. No plist touch; logout/reboot persistence is
+    /// unverified (callers report it honestly, never claimed).
+    pub fn hotkey_set_enabled(
+        spi: HotkeySpi,
+        symbolic_id: u32,
+        enabled: bool,
+    ) -> Result<(), String> {
+        if !(118..=133).contains(&symbolic_id) {
+            return Err(format!(
+                "symbolic id {symbolic_id} outside Desktop-N 118-133; refusing"
+            ));
+        }
+        // SAFETY: resolved non-null symbol; ID range-checked above; the
+        // `u32` 0/1 param carries the identical value under any C
+        // boolean/int callee width (see the pinned note above).
+        let status = unsafe { (spi.set_enabled)(symbolic_id, u32::from(enabled)) };
+        if status != 0 {
+            return Err(format!(
+                "CGSSetSymbolicHotKeyEnabled status {status} for id {symbolic_id}"
+            ));
+        }
+        Ok(())
+    }
+
     /// macOS major release via the maintained `objc2-foundation`
     /// `NSProcessInfo` binding. `None` when unreadable (fail closed at the
     /// version-coupled gate, never guessed).
@@ -6159,8 +6330,8 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
-    CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, KeyCounts, NsAppIdentity,
-    NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
+    CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts,
+    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
     ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
@@ -6172,16 +6343,16 @@ pub use macos::{
     ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
     ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
-    drain_app_events, drain_app_events_counted, frontmost_app, install_display_change_guard,
-    key_counts_snapshot, launch_date_for_pid, macos_major, mc_launch_toggle,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
-    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
-    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
-    warp_cursor_position,
+    drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled,
+    hotkey_spi_available, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
+    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
+    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
+    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -6745,6 +6916,31 @@ mod stub {
         Err("macOS-only".to_owned())
     }
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct HotkeySpi {
+        _priv: (),
+    }
+
+    pub fn resolve_hotkey_spi() -> Option<HotkeySpi> {
+        None
+    }
+
+    pub fn hotkey_spi_available() -> bool {
+        false
+    }
+
+    pub fn hotkey_read(_spi: HotkeySpi, _symbolic_id: u32) -> Result<(u32, u64, bool), String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn hotkey_set_enabled(
+        _spi: HotkeySpi,
+        _symbolic_id: u32,
+        _enabled: bool,
+    ) -> Result<(), String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn macos_major() -> Option<u32> {
         None
     }
@@ -6878,11 +7074,11 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     AxElement, AxFrame, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect,
-    KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN,
-    SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
-    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
-    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
+    TapHit, TapPump, TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid,
+    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
     ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
     ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
     ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
@@ -6890,9 +7086,10 @@ pub use stub::{
     ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
     ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
-    frontmost_app, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
-    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
     run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
