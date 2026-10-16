@@ -253,6 +253,10 @@ it predates the later retained-layout changes.
   Follow-up `8d445ba1` passes Windows tests too; its Windows strict clippy
   requires explicitly non-truncating lock-file opens. Both platform branches
   now state that existing lock-file contents are preserved.
+  `b9338c38` passes Windows and all Linux gates; macOS exposed an existing
+  ambient-PID test assumption (a supposedly mismatched PID was identical and
+  happened to be alive). That test now exercises the exact pure PID/bundle
+  ownership boundary; production authorization is unchanged.
 - Unsafe blocks in the existing FFI module: **96 → 100** (four narrowly scoped
   dynamic hotkey SPI resolution/read/enable blocks); no unsafe elsewhere and no
   new dependency. Standard-library locking avoided an additional unsafe block.

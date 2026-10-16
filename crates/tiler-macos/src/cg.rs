@@ -292,11 +292,16 @@ mod tests {
 
     #[test]
     fn pid_mismatch_fails_closed() {
+        // Pure `check_action` oracle: no live window-server or process-table
+        // query. The previous fixture called `owned_windows(&id, 4242)` with
+        // the SAME pid as the record and expected `Err`, which only holds
+        // when ambient PID 4242 is dead; a live PID 4242 with no bundle falls
+        // back to the owned bundle and returns `Ok([])`. A true mismatch
+        // (differing PID, or same PID with the other owned bundle) refuses
+        // deterministically on every host.
         let id = owned();
-        assert!(matches!(
-            owned_windows(&id, 4242).unwrap_err(),
-            CgError::Ownership(_) | CgError::Unsupported(_)
-        ));
+        assert!(id.check_action(4243, crate::BUNDLE_ID).is_err());
+        assert!(id.check_action(4242, crate::HELPER_BUNDLE_ID).is_err());
     }
 
     fn window(pid: u32, title: Option<&str>) -> crate::ffi::CgWindow {
