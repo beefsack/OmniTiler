@@ -28,6 +28,12 @@ Architecture candidates, not selected native behavior.
 | Repeated state after manual focus | Directionally focus overlapping B once; manually focus A; deliver another otherwise identical desired-state snapshot | Distinguishes one-shot focus/raise from continuously enforcing active/stacking state | Native focus/raise/stack settlement and reference outcomes TBD; persistent focus enforcement is not selected |
 | Silent final notification loss | Settle A/B; suppress the final native change notification for B; generate no further input | Distinguishes event-driven recovery from a periodic full audit, independently of dropped transport reports | Detection latency, idle cost and native/reference outcomes TBD; no polling interval or new polling behavior selected |
 
+### Windows minimum-query timeout discriminator
+
+| Variant | Minimal action sequence | Established evidence | Unsupported outcome / decision |
+| --- | --- | --- | --- |
+| Temporary missing minimum during settled tiling | Tile ordinary A/B with A's usable minimum; time out A's next `WM_GETMINMAXINFO` query; return the same hint on the next query; repeat without user input | Windows currently projects unknown on timeout; the 2026-10-16 launcher incident correlates one member's repeated hint/timeout transitions with repeated writes, but lacks requested/readback rectangles and class/process attribution. [Diagnosis and physical plan](../changes/windows-launcher-geometry-fighting.md) | Bounded last-good-hint reuse versus affected-domain deferral versus existing fresh-only behavior TBD; exact native/reference sequence and geometry TBD. No new timeout cache, auto-float, learned limit or cross-platform policy selected. Existing B6 minimum-infeasible origin placement remains unchanged. |
+
 ### Windows Xbox return discriminator
 
 | Variant | Minimal action sequence | Observed evidence | Unsupported outcome / next discriminator |
