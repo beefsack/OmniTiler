@@ -7558,7 +7558,8 @@ mod stub {
         (above, carrier_idx, target_idx)
     }
 
-    /// Stub downstream key-delivery counters (always zero off-macOS).    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    /// Stub downstream key-delivery counters (always zero off-macOS).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeyCounts {
         pub h_down: [u64; 16],
         pub h_up: [u64; 16],
@@ -7642,6 +7643,18 @@ mod tests {
         assert_eq!(ax_error_name(0), "kAXErrorSuccess");
         assert!(ax_error_name(-25204).contains("CannotComplete"));
         assert!(ax_error_name(99999).contains("99999"));
+    }
+
+    #[test]
+    fn key_counts_serde_round_trip() {
+        // `input_session` serializes `KeyCounts` on every platform; the
+        // off-macOS stub lost its serde derive once when an edit joined the
+        // doc comment and `#[derive]` lines, breaking Linux/Windows CI. This
+        // pins the bound on all targets.
+        let snapshot = key_counts_snapshot();
+        let value = serde_json::to_value(snapshot).expect("KeyCounts serializes");
+        let parsed: KeyCounts = serde_json::from_value(value).expect("KeyCounts deserializes");
+        assert_eq!(parsed, snapshot);
     }
 
     #[test]
