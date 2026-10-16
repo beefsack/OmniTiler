@@ -80,6 +80,14 @@ trailing cleanup and physical select/send dogfooding remain outstanding.
   `d1a592b40cfe0599617eaef256e41d704bd91cdba1b28b52781dac2416a24072`.
   This artifact includes the later offline-only zero-area refusal; it is not a
   successful live-transfer artifact.
+- Source checkpoint `ff0ebb00`: [CI 38908954339](https://github.com/beefsack/OmniTiler/actions/runs/38908954339)
+  passes macOS, Rust, Windows, KWin script, shell, license and notice jobs.
+  The KDE native job fails test `native-effect-kcm-shortcut-selection`: first
+  a `shortcutDisabledIds` assertion, then a subprocess abort on one failed-job
+  rerun (32/33 native tests pass in both attempts). The rerun's failed-step log
+  does not identify the abort cause. No KDE/shared source changed in this
+  checkpoint; causality is not established and the overall hosted gate remains
+  **not green**. Native KCM investigation is separate from this macOS milestone.
 - Read-only final inspection independently confirms one original Space/current,
   Mission Control absent, trusted/unlocked session, no settings preimage and no
   enabled digit holders. No helper, probe or display-sleep companions remain.
