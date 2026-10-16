@@ -247,8 +247,28 @@ platform API behavior.
     default Meta; Command is supported; Alt/Shift-as-Meta refuse effective-chord
     collisions with the basic action arms. Optional exact bundle-ID exclusions
     apply only unscoped. Own probe/helper bundles are excluded unscoped; ordinary
-    terminals remain ordinary product candidates. Scoped allowlists retain
-    their protected-terminal fence and explicit helper-fixture exception.
+     terminals remain ordinary product candidates. Scoped allowlists retain
+     their protected-terminal fence and explicit helper-fixture exception.
+  - **User direction 2026-10-16 (dogfooding and consistency):** generally accept
+    the tentative focus oracle, tap-only product input with Carbon diagnostic-only,
+    Authentic exact-chord consumption without persistent writes, basic default
+    action set, classification edge defaults and fixed-window clamping, provided
+    they remain consistent with KDE/Windows and the Tier 1 input tilers. These
+    choices remain subject to dogfooding refinement; this is not blanket native
+    acceptance of untested behavior. Default supported bindings mirror KDE/Windows
+    with configurable Ctrl as macOS Meta. Consistency across target platforms and
+    with the Tier 1 input tilers is critical and a primary reason for the project;
+    surface differences explicitly rather than silently adopting adapter behavior.
+    The [dogfood comparison](changes/archive/macos-dogfood-hardening.md#consistency-review)
+    identifies current capability gaps, conditional input interception versus
+    Windows consume-first behavior, and unresolved classification outcomes.
+  - **User testing direction 2026-10-16:** where automated live testing is hard,
+    fiddly or unreliable, prefer user-run physical checks. Keep bounded probes and
+    truthful readbacks; synthetic delivery and dispatch returns never substitute
+    for physical input, focus arrival or shell acceptance. The
+    [live guide](live-macos-testing.md#user-run-physical-checks) and
+    [copy-paste procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
+    apply this to timeout recovery, Carbon delivery and manual native transfers.
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring

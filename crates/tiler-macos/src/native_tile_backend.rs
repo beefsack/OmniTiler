@@ -134,6 +134,21 @@ pub trait AxSetter {
     fn readback(&mut self, wid: u32) -> Result<Option<AxFrame>, String>;
 }
 
+/// Sequenced SLPS focus legs (yabai `window_manager_focus_window_with_raise`
+/// parity: SLPS front plus key-window posts, then `AXRaise` on the exact
+/// joined window). Dispatch runs first; a dispatch refusal never reaches the
+/// raise leg, and a raise refusal after a sent dispatch reports both — the
+/// fronting side effect already happened, so a bare raise reason would hide
+/// it. Pure sequencing seam so the order and error precedence stay
+/// unit-pinned without live AX.
+pub fn slps_focus_sequence(
+    dispatch: impl FnOnce() -> Result<(), String>,
+    raise: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    dispatch()?;
+    raise().map_err(|reason| format!("dispatch sent but {reason}"))
+}
+
 /// One leg's outcome in a scoped frame transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LegOutcome {
@@ -1472,9 +1487,30 @@ mod native {
                 return Err("setter target mismatch; refusing".to_owned());
             }
             match route {
-                FocusRoute::Slps => crate::focus::dispatch_focus(self.pid, wid)
-                    .map(|_| ())
-                    .map_err(|e| e.to_string()),
+                FocusRoute::Slps => {
+                    // yabai `window_manager_focus_window_with_raise` parity:
+                    // `_SLPSSetFrontProcessWithOptions` + the two key-window
+                    // posts only front the app; the same-app key window moves
+                    // via the `AXRaise` leg (`AXUIElementPerformAction`
+                    // `kAXRaiseAction` on the exact joined window). SLPS-only
+                    // dispatch can succeed without same-PID arrival; earlier
+                    // cross-PID proofs did not exercise this missing leg.
+                    // Dispatch is send-only: arrival needs the agreement
+                    // oracle on a later observation, never this completion.
+                    super::slps_focus_sequence(
+                        || {
+                            crate::focus::dispatch_focus(self.pid, wid)
+                                .map(|_| ())
+                                .map_err(|e| e.to_string())
+                        },
+                        || {
+                            let window = self.join()?;
+                            ax_raise(&window).map_err(|code| {
+                                format!("raise: {}", crate::ffi::ax_error_name(code))
+                            })
+                        },
+                    )
+                }
                 FocusRoute::PublicApiSeam => {
                     // Exact public seam only: set the app's focused window
                     // to exactly this window, raise exactly this window,
@@ -1516,5 +1552,69 @@ mod native {
                 Err(code) => Err(format!("readback: {}", crate::ffi::ax_error_name(code))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    #[test]
+    fn slps_raise_runs_after_dispatch_and_reports_both_on_raise_failure() {
+        // Order pin: a dispatch refusal never reaches the raise leg.
+        let raise_ran = Rc::new(Cell::new(false));
+        let probe = Rc::clone(&raise_ran);
+        let refused = slps_focus_sequence(
+            || Err("slps: refused".to_owned()),
+            || {
+                probe.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(refused, Err("slps: refused".to_owned()));
+        assert!(
+            !raise_ran.get(),
+            "raise must not run after refused dispatch"
+        );
+
+        // Partial-truth pin: dispatch sent, raise refused — the error says
+        // both, since fronting already happened. Completion stays
+        // send-truth only; arrival needs the agreement oracle later.
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let dispatch_order = Rc::clone(&order);
+        let raise_order = Rc::clone(&order);
+        let failed = slps_focus_sequence(
+            || {
+                dispatch_order.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                raise_order.borrow_mut().push("raise");
+                Err("raise: no error".to_owned())
+            },
+        );
+        assert_eq!(*order.borrow(), vec!["dispatch", "raise"]);
+        assert_eq!(failed, Err("dispatch sent but raise: no error".to_owned()));
+
+        // Happy path sequences both legs exactly once.
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let dispatch_order = Rc::clone(&order);
+        let raise_order = Rc::clone(&order);
+        assert_eq!(
+            slps_focus_sequence(
+                || {
+                    dispatch_order.borrow_mut().push("dispatch");
+                    Ok(())
+                },
+                || {
+                    raise_order.borrow_mut().push("raise");
+                    Ok(())
+                },
+            ),
+            Ok(())
+        );
+        assert_eq!(*order.borrow(), vec!["dispatch", "raise"]);
     }
 }

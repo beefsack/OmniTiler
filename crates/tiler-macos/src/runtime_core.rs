@@ -570,10 +570,24 @@ pub(crate) struct NativeDomainView {
     pub(crate) domain: OutputDomain,
 }
 
+/// Adapter-side outer-gap inset for one native tile domain: the visible
+/// work area minus the shared outer margin on every side (KDE
+/// `domain-gap.ts` and Windows `tiling_domain_bounds` parity, both 8/8
+/// defaults). The core plans into these bounds as-is, so handing it the raw
+/// work area tiles edge-to-edge with no outer margin. A degenerate work
+/// area that cannot carry the margin keeps its raw rect rather than tiling
+/// nothing (unreachable on real displays; inset fails only below 16px per
+/// axis with the current gap).
+#[must_use]
+pub(crate) fn tile_domain_bounds(visible: Rect) -> Rect {
+    tiler_core::geometry::inset_bounds(visible, PHASE1_OUTER_GAP).unwrap_or(visible)
+}
+
 /// Native-mode domain views from the shared context: every exactly-homed
 /// current-user-Space display becomes one core domain planned into its
-/// actual visible work area (menu/Dock-excluded integer units — never the
-/// skeleton bounds). Order follows the context (display order).
+/// visible work area (menu/Dock-excluded integer units — never the
+/// skeleton bounds) minus the adapter-side outer-gap inset. Order follows
+/// the context (display order).
 pub(crate) fn native_domain_views(
     ctx: &crate::runtime_types::NativeContext,
 ) -> Vec<NativeDomainView> {
@@ -587,7 +601,7 @@ pub(crate) fn native_domain_views(
             let domain = OutputDomain {
                 id: d.output.clone(),
                 workspace: d.workspace.clone(),
-                bounds: d.visible,
+                bounds: tile_domain_bounds(d.visible),
                 gap: PHASE1_GAP,
                 adjacent: BTreeMap::new(),
             };
@@ -880,6 +894,53 @@ mod tests {
             ),
             (false, false)
         );
+    }
+
+    #[test]
+    fn tile_domain_bounds_carries_kde_windows_outer_margin() {
+        // Adapter-side outer-gap inset (KDE `domain-gap.ts` / Windows
+        // `tiling_domain_bounds` parity, 8/8 defaults): the visible work
+        // area shrinks by the outer gap on every side before the core
+        // plans, so tiled frames keep the work-area edge margin. Inner
+        // sibling spacing stays core-owned (`PHASE1_GAP` on the domain).
+        assert_eq!(
+            tile_domain_bounds(Rect {
+                x: 0,
+                y: 0,
+                w: 1440,
+                h: 900,
+            }),
+            Rect {
+                x: 8,
+                y: 8,
+                w: 1424,
+                h: 884,
+            }
+        );
+        // Offset work areas keep their origin under the inset.
+        assert_eq!(
+            tile_domain_bounds(Rect {
+                x: 1440,
+                y: 0,
+                w: 1440,
+                h: 900,
+            }),
+            Rect {
+                x: 1448,
+                y: 8,
+                w: 1424,
+                h: 884,
+            }
+        );
+        // A degenerate work area that cannot carry the margin keeps its
+        // raw rect instead of tiling nothing.
+        let tiny = Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 900,
+        };
+        assert_eq!(tile_domain_bounds(tiny), tiny);
     }
 
     #[test]

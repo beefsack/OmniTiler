@@ -146,6 +146,14 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
         }
         Command::InputRegister { seconds } => {
+            // stderr (unbuffered): the LaunchServices wrapper streams it
+            // live with `--stream`. Carbon hotkeys are system-wide, so the
+            // user keeps this terminal focused while pressing.
+            eprintln!(
+                "tiler-macos input-register: press {}+h during the {}s window (keep this terminal focused); zero deliveries without a press is expected",
+                request.modifier.as_str(),
+                seconds,
+            );
             let idle = std::time::Duration::from_secs(seconds.saturating_add(10));
             let (engine, handle) = tiler_macos::engine::Engine::spawn_thread(idle);
             let report = tiler_macos::input::register_hotkey_bounded(
@@ -205,6 +213,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             route,
             post_route,
             stall_once_ms,
+            physical_stall,
             direct_disable_hold_ms,
             direct_rearm,
             disable_once,
@@ -221,6 +230,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 route,
                 post_route,
                 stall_once_ms,
+                physical_stall,
                 direct_disable_hold_ms,
                 direct_rearm,
                 disable_once,

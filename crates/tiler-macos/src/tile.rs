@@ -357,6 +357,23 @@ pub const fn heartbeat_stride(log: TileLogLevel) -> Option<u64> {
     }
 }
 
+/// Change-only heartbeat snapshot: the counters one heartbeat line prints.
+/// The main loop prints a heartbeat at most every stride AND only when this
+/// snapshot differs from the last printed one, so an idle run goes quiet
+/// instead of reprinting identical counters forever (bounded-diagnostic
+/// parity: empty windows emit nothing). `input` carries the
+/// forward/ignore pair on trace, `None` on verbose (which prints neither).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatState {
+    pub launched: u64,
+    pub terminated: u64,
+    pub topo_updates: u64,
+    pub topo_failures: u64,
+    pub lock_stops: u64,
+    pub secure_seen: u64,
+    pub input: Option<(u64, u64)>,
+}
+
 /// Product-mode token for terminal JSON (`scoped` vs `unscoped`).
 #[must_use]
 pub const fn mode_str(unscoped: bool) -> &'static str {
@@ -747,6 +764,9 @@ mod native {
         let mut lock_stops = 0u64;
         let mut secure_active_seen = 0u64;
         let mut early_refusal: Option<String> = None;
+        // Last printed heartbeat: heartbeats are change-only (idle silence),
+        // so this starts empty and the first stride tick always prints.
+        let mut last_heartbeat: Option<HeartbeatState> = None;
         // Graceful exact-run stop: published by the launcher into this
         // run's directory, observed here, then the existing bounded
         // shutdown runs (never a signal kill).
@@ -788,33 +808,62 @@ mod native {
             // Foreground verbosity: lifecycle/recovery lines always stream;
             // verbose adds a counter heartbeat, trace shortens it and adds
             // input forward/ignore counters. Static tokens plus numbers
-            // only — never titles, bundles, or paths.
+            // only — never titles, bundles, or paths. Heartbeats are
+            // change-only: an idle run prints once, then stays quiet until
+            // a counter moves.
             if let Some(stride) = heartbeat_stride(request.log)
                 && cadence_count.is_multiple_of(stride)
             {
                 if request.log == TileLogLevel::Trace {
                     let diagnostics = handle.diagnostics();
-                    eprintln!(
-                        "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} topo_failures={} lock_stops={} secure_seen={} input_fwd={} input_ignored={}",
-                        mode_str(request.unscoped),
+                    let state = HeartbeatState {
                         launched,
                         terminated,
-                        topology_updates,
-                        topology_failures,
+                        topo_updates: topology_updates,
+                        topo_failures: topology_failures,
                         lock_stops,
-                        secure_active_seen,
-                        diagnostics.input_forwarded,
-                        diagnostics.input_ignored,
-                    );
+                        secure_seen: secure_active_seen,
+                        input: Some((diagnostics.input_forwarded, diagnostics.input_ignored)),
+                    };
+                    if last_heartbeat.as_ref() != Some(&state) {
+                        last_heartbeat = Some(state);
+                        eprintln!(
+                            "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} topo_failures={} lock_stops={} secure_seen={} input_fwd={} input_ignored={}",
+                            mode_str(request.unscoped),
+                            launched,
+                            terminated,
+                            topology_updates,
+                            topology_failures,
+                            lock_stops,
+                            secure_active_seen,
+                            diagnostics.input_forwarded,
+                            diagnostics.input_ignored,
+                        );
+                    }
                 } else {
-                    eprintln!(
-                        "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} lock_stops={}",
-                        mode_str(request.unscoped),
+                    // Verbose prints four counters only: gate on exactly
+                    // those, so an unprinted move (topology failure,
+                    // secure-input sighting) never reprints identical text.
+                    let state = HeartbeatState {
                         launched,
                         terminated,
-                        topology_updates,
+                        topo_updates: topology_updates,
+                        topo_failures: 0,
                         lock_stops,
-                    );
+                        secure_seen: 0,
+                        input: None,
+                    };
+                    if last_heartbeat.as_ref() != Some(&state) {
+                        last_heartbeat = Some(state);
+                        eprintln!(
+                            "tiler-macos dev heartbeat mode={} launched={} terminated={} topo_updates={} lock_stops={}",
+                            mode_str(request.unscoped),
+                            launched,
+                            terminated,
+                            topology_updates,
+                            lock_stops,
+                        );
+                    }
                 }
             }
 
@@ -1163,6 +1212,62 @@ mod tests {
         assert_eq!(heartbeat_stride(TileLogLevel::Normal), None);
         assert_eq!(heartbeat_stride(TileLogLevel::Verbose), Some(40));
         assert_eq!(heartbeat_stride(TileLogLevel::Trace), Some(8));
+    }
+
+    #[test]
+    fn heartbeat_state_detects_every_printed_counter_move() {
+        // Change-only gate: identical snapshots stay quiet, any printed
+        // counter move (including one input forward) reprints. Verbose and
+        // trace arms never compare equal (trace carries the input pair).
+        let base = HeartbeatState {
+            launched: 40,
+            terminated: 0,
+            topo_updates: 1,
+            topo_failures: 0,
+            lock_stops: 0,
+            secure_seen: 0,
+            input: Some((0, 0)),
+        };
+        assert_eq!(base, base);
+        let mut moved = base;
+        moved.input = Some((1, 1));
+        assert_ne!(base, moved);
+        for distinct in [
+            HeartbeatState {
+                launched: 41,
+                ..base
+            },
+            HeartbeatState {
+                terminated: 1,
+                ..base
+            },
+            HeartbeatState {
+                topo_updates: 2,
+                ..base
+            },
+            HeartbeatState {
+                topo_failures: 1,
+                ..base
+            },
+            HeartbeatState {
+                lock_stops: 1,
+                ..base
+            },
+            HeartbeatState {
+                secure_seen: 1,
+                ..base
+            },
+            HeartbeatState {
+                input: None,
+                ..base
+            },
+            HeartbeatState {
+                input: Some((0, 1)),
+                ..base
+            },
+        ] {
+            assert_ne!(base, distinct, "{distinct:?} must reprint");
+        }
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub mod input_match;
 pub mod input_policy;
 pub mod input_session;
 pub mod input_session_legs;
+pub mod input_session_physical;
 pub mod mc_lifecycle;
 pub mod mc_members;
 pub mod mc_observe;

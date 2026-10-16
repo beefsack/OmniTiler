@@ -10,6 +10,12 @@
 #
 #   scripts/macos-launch.sh -- preflight
 #   scripts/macos-launch.sh --timeout 60 -- spaces-session --seconds 20
+#   scripts/macos-launch.sh --timeout 120 --stream -- input-session --route tap --seconds 90 ...
+#
+# `--stream` passes the bundle's stderr through live while polling (physical
+# press-now prompts surface in real time); stdout still prints once at
+# terminal completion so the JSON payload stays intact, and the closing
+# stderr section carries only lines not already streamed (never duplicated).
 #
 # Route: `open -n -o <ephemeral-out> --stderr <ephemeral-err> <fixed .app>
 # --args <probe args...>`, then poll the ephemeral outputs under a bounded
@@ -42,9 +48,10 @@ APP="$REPO_ROOT/target/macos/OmniTilerProbe.app"
 BUNDLE_ID="io.github.omnitiler.macos.probe"
 MARKER_REL="Contents/Resources/.omnitiler-probe-marker"
 TIMEOUT_SECS=30
+STREAM=0
 
 usage() {
-  echo "usage: $(basename -- "$0") [--timeout SECS] -- <probe args...>" >&2
+  echo "usage: $(basename -- "$0") [--timeout SECS] [--stream] -- <probe args...>" >&2
   exit 2
 }
 
@@ -57,6 +64,8 @@ while [[ $# -gt 0 ]]; do
       # failure: `$# -ge 2` means the flag plus its value are both present.
       [[ $# -ge 2 ]] || usage
       TIMEOUT_SECS="$2"; shift 2 ;;
+    --stream)
+      STREAM=1; shift ;;
     # A bare `--` only separates wrapper layers (e.g. just forwards its own
     # `--` into the recipe args): skip it and keep parsing script flags, so
     # both `launch -- preflight` and `launch -- --timeout N -- <probe>` work.
@@ -120,10 +129,21 @@ bundle_procs_running() {
   our_procs_running
 }
 
+# Print ERR bytes $1..$2 (both 1-based, $2 inclusive) to our stderr. The
+# head bound snapshots the read: bytes appended after the caller measured
+# the size are left for the next poll, so a racing append can neither slip
+# into this print (which would duplicate it next poll) nor be skipped.
+stream_err_range() {
+  head -c "$2" "$ERR" 2>/dev/null | tail -c +"$1" >&2 || true
+}
+
 deadline=$((SECONDS + TIMEOUT_SECS))
 last_out=""
 last_err=""
 stable_polls=0
+# Bytes of ERR already passed through live under --stream (final section
+# prints only the remainder, so streamed lines never appear twice).
+streamed_err=0
 # Set only by the terminal-completion break below. A timeout exit with
 # partial stdout plus dead processes must still fail: without this flag the
 # tail branch could mistake stale partial output for a completed run.
@@ -140,6 +160,20 @@ while [[ $SECONDS -lt $deadline ]]; do
   fi
   last_out="$sum_out"
   last_err="$sum_err"
+  # Live stderr under --stream: pass through bytes not yet shown (the
+  # physical press-now prompt) with poll latency (~0.2s), well before any
+  # bounded await expires. Stdout never streams: the JSON payload prints
+  # once at terminal completion only. The read is bounded at the
+  # snapshot: bytes appended between the size check and the read stay for
+  # the next poll and are never duplicated here.
+  if [[ $STREAM -eq 1 && -s "$ERR" ]]; then
+    err_bytes="$(wc -c <"$ERR" 2>/dev/null | tr -d ' ' || echo 0)"
+    case "$err_bytes" in ''|*[!0-9]*) err_bytes=0 ;; esac
+    if [[ "$err_bytes" -gt "$streamed_err" ]]; then
+      stream_err_range $((streamed_err + 1)) "$err_bytes"
+      streamed_err="$err_bytes"
+    fi
+  fi
   # Stable content plus no live bundle process: the probe said its last word.
   if [[ $stable_polls -ge 5 ]] && [[ -s "$OUT" || -s "$ERR" ]] \
     && ! bundle_procs_running; then
@@ -154,7 +188,20 @@ done
 if [[ -s "$OUT" ]]; then
   cat -- "$OUT"
 fi
-if [[ -s "$ERR" ]]; then
+if [[ $STREAM -eq 1 ]]; then
+  # Already streamed live above: emit only the tail not yet shown (often
+  # empty), so no line ever appears twice. Bounded at the snapshot like
+  # the poll read: a concurrent append stays for no one (the probe is
+  # quiescent here) and is still printed, never skipped nor duplicated.
+  if [[ -s "$ERR" ]]; then
+    err_total="$(wc -c <"$ERR" 2>/dev/null | tr -d ' ' || echo 0)"
+    case "$err_total" in ''|*[!0-9]*) err_total=0 ;; esac
+    if [[ "$err_total" -gt "$streamed_err" ]]; then
+      echo "--- probe stderr (remainder) ---" >&2
+      stream_err_range $((streamed_err + 1)) "$err_total"
+    fi
+  fi
+elif [[ -s "$ERR" ]]; then
   echo "--- probe stderr ---" >&2
   cat -- "$ERR" >&2
 fi

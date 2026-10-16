@@ -239,6 +239,13 @@ Native Spaces remain the selected direction, with SIP enabled.
 
 ## Remaining
 
+First unscoped user dogfooding was positive on moves, tiling and inner gaps.
+The [hardening follow-up](archive/macos-dogfood-hardening.md) adds the missing
+native same-app focus raise leg, change-only idle records and shared outer gaps.
+It includes the copy-paste physical timeout, Carbon and manual Space-transfer
+script plus the same-app focus/gap/logging recheck. Physical outcomes remain
+pending; native dispatch success alone does not prove focus arrival.
+
 Actual OS timeout-notification recovery needs a bounded physical-input
 discriminator; the synthetic stall modes must not be
 reported as a timeout pass. Physical Carbon delivery remains unproven and is no

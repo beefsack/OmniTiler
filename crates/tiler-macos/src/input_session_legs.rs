@@ -686,9 +686,20 @@ pub(crate) fn run_post_legs(
     // expects the owner match plus helper ABSENCE (suppression proof over
     // the bounded hold, never assumed); stall expects the stalled down
     // suppressed under burst load behind the sleeping callback (see
-    // `post_stall_leg`).
+    // `post_stall_leg`); physical-stall awaits ONE real HID press instead
+    // (see [`crate::input_session_physical::await_physical_stall_leg`]).
     let tap_before = tap_counts();
-    let mut exact = if request.stall_once_ms > 0 {
+    let mut exact = if request.physical_stall {
+        crate::input_session_physical::await_physical_stall_leg(
+            meta,
+            lines,
+            hits,
+            tap_factory,
+            h_index,
+            want,
+        )
+        .map_err(|e| ("post-exact".to_owned(), e))?
+    } else if request.stall_once_ms > 0 {
         post_stall_leg(child, meta, lines, hits, tap_factory, h_index, want, 6)
             .map_err(|e| ("post-exact".to_owned(), e))?
     } else {
@@ -1364,6 +1375,7 @@ mod tests {
             route,
             post_route: PostRoute::Session,
             stall_once_ms: 0,
+            physical_stall: false,
             direct_disable_hold_ms: 0,
             direct_rearm: false,
             disable_once: false,
@@ -1495,6 +1507,48 @@ mod tests {
         let mut r = request(InputSessionRoute::Tap);
         r.direct_rearm = true;
         r.disable_once = true;
+        assert!(r.validate().is_err());
+    }
+
+    #[test]
+    fn validation_bounds_physical_stall() {
+        // Physical-stall is tap-only with a stall armed, never combined
+        // with the other fault legs, and needs user-reaction budget.
+        let mut r = request(InputSessionRoute::Carbon);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.physical_stall = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        r.seconds = 30;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        assert!(r.validate().is_ok());
+        let mut r = request(InputSessionRoute::Tap);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        r.direct_disable_hold_ms = 300;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        r.direct_rearm = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.stall_once_ms = 1200;
+        r.physical_stall = true;
+        r.disable_once = true;
+        assert!(r.validate().is_err());
+        let mut r = request(InputSessionRoute::Tap);
+        r.watchdog_only = true;
+        r.seconds = 4;
+        r.physical_stall = true;
         assert!(r.validate().is_err());
     }
 

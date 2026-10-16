@@ -54,6 +54,7 @@ pub enum Command {
         route: crate::input_session::InputSessionRoute,
         post_route: crate::input_session::PostRoute,
         stall_once_ms: u64,
+        physical_stall: bool,
         direct_disable_hold_ms: u64,
         direct_rearm: bool,
         disable_once: bool,
@@ -262,11 +263,13 @@ pub fn help_text() -> String {
             \x20 input-tap [--seconds N] [--suppress]  CGEventTap Ctrl-chord, finite RAII (max {max_tap}s)\n\
             \x20 \x20 (default observe-only, Keep always; --suppress arms exact-chord\n\
             \x20 \x20 KeyDown/KeyUp pair suppression only, unrelated keys always pass)\n\
-             \x20 input-session --route carbon|tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--direct-disable-hold-ms MS] [--direct-rearm] [--disable-once] [--watchdog-only]\n\
+             \x20 input-session --route carbon|tap [--seconds N] [--post-route session|hid] [--stall-once-ms MS] [--physical-stall] [--direct-disable-hold-ms MS] [--direct-rearm] [--disable-once] [--watchdog-only]\n\
              \x20 \x20 (bounded owned input fixture over the REAL native tile source:\n\
              \x20 \x20 dedicated owner thread, owned helper window, synthetic CG posts\n\
              \x20 \x20 with per-post oracle proof, helper delivery counters; --stall-once-ms\n\
-             \x20 \x20 is tap-only and provokes a real OS timeout-disable; --direct-disable-hold-ms\n\
+             \x20 \x20 is tap-only and provokes a real OS timeout-disable; --physical-stall\n\
+             \x20 \x20 needs --stall-once-ms and awaits ONE physical Ctrl+h press;\n\
+             \x20 \x20 --direct-disable-hold-ms\n\
              \x20 \x20 is tap-only and parks the tap DIRECTLY OS-disabled for the exact-post\n\
              \x20 \x20 passthrough plus recovery proof (actual CGEventTapIsEnabled readbacks);\n\
              \x20 \x20 --direct-rearm is tap-only and re-arms EXPLICITLY after an intentional\n\
@@ -612,6 +615,10 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             // --disable-once is tap-only (one-shot directly-disabled fault
             // with no fixture hold and no assumed notification kind; the leg
             // reports the actual recovery kind from the counters),
+            // --physical-stall is tap-only with --stall-once-ms (awaits ONE
+            // physical Ctrl+h press instead of a synthetic exact post, so the
+            // stall consumes real HID load; recovery still re-proves
+            // suppression synthetically),
             // --watchdog-only is tap-only 2..=5s with no helper/posts
             // (the dirty watchdog exit is the evidence).
             // --post-route session|hid selects the CG producer tap
@@ -621,6 +628,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut route: Option<crate::input_session::InputSessionRoute> = None;
             let mut post_route = crate::input_session::PostRoute::Session;
             let mut stall_once_ms = 0u64;
+            let mut physical_stall = false;
             let mut direct_disable_hold_ms = 0u64;
             let mut direct_rearm = false;
             let mut disable_once = false;
@@ -663,6 +671,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--watchdog-only" => {
                         watchdog_only = true;
                     }
+                    "--physical-stall" => {
+                        physical_stall = true;
+                    }
                     "--direct-rearm" => {
                         direct_rearm = true;
                     }
@@ -678,6 +689,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 route: route.ok_or("input-session needs --route carbon|tap")?,
                 post_route,
                 stall_once_ms,
+                physical_stall,
                 direct_disable_hold_ms,
                 direct_rearm,
                 disable_once,

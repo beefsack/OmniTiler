@@ -31,6 +31,11 @@
 //!   `TapDisabledByTimeout` (never a manual callback); the leg then proves
 //!   the OS disable notification/counter, re-enable, a recovery follow-up
 //!   post, and passthrough after disable/exit.
+//! - `--physical-stall` (tap only with `--stall-once-ms`): the same stalled
+//!   tap, but the exact leg awaits ONE physical Ctrl+h press (no synthetic
+//!   exact post) so the stall consumes real HID load; synthetic stalls alone
+//!   never proved a timeout (enabled-readback false is not timeout evidence).
+//!   Recovery still re-proves suppression synthetically.
 //! - `--direct-disable-hold-ms` (tap only): the owner parks the tap
 //!   DIRECTLY OS-disabled (`CGEventTapEnable(false)`, fixture-only hold
 //!   flag) while the main posts the exact chord; the leg proves the actual
@@ -97,6 +102,10 @@ use crate::watchdog::Watchdog;
 pub const DEFAULT_INPUT_SECONDS: u64 = 60;
 /// One-shot tap-callback stall bound (fault-injection leg only).
 pub const MAX_STALL_ONCE_MS: u64 = 2000;
+/// Physical-stall minimum lifetime (user reaction plus recovery legs).
+pub const MIN_PHYSICAL_STALL_SECONDS: u64 = 45;
+/// Physical-stall await bound for the single user press.
+pub const PHYSICAL_STALL_AWAIT_SECS: u64 = 30;
 /// Fixture-only DIRECT disable hold bound (fault-injection leg only):
 /// the owner parks the tap directly OS-disabled while the hold is set.
 pub const MAX_DIRECT_HOLD_MS: u64 = 1000;
@@ -177,6 +186,7 @@ pub struct InputSessionRequest {
     pub route: InputSessionRoute,
     pub post_route: PostRoute,
     pub stall_once_ms: u64,
+    pub physical_stall: bool,
     pub direct_disable_hold_ms: u64,
     pub direct_rearm: bool,
     pub disable_once: bool,
@@ -213,6 +223,11 @@ impl InputSessionRequest {
             }
             if self.disable_once {
                 return Err("watchdog-only takes no --disable-once (separate fault leg)".to_owned());
+            }
+            if self.physical_stall {
+                return Err(
+                    "watchdog-only takes no --physical-stall (separate fault leg)".to_owned(),
+                );
             }
             return Ok(());
         }
@@ -288,6 +303,38 @@ impl InputSessionRequest {
                     "disable-once and direct-rearm are separate fault legs (never combined)"
                         .to_owned(),
                 );
+            }
+        }
+        if self.physical_stall {
+            if self.route != InputSessionRoute::Tap {
+                return Err("physical-stall is tap-only (carbon has no tap callback)".to_owned());
+            }
+            if self.stall_once_ms == 0 {
+                return Err("physical-stall needs --stall-once-ms (the stalled tap)".to_owned());
+            }
+            if self.direct_disable_hold_ms > 0 {
+                return Err(
+                    "physical-stall and direct-disable-hold are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+            if self.direct_rearm {
+                return Err(
+                    "physical-stall and direct-rearm are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+            if self.disable_once {
+                return Err(
+                    "physical-stall and disable-once are separate fault legs (never combined)"
+                        .to_owned(),
+                );
+            }
+            if self.seconds < MIN_PHYSICAL_STALL_SECONDS {
+                return Err(format!(
+                    "physical-stall seconds must be >={MIN_PHYSICAL_STALL_SECONDS} (user reaction plus recovery), got {}",
+                    self.seconds
+                ));
             }
         }
         Ok(())
@@ -628,6 +675,7 @@ struct InputSessionReport {
     owner_unexpected_eos: u64,
     legs: Vec<PostLeg>,
     stall_once_ms: u64,
+    physical_stall: bool,
     direct_disable_hold_ms: u64,
     direct_rearm: bool,
     disable_once: bool,
@@ -1371,6 +1419,7 @@ pub fn run_input_session(request: InputSessionRequest) -> Result<String, (i32, S
         owner_unexpected_eos: owner_done.unexpected_eos,
         legs,
         stall_once_ms: request.stall_once_ms,
+        physical_stall: request.physical_stall,
         direct_disable_hold_ms: request.direct_disable_hold_ms,
         direct_rearm: request.direct_rearm,
         disable_once: request.disable_once,

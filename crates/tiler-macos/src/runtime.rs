@@ -1341,9 +1341,25 @@ impl RuntimeHandle {
     /// `ax_focus` at send time, and the promotion rule admits an app-local
     /// focused window only on full agreement, so a background app's focused
     /// window never becomes global focus.
+    ///
+    /// Change-only: republishing identical evidence neither restores state
+    /// nor emits. The controller pumps this every cadence, so an
+    /// unconditional emit is idle trace spam (one ring line per cadence
+    /// forever); the worker's frontmost-change refresh is value-compared
+    /// downstream and needs no redundant wake.
     pub fn update_focus_evidence(&self, evidence: FocusEvidence) {
-        lock_shared(&self.shared).focus_evidence = Some(evidence);
-        emit(&self.shared, 0, 0, 0, "focus", "evidence-updated", 0);
+        let changed = {
+            let mut guard = lock_shared(&self.shared);
+            if guard.focus_evidence.as_ref() == Some(&evidence) {
+                false
+            } else {
+                guard.focus_evidence = Some(evidence);
+                true
+            }
+        };
+        if changed {
+            emit(&self.shared, 0, 0, 0, "focus", "evidence-updated", 0);
+        }
     }
 
     /// Invalidate the published native context after an unreadable topology

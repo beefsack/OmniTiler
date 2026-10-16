@@ -176,6 +176,23 @@ fn input_session_needs_an_explicit_route() {
         "input-session",
         "--route",
         "tap",
+        "--stall-once-ms",
+        "1500",
+        "--physical-stall",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::InputSession {
+            stall_once_ms: 1500,
+            physical_stall: true,
+            ..
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "input-session",
+        "--route",
+        "tap",
         "--seconds",
         "4",
         "--watchdog-only",

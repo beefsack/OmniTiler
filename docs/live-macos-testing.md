@@ -140,7 +140,26 @@ experiment.
 - Respect Secure Input and lock states: stop interception experiments when
   Secure Input is active rather than attempting to work around the
   blackout. Never synthesize system chords outside the approved owned
-  test scope.
+   test scope.
+
+## User-Run Physical Checks
+
+- User direction 2026-10-16: where automated live testing is hard, fiddly or
+  unreliable, prefer user-run physical checks with a short procedure, bounded
+  lifetime, explicit expected readbacks and cleanup. Do not invest in repeated
+  synthetic substitutes for a physical-input or shell discriminator.
+- A deliberately stalled callback is allowed only in the explicit bounded
+  diagnostic fixture (`input-session --physical-stall --stall-once-ms`), never
+  the product path. Require a real timeout notification, verified re-enable and
+  subsequent suppression; unnotified disabled-state recovery is separate evidence.
+- Launch physical probes through the signed bundle. Use the launcher's `--stream`
+  option for real-time press instructions and a wrapper timeout longer than the
+  probe budget. Ctrl+C stops this launch wrapper, not the LaunchServices child;
+  wait for its bounded teardown before starting another probe. Inspect terminal
+  JSON rather than inferring success from wrapper exit status.
+- Current [physical procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
+  covers timeout recovery, diagnostic Carbon delivery, manual Space transfers and
+  the same-application focus/gap/logging dogfood recheck.
 
 ## TCC, Signing, And Permission Experiments
 

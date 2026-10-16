@@ -979,9 +979,9 @@ fn focus_dispatches_through_owner_slot_with_exact_target() {
         APP_A,
         scripted(
             vec![
-                win_at(1, 0, 0, 480, 900),
-                win_at(2, 480, 0, 480, 900),
-                win_at(3, 960, 0, 480, 900),
+                win_at(1, 8, 8, 466, 884),
+                win_at(2, 482, 8, 466, 884),
+                win_at(3, 956, 8, 468, 884),
             ],
             vec![vec![11], vec![11], vec![11]],
             Some(1),
@@ -1197,9 +1197,9 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
         APP_A,
         scripted(
             vec![
-                win_at(1, 0, 0, 480, 900),
-                win_at(2, 480, 0, 480, 900),
-                win_at(3, 960, 0, 480, 900),
+                win_at(1, 8, 8, 466, 884),
+                win_at(2, 482, 8, 466, 884),
+                win_at(3, 956, 8, 468, 884),
             ],
             vec![vec![11], vec![11], vec![11]],
             Some(1),
