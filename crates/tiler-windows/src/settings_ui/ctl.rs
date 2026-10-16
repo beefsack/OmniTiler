@@ -7,6 +7,8 @@
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Gdi::HFONT;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::App;
 use super::{
     DynError, ID_BIND_CHORD, ID_BORDER_COLOR, ID_BORDER_GAP, ID_BORDER_RADIUS, ID_BORDER_WIDTH,
@@ -19,11 +21,29 @@ pub(super) fn wide(text: &str) -> Vec<u16> {
 
 pub(super) fn set_text(hwnd: HWND, text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+    // Every `set_text` call site is programmatic (user keystrokes never
+    // route here), and `SetWindowTextW` on an edit synchronously delivers
+    // EN_CHANGE to the parent. Suppress the parent's command handling for
+    // the duration so refresh pushes never mark the draft dirty and the
+    // reentrant `WM_COMMAND` never touches `App` mid-refresh.
+    SUPPRESS_NOTIFY.store(true, Ordering::SeqCst);
     let text_w = wide(text);
     unsafe {
         SetWindowTextW(hwnd, text_w.as_ptr());
     }
+    SUPPRESS_NOTIFY.store(false, Ordering::SeqCst);
 }
+
+/// True while a programmatic push is delivering its synchronous
+/// notifications: the parent's `WM_COMMAND` handler returns early.
+pub(super) fn notifications_suppressed() -> bool {
+    SUPPRESS_NOTIFY.load(Ordering::SeqCst)
+}
+
+/// Programmatic-push suppression flag (see `set_text`). One settings
+/// window exists at a time (per-user singleton mutex), so a process-wide
+/// flag never crosses instances.
+static SUPPRESS_NOTIFY: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn get_text(hwnd: HWND) -> String {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
@@ -79,11 +99,11 @@ pub(super) fn px(value: i32, dpi: u32) -> i32 {
 
 /// Create one child control with the DPI-scaled message font.
 /// `WS_CLIPSIBLINGS` plus the parent's `WS_CLIPCHILDREN` keep the groupbox
-/// frames from smearing over their children; the groupboxes are additionally
-/// pinned to the bottom of the sibling order after creation (see below),
-/// because creation order alone left the first-created groupboxes topmost and
-/// each opaque groupbox then covered every control inside it. Returns the new
-/// control handle.
+/// frames from smearing over their children; after creation the groupboxes
+/// go to the very bottom in reverse creation order with the tab strip
+/// bottommost last (see `cmd_settings`), because the opaque frames
+/// otherwise covered every control inside them (historical pre-tab
+/// window). Returns the new control handle.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_ctl(
     parent: HWND,
@@ -172,13 +192,20 @@ pub(super) fn message_font(dpi: u32) -> HFONT {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn dialog_fits_1380_work_area_at_dpi120() {
-        // Lowest control edge is the status line (y1028 h60); it must sit
-        // inside the 1088-high client area, which itself must fit a
-        // 1380-high work area at DPI 120 (px(1088, 120) == 1360, leaving room
-        // for the non-client frame on top).
-        assert_eq!(super::px(1088, 120), 1360);
-        assert!(super::px(1028 + 60, 120) <= super::px(1088, 120));
-        assert!(super::px(1088, 120) <= 1380);
+    fn dialog_fits_1080p_work_area_at_100_and_150_percent() {
+        // Tabbed client (924x600 logical) replaces the old 924x1088 page:
+        // the scaled client plus frame allowances (32px horizontal, 80px
+        // vertical) must fit a 1920x1040 work area (1080p minus taskbar)
+        // at both 100% (96 DPI) and 150% (144 DPI). Each tab page fits or
+        // scrolls internally (listbox/info edits carry their own bars).
+        for dpi in [96u32, 144u32] {
+            assert!(super::px(924, dpi) + 32 <= 1920, "width at {dpi}");
+            assert!(super::px(600, dpi) + 80 <= 1040, "height at {dpi}");
+        }
+        // The footer (two-line badge y500 h32, status y534 h48) sits
+        // inside the client at both DPIs; the listbox and note edits
+        // carry their own bars so tall tab content scrolls, never clips.
+        assert!(super::px(532, 144) <= super::px(600, 144));
+        assert!(super::px(582, 144) <= super::px(600, 144));
     }
 }

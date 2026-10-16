@@ -28,7 +28,9 @@ use super::{
 };
 
 /// Push the saved/draft values into every control and rebuild the list.
-pub(super) fn refresh_all(app: &App) {
+/// Clears the HWND-dirty flag: every control now matches `work`, so only
+/// a later user edit, staged binding, or pending chord can unsave it.
+pub(super) fn refresh_all(app: &mut App) {
     let core = &app.work.core;
     set_text(app.ctl(ID_INNER_GAP), &format!("{}", core.inner_gap));
     set_text(app.ctl(ID_OUTER_GAP), &format!("{}", core.outer_gap));
@@ -83,6 +85,8 @@ pub(super) fn refresh_all(app: &App) {
     set_checked(app.ctl(ID_WORKSPACE_MODE_SHARED), mode == 2);
     refresh_list(app);
     enable(app.ctl(ID_APPLY), app.invalid.is_none());
+    app.dirty = false;
+    super::info::refresh_badge(app);
 }
 
 fn parse_gap(text: &str, field: &str) -> Result<i32, String> {

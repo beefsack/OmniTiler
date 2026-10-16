@@ -1,9 +1,14 @@
 # Shared settings schema and tabbed Settings
 
-- Recommendation: **D, a small Rust catalog with checked-in generated native
-  descriptors, after KDE 0.1**. Independently offer **KDE-only tabs before 0.1**.
-- Status: options delivered 2026-10-15; architecture, tab grouping and timing
-  pending user decision. Research only; estimates are engineering assessments.
+- Selected 2026-10-16: **D, a small Rust catalog with checked-in generated native
+  descriptors, staged before 0.1**. First slice: shared catalog and native
+  Windows tabs; KDE exporter/generated descriptors follow separately.
+- Status: options delivered 2026-10-15; route/timing approved 2026-10-16,
+  superseding the post-0.1 recommendation below. Windows implementation and
+  pending physical acceptance are tracked in the
+  [active record](../changes/shared-settings-catalog-windows-tabs.md).
+  KDE-only tabs were [delivered independently](../changes/archive/kde-settings-tabs.md).
+  Estimates below are historical engineering assessments, not commitments.
 - Evidence snapshot: `6564e671ebe7995b32a48d50f0c356516f483d77`. Repository
   `file:line` locators below refer to that revision. Source and commit inspection,
   not new build or native UX acceptance.
@@ -109,5 +114,7 @@
 - Verification for this research: source/history cross-checks, cited-path/line
   and document-link checks, and `git diff --check`. Implementation tests above
   are proposed acceptance, not tests run for this documentation.
-- Exact next action: user selects **KDE-only tabs pre-0.1** and **D post-0.1**
-  (recommended), or an alternative route/timing, before an implementation brief.
+- Current next action: physically accept the Windows catalog-rendered tabs;
+  migrate KDE Settings through the exporter, checked-in generated descriptors
+  and CI drift check in its separate stream. The recommendation tables above
+  preserve the original options, not a still-pending route/timing decision.

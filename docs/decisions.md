@@ -594,6 +594,27 @@ platform API behavior.
 
 ## Settings, Tray and First-Run
 
+- User decision 2026-10-16: route D from the
+  [shared-settings research](research/shared-settings-schema.md) starts before
+  0.1 with a dependency-free Rust core catalog and a native Windows tabbed
+  Settings renderer. Stable tab/section/field IDs, value types, tokens,
+  defaults, bounds, functional labels/help, validity and timing belong in the
+  catalog; widgets, storage, load policy and operations remain platform-owned.
+  Toolkit types and serialized JSON stay out of the core.
+  - Preserve Windows schema-v1 nested snake_case storage and strict
+    refusal/last-good, KDE keys and tolerant decoding, and distinct
+    saved/requested/confirmed state. Startup-only and next-admission notes
+    must describe actual adoption, not imply Save confirms an effect.
+  - Windows uses Tiling & Workspaces, Appearance, Shortcuts and Desktop
+    Integration tabs, with persistent status/conflict feedback and scrolling
+    for long notes. Windows-only fields and native operation panels stay in
+    its adapter; a generic field setter never invokes takeover/remediation,
+    presets, conflict operations or KDE Fix/Force/Revert.
+  - KDE behavior is unchanged in this slice. Its later catalog migration
+    uses an exporter, checked-in generated descriptors and a CI drift check,
+    without a new runtime dependency for settings-only packages. macOS
+    settings participation remains consumer-driven, not probe-flag migration.
+  - [Windows implementation and pending physical acceptance](changes/shared-settings-catalog-windows-tabs.md).
 - User-approved 2026-10-11 (KDE package ownership): distro core package
   `omnitiler` ships both KWin-independent Settings KCMs, providing
   tiling plus Settings/Apply/Revert without the optional effect.

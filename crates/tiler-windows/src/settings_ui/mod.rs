@@ -1,8 +1,8 @@
 //! Native Win32 settings window (`cfg(windows)` only).
 //!
-//! Mechanism: one overlapped settings window with plain Win32 child controls
-//! (`STATIC`, `EDIT`, `BUTTON`, `LISTBOX`) created through the existing
-//! `windows-sys` route. No new dependency, no registry/policy writes, no tray.
+//! Mechanism: one overlapped settings window with four native tab pages
+//! (`SysTabControl32`) plus plain Win32 child controls (`STATIC`, `EDIT`,
+//! `BUTTON`, `LISTBOX`) created through the existing `windows-sys` route. No new dependency, no registry/policy writes, no tray.
 //! The window edits a draft [`crate::settings::Settings`]; Apply validates the
 //! whole draft (including the selected binding editor) and saves atomically,
 //! Revert reloads the last saved values without writing, and Close never
@@ -44,6 +44,7 @@ mod choice;
 mod ctl;
 mod draft;
 mod info;
+mod tabs;
 #[cfg(test)]
 mod tests;
 
@@ -112,6 +113,12 @@ pub const ID_GAMING_OPEN_GAMEBAR: u32 = 146;
 pub const ID_GAMING_OPEN_APP: u32 = 147;
 /// Explicit gaming recheck (async worker, never blocks the UI).
 pub const ID_GAMING_RECHECK: u32 = 148;
+/// Native tab strip (`SysTabControl32`): four catalog tabs, always visible.
+pub const ID_TABS: u32 = 150;
+/// Global badge outside the tab pages: invalid file, unsaved draft, and the
+/// selected-row gaming conflict stay visible on every tab. Never claims
+/// resolution or runtime adoption; the tab's own controls do the work.
+pub const ID_TAB_BADGE: u32 = 151;
 
 /// Poll timer for the Settings-process gaming worker (1s; the worker itself
 /// stays attempt-gated at its 5-minute interval, so steady-state ticks spawn
@@ -155,6 +162,23 @@ pub(super) struct App {
     /// Last worker generation rendered into the binding info; the timer only
     /// rewrites the info when a pass completes.
     gaming_generation: u64,
+    /// Active tab index into `tabs::tab_titles` (draft lives in the HWND
+    /// text of every page, so switching tabs never collects or discards).
+    current_tab: usize,
+    /// True once a user edit lands in any HWND (EN_CHANGE on an edit,
+    /// BN_CLICKED on a check/radio). Programmatic pushes never set it
+    /// (their notifications are suppressed in `ctl::set_text`, and
+    /// `BM_SETCHECK` notifies nothing). Cleared by `refresh_all`
+    /// (reloads and successful saves); retained on validation failure.
+    /// The badge treats this, `work != base`, and a pending chord as
+    /// requested-but-unsaved, never "saved".
+    dirty: bool,
+    /// Groupbox handles with their owning tab (creation order parallel to
+    /// `tabs::GROUPS`): hidden with their page on tab switches.
+    groups: Vec<(usize, HWND)>,
+    /// Label-static handles with their owning tab (`tabs::LABEL_RECTS`
+    /// order): hidden with their page on tab switches.
+    statics: Vec<(usize, HWND)>,
 }
 
 impl App {
@@ -196,10 +220,164 @@ fn open_gaming_uri(app: &App, uri: &str, what: &str) {
     }
 }
 
+/// Register the common-control tab classes before any `SysTabControl32`
+/// child exists. `insert_tab_items` also calls this, but that runs after
+/// the strip's `CreateWindowExW`: on a cold process the class may not be
+/// registered yet and strip creation itself fails. Called once before the
+/// main window exists; idempotent on repeat calls.
+fn ensure_tab_classes() -> Result<(), DynError> {
+    use windows_sys::Win32::UI::Controls::{
+        ICC_TAB_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    };
+    let icc = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_TAB_CLASSES,
+    };
+    if unsafe { InitCommonControlsEx(&icc) } == 0 {
+        return Err(err("error: settings tab classes failed"));
+    }
+    Ok(())
+}
+
+/// Insert the four catalog tab titles into the strip. Missing tabs would
+/// leave catalog fields unreachable, so any failure aborts the window
+/// through the caller's `abort_create` path.
+fn insert_tab_items(app: &App) -> Result<(), DynError> {
+    use windows_sys::Win32::UI::Controls::{TCIF_TEXT, TCITEMW, TCM_INSERTITEMW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+    let strip = app.ctl(ID_TABS);
+    if strip.is_null() {
+        return Err(err("error: settings tab strip missing"));
+    }
+    // Idempotent re-registration: the classes were ensured before any
+    // strip existed; this keeps item insertion self-sufficient.
+    ensure_tab_classes()?;
+    let titles = tabs::tab_titles();
+    for (index, title) in titles.iter().enumerate() {
+        let text_w = ctl::wide(title);
+        let item = TCITEMW {
+            mask: TCIF_TEXT,
+            dwState: 0,
+            dwStateMask: 0,
+            pszText: text_w.as_ptr() as *mut u16,
+            cchTextMax: 0,
+            iImage: 0,
+            lParam: 0,
+        };
+        let placed = unsafe {
+            SendMessageW(
+                strip,
+                TCM_INSERTITEMW,
+                index,
+                &item as *const TCITEMW as isize,
+            )
+        };
+        if placed < 0 {
+            return Err(err("error: settings tab item failed"));
+        }
+    }
+    if titles.len() != tabs::TAB_COUNT {
+        return Err(err("error: settings tab count drifted"));
+    }
+    Ok(())
+}
+
+/// Show one tab page: the tab strip and footer stay visible and enabled;
+/// every other page's controls hide and disable so `IsDialogMessageW`
+/// skips them. HWND text is untouched, so cross-tab draft edits and the
+/// pending chord survive. Focus parked on a hiding control moves to the
+/// tab strip; focus elsewhere (e.g. the strip after a mouse click) stays.
+pub(super) fn show_tab(app: &mut App, index: usize) {
+    use windows_sys::Win32::UI::Controls::TCM_SETCURSEL;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, SW_SHOW, SendMessageW, ShowWindow};
+    let index = index % tabs::TAB_COUNT;
+    app.current_tab = index;
+    let strip = app.ctl(ID_TABS);
+    if !strip.is_null() {
+        unsafe {
+            SendMessageW(strip, TCM_SETCURSEL, index, 0);
+        }
+    }
+    let focused = unsafe { GetFocus() };
+    let mut focus_hidden = false;
+    for (id, hwnd) in app.controls.clone() {
+        let visible = match tabs::control_tab(id) {
+            None => true,
+            Some(tab) => tab == index,
+        };
+        unsafe {
+            ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
+        }
+        // Hidden pages disable so `IsDialogMessageW` skips them; shown
+        // pages re-enable, then the gates below restore semantic disables.
+        ctl::enable(hwnd, visible);
+        if hwnd == focused && tabs::needs_focus_move(id, index) {
+            focus_hidden = true;
+        }
+    }
+    for (tab, grouped) in app.groups.clone() {
+        unsafe {
+            ShowWindow(grouped, if tab == index { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    for (tab, labelled) in app.statics.clone() {
+        let visible = tab == index;
+        unsafe {
+            ShowWindow(labelled, if visible { SW_SHOW } else { SW_HIDE });
+        }
+        // Note edits carry a tab stop: hidden ones disable like hidden
+        // page controls so keyboard traversal never parks off-tab.
+        ctl::enable(labelled, visible);
+        if labelled == focused && !visible {
+            focus_hidden = true;
+        }
+    }
+    if focus_hidden && !strip.is_null() {
+        unsafe {
+            SetFocus(strip);
+        }
+    }
+    ctl::enable(app.ctl(ID_APPLY), app.invalid.is_none());
+    info::refresh_list(app);
+    // `refresh_list` restores the gaming buttons' own enable gates, which
+    // re-enables hidden ones: re-disable every hidden page control so a
+    // tab switch never enables an off-tab button.
+    for (id, hwnd) in app.controls.clone() {
+        if matches!(tabs::control_tab(id), Some(tab) if tab != index) {
+            ctl::enable(hwnd, false);
+        }
+    }
+    info::refresh_badge(app);
+}
+
 fn on_command(app: &mut App, id: u32, notify: u32) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BN_CLICKED, LB_GETCURSEL, LB_SETCURSEL, LBN_SELCHANGE, SendMessageW,
     };
+    // Edit notifications: 768 is EN_CHANGE (winuser). Every `set_text`
+    // call site is programmatic and suppressed in `ctl`, and `BM_SETCHECK`
+    // notifies nothing, so a live EN_CHANGE is always a user keystroke:
+    // the HWND no longer matches the last push and the badge must say so.
+    // Edits stage at Apply; nothing else happens here.
+    const EN_CHANGE: u32 = 768;
+    if notify == EN_CHANGE {
+        match id {
+            ID_INNER_GAP
+            | ID_OUTER_GAP
+            | ID_BORDER_COLOR
+            | ID_BORDER_WIDTH
+            | ID_BORDER_GAP
+            | ID_BORDER_RADIUS
+            | ID_UNDERLAY_COLOR
+            | ID_UNDERLAY_EXTENSION
+            | ID_BIND_CHORD => {
+                app.dirty = true;
+            }
+            _ => {}
+        }
+        return;
+    }
     if id == ID_BINDING_LIST {
         if notify == LBN_SELCHANGE {
             let picked = unsafe { SendMessageW(app.ctl(ID_BINDING_LIST), LB_GETCURSEL, 0, 0) };
@@ -233,6 +411,33 @@ fn on_command(app: &mut App, id: u32, notify: u32) {
     }
     if notify != BN_CLICKED {
         return;
+    }
+    // Check/radio clicks edit the HWND draft immediately (auto controls
+    // flip before this notification); Apply stages them into the draft.
+    match id {
+        ID_BORDER_ENABLED
+        | ID_BORDER_THEME
+        | ID_UNDERLAY_ENABLED
+        | ID_KEYBOARD_TAKEOVER
+        | ID_ALLOW_WIN_L
+        | ID_MOUSE_SNAP
+        | ID_TASKBAR_PAGER
+        | ID_DEFAULT_TILED
+        | ID_DEFAULT_FLOATING
+        | ID_SAME_AXIS_GROUP
+        | ID_SAME_AXIS_SWAP
+        | ID_BORN_MAX_TILE
+        | ID_BORN_MAX_OVERLAY
+        | ID_FIXED_SIZE_BOTH
+        | ID_FIXED_SIZE_EITHER
+        | ID_MIGRATION_REFILL_LAST
+        | ID_MIGRATION_REFILL_MRU
+        | ID_WORKSPACE_MODE_LOCAL
+        | ID_WORKSPACE_MODE_GLOBAL
+        | ID_WORKSPACE_MODE_SHARED => {
+            app.dirty = true;
+        }
+        _ => {}
     }
     match id {
         ID_APPLY => do_apply(app),
@@ -322,7 +527,7 @@ unsafe extern "system" fn wnd_proc(
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
         GetWindowRect, MINMAXINFO, PostQuitMessage, SetWindowLongPtrW, WM_CLOSE, WM_COMMAND,
-        WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_TIMER,
+        WM_CREATE, WM_DESTROY, WM_GETMINMAXINFO, WM_NOTIFY, WM_TIMER,
     };
     match msg {
         WM_CREATE => {
@@ -373,6 +578,12 @@ unsafe extern "system" fn wnd_proc(
             }
         }
         WM_COMMAND => {
+            // Programmatic pushes (`ctl::set_text`) suppress their own
+            // synchronous EN_CHANGE here, so a live notification is always
+            // a user edit. Suppressed commands never touch `App`.
+            if ctl::notifications_suppressed() {
+                return 0;
+            }
             let id = (wparam & 0xffff) as u32;
             if id == ID_CLOSE {
                 // Close without borrowing `App`: `DestroyWindow` runs
@@ -389,12 +600,35 @@ unsafe extern "system" fn wnd_proc(
                 let app = unsafe { &mut *(ptr as *mut App) };
                 let notify = ((wparam >> 16) & 0xffff) as u32;
                 on_command(app, id, notify);
+                // Every command may move draft state (HWND dirty flag,
+                // staged bindings, pending chord): re-badge afterwards.
+                info::refresh_badge(app);
             }
             0
         }
         WM_CLOSE => {
             unsafe {
                 DestroyWindow(hwnd);
+            }
+            0
+        }
+        WM_NOTIFY => {
+            // Tab strip selection: mouse clicks and arrow keys land here
+            // (`TCN_SELCHANGE`). Keyboard Ctrl+Tab is handled in the
+            // message loop below; both funnel into `show_tab`, which never
+            // touches HWND draft text.
+            use windows_sys::Win32::UI::Controls::{NMHDR, TCM_GETCURSEL, TCN_SELCHANGE};
+            use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+            if ptr != 0 && lparam != 0 {
+                let hdr = unsafe { &*(lparam as *const NMHDR) };
+                if hdr.idFrom as u32 == ID_TABS && hdr.code == TCN_SELCHANGE {
+                    let app = unsafe { &mut *(ptr as *mut App) };
+                    let picked = unsafe { SendMessageW(hdr.hwndFrom, TCM_GETCURSEL, 0, 0) };
+                    if picked >= 0 {
+                        show_tab(app, picked as usize);
+                    }
+                }
             }
             0
         }
@@ -416,6 +650,7 @@ unsafe extern "system" fn wnd_proc(
                 if generation != app.gaming_generation {
                     app.gaming_generation = generation;
                     refresh_list(app);
+                    info::refresh_badge(app);
                 }
             }
             0
@@ -555,8 +790,8 @@ pub fn cmd_settings() -> Result<String, DynError> {
     }
 
     let style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-    let client_w = px(924, dpi);
-    let client_h = px(1088, dpi);
+    let client_w = px(tabs::CLIENT_W, dpi);
+    let client_h = px(tabs::CLIENT_H, dpi);
     let mut rect = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,
@@ -574,6 +809,9 @@ pub fn cmd_settings() -> Result<String, DynError> {
         crate::gaming::GamingMonitor::new(std::sync::Arc::new(crate::tray_sys::gaming::probe_all));
     gaming.sync_revision(Some(base.revision));
     gaming.request_refresh(crate::gaming::RefreshReason::Startup);
+    // Tab classes before any tab strip exists: strip creation below fails
+    // on a cold process without this (no window yet, so no teardown).
+    ensure_tab_classes()?;
     // Boxed before creation; reclaimed in WM_DESTROY. Pointer travels via
     // CREATESTRUCT lpCreateParams into GWLP_USERDATA.
     let app = Box::new(App {
@@ -588,6 +826,10 @@ pub fn cmd_settings() -> Result<String, DynError> {
         tip_text: choice_tip_texts(),
         gaming,
         gaming_generation: 0,
+        current_tab: 0,
+        dirty: false,
+        groups: Vec::new(),
+        statics: Vec::new(),
     });
     let raw = Box::into_raw(app);
     let hwnd = unsafe {
@@ -596,8 +838,8 @@ pub fn cmd_settings() -> Result<String, DynError> {
             class_w.as_ptr(),
             title_w.as_ptr(),
             style,
-            120,
-            80,
+            tabs::ORIGIN_X,
+            tabs::ORIGIN_Y,
             rect.right - rect.left,
             rect.bottom - rect.top,
             std::ptr::null_mut(),
@@ -631,162 +873,244 @@ pub fn cmd_settings() -> Result<String, DynError> {
     let edit_style = WS_BORDER | edits;
     // Selected-row readout: a readonly multiline edit with its own scrollbar
     // so the full OS-conflict text stays readable instead of clipping in an
-    // 84px static.
+    // 84px static. Long native notes and workspace notes share it.
     let info_style = ES_MULTILINE as u32
         | ES_AUTOVSCROLL as u32
         | ES_READONLY as u32
         | WS_VSCROLL
         | WS_BORDER
         | tab;
-    let controls = [
-        Ctl { id: 0, class: "BUTTON", text: "Gaps, tiles (0..64)".to_owned(), x: 10, y: 8, w: 272, h: 64, style: group },
-        Ctl { id: 0, class: "STATIC", text: "Inner:".to_owned(), x: 20, y: 32, w: 52, h: 20, style: label },
-        Ctl { id: ID_INNER_GAP, class: "EDIT", text: String::new(), x: 76, y: 30, w: 56, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Outer:".to_owned(), x: 142, y: 32, w: 52, h: 20, style: label },
-        Ctl { id: ID_OUTER_GAP, class: "EDIT", text: String::new(), x: 198, y: 30, w: 56, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "BUTTON", text: "Active border".to_owned(), x: 292, y: 8, w: 320, h: 200, style: group },
-        Ctl { id: ID_BORDER_ENABLED, class: "BUTTON", text: "Enabled".to_owned(), x: 302, y: 28, w: 200, h: 20, style: check | tab },
-        Ctl { id: ID_BORDER_THEME, class: "BUTTON", text: "Use system accent (theme)".to_owned(), x: 302, y: 50, w: 290, h: 20, style: check | tab },
-        Ctl { id: 0, class: "STATIC", text: "Colour #rrggbb:".to_owned(), x: 302, y: 74, w: 120, h: 20, style: label },
-        Ctl { id: ID_BORDER_COLOR, class: "EDIT", text: String::new(), x: 428, y: 72, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Width 0..32:".to_owned(), x: 302, y: 98, w: 120, h: 20, style: label },
-        Ctl { id: ID_BORDER_WIDTH, class: "EDIT", text: String::new(), x: 428, y: 96, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Gap 0..64:".to_owned(), x: 302, y: 122, w: 120, h: 20, style: label },
-        Ctl { id: ID_BORDER_GAP, class: "EDIT", text: String::new(), x: 428, y: 120, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Radius 0..64:".to_owned(), x: 302, y: 146, w: 120, h: 20, style: label },
-        Ctl { id: ID_BORDER_RADIUS, class: "EDIT", text: String::new(), x: 428, y: 144, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Configured colour wins when theme is off or no accent.".to_owned(), x: 302, y: 170, w: 300, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Group underlay".to_owned(), x: 622, y: 8, w: 292, h: 124, style: group },
-        Ctl { id: ID_UNDERLAY_ENABLED, class: "BUTTON", text: "Enabled".to_owned(), x: 632, y: 28, w: 200, h: 20, style: check | tab },
-        Ctl { id: 0, class: "STATIC", text: "Colour #aarrggbb:".to_owned(), x: 632, y: 52, w: 140, h: 20, style: label },
-        Ctl { id: ID_UNDERLAY_COLOR, class: "EDIT", text: String::new(), x: 776, y: 50, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "Extension -1..32:".to_owned(), x: 632, y: 76, w: 140, h: 20, style: label },
-        Ctl { id: ID_UNDERLAY_EXTENSION, class: "EDIT", text: String::new(), x: 776, y: 74, w: 120, h: 22, style: edit_style | tab },
-        Ctl { id: 0, class: "STATIC", text: "-1 follows the border width.".to_owned(), x: 632, y: 100, w: 272, h: 22, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Keyboard and mouse takeover".to_owned(), x: 10, y: 212, w: 602, h: 168, style: group },
-        Ctl { id: ID_KEYBOARD_TAKEOVER, class: "BUTTON", text: "Keyboard takeover (Win shortcut interception)".to_owned(), x: 20, y: 234, w: 560, h: 20, style: check | tab },
-        Ctl { id: ID_MOUSE_SNAP, class: "BUTTON", text: "Mouse Snap prevention (session only, no registry)".to_owned(), x: 20, y: 256, w: 560, h: 20, style: check | tab },
-        Ctl { id: ID_SNAP_MEANING, class: "STATIC", text: "Off restores native keyboard chords / captured mouse-Snap value. Keyboard takeover follows individual bindings. Snap Layouts coverage is unverified.".to_owned(), x: 20, y: 278, w: 572, h: 44, style: label },
-        Ctl { id: ID_ALLOW_WIN_L, class: "BUTTON", text: "Allow unshifted Win+L (explicit opt-in)".to_owned(), x: 20, y: 324, w: 560, h: 20, style: check | tab },
-        Ctl { id: ID_LOCK_WARNING, class: "STATIC", text: "Warning: the hook cannot reliably suppress the OS lock chord.".to_owned(), x: 20, y: 346, w: 572, h: 24, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Presets".to_owned(), x: 622, y: 140, w: 292, h: 240, style: group },
-        Ctl { id: ID_PRESET_AUTHENTIC, class: "BUTTON", text: "Authentic".to_owned(), x: 632, y: 162, w: 132, h: 28, style: push | tab },
-        Ctl { id: ID_PRESET_COMPATIBLE, class: "BUTTON", text: "Compatible".to_owned(), x: 772, y: 162, w: 132, h: 28, style: push | tab },
-        Ctl { id: ID_PRESET_EXPLAIN, class: "STATIC", text: "Authentic restores KDE defaults for every binding (Win+L opt-in preserved). Compatible disables known OS-conflicting chords only (including Win+Ctrl+Left/Right) and rebinds float to Win+Ctrl+G and fullscreen to Win+Ctrl+F11; every other chord is kept, including ones with unknown Windows ownership (letter moves, sticky, Win+Ctrl+Tab/letters/Up/Down, relative-send follows, keyboard resize Alt chords). Kept does not mean conflict-free. Stay rows and workspace-migration rows stay unbound under both presets. No other replacement defaults are invented; manual rebind stays available.".to_owned(), x: 632, y: 196, w: 272, h: 174, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "New workspaces".to_owned(), x: 10, y: 388, w: 904, h: 100, style: group },
-        Ctl { id: ID_DEFAULT_TILED, class: "BUTTON", text: "Tiled".to_owned(), x: 20, y: 410, w: 140, h: 24, style: radio_first | tab },
-        Ctl { id: ID_DEFAULT_FLOATING, class: "BUTTON", text: "Floating".to_owned(), x: 170, y: 410, w: 140, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "New workspaces start tiled or floating. Applies to workspaces created after Apply; existing workspaces keep their session tiling. Only the default is saved.".to_owned(), x: 320, y: 408, w: 584, h: 30, style: label },
-        Ctl { id: ID_WORKSPACE_MODE_LOCAL, class: "BUTTON", text: "Per-output local".to_owned(), x: 20, y: 442, w: 170, h: 24, style: radio_first | tab },
-        Ctl { id: ID_WORKSPACE_MODE_GLOBAL, class: "BUTTON", text: "Global unique".to_owned(), x: 200, y: 442, w: 160, h: 24, style: radio | tab },
-        Ctl { id: ID_WORKSPACE_MODE_SHARED, class: "BUTTON", text: "Shared".to_owned(), x: 370, y: 442, w: 100, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Scope (restart required): saved immediately; the running owner keeps its startup scope until restart.".to_owned(), x: 480, y: 440, w: 424, h: 30, style: label },
-        Ctl { id: ID_TASKBAR_PAGER, class: "BUTTON", text: "Taskbar pager (per-output workspace strip, default on)".to_owned(), x: 20, y: 468, w: 560, h: 20, style: check | tab },
-        Ctl { id: 0, class: "BUTTON", text: "Same-axis move".to_owned(), x: 10, y: 496, w: 904, h: 56, style: group },
-        Ctl { id: ID_SAME_AXIS_GROUP, class: "BUTTON", text: "Group with neighbor".to_owned(), x: 20, y: 518, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_SAME_AXIS_SWAP, class: "BUTTON", text: "Swap with neighbor".to_owned(), x: 230, y: 518, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Same-axis moves apply to subsequent moves only; existing trees keep their layout until the next move.".to_owned(), x: 440, y: 516, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Born maximized".to_owned(), x: 10, y: 560, w: 904, h: 56, style: group },
-        Ctl { id: ID_BORN_MAX_TILE, class: "BUTTON", text: "Tile on launch".to_owned(), x: 20, y: 582, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_BORN_MAX_OVERLAY, class: "BUTTON", text: "Keep maximized overlay".to_owned(), x: 230, y: 582, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Born-maximized admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 580, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Fixed-size admission".to_owned(), x: 10, y: 624, w: 904, h: 56, style: group },
-        Ctl { id: ID_FIXED_SIZE_BOTH, class: "BUTTON", text: "Width and height both fixed".to_owned(), x: 20, y: 646, w: 200, h: 24, style: radio_first | tab },
-        Ctl { id: ID_FIXED_SIZE_EITHER, class: "BUTTON", text: "Width or height fixed".to_owned(), x: 230, y: 646, w: 200, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Fixed-size admission applies to subsequent admissions only; admitted windows keep their state.".to_owned(), x: 440, y: 644, w: 464, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Source workspace after migration".to_owned(), x: 10, y: 688, w: 904, h: 56, style: group },
-        Ctl { id: ID_MIGRATION_REFILL_LAST, class: "BUTTON", text: "Last remaining workspace".to_owned(), x: 20, y: 710, w: 210, h: 24, style: radio_first | tab },
-        Ctl { id: ID_MIGRATION_REFILL_MRU, class: "BUTTON", text: "Most recently used workspace".to_owned(), x: 240, y: 710, w: 220, h: 24, style: radio | tab },
-        Ctl { id: 0, class: "STATIC", text: "Source refill applies to subsequent migrations only; migrated workspaces keep their state.".to_owned(), x: 470, y: 708, w: 434, h: 30, style: label },
-        Ctl { id: 0, class: "BUTTON", text: "Shortcuts (103 rows)".to_owned(), x: 10, y: 752, w: 904, h: 268, style: group },
-        Ctl { id: ID_BINDING_LIST, class: "LISTBOX", text: String::new(), x: 20, y: 774, w: 540, h: 192, style: list_style | tab },
-        Ctl { id: ID_BINDING_INFO, class: "EDIT", text: String::new(), x: 570, y: 774, w: 324, h: 84, style: info_style },
-        Ctl { id: ID_BIND_KEEP, class: "BUTTON", text: "Keep".to_owned(), x: 570, y: 868, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_DISABLE, class: "BUTTON", text: "Disable".to_owned(), x: 676, y: 868, w: 100, h: 26, style: push | tab },
-        Ctl { id: ID_BIND_CHORD, class: "EDIT", text: String::new(), x: 570, y: 898, w: 150, h: 24, style: edit_style | tab },
-        Ctl { id: ID_BIND_REBIND, class: "BUTTON", text: "Set rebind".to_owned(), x: 726, y: 896, w: 120, h: 26, style: push | tab },
-        Ctl { id: ID_REBIND_NOTE, class: "STATIC", text: "Rebind: Win[+Shift][+Alt][+Ctrl]+Key, keeping this action's modifier arm (focus/select unshifted, float/fullscreen Win or Win+Ctrl, move/send shifted, numbered stay Win+Shift or Win+Ctrl+Shift, previous/relative Win+Ctrl, relative send Win+Ctrl+Shift, output follow Win+Ctrl+Alt, output stay Win+Ctrl+Alt or Win+Ctrl+Alt+Shift, workspace migration Win+Ctrl+Alt+Shift, resize out Win+Alt, resize in Win+Shift+Alt). Win+L can never be a target. Win+G / Win+F11 cannot fully contain the OS Xbox/Game Bar handlers; Win+Ctrl+Left/Right virtual-desktop, Win+Ctrl+Shift arrow, Win+Ctrl+Alt, and Win+Alt chord ownership are unverified.".to_owned(), x: 570, y: 924, w: 324, h: 60, style: label },
-        Ctl { id: ID_GAMING_OPEN_XBOX, class: "BUTTON", text: "Open Xbox mode settings".to_owned(), x: 20, y: 986, w: 205, h: 26, style: push | tab },
-        Ctl { id: ID_GAMING_OPEN_GAMEBAR, class: "BUTTON", text: "Open Game Bar settings".to_owned(), x: 235, y: 986, w: 205, h: 26, style: push | tab },
-        Ctl { id: ID_GAMING_OPEN_APP, class: "BUTTON", text: "Open Game Bar app settings".to_owned(), x: 450, y: 986, w: 215, h: 26, style: push | tab },
-        Ctl { id: ID_GAMING_RECHECK, class: "BUTTON", text: "Recheck gaming status".to_owned(), x: 675, y: 986, w: 219, h: 26, style: push | tab },
-        Ctl { id: ID_STATUS, class: "STATIC", text: "Status: ready.".to_owned(), x: 20, y: 1028, w: 540, h: 60, style: label },
-        Ctl { id: ID_APPLY, class: "BUTTON", text: "Apply".to_owned(), x: 580, y: 1028, w: 100, h: 30, style: defpush | tab },
-        Ctl { id: ID_REVERT, class: "BUTTON", text: "Revert".to_owned(), x: 690, y: 1028, w: 100, h: 30, style: push | tab },
-        Ctl { id: ID_CLOSE, class: "BUTTON", text: "Close".to_owned(), x: 800, y: 1028, w: 100, h: 30, style: push | tab },
-    ];
-    // Group/label/statics carry id 0 and skip automation lookup. Groupboxes
-    // are pinned behind every sibling (see below); their handles ride here.
+    // Catalog-driven controls: geometry and text come from `tabs`
+    // (sections/fields rendered from the shared catalog plus the Windows
+    // adapter, never the old single-page form). Native styling stays here.
+    let style_for = |id: u32, class: &str| -> u32 {
+        if class == "SysTabControl32" {
+            return tab;
+        }
+        // Radio exclusion groups live in `tabs::is_radio_first` (single
+        // source, covered by its own test): exactly one WS_GROUP starter
+        // per field, so sibling reordering below can never merge fields.
+        if tabs::is_radio_first(id) {
+            return radio_first | tab;
+        }
+        match id {
+            ID_APPLY => return defpush | tab,
+            ID_PRESET_AUTHENTIC
+            | ID_PRESET_COMPATIBLE
+            | ID_BIND_KEEP
+            | ID_BIND_DISABLE
+            | ID_BIND_REBIND
+            | ID_GAMING_OPEN_XBOX
+            | ID_GAMING_OPEN_GAMEBAR
+            | ID_GAMING_OPEN_APP
+            | ID_GAMING_RECHECK
+            | ID_REVERT
+            | ID_CLOSE => return push | tab,
+            ID_DEFAULT_FLOATING
+            | ID_SAME_AXIS_SWAP
+            | ID_BORN_MAX_OVERLAY
+            | ID_FIXED_SIZE_EITHER
+            | ID_MIGRATION_REFILL_MRU
+            | ID_WORKSPACE_MODE_GLOBAL
+            | ID_WORKSPACE_MODE_SHARED => {
+                return radio | tab;
+            }
+            ID_BORDER_ENABLED | ID_BORDER_THEME | ID_UNDERLAY_ENABLED | ID_KEYBOARD_TAKEOVER
+            | ID_ALLOW_WIN_L | ID_MOUSE_SNAP | ID_TASKBAR_PAGER => return check | tab,
+            ID_BINDING_LIST => return list_style | tab,
+            ID_BINDING_INFO | ID_PRESET_EXPLAIN | ID_REBIND_NOTE => return info_style,
+            ID_TAB_BADGE | ID_STATUS | ID_SNAP_MEANING | ID_LOCK_WARNING => return label,
+            _ => {}
+        }
+        if class == "EDIT" {
+            return edit_style | tab;
+        }
+        label
+    };
+    // Creation follows `tabs::creation_sequence` so every buddy label
+    // lands immediately before its editor (accessible-name association).
     let mut owned: Vec<(u32, HWND)> = Vec::new();
-    let mut groups: Vec<HWND> = Vec::new();
-    for ctl in &controls {
-        let handle = if ctl.id == 0 {
-            let mut sink: Vec<(u32, HWND)> = Vec::new();
-            match create_ctl(hwnd, hinst, ctl, dpi, font, &mut sink) {
-                Ok(handle) => {
-                    if ctl.class == "BUTTON" {
-                        groups.push(handle);
+    let mut grouped: Vec<(usize, HWND)> = Vec::new();
+    let mut labelled: Vec<(usize, HWND)> = Vec::new();
+    let mut create_owned = |ctl: &Ctl| -> Result<HWND, DynError> {
+        create_ctl(hwnd, hinst, ctl, dpi, font, &mut owned)
+    };
+    let create_unowned = |ctl: &Ctl| -> Result<HWND, DynError> {
+        let mut sink: Vec<(u32, HWND)> = Vec::new();
+        create_ctl(hwnd, hinst, ctl, dpi, font, &mut sink)
+    };
+    for step in tabs::creation_sequence() {
+        match step {
+            tabs::CreateStep::TabStrip => {
+                let (x, y, w, h) = tabs::control_rect(ID_TABS).expect("strip rect");
+                let spec = Ctl {
+                    id: ID_TABS,
+                    class: "SysTabControl32",
+                    text: tabs::control_text(ID_TABS),
+                    x,
+                    y,
+                    w,
+                    h,
+                    style: tab,
+                };
+                if create_owned(&spec).is_err() {
+                    abort_create(hwnd, raw);
+                    return Err(err("error: settings tab strip failed"));
+                }
+            }
+            tabs::CreateStep::Group(group_index) => {
+                let (key, x, y, w, h) = tabs::GROUPS[group_index];
+                let spec = Ctl {
+                    id: 0,
+                    class: "BUTTON",
+                    text: tabs::group_title(key),
+                    x,
+                    y,
+                    w,
+                    h,
+                    style: group,
+                };
+                match create_unowned(&spec) {
+                    Ok(handle) => grouped.push((tabs::group_tab(key).expect("group tab"), handle)),
+                    Err(error) => {
+                        abort_create(hwnd, raw);
+                        return Err(error);
                     }
-                    handle
-                }
-                Err(error) => {
-                    abort_create(hwnd, raw);
-                    return Err(error);
                 }
             }
-        } else {
-            match create_ctl(hwnd, hinst, ctl, dpi, font, &mut owned) {
-                Ok(handle) => handle,
-                Err(error) => {
-                    abort_create(hwnd, raw);
-                    return Err(error);
+            tabs::CreateStep::Label(label_index) => {
+                let (page, x, y, w, h) = tabs::LABEL_RECTS[label_index];
+                let class = tabs::label_class(label_index);
+                let spec = Ctl {
+                    id: 0,
+                    class,
+                    text: tabs::label_text(label_index),
+                    x,
+                    y,
+                    w,
+                    h,
+                    style: if class == "EDIT" { info_style } else { label },
+                };
+                match create_unowned(&spec) {
+                    Ok(handle) => labelled.push((page, handle)),
+                    Err(error) => {
+                        abort_create(hwnd, raw);
+                        return Err(error);
+                    }
                 }
             }
-        };
-        if ctl.class == "EDIT"
-            && let Some(limit) = edit_limit(ctl.id)
-        {
-            use windows_sys::Win32::UI::Controls::EM_SETLIMITTEXT;
-            use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
-            unsafe {
-                SendMessageW(handle, EM_SETLIMITTEXT, limit, 0);
+            tabs::CreateStep::Control(id) => {
+                if id == ID_TABS {
+                    continue;
+                }
+                let Some((x, y, w, h)) = tabs::control_rect(id) else {
+                    continue;
+                };
+                let Some(class) = tabs::control_class(id) else {
+                    continue;
+                };
+                let spec = Ctl {
+                    id,
+                    class,
+                    text: tabs::control_text(id),
+                    x,
+                    y,
+                    w,
+                    h,
+                    style: style_for(id, class),
+                };
+                let handle = match create_owned(&spec) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        abort_create(hwnd, raw);
+                        return Err(error);
+                    }
+                };
+                if spec.class == "EDIT"
+                    && let Some(limit) = edit_limit(spec.id)
+                {
+                    use windows_sys::Win32::UI::Controls::EM_SETLIMITTEXT;
+                    use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+                    unsafe {
+                        SendMessageW(handle, EM_SETLIMITTEXT, limit, 0);
+                    }
+                }
             }
         }
     }
     let app = unsafe { &mut *raw };
     app.controls = owned;
-    // Pin every groupbox behind all siblings: creation order alone left the
-    // first-created groupboxes topmost, and each opaque groupbox then covered
-    // every control inside it (blank frames in both screen and `WM_PRINT`
-    // captures, machine-proven live). `SWP_NOACTIVATE` keeps focus untouched;
-    // geometry flags keep every rect. A failure aborts like any other
-    // control-creation failure.
+    app.groups = grouped;
+    app.statics = labelled;
+    // Offline layout invariant over the built specs (rects, tabs, text
+    // fit): zero release cost, fails debug builds before first paint.
+    debug_assert!(tabs::layout_valid());
+    debug_assert!(tabs::client_fits_1080p(dpi));
+    debug_assert!(tabs::origin_fits_1080p(dpi));
+    // Sibling order, bottom to top: tab strip, groupboxes in creation
+    // order, then page controls and footer on top. The strip must sit
+    // bottommost: it shares the parent with every page control and its
+    // rect covers the display area, so a strip above the pages would take
+    // their clicks and paint over the group frames. Each plan target goes
+    // to `HWND_BOTTOM` in `tabs::zorder_plan` order (groups reversed,
+    // strip last): absolute placements only, never an `hWndInsertAfter`
+    // anchor, which would put the moved window BELOW its anchor and leave
+    // the strip on top. Groupboxes end just above the strip so the opaque
+    // frames never cover their own controls (historical pre-tab window:
+    // blank frames in both screen and `WM_PRINT` captures, not a claim
+    // about this tabbed layout, which has no live proof yet); page
+    // controls keep the creation-sequence tab-stop flow because only
+    // non-tab-stop groupboxes move, and every radio field keeps its own
+    // `WS_GROUP` starter (see `tabs::is_radio_first`), so clustering the
+    // frames cannot merge two exclusion groups. `SWP_NOACTIVATE` keeps
+    // focus untouched; geometry flags keep every rect. A failure aborts
+    // like any other control-creation failure.
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
         };
-        for grouped in &groups {
-            let moved = unsafe {
-                SetWindowPos(
-                    *grouped,
-                    HWND_BOTTOM,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                )
+        let order_flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        let strip = app.ctl(ID_TABS);
+        if strip.is_null() {
+            abort_create(hwnd, raw);
+            return Err(err("error: settings tab strip missing"));
+        }
+        // `app.groups` parallels `tabs::GROUPS` in creation order (one push
+        // per `CreateStep::Group`, and group tabs never decrease over
+        // `GROUPS`, asserted by test), so plan indices address it directly.
+        let created = app.groups.clone();
+        for op in tabs::zorder_plan() {
+            let target = match op {
+                tabs::ZOrderOp::StripToBottom => strip,
+                tabs::ZOrderOp::GroupToBottom(index) => created
+                    .get(index)
+                    .map(|(_, handle)| *handle)
+                    .unwrap_or(std::ptr::null_mut()),
             };
-            if moved == 0 {
+            if target.is_null() {
+                abort_create(hwnd, raw);
+                return Err(err("error: settings groupbox order failed"));
+            }
+            let placed = unsafe { SetWindowPos(target, HWND_BOTTOM, 0, 0, 0, 0, order_flags) };
+            if placed == 0 {
                 abort_create(hwnd, raw);
                 return Err(err("error: settings groupbox order failed"));
             }
         }
     }
     refresh_all(app);
+    // Tab strip items from the portable catalog order. Missing tabs would
+    // leave catalog fields unreachable, so this aborts like any other
+    // control-creation failure.
+    if let Err(error) = insert_tab_items(app) {
+        abort_create(hwnd, raw);
+        return Err(error);
+    }
     // Native tooltips for the R-MOV-03 and R-MAX-06 radios; best-effort (see
     // the helper).
     attach_choice_tips(app, hwnd, hinst);
+    // First paint shows tab zero; HWND draft text is untouched.
+    show_tab(app, 0);
     if let Some(reason) = invalid {
         status(
             app,
@@ -827,6 +1151,24 @@ pub fn cmd_settings() -> Result<String, DynError> {
                 DestroyWindow(hwnd);
             }
             continue;
+        }
+        // Ctrl+Tab / Ctrl+Shift+Tab cycles the four catalog tabs without
+        // touching HWND draft text. Handled before `IsDialogMessageW` so
+        // the chord never reaches a focused edit.
+        if msg.message == WM_KEYDOWN && msg.wParam == 0x09 {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GWLP_USERDATA;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW;
+            let ctrl = unsafe { GetKeyState(0x11) } < 0;
+            if ctrl {
+                let shift = unsafe { GetKeyState(0x10) } < 0;
+                let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+                if ptr != 0 {
+                    let app = unsafe { &mut *(ptr as *mut App) };
+                    show_tab(app, tabs::next_tab(app.current_tab, !shift));
+                }
+                continue;
+            }
         }
         let eaten = unsafe { IsDialogMessageW(hwnd, std::ptr::addr_of!(msg)) };
         if eaten == 0 {

@@ -40,6 +40,7 @@ mod presets;
 mod schema;
 mod tile_bridge;
 mod validation;
+mod windows_catalog;
 
 pub use catalog::{
     BindingDef, BindingFamily, LaunchKind, OUTPUT_SEND_CONFLICT, RESIZE_CONFLICT, SnapFamilyOp,
@@ -81,6 +82,14 @@ pub use schema::{
 };
 pub use tile_bridge::{retained_gaps_match, tile_options_from_settings};
 pub use validation::{gap_valid, validate_settings};
+pub use windows_catalog::{
+    FieldStorageMap, NATIVE_PANELS, SECTION_DESKTOP_PAGER, SECTION_DESKTOP_SNAP,
+    SECTION_SHORTCUTS_BINDINGS, SECTION_SHORTCUTS_GAMING, SECTION_SHORTCUTS_PRESETS,
+    SECTION_SHORTCUTS_TAKEOVER, WINDOWS_FIELD_ALLOW_WIN_L, WINDOWS_FIELD_MAPPINGS,
+    WINDOWS_FIELD_SNAP_PREVENTION, WINDOWS_FIELD_TAKEOVER, WINDOWS_FIELD_TASKBAR_PAGER,
+    WINDOWS_ONLY_CAPS, WINDOWS_ONLY_FIELDS, WINDOWS_SECTIONS, WindowsValue,
+    stage_windows_field_value, windows_field_def, windows_field_value,
+};
 
 #[cfg(test)]
 mod tests;

@@ -1,4 +1,7 @@
 use super::*;
+use tiler_core::settings_catalog as catalog;
+use tiler_core::{born_maximized::BornMaximized, directional::SameAxisMove};
+use tiler_core::{output_selection::MigrationSourceRefill, size_hints::FixedSizePredicate};
 
 /// Settings schema version. Older readers refuse newer versions outright;
 /// newer readers refuse anything but known versions (no silent migration).
@@ -10,30 +13,32 @@ pub const SETTINGS_PENDING_SUFFIX: &str = "settings.json.pending";
 /// Bounded read: files larger than this refuse instead of loading.
 pub const SETTINGS_MAX_BYTES: u64 = 65_536;
 
-/// KDE-parity gap defaults and bounds (`domain-gap.ts`).
-pub const DEFAULT_INNER_GAP: i32 = 8;
-pub const DEFAULT_OUTER_GAP: i32 = 8;
-pub const MAX_GAP: i32 = 64;
+/// KDE-parity gap defaults and bounds (`domain-gap.ts`). Single source:
+/// the shared portable catalog.
+pub const DEFAULT_INNER_GAP: i32 = catalog::DEFAULT_GAP;
+pub const DEFAULT_OUTER_GAP: i32 = catalog::DEFAULT_GAP;
+pub const MAX_GAP: i32 = catalog::MAX_CATALOG_GAP;
 
 /// Border defaults: KDE `activeborderconfig.kcfg` parity (width 3, gap 0,
-/// theme on with the configured `#2a82da` fallback) except radius, which
-/// defaults to 6 per 2026-10-11. The Windows
+/// radius 6, theme on with the configured `#2a82da` fallback). The Windows
 /// analogue of the Plasma highlight colour is the live system accent; the
 /// configured colour wins only when theming is off or the accent query is
 /// unavailable (see [`crate::active_border::effective_color`]).
-pub const DEFAULT_BORDER_WIDTH: f64 = 3.0;
-pub const DEFAULT_BORDER_GAP: f64 = 0.0;
-pub const DEFAULT_BORDER_RADIUS: f64 = 6.0;
-pub const DEFAULT_BORDER_COLOR_HEX: &str = "#2a82da";
-pub const DEFAULT_BORDER_USE_THEME: bool = true;
-pub const MAX_BORDER_WIDTH: f64 = 32.0;
-pub const MAX_BORDER_GAP: f64 = 64.0;
-pub const MAX_BORDER_RADIUS: f64 = 64.0;
+/// Single source: the shared portable catalog.
+pub const DEFAULT_BORDER_WIDTH: f64 = catalog::DEFAULT_CATALOG_BORDER_WIDTH;
+pub const DEFAULT_BORDER_GAP: f64 = catalog::DEFAULT_CATALOG_BORDER_GAP;
+pub const DEFAULT_BORDER_RADIUS: f64 = catalog::DEFAULT_CATALOG_BORDER_RADIUS;
+pub const DEFAULT_BORDER_COLOR_HEX: &str = catalog::DEFAULT_CATALOG_BORDER_COLOR;
+pub const DEFAULT_BORDER_USE_THEME: bool = catalog::DEFAULT_CATALOG_BORDER_USE_THEME;
+pub const MAX_BORDER_WIDTH: f64 = catalog::MAX_CATALOG_BORDER_WIDTH;
+pub const MAX_BORDER_GAP: f64 = catalog::MAX_CATALOG_BORDER_GAP;
+pub const MAX_BORDER_RADIUS: f64 = catalog::MAX_CATALOG_BORDER_RADIUS;
 
 /// Underlay defaults: KDE parity (`#662a82da`, extension -1 follows border).
-pub const DEFAULT_UNDERLAY_COLOR_HEX: &str = "#662a82da";
-pub const DEFAULT_UNDERLAY_EXTENSION: f64 = -1.0;
-pub const MAX_UNDERLAY_EXTENSION: f64 = 32.0;
+/// Single source: the shared portable catalog.
+pub const DEFAULT_UNDERLAY_COLOR_HEX: &str = catalog::DEFAULT_CATALOG_UNDERLAY_COLOR;
+pub const DEFAULT_UNDERLAY_EXTENSION: f64 = catalog::DEFAULT_CATALOG_UNDERLAY_EXTENSION;
+pub const MAX_UNDERLAY_EXTENSION: f64 = catalog::MAX_CATALOG_UNDERLAY_EXTENSION;
 
 fn default_revision() -> u64 {
     1
@@ -75,49 +80,52 @@ impl std::error::Error for SettingsError {}
 /// R-MOV-03 same-axis move wire values (decisions 3.1/3.2, functional IDs
 /// 2026-10-08). Exact tokens only: no aliases, no migration; unknown or
 /// mistyped values refuse through the existing invalid-file/last-good path.
-pub const SAME_AXIS_MOVE_GROUP: &str = "group-with-neighbor";
+/// Single source: the shared portable catalog and core enum.
+pub const SAME_AXIS_MOVE_GROUP: &str = SameAxisMove::GroupWithNeighbor.as_wire_str();
 /// R-MOV-03 flat-swap alternative wire value.
-pub const SAME_AXIS_MOVE_SWAP: &str = "swap-with-neighbor";
+pub const SAME_AXIS_MOVE_SWAP: &str = SameAxisMove::SwapWithNeighbor.as_wire_str();
 /// Functional label for the default (KCM parity).
-pub const SAME_AXIS_MOVE_GROUP_LABEL: &str = "Group with neighbor";
+pub const SAME_AXIS_MOVE_GROUP_LABEL: &str = catalog::SAME_AXIS_MOVE_OPTIONS[0].label;
 /// Reference WM named by the default's tooltip (KCM parity: never a setting id).
-pub const SAME_AXIS_MOVE_GROUP_TIP: &str = "COSMIC";
+pub const SAME_AXIS_MOVE_GROUP_TIP: &str = catalog::SAME_AXIS_MOVE_OPTIONS[0].tip;
 /// Functional label for the flat-swap alternative (KCM parity).
-pub const SAME_AXIS_MOVE_SWAP_LABEL: &str = "Swap with neighbor";
+pub const SAME_AXIS_MOVE_SWAP_LABEL: &str = catalog::SAME_AXIS_MOVE_OPTIONS[1].label;
 /// Reference WMs named by the alternative's tooltip (KCM parity).
-pub const SAME_AXIS_MOVE_SWAP_TIP: &str = "i3, sway";
+pub const SAME_AXIS_MOVE_SWAP_TIP: &str = catalog::SAME_AXIS_MOVE_OPTIONS[1].tip;
 
 /// R-MAX-06 born-maximized admission wire values (user 2026-10-11, option B,
 /// cross-platform functional IDs `core.born_maximized`). Exact tokens only:
 /// no aliases, no migration; unknown or mistyped values refuse through the
 /// existing invalid-file/last-good path.
-pub const BORN_MAXIMIZED_TILE: &str = "tile-on-launch";
+/// Single source: the shared portable catalog and core enum.
+pub const BORN_MAXIMIZED_TILE: &str = BornMaximized::TileOnLaunch.as_wire_str();
 /// R-MAX-06 keep-overlay alternative wire value.
-pub const BORN_MAXIMIZED_OVERLAY: &str = "keep-maximized-overlay";
+pub const BORN_MAXIMIZED_OVERLAY: &str = BornMaximized::KeepMaximizedOverlay.as_wire_str();
 /// Functional label for the default (KCM parity).
-pub const BORN_MAXIMIZED_TILE_LABEL: &str = "Tile on launch";
+pub const BORN_MAXIMIZED_TILE_LABEL: &str = catalog::BORN_MAXIMIZED_OPTIONS[0].label;
 /// Reference WMs named by the default's tooltip (KCM parity: never a setting id).
-pub const BORN_MAXIMIZED_TILE_TIP: &str = "bspwm, i3, xmonad, sway, qtile";
+pub const BORN_MAXIMIZED_TILE_TIP: &str = catalog::BORN_MAXIMIZED_OPTIONS[0].tip;
 /// Functional label for the keep-overlay alternative (KCM parity).
-pub const BORN_MAXIMIZED_OVERLAY_LABEL: &str = "Keep maximized overlay";
+pub const BORN_MAXIMIZED_OVERLAY_LABEL: &str = catalog::BORN_MAXIMIZED_OPTIONS[1].label;
 /// Reference WMs named by the alternative's tooltip (KCM parity).
-pub const BORN_MAXIMIZED_OVERLAY_TIP: &str = "COSMIC, Hyprland";
+pub const BORN_MAXIMIZED_OVERLAY_TIP: &str = catalog::BORN_MAXIMIZED_OPTIONS[1].tip;
 
 /// R-SPC-04 D1 fixed-size admission predicate wire values (user 2026-10-08,
 /// functional IDs delivered offline; G-05 per-axis-zero user 2026-10-10).
 /// Exact tokens only: no aliases, no migration; unknown or mistyped values
 /// refuse through the existing invalid-file/last-good path.
-pub const FIXED_SIZE_BOTH_AXES: &str = "both-axes-fixed";
+/// Single source: the shared portable catalog and core enum.
+pub const FIXED_SIZE_BOTH_AXES: &str = FixedSizePredicate::BothAxes.as_wire_str();
 /// R-SPC-04 D1 either-axis alternative wire value.
-pub const FIXED_SIZE_EITHER_AXIS: &str = "either-axis-fixed";
+pub const FIXED_SIZE_EITHER_AXIS: &str = FixedSizePredicate::EitherAxis.as_wire_str();
 /// Functional label for the default (KCM parity).
-pub const FIXED_SIZE_BOTH_AXES_LABEL: &str = "Width and height both fixed";
+pub const FIXED_SIZE_BOTH_AXES_LABEL: &str = catalog::FIXED_SIZE_OPTIONS[0].label;
 /// Reference WM named by the default's tooltip (KCM parity: never a setting id).
-pub const FIXED_SIZE_BOTH_AXES_TIP: &str = "COSMIC";
+pub const FIXED_SIZE_BOTH_AXES_TIP: &str = catalog::FIXED_SIZE_OPTIONS[0].tip;
 /// Functional label for the either-axis alternative (KCM parity).
-pub const FIXED_SIZE_EITHER_AXIS_LABEL: &str = "Width or height fixed";
+pub const FIXED_SIZE_EITHER_AXIS_LABEL: &str = catalog::FIXED_SIZE_OPTIONS[1].label;
 /// Reference WMs named by the alternative's tooltip (KCM parity).
-pub const FIXED_SIZE_EITHER_AXIS_TIP: &str = "Hyprland (Wayland), sway";
+pub const FIXED_SIZE_EITHER_AXIS_TIP: &str = catalog::FIXED_SIZE_OPTIONS[1].tip;
 
 /// R-MAX-06 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
@@ -146,17 +154,19 @@ fn default_born_maximized() -> String {
 /// functional IDs delivered offline in shared core/KDE). Exact tokens only:
 /// no aliases, no migration; unknown or mistyped values refuse through the
 /// existing invalid-file/last-good path.
-pub const MIGRATION_REFILL_LAST_REMAINING: &str = "last-remaining-workspace";
+/// Single source: the shared portable catalog and core enum.
+pub const MIGRATION_REFILL_LAST_REMAINING: &str =
+    MigrationSourceRefill::LastRemaining.as_wire_str();
 /// R-WS-12e G-37 most-recently-used alternative wire value.
-pub const MIGRATION_REFILL_MRU: &str = "most-recently-used-workspace";
+pub const MIGRATION_REFILL_MRU: &str = MigrationSourceRefill::MostRecentlyUsed.as_wire_str();
 /// Functional label for the default (KCM parity).
-pub const MIGRATION_REFILL_LAST_REMAINING_LABEL: &str = "Last remaining workspace";
+pub const MIGRATION_REFILL_LAST_REMAINING_LABEL: &str = catalog::MIGRATION_REFILL_OPTIONS[0].label;
 /// Reference WM named by the default's tooltip (KCM parity: never a setting id).
-pub const MIGRATION_REFILL_LAST_REMAINING_TIP: &str = "COSMIC";
+pub const MIGRATION_REFILL_LAST_REMAINING_TIP: &str = catalog::MIGRATION_REFILL_OPTIONS[0].tip;
 /// Functional label for the most-recently-used alternative (KCM parity).
-pub const MIGRATION_REFILL_MRU_LABEL: &str = "Most recently used workspace";
+pub const MIGRATION_REFILL_MRU_LABEL: &str = catalog::MIGRATION_REFILL_OPTIONS[1].label;
 /// Reference WMs named by the alternative's tooltip (KCM parity).
-pub const MIGRATION_REFILL_MRU_TIP: &str = "bspwm, i3, awesome";
+pub const MIGRATION_REFILL_MRU_TIP: &str = catalog::MIGRATION_REFILL_OPTIONS[1].tip;
 
 /// R-MOV-03 two-choice control rows: `(wire token, functional label, WM tooltip)`.
 #[must_use]
@@ -225,23 +235,26 @@ fn default_migration_source_refill() -> String {
 /// `workspace-native.ts` parity: `per-output-local` default, `global-unique`,
 /// `shared`). Exact tokens only: no aliases, no migration; unknown or
 /// mistyped values refuse through the existing invalid-file/last-good path.
-pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL: &str = "per-output-local";
+/// Single source: the shared core workspace token constants and catalog.
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL: &str =
+    tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS[0];
 /// Item 12 global-unique alternative wire value.
-pub const WORKSPACE_MODE_GLOBAL_UNIQUE: &str = "global-unique";
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE: &str =
+    tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS[1];
 /// Item 12 shared alternative wire value.
-pub const WORKSPACE_MODE_SHARED: &str = "shared";
+pub const WORKSPACE_MODE_SHARED: &str = tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS[2];
 /// Functional label for the default.
-pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_LABEL: &str = "Per-output local";
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_LABEL: &str = catalog::WORKSPACE_MODE_OPTIONS[0].label;
 /// Functional label for the global-unique alternative.
-pub const WORKSPACE_MODE_GLOBAL_UNIQUE_LABEL: &str = "Global unique";
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE_LABEL: &str = catalog::WORKSPACE_MODE_OPTIONS[1].label;
 /// Functional label for the shared alternative.
-pub const WORKSPACE_MODE_SHARED_LABEL: &str = "Shared";
+pub const WORKSPACE_MODE_SHARED_LABEL: &str = catalog::WORKSPACE_MODE_OPTIONS[2].label;
 /// Functional scope note for the default (no WM reference established).
-pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_TIP: &str = "Each output keeps its own set";
+pub const WORKSPACE_MODE_PER_OUTPUT_LOCAL_TIP: &str = catalog::WORKSPACE_MODE_OPTIONS[0].tip;
 /// Functional scope note for the global-unique alternative.
-pub const WORKSPACE_MODE_GLOBAL_UNIQUE_TIP: &str = "Distinct sets with cross-output swap";
+pub const WORKSPACE_MODE_GLOBAL_UNIQUE_TIP: &str = catalog::WORKSPACE_MODE_OPTIONS[1].tip;
 /// Functional scope note for the shared alternative.
-pub const WORKSPACE_MODE_SHARED_TIP: &str = "One set shown across all outputs";
+pub const WORKSPACE_MODE_SHARED_TIP: &str = catalog::WORKSPACE_MODE_OPTIONS[2].tip;
 
 /// Item 12 three-choice control rows: `(wire token, functional label, scope note)`.
 #[must_use]

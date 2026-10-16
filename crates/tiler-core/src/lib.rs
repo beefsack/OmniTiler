@@ -18,6 +18,7 @@ pub mod policy;
 pub mod reconcile;
 pub mod seed;
 pub mod session;
+pub mod settings_catalog;
 pub mod size_hints;
 pub mod visual;
 pub mod window_policy;

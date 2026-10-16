@@ -13,7 +13,8 @@
 use crate::gaming::{
     APP_SETTINGS_URI, GAMEBAR_SETTINGS_URI, GamingConflict, GamingConflictKind, GamingSnapshot,
     XBOX_SETTINGS_URI, XboxConfig, gamebar_app_settings_uri, gaming_conflicts,
-    is_allowed_navigation_uri, is_gamebar_note, is_xbox_mode_note, xbox_evidence,
+    is_allowed_navigation_uri, is_gamebar_note, is_xbox_mode_note, tray_warning_conflicts,
+    xbox_evidence,
 };
 use crate::settings::Settings;
 
@@ -158,6 +159,34 @@ pub fn cleared_gaming_note(
         return Some(xbox_evidence(XboxConfig::Disabled));
     }
     None
+}
+
+/// Badge counts over every effective row for the Settings global badge:
+/// `(conflicts, warnings)`. Mirrors the tray warnings exactly
+/// ([`tray_warning_conflicts`]): known-incomplete gaming containment plus
+/// the Win+L opt-in warning while its chord stays effective, across all
+/// rows (never just the selection) and all owner kinds (never just
+/// gaming). Recognised Xbox off clears the Xbox row and takeover off
+/// silences everything (pass-through by user choice), matching
+/// [`cleared_gaming_note`]. Gaming containment notes count as conflicts;
+/// the Win+L opt-in counts as a warning.
+#[must_use]
+pub fn badge_conflict_counts(
+    settings: &Settings,
+    takeover: bool,
+    allow_win_l: bool,
+    snapshot: &GamingSnapshot,
+) -> (usize, usize) {
+    let mut conflicts = 0;
+    let mut warnings = 0;
+    for row in tray_warning_conflicts(settings, takeover, allow_win_l, snapshot) {
+        if is_gamebar_note(row.note) || is_xbox_mode_note(row.note) {
+            conflicts += 1;
+        } else {
+            warnings += 1;
+        }
+    }
+    (conflicts, warnings)
 }
 
 /// True when every action URI offered for a kind is on the navigation
@@ -499,5 +528,48 @@ mod tests {
                 Some(TAKEOVER_OFF_GAMING_NOTE)
             );
         }
+    }
+
+    #[test]
+    fn badge_counts_cover_every_row_not_just_the_selection() {
+        // Authentic draft, takeover on, Win+L opt-in off, unknown
+        // snapshot: the two gaming rows count as conflicts however the
+        // list selection sits; nothing else warns.
+        let unknown = unknown_snapshot();
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, false, &unknown),
+            (2, 0)
+        );
+        // Win+L opt-in on surfaces the lock-chord warning beside them.
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, true, &unknown),
+            (2, 1)
+        );
+        // Recognised Xbox off clears only the fullscreen conflict; the
+        // Game Bar residual and the Win+L warning stay badged.
+        let off = snapshot_with(XboxConfig::Disabled, GameBarPackage::Registered);
+        assert_eq!(
+            badge_conflict_counts(&authentic(), true, true, &off),
+            (1, 1)
+        );
+        // Takeover off silences everything: pass-through is user choice.
+        assert_eq!(
+            badge_conflict_counts(&authentic(), false, true, &unknown),
+            (0, 0)
+        );
+        // Disabling the float row drops its conflict; fullscreen still warns.
+        let mut disabled = authentic();
+        disabled.bindings.insert(
+            "toggle-float".to_owned(),
+            BindingSetting {
+                state: BindingState::Disabled,
+                chord: None,
+            },
+        );
+        assert!(validate_settings(&disabled).is_ok());
+        assert_eq!(
+            badge_conflict_counts(&disabled, true, false, &unknown),
+            (1, 0)
+        );
     }
 }

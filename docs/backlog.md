@@ -70,7 +70,16 @@ decisions of 2026-09-24 are under
   first slice builds the core catalog with tabs/sections and platform-specific
   fields, messages and native panel slots, and Windows renders a tabbed dialog
   from it using the KDE tab groups; KDE migration to the catalog follows as a
-  KDE-stream item.
+  KDE-stream item. [Windows first slice](changes/shared-settings-catalog-windows-tabs.md)
+  implemented: 17 portable fields, four Windows-only fields, four native tabs,
+  persistent feedback and scrollable long notes; physical size/keyboard/
+  accessibility and save/reload checks remain pending.
+- P1 | KDE Settings core-catalog migration | Migrate the existing native
+  Settings tabs to the shared Rust catalog using an exporter, checked-in
+  generated descriptors and a CI drift check. Preserve KConfig keys, tolerant
+  fallback, both KCM identities, settings-only packaging and native shortcut/
+  conflict operations; no generic setter may invoke Fix/Force/Revert. Follow
+  the [approved boundary](research/shared-settings-schema.md#recommended-boundary-and-compatibility).
 - P1 | Core update replies carry workspace state | User 2026-10-16: every
   change a platform reports to the core (window created/closed, workspace
   switch, send, output change) returns everything the platform must apply,
