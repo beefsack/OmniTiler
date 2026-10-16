@@ -190,7 +190,9 @@ pub struct PostedClick {
 }
 
 /// Validate a click point before any OS touch. Non-finite or negative
-/// coordinates refuse here rather than at the post boundary.
+/// coordinates refuse here rather than at the post boundary. (Live macOS
+/// legs call this; the off-macOS stub never does.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn validate_click_point(point: (f64, f64)) -> Result<(), String> {
     if !point.0.is_finite() || !point.1.is_finite() {
         return Err("refusing synthetic click at a non-finite point".to_owned());
@@ -210,7 +212,9 @@ pub(crate) fn validate_click_point(point: (f64, f64)) -> Result<(), String> {
 ///
 /// Never a Ghostty (or any foreign) event target. The click carries no
 /// key content; only the owned helper's own downstream `mouse_counts`
-/// delta proves receipt.
+/// delta proves receipt. (Live macOS legs call this; the off-macOS stub
+/// never does.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn post_mouse_click_guarded(
     target: &OwnedPostTarget,
     point: (f64, f64),
@@ -233,6 +237,7 @@ pub(crate) fn post_mouse_click_guarded(
 /// Raw HID mouse post (crate-private): only [`post_mouse_click_guarded`]
 /// calls this, after owned proof plus the fresh oracle plus bundle refusal.
 /// Untagged plain synthetic. Returns the dispatch latency around the post.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn raw_post_mouse_event(pid: u32, down: bool, point: (f64, f64)) -> Result<u64, String> {
     #[cfg(target_os = "macos")]
     {
@@ -274,6 +279,8 @@ fn raw_post_mouse_event(pid: u32, down: bool, point: (f64, f64)) -> Result<u64, 
 /// location stamps the live cursor). `None` when non-finite or off-macOS.
 /// Pointer-restore baseline only: restoring uses the eventless
 /// [`crate::ffi::warp_cursor_position`], never a synthesized move.
+/// (Live macOS legs call this; the off-macOS stub never does.)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn cursor_position() -> Option<(f64, f64)> {
     #[cfg(target_os = "macos")]
     {
