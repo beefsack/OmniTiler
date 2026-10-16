@@ -25,8 +25,10 @@ Historical implementation detail is recoverable in Git history.
   stopped over ordinary apps on each display's current user Space. Ctrl+C or
   `just dev-stop` requests bounded teardown through an exact-run control directory;
   a clean owner result, not process termination or stderr silence, proves stop.
-  Scoped finite runs remain available for focused verification. Managed Spaces,
-  borders and other effects are later work.
+  Scoped finite runs remain available for focused verification. Active-border
+  implementation and owned-fixture evidence are now available, with Space-switch
+  and physical acceptance pending; see the macOS active-border decision below.
+  Other effects remain later work.
   [Preview guide and evidence](changes/macos-dogfood-preview.md).
 - User 2026-10-14: Windows `just dev` user-accepted (including tray Stop and
   whole-desktop use); further issues become new backlog items.
@@ -2212,6 +2214,34 @@ platform API behavior.
   arrangements and topmost/style variants remain bounded follow-up checks.
   Evidence and limitations:
    `changes/archive/windows-active-border.md`.
+- **macOS active border, 2026-10-17 — Tentative (pending user review):** use a
+  public AppKit borderless, nonactivating, click-through panel on the main thread,
+  with Managed collection behavior and relative ordering above the target. Local
+  JankyBorders uses private SkyLight windows/transactions, current yabai delegates
+  borders to it, and AeroSpace has no equivalent renderer. Public cross-process
+  ordering passed the owned fixture, so the smaller public API/lifetime surface
+  is sufficient for continued evaluation; no SkyLight renderer is added.
+  Reuse `tiler-core::visual` visibility, inner geometry and theme gates: eligible
+  active floating and tiled windows, width 3, gap 0, radius 6, configured fallback
+  `#2a82da`, theme enabled. Tiling gaps remain independent. Native accent comes
+  from `NSColor.controlAccentColor` in sRGB; geometry uses AppKit points and
+  backing-scale conversion. No blanket move/animation suppression is added.
+  Observed owner facts, current Space, scope, identity, freshness and lock fences
+  must all agree before showing; unknown states hide. A 33 ms border-only dirty
+  fast path avoids the measured 253 ms cadence delay without increasing
+  topology/tiling/AX work at drag frequency. Verified later production runs had
+  maximum snapshot-to-application samples of 22–32 ms, not display-latency proof.
+  Explicit host differences: startup-only configuration rather than Windows
+  live Apply; zoom inferred from work-area axis equality for non-engine-placed
+  windows rather than native maximize flags; full-display coverage suppressed
+  regardless of placement for game safety; only scoped eligible targets in
+  scoped runs; native macOS accent/point coordinates; normal-level panel above
+  the target rather than KDE/Windows below-target rendering and Windows band
+  matching. Transient/accessory/own-app targets are excluded by the macOS
+  classifier. Physical appearance, input pass-through, fullscreen exit/return,
+  successful float/zoom suppression, Space-switch behavior, multiple displays
+  and actual games remain unproven. See
+  [implementation and evidence](changes/macos-active-border.md).
 - Group underlay (user decision 2026-10-02, accepted for now):
   `changes/group-underlay-move-trigger.md` on Windows. Show for Win+Shift hold
   (both required, either order, extra modifiers allowed) OR a matching focused

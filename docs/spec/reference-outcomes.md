@@ -103,6 +103,14 @@ These rows select no new native behavior.
 | Empty-Space product select eligibility | With A on O and empty T, run Authentic bounded preview; press Ctrl+2, Ctrl+Cmd+J, Ctrl+Cmd+Tab, Ctrl+1; verify arrival/history and basic-chord consumption/refusal on T | Offline category-gate, separate-cache wiring, consume-first drain, no-focus claim, single-dispatch/history and retained hidden-layout tests pass. Product refuses selection with zero or multiple native displays | Live tap→engine→drain, empty-Space physical navigation and MC jank TBD; only 18 existing-Space select bindings armed; index 0 and sends remain disabled |
 | Repeated trailing selection on native empty | From one native user Space, select/create trailing T; return to O; toggle back to T; request trailing again | Explicit MC AX batch read back all selections but appended a second SID. Occupancy cause was not captured at the decision boundary; zero-area candidate unknown-refusal is subsequently offline-covered only | Native active-empty reuse and chrome classification TBD; no new chrome exemption, automatic deletion or product-binding acceptance selected |
 
+### macOS active-border discriminators
+
+| Variant | Minimal action sequence | Observed evidence | Unsupported outcome |
+| --- | --- | --- | --- |
+| Active-target appearance and input | Scope TextEdit; focus disposable A then B; move/resize; click near the ring; fullscreen and exit | Owned foreign-helper fixtures prove global ordering, unchanged target focus, fullscreen hide on entry and teardown restoration. Later production snapshot-to-application maxima were 22–32 ms versus a 253 ms pre-fix sample; not display latency | Physical appearance, click delivery, perceived tracking and fullscreen exit/return TBD; [procedure](../changes/archive/macos-dogfood-hardening.md#6-active-border-appearance-and-space-check-pending-2026-10-17) |
+| Native Space switch without transfer | Focus disposable A on O; switch to adjacent existing T without sending A; return to O | Same-Space teardown restoration only. A window-transfer no-effect result is not a Space-switch test | Ring absence on T, eligible return on O, focus and multi-display attribution TBD |
+| Floating zoom suppression | Successfully float A; verify float state; zoom to work area; restore; retile | Pure plan-membership/zoom tests pass. Synthetic toggle inputs were posted and merged, but neither an actual float nor a maximize transition was established | Live float/zoom suppression TBD; rejected float must not be treated as actual floating or override retained plan truth |
+
 ### KDE directional transfer settlement discriminator
 
 | Variant | Minimal action sequence | Observed KDE outcome | Unsupported outcome / next discriminator |

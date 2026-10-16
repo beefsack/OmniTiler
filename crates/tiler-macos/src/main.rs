@@ -695,17 +695,18 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             excluded,
             log,
             run_dir,
+            border,
         } => {
             // Tile session: explicit start + product selection validated
             // inside; tap product route, Authentic/Compatible preset.
-            // Modifier/preset resolve CLI-over-settings-file (an explicitly
-            // passed CLI flag wins, else the tentative user settings file,
-            // else the built-in default); file exclusions apply to unscoped
-            // runs only. A malformed file fails closed (never a silent
-            // fallback). Every terminal result also persists to the run
-            // directory's `outcome.json` when `--run-dir` was passed, so an
-            // exact-run launcher observes completion without process
-            // attribution. LaunchServices launch via the `just tile` /
+            // Modifier/preset/border resolve CLI-over-settings-file (an
+            // explicitly passed CLI flag wins, else the tentative user
+            // settings file, else the built-in default); file exclusions
+            // apply to unscoped runs only. A malformed file fails closed
+            // (never a silent fallback). Every terminal result also persists
+            // to the run directory's `outcome.json` when `--run-dir` was
+            // passed, so an exact-run launcher observes completion without
+            // process attribution. LaunchServices launch via the `just tile` /
             // `just dev` recipes. Shutdown is bounded and windows stay in
             // place (never restored).
             let write_refused = |reason: &str| {
@@ -733,6 +734,14 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 write_refused(&reason);
                 (2, reason)
             })?;
+            let border = tiler_macos::dev_selection::resolve_border_config(
+                &border,
+                file.active_border.as_ref(),
+            )
+            .map_err(|reason| {
+                write_refused(&reason);
+                (2, reason)
+            })?;
             let request = tiler_macos::tile::TileRequest {
                 user_start,
                 scopes,
@@ -744,6 +753,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 excluded: resolved.excluded,
                 log,
                 run_dir: run_dir.clone(),
+                border,
             };
             tiler_macos::tile::run_tile(request).map_err(|(code, body)| {
                 // Validation refusals carry plain text (not JSON): persist
@@ -761,6 +771,10 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             seconds,
             allow_untested,
         } => tiler_macos::session::run_spaces_session(seconds, allow_untested),
+        Command::BorderSession {
+            seconds,
+            regular_policy,
+        } => tiler_macos::border_session::run_border_session(seconds, regular_policy),
         Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
         Command::McLifecycle {
             seconds,

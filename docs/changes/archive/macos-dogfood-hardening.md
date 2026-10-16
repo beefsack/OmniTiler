@@ -277,6 +277,37 @@ test text, verify baseline geometry/membership and leave existing Spaces/setting
 untouched. These two basic/fullscreen legs do not Apply settings, so require no
 Revert. Report changed/unchanged text only, not document content.
 
+### 6. Active-border appearance and Space check (pending, 2026-10-17)
+
+Use two disposable TextEdit documents; note their starting frames and Space.
+Leave unrelated windows, existing Spaces, settings and permissions unchanged.
+Build/verify the signed app and require `ax_trusted:true` from preflight:
+
+```sh
+mise exec -- just app 'OmniTiler Mac Dev'
+mise exec -- just verify
+mise exec -- just preflight-app
+mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 60
+```
+
+Focus A then B: one thin accent-coloured ring should follow focus. Move and
+corner-resize the focused window; judge tracking feel, width and rounded corners.
+Click normally near its edge and in the document: clicks must reach TextEdit,
+not the ring. Fullscreen the disposable document with its green button: the ring
+must hide; exit and check its return. Switch to an adjacent existing Space and
+back without moving the document: the ring must not remain on the other Space
+and must return only for an eligible focused target. If no adjacent Space exists,
+report that cell untested; do not create one for this short check. Repeat the
+bounded command for separate legs if needed; do not infer any result after its
+60-second lifetime.
+
+Wait for the clean bounded outcome and verify the ring is gone. Restore the
+documents' baseline frames/membership, then close only those disposable documents.
+No settings were applied, so no Revert is required. Report focus agreement,
+appearance/tracking, click delivery, fullscreen return and Space outcome
+separately; API flag readbacks are not physical acceptance. Real games and
+multi-display checks remain separate follow-ups.
+
 ## User physical results 2026-10-16
 
 User-run on one display, following the script above.

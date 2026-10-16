@@ -45,6 +45,19 @@ Command). Focus uses modifier+H/J/K/L or arrows; move adds Shift; float toggle
 is modifier+G. No native settings are changed. Shift alone cannot distinguish the focus/move arms and is
 rejected for this catalogue.
 
+The focused window also gets an active border (on by default): a
+nonactivating click-through ring ordered above it with the live system
+accent, hidden on fullscreen/zoom/minimize/Space-departure/lock and on any
+unknown state. Scoped runs decorate only in-scope apps; unscoped runs
+decorate ordinary apps through the same product gate. Tune it with
+`--no-active-border`, `--active-border-width 0..=32` (default 3),
+`--active-border-gap 0..=64` (default 0), `--active-border-radius 0..=64`
+(default 6), `--active-border-color #rrggbb` (fallback `#2a82da`), and
+`--active-border-theme` / `--no-active-border-theme` (default on); the same
+keys live under the `"active_border"` object in
+`~/Library/Application Support/OmniTiler/settings.json`, with CLI winning
+per field. Border configuration is startup-only.
+
 The separately signed `OmniTilerProbeHelper.app` has bundle ID
 `io.github.omnitiler.macos.probe.helper`; it can join an explicit helper scope
 when launched through LaunchServices with its bounded nonce arguments. The

@@ -169,6 +169,10 @@ pub enum Command {
         seconds: u64,
         allow_untested: bool,
     },
+    BorderSession {
+        seconds: u64,
+        regular_policy: bool,
+    },
     McInspect,
     SpacesGrabDiagnose,
     CgInspect,
@@ -224,6 +228,9 @@ pub enum Command {
         /// foreground launcher): the owner polls `<dir>/stop-requested`
         /// and publishes its terminal outcome to `<dir>/outcome.json`.
         run_dir: Option<String>,
+        /// Raw active-border selections (all unset = defaults; the settings
+        /// file fills the gaps in `main`, then startup config).
+        border: crate::dev_selection::BorderCli,
     },
     ScopeInspect {
         scopes: Vec<String>,
@@ -314,6 +321,11 @@ pub fn help_text() -> String {
             \x20 \x20 the exact supported chords while running, compatible leaves known\n\
             \x20 \x20 conflicting chords (unshifted Ctrl+arrows under the Ctrl meta) to macOS;\n\
            \x20 \x20 modifier/preset/exclusions resolve CLI-over-settings-file;\n\
+           \x20 \x20 active border on by default: [--no-active-border] [--active-border-width 0..=32]\n\
+           \x20 \x20 [--active-border-gap 0..=64] [--active-border-radius 0..=64]\n\
+           \x20 \x20 [--active-border-color #rrggbb] [--active-border-theme|--no-active-border-theme]\n\
+           \x20 \x20 (width 3, gap 0, radius 6, fallback #2a82da, theme on; border config\n\
+           \x20 \x20 resolves CLI-over-settings-file like modifier/preset);\n\
            \x20 \x20 --run-dir DIR opts into exact-run lifecycle (stop file\n\
            \x20 \x20 polled every cadence, terminal outcome published to\n\
            \x20 \x20 DIR/outcome.json);\n\
@@ -430,6 +442,14 @@ pub fn help_text() -> String {
            \x20 \x20 (single bounded Child-holder session: lifecycle proofs, CG identity,\n\
            \x20 \x20 membership/topology/permission readbacks; dispatches no Space writes;\n\
            \x20 \x20 never cross-command title auth)\n\
+           \x20 border-session [--seconds N] [--regular-policy]\n\
+           \x20 \x20 (bounded cross-process carrier fixture, default 60s, 30..=120s\n\
+           \x20 \x20 real deadline: owned carrier panel here plus a SEPARATE owned\n\
+           \x20 \x20 helper target; proves global CG ordering, frame tracking,\n\
+           \x20 \x20 focus isolation (helper-only activation), fence hide/restore,\n\
+           \x20 \x20 foreign-fullscreen hide and verified teardown; --regular-policy\n\
+           \x20 \x20 opts the HELPER into regular activation; no taps, no Space\n\
+           \x20 \x20 writes, no synthetic keys, click-through parked)\n\
             \x20 mc-inspect\n\
             \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
             \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
@@ -1460,6 +1480,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut excluded: Vec<String> = Vec::new();
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
+            let mut border = crate::dev_selection::BorderCli::default();
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1503,6 +1524,47 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         j += 1;
                         run_dir = Some(args.get(j).ok_or("--run-dir needs a value")?.clone());
                     }
+                    "--no-active-border" => {
+                        border.enabled = Some(false);
+                    }
+                    "--active-border-width" => {
+                        j += 1;
+                        border.width = Some(
+                            args.get(j)
+                                .ok_or("--active-border-width needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--active-border-gap" => {
+                        j += 1;
+                        border.gap = Some(
+                            args.get(j)
+                                .ok_or("--active-border-gap needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--active-border-radius" => {
+                        j += 1;
+                        border.radius = Some(
+                            args.get(j)
+                                .ok_or("--active-border-radius needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--active-border-color" => {
+                        j += 1;
+                        border.color = Some(
+                            args.get(j)
+                                .ok_or("--active-border-color needs a value")?
+                                .clone(),
+                        );
+                    }
+                    "--active-border-theme" => {
+                        border.use_theme = Some(true);
+                    }
+                    "--no-active-border-theme" => {
+                        border.use_theme = Some(false);
+                    }
                     other => return Err(format!("tile: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -1518,6 +1580,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 excluded,
                 log,
                 run_dir,
+                border,
             }
         }
         "spaces-session" => {
@@ -1541,6 +1604,35 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             Command::SpacesSession {
                 seconds,
                 allow_untested,
+            }
+        }
+        "border-session" => {
+            // Bounded cross-process carrier fixture: the owned AppKit
+            // carrier lives on the calling (main) thread while a SEPARATE
+            // owned helper process owns the target window. `--seconds`
+            // (default 60, 30..=120) is the enforced real deadline, and
+            // `--regular-policy` opts the HELPER into regular activation
+            // (the controller stays accessory/nonactivating).
+            let mut seconds = crate::border_session::DEFAULT_BORDER_SECONDS;
+            let mut regular_policy = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--regular-policy" => {
+                        regular_policy = true;
+                    }
+                    other => return Err(format!("border-session: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::BorderSession {
+                seconds,
+                regular_policy,
             }
         }
         "mc-inspect" => {

@@ -3622,8 +3622,12 @@ decisions of 2026-09-24 are under
       fullscreen refusal and empty-Space select/basic distinction.
       [Evidence](changes/archive/macos-consume-first-input.md) and
       [bounded procedure](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
-  3. Effects (KDE/Windows parity): active border, group underlay, drag/drop
-     overlays.
+   3. Effects (KDE/Windows parity): active border implemented with owned-fixture
+      ordering/focus/fullscreen-hide/teardown evidence and offline gates passing;
+      **acceptance pending** for Space switching, physical appearance/input,
+      fullscreen return, float/zoom, multi-display and games.
+      [Evidence and bounded procedure](changes/macos-active-border.md).
+      Group underlay and drag/drop overlays remain next.
   4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by
      AeroSpace's all-workspaces-visible numbered mode; explore showing app icons
      per workspace within the limited space.

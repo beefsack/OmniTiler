@@ -5010,6 +5010,415 @@ mod macos {
         Ok(())
     }
 
+    // -- Active-border carrier fixture (public AppKit only, main thread) --
+    //
+    // Minimal reusable carrier: a borderless, nonactivating, click-through
+    // `NSPanel` whose content view strokes the ring on the main thread
+    // (`drawRect:`, no `CALayer` tree), ordered relative to its target with
+    // public `orderWindow:relativeTo:`. Collection behavior is explicitly
+    // `Managed` (never `CanJoinAllSpaces` / `FullScreenAuxiliary`), so the
+    // carrier cannot draw over unrelated fullscreen/games: fullscreen and
+    // Space departure hide it via the shared `active_border` fence plus an
+    // explicit `orderOut:`. No SkyLight rendering anywhere here.
+
+    #[repr(C)]
+    struct BorderRingIvars {
+        // f64 bit patterns: `update` restyles without recreating the view.
+        width_bits: std::sync::atomic::AtomicU64,
+        radius_bits: std::sync::atomic::AtomicU64,
+        r_bits: std::sync::atomic::AtomicU64,
+        g_bits: std::sync::atomic::AtomicU64,
+        b_bits: std::sync::atomic::AtomicU64,
+        draws: std::sync::atomic::AtomicU64,
+    }
+
+    impl BorderRingIvars {
+        fn new(width: f64, radius: f64, r: f64, g: f64, b: f64) -> Self {
+            use std::sync::atomic::AtomicU64;
+            Self {
+                width_bits: AtomicU64::new(width.to_bits()),
+                radius_bits: AtomicU64::new(radius.to_bits()),
+                r_bits: AtomicU64::new(r.to_bits()),
+                g_bits: AtomicU64::new(g.to_bits()),
+                b_bits: AtomicU64::new(b.to_bits()),
+                draws: AtomicU64::new(0),
+            }
+        }
+
+        fn store(&self, width: f64, radius: f64, r: f64, g: f64, b: f64) {
+            use std::sync::atomic::Ordering;
+            self.width_bits.store(width.to_bits(), Ordering::Relaxed);
+            self.radius_bits.store(radius.to_bits(), Ordering::Relaxed);
+            self.r_bits.store(r.to_bits(), Ordering::Relaxed);
+            self.g_bits.store(g.to_bits(), Ordering::Relaxed);
+            self.b_bits.store(b.to_bits(), Ordering::Relaxed);
+        }
+
+        fn load(&self) -> (f64, f64, f64, f64, f64) {
+            use std::sync::atomic::Ordering;
+            (
+                f64::from_bits(self.width_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.radius_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.r_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.g_bits.load(Ordering::Relaxed)),
+                f64::from_bits(self.b_bits.load(Ordering::Relaxed)),
+            )
+        }
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (same shape as
+    // `DisplayChangeIvars` above); never dereferenced as an ObjC object.
+    unsafe impl objc2::Encode for BorderRingIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSView` subclass with no subclassing requirements beyond
+        // the two drawing overrides below; no `Drop`; `drawRect:` strokes one
+        // rounded rect only (no layout, no logging, no panics).
+        #[unsafe(super(objc2_app_kit::NSView))]
+        #[thread_kind = objc2::MainThreadOnly]
+        #[ivars = Box<BorderRingIvars>]
+        struct BorderRingView;
+
+        // SAFETY: signatures match `isOpaque` and `drawRect:` exactly.
+        impl BorderRingView {
+            #[unsafe(method(isOpaque))]
+            fn is_opaque(&self) -> bool {
+                false
+            }
+
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _dirty: objc2_foundation::NSRect) {
+                use std::sync::atomic::Ordering;
+                self.ivars().draws.fetch_add(1, Ordering::Relaxed);
+                let (width, radius, r, g, b) = self.ivars().load();
+                if width <= 0.0 {
+                    return;
+                }
+                let bounds = self.bounds();
+                let inset = width / 2.0;
+                let w = (bounds.size.width - 2.0 * inset).max(0.0);
+                let h = (bounds.size.height - 2.0 * inset).max(0.0);
+                let rect = objc2_foundation::NSRect::new(
+                    objc2_foundation::NSPoint::new(
+                        bounds.origin.x + inset,
+                        bounds.origin.y + inset,
+                    ),
+                    objc2_foundation::NSSize::new(w, h),
+                );
+                let color =
+                    objc2_app_kit::NSColor::colorWithCalibratedRed_green_blue_alpha(
+                        r, g, b, 1.0,
+                    );
+                color.set();
+                let path =
+                    objc2_app_kit::NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                        rect, radius, radius,
+                    );
+                path.setLineWidth(width);
+                path.stroke();
+            }
+        }
+    }
+
+    // -- Reusable active-border carrier (public AppKit only, main thread) --
+    //
+    // A borderless, nonactivating, click-through `NSPanel` whose content view
+    // strokes the ring on the main thread (`drawRect:`, no `CALayer` tree),
+    // ordered relative to its target with public `orderWindow:relativeTo:`.
+    // Collection behavior is explicitly `Managed` (never `CanJoinAllSpaces` /
+    // `FullScreenAuxiliary`), so the carrier cannot draw over unrelated
+    // fullscreen/games: fullscreen and Space departure hide it via the shared
+    // `active_border` fence plus an explicit `orderOut:`. No SkyLight
+    // rendering anywhere here. The bounded fixture holder
+    // (`crate::border_session`) owns one handle per run; future
+    // group-underlay/drop-overlay work reuses this handle, never a copy.
+
+    /// Live system accent from the native source
+    /// (`NSColor.controlAccentColor`, resolved to sRGB): RGB plus the
+    /// quantized alpha byte the shared core theme gate consumes. `None` off
+    /// the main thread, when the color-space conversion fails, or for
+    /// non-finite components: the caller falls back to the configured colour
+    /// (see `effective_color`). The ring always strokes an opaque calibrated
+    /// colour; the accent alpha feeds the theme gate only, never the ring.
+    pub fn border_system_accent() -> Option<crate::active_border::SystemAccent> {
+        let _mtm = objc2::MainThreadMarker::new()?;
+        let accent = objc2_app_kit::NSColor::controlAccentColor();
+        let srgb = objc2_app_kit::NSColorSpace::sRGBColorSpace();
+        let rgb = accent.colorUsingColorSpace(&srgb)?;
+        let (r, g, b, a) = (
+            rgb.redComponent(),
+            rgb.greenComponent(),
+            rgb.blueComponent(),
+            rgb.alphaComponent(),
+        );
+        if ![r, g, b, a].iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let byte = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Some(crate::active_border::SystemAccent {
+            color: (byte(r), byte(g), byte(b)),
+            alpha: byte(a),
+        })
+    }
+
+    /// Measured carrier flags: API readbacks, never desired-state claims.
+    /// `ignores_mouse` alone is NOT physical click-through proof (the real
+    /// click check stays parked until a helper click-receipt channel exists);
+    /// it is reported so the fixture never claims more than the API shows.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BorderCarrierFlags {
+        /// `ignoresMouseEvents` readback (must be true).
+        pub ignores_mouse: bool,
+        /// `canBecomeKeyWindow` readback (must be false).
+        pub can_key: bool,
+        /// `canBecomeMainWindow` readback (must be false).
+        pub can_main: bool,
+        /// Collection behavior holds `Managed` and neither
+        /// `CanJoinAllSpaces` nor `FullScreenAuxiliary`.
+        pub collection_managed_only: bool,
+        /// Window level (expected `Normal` = 0).
+        pub level: i64,
+    }
+
+    /// Reusable active-border carrier handle: create/update/hide/destroy over
+    /// one owned `NSPanel`.
+    ///
+    /// Main-thread confinement is structural, not conventional: every method
+    /// that touches AppKit takes a [`objc2::MainThreadMarker`] (unforgeable
+    /// off the main thread), and the held `Retained<NSPanel>` is `!Send +
+    /// !Sync` (`NSWindow` is `MainThreadOnly`), so the handle cannot leave
+    /// the creating thread. There is deliberately no `Drop` impl: teardown
+    /// is the explicit [`BorderCarrier::destroy`], which consumes the handle
+    /// so no AppKit call can follow the close.
+    pub struct BorderCarrier {
+        panel: objc2::rc::Retained<objc2_app_kit::NSPanel>,
+        ring: objc2::rc::Retained<BorderRingView>,
+        mtm: objc2::MainThreadMarker,
+    }
+
+    impl BorderCarrier {
+        /// Create the carrier for `outer` (AppKit points, global coordinates)
+        /// with `style` and the live `accent`. The panel starts hidden; the
+        /// caller shows it with [`BorderCarrier::show_above`]. Fails closed
+        /// on non-finite or degenerate geometry.
+        pub fn create(
+            mtm: objc2::MainThreadMarker,
+            style: &crate::active_border::ActiveBorderStyle,
+            outer: tiler_core::visual::VisualRect,
+            accent: Option<crate::active_border::SystemAccent>,
+            title: &str,
+        ) -> Result<Self, String> {
+            use objc2_app_kit::{
+                NSBackingStoreType, NSPanel, NSWindowCollectionBehavior, NSWindowStyleMask,
+            };
+            use objc2_foundation::NSString;
+            if ![outer.x, outer.y, outer.w, outer.h]
+                .iter()
+                .all(|v| v.is_finite())
+                || outer.w <= 0.0
+                || outer.h <= 0.0
+            {
+                return Err("carrier outer rect refused: non-finite or degenerate".to_owned());
+            }
+            let color = crate::active_border::effective_color(style, accent);
+            // The maintained `initWithContentRect` wrapper is safe; only raw
+            // `alloc`/class-definition sites need `unsafe`. Fresh `alloc()`
+            // on the main thread; no pointer escapes, only this handle
+            // retains the panel.
+            let panel: objc2::rc::Retained<NSPanel> =
+                NSPanel::initWithContentRect_styleMask_backing_defer(
+                    mtm.alloc::<NSPanel>(),
+                    border_nsrect((outer.x, outer.y, outer.w, outer.h)),
+                    NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                    NSBackingStoreType(2),
+                    false,
+                );
+            panel.setTitle(&NSString::from_str(title));
+            panel.setIgnoresMouseEvents(true);
+            panel.setOpaque(false);
+            panel.setHasShadow(false);
+            panel.setBackgroundColor(Some(&objc2_app_kit::NSColor::clearColor()));
+            panel.setCollectionBehavior(NSWindowCollectionBehavior::Managed);
+            // SAFETY: `alloc` + direct ivars + superclass `initWithFrame:`
+            // (the `define_class!` doc shape); the view lives as the
+            // carrier's content view until `destroy`. Main-thread-only
+            // allocation via the marker (this class is `MainThreadOnly`, so
+            // bare `alloc()` is unavailable by design).
+            let ring: objc2::rc::Retained<BorderRingView> = unsafe {
+                let allocated =
+                    mtm.alloc::<BorderRingView>()
+                        .set_ivars(Box::new(BorderRingIvars::new(
+                            style.width,
+                            style.radius,
+                            f64::from(color.0) / 255.0,
+                            f64::from(color.1) / 255.0,
+                            f64::from(color.2) / 255.0,
+                        )));
+                objc2::msg_send![super(allocated), initWithFrame: border_nsrect((0.0, 0.0, outer.w, outer.h))]
+            };
+            panel.setContentView(Some(ring.as_ref()));
+            Ok(Self { panel, ring, mtm })
+        }
+
+        /// Show above `target_wid` (public ordering; never activation). The
+        /// window number may belong to a foreign process: cross-process
+        /// relative ordering is NOT assumed — the caller must read back the
+        /// global CG order (see [`cg_carrier_above_target`]).
+        pub fn show_above(&self, _mtm: objc2::MainThreadMarker, target_wid: isize) {
+            self.panel.orderFront(None);
+            self.panel
+                .orderWindow_relativeTo(objc2_app_kit::NSWindowOrderingMode::Above, target_wid);
+        }
+
+        /// Move and/or restyle the carrier: frame set plus ring restyle and
+        /// redisplay. Fails closed on degenerate geometry (the previous frame
+        /// is kept, never a guessed clamp).
+        pub fn update(
+            &self,
+            _mtm: objc2::MainThreadMarker,
+            style: &crate::active_border::ActiveBorderStyle,
+            outer: tiler_core::visual::VisualRect,
+            accent: Option<crate::active_border::SystemAccent>,
+        ) -> Result<(), String> {
+            if ![outer.x, outer.y, outer.w, outer.h]
+                .iter()
+                .all(|v| v.is_finite())
+                || outer.w <= 0.0
+                || outer.h <= 0.0
+            {
+                return Err("carrier update refused: non-finite or degenerate outer".to_owned());
+            }
+            let color = crate::active_border::effective_color(style, accent);
+            self.panel
+                .setFrame_display(border_nsrect((outer.x, outer.y, outer.w, outer.h)), true);
+            self.ring.ivars().store(
+                style.width,
+                style.radius,
+                f64::from(color.0) / 255.0,
+                f64::from(color.1) / 255.0,
+                f64::from(color.2) / 255.0,
+            );
+            self.ring.setNeedsDisplay(true);
+            Ok(())
+        }
+
+        /// Fence hide: `orderOut:` (the caller reads back `is_visible`).
+        pub fn hide(&self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderOut(None);
+        }
+
+        /// Main-thread marker proof for pump-gated legs (the handle already
+        /// confines to the creating thread; this re-proves it cheaply).
+        pub fn main_thread(&self) -> objc2::MainThreadMarker {
+            self.mtm
+        }
+
+        /// Current carrier frame in AppKit points (global coordinates).
+        pub fn frame_points(&self) -> (f64, f64, f64, f64) {
+            frame_tuple(self.panel.frame())
+        }
+
+        /// Backing-pixel rect of the current frame at the target screen's
+        /// `backingScaleFactor`: target-coordinate points and backing scale
+        /// stay explicit at every readback, never mixed. `None` refuses.
+        pub fn backing_rect(&self, scale: f64) -> Option<crate::active_border::BackingRect> {
+            let (x, y, w, h) = self.frame_points();
+            crate::active_border::points_to_backing(
+                tiler_core::visual::VisualRect { x, y, w, h },
+                scale,
+            )
+        }
+
+        /// `isVisible` readback.
+        pub fn is_visible(&self) -> bool {
+            self.panel.isVisible()
+        }
+
+        /// Carrier window number for CG joins.
+        pub fn window_number(&self) -> i64 {
+            self.panel.windowNumber() as i64
+        }
+
+        /// Ring `drawRect:` dispatches so far (stroke-path execution proof;
+        /// not pixel proof).
+        pub fn draws(&self) -> u64 {
+            use std::sync::atomic::Ordering;
+            self.ring.ivars().draws.load(Ordering::Relaxed)
+        }
+
+        /// Static flag readbacks (honest API evidence, not claims).
+        pub fn flags(&self) -> BorderCarrierFlags {
+            use objc2_app_kit::NSWindowCollectionBehavior;
+            let behavior = self.panel.collectionBehavior();
+            BorderCarrierFlags {
+                ignores_mouse: self.panel.ignoresMouseEvents(),
+                can_key: self.panel.canBecomeKeyWindow(),
+                can_main: self.panel.canBecomeMainWindow(),
+                collection_managed_only: behavior.contains(NSWindowCollectionBehavior::Managed)
+                    && !behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces)
+                    && !behavior.contains(NSWindowCollectionBehavior::FullScreenAuxiliary),
+                level: self.panel.level() as i64,
+            }
+        }
+
+        /// Verified teardown: hide plus close. Consumes the handle so no
+        /// AppKit call can follow the close.
+        pub fn destroy(self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderOut(None);
+            self.panel.close();
+        }
+    }
+
+    fn border_nsrect(frame: (f64, f64, f64, f64)) -> objc2_foundation::NSRect {
+        objc2_foundation::NSRect::new(
+            objc2_foundation::NSPoint::new(frame.0, frame.1),
+            objc2_foundation::NSSize::new(frame.2, frame.3),
+        )
+    }
+
+    fn frame_tuple(rect: objc2_foundation::NSRect) -> (f64, f64, f64, f64) {
+        (
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        )
+    }
+
+    /// Relative-ordering verdict over one CG snapshot ACROSS processes: both
+    /// window numbers must be present globally — no owner/PID filtering, the
+    /// carrier and its target live in different processes — and the carrier
+    /// must precede the target in list order (the list is front-to-back).
+    /// Foreign windows anywhere (above, below, or between the pair) move the
+    /// indices but never change the pairwise verdict. Returns the verdict
+    /// plus both global indices for transparency. A same-app subsequence
+    /// verdict is deliberately NOT offered: it cannot evidence
+    /// foreign-window ordering.
+    pub fn cg_carrier_above_target(
+        windows: &[CgWindow],
+        carrier_wid: isize,
+        target_wid: isize,
+    ) -> (bool, isize, isize) {
+        let (Ok(carrier), Ok(target)) = (u32::try_from(carrier_wid), u32::try_from(target_wid))
+        else {
+            return (false, -1, -1);
+        };
+        let mut carrier_idx: isize = -1;
+        let mut target_idx: isize = -1;
+        for (i, w) in windows.iter().enumerate() {
+            if w.wid == carrier && carrier_idx < 0 {
+                carrier_idx = i as isize;
+            }
+            if w.wid == target && target_idx < 0 {
+                target_idx = i as isize;
+            }
+        }
+        let above = carrier_idx >= 0 && target_idx >= 0 && carrier_idx < target_idx;
+        (above, carrier_idx, target_idx)
+    }
+
     // -- Bounded event tap (trusted core-graphics wrapper) --
 
     struct TapShared {
@@ -6405,18 +6814,19 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
-    CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts,
-    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
-    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
-    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
-    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
+    BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
+    DisplayRect, HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer,
+    SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow,
+    SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, activate_app,
+    activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute,
+    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_display_uuid,
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
     drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled,
     hotkey_spi_available, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
@@ -7099,8 +7509,56 @@ mod stub {
         Err("owned probe window is macOS-only".to_owned())
     }
 
-    /// Stub downstream key-delivery counters (always zero off-macOS).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    /// Stub carrier handle (macOS-only fixture): unconstructible off-macOS.
+    pub struct BorderCarrier {
+        _priv: (),
+    }
+
+    /// Stub carrier flags (macOS-only fixture).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct BorderCarrierFlags {
+        /// `ignoresMouseEvents` readback.
+        pub ignores_mouse: bool,
+        /// `canBecomeKeyWindow` readback.
+        pub can_key: bool,
+        /// `canBecomeMainWindow` readback.
+        pub can_main: bool,
+        /// Collection behavior holds Managed only.
+        pub collection_managed_only: bool,
+        /// Window level.
+        pub level: i64,
+    }
+
+    pub fn border_system_accent() -> Option<crate::active_border::SystemAccent> {
+        None
+    }
+
+    /// Pure global pairwise ordering (same semantics as the macOS leg; no
+    /// owner filtering on either platform).
+    pub fn cg_carrier_above_target(
+        windows: &[CgWindow],
+        carrier_wid: isize,
+        target_wid: isize,
+    ) -> (bool, isize, isize) {
+        let (Ok(carrier), Ok(target)) = (u32::try_from(carrier_wid), u32::try_from(target_wid))
+        else {
+            return (false, -1, -1);
+        };
+        let mut carrier_idx: isize = -1;
+        let mut target_idx: isize = -1;
+        for (i, w) in windows.iter().enumerate() {
+            if w.wid == carrier && carrier_idx < 0 {
+                carrier_idx = i as isize;
+            }
+            if w.wid == target && target_idx < 0 {
+                target_idx = i as isize;
+            }
+        }
+        let above = carrier_idx >= 0 && target_idx >= 0 && carrier_idx < target_idx;
+        (above, carrier_idx, target_idx)
+    }
+
+    /// Stub downstream key-delivery counters (always zero off-macOS).    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct KeyCounts {
         pub h_down: [u64; 16],
         pub h_up: [u64; 16],
@@ -7149,18 +7607,19 @@ mod stub {
 
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
-    AxElement, AxFrame, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard, DisplayRect,
-    HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
-    SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
-    TapHit, TapPump, TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
-    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
+    AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
+    DisplayChangeGuard, DisplayRect, HotkeySpi, KeyCounts, NsAppIdentity, NsDisplay,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
+    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
+    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_display_uuid,
     cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
     frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
     install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
@@ -7631,6 +8090,65 @@ mod tests {
         let _ = sls_display_rows();
         let _ = cg_display_uuid(1);
         let _ = ns_separate_spaces();
+    }
+
+    #[test]
+    fn cg_relative_order_is_global_across_pids() {
+        // Cross-process verdict: the carrier (controller PID) and the target
+        // (helper PID) compare by GLOBAL front-to-back index only. No owner
+        // filtering exists: a same-app subsequence verdict cannot evidence
+        // foreign-window ordering, so none is offered.
+        let window = |wid: u32, pid: u32| CgWindow {
+            wid,
+            pid,
+            layer: 0,
+            onscreen: true,
+            bounds: CgBounds {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            title: None,
+        };
+        let controller = 4242;
+        let helper = 4243;
+        let foreign = 9999;
+        // Carrier globally before the target despite foreign windows between
+        // the pair: above.
+        let list = vec![
+            window(100, foreign),
+            window(9, controller),
+            window(101, foreign),
+            window(102, foreign),
+            window(7, helper),
+        ];
+        let (above, gc, gt) = cg_carrier_above_target(&list, 9, 7);
+        assert!(above);
+        assert_eq!((gc, gt), (1, 4));
+        // Target globally before the carrier (helper foregrounded past the
+        // carrier): not above, even though each PID's own subsequence is
+        // trivially ordered.
+        let list = vec![
+            window(100, foreign),
+            window(7, helper),
+            window(101, foreign),
+            window(102, foreign),
+            window(103, foreign),
+            window(104, foreign),
+            window(105, foreign),
+            window(106, foreign),
+            window(9, controller),
+        ];
+        let (above, gc, gt) = cg_carrier_above_target(&list, 9, 7);
+        assert!(!above);
+        assert_eq!((gc, gt), (8, 1));
+        // Missing carrier, missing target, and empty list fail closed.
+        assert!(!cg_carrier_above_target(&[window(7, helper)], 9, 7).0);
+        assert!(!cg_carrier_above_target(&[window(9, controller)], 9, 7).0);
+        assert!(!cg_carrier_above_target(&[], 9, 7).0);
+        // Non-positive window numbers never match.
+        assert!(!cg_carrier_above_target(&list, -1, 7).0);
     }
 
     #[test]

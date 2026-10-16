@@ -25,8 +25,11 @@
 //! closed. Mutating Space operations report explicit unsupported status
 //! (proven recovery not demonstrated); no guessed SLS writes or injection.
 
+pub mod active_border;
 pub mod ax;
 pub mod ax_session;
+pub mod border_runtime;
+pub mod border_session;
 pub mod cg;
 pub mod classifier;
 pub mod cli;

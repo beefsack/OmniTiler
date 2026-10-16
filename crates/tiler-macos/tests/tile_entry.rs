@@ -334,6 +334,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         excluded,
         log,
         run_dir,
+        border: _,
     } = parsed.command
     else {
         panic!("expected tile, got {:?}", parsed.command);
@@ -349,6 +350,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         excluded,
         log,
         run_dir,
+        border: tiler_macos::active_border::ActiveBorderOptions::default(),
     }
 }
 

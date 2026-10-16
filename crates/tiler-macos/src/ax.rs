@@ -802,6 +802,178 @@ pub fn set_frame_owned(
     }
 }
 
+/// Persistent frame-write outcome for one owned window: the preimage, the
+/// attempted frame, the observed applied readback, and whether it matched
+/// exactly. Unlike [`set_frame_owned`] there is deliberately NO restore:
+/// the caller owns cleanup (the bounded border fixture destroys the
+/// disposable helper at teardown and proves zero CG residue). Every path
+/// before the first write refuses with no mutation; every path after it
+/// retains the preimage evidence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersistentFrameReport {
+    pub pid: u32,
+    pub wid: u32,
+    pub preimage: crate::ffi::AxFrame,
+    pub attempted: crate::ffi::AxFrame,
+    pub applied: Option<crate::ffi::AxFrame>,
+    pub matched: bool,
+}
+
+/// App-thread body for [`set_frame_owned_persistent`]. Same gates and
+/// handle discipline as [`set_frame_owned`] (live-bundle gate, entry
+/// revalidation, fresh CG WID join, per-leg messaging timeouts) but the
+/// applied frame is LEFT in place: no restore write follows the applied
+/// readback. Runs ONLY on the dedicated per-app AX worker.
+#[cfg(target_os = "macos")]
+/// `live_bundle` is resolved by the CALLER and threaded in as plain data:
+/// `NSWorkspace` table reads off the main runloop thread are unreliable
+/// (stale/empty snapshots misfire the direct-spawn fallback), so workers
+/// never resolve the bundle themselves.
+fn set_frame_persistent_on_worker(
+    owned: &OwnedIdentity,
+    entry: &crate::probe_target::SpawnRecord,
+    live_bundle: &str,
+    target_pid: u32,
+    wid: u32,
+    frame: crate::ffi::AxFrame,
+) -> Result<PersistentFrameReport, AxError> {
+    use crate::ffi::{AxElement, ax_get_frame, ax_window_id};
+    gate_owned_frame(owned, target_pid, live_bundle)?;
+    revalidate_entry(entry)?;
+    let pid_i32 = target_pid as i32;
+    let app = AxElement::application(pid_i32)
+        .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
+    let _ = crate::ffi::ax_set_messaging_timeout(&app, 2.0);
+    let windows = app
+        .windows()
+        .map_err(|code| AxError::System(format!("windows: {}", crate::ffi::ax_error_name(code))))?;
+    let window = windows
+        .iter()
+        .find(|w| ax_window_id(w) == Some(wid))
+        .ok_or_else(|| {
+            AxError::Ownership(format!(
+                "wid {wid} not joined to owned pid {target_pid} (identity join failed)"
+            ))
+        })?;
+    let _ = crate::ffi::ax_set_messaging_timeout(window, 2.0);
+    let preimage = ax_get_frame(window).map_err(|code| {
+        AxError::System(format!("preimage: {}", crate::ffi::ax_error_name(code)))
+    })?;
+    revalidate_entry(entry)?;
+    let mut ops = LiveFrameOps {
+        window,
+        entry: entry.clone(),
+        pid: target_pid,
+        wid,
+    };
+    if let Err(e) = ops.revalidate() {
+        return Err(AxError::Ownership(format!(
+            "pre-write ownership refused: {e}"
+        )));
+    }
+    if let Err(code) = ops.set_frame(&frame) {
+        return Err(AxError::System(format!(
+            "persistent set failed (preimage {preimage:?}, attempted {frame:?}): {}",
+            crate::ffi::ax_error_name(code)
+        )));
+    }
+    // Bounded applied poll: the window server applies asynchronously, so the
+    // first readback may still show the preimage. Revalidate before the
+    // readback series; ownership loss after the write refuses further reads
+    // with the preimage retained (the window keeps whatever was applied).
+    if let Err(e) = ops.revalidate() {
+        return Err(AxError::Ownership(format!(
+            "post-write ownership refused (preimage {preimage:?}, attempted {frame:?}): {e}"
+        )));
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let mut applied: Option<crate::ffi::AxFrame> = None;
+    while std::time::Instant::now() < deadline {
+        match ops.get_frame() {
+            Ok(current) => {
+                applied = Some(current);
+                if current == frame {
+                    break;
+                }
+            }
+            Err(code) => {
+                return Err(AxError::System(format!(
+                    "applied readback failed (preimage {preimage:?}, attempted {frame:?}): {}",
+                    crate::ffi::ax_error_name(code)
+                )));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let matched = applied == Some(frame);
+    Ok(PersistentFrameReport {
+        pid: target_pid,
+        wid,
+        preimage,
+        attempted: frame,
+        applied,
+        matched,
+    })
+}
+
+/// Move/resize one owned window and LEAVE the applied frame in place, with
+/// preimage capture and an exact-match applied readback. Fixture-only
+/// (disposable helper control for the bounded border tracking legs); never
+/// a shipped product move, never foreign windows. The caller owns cleanup:
+/// the border fixture destroys the helper at teardown and proves zero CG
+/// residue instead of restoring. Threading matches [`set_frame_owned`]:
+/// gates on the caller, then one dedicated AX worker with a bounded wait.
+pub fn set_frame_owned_persistent(
+    owned: &OwnedIdentity,
+    target_pid: u32,
+    wid: u32,
+    frame: crate::ffi::AxFrame,
+) -> Result<PersistentFrameReport, AxError> {
+    if !frame.valid_for_set() {
+        return Err(AxError::Unsupported("degenerate frame".to_owned()));
+    }
+    let live_bundle = live_owned_bundle(target_pid)?;
+    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    let entry = crate::probe_target::load_verified_record(target_pid, &owned.nonce)
+        .map_err(AxError::Ownership)?;
+    #[cfg(target_os = "macos")]
+    {
+        let owned_send = owned.clone();
+        let frame_send = frame;
+        let bundle_send = live_bundle.clone();
+        let (done_tx, done_rx) =
+            std::sync::mpsc::channel::<Result<PersistentFrameReport, AxError>>();
+        std::thread::Builder::new()
+            .name(format!("ax-set-frame-persistent-{target_pid}"))
+            .spawn(move || {
+                let outcome = set_frame_persistent_on_worker(
+                    &owned_send,
+                    &entry,
+                    &bundle_send,
+                    target_pid,
+                    wid,
+                    frame_send,
+                );
+                let _ = done_tx.send(outcome);
+            })
+            .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
+        match done_rx.recv_timeout(std::time::Duration::from_secs(SET_FRAME_OUTER_SECS)) {
+            Ok(report) => report,
+            Err(_) => Err(AxError::Timeout {
+                pid: target_pid,
+                timeout_ms: SET_FRAME_OUTER_SECS * 1000,
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&entry, wid, frame);
+        Err(AxError::Unsupported(
+            "AX frame set is macOS-only".to_owned(),
+        ))
+    }
+}
+
 /// Owned window state with AX + CG frames (read-only: no writes on any
 /// path). Every leg is `Option`: an unreadable attribute is unknown
 /// evidence, never a guessed state. No titles, no content, no paths.
@@ -824,15 +996,17 @@ pub struct WindowStateReport {
 /// Never called on the caller/main thread. Read-only throughout: entry +
 /// CG revalidation gates the reads, nothing is written.
 #[cfg(target_os = "macos")]
+/// `live_bundle` is caller-resolved plain data (see
+/// `set_frame_persistent_on_worker`): workers never read the table.
 fn read_window_on_worker(
     owned: &OwnedIdentity,
     entry: &crate::probe_target::SpawnRecord,
+    live_bundle: &str,
     target_pid: u32,
     wid: u32,
 ) -> Result<WindowStateReport, AxError> {
     use crate::ffi::{AxElement, ax_window_id};
-    let live_bundle = live_owned_bundle(target_pid)?;
-    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    gate_owned_frame(owned, target_pid, live_bundle)?;
     revalidate_entry(entry)?;
     let app = AxElement::application(target_pid as i32)
         .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
@@ -890,11 +1064,13 @@ pub fn read_window_owned(
     #[cfg(target_os = "macos")]
     {
         let owned_send = owned.clone();
+        let bundle_send = live_bundle.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<WindowStateReport, AxError>>();
         std::thread::Builder::new()
             .name(format!("ax-read-window-{target_pid}"))
             .spawn(move || {
-                let outcome = read_window_on_worker(&owned_send, &entry, target_pid, wid);
+                let outcome =
+                    read_window_on_worker(&owned_send, &entry, &bundle_send, target_pid, wid);
                 let _ = done_tx.send(outcome);
             })
             .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;
@@ -1075,16 +1251,18 @@ pub struct FullscreenReport {
 /// the reader: `AXFullScreen` (yabai) first, `AXFullscreen` (rift) fallback
 /// on service failures only.
 #[cfg(target_os = "macos")]
+/// `live_bundle` is caller-resolved plain data (see
+/// `set_frame_persistent_on_worker`): workers never read the table.
 fn set_fullscreen_on_worker(
     owned: &OwnedIdentity,
     entry: &crate::probe_target::SpawnRecord,
+    live_bundle: &str,
     target_pid: u32,
     wid: u32,
     want: bool,
 ) -> Result<FullscreenReport, AxError> {
     use crate::ffi::{AxElement, ax_window_id};
-    let live_bundle = live_owned_bundle(target_pid)?;
-    gate_owned_frame(owned, target_pid, &live_bundle)?;
+    gate_owned_frame(owned, target_pid, live_bundle)?;
     revalidate_entry(entry)?;
     let app = AxElement::application(target_pid as i32)
         .ok_or_else(|| AxError::System(format!("no AX element for pid {target_pid}")))?;
@@ -1183,11 +1361,19 @@ pub fn set_fullscreen_owned(
     #[cfg(target_os = "macos")]
     {
         let owned_send = owned.clone();
+        let bundle_send = live_bundle.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<FullscreenReport, AxError>>();
         std::thread::Builder::new()
             .name(format!("ax-fullscreen-{target_pid}"))
             .spawn(move || {
-                let outcome = set_fullscreen_on_worker(&owned_send, &entry, target_pid, wid, want);
+                let outcome = set_fullscreen_on_worker(
+                    &owned_send,
+                    &entry,
+                    &bundle_send,
+                    target_pid,
+                    wid,
+                    want,
+                );
                 let _ = done_tx.send(outcome);
             })
             .map_err(|e| AxError::System(format!("spawn AX worker thread: {e}")))?;

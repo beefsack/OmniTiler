@@ -666,6 +666,10 @@ pub struct ScopedAxFactory {
     /// its own bound PID from snapshot data it already read. `None` keeps
     /// the factory observation-only (existing fixtures/tests).
     facts: Option<Arc<crate::input_eligibility::EligibilityFactsStore>>,
+    /// Shared per-PID border facts: same publish shape for the focused
+    /// window (frame plus AX/CG/app facts plus Space membership). `None`
+    /// disables border publishing.
+    border: Option<Arc<crate::border_runtime::BorderFactsStore>>,
 }
 
 impl ScopedAxFactory {
@@ -675,6 +679,7 @@ impl ScopedAxFactory {
         Ok(Self {
             scope: selection,
             facts: None,
+            border: None,
         })
     }
 
@@ -687,6 +692,7 @@ impl ScopedAxFactory {
         Ok(Self {
             scope: selection,
             facts: None,
+            border: None,
         })
     }
 
@@ -699,6 +705,18 @@ impl ScopedAxFactory {
         store: Arc<crate::input_eligibility::EligibilityFactsStore>,
     ) -> Self {
         self.facts = Some(store);
+        self
+    }
+
+    /// Share the border facts store: created backends publish their own
+    /// PID's focused-window facts from already-read snapshots (never new
+    /// AX for the publisher; never any AX for the main-thread consumer).
+    #[must_use]
+    pub fn with_border_store(
+        mut self,
+        store: Arc<crate::border_runtime::BorderFactsStore>,
+    ) -> Self {
+        self.border = Some(store);
         self
     }
 
@@ -728,6 +746,7 @@ impl AxBackendFactory for ScopedAxFactory {
             self.scope.clone(),
             identity,
             self.facts.clone(),
+            self.border.clone(),
         )))
     }
 }
@@ -752,6 +771,11 @@ pub struct ScopedAxBackend {
     /// snapshot data already read below. `None` disables publishing.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     facts: Option<Arc<crate::input_eligibility::EligibilityFactsStore>>,
+    /// Shared border facts: this owner publishes ONLY `pid`'s focused
+    /// window from snapshot data already read below. `None` disables
+    /// border publishing.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    border: Option<Arc<crate::border_runtime::BorderFactsStore>>,
     #[cfg(target_os = "macos")]
     observer: Option<crate::ffi::Phase1Observer>,
     /// Monotonic origin for the missed-notification backstop clock (set on
@@ -774,12 +798,14 @@ impl ScopedAxBackend {
         scope: TileScope,
         identity: ProcessIdentity,
         facts: Option<Arc<crate::input_eligibility::EligibilityFactsStore>>,
+        border: Option<Arc<crate::border_runtime::BorderFactsStore>>,
     ) -> Self {
         Self {
             pid,
             scope,
             identity,
             facts,
+            border,
             hook: None,
             #[cfg(target_os = "macos")]
             observer: None,
@@ -1050,6 +1076,58 @@ mod native {
                     fullscreen: window.map(|w| w.fullscreen),
                     minimized: window.map(|w| w.minimized),
                     hidden_app: window.map(|w| w.hidden),
+                    revision: ctx.revision,
+                    updated_ms: store.now_ms(),
+                });
+            }
+            // Border publish (best-effort side channel, never fails the
+            // observation): ONLY this owner's bound PID, focused-window
+            // facts from the outcome just read above (frame, AX/CG/app
+            // facts, Space membership). A missing join anywhere publishes
+            // `window: None` (unknown hides tick-side) rather than a
+            // guessed target; classifier-excluded shapes keep their facts
+            // here (the tick-side mapper hides them with a reason) while
+            // Space membership falls back to one direct read. Placement
+            // truth (engine plan membership, including ToggleFloat) is a
+            // tick-side join in `tile` — never a second classifier call
+            // here: disposition is eligibility, not placement.
+            if let Some(store) = self.border.as_ref() {
+                let window = snapshot.focused_wid.and_then(|wid| {
+                    let facts = outcome.windows.iter().find(|w| w.wid == wid)?;
+                    let frame = facts.frame?;
+                    let ax = facts.to_ax_facts(false)?;
+                    let cg = facts.to_cg_facts()?;
+                    let app = app_facts.to_app_facts();
+                    let spaces = snapshot
+                        .meta
+                        .iter()
+                        .find(|m| m.wid == wid)
+                        .map(|m| m.spaces.clone())
+                        .or_else(|| {
+                            #[cfg(target_os = "macos")]
+                            {
+                                crate::ffi::sls_spaces_for_window(wid).ok()
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                None
+                            }
+                        })?;
+                    Some(crate::border_runtime::BorderWindowFacts {
+                        wid,
+                        frame,
+                        ax,
+                        cg,
+                        app,
+                        spaces,
+                    })
+                });
+                store.publish_app(crate::border_runtime::BorderAppRecord {
+                    pid: self.pid,
+                    bundle: self.identity.bundle.clone(),
+                    focused_wid: snapshot.focused_wid,
+                    selected: snapshot.sys_focus,
+                    window,
                     revision: ctx.revision,
                     updated_ms: store.now_ms(),
                 });

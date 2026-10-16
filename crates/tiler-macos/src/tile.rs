@@ -24,6 +24,19 @@
 //! `Resize`/`ToggleFloat`/`ToggleOrientation` commands, effects ride the
 //! existing scoped backend.
 //!
+//! The same main thread owns one active-border carrier
+//! ([`crate::ffi::BorderCarrier`]) driven by [`crate::border_runtime`]:
+//! each per-app AX owner publishes its focused-window facts from already-read
+//! snapshots, and the main loop joins the frontmost PID's record with the
+//! live session/scope/Space/revision verdict plus the system accent. The
+//! controller updates the panel only on observed frame/target/style change
+//! and hides on every false/unknown leg (including lock and Space drift);
+//! no app activation or policy flip happens on this path, and the carrier
+//! never joins tiling (own-bundle exclusion). Scoped runs decorate only
+//! in-scope frontmost apps (unrelated windows never decorate); unscoped
+//! runs decorate ordinary apps through the same product gate. Border
+//! configuration is startup-only (`--active-border-*`/settings file).
+//!
 //! Safety contract: explicit `--user-start` plus a non-empty bundle
 //! allowlist are mandatory. Ghostty (any case/variant), the own bundle,
 //! protected terminals, and unknown (`None`) bundles never write — at
@@ -48,6 +61,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::active_border::ActiveBorderOptions;
 use crate::config::{MAX_PROBE_SECONDS, ProbeModifier};
 use crate::dev_selection::{TileScope, launchable as selection_launchable};
 use crate::input_policy::InputPreset;
@@ -132,7 +146,7 @@ impl TileLogLevel {
 /// Construction never touches the OS. Unscoped `--seconds 0` means
 /// unbounded (owner exit or exact-PID stop ends the run); scoped runs are
 /// always bounded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TileRequest {
     pub user_start: bool,
     pub scopes: Vec<String>,
@@ -153,6 +167,9 @@ pub struct TileRequest {
     /// outcome JSON to `<dir>/outcome.json`. `None` keeps the plain
     /// bounded behavior with stdout as the only outcome channel.
     pub run_dir: Option<String>,
+    /// Startup border configuration (master switch plus ring style).
+    /// Startup-only: a running session never re-reads it.
+    pub border: ActiveBorderOptions,
 }
 
 impl TileRequest {
@@ -308,6 +325,17 @@ pub struct TileOutcome {
     pub input_select_refused: u64,
     pub observations_published: u64,
     pub observation_failures: u64,
+    /// Pushed border carrier effects (main-thread controller): creates,
+    /// move/restyle updates, hides, and carrier-call failures.
+    pub border_shows: u64,
+    pub border_updates: u64,
+    pub border_hides: u64,
+    pub border_errors: u64,
+    /// Maximum observed-frame→panel-application lag in milliseconds,
+    /// sampled on pushed border shows/updates only (0 when none pushed).
+    pub border_apply_lag_max_ms: u64,
+    /// Pushed border show/update count backing the maximum above.
+    pub border_apply_samples: u64,
     pub note: String,
 }
 
@@ -349,6 +377,12 @@ impl TileOutcome {
             input_select_refused: 0,
             observations_published: 0,
             observation_failures: 0,
+            border_shows: 0,
+            border_updates: 0,
+            border_hides: 0,
+            border_errors: 0,
+            border_apply_lag_max_ms: 0,
+            border_apply_samples: 0,
             note: "no effects ran; no restoration performed".to_owned(),
         }
     }
@@ -505,6 +539,247 @@ mod native {
         })
     }
 
+    /// Owned production border carrier on the tile main thread: created on
+    /// the first show, updated only on observed change, hidden on every
+    /// false/unknown leg, destroyed here at run stop on every path (`Drop`
+    /// runs on all returns past construction — the watchdog forced exit
+    /// excepted, where the OS reaps the panel with the process). No app
+    /// activation and no activation-policy call happen on this path; the
+    /// fixture-accepted create/update/hide/show_above/destroy surface is
+    /// the only AppKit touch.
+    struct BorderCarrierGuard {
+        carrier: Option<crate::ffi::BorderCarrier>,
+        mtm: objc2::MainThreadMarker,
+    }
+
+    impl BorderCarrierGuard {
+        fn new(mtm: objc2::MainThreadMarker) -> Self {
+            Self { carrier: None, mtm }
+        }
+
+        /// Drive one controller effect: at most one panel call. Create and
+        /// update failures forget the pushed state (the next tick retries)
+        /// and count; transitions log one line each (static tokens plus
+        /// geometry — never titles, bundles, or paths). `engine_placed`
+        /// reports the tick's placement join on show/update lines (live
+        /// placement-truth diagnosis); hide-only callers pass false.
+        fn drive(
+            &mut self,
+            controller: &mut crate::border_runtime::BorderController,
+            effect: crate::border_runtime::BorderEffect,
+            accent: Option<crate::active_border::SystemAccent>,
+            engine_placed: bool,
+        ) {
+            use crate::border_runtime::BorderEffect;
+            match effect {
+                BorderEffect::None => {}
+                BorderEffect::Show {
+                    target_wid,
+                    reorder_above,
+                    outer,
+                    style,
+                    color,
+                } => {
+                    let created = self.carrier.is_none();
+                    let outcome = match self.carrier.as_ref() {
+                        None => {
+                            match crate::ffi::BorderCarrier::create(
+                                self.mtm,
+                                &style,
+                                outer,
+                                accent,
+                                "OmniTiler active border",
+                            ) {
+                                Ok(carrier) => {
+                                    carrier.show_above(self.mtm, target_wid as isize);
+                                    self.carrier = Some(carrier);
+                                    Ok(())
+                                }
+                                Err(reason) => Err(reason),
+                            }
+                        }
+                        Some(carrier) => match carrier.update(self.mtm, &style, outer, accent) {
+                            Ok(()) => {
+                                if reorder_above {
+                                    carrier.show_above(self.mtm, target_wid as isize);
+                                }
+                                Ok(())
+                            }
+                            Err(reason) => Err(reason),
+                        },
+                    };
+                    match outcome {
+                        Ok(()) => eprintln!(
+                            "tiler-macos dev border {} outer={:.0},{:.0},{:.0},{:.0} color={} reorder={} lag={}ms placed={}",
+                            if created { "show" } else { "update" },
+                            outer.x,
+                            outer.y,
+                            outer.w,
+                            outer.h,
+                            crate::active_border::render_color(color),
+                            reorder_above,
+                            controller.last_apply_lag_ms(),
+                            engine_placed,
+                        ),
+                        Err(reason) => {
+                            controller.note_carrier_error();
+                            eprintln!("tiler-macos dev border carrier-error reason={reason}");
+                        }
+                    }
+                }
+                BorderEffect::Hide => {
+                    if let Some(carrier) = self.carrier.as_ref() {
+                        carrier.hide(self.mtm);
+                    }
+                    eprintln!(
+                        "tiler-macos dev border hide reason={}",
+                        controller.hide_reason().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
+    }
+
+    impl Drop for BorderCarrierGuard {
+        fn drop(&mut self) {
+            if let Some(carrier) = self.carrier.take() {
+                carrier.destroy(self.mtm);
+            }
+        }
+    }
+
+    /// Minimum interval between publisher-woken border-only joins: AX
+    /// notification bursts re-join at most this often (never topology or
+    /// tiling at AX frequency). The runloop pump below already quantizes
+    /// wakeups to roughly its own period, so this throttle only caps
+    /// pathological bursts.
+    const BORDER_FAST_MIN: Duration = Duration::from_millis(33);
+
+    /// Pure border fast-path gate over explicit inputs (fake-clock
+    /// testable): enabled runs re-join only on publisher dirt with the
+    /// throttle satisfied. The caller peeks (never takes) here — the take
+    /// happens only on a joining tick, so a throttled burst never loses
+    /// its wakeup (the 250 ms cadence stays the backstop regardless).
+    fn border_fast_due(enabled: bool, dirty: bool, elapsed: Duration) -> bool {
+        enabled && dirty && elapsed >= BORDER_FAST_MIN
+    }
+
+    /// Current visible work areas in CG top-left points for the zoom
+    /// heuristic (one entry per display with converted geometry).
+    fn visibles_of(
+        snapshot: &crate::topology::TopologySnapshot,
+    ) -> Vec<tiler_core::visual::VisualRect> {
+        snapshot
+            .displays
+            .iter()
+            .filter_map(|d| d.visible)
+            .map(|r| tiler_core::visual::VisualRect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+            })
+            .collect()
+    }
+
+    /// Current full display bounds in CG top-left points for the
+    /// borderless full-display game fence (one entry per display with
+    /// converted geometry — never work areas).
+    fn displays_of(
+        snapshot: &crate::topology::TopologySnapshot,
+    ) -> Vec<tiler_core::visual::VisualRect> {
+        snapshot
+            .displays
+            .iter()
+            .filter_map(|d| d.cg_bounds)
+            .map(|r| tiler_core::visual::VisualRect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+            })
+            .collect()
+    }
+
+    /// Engine-placement truth for one window: true only when the core's
+    /// latest plan geometry names exactly `(pid, wid)`. Pure over the
+    /// runtime's last desired snapshot (window IDs round-trip through
+    /// `window_id`/`parse_window_id`); a `ToggleFloat`-floated window
+    /// drops out of plan truth on the next plan and reads unplaced, so
+    /// the zoom heuristic applies to it. Unknown reads false (safe
+    /// direction: a ring may hide, never wrongly show).
+    fn engine_places(desired: &[crate::runtime_types::DesiredFrame], pid: u32, wid: u32) -> bool {
+        desired
+            .iter()
+            .any(|frame| crate::runtime_types::parse_window_id(&frame.window) == Some((pid, wid)))
+    }
+
+    /// Active-border tick: join the frontmost PID's owner-published facts
+    /// with the live session verdict, the product scope gate, the current
+    /// user Spaces plus topology revision, engine-placement truth, and the
+    /// system accent — then drive the one main-thread carrier. The decision
+    /// is pure and change-only (silent on steady state); `snapshot` is the
+    /// last good topology read (`None` hides: no flip height, no work
+    /// areas, no display bounds).
+    #[allow(clippy::too_many_arguments)]
+    fn border_tick_once(
+        selection: &crate::dev_selection::TileScope,
+        border_store: &crate::border_runtime::BorderFactsStore,
+        facts_store: &crate::input_eligibility::EligibilityFactsStore,
+        controller: &mut crate::border_runtime::BorderController,
+        guard: &mut BorderCarrierGuard,
+        options: &crate::active_border::ActiveBorderOptions,
+        snapshot: Option<&crate::topology::TopologySnapshot>,
+        handle: &crate::runtime::RuntimeHandle,
+    ) {
+        let frontmost = crate::ffi::frontmost_app();
+        let (context_currents, context_revision) = facts_store.context();
+        let accent = crate::ffi::border_system_accent();
+        let record = frontmost.as_ref().and_then(|(pid, _)| {
+            if *pid > 1 {
+                border_store.snapshot_for(*pid as u32)
+            } else {
+                None
+            }
+        });
+        // Engine-placement join over the latest plan truth (never AX, never
+        // the classifier): only a plan member reads placed.
+        let engine_placed = match (frontmost.as_ref(), record.as_ref()) {
+            (Some((pid, _)), Some(record)) if *pid > 1 => record.focused_wid.is_some_and(|wid| {
+                engine_places(&handle.last_desired_geometry(), *pid as u32, wid)
+            }),
+            _ => false,
+        };
+        let input = crate::border_runtime::BorderTickInput {
+            enabled: options.enabled,
+            style: options.style,
+            accent,
+            session_unlocked: matches!(
+                crate::ffi::session_state().lock,
+                crate::ffi::SessionLock::Unlocked
+            ),
+            frontmost_pid: frontmost
+                .as_ref()
+                .filter(|(pid, _)| *pid > 1)
+                .map(|(pid, _)| *pid as u32),
+            frontmost_bundle: frontmost.as_ref().map(|(_, bundle)| bundle.clone()),
+            scope_allowed: frontmost
+                .as_ref()
+                .is_some_and(|(_, bundle)| selection.allows_effect(Some(bundle))),
+            record,
+            context_currents,
+            context_revision,
+            visibles: snapshot.map(visibles_of).unwrap_or_default(),
+            displays: snapshot.map(displays_of).unwrap_or_default(),
+            engine_placed,
+            primary_h: snapshot
+                .and_then(|s| crate::border_runtime::snapshot_primary_height(&s.displays)),
+            now_ms: border_store.now_ms(),
+        };
+        let effect = controller.tick(&input);
+        guard.drive(controller, effect, accent, input.engine_placed);
+    }
+
     /// Publish the eligibility current context from a snapshot the main
     /// thread already took: every user-typed current Space (one per
     /// display — multi-display supported, each display homes its own
@@ -601,6 +876,13 @@ mod native {
         // here before `Runtime::start` and shared with both factories —
         // no new threads, no new channels.
         let facts_store = Arc::new(crate::input_eligibility::EligibilityFactsStore::new());
+        // Border facts ride the same publisher shape: each per-app AX
+        // owner publishes its focused-window facts from already-read
+        // snapshots; the main loop below joins the frontmost record with
+        // the live verdict and drives one carrier (no AX on this thread).
+        let border_store = Arc::new(crate::border_runtime::BorderFactsStore::new());
+        let mut border_controller = crate::border_runtime::BorderController::new();
+        let mut border_carrier = BorderCarrierGuard::new(mtm);
         // Exactly one input route arms per run; no auto fallback. Scoped
         // sources start ineligible until attested scope/foreground/Space/
         // showstate facts (no global interception while out-of-scope).
@@ -734,7 +1016,10 @@ mod native {
             } else {
                 ScopedAxFactory::new(request.scope())
             }
-            .map(|f| f.with_facts_store(Arc::clone(&facts_store)))
+            .map(|f| {
+                f.with_facts_store(Arc::clone(&facts_store))
+                    .with_border_store(Arc::clone(&border_store))
+            })
             .map_err(|reason| (2, reason))?,
         );
         let handle = Runtime::start(config, ax_factory, input_factory).map_err(|failure| {
@@ -770,6 +1055,9 @@ mod native {
         let mut last_cadence = Instant::now()
             .checked_sub(CADENCE)
             .unwrap_or_else(Instant::now);
+        // Last publisher-woken border-only join (fast path below throttles
+        // against this; starts at first-pump so an early burst joins).
+        let mut last_border_fast = Instant::now();
         let mut launched = 0u64;
         let mut launch_refused = 0u64;
         let mut terminated = 0u64;
@@ -786,6 +1074,10 @@ mod native {
         // run's directory, observed here, then the existing bounded
         // shutdown runs (never a signal kill).
         let mut stopped = false;
+        // Last good topology read for the border tick (visible work areas
+        // for the zoom heuristic, primary height for the AppKit flip).
+        // Refreshed on every good read, not just on change.
+        let mut last_snapshot: Option<TopologySnapshot> = None;
 
         // Initial snapshot before any discovery: scoped observations fence
         // without a published context, so publish first. A failed read
@@ -797,6 +1089,7 @@ mod native {
             Ok(snapshot) => {
                 poll.poll(&snapshot);
                 publish_snapshot_context(&facts_store, &snapshot);
+                last_snapshot = Some(snapshot.clone());
                 handle.update_topology_with(snapshot, &|sid| crate::ffi::sls_space_type(sid).ok());
                 topology_updates += 1;
             }
@@ -815,6 +1108,33 @@ mod native {
                 crate::ffi::drain_app_events(&app);
                 crate::ffi::pump_runloop_once(50);
             });
+            // Border-only fast path: a publisher publish/invalidation sets
+            // the wakeup flag, and this re-runs ONLY the border join (no
+            // topology, no tiling, no AX) — throttled so AX-frequency
+            // publishes never spin the join. Idle runs never set the flag
+            // (unchanged snapshots don't republish), so this costs two
+            // atomic loads per pump. The take happens only on a joining
+            // tick, so a throttled burst keeps its wakeup; the 250 ms
+            // cadence below stays the backstop (slow polls, heartbeats,
+            // stop file).
+            if border_fast_due(
+                request.border.enabled,
+                border_store.is_dirty(),
+                last_border_fast.elapsed(),
+            ) && border_store.take_dirty()
+            {
+                last_border_fast = Instant::now();
+                border_tick_once(
+                    &selection,
+                    &border_store,
+                    &facts_store,
+                    &mut border_controller,
+                    &mut border_carrier,
+                    &request.border,
+                    last_snapshot.as_ref(),
+                    &handle,
+                );
+            }
             if last_cadence.elapsed() < CADENCE {
                 continue;
             }
@@ -909,9 +1229,19 @@ mod native {
                     // A locked session never dispatches a switch: drop any
                     // pending select without replay.
                     handle.discard_select_pending();
+                    // A locked session never decorates either: hide now
+                    // (this branch skips the border tick below).
+                    let effect = border_controller.reset();
+                    border_carrier.drive(
+                        &mut border_controller,
+                        effect,
+                        crate::ffi::border_system_accent(),
+                        false,
+                    );
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
+                        border_store.invalidate_pid(pid);
                         tracked.remove(&pid);
                         terminated += 1;
                     }
@@ -925,9 +1255,18 @@ mod native {
                     // Lock-screen foreground: same refusal as a locked
                     // session (no switch under the lock screen, no replay).
                     handle.discard_select_pending();
+                    // Same border hide (this branch skips the tick below).
+                    let effect = border_controller.reset();
+                    border_carrier.drive(
+                        &mut border_controller,
+                        effect,
+                        crate::ffi::border_system_accent(),
+                        false,
+                    );
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
+                        border_store.invalidate_pid(pid);
                         tracked.remove(&pid);
                         terminated += 1;
                     }
@@ -951,6 +1290,7 @@ mod native {
             }
             match snapshot_live() {
                 Ok(snapshot) => {
+                    last_snapshot = Some(snapshot.clone());
                     if !matches!(
                         poll.poll(&snapshot),
                         crate::topology::PollOutcome::Unchanged
@@ -1055,6 +1395,7 @@ mod native {
                 if tracked.contains_key(&pid) {
                     handle.terminate_app(pid);
                     facts_store.invalidate_pid(pid);
+                    border_store.invalidate_pid(pid);
                     terminated += 1;
                 }
                 match handle.launch_app_async(pid) {
@@ -1074,9 +1415,26 @@ mod native {
             {
                 handle.terminate_app(pid);
                 facts_store.invalidate_pid(pid);
+                border_store.invalidate_pid(pid);
                 tracked.remove(&pid);
                 terminated += 1;
             }
+
+            // Active border: join the frontmost PID's owner-published
+            // facts with the live verdict and drive the one main-thread
+            // carrier. Change-only and silent on steady state (no polling
+            // threads: owner notifications plus the ~1 s backstop refresh
+            // the records this reads; the 250 ms cadence only re-joins).
+            border_tick_once(
+                &selection,
+                &border_store,
+                &facts_store,
+                &mut border_controller,
+                &mut border_carrier,
+                &request.border,
+                last_snapshot.as_ref(),
+                &handle,
+            );
         }
 
         // Worker readiness at teardown (main thread never waited on it).
@@ -1162,6 +1520,12 @@ mod native {
             input_select_refused: diagnostics.input_select_refused,
             observations_published: diagnostics.observations_published,
             observation_failures: diagnostics.observation_failures,
+            border_shows: border_controller.shows(),
+            border_updates: border_controller.updates(),
+            border_hides: border_controller.hides(),
+            border_errors: border_controller.carrier_errors(),
+            border_apply_lag_max_ms: border_controller.apply_lag_max_ms(),
+            border_apply_samples: border_controller.apply_lag_samples(),
             note: "stop leaves windows in place; no restoration performed".to_owned(),
         };
         let body = serde_json::to_string(&body).map_err(|e| (1, e.to_string()))?;
@@ -1233,6 +1597,48 @@ mod native {
             }
         }
     }
+
+    #[cfg(test)]
+    mod border_placement_tests {
+        use super::*;
+        use crate::runtime_types::DesiredFrame;
+
+        fn desired(window: &str) -> DesiredFrame {
+            DesiredFrame {
+                window: window.to_owned(),
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            }
+        }
+
+        #[test]
+        fn engine_places_joins_exact_pid_and_wid() {
+            // Plan truth names exactly (4242, 7): same wid under another
+            // PID, another wid under the same PID, and malformed IDs all
+            // read unplaced.
+            let plan = vec![desired("4242_7"), desired("4242_9"), desired("nope")];
+            assert!(engine_places(&plan, 4242, 7));
+            assert!(engine_places(&plan, 4242, 9));
+            assert!(!engine_places(&plan, 9999, 7));
+            assert!(!engine_places(&plan, 4242, 77));
+            assert!(!engine_places(&[], 4242, 7));
+        }
+
+        #[test]
+        fn border_fast_gate_needs_enabled_dirty_and_throttle() {
+            // Disabled runs never join (but the peek/take protocol still
+            // clears elsewhere — this pure gate only answers).
+            assert!(!border_fast_due(false, true, Duration::from_secs(10)));
+            assert!(!border_fast_due(true, false, Duration::from_secs(10)));
+            // Throttle: a fresh burst waits out the minimum interval.
+            assert!(!border_fast_due(true, true, Duration::from_millis(0)));
+            assert!(!border_fast_due(true, true, Duration::from_millis(32)));
+            assert!(border_fast_due(true, true, Duration::from_millis(33)));
+            assert!(border_fast_due(true, true, Duration::from_secs(10)));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1251,6 +1657,7 @@ mod tests {
             excluded: Vec::new(),
             log: TileLogLevel::Normal,
             run_dir: None,
+            border: ActiveBorderOptions::default(),
         }
     }
 
@@ -1266,6 +1673,7 @@ mod tests {
             excluded: excluded.iter().map(|s| s.to_string()).collect(),
             log: TileLogLevel::Normal,
             run_dir: None,
+            border: ActiveBorderOptions::default(),
         }
     }
 

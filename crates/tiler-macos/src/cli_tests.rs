@@ -323,6 +323,36 @@ fn spaces_session_is_bounded_holder_with_explicit_opt_in() {
 }
 
 #[test]
+fn border_session_is_bounded_with_optional_regular_policy() {
+    use crate::border_session::DEFAULT_BORDER_SECONDS;
+    let r = parse_args(&argv(&["border-session"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::BorderSession {
+            seconds: DEFAULT_BORDER_SECONDS,
+            regular_policy: false,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "border-session",
+        "--seconds",
+        "30",
+        "--regular-policy",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::BorderSession {
+            seconds: 30,
+            regular_policy: true,
+        }
+    ));
+    assert!(parse_args(&argv(&["border-session", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["border-session", "--seconds"])).is_err());
+}
+
+#[test]
 fn owned_controls_parse_with_exact_identity() {
     // owned-frame is read-only; minimize/post/focus mutate.
     let r = parse_args(&argv(&[
@@ -1098,6 +1128,63 @@ fn tile_never_implies_scope_or_start() {
     // Unknown flags refuse at parse time.
     assert!(parse_args(&argv(&["tile", "--user-start", "--scope", "x", "--bogus"])).is_err());
     assert!(parse_args(&argv(&["tile", "--scope"])).is_err());
+}
+
+#[test]
+fn tile_border_flags_default_unset_and_parse_raw() {
+    // No border flags: every selection stays unset (startup merge fills
+    // defaults from the settings file, else shared parity).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    if let Command::Tile { border, .. } = r.command {
+        assert_eq!(border, crate::dev_selection::BorderCli::default());
+    } else {
+        panic!("want tile");
+    }
+    // Every border flag parses (values stay raw: bounds validate at
+    // startup merge with the shared errors).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--no-active-border",
+        "--active-border-width",
+        "5",
+        "--active-border-gap",
+        "2",
+        "--active-border-radius",
+        "10",
+        "--active-border-color",
+        "#112233",
+        "--active-border-theme",
+    ]))
+    .unwrap();
+    if let Command::Tile { border, .. } = r.command {
+        assert_eq!(border.enabled, Some(false));
+        assert_eq!(border.width.as_deref(), Some("5"));
+        assert_eq!(border.gap.as_deref(), Some("2"));
+        assert_eq!(border.radius.as_deref(), Some("10"));
+        assert_eq!(border.color.as_deref(), Some("#112233"));
+        assert_eq!(border.use_theme, Some(true));
+    } else {
+        panic!("want tile");
+    }
+    // The negative theme flag wins when last (plain last-wins, like preset).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--active-border-theme",
+        "--no-active-border-theme",
+    ]))
+    .unwrap();
+    if let Command::Tile { border, .. } = r.command {
+        assert_eq!(border.use_theme, Some(false));
+    } else {
+        panic!("want tile");
+    }
+    // Missing values refuse at parse time.
+    assert!(parse_args(&argv(&["tile", "--active-border-width"])).is_err());
+    assert!(parse_args(&argv(&["tile", "--active-border-color"])).is_err());
 }
 
 #[test]
