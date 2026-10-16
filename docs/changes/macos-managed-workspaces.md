@@ -80,8 +80,13 @@ action and unarmed-select status in the earlier checkpoints below.
   separate verification pass. Independent review reran all 536 library tests and
   all 26 scoped-tile tests. Unsafe blocks **102 → 102**, confined to `ffi.rs`;
   no dependency or shared-core change.
-- Publication and hosted-CI results are recorded below when available; local
-  passing gates alone do not establish hosted or physical acceptance.
+- Published fallback `ba422719`; hosted CI exposed non-macOS dead-code warnings
+  for the live-gated drain. Narrow target-conditional lint annotations in
+  `920d218d` repair that portability issue without changing macOS behavior.
+  [CI 38923718185](https://github.com/beefsack/OmniTiler/actions/runs/38923718185)
+  passes all eight jobs: macOS, Windows, Rust, native, KWin, shell, licenses and
+  notices. Concurrent unrelated changes were retained. Hosted success does not
+  establish physical acceptance.
 - Differences from KDE/Windows and Tier 1 tilers: select-only bounded preview,
   not a complete managed workspace manager; no send/follow/stay/output/migration
   execution; no trailing lifecycle; one-display-only product selection; explicit
