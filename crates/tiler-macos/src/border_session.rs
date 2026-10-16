@@ -153,6 +153,9 @@ pub fn validate_border_seconds(seconds: u64) -> Result<u64, String> {
     }
 }
 
+/// Live-leg frame comparison (macOS legs and the pure unit test below use
+/// this; the off-macOS stub never calls it).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn frames_close(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
     let close = |x: f64, y: f64| (x - y).abs() <= 0.5;
     close(a.0, b.0) && close(a.1, b.1) && close(a.2, b.2) && close(a.3, b.3)
@@ -202,10 +205,10 @@ pub fn run_border_session(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (seconds, helper_regular_policy);
-        return Err(fail(
+        Err(fail(
             "unsupported",
             "border-session is macOS-only".to_owned(),
-        ));
+        ))
     }
     #[cfg(target_os = "macos")]
     {
