@@ -119,6 +119,23 @@ decisions of 2026-09-24 are under
   are accepted pre-0.1; the core change adds follow-up items for each platform
   not migrated in the same change. Repeated replies must not churn
   workspaces.
+- P1 (next after full-state replies) | Best-effort admission when space runs
+  out | The full-state change returns a recoverable hold when a domain's
+  projection cannot give every tile a positive extent after gaps (14 fresh
+  windows in an 800x600 gap-8 domain); clear that hold. User 2026-10-16:
+  rejecting the layout is bad UX; we cannot override client limits the way
+  native tilers do (Tier 1 keep splitting at the anchor into degenerate tiles,
+  [R-MIN-04, R-INS-09](spec/reference-outcomes.md)), so do the most sensible
+  best-effort thing. Proposed two settings (host-limitation deviation from the
+  tier setting rule, user direction):
+  - Anchor too small to split: largest splittable window / closest splittable
+    relative (sibling, then parent) / do nothing (go straight to no-space).
+  - No space for the window: float it / allow overlap. User prefers floating
+    over overlap (overlap looks bad and confuses navigation/movement);
+    opening on another workspace is rejected.
+  Investigate current Windows behavior (may already float), interaction with
+  B6 origin+minimum overlap and startup clean-fit adoption, defaults, and
+  recovery when space returns; propose for user review before implementing.
 - P1 | Research: stateless core with caller-owned state | User 2026-10-16
   is unsure this is sensible since the stateful core is already efficient;
   weigh testability and reliability wins against cost. User 2026-10-16
