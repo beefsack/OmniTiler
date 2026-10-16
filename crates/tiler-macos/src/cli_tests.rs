@@ -794,6 +794,82 @@ fn spaces_switch_probe_parses_existing_sids_with_opt_in() {
 }
 
 #[test]
+fn spaces_drag_transfer_parses_existing_sids_with_opt_in() {
+    // Both existing SIDs mandatory (no Space is created); budget defaults
+    // to the helper cap; explicit --allow-untested rides along. Mutating
+    // (synthetic drag plus visible switches).
+    let r = parse_args(&argv(&[
+        "spaces-drag-transfer",
+        "--original",
+        "1",
+        "--temp",
+        "66",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDragTransfer {
+            original: 1,
+            temp: Some(66),
+            seconds: crate::config::MAX_PROBE_SECONDS,
+            allow_untested: true,
+        }
+    ));
+    assert!(parse_args(&argv(&["spaces-drag-transfer", "--original", "1"])).is_err());
+    assert!(parse_args(&argv(&["spaces-drag-transfer", "--temp", "66"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "spaces-drag-transfer",
+            "--original",
+            "1",
+            "--temp",
+            "66",
+            "--bogus",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn spaces_drag_transfer_temporary_parses_without_temp() {
+    // --temporary replaces --temp (exactly one of the two): the runner
+    // creates exactly one temp internally and removes only it. Mutating.
+    let r = parse_args(&argv(&[
+        "spaces-drag-transfer",
+        "--original",
+        "1",
+        "--temporary",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::SpacesDragTransfer {
+            original: 1,
+            temp: None,
+            seconds: crate::config::MAX_PROBE_SECONDS,
+            allow_untested: true,
+        }
+    ));
+    // --temp and --temporary are exclusive; bare --original still refuses.
+    assert!(
+        parse_args(&argv(&[
+            "spaces-drag-transfer",
+            "--original",
+            "1",
+            "--temp",
+            "66",
+            "--temporary",
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["spaces-drag-transfer", "--original", "1"])).is_err());
+}
+
+#[test]
 fn owned_fullscreen_parses_with_exact_identity_and_single_arm() {
     for (flag, want) in [("--enter", true), ("--exit", false)] {
         let r = parse_args(&argv(&[

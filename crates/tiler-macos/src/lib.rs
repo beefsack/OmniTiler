@@ -79,6 +79,10 @@ pub mod scope;
 pub mod scope_inspect;
 pub mod session;
 pub mod space_direct_probe;
+pub mod space_drag_live;
+pub mod space_drag_transfer;
+#[cfg(test)]
+mod space_drag_transfer_tests;
 pub mod space_join;
 pub mod space_recovery;
 pub mod space_switch_edges;

@@ -210,6 +210,12 @@ pub(crate) fn boundary_gate(pid: u32, wid: u32) -> Result<(), String> {
 /// their per-edge construction plus the per-edge oracle for that reason.
 ///
 /// Never a Ghostty (or any foreign) event target.
+///
+/// Tile-catalogue posts carry NO provenance tag (the tap consumes them
+/// exactly like user chords -- see the input-session suppression proof).
+/// Native switch-chord posts (drag transfers, switch-probe arrows) pass
+/// `Some(crate::input_match::OWN_SWITCH_USER_DATA)` so the tap passes our
+/// own switch chords while still consuming the user's.
 pub(crate) fn post_guarded(
     target: &OwnedPostTarget,
     key_code: u16,
@@ -217,11 +223,42 @@ pub(crate) fn post_guarded(
     down: bool,
     route: GuardedPostRoute,
 ) -> Result<PostedEvent, String> {
+    post_guarded_with_tag(target, key_code, flags, down, route, None)
+}
+
+/// Pure provenance-tag gate: the tag space has exactly two members --
+/// absent (tile-catalogue posts, consumed like user chords) and the
+/// own-switch tag (native switch chords, passed by the tap). Any other
+/// value refuses before the window server is touched. No live touch.
+pub(crate) fn validate_provenance_tag(tag: Option<i64>) -> Result<(), String> {
+    match tag {
+        None | Some(crate::input_match::OWN_SWITCH_USER_DATA) => Ok(()),
+        Some(t) => Err(format!(
+            "refusing synthetic post with unknown provenance tag {t}"
+        )),
+    }
+}
+
+/// Tagged guarded post: identical to [`post_guarded`] except the created
+/// event carries `tag` as `kCGEventSourceUserData` (field 42) before the
+/// post. Pass `None` for tile-catalogue posts (no tag); pass
+/// `Some(crate::input_match::OWN_SWITCH_USER_DATA)` for native switch
+/// chords only. Any other tag value refuses before the window server is
+/// touched -- the tag space has exactly two members (absent, own-switch).
+pub(crate) fn post_guarded_with_tag(
+    target: &OwnedPostTarget,
+    key_code: u16,
+    flags: u64,
+    down: bool,
+    route: GuardedPostRoute,
+    tag: Option<i64>,
+) -> Result<PostedEvent, String> {
+    validate_provenance_tag(tag)?;
     let (pid, wid) = (target.pid, target.wid);
     boundary_gate(pid, wid)?;
     match route {
-        GuardedPostRoute::Session => raw_post_key_event_to_session(pid, key_code, flags, down),
-        GuardedPostRoute::Hid => raw_post_key_event_to_hid(pid, key_code, flags, down),
+        GuardedPostRoute::Session => raw_post_key_event_to_session(pid, key_code, flags, down, tag),
+        GuardedPostRoute::Hid => raw_post_key_event_to_hid(pid, key_code, flags, down, tag),
     }
 }
 
@@ -234,13 +271,17 @@ fn raw_post_key_event_to_session(
     key_code: u16,
     flags: u64,
     down: bool,
+    tag: Option<i64>,
 ) -> Result<PostedEvent, String> {
     #[cfg(target_os = "macos")]
     {
-        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
+        use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventTapLocation};
         let event = CGEvent::new_keyboard_event(None, key_code, down)
             .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
         CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+        if let Some(t) = tag {
+            CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, t);
+        }
         let start = Instant::now();
         CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&event));
         Ok(PostedEvent {
@@ -253,7 +294,7 @@ fn raw_post_key_event_to_session(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (pid, key_code, flags, down);
+        let _ = (pid, key_code, flags, down, tag);
         Err("synthetic key posts are macOS-only".to_owned())
     }
 }
@@ -266,13 +307,17 @@ fn raw_post_key_event_to_hid(
     key_code: u16,
     flags: u64,
     down: bool,
+    tag: Option<i64>,
 ) -> Result<PostedEvent, String> {
     #[cfg(target_os = "macos")]
     {
-        use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
+        use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventTapLocation};
         let event = CGEvent::new_keyboard_event(None, key_code, down)
             .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
         CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+        if let Some(t) = tag {
+            CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, t);
+        }
         let start = Instant::now();
         CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
         Ok(PostedEvent {
@@ -285,7 +330,7 @@ fn raw_post_key_event_to_hid(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (pid, key_code, flags, down);
+        let _ = (pid, key_code, flags, down, tag);
         Err("synthetic key posts are macOS-only".to_owned())
     }
 }
@@ -362,6 +407,18 @@ mod tests {
             crate::ffi::selected_focus_agrees(4242, 7, Some(4242), Some(4242), Some(9), true);
         assert!(!disagrees);
         assert!(guarded_verdict(Some("com.apple.TextEdit"), disagrees).is_err());
+    }
+
+    #[test]
+    fn provenance_tag_space_has_exactly_two_members() {
+        // Absent (tile posts, consumed like user chords) and the
+        // own-switch tag (native switch chords, passed by the tap) pass;
+        // every other value refuses before any live touch.
+        assert!(validate_provenance_tag(None).is_ok());
+        assert!(validate_provenance_tag(Some(crate::input_match::OWN_SWITCH_USER_DATA)).is_ok());
+        assert!(validate_provenance_tag(Some(0)).is_err());
+        assert!(validate_provenance_tag(Some(1)).is_err());
+        assert!(validate_provenance_tag(Some(i64::MAX)).is_err());
     }
 
     #[test]

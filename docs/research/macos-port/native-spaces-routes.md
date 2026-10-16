@@ -150,6 +150,13 @@ and synthetic (agent-posted) drag remain unverified.
 User decision 2026-10-16: build managed native workspaces on these routes
 ([decision](../../decisions.md#scope-and-platform-goals)).
 
+The subsequent [synthetic drag diagnostic](../../changes/macos-managed-workspaces.md#diagnostic-milestone-2026-10-16)
+verified independent helper recovery but refused before any synthetic post on a
+positional safety check. Original single-Space topology and helper absence were
+verified; frame/protected-stability diagnostics remain unresolved. This adds no
+synthetic-transfer acceptance and changes neither the manual result nor the
+approved route.
+
 ### Exact continuation
 
 **Superseded 2026-10-16 by the user manual check above:** implement synthetic

@@ -867,6 +867,38 @@ mod macos {
             }
             Ok(out)
         }
+
+        /// Parent element via `AXParent` (checked downcast; a missing or
+        /// non-element parent is `Err`, never guessed). Used to walk the
+        /// element-at-position up its bounded chain to an owning window.
+        pub fn parent(&self) -> Result<AxElement, i32> {
+            let value = self.copy_attribute("AXParent")?;
+            let inner: CFRetained<AXUIElement> =
+                value.downcast().map_err(|_| AX_NOT_IMPLEMENTED)?;
+            Ok(AxElement {
+                inner,
+                _not_send: std::marker::PhantomData,
+            })
+        }
+
+        /// AX process identifier for this element. Reserved PIDs refuse;
+        /// unreadable PIDs are `Err`, never guessed.
+        pub fn element_pid(&self) -> Result<i32, i32> {
+            let mut pid: libc::pid_t = 0;
+            // SAFETY: live element from a checked constructor; valid
+            // out-pointer; status gates the read.
+            let err = unsafe {
+                self.inner
+                    .pid(NonNull::new(std::ptr::addr_of_mut!(pid)).expect("non-null"))
+            };
+            if err.0 != 0 {
+                return Err(err.0);
+            }
+            if pid <= 1 {
+                return Err(AX_ILLEGAL_ARGUMENT);
+            }
+            Ok(pid as i32)
+        }
     }
 
     /// Whether this process is trusted for accessibility (consent state).
@@ -902,6 +934,101 @@ mod macos {
             Ok(wid)
         } else {
             Err(format!("_AXUIElementGetWindow status {err}"))
+        }
+    }
+
+    /// Maximum `AXParent` hops when resolving the element at a point to its
+    /// owning window: real control hierarchies resolve within a few hops; the
+    /// bound keeps a pathological chain from stalling the fixture.
+    const HIT_PARENT_HOPS: usize = 16;
+
+    /// Raw AX element at a screen point (top-left points) via the system-wide
+    /// `AXUIElementCopyElementAtPosition` (maintained `objc2` binding, no new
+    /// hand declaration). `Err` names the AX status; no element at the point
+    /// (`kAXErrorNoValue`) is an honest miss, never a guess.
+    pub fn ax_element_at_position(x: f64, y: f64) -> Result<AxElement, String> {
+        let system = AxElement::system_wide()
+            .ok_or_else(|| "system-wide AX element unavailable".to_owned())?;
+        let timeout = ax_set_messaging_timeout(&system, 2.0);
+        if timeout != 0 {
+            return Err(format!(
+                "system-wide AX messaging timeout unset: {}",
+                super::ax_error_name(timeout)
+            ));
+        }
+        let mut raw: *const AXUIElement = std::ptr::null();
+        // SAFETY: live system element from a checked constructor; the
+        // out-pointer is a live stack local; a nonzero status returns `Err`
+        // with no use of the out value. Copy rule: success yields a +1
+        // retained element, wrapped exactly once below.
+        let status = unsafe {
+            system.inner.copy_element_at_position(
+                x as std::ffi::c_float,
+                y as std::ffi::c_float,
+                NonNull::new(std::ptr::addr_of_mut!(raw)).expect("out-pointer non-null"),
+            )
+        };
+        if status.0 != 0 {
+            return Err(format!(
+                "AXUIElementCopyElementAtPosition: {}",
+                super::ax_error_name(status.0)
+            ));
+        }
+        let ptr = NonNull::new(raw as *mut AXUIElement)
+            .ok_or_else(|| "AXUIElementCopyElementAtPosition returned null".to_owned())?;
+        // SAFETY: success status plus a non-null out value is the +1 retained
+        // element per the copy rule; owned exactly once here.
+        let inner = unsafe { CFRetained::from_raw(ptr) };
+        Ok(AxElement {
+            inner,
+            _not_send: std::marker::PhantomData,
+        })
+    }
+
+    /// Owning `(pid, wid)` at a screen point: the raw element-at-position
+    /// resolved up a bounded `AXParent` chain to the first element joining a
+    /// nonzero CG window ID, with that element's AX process ID. This is
+    /// actual positional proof (never CG list order, never focus): the live
+    /// drag runner requires the result to equal the exact held `(pid, wid)`
+    /// before mouse-down/drag. `Err` names the miss (no element, no window on
+    /// the chain, unreadable/reserved pid). A foreign menu-bar, desktop, or
+    /// chrome element resolves to ITS owner and refuses downstream by
+    /// identity mismatch, never by list position.
+    pub fn ax_hit_test_owner(x: f64, y: f64) -> Result<(u32, u32), String> {
+        let mut current = ax_element_at_position(x, y)?;
+        for _ in 0..HIT_PARENT_HOPS {
+            if let Ok(wid) = ax_window_id_detailed(&current)
+                && wid != 0
+            {
+                let pid = current.element_pid().map_err(super::ax_error_name)?;
+                return Ok((pid as u32, wid));
+            }
+            match current.parent() {
+                Ok(next) => current = next,
+                Err(code) => {
+                    return Err(format!(
+                        "hit-test has no owning window: {}",
+                        super::ax_error_name(code)
+                    ));
+                }
+            }
+        }
+        Err("hit-test refused: parent chain exhausted without an owning window".to_owned())
+    }
+
+    /// Cursor warp without delivering an input event (maintained
+    /// `objc2-core-graphics` `CGWarpMouseCursorPosition`: a safe binding, so
+    /// no `unsafe` here). Pointer-restore only: the drag fixture never posts
+    /// a `MouseMoved` event onto a baseline that may sit over a protected
+    /// surface. `Err` carries the `CGError`; callers refuse the restore and
+    /// report, never falling back to a synthesized move event.
+    pub fn warp_cursor_position(x: f64, y: f64) -> Result<(), String> {
+        let status =
+            objc2_core_graphics::CGWarpMouseCursorPosition(objc2_core_foundation::CGPoint { x, y });
+        if status.0 == 0 {
+            Ok(())
+        } else {
+            Err(format!("CGWarpMouseCursorPosition status {}", status.0))
         }
     }
 
@@ -4691,7 +4818,7 @@ mod macos {
         suppress_armed: bool,
         tx: &SyncSender<EngineMessage>,
     ) -> Result<TapRunReport, TapSetupError> {
-        use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
+        use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event_with_provenance};
         use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
         use core_graphics::event::{
             CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
@@ -4746,16 +4873,28 @@ mod macos {
                 } else {
                     return CallbackResult::Keep;
                 };
+                let flags = event.get_flags().bits();
+                let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                // Own native switch chords pass untouched (never matched,
+                // never suppressed, never forwarded, never counted): the
+                // tiler's drag transfer posts tagged Ctrl+Left/Right;
+                // untagged user chords follow the normal path. The bypass
+                // is invisible in the counters (like the gated path) so
+                // suppression evidence reflects user events only.
+                let user_data =
+                    event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA);
+                if crate::input_match::is_own_switch_chord(user_data, tap_kind, flags, code) {
+                    return CallbackResult::Keep;
+                }
                 if matches!(tap_kind, TapKeyKind::KeyDown | TapKeyKind::KeyUp) {
                     callback_shared.deliveries.fetch_add(1, Ordering::SeqCst);
                 }
-                let flags = event.get_flags().bits();
-                let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                 let mut pending = callback_shared.down_pending.load(Ordering::SeqCst);
-                let decision = decide_tap_event(
+                let decision = decide_tap_event_with_provenance(
                     tap_kind,
                     flags,
                     code,
+                    user_data,
                     callback_shared.tuning,
                     callback_shared.suppress_armed,
                     &mut pending,
@@ -5161,11 +5300,27 @@ mod macos {
                     } else {
                         return CallbackResult::Keep;
                     };
+                    let flags = event.get_flags().bits();
+                    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+                    // Own native switch chords pass untouched: the tiler's
+                    // drag transfer posts tagged Ctrl+Left/Right; untagged
+                    // user chords follow the normal match path below. The
+                    // bypass sits BEFORE the deliveries count and the
+                    // per-chord pending/match loop, so own chords are
+                    // invisible in the counters (like the gated/ineligible
+                    // paths), never arm suppression, never forward to the
+                    // engine, and never trigger the fixture stall.
+                    if crate::input_match::is_own_switch_chord(
+                        event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA),
+                        tap_kind,
+                        flags,
+                        code,
+                    ) {
+                        return CallbackResult::Keep;
+                    }
                     if matches!(tap_kind, TapKeyKind::KeyDown | TapKeyKind::KeyUp) {
                         callback_shared.deliveries.fetch_add(1, Ordering::SeqCst);
                     }
-                    let flags = event.get_flags().bits();
-                    let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
                     // First exact match wins (tables are duplicate-free, so
                     // at most one arm matches). Minimal per-chord work:
                     // exact compare plus a non-blocking forward.
@@ -6009,23 +6164,24 @@ pub use macos::{
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
     ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_identifier, ax_is_process_trusted, ax_is_size_settable,
-    ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, terminate_process,
+    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
+    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
+    drain_app_events, drain_app_events_counted, frontmost_app, install_display_change_guard,
+    key_counts_snapshot, launch_date_for_pid, macos_major, mc_launch_toggle,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
+    process_executable_path, process_exists, pump_runloop_once, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_direct,
+    sls_space_type, sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
+    warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -6252,6 +6408,18 @@ mod stub {
     }
 
     pub fn cg_window_list_basic() -> Result<Vec<CgWindowBasic>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_hit_test_owner(_x: f64, _y: f64) -> Result<(u32, u32), String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_element_at_position(_x: f64, _y: f64) -> Result<AxElement, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn warp_cursor_position(_x: f64, _y: f64) -> Result<(), String> {
         Err("macOS-only".to_owned())
     }
 
@@ -6714,22 +6882,23 @@ pub use stub::{
     SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
     ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_identifier, ax_is_process_trusted, ax_is_size_settable,
-    ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title, bundle_id_for_pid,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, frontmost_app, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, ns_app_identity_for_pid,
-    ns_display_snapshot, ns_separate_spaces, own_bundle_id, process_executable_path,
-    process_exists, pump_runloop_once, run_event_tap_bounded, run_owned_probe_window,
-    runloop_present, running_apps, secure_input_known, session_state, slps_available,
-    slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front,
-    sls_bridged_availability, sls_connection_available, sls_display_rows, sls_display_spaces,
-    sls_main_connection_id, sls_move_symbols, sls_move_windows_direct, sls_space_type,
-    sls_spaces_for_window, sls_spaces_for_windows, terminate_process,
+    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, bundle_id_for_pid, cg_display_uuid,
+    cg_post_event_access_known, cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys,
+    frontmost_app, install_display_change_guard, key_counts_snapshot, launch_date_for_pid,
+    macos_major, mc_launch_toggle, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_spaces_for_windows, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]

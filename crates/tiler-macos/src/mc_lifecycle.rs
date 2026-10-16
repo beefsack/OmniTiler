@@ -102,6 +102,12 @@ pub(crate) mod live {
                 Err(_) => return false,
             }
             self.reaped = child.wait().is_ok();
+            if self.reaped {
+                // Cache the successful reap: a second stop on the already
+                // reaped handle must report the cached truth, never flip it
+                // by waiting on a reaped child.
+                self.child = None;
+            }
             self.reaped
         }
     }

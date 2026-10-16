@@ -317,6 +317,7 @@ mise exec -- just launch -- mc-members --space SID
 mise exec -- just launch -- spaces-bindings
 mise exec -- just launch -- --timeout 120 -- spaces-owned-recovery --original SID --temp SID --allow-untested [--probe-direct]
 mise exec -- just launch -- --timeout 120 -- spaces-switch-probe --original SID --temp SID --allow-untested
+mise exec -- just launch -- --timeout 120 -- spaces-drag-transfer --original SID (--temp SID | --temporary) --allow-untested
 mise exec -- just launch -- --timeout 120 -- mc-recover --temp SID --original SID --allow-untested
 mise exec -- just launch -- --timeout 120 -- mc-restore-frontmost --pid PID --wid WID --space SID --allow-untested
 ```
@@ -357,7 +358,16 @@ comparison over two existing SIDs (two owned helpers bracket enabled
 Ctrl+Right/Left posts and the yabai began/ended gesture pair; creates/
 destroys no Space, no SLS move, no tap input; observed standing: gesture
 legs read back the current both ways, the arrow session pair observed no
-effect); `mc-recover` adopts ONLY the
+effect); `spaces-drag-transfer` is the bounded owned titlebar-drag transfer
+diagnostic over two SIDs (independent public self-join recovery proven
+first, then one synthetic HID titlebar-drag plus a tagged native
+Ctrl+arrow chord outward with an exact drag-back inverse; `--temporary`
+creates exactly one temp on the original's display and removes ONLY that
+SID afterwards, while a named `--temp` is never created or destroyed; no
+SLS move, no preference writes, no product bindings enabled; live
+synthetic transfer is NOT established -- the single live run refused
+pre-post on above-normal chrome with the original restored and the helper
+absent); `mc-recover` adopts ONLY the
 exact ordered [original, temp] topology and removes ONLY that temp when the
 strict emptiness gate already proves clear (else parked, never clean);
 `mc-restore-frontmost` is a guarded Ghostty-only single app activation with

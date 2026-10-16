@@ -364,7 +364,7 @@ impl RunCtx {
 /// off-current) and only then performs the plain SLS membership read for
 /// the already-joined window ID. No foreign windows: the WID was joined to
 /// the owned PID at baseline and re-joined on every poll.
-fn poll_membership_held(
+pub(crate) fn poll_membership_held(
     child: &mut std::process::Child,
     pid: u32,
     helper_path: &str,
@@ -406,7 +406,7 @@ fn poll_membership_held(
 /// instead of the cross-command title proof, which cannot observe an
 /// off-current window). The proof is taken immediately before publishing;
 /// exact behavior-restore is required. Returns behavior evidence + elapsed.
-fn run_join_leg_held(
+pub(crate) fn run_join_leg_held(
     child: &mut std::process::Child,
     pid: u32,
     nonce: &str,

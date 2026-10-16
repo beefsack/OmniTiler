@@ -640,6 +640,26 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 allow_untested,
             )
         }
+        Command::SpacesDragTransfer {
+            original,
+            temp,
+            seconds,
+            allow_untested,
+        } => {
+            // Bounded owned titlebar-drag transfer: `Some` temp runs over
+            // two EXISTING SIDs (independent self-join recovery proven
+            // first, then one synthetic drag outward with an exact
+            // drag-back inverse; creates/destroys no Space); `None`
+            // (--temporary) creates exactly one temp on the original's
+            // display first and removes only it afterwards. Performs no
+            // SLS move, writes no preferences, never targets Ghostty.
+            tiler_macos::space_drag_live::run_spaces_drag_transfer(
+                original,
+                temp,
+                seconds,
+                allow_untested,
+            )
+        }
         Command::Tile {
             user_start,
             scopes,

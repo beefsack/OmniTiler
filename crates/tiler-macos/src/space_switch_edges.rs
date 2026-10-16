@@ -175,9 +175,11 @@ pub(crate) fn edge_synth_gates(edge: &str) -> Result<(), McError> {
 
 /// One arrow down/up pair through the session stream. Session gates plus
 /// the exact held-helper proof plus the shared bundle/oracle boundary run
-/// before EACH edge. When `up` is refused after `down` posted, the pair
-/// reports [`PairOutcome::Pending`] (complete once via the probe's pending
-/// recovery, never retried here).
+/// before EACH edge. Both edges carry the own-switch provenance tag
+/// ([`crate::input_match::OWN_SWITCH_USER_DATA`]) so the tap passes our own
+/// switch chords while still consuming the user's. When `up` is refused
+/// after `down` posted, the pair reports [`PairOutcome::Pending`] (complete
+/// once via the probe's pending recovery, never retried here).
 #[cfg(target_os = "macos")]
 pub(crate) fn post_arrow_held(
     child: &mut std::process::Child,
@@ -187,7 +189,7 @@ pub(crate) fn post_arrow_held(
     helper_path: &str,
     keycode: u32,
 ) -> PairOutcome {
-    use crate::synth::{GuardedPostRoute, OwnedPostTarget, post_guarded};
+    use crate::synth::{GuardedPostRoute, OwnedPostTarget, post_guarded_with_tag};
     let key: u16 = match u16::try_from(keycode) {
         Ok(k) => k,
         Err(_) => {
@@ -201,7 +203,14 @@ pub(crate) fn post_arrow_held(
         Ok(t) => t,
         Err(e) => return PairOutcome::Refused(format!("arrow down target refused: {e}")),
     };
-    if let Err(e) = post_guarded(&target, key, CG_CTRL_BIT, true, GuardedPostRoute::Session) {
+    if let Err(e) = post_guarded_with_tag(
+        &target,
+        key,
+        CG_CTRL_BIT,
+        true,
+        GuardedPostRoute::Session,
+        Some(crate::input_match::OWN_SWITCH_USER_DATA),
+    ) {
         return PairOutcome::Refused(format!("arrow down refused: {e}"));
     }
     // The up edge re-proves everything (gates, holder, boundary): a PID
@@ -212,8 +221,15 @@ pub(crate) fn post_arrow_held(
         edge_synth_gates("arrow-up").map_err(|e| e.to_string())?;
         let target = OwnedPostTarget::from_held_child(child, pid, wid, helper_path)
             .map_err(|e| format!("arrow up target refused: {e}"))?;
-        post_guarded(&target, key, CG_CTRL_BIT, false, GuardedPostRoute::Session)
-            .map_err(|e| format!("arrow up refused: {e}"))?;
+        post_guarded_with_tag(
+            &target,
+            key,
+            CG_CTRL_BIT,
+            false,
+            GuardedPostRoute::Session,
+            Some(crate::input_match::OWN_SWITCH_USER_DATA),
+        )
+        .map_err(|e| format!("arrow up refused: {e}"))?;
         Ok(())
     })();
     if pending_release_needed(true, second.is_ok()) {
@@ -246,8 +262,10 @@ pub(crate) fn post_arrow_held(
 }
 
 /// One yabai began/ended gesture event with the exact pinned 6-field
-/// branch (same display, no warp/click). Shared by the leg post and the
-/// pending-release completion so both emit the identical shape.
+/// branch (same display, no warp/click). Carries the own-switch provenance
+/// tag (tap observes key chords only, so this is future-proofing plus
+/// mouse-event parity, never a bypass claim). Shared by the leg post and
+/// the pending-release completion so both emit the identical shape.
 #[cfg(target_os = "macos")]
 pub(crate) fn gesture_event(
     sign: f64,
@@ -255,6 +273,11 @@ pub(crate) fn gesture_event(
 ) -> Option<objc2_core_foundation::CFRetained<objc2_core_graphics::CGEvent>> {
     use objc2_core_graphics::{CGEvent, CGEventField};
     let event = CGEvent::new(None)?;
+    CGEvent::set_integer_value_field(
+        Some(&event),
+        CGEventField::EventSourceUserData,
+        crate::input_match::OWN_SWITCH_USER_DATA,
+    );
     CGEvent::set_integer_value_field(
         Some(&event),
         CGEventField(GESTURE_FIELD_TYPE),
@@ -398,11 +421,18 @@ pub(crate) fn post_release_once(
             Err("gesture release is macOS-only".to_owned())
         }
     } else {
-        use crate::synth::{GuardedPostRoute, post_guarded};
+        use crate::synth::{GuardedPostRoute, post_guarded_with_tag};
         let key = u16::try_from(pending.keycode)
             .map_err(|_| format!("keycode {} out of range", pending.keycode))?;
-        post_guarded(target, key, CG_CTRL_BIT, false, GuardedPostRoute::Session)
-            .map_err(|e| format!("up post refused ({e})"))?;
+        post_guarded_with_tag(
+            target,
+            key,
+            CG_CTRL_BIT,
+            false,
+            GuardedPostRoute::Session,
+            Some(crate::input_match::OWN_SWITCH_USER_DATA),
+        )
+        .map_err(|e| format!("up post refused ({e})"))?;
         Ok(1)
     }
 }

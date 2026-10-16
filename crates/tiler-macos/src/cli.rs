@@ -151,6 +151,15 @@ pub enum Command {
         seconds: u64,
         allow_untested: bool,
     },
+    SpacesDragTransfer {
+        original: u64,
+        /// `Some` = two preexisting SIDs (creates/destroys no Space);
+        /// `None` (`--temporary`) = create exactly one temp internally and
+        /// remove only it afterwards.
+        temp: Option<u64>,
+        seconds: u64,
+        allow_untested: bool,
+    },
     SpacesSession {
         seconds: u64,
         allow_untested: bool,
@@ -368,6 +377,18 @@ pub fn help_text() -> String {
             \x20 \x20 edge) and the yabai began/ended gesture pair (same display,\n\
             \x20 \x20 no warp/click); creates/destroys no Space, performs no SLS\n\
             \x20 \x20 move, posts no tap input; explicit opt-in per invocation)\n\
+            \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested\n\
+            \x20 \x20 (bounded owned titlebar-drag transfer, default 120s,\n\
+            \x20 \x20 minimum 60s: one owned helper, independent public\n\
+            \x20 \x20 self-join recovery proven first, then a synthetic\n\
+            \x20 \x20 titlebar-drag plus tagged Ctrl+arrow chord outward with\n\
+            \x20 \x20 an exact drag-back inverse; --temp runs over two\n\
+            \x20 \x20 preexisting SIDs (creates/destroys no Space),\n\
+            \x20 \x20 --temporary creates exactly one temp on the original's\n\
+            \x20 \x20 display (baseline must read exactly [original]) and\n\
+            \x20 \x20 removes only it afterwards; performs no SLS move,\n\
+            \x20 \x20 writes no preferences; explicit\n\
+            \x20 \x20 opt-in per invocation)\n\
            \x20 spaces-session [--seconds N] [--allow-untested]\n\
            \x20 \x20 (single bounded Child-holder session: lifecycle proofs, CG identity,\n\
            \x20 \x20 membership/topology/permission readbacks; dispatches no Space writes;\n\
@@ -1290,6 +1311,64 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             Command::SpacesSwitchProbe {
                 original: original.ok_or("spaces-switch-probe needs --original")?,
                 temp: temp.ok_or("spaces-switch-probe needs --temp")?,
+                seconds,
+                allow_untested,
+            }
+        }
+        "spaces-drag-transfer" => {
+            // Bounded owned titlebar-drag transfer: either over two
+            // EXISTING SIDs (--temp SID: creates/destroys no Space,
+            // performs no SLS move, writes no preferences) or with exactly
+            // one internally created temp (--temporary: the baseline must
+            // read exactly [original] on the display; ONLY the created
+            // temp is removed afterwards). --temp and --temporary are
+            // mutually exclusive.
+            let mut original: Option<u64> = None;
+            let mut temp: Option<u64> = None;
+            let mut temporary = false;
+            let mut seconds = crate::config::MAX_PROBE_SECONDS;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--original" => {
+                        j += 1;
+                        original = Some(parse_u64(
+                            args.get(j).ok_or("--original needs a value")?,
+                            "--original",
+                        )?);
+                    }
+                    "--temp" => {
+                        j += 1;
+                        temp = Some(parse_u64(
+                            args.get(j).ok_or("--temp needs a value")?,
+                            "--temp",
+                        )?);
+                    }
+                    "--temporary" => {
+                        temporary = true;
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("spaces-drag-transfer: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            if temporary && temp.is_some() {
+                return Err("spaces-drag-transfer: --temp and --temporary are exclusive".to_owned());
+            }
+            if !temporary && temp.is_none() {
+                return Err("spaces-drag-transfer needs --temp or --temporary".to_owned());
+            }
+            Command::SpacesDragTransfer {
+                original: original.ok_or("spaces-drag-transfer needs --original")?,
+                temp,
                 seconds,
                 allow_untested,
             }

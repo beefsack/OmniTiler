@@ -53,6 +53,73 @@ pub struct TapTuning {
     pub want_code: i64,
 }
 
+/// Provenance tag for the tiler's OWN native Space-switch chords.
+///
+/// Set as `kCGEventSourceUserData` (field 42) on every synthetic switch
+/// chord the tiler posts for a drag transfer (arrow down/up, gesture
+/// began/ended, future drag-chord posts). Tile-catalogue posts
+/// ([`crate::synth::post_guarded`]) and all physical input carry no tag, so
+/// the tap can tell our switch chords apart from the user's identical
+/// chords: own tagged switch chords pass (`Keep`), user chords still
+/// consume per the catalogue. The value spells "OMNITILE" in ASCII
+/// (distinct from any PID/UID the field normally carries); nonzero so an
+/// unset field never matches.
+pub const OWN_SWITCH_USER_DATA: i64 = 0x4F4E_4E49_5449_4C45;
+
+/// Mac virtual keycodes for the relative-switch arrow legs (`CGKeyCode`
+/// space; pinned equal to [`crate::input_policy::KEY_LEFT`] /
+/// [`crate::input_policy::KEY_RIGHT`]).
+pub const SWITCH_KEY_LEFT: u32 = 0x7B;
+pub const SWITCH_KEY_RIGHT: u32 = 0x7C;
+/// `CGEventFlags` Control bit plus the exact-chord mask for the switch
+/// legs (CG domain, never Carbon; same bits as [`crate::input::cg_flag_bits`]
+/// for Ctrl).
+pub const SWITCH_CTRL_BIT: u64 = 0x0004_0000;
+pub const SWITCH_FLAGS_MASK: u64 = 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0010_0000;
+
+/// Pure own-switch provenance over plain data: true only for the tiler's
+/// own tagged relative-switch chord shape -- exact tag, KeyDown/KeyUp, exact
+/// Ctrl with no extra masked modifier, Left/Right arrow keycode. Everything
+/// else (untagged user chords, untagged/tagged tile-catalogue chords that
+/// are not exactly this shape, FlagsChanged, digits) is NOT an own switch
+/// chord and follows the normal match path. No live touch.
+#[must_use]
+pub fn is_own_switch_chord(user_data: i64, kind: TapKeyKind, flags: u64, code: i64) -> bool {
+    if user_data != OWN_SWITCH_USER_DATA {
+        return false;
+    }
+    if !matches!(kind, TapKeyKind::KeyDown | TapKeyKind::KeyUp) {
+        return false;
+    }
+    if (flags & SWITCH_FLAGS_MASK) != SWITCH_CTRL_BIT {
+        return false;
+    }
+    code == i64::from(SWITCH_KEY_LEFT) || code == i64::from(SWITCH_KEY_RIGHT)
+}
+
+/// Pure per-event tap decision with own-switch provenance. An own tagged
+/// switch chord always passes (`matched: false, suppress: false`) WITHOUT
+/// touching `down_pending` -- it never arms suppression and never forwards
+/// to the engine. Every other event follows [`decide_tap_event`] unchanged,
+/// so user chords (untagged) and own tile-catalogue posts (untagged, or
+/// tagged but not the switch shape) keep exact-chord suppression.
+pub fn decide_tap_event_with_provenance(
+    kind: TapKeyKind,
+    flags: u64,
+    code: i64,
+    user_data: i64,
+    tuning: TapTuning,
+    suppress_armed: bool,
+    down_pending: &mut bool,
+) -> TapDecision {
+    if is_own_switch_chord(user_data, kind, flags, code) {
+        return TapDecision {
+            matched: false,
+            suppress: false,
+        };
+    }
+    decide_tap_event(kind, flags, code, tuning, suppress_armed, down_pending)
+}
 /// Pure per-event tap decision. Suppression is armed only by the explicit
 /// CLI `--suppress` flag and applies ONLY to exact-chord `KeyDown`/`KeyUp`
 /// pairs: a `KeyDown` match arms `down_pending`; the matching `KeyUp`
@@ -262,5 +329,167 @@ mod tests {
         assert!(!d.matched && !d.suppress && !pending);
         let d = decide_tap_event(TapKeyKind::KeyUp, 0x0010_0000, 0x04, t, true, &mut pending);
         assert!(d.matched && !d.suppress);
+    }
+
+    fn switch_tuning() -> TapTuning {
+        // Tile-catalogue focus-right under the Ctrl modifier: exact
+        // Ctrl+Right. The user's chord must consume; ours must pass.
+        TapTuning {
+            want_flags: SWITCH_CTRL_BIT,
+            flags_mask: SWITCH_FLAGS_MASK,
+            want_code: i64::from(SWITCH_KEY_RIGHT),
+        }
+    }
+
+    #[test]
+    fn own_tag_is_nonzero_and_distinct_from_unset() {
+        assert_ne!(OWN_SWITCH_USER_DATA, 0);
+        // Switch legs pin the shared domains: CG Control bit, arrow codes.
+        assert_eq!(SWITCH_CTRL_BIT, 0x0004_0000);
+        assert_eq!(SWITCH_KEY_LEFT, crate::input_policy::KEY_LEFT);
+        assert_eq!(SWITCH_KEY_RIGHT, crate::input_policy::KEY_RIGHT);
+    }
+
+    #[test]
+    fn own_switch_shape_needs_tag_chord_and_arrows() {
+        use TapKeyKind::{KeyDown, KeyUp, Other};
+        let down = |user_data: i64, kind: TapKeyKind, flags: u64, code: i64| {
+            is_own_switch_chord(user_data, kind, flags, code)
+        };
+        // Own tagged Ctrl+arrows pass on both edges.
+        assert!(down(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        assert!(down(
+            OWN_SWITCH_USER_DATA,
+            KeyUp,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_LEFT)
+        ));
+        // Untagged (user) identical chords are not ours.
+        assert!(!down(
+            0,
+            KeyDown,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        // Wrong tag, wrong key, extra modifier, FlagsChanged, digits: not ours.
+        assert!(!down(
+            1,
+            KeyDown,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        assert!(!down(OWN_SWITCH_USER_DATA, KeyDown, SWITCH_CTRL_BIT, 0x04));
+        assert!(!down(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            SWITCH_CTRL_BIT | 0x0002_0000,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        assert!(!down(
+            OWN_SWITCH_USER_DATA,
+            Other,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+        assert!(!down(
+            OWN_SWITCH_USER_DATA,
+            KeyDown,
+            0,
+            i64::from(SWITCH_KEY_RIGHT)
+        ));
+    }
+
+    #[test]
+    fn own_switch_chords_pass_while_user_chords_consume() {
+        let t = switch_tuning();
+        // User Ctrl+Right (untagged), armed: down suppresses and pends,
+        // paired up suppresses -- the containment proof is unchanged.
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT),
+            0,
+            t,
+            true,
+            &mut pending,
+        );
+        assert!(d.matched && d.suppress && pending);
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyUp,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT),
+            0,
+            t,
+            true,
+            &mut pending,
+        );
+        assert!(d.matched && d.suppress && !pending);
+        // Our tagged Ctrl+Right pair, armed: passes with no match, no
+        // suppress, and never arms pending -- the tap never sees it.
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT),
+            OWN_SWITCH_USER_DATA,
+            t,
+            true,
+            &mut pending,
+        );
+        assert_eq!(
+            d,
+            TapDecision {
+                matched: false,
+                suppress: false,
+            }
+        );
+        assert!(!pending);
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyUp,
+            SWITCH_CTRL_BIT,
+            i64::from(SWITCH_KEY_RIGHT),
+            OWN_SWITCH_USER_DATA,
+            t,
+            true,
+            &mut pending,
+        );
+        assert_eq!(
+            d,
+            TapDecision {
+                matched: false,
+                suppress: false,
+            }
+        );
+        assert!(!pending);
+    }
+
+    #[test]
+    fn own_tag_on_non_switch_shapes_still_consumes() {
+        // A tagged event that is NOT the switch shape (tile-catalogue H
+        // chord shape here) follows the normal path: exact match consumes
+        // when armed. Tagging is switch-scoped, never a blanket bypass --
+        // this pins the input-session arrow/tile suppression regression.
+        let t = TapTuning {
+            want_flags: SWITCH_CTRL_BIT,
+            flags_mask: SWITCH_FLAGS_MASK,
+            want_code: 0x04,
+        };
+        let mut pending = false;
+        let d = decide_tap_event_with_provenance(
+            TapKeyKind::KeyDown,
+            SWITCH_CTRL_BIT,
+            0x04,
+            OWN_SWITCH_USER_DATA,
+            t,
+            true,
+            &mut pending,
+        );
+        assert!(d.matched && d.suppress && pending);
     }
 }
