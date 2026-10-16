@@ -1,5 +1,40 @@
 use super::*;
 
+/// Maximum hydration-candidate rows carried in one normal rejection detail
+/// record. Restart hydration sets are small (one domain's staged floats
+/// plus its tiled rows); the cap keeps normal-log expansion bounded while
+/// `total`/`omitted` keep the count exact. Integer geometry plus opaque
+/// tokens only: no HWNDs, pids, paths, or titles.
+pub(super) const RESTART_HYDRATION_DETAIL_CAP: usize = 8;
+
+/// Bounded candidate facts for a rejected hydration attempt, for the normal
+/// log. `total` is the exact row count; only the first
+/// [`RESTART_HYDRATION_DETAIL_CAP`] rows are carried and `omitted` counts
+/// the rest, so the record never grows with the domain.
+pub(super) fn bounded_hydration_candidates(
+    rows: &[crate::workspace_owner::OwnerRow],
+) -> serde_json::Value {
+    let total = rows.len();
+    let candidates: Vec<serde_json::Value> = rows
+        .iter()
+        .take(RESTART_HYDRATION_DETAIL_CAP)
+        .map(|row| {
+            serde_json::json!({
+                "window": row.token,
+                "rect": [row.rect.x, row.rect.y, row.rect.w, row.rect.h],
+                "floating": row.floating,
+                "min": [row.hints.min_w, row.hints.min_h],
+                "max": [row.hints.max_w, row.hints.max_h],
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "total": total,
+        "omitted": total.saturating_sub(candidates.len()),
+        "candidates": candidates,
+    })
+}
+
 /// Admit first-seen fullscreen windows as born-held workspace members (KDE
 /// initial-fullscreen-hold parity): managed membership with a slotless
 /// synthetic floating Engine observation, never a tile slot. First-seen
@@ -316,6 +351,10 @@ pub(super) fn adopt_restart_markers(
     }
     let log_path = state.log_path.clone();
     let correlation = state.correlation();
+    // Rebuild the observation-scoped write barrier: a rejected staged float
+    // from the previous observation holds no authority here until this
+    // observation revalidates its marker, lifetime, and pid fences below.
+    state.restart_reject_hold.clear();
     // Stage every admitted valid marker before the first domain commit, so
     // no marker window is ever admitted as an ordinary tile first. No Engine
     // commits and no map writes in this pass (the already-floating fast path
@@ -533,6 +572,13 @@ pub(super) fn adopt_restart_markers(
                 state.sticky.remove(&s.key);
                 state.floated.remove(&s.key);
                 state.float_rects.remove(&s.token);
+                // Observation-scoped write barrier for this exact validated
+                // lifetime only: row assembly rides the held key floating
+                // and the write gate excludes it, so the rejected candidate
+                // takes no tiled writes before the next observation
+                // revalidates. Durable markers are untouched and no lane is
+                // kept: the next preamble clears and rebuilds this set.
+                state.restart_reject_hold.insert(s.key.clone());
             }
         };
         let Some(rows) = assemble_domain_rows(
@@ -569,6 +615,10 @@ pub(super) fn adopt_restart_markers(
             .find(|r| !r.floating)
             .map(|r| WindowId(r.token.clone()));
         let mut candidate = state.engine.clone();
+        let pre_revision = state
+            .engine
+            .session(&domain_key)
+            .map(|session| session.accepted_revision());
         let mut event = crate::tiling::build_reconcile_event_for_floating(
             &state.owner,
             &state.generation,
@@ -582,11 +632,70 @@ pub(super) fn adopt_restart_markers(
             focused.as_ref(),
         );
         stamp_engine_event(state, &mut event);
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "restart-adopt-attempt",
+                "correlation": correlation.as_str(),
+                "windows": rows.len(),
+                "floating": rows.iter().filter(|row| row.floating).count(),
+                "focus": focused.as_ref().map(|window| window.0.as_str()),
+                "session_present_before": pre_revision.is_some(),
+                "session_revision_before": pre_revision,
+            }),
+        );
         let reply = candidate.handle(&event);
         if matches!(
             reply,
             CoreReply::Rejected { .. } | CoreReply::Diverged(_) | CoreReply::SnapshotInvalid { .. }
         ) {
+            // Rejection detail: the per-window lane rows below stay
+            // unchanged; this one record carries the full bounded
+            // candidate facts plus the Engine reports that distinguish a
+            // converge-then-seed fall-through (converged counts with a
+            // fallback fit reason, then `duplicate-window`) from an
+            // immediate convergence refusal (no converged counts).
+            let converged = candidate.last_convergence().map(|report| {
+                serde_json::json!({
+                    "op": report.op,
+                    "removed": report.removed,
+                    "admitted": report.admitted,
+                    "flags_adopted": report.flags_adopted,
+                })
+            });
+            let adoption_fit = candidate.last_adoption_fit().map(|report| {
+                serde_json::json!({
+                    "outcome": report.outcome,
+                    "windows": report.windows,
+                    "reason": report.reason,
+                })
+            });
+            let fixed = candidate.last_fixed_admission().map(|report| {
+                serde_json::json!({
+                    "op": report.op,
+                    "evaluated": report.evaluated,
+                    "admitted": report.admitted,
+                    "reason": report.reason,
+                })
+            });
+            log_json_at(
+                &log_path,
+                serde_json::json!({
+                    "event": "candidate-rejected-detail",
+                    "correlation": correlation.as_str(),
+                    "outcome": "candidate-rejected",
+                    "reason": reply_outcome(&reply),
+                    "focus": focused.as_ref().map(|window| window.0.as_str()),
+                    "windows": rows.len(),
+                    "floating": rows.iter().filter(|row| row.floating).count(),
+                    "session_present_before": pre_revision.is_some(),
+                    "session_revision_before": pre_revision,
+                    "converged": converged,
+                    "adoption_fit": adoption_fit,
+                    "fixed": fixed,
+                    "detail": bounded_hydration_candidates(&rows),
+                }),
+            );
             rollback(state);
             for s in staged
                 .iter()

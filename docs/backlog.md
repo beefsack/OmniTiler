@@ -2305,11 +2305,17 @@ decisions of 2026-09-24 are under
     CLI are tentative, pending user review. Historical checklist follows.
     Agent-live 2026-10-17: two centered-start restarts preserved both sticky
     origins, intentional float, set/membership and provable return focus.
-    FAIL parked: another restart rejected three adoptions with `duplicate-window`
-    on tick 1, wrote tile frames, then recovered intent on tick 2 without
-    geometry repair. Trigger isolation inconclusive; no core change selected.
+    The first-observation `duplicate-window` write defect is contained by
+    Windows-only, lifetime-keyed observation holds (2026-10-17): a captured
+    fixed-size first-tiled anchor converges without tiled focus, falls through
+    to duplicate admission, and previously exposed three marked floats to
+    tiled writes. Mixed baseline reproduction displaced all three; six protected
+    mixed restarts made zero tiled writes and adopted on the next observation.
+    Seven regressions and locked gates pass (2,465 passed, 0 failed, 1 ignored).
+    Shared-core rejection remains unchanged: its valid-input KDE repair needs
+    a separate reply/projection decision. [Repair evidence and limits](changes/windows-restart-hydration-rejection.md).
     Full restart acceptance and initial-desktop restoration are not established;
-    [receipts, cleanup limitations and next discriminator](changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17).
+    [historical receipts and cleanup limitations](changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17).
     Restart R-RST-01 plus R-FLT-05 sticky persistence. User
     decisions 2026-10-07 (R-FLT-05, R-RST-01 float identity;
     [decisions](decisions.md#restart-persistence)): sticky floats stay

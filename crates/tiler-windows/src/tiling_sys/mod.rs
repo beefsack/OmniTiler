@@ -830,6 +830,17 @@ struct TileLoop {
     /// Engine as a slotless float plus this map plus a window-lifetime native
     /// marker; the marker (not this map) survives owner restarts.
     sticky: std::collections::BTreeMap<crate::workspace::WindowKey, bool>,
+    /// Observation-scoped write barrier for restart-hydration float
+    /// candidates: exact marker/lifetime-validated staged ordinary/sticky
+    /// floats whose hydration commit was rejected (or never assembled) this
+    /// observation. Rebuilt by every admission preamble (cleared, then
+    /// repopulated only for the current observation's rejected staged sets),
+    /// keyed by full window lifetime identity, pruned with membership. Row
+    /// assembly rides held keys floating and the write gate excludes them,
+    /// so rejected candidates take no tiled writes before the next
+    /// observation revalidates. Never an adapter float lane: durable
+    /// markers are untouched, and success/invalid markers leave no entry.
+    restart_reject_hold: BTreeSet<crate::workspace::WindowKey>,
     /// Unconfirmed workspace-domain releases (toggle edges). Retried on
     /// topology edges only (never polled) until the exact domain release
     /// confirms; keyed by domain with latest-intent-wins.

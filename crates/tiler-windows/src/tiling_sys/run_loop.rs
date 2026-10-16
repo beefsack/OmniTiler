@@ -265,6 +265,7 @@ pub(super) fn run_tile_loop(
         float_rects: HashMap::new(),
         floated: BTreeSet::new(),
         sticky: std::collections::BTreeMap::new(),
+        restart_reject_hold: BTreeSet::new(),
         fixed_tile_overrides: BTreeSet::new(),
         fixed_origin_overrides: BTreeSet::new(),
         fixed_auto_seen: BTreeSet::new(),

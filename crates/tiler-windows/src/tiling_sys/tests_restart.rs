@@ -841,3 +841,674 @@ fn absent_markers_adopt_nothing_without_side_effects() {
         "no float frame without adoption"
     );
 }
+
+fn hydration_row(
+    token: &str,
+    rect: Rect,
+    hints: tiler_core::size_hints::WindowSizeHints,
+    floating: bool,
+) -> crate::workspace_owner::OwnerRow {
+    crate::workspace_owner::OwnerRow {
+        token: token.to_owned(),
+        rect,
+        hints,
+        floating,
+    }
+}
+
+#[test]
+fn hydration_rejection_detail_carries_exact_counts_under_cap() {
+    // Pure bound check, no windows touched: the cap explanation lives in
+    // `bounded_hydration_candidates` (`restart.rs`).
+    let rect = Rect {
+        x: 1,
+        y: 2,
+        w: 3,
+        h: 4,
+    };
+    let rows: Vec<crate::workspace_owner::OwnerRow> = (0
+        ..super::restart::RESTART_HYDRATION_DETAIL_CAP + 2)
+        .map(|n| {
+            hydration_row(
+                &format!("w{n}"),
+                rect,
+                tiler_core::size_hints::WindowSizeHints::none(),
+                n % 2 == 0,
+            )
+        })
+        .collect();
+    let detail = super::restart::bounded_hydration_candidates(&rows);
+    assert_eq!(detail["total"], serde_json::json!(rows.len()));
+    assert_eq!(detail["omitted"], serde_json::json!(2));
+    let carried = detail["candidates"].as_array().expect("candidate array");
+    assert_eq!(carried.len(), super::restart::RESTART_HYDRATION_DETAIL_CAP);
+    assert_eq!(carried[0]["window"], "w0");
+    assert_eq!(carried[0]["rect"], serde_json::json!([1, 2, 3, 4]));
+    assert_eq!(carried[0]["floating"], true);
+    assert_eq!(
+        carried[0]["min"],
+        serde_json::json!([null, null]),
+        "absent hints stay null, never zero-filled"
+    );
+    assert!(
+        detail["candidates"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| row.get("window").is_some()
+                && row.get("rect").is_some()
+                && row.get("floating").is_some()
+                && row.get("min").is_some()
+                && row.get("max").is_some()))
+    );
+}
+
+#[test]
+fn hydration_rejection_detail_omits_nothing_under_cap() {
+    let detail = super::restart::bounded_hydration_candidates(&[
+        hydration_row(
+            "w0",
+            Rect {
+                x: 517,
+                y: 281,
+                w: 1526,
+                h: 818,
+            },
+            tiler_core::size_hints::WindowSizeHints {
+                min_w: Some(1157),
+                min_h: Some(789),
+                max_w: Some(1157),
+                max_h: Some(789),
+            },
+            false,
+        ),
+        hydration_row(
+            "w1",
+            Rect {
+                x: 8,
+                y: 8,
+                w: 100,
+                h: 100,
+            },
+            tiler_core::size_hints::WindowSizeHints::none(),
+            true,
+        ),
+    ]);
+    assert_eq!(detail["total"], serde_json::json!(2));
+    assert_eq!(detail["omitted"], serde_json::json!(0));
+    assert_eq!(
+        detail["candidates"][0]["min"],
+        serde_json::json!([1157, 789])
+    );
+    assert_eq!(
+        detail["candidates"][0]["max"],
+        serde_json::json!([1157, 789])
+    );
+    assert_eq!(detail["candidates"][1]["floating"], true);
+}
+
+// --- Rejected-hydration write barrier ---------------------------------------
+// First-observation fixture through the production preamble: a fixed
+// (max-pinned) focused anchor plus one plain tiled remainder plus two
+// sticky-marked and one ordinary float-marked candidates. Hydration must
+// reject (the recorded `duplicate-window` shape) while the same tick's
+// row assembly rides the validated floats floating and the write gate
+// excludes them, with the tiled remainder still eligible.
+
+fn reject_domain_bounds() -> Rect {
+    Rect {
+        x: 8,
+        y: 8,
+        w: 2544,
+        h: 1364,
+    }
+}
+
+fn reject_areas_for(output: &str) -> Vec<super::MonitorArea> {
+    vec![super::MonitorArea {
+        device: output.to_owned(),
+        work: reject_domain_bounds(),
+        full: reject_domain_bounds(),
+    }]
+}
+
+fn reject_anchor_frame() -> Rect {
+    Rect {
+        x: 48,
+        y: 20,
+        w: 1157,
+        h: 789,
+    }
+}
+
+fn reject_plain_frame() -> Rect {
+    Rect {
+        x: 1400,
+        y: 800,
+        w: 900,
+        h: 500,
+    }
+}
+
+fn reject_float_frame() -> Rect {
+    Rect {
+        x: 517,
+        y: 281,
+        w: 1526,
+        h: 818,
+    }
+}
+
+fn fixed_anchor_hints() -> tiler_core::size_hints::WindowSizeHints {
+    tiler_core::size_hints::WindowSizeHints {
+        min_w: Some(1157),
+        min_h: Some(789),
+        max_w: Some(1157),
+        max_h: Some(789),
+    }
+}
+
+fn min_anchor_hints() -> tiler_core::size_hints::WindowSizeHints {
+    tiler_core::size_hints::WindowSizeHints {
+        min_w: Some(1157),
+        min_h: Some(789),
+        ..tiler_core::size_hints::WindowSizeHints::none()
+    }
+}
+
+fn reject_plain_hints() -> tiler_core::size_hints::WindowSizeHints {
+    tiler_core::size_hints::WindowSizeHints {
+        min_w: Some(401),
+        min_h: Some(246),
+        ..tiler_core::size_hints::WindowSizeHints::none()
+    }
+}
+
+fn observed_frame(hwnd: u64, token: &str, visible: Rect) -> super::ObservedWindow {
+    let mut window = observed(hwnd, token);
+    window.visible = visible;
+    window
+}
+
+/// Five owned windows in seed order: fixed anchor (w1), plain remainder
+/// (w2), sticky ex-tiled (w3), sticky ex-float (w4), ordinary float (w5).
+/// Real member tags plus real classification markers; injected hints only
+/// for the tiled rows (float lanes always ride hintless). The anchor
+/// sorts first so the hydration focus names it, matching the recorded
+/// rejection shape. No native writes beyond the owned windows' own
+/// properties; the log sinks to NUL.
+struct RejectRig {
+    wins: Vec<AdoptWindow>,
+    state: super::TileLoop,
+    keys: Vec<WindowKey>,
+    tokens: Vec<String>,
+    output: String,
+    active: String,
+    observed: Vec<super::ObservedWindow>,
+}
+
+fn reject_rig() -> RejectRig {
+    super::clear_test_hints();
+    let wins = vec![
+        AdoptWindow::create(),
+        AdoptWindow::create(),
+        AdoptWindow::create(),
+        AdoptWindow::create(),
+        AdoptWindow::create(),
+    ];
+    let pid = std::process::id();
+    let mut state = test_state();
+    state.log_path = std::path::PathBuf::from("NUL");
+    state.engine.set_fixed_size_admission(true);
+    let mut keys = Vec::new();
+    let mut tokens = Vec::new();
+    let (mut output, mut active) = (String::new(), String::new());
+    let mut tags = Vec::new();
+    for win in &wins {
+        tags.push(
+            crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+                .expect("member tag installs on the owned window"),
+        );
+    }
+    crate::product_hide::sys::install_sticky_marker(wins[2].hwnd, false)
+        .expect("sticky marker installs");
+    crate::product_hide::sys::install_sticky_marker(wins[3].hwnd, true)
+        .expect("sticky marker installs");
+    crate::product_hide::sys::install_float_intent_marker(wins[4].hwnd)
+        .expect("float marker installs");
+    for (index, win) in wins.iter().enumerate() {
+        let (key, token, out, act) = seed_member(&mut state, win.hwnd, &tags[index]);
+        keys.push(key);
+        tokens.push(token);
+        output = out;
+        active = act;
+    }
+    super::inject_test_hints(wins[0].hwnd, fixed_anchor_hints());
+    super::inject_test_hints(wins[1].hwnd, reject_plain_hints());
+    let observed = vec![
+        observed_frame(wins[0].hwnd, &tokens[0], reject_anchor_frame()),
+        observed_frame(wins[1].hwnd, &tokens[1], reject_plain_frame()),
+        observed_frame(wins[2].hwnd, &tokens[2], reject_float_frame()),
+        observed_frame(wins[3].hwnd, &tokens[3], reject_float_frame()),
+        observed_frame(wins[4].hwnd, &tokens[4], reject_float_frame()),
+    ];
+    RejectRig {
+        wins,
+        state,
+        keys,
+        tokens,
+        output,
+        active,
+        observed,
+    }
+}
+
+fn reject_domain_key(rig: &RejectRig) -> DomainKey {
+    DomainKey {
+        output: OutputId(rig.output.clone()),
+        workspace: WorkspaceId(rig.active.clone()),
+    }
+}
+
+/// Production reconcile event over freshly assembled rows on a cloned
+/// Engine, so the probe never mutates the rig: proves the fixture rejects
+/// through the real event builder and extracts the plan-level writes.
+fn probe_reconcile(
+    rig: &RejectRig,
+    rows: &[crate::workspace_owner::OwnerRow],
+) -> tiler_core::boundary::CoreReply {
+    use tiler_core::directional::WindowId;
+    let windows: Vec<(
+        WindowId,
+        Rect,
+        tiler_core::size_hints::WindowSizeHints,
+        bool,
+    )> = rows
+        .iter()
+        .map(|row| {
+            (
+                WindowId(row.token.clone()),
+                row.rect,
+                row.hints,
+                row.floating,
+            )
+        })
+        .collect();
+    let fingerprint = crate::tiling::fingerprint(
+        &rows
+            .iter()
+            .map(|row| (row.token.clone(), row.rect))
+            .collect::<Vec<_>>(),
+    );
+    let focused = rows
+        .iter()
+        .find(|row| !row.floating)
+        .map(|row| WindowId(row.token.clone()));
+    let areas = reject_areas_for(&rig.output);
+    let (domain, domain_key) = super::workspace_domain_for(
+        &rig.output,
+        &rig.active,
+        &areas,
+        rig.state.inner_gap,
+        rig.state.outer_gap,
+    )
+    .expect("domain resolves");
+    let correlation = rig.state.correlation();
+    let mut event = crate::tiling::build_reconcile_event_for_floating(
+        &rig.state.owner,
+        &rig.state.generation,
+        &correlation,
+        super::revision_for(&rig.state, &rig.output, &rig.active),
+        fingerprint,
+        &domain,
+        &domain_key,
+        rig.state.outer_gap,
+        &windows,
+        focused.as_ref(),
+    );
+    super::stamp_engine_event(&rig.state, &mut event);
+    let mut probe = rig.state.engine.clone();
+    probe.handle(&event)
+}
+
+fn assert_no_float_writes(
+    reply: &tiler_core::boundary::CoreReply,
+    float_tokens: &[String],
+    what: &str,
+) {
+    if let Some(entries) = crate::workspace_owner::planned_writes(reply) {
+        for entry in &entries {
+            assert!(
+                !float_tokens.contains(&entry.window.0),
+                "{what}: zero tiled writes to held floats, planned {entry:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejected_hydration_holds_float_writes_for_one_observation() {
+    // Fixed focused anchor plus plain remainder plus three marked floats:
+    // hydration rejects, the validated floats hold exactly one
+    // observation of write protection, lanes stay empty, durable markers
+    // stay installed, the tiled remainder stays eligible, and the
+    // production event on a cloned Engine rejects with no float writes. A
+    // repeated identical observation recomputes the same narrow hold.
+    let mut rig = reject_rig();
+    let areas = reject_areas_for(&rig.output);
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    let barrier = &rig.state.restart_reject_hold;
+    assert_eq!(
+        barrier.len(),
+        3,
+        "rejection holds exactly the three validated floats"
+    );
+    for key in &rig.keys[2..] {
+        assert!(
+            barrier.contains(key),
+            "validated float {key:?} is write-held this observation"
+        );
+    }
+    for key in &rig.keys[..2] {
+        assert!(!barrier.contains(key), "tiled rows never enter the hold");
+    }
+    assert!(
+        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
+        "rejection keeps no adapter float lane"
+    );
+    for token in &rig.tokens[2..] {
+        assert!(
+            !rig.state.float_rects.contains_key(token),
+            "rejection keeps no float frame for {token}"
+        );
+    }
+    assert!(
+        rig.state.engine.session(&reject_domain_key(&rig)).is_none(),
+        "rejection commits no Engine candidate"
+    );
+    assert!(
+        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        "durable float marker survives rejection"
+    );
+    for (win, prior) in [(&rig.wins[2], false), (&rig.wins[3], true)] {
+        assert_eq!(
+            crate::product_hide::sys::read_sticky_marker(win.hwnd),
+            Some(prior),
+            "durable sticky marker survives rejection"
+        );
+    }
+    // Same-tick row assembly rides the held keys floating on their live
+    // frames while the tiled remainder stays tiled.
+    let mut hint_cx = super::HintCx::new();
+    let rows = super::assemble_domain_rows(
+        &mut rig.state,
+        &rig.output,
+        &rig.active,
+        &rig.observed,
+        &[],
+        "reconcile",
+        "reject-hold",
+        &mut hint_cx,
+    )
+    .expect("rows assemble");
+    assert_eq!(rows.len(), 5, "observation stays complete under hold");
+    for token in &rig.tokens[2..] {
+        let row = rows
+            .iter()
+            .find(|row| row.token == *token)
+            .expect("held float row");
+        assert!(row.floating, "held float {token} rides floating");
+        assert_eq!(
+            row.rect,
+            reject_float_frame(),
+            "held float keeps live frame"
+        );
+    }
+    for token in &rig.tokens[..2] {
+        let row = rows
+            .iter()
+            .find(|row| row.token == *token)
+            .expect("tiled row");
+        assert!(!row.floating, "tiled {token} stays tiled under hold");
+    }
+    // Write gate excludes the held floats but keeps the tiled remainder.
+    let writable = super::writable_tokens(&rig.state, &rig.output, &rig.active, &rig.observed);
+    for token in &rig.tokens[..2] {
+        assert!(
+            writable.contains(token),
+            "unaffected tile {token} stays writable"
+        );
+    }
+    for token in &rig.tokens[2..] {
+        assert!(
+            !writable.contains(token),
+            "held float {token} takes no tiled write"
+        );
+    }
+    // The production event shape rejects on a cloned Engine with zero
+    // planned writes to the held floats.
+    let reply = probe_reconcile(&rig, &rows);
+    match &reply {
+        tiler_core::boundary::CoreReply::Rejected { kind, .. } => assert_eq!(
+            *kind, "duplicate-window",
+            "fixture reproduces the recorded rejection"
+        ),
+        other => panic!("held-float fixture must reject, got {other:?}"),
+    }
+    assert_no_float_writes(&reply, &rig.tokens[2..], "rejected tick");
+    // Indefinite repeated rejection recomputes the same narrow hold: no
+    // accumulation, no lanes, markers untouched.
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    assert_eq!(
+        rig.state.restart_reject_hold.len(),
+        3,
+        "repeat rejection recomputes the narrow hold"
+    );
+    for key in &rig.keys[2..] {
+        assert!(rig.state.restart_reject_hold.contains(key));
+    }
+    assert!(
+        rig.state.floated.is_empty() && rig.state.sticky.is_empty(),
+        "repeat rejection still keeps no lane"
+    );
+    assert!(
+        crate::product_hide::sys::read_float_intent_marker(rig.wins[4].hwnd),
+        "repeat rejection keeps the durable marker"
+    );
+    super::clear_test_hints();
+}
+
+#[test]
+fn next_consistent_observation_revalidates_after_rejection() {
+    // Same rig rejects first, then the anchor reports minimum-only (no
+    // maximum pin) under unchanged markers and lifetime: the next
+    // observation adopts all three floats, the hold clears, and later
+    // planned writes never target the floats.
+    let mut rig = reject_rig();
+    let areas = reject_areas_for(&rig.output);
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    assert_eq!(
+        rig.state.restart_reject_hold.len(),
+        3,
+        "first observation rejects and holds"
+    );
+    super::inject_test_hints(rig.wins[0].hwnd, min_anchor_hints());
+    let mut hint_cx = super::HintCx::new();
+    super::adopt_restart_markers(
+        &mut rig.state,
+        &fake_me(),
+        &rig.observed,
+        &[],
+        &areas,
+        &mut hint_cx,
+    );
+    assert!(
+        rig.state.restart_reject_hold.is_empty(),
+        "successful hydration leaves no hold"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[2]),
+        Some(&false),
+        "ex-tiled sticky re-adopts its prior"
+    );
+    assert_eq!(
+        rig.state.sticky.get(&rig.keys[3]),
+        Some(&true),
+        "ex-float sticky re-adopts its prior"
+    );
+    assert!(
+        rig.state.floated.contains(&rig.keys[4]),
+        "ordinary float re-adopts"
+    );
+    let key = reject_domain_key(&rig);
+    let session = rig
+        .state
+        .engine
+        .session(&key)
+        .expect("hydrated domain retained");
+    for token in &rig.tokens[2..] {
+        assert!(
+            session.is_exception(&tiler_core::directional::WindowId(token.clone())),
+            "adopted float {token} converges as an exception"
+        );
+    }
+    let mut hint_cx = super::HintCx::new();
+    let rows = super::assemble_domain_rows(
+        &mut rig.state,
+        &rig.output,
+        &rig.active,
+        &rig.observed,
+        &[],
+        "reconcile",
+        "revalidate",
+        &mut hint_cx,
+    )
+    .expect("rows assemble");
+    let writable = super::writable_tokens(&rig.state, &rig.output, &rig.active, &rig.observed);
+    for token in &rig.tokens[..2] {
+        assert!(
+            writable.contains(token),
+            "revalidated tile {token} stays writable"
+        );
+    }
+    for token in &rig.tokens[2..] {
+        assert!(
+            !writable.contains(token),
+            "revalidated float {token} takes no tiled write"
+        );
+    }
+    let reply = probe_reconcile(&rig, &rows);
+    assert_no_float_writes(&reply, &rig.tokens[2..], "revalidated tick");
+    super::clear_test_hints();
+}
+
+#[test]
+fn invalid_marker_and_replaced_lifetime_never_hold() {
+    // Corrupt values and replaced lifetime tags never stage, so a stale
+    // hold clears and rebuilds to empty: no persistent protection without
+    // a currently valid marker plus exact lifetime.
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+    super::clear_test_hints();
+    // Corrupt float-intent value on our property name.
+    {
+        let win = AdoptWindow::create();
+        let pid = std::process::id();
+        let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+            .expect("member tag installs on the owned window");
+        let name = wide(crate::model::FLOAT_INTENT_PROP);
+        let planted = unsafe {
+            SetPropW(
+                win.hwnd as usize as windows_sys::Win32::Foundation::HWND,
+                name.as_ptr(),
+                99usize as _,
+            )
+        };
+        assert_ne!(planted, 0, "foreign value plants on the owned window");
+        let mut state = test_state();
+        state.log_path = std::path::PathBuf::from("NUL");
+        let (key, token, output, _) = seed_member(&mut state, win.hwnd, &tag);
+        state.restart_reject_hold.insert(key.clone());
+        let observed = vec![observed(win.hwnd, &token)];
+        let mut hint_cx = super::HintCx::new();
+        super::adopt_restart_markers(
+            &mut state,
+            &fake_me(),
+            &observed,
+            &[],
+            &areas_for(&output),
+            &mut hint_cx,
+        );
+        assert!(
+            state.restart_reject_hold.is_empty(),
+            "corrupt marker rebuilds the hold to empty"
+        );
+        assert!(
+            state.floated.is_empty() && state.sticky.is_empty(),
+            "corrupt marker stages no lane"
+        );
+    }
+    // Replaced lifetime tag under a valid marker: the stored tag no
+    // longer reads live, so the window is not ours this observation.
+    {
+        let win = AdoptWindow::create();
+        let pid = std::process::id();
+        let stale = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+            .expect("member tag installs on the owned window");
+        crate::product_hide::sys::install_float_intent_marker(win.hwnd)
+            .expect("float marker installs on the owned window");
+        let mut state = test_state();
+        state.log_path = std::path::PathBuf::from("NUL");
+        let (key, token, output, _) = seed_member(&mut state, win.hwnd, &stale);
+        crate::product_hide::sys::install_member_tag(win.hwnd, pid)
+            .expect("replacement tag installs on the owned window");
+        state.restart_reject_hold.insert(key.clone());
+        let observed = vec![observed(win.hwnd, &token)];
+        let mut hint_cx = super::HintCx::new();
+        super::adopt_restart_markers(
+            &mut state,
+            &fake_me(),
+            &observed,
+            &[],
+            &areas_for(&output),
+            &mut hint_cx,
+        );
+        assert!(
+            state.restart_reject_hold.is_empty(),
+            "replaced lifetime rebuilds the hold to empty"
+        );
+        assert!(
+            state.floated.is_empty() && state.sticky.is_empty(),
+            "replaced lifetime stages no lane"
+        );
+        assert!(
+            crate::product_hide::sys::read_float_intent_marker(win.hwnd),
+            "replaced lifetime never touches the durable marker"
+        );
+    }
+    super::clear_test_hints();
+}

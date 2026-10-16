@@ -130,6 +130,7 @@ pub(super) fn test_state() -> TileLoop {
         float_rects: std::collections::HashMap::new(),
         floated: std::collections::BTreeSet::new(),
         sticky: std::collections::BTreeMap::new(),
+        restart_reject_hold: std::collections::BTreeSet::new(),
         fixed_tile_overrides: std::collections::BTreeSet::new(),
         fixed_origin_overrides: std::collections::BTreeSet::new(),
         fixed_auto_seen: std::collections::BTreeSet::new(),

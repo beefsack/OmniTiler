@@ -284,6 +284,9 @@ pub(super) fn prune_float_state(state: &mut TileLoop) {
     state
         .sticky
         .retain(|key, _| state.member_tokens.contains_key(key));
+    state
+        .restart_reject_hold
+        .retain(|key| state.member_tokens.contains_key(key));
     // Fixed-size admission lanes are membership-bound like the float lanes:
     // overrides and automatic origins never outlive their live client, and
     // overlay snapshots never outlive their token. Markers (window
@@ -346,6 +349,7 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
     state.float_topmost_prev.remove(key);
     state.floated.remove(key);
     state.sticky.remove(key);
+    state.restart_reject_hold.remove(key);
     state.member_identity.remove(key);
     state.member_tags.remove(key);
     state.hint_last_good.remove(key);
@@ -595,6 +599,18 @@ pub(super) fn assemble_domain_rows(
     for token in
         crate::workspace_owner::float_carry_tokens(&members, &state.member_tokens, &state.floated)
     {
+        float_tokens.insert(token);
+    }
+    // Observation-scoped restart-hydration write barrier: rejected staged
+    // floats ride the slotless floating lane (live frame, no hint, no tile
+    // slot) until the next observation revalidates, so the same tick's
+    // reconcile and action writers cannot tile them. Lifetime-keyed like
+    // the intent lane above; cleared and rebuilt by every preamble.
+    for token in crate::workspace_owner::float_carry_tokens(
+        &members,
+        &state.member_tokens,
+        &state.restart_reject_hold,
+    ) {
         float_tokens.insert(token);
     }
     // A slotless maximized row on a floating domain keeps no tile slot, so

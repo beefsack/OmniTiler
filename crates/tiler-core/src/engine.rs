@@ -5590,6 +5590,290 @@ mod tests {
         );
     }
 
+    /// Restart-hydration candidate shape from the recorded 2026-10-17
+    /// `duplicate-window` rejection (run `01dd5da7`, tick 1): three staged
+    /// floats (two sticky, one ordinary) sharing one centered frame plus
+    /// two tiled controls carrying fresh minimums. Only the float frame
+    /// `[517,281,1526,818]` and the control minimums (`[1157,789]` and
+    /// `[401,246]`) come from the failure record; the original logs were
+    /// removed at cleanup, so domain bounds, tiled frames, focus, and
+    /// whether either minimum pins its maximum are reconstruction, marked
+    /// below. Staged rows ride hintless with `fit_excluded: false`, exactly
+    /// as `build_reconcile_event_for_floating` carries them.
+    fn restart_hydration_windows(
+        control_hints: crate::size_hints::WindowSizeHints,
+        other_hints: crate::size_hints::WindowSizeHints,
+    ) -> Vec<crate::seed::EngineWindow> {
+        use crate::directional::WindowId;
+        let float_rect = Rect {
+            x: 517,
+            y: 281,
+            w: 1526,
+            h: 818,
+        };
+        let mut windows = Vec::new();
+        for id in ["f1", "f2", "f3"] {
+            windows.push(crate::seed::EngineWindow {
+                window: WindowId(id.to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws".to_owned()),
+                rect: float_rect,
+                floating: true,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            });
+        }
+        // Reconstruction: exact tiled frames are unrecoverable.
+        windows.push(crate::seed::EngineWindow {
+            window: WindowId("c1".to_owned()),
+            output: OutputId("out".to_owned()),
+            workspace: WorkspaceId("ws".to_owned()),
+            rect: Rect {
+                x: 48,
+                y: 20,
+                w: 1157,
+                h: 789,
+            },
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: control_hints,
+        });
+        windows.push(crate::seed::EngineWindow {
+            window: WindowId("c2".to_owned()),
+            output: OutputId("out".to_owned()),
+            workspace: WorkspaceId("ws".to_owned()),
+            rect: Rect {
+                x: 8,
+                y: 8,
+                w: 2544,
+                h: 1364,
+            },
+            floating: false,
+            fit_excluded: false,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: other_hints,
+        });
+        windows
+    }
+
+    /// Fresh reconcile over the recorded hydration shape. Reconstruction
+    /// domain mirrors the throwaway probe bounds; gap matches production.
+    fn restart_hydration_event(
+        owner: &OwnerId,
+        gen_id: &GenerationId,
+        domain: OutputDomain,
+        windows: Vec<crate::seed::EngineWindow>,
+    ) -> crate::boundary::CoreEvent {
+        use crate::boundary::{CoreCommand, CoreEvent};
+        use crate::directional::WindowId;
+        use crate::ids::CorrelationId;
+        let key = domain.key();
+        CoreEvent {
+            owner: owner.clone(),
+            generation: gen_id.clone(),
+            correlation: CorrelationId::parse("corr-restart-hydration").expect("valid"),
+            revision: 0,
+            fingerprint: 7,
+            domain,
+            domain_key: key,
+            outer_gap: 8,
+            focused_window: WindowId("c1".to_owned()),
+            windows,
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: vec![],
+            closed_windows: vec![],
+            command: CoreCommand::Reconcile,
+        }
+    }
+
+    fn restart_hydration_domain() -> OutputDomain {
+        OutputDomain {
+            id: OutputId("out".to_owned()),
+            workspace: WorkspaceId("ws".to_owned()),
+            bounds: Rect {
+                x: 8,
+                y: 8,
+                w: 2544,
+                h: 1364,
+            },
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn restart_hydration_min_only_controls_adopt_cleanly() {
+        use crate::boundary::CoreReply;
+        use crate::directional::WindowId;
+        // Recorded minimums carried as advisory minimums only (maximums
+        // unset, so neither control is fixed-size): this shape adopts
+        // cleanly, matching the recorded reconstructed-input probe. It
+        // pins the non-reproducing baseline: the rejection trigger needs
+        // a fact this shape lacks (exact tiled frames, focus, or
+        // maximum-pinned hints).
+        let control = crate::size_hints::WindowSizeHints {
+            min_w: Some(1157),
+            min_h: Some(789),
+            ..crate::size_hints::WindowSizeHints::none()
+        };
+        let other = crate::size_hints::WindowSizeHints {
+            min_w: Some(401),
+            min_h: Some(246),
+            ..crate::size_hints::WindowSizeHints::none()
+        };
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        let mut engine = Engine::new();
+        engine.sync_binding(&owner, &gen_id);
+        engine.set_fixed_size_admission(true);
+        let domain = restart_hydration_domain();
+        let key = domain.key();
+        let event = restart_hydration_event(
+            &owner,
+            &gen_id,
+            domain,
+            restart_hydration_windows(control, other),
+        );
+        match engine.handle(&event) {
+            CoreReply::Tiled(plan) => {
+                let mut members: Vec<String> = plan
+                    .geometry
+                    .iter()
+                    .map(|entry| entry.window.0.clone())
+                    .collect();
+                members.sort();
+                assert_eq!(members, vec!["c1".to_string(), "c2".to_string()]);
+            }
+            other => panic!("min-only hydration shape must adopt, got {other:?}"),
+        }
+        let session = engine.session(&key).expect("hydrated domain retained");
+        for id in ["f1", "f2", "f3"] {
+            assert!(
+                session.is_exception(&WindowId(id.to_owned())),
+                "staged float {id} converges as an exception"
+            );
+        }
+        for id in ["c1", "c2"] {
+            assert!(
+                !session.is_exception(&WindowId(id.to_owned())),
+                "control {id} stays tiled"
+            );
+        }
+        let convergence = engine.last_convergence().expect("converged hydration");
+        assert_eq!(convergence.op, "reconcile");
+        assert_eq!(convergence.admitted, 2);
+        assert_eq!(convergence.flags_adopted, 3);
+        let fit = engine.last_adoption_fit().expect("fit decision recorded");
+        assert_eq!(fit.outcome, "fallback");
+    }
+
+    #[test]
+    fn restart_hydration_fixed_anchor_reports_fallthrough_evidence() {
+        use crate::boundary::CoreReply;
+        use crate::directional::WindowId;
+        // Same recorded shape, but the focused control pins
+        // minimum == maximum (`[1157,789]` read as a fixed-size hint), so
+        // convergence retains it as an automatic float exception. The
+        // suspected path is the converge-then-seed fall-through: the
+        // floating-aware build stores the session, the tiled projection
+        // misses the exception anchor, and the legacy seed re-admits the
+        // already-converged anchor as `duplicate-window`.
+        let control = crate::size_hints::WindowSizeHints {
+            min_w: Some(1157),
+            min_h: Some(789),
+            max_w: Some(1157),
+            max_h: Some(789),
+        };
+        let other = crate::size_hints::WindowSizeHints {
+            min_w: Some(401),
+            min_h: Some(246),
+            ..crate::size_hints::WindowSizeHints::none()
+        };
+        let owner = OwnerId::parse("owner-a").expect("valid");
+        let gen_id = GenerationId::parse("gen-1").expect("valid");
+        let mut engine = Engine::new();
+        engine.sync_binding(&owner, &gen_id);
+        engine.set_fixed_size_admission(true);
+        let domain = restart_hydration_domain();
+        let key = domain.key();
+        let event = restart_hydration_event(
+            &owner,
+            &gen_id,
+            domain,
+            restart_hydration_windows(control, other),
+        );
+        match engine.handle(&event) {
+            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "duplicate-window"),
+            other => panic!("fixed-anchor hydration shape must reject duplicate, got {other:?}"),
+        }
+        // Fall-through evidence, pinned to the exact branch: the fit
+        // declines for the fixed anchor (`fit-excluded`), the
+        // floating-aware build stores one tiled control plus four
+        // exceptions (the focused anchor becomes an automatic float, so
+        // the converged session holds no tiled focus), both projection
+        // blocks miss, and the legacy seed re-admits the already-converged
+        // anchor as `duplicate-window`. The converged session stays
+        // stored, so the next observation re-adopts from it (tick 2).
+        let convergence = engine.last_convergence().expect("converged before seed");
+        assert_eq!(convergence.op, "reconcile");
+        assert_eq!(
+            (
+                convergence.removed,
+                convergence.admitted,
+                convergence.flags_adopted
+            ),
+            (0, 1, 4)
+        );
+        let fit = engine.last_adoption_fit().expect("fit decision recorded");
+        assert_eq!(
+            (fit.outcome, fit.windows, fit.reason),
+            ("fallback", 5, "fit_excluded")
+        );
+        let fixed = engine
+            .last_fixed_admission()
+            .expect("fixed decision recorded");
+        assert_eq!(
+            (fixed.op, fixed.evaluated, fixed.admitted, fixed.reason),
+            ("reconcile", 1, 1, "fixed-equal")
+        );
+        let session = engine.session(&key).expect("converged session retained");
+        assert_eq!(session.accepted_revision(), 1);
+        let tiled: Vec<String> = session
+            .snapshot()
+            .windows
+            .iter()
+            .map(|link| link.window.0.clone())
+            .collect();
+        assert_eq!(tiled, vec!["c2".to_string()]);
+        for id in ["f1", "f2", "f3", "c1"] {
+            assert!(
+                session.is_exception(&WindowId(id.to_owned())),
+                "{id} converges as an exception"
+            );
+        }
+        assert!(
+            !session.is_exception(&WindowId("c2".to_owned())),
+            "c2 stays tiled"
+        );
+        assert_eq!(session.focus(), (None, None));
+    }
+
     #[test]
     fn fresh_reconcile_prefers_relocation_over_seeding() {
         use crate::boundary::{CoreCommand, CoreEvent, CoreReply};

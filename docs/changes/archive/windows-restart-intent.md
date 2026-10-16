@@ -160,3 +160,14 @@
 - Locked build/test for core/protocol/FFI/Windows passed: 2,458 passed, 0 failed,
   1 ignored. Workspace fmt, strict all-target clippy and diff check passed.
   No production or regression-test changes accompanied this evidence update.
+
+### Rejection containment follow-up (2026-10-17)
+
+- The [hydration repair record](../windows-restart-hydration-rejection.md)
+  captures a live fixed-size first-tiled anchor triggering convergence followed
+  by duplicate admission. A mixed baseline again displaced three marked floats.
+  Windows-only observation holds now prevent those fallback writes; six mixed
+  protected restarts preserved starting frames and adopted on the next observation.
+- The shared-core rejection is unchanged pending a separate KDE-compatible
+  reply/projection decision. Historical missing-candidate and cleanup limitations
+  above, full D25 acceptance, and post-restart un-stick TBDs are not erased.

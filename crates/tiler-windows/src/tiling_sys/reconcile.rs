@@ -56,6 +56,11 @@ pub(super) fn writable_tokens(
         })
         .unwrap_or_default();
     eligible.retain(|_, token| !float_tokens.contains(token));
+    // Observation-scoped restart-hydration write barrier: a rejected staged
+    // float keeps no Engine exception and no intent lane, so the exception
+    // exclusion above cannot see it. Exact lifetime identity, never HWND
+    // alone; the next preamble clears and rebuilds the set.
+    eligible.retain(|key, _| !state.restart_reject_hold.contains(key));
     crate::workspace_owner::writable_subset(
         &members,
         |k| state.workspaces.is_hidden(k),
