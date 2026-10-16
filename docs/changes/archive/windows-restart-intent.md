@@ -163,7 +163,7 @@
 
 ### Rejection containment follow-up (2026-10-17)
 
-- The [hydration repair record](../windows-restart-hydration-rejection.md)
+- The [hydration repair record](windows-restart-hydration-rejection.md)
   captures a live fixed-size first-tiled anchor triggering convergence followed
   by duplicate admission. A mixed baseline again displaced three marked floats.
   Windows-only observation holds now prevent those fallback writes; six mixed

@@ -2313,7 +2313,9 @@ decisions of 2026-09-24 are under
     mixed restarts made zero tiled writes and adopted on the next observation.
     Seven regressions and locked gates pass (2,465 passed, 0 failed, 1 ignored).
     Shared-core rejection remains unchanged: its valid-input KDE repair needs
-    a separate reply/projection decision. [Repair evidence and limits](changes/windows-restart-hydration-rejection.md).
+    a separate reply/projection decision. Windows/Rust/KWin and other relevant
+    CI streams pass; only the known unrelated API guard fails.
+    [Repair evidence and limits](changes/archive/windows-restart-hydration-rejection.md).
     Full restart acceptance and initial-desktop restoration are not established;
     [historical receipts and cleanup limitations](changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17).
     Restart R-RST-01 plus R-FLT-05 sticky persistence. User

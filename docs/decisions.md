@@ -1437,7 +1437,7 @@ platform API behavior.
   No durable state, saved-layout restoration, or marker-derived write/recovery
   authority is added. The shared-core fixed-anchor rejection remains unchanged;
   changing its valid-input KDE reply/projection needs a separate decision.
-  [Evidence and boundaries](changes/windows-restart-hydration-rejection.md).
+  [Evidence and boundaries](changes/archive/windows-restart-hydration-rejection.md).
 - User decision 2026-10-12, D25 / REQ-RST-01c / R-RST-01, option (a):
   orderly owner restart with apps kept alive retains the host-owned workspace
   set; re-observe membership from the host without moves; restore focus only

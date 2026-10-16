@@ -41,7 +41,8 @@ Preserve intentional ordinary and sticky floats from the first observation after
 - Eighteen semantic restart trials: six ordinary diagnostic-only passes; four fixed-anchor/all-float-remainder baseline rejections; two mixed baseline rejections; six protected mixed rejections. All six protected trials preserved their starting frames with zero tiled writes and adopted intent on the next observation. Four protected trials began with centered floats.
 - Causal mixed A/B: the first baseline restart tiled all three intentional floats on tick 1, then adopted on tick 2 without frame repair. The second baseline trial began already displaced and made no further float writes. Both protected A/B trials preserved those starting frames with zero writes. The protection does not repair prior displacement; centered-frame protection is separately covered by the four earlier protected trials.
 - Artifact SHA256: diagnostic-only baseline `B38D3A5F17BEB820B2DAD452ADAF3DFA8F2AB84DC8262AD2DE216737513191DF`; protected `E3FD1AF475F514F90EE66E31B0F76209D789B87BDF29931D2B700BDDEFEC46C8`. Both were built from `7511ae4c` with the documented diagnostic/test and protection deltas respectively. Logs and complete candidate facts were retained outside the repository.
-- Locked four-package build/test passed: 2,465 passed, zero failed, one pre-existing ignored benchmark. Workspace formatting, strict four-package all-target clippy, and diff checks passed. Cross-platform CI remains to be confirmed after publication.
+- Locked four-package build/test passed before publication and again after rebasing: 2,465 passed, zero failed, one pre-existing ignored benchmark. Workspace formatting, strict four-package all-target clippy, and diff checks passed.
+- Delivery commit `e6e2ba86`: [CI 38975584726](https://github.com/beefsack/OmniTiler/actions/runs/38975584726) passed Windows (3,170 tests, one ignored; includes the additional macOS package), Rust workspace (2,780 tests), KWin (1,703 tests and typecheck), macOS, native effect/settings (33/26 tests), licenses, and notices. Only the known unrelated shell `kwin-66-api-guard` failed (`PASS=6 FAIL=2`, clean-tree/clean-marker for unaudited `fullscreen`, `maximized`, `sticky` symbols). No other stream failed; that guard is not changed here.
 - Independent review accepted the lifetime fencing, observation ordering, tiled-write coverage, rollback, diagnostic bounds, and KDE compatibility. An explicit unfloat during a rejection hold can delay its native reflow until the next observation; marker clearing still succeeds and recovery is automatic.
 - All positively-owned live fixtures, including previous residue, were closed after identity checks. Settings and changed state were restored; the controlling terminal and non-owned windows were unchanged. Earlier historical cleanup limitations are not retroactively resolved.
 
@@ -50,6 +51,11 @@ Preserve intentional ordinary and sticky floats from the first observation after
 - The exact historical candidate was not retained, so equivalence to that original run remains qualified despite reproduction of the same rejection, matching control minimums, and harmful write sequence.
 - The shared-core rejection remains characterized, not repaired. Completing the no-focus fixed-anchor branch would change valid KDE input behavior and requires a separate decision and KDE regression coverage. Recommended follow-up: repair that branch only after selecting its accepted no-focus reply/projection contract.
 - Full D25 membership/set/focus acceptance, post-restart un-stick, saved-layout restoration, and unsupported reference outcomes remain outside this repair.
+
+## Outcome
+
+- Harmful first-observation tiled writes to validated restart floats are prevented at the Windows observation/write boundary, with repeated live verification and offline regressions.
+- The underlying shared-core no-focus rejection remains a separate reply/projection choice; completing that guard is recommended only after selecting its valid-input KDE contract.
 
 ## Decisions and boundaries
 
