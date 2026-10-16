@@ -86,4 +86,9 @@ adoption. Existing Windows Revert reloads saved settings, not shortcut defaults.
 
 Physical shortcut delivery and user acceptance of the tentative presentation
 remain TBD. Synthetic input and owner revision logs do not establish either.
-Integration CI is pending.
+Implementation commit `0ab5d104` passed the same local gates again after rebase.
+[CI run 38945371716](https://github.com/beefsack/OmniTiler/actions/runs/38945371716)
+passed Windows, macOS, Rust, native, KWin, licenses, and notices. The sole failed
+job was shell: the existing `kwin-66-api-guard` clean-tree/clean-marker assertions
+reject unaudited `fullscreen`, `maximized`, and `sticky` API symbols. No related
+KDE changes were made; that separate guard failure remains outside this change.
