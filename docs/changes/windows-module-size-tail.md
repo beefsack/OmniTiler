@@ -53,3 +53,16 @@
   migration methods move byte-for-byte into an inherent impl in the child.
   State and private helpers stay in the parent with no visibility widening.
   All five local gates pass: 2,313 passed / 0 failed / 1 ignored.
+- Active-border production row complete: parent 1,748 -> 1,107;
+  `active_border_sys/carrier.rs` 654. Shared owned-window creation,
+  liveness/z-order, positioning and DIB presentation move together. Twelve
+  parent/test-facing functions and the test-facing `ZRelation` gain only
+  `pub(super)`; three existing crate-visible paths remain re-exported.
+  Parent and leaf compare exactly after those declarations, one blank seam
+  collapse and rustfmt. Tests keep their original paths. All five local
+  gates pass: 2,313 passed / 0 failed / 1 ignored.
+- Tests-first CI `38904321670`: Windows, Rust, macOS and all other jobs
+  except native passed. The unrelated KDE native test
+  `native-effect-kcm-shortcut-selection` aborted with
+  `malloc_consolidate(): unaligned fastbin chunk detected` (32/33 passed).
+  No KDE source changed; this external failure is not repaired here.
