@@ -205,6 +205,9 @@ pub struct SelectGates {
 /// arrival). The claim/release protocol around this call (not the slot
 /// itself) serializes concurrent presses: the slot stays claimed while
 /// this blocks, so engine enqueues refuse busy instead of overlapping.
+/// Live-macOS-only outside tests (the non-test caller is gated to macOS);
+/// portable unit tests exercise this on every host.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn drain_claimed(
     state: &mut SelectionState,
     backend: &mut impl SelectionBackend,
@@ -251,11 +254,15 @@ pub(crate) fn drain_claimed(
 /// single-goto wall time (~8 s action timeout + 0.3 s stabilize + press
 /// legs + 3 s effect settle ≈ 12 s) with margin while halving the previous
 /// 60 s main-pump stall exposure. No cleanup legs run in the product drain.
+/// Live-macOS-only constant (consumed by the macOS-gated live drain).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PRODUCT_DRAIN_BUDGET_SECS: u64 = 30;
 /// Caffeinate companion bound (seconds) around the product drain: covers
 /// the drain budget plus reap margin and self-terminates via `-t` even if
 /// the reaper wedges. The held child handle is signalled/waited by exact
 /// PID only (never by name); `Drop` is the backstop.
+/// Live-macOS-only constant (consumed by the macOS-gated live drain).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 
 /// Live product drain for one claimed armed select: builds the proven
@@ -270,6 +277,9 @@ const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 /// Returns the verified effect plus whether the caffeinate companion
 /// reaped cleanly (arrival truth dominates: a verified effect still
 /// returns `Ok` when only the reaper failed).
+/// Live-macOS-only outside tests (the non-test caller is gated to macOS);
+/// kept compiled on every host for the portable unit tests.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn drain_live_claimed(
     state: &mut SelectionState,
     action: InputSemanticAction,
