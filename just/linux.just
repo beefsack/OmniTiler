@@ -1338,13 +1338,8 @@ check-portable:
     cargo metadata --manifest-path "$REPO_ROOT/Cargo.toml" --no-deps --format-version 1 --offline \
       | jq -e '([.packages[] | select(.name == "tiler-core")] | length) == 1 and ([.packages[] | select(.name == "tiler-core") | .dependencies[]? | select(.kind == null)] | length) == 0' >/dev/null \
       || { echo "error: tiler-core must exist with zero normal dependencies" >&2; exit 1; }
-    if grep -rEn --include='*.rs' 'std::os::|std::process::|/proc|libc|rustix|zbus|extern "C"|cfg[[:space:]]*\([[:space:]]*(unix|windows|target_os)|target_os' "$REPO_ROOT/crates/tiler-core/src"; then
-      echo "error: platform leak found in crates/tiler-core/src" >&2
-      exit 1
-    else
-      status=$?
-      [[ "$status" -eq 1 ]] || { echo "error: could not scan crates/tiler-core/src" >&2; exit 1; }
-    fi
+    bash "$REPO_ROOT/scripts/check-portable-scan.sh" "$REPO_ROOT/crates/tiler-core/src" \
+      || { echo "error: platform leak found in crates/tiler-core/src" >&2; exit 1; }
     echo "check-portable: tiler-core has 0 normal deps and no platform leaks"
 
 # Build the KWin script bundle via npm and verify the existing bundle (subset build).

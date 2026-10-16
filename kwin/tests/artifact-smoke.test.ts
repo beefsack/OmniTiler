@@ -7,7 +7,8 @@ import { createContext, runInContext } from "node:vm";
 import { describe, it } from "node:test";
 
 const SHIPPED_BUNDLE = "contents/code/main.js";
-const PLAN_METHOD_TOKEN = "DescribePlan";
+const PLAN_METHOD_TOKEN = "DescribeWorld";
+const DISCOVERY_METHOD_TOKEN = "DiscoverWorld";
 
 // Minimal KWin ambient surface for the Stage 4 plan entry: the tray
 // heartbeat plus the single DescribePlan adapter. The stub workspace carries
@@ -123,13 +124,15 @@ describe("shipped artifact smoke execution", () => {
         assert.ok(!stub.diagnostics.some((entry) => entry.includes("drag-attach")));
         assert.ok(!bundle.includes("TileController"));
         assert.ok(bundle.includes(PLAN_METHOD_TOKEN));
+        assert.ok(bundle.includes(DISCOVERY_METHOD_TOKEN));
         assert.ok(bundle.includes("registerShortcut"));
         assert.ok(!bundle.includes("DescribeMovement"));
         assert.ok(!bundle.includes("DescribeFocus"));
         assert.ok(!bundle.includes("DescribeResize"));
+        assert.ok(!bundle.includes("DescribePlan"));
     });
 
-    it("builds a fresh plan bundle with the single DescribePlan route", () => {
+    it("builds a fresh plan bundle with the single DescribeWorld route", () => {
         const outDir = mkdtempSync(join(tmpdir(), "pat-bundle-"));
         const outFile = join(outDir, "main.js");
         execFileSync("npx", ["esbuild", "src/entry.ts", "--bundle", "--format=iife", "--target=es2017", `--outfile=${outFile}`], {
@@ -138,12 +141,14 @@ describe("shipped artifact smoke execution", () => {
         });
         const bundle = readFileSync(outFile, "utf8");
         assert.ok(bundle.includes(PLAN_METHOD_TOKEN));
+        assert.ok(bundle.includes(DISCOVERY_METHOD_TOKEN));
         assert.ok(!bundle.includes("TileController"));
         assert.ok(bundle.includes("registerShortcut"));
         assert.ok(!bundle.includes("legacy-engine-removed"));
         assert.ok(!bundle.includes("DescribeMovement"));
         assert.ok(!bundle.includes("DescribeFocus"));
         assert.ok(!bundle.includes("DescribeResize"));
+        assert.ok(!bundle.includes("DescribePlan"));
         const stub = makeKWinStub();
         try {
             runInContext(bundle, stub.context, { filename: outFile });

@@ -1,26 +1,31 @@
-import { startPlanAdapterEntry } from "./plan-adapter-entry";
+import { startWorldAdapterEntry } from "./world-entry";
 import { TrayPublisher } from "./tray-publisher";
 
-// Production entry: the single bounded DescribePlan adapter owns all
-// KWin observation and actuation. Only normal windows are observed with
-// stable opaque ids, frame rectangles, output, workspace, and focus; Rust
-// owns every tiling, order, membership, and rejection decision through the
-// stateless DescribePlan route and the adapter applies the complete reply
-// geometries in the shared canonical order. Directional focus/move and
-// direction-plus-mode resize shortcuts issue parameterized plan commands,
-// and window/scope signals feed one debounced fresh-snapshot resync.
+// Production entry: the single world-state adapter owns all KWin observation
+// and actuation over DiscoverWorld/DescribeWorld. Only normal windows are
+// observed with stable opaque ids, frame rectangles, output, workspace, and
+// focus; Rust owns every tiling, order, membership, and rejection decision
+// through the full world report/reply boundary and the adapter applies the
+// complete desired snapshot per property in the shared canonical order.
+// Directional focus/move and direction-plus-mode resize shortcuts issue
+// parameterized world operation commands, workspace selection/send/migration
+// shortcuts issue Planner-resolved world commands, and window/scope signals
+// feed one debounced fresh-snapshot resync. Legacy plan modules
+// remain in-tree for native-only callers and offline fixtures but are never
+// called on this path and are never a fallback.
 
 const trayTimers = new Set<QTimer>();
 
-// The plan adapter owns session workspace tiling state; the tray snapshot
-// projects its current scope/tiled/default. The tray invokes the toggle over
-// KGlobalAccel; the menu waits for the next published state.
+// The world adapter owns no tiling state locally; the tray snapshot projects
+// the live scope from the latest accepted Planner mapping. The tray invokes
+// the toggle over KGlobalAccel; the menu waits for the next published state.
 const trayHolder: { current: TrayPublisher | null } = { current: null };
-const planHandle = startPlanAdapterEntry({
-    owner: "kwin-plan-adapter",
-    generation: "plan-1",
-    // Q3 settled intentional-float persistence across script and planner
-    // restarts (Rust-owned runtime membership store, Planner1 interface).
+const planHandle = startWorldAdapterEntry({
+    owner: "kwin-world-adapter",
+    adapter: "kwin-world-adapter",
+    // Accepted and ignored: the core generation binds through authenticated
+    // discovery, and float membership rides the full observation.
+    generation: "world-1",
     floatIntent: true,
     onWorkspaceTilingChanged: () => {
         try {
@@ -75,8 +80,4 @@ const trayPublisher = new TrayPublisher({
 trayPublisher.start();
 trayHolder.current = trayPublisher;
 
-// Drag-verdict route: the plan adapter owns the single finished-handler
-// LastVerdict pull and routes exactly one strict pointer-resize after a
-// non-cancelled verdict. Cancelled verdicts are a strict no-op; derive
-// failures fail closed with exact bounded reasons. No push, retry, or fallback.
 void planHandle;

@@ -2016,23 +2016,45 @@ describe("global-unique and shared preexisting terminal collapse", () => {
 describe("workspace production entry wiring", () => {
     it("integrates the send transport reference with the smallest production wiring", () => {
         const srcDir = kwinSrcDir();
+        // Legacy plan path keeps its send-transport reference for
+        // native-only callers and offline fixtures.
         const entry = readFileSync(join(srcDir, "plan-adapter-entry.ts"), "utf8");
         assert.ok(entry.includes("workspace-native"), "native lifecycle module");
         assert.ok(entry.includes("WorkspaceSendAdapter"), "send transport reference");
         assert.ok(entry.includes("workspaceShortcutCatalog"), "number chord wiring");
         assert.ok(entry.includes("requestWorkspaceSelect"), "select handoff");
         assert.ok(entry.includes("requestWorkspaceMove"), "move handoff");
+        // World production path resolves every selection/send/migration as a
+        // Planner world command (no synchronous TS workspace policy).
+        const world = readFileSync(join(srcDir, "world-entry.ts"), "utf8");
+        // Native lifecycle bindings (desktop/output reads plus actuation
+        // setters) live in the world-native apply host, driven by the entry
+        // through one spread call; the entry itself owns no native lifecycle
+        // import.
+        const worldNative = readFileSync(join(srcDir, "world-native.ts"), "utf8");
+        assert.ok(worldNative.includes("workspace-native"), "native lifecycle module");
+        assert.ok(world.includes("world-native"), "native host module");
+        assert.ok(world.includes("createWorldApplyHost"), "apply host call");
+        assert.ok(world.includes("world-shortcuts"), "shortcut registration module");
+        assert.ok(world.includes("registerWorldShortcuts"), "shortcut registration call");
+        assert.ok(world.includes("requestWorkspaceSelect"), "select handoff");
+        assert.ok(world.includes("requestWorkspaceMove"), "move handoff");
+        assert.ok(world.includes("DescribeWorld"), "world transport");
+        const shortcuts = readFileSync(join(srcDir, "world-shortcuts.ts"), "utf8");
+        assert.ok(shortcuts.includes("workspaceShortcutCatalog"), "number chord wiring");
         const native = readFileSync(join(srcDir, "workspace-native.ts"), "utf8");
         for (const token of ["currentDesktopForScreen", "windowList", "desktops", "removeDesktop", "createDesktop"]) {
             assert.ok(native.includes(token), token);
         }
         assert.ok(entry.includes("desktopsChanged"), "signal coherence");
+        assert.ok(world.includes("desktopsChanged"), "world signal coherence");
         for (const token of ["setTimeout", "setInterval", "requestAnimationFrame", "waitFor", "pollFor"]) {
             assert.ok(!native.includes(token), token);
             assert.ok(!entry.includes(token), `entry:${token}`);
+            assert.ok(!world.includes(token), `world:${token}`);
         }
         assert.ok(!native.includes("retry"), "no retries");
         const production = readFileSync(join(srcDir, "entry.ts"), "utf8");
-        assert.ok(production.includes("startPlanAdapterEntry"), "single production route");
+        assert.ok(production.includes("startWorldAdapterEntry"), "single production route");
     });
 });

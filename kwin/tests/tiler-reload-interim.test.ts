@@ -120,9 +120,9 @@ function domainOf(payload: string): { gap: unknown; outer_gap: unknown } {
 }
 
 describe("interim tiler reload contract", () => {
-    it("keeps the production entry bound to the plan adapter", () => {
-        assert.match(productionEntry, /startPlanAdapterEntry/);
-        assert.match(productionEntry, /owner: "kwin-plan-adapter"/);
+    it("keeps the production entry bound to the world adapter", () => {
+        assert.match(productionEntry, /startWorldAdapterEntry/);
+        assert.match(productionEntry, /owner: "kwin-world-adapter"/);
     });
 
     it("wires deliberate reload through Options configChanged with gap re-read and resync", () => {

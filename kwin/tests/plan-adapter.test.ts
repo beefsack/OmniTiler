@@ -3625,9 +3625,10 @@ describe("plan adapter source hygiene", () => {
         assert.ok(!entry.includes("resize-adapter"), "resize-adapter");
         assert.ok(!entry.includes("ResizeAdapter"), "ResizeAdapter");
         assert.ok(!entry.includes("DescribeResize"), "DescribeResize");
+        assert.ok(!entry.includes("DescribePlan"), "legacy plan route");
         assert.ok(!entry.includes("legacy-engine-removed"), "legacy marker");
-        assert.ok(entry.includes("plan-adapter-entry"), "plan entry wiring");
-        assert.ok(entry.includes("startPlanAdapterEntry"), "plan entry start");
+        assert.ok(entry.includes("world-entry"), "world entry wiring");
+        assert.ok(entry.includes("startWorldAdapterEntry"), "world entry start");
     });
 });
 
