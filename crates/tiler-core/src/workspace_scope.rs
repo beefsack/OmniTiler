@@ -167,6 +167,93 @@ pub fn rebuild_shared_order(live_order: &[String]) -> Vec<String> {
     live_order.to_vec()
 }
 
+/// One disconnected output's preserved workspace unit: the live native
+/// ids that belonged to the removed origin plus the surviving output
+/// currently hosting them. Workspaces move as a unit with then-current
+/// contents (never a saved snapshot, never merged into the survivor
+/// layout); the record drops when the origin returns or its ids leave
+/// the live set. Session-local only, never restart-persistent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplacedEntry {
+    /// Live native workspace ids displaced from the origin.
+    pub workspaces: Vec<String>,
+    /// Stable key of the surviving output hosting them.
+    pub dest: String,
+}
+
+/// Last observed native facts for one output: live geometry when
+/// observed plus whether it was the active (primary) screen. Retained
+/// across reports so a disconnected origin still offers its
+/// disconnect-time rect for nearest-survivor placement (never a
+/// post-disconnect window frame proxy). Pruned with its displacement
+/// record on return, or when the output no longer needs placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFacts {
+    /// Last live native geometry, when observed.
+    pub rect: Option<crate::geometry::Rect>,
+    /// Whether it was the active screen when last observed.
+    pub primary: bool,
+}
+
+/// One surviving output candidate for displaced-workspace placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurvivorInfo {
+    /// Stable output key.
+    pub key: String,
+    /// Live native geometry when observed, else `None`.
+    pub rect: Option<crate::geometry::Rect>,
+}
+
+/// Choose the surviving output that hosts a disconnected output's
+/// workspaces (hotplug displacement, local/global-unique only; shared
+/// mode never displaces). Mirrors `chooseDisplacedDestination`: no
+/// survivors refuses; a single survivor wins directly; disconnect-time
+/// removed-output geometry selects the nearest survivor by centre
+/// distance (first wins ties; rect-less survivors skip); otherwise the
+/// live primary wins, else deterministic survivor order. Never
+/// post-disconnect frame geometry as a proxy: callers pass only live
+/// survivor rects plus the live primary key, with disconnect-time
+/// removed geometry from retained output facts when available. Pure
+/// and deterministic; no history tracking.
+#[must_use]
+pub fn choose_displaced_destination(
+    survivors: &[SurvivorInfo],
+    primary: Option<&str>,
+    removed: Option<crate::geometry::Rect>,
+) -> Option<String> {
+    if survivors.is_empty() {
+        return None;
+    }
+    if survivors.len() == 1 {
+        return survivors.first().map(|only| only.key.clone());
+    }
+    if let Some(from) = removed {
+        let rx = f64::from(from.x) + f64::from(from.w) / 2.0;
+        let ry = f64::from(from.y) + f64::from(from.h) / 2.0;
+        let mut best: Option<(&str, f64)> = None;
+        for candidate in survivors {
+            let Some(rect) = candidate.rect else {
+                continue;
+            };
+            let cx = f64::from(rect.x) + f64::from(rect.w) / 2.0;
+            let cy = f64::from(rect.y) + f64::from(rect.h) / 2.0;
+            let dist = (cx - rx) * (cx - rx) + (cy - ry) * (cy - ry);
+            if best.is_none_or(|(_, far)| dist < far) {
+                best = Some((candidate.key.as_str(), dist));
+            }
+        }
+        if let Some((key, _)) = best {
+            return Some(key.to_owned());
+        }
+    }
+    if let Some(primary) = primary
+        && survivors.iter().any(|candidate| candidate.key == primary)
+    {
+        return Some(primary.to_owned());
+    }
+    survivors.first().map(|first| first.key.clone())
+}
+
 /// Scoped ring ids: every existing scoped id in order, including the
 /// trailing empty and ordinals beyond 9. Shared returns the shared order;
 /// local/global-unique return the output's assignment. All filtered to

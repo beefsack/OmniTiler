@@ -597,7 +597,26 @@ impl super::super::Session {
         let (desired_focus_domain, desired_focus_leaf) = if was_focused {
             match self.focus_stack_fallback(&key, &desired_trees, &desired_windows) {
                 Some(next) => (Some(key.clone()), Some(next)),
-                None => (None, None),
+                // No MRU history (e.g. floating the only-ever-focused
+                // window): fall back to a surviving leaf in the same
+                // domain, never focus-none with live tiles here and never
+                // a cross-domain jump. An emptied domain keeps focus none
+                // (removal retains empty domains); a focus-none session
+                // with live tiles would refuse every follow-up sweep,
+                // silently stalling retained targets.
+                None => match desired_trees.get(&key).cloned().flatten().map(|tree| {
+                    collect_leaves(&tree).into_iter().find(|leaf| {
+                        self.focus_resolves(
+                            &Some(key.clone()),
+                            &Some(leaf.clone()),
+                            &desired_trees,
+                            &desired_windows,
+                        )
+                    })
+                }) {
+                    Some(Some(leaf)) => (Some(key.clone()), Some(leaf)),
+                    _ => (None, None),
+                },
             }
         } else {
             // Removing an unfocused window leaves the active focus unchanged.

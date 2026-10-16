@@ -31,6 +31,10 @@ use zbus::{MatchRule, fdo::NameOwnerChanged};
 use crate::float_intent_store::{
     FloatIntentStore, INTENT_MAX_REPLY_BYTES, INTENT_MAX_REQUEST_BYTES, IntentNamespace,
 };
+use crate::world_service::{
+    WORLD_SERVICE_MAX_REPLY, WORLD_SERVICE_MAX_REQUEST, WorldService, parse_discovery_request,
+    world_egress_summary, world_ingress_summary,
+};
 
 pub const SERVICE: &str = "com.omnitiler.Planner";
 pub const OBJECT: &str = "/com/omnitiler/Planner";
@@ -296,6 +300,11 @@ pub enum PlannerError {
 pub struct PlannerEndpoint {
     operation_lock: Arc<async_lock::Mutex<()>>,
     planner: Arc<std::sync::Mutex<tiler_protocol::planner_protocol::Planner>>,
+    /// World boundary: retained [`WorldService`] backend (fresh core
+    /// generation at construction, poison replacement under a new one).
+    /// Cloned endpoints share one backend, matching the shared planner.
+    /// Single-flight admission uses the service's own non-queuing lock.
+    world: WorldService,
     intent_store: Option<FloatIntentStore>,
     /// Bounded drag-preview log dedup shared across calls (see
     /// [`PreviewLogDedup`]). Held only for the short classify step after the
@@ -317,6 +326,7 @@ impl PlannerEndpoint {
             planner: Arc::new(std::sync::Mutex::new(
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
+            world: WorldService::new(),
             intent_store: FloatIntentStore::from_runtime_dir(),
             preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
@@ -332,6 +342,7 @@ impl PlannerEndpoint {
             planner: Arc::new(std::sync::Mutex::new(
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
+            world: WorldService::new(),
             intent_store: Some(FloatIntentStore::with_root(root)),
             preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
@@ -347,6 +358,7 @@ impl PlannerEndpoint {
             planner: Arc::new(std::sync::Mutex::new(
                 tiler_protocol::planner_protocol::Planner::new(),
             )),
+            world: WorldService::new(),
             intent_store: None,
             preview_log: Arc::new(std::sync::Mutex::new(PreviewLogDedup::default())),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
@@ -617,6 +629,155 @@ impl PlannerEndpoint {
                 tiler_protocol::planner_protocol::summarize_plan_shape(&request)
             );
         }
+        Ok(reply)
+    }
+
+    /// World discovery/bootstrap route. Authenticated same-UID caller that
+    /// must also be the current KWin unique owner (single active adapter,
+    /// resolved live per call through the intent namespace seam, never from
+    /// the caller); alternating same-UID non-KWin senders are rejected
+    /// before touching backend state, so they can neither read generations
+    /// nor reset ordering. Returns the serving generation plus capabilities
+    /// with `ready=false` and no applicable desired state. Malformed
+    /// discovery requests and authorization failures return bounded in-band
+    /// errors bound to the serving generation; only oversize/closed surface
+    /// as D-Bus errors. Lock-free: the backend mutex serializes against
+    /// world flights, and poison replacement mints a fresh generation
+    /// rather than serving partial state. KWin restart surfaces as a new
+    /// owner that re-discovers (same generation, fresh observation);
+    /// service restart surfaces as a new generation that rejects stale
+    /// reports until re-discovery.
+    #[zbus(name = "DiscoverWorld")]
+    async fn discover_world(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        if emitter.connection().is_closed() {
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        if let Err(reason) = authorize_intent_sender(emitter.connection(), caller).await {
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body(reason, reason));
+        }
+        let reply = match parse_discovery_request(&request) {
+            Ok((adapter, req)) => self.world.discovery_body(&adapter, &req),
+            Err((kind, message)) => self.world.error_body(kind, message),
+        };
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
+        Ok(reply)
+    }
+
+    /// World planning route. Bounded non-queuing single-flight with
+    /// same-UID verification plus the current-KWin-owner check (single
+    /// active adapter; see [`PlannerEndpoint::discover_world`]),
+    /// connection-loss, and reply-size checks. A delayed reply or request
+    /// from a superseded generation or a non-owner sender can never reset
+    /// ordering: generation binding rejects before evaluation and the owner
+    /// check rejects before any state access. Authorized requests evaluate
+    /// against the retained world backend; accepted/duplicate/consumed
+    /// outcomes return the ready full-state reply, core rejections return
+    /// bounded in-band errors, and only oversize replies fail closed as
+    /// `Unavailable`. One bounded ingress plus one bounded egress summary
+    /// line each; diagnostics never echo payload bytes.
+    #[zbus(name = "DescribeWorld")]
+    async fn describe_world(
+        &self,
+        request: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> Result<String, PlannerError> {
+        use crate::world_service::WorldServiceError;
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            let Some(_guard) = self.world.try_acquire_guard() else {
+                emit_plan_early_exit(PlanEarlyExit::Busy);
+                return Err(PlannerError::Unavailable("planner is busy".to_owned()));
+            };
+            drop(_guard);
+            emit_plan_early_exit(PlanEarlyExit::Oversize);
+            return Err(PlannerError::Unavailable(
+                "request exceeds size bound".to_owned(),
+            ));
+        }
+        let Some(_guard) = self.world.try_acquire_guard() else {
+            emit_plan_early_exit(PlanEarlyExit::Busy);
+            return Err(PlannerError::Unavailable("planner is busy".to_owned()));
+        };
+        if emitter.connection().is_closed() {
+            drop(_guard);
+            emit_plan_early_exit(PlanEarlyExit::Closed);
+            return Err(PlannerError::Unavailable(
+                "planner serving connection was lost".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(ToString::to_string);
+        let Some(caller) = caller.as_deref() else {
+            drop(_guard);
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        };
+        if !verify_planner_caller(emitter.connection(), caller).await {
+            drop(_guard);
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+        }
+        if let Err(reason) = authorize_intent_sender(emitter.connection(), caller).await {
+            drop(_guard);
+            emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+            return Ok(self.world.error_body(reason, reason));
+        }
+        let reply = match self.world.evaluate_world_request(&request) {
+            Ok(reply) => reply,
+            Err(WorldServiceError::Oversized) => {
+                drop(_guard);
+                emit_plan_early_exit(PlanEarlyExit::Oversize);
+                return Err(PlannerError::Unavailable(
+                    "request exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::Unavailable(message)) => {
+                drop(_guard);
+                eprintln!(
+                    "{}",
+                    tiler_protocol::planner_protocol::summarize_plan_egress(&request, "")
+                );
+                return Err(PlannerError::Unavailable(message));
+            }
+        };
+        if reply.len() > WORLD_SERVICE_MAX_REPLY {
+            drop(_guard);
+            return Err(PlannerError::Unavailable(
+                "reply exceeds size bound".to_owned(),
+            ));
+        }
+        drop(_guard);
+        eprintln!("{}", world_ingress_summary(&request));
+        eprintln!("{}", world_egress_summary(&request, &reply));
         Ok(reply)
     }
 

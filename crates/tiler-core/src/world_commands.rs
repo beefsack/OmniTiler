@@ -1,0 +1,1379 @@
+//! World command execution (D2/D3): one fresh command per accepted report.
+//!
+//! Split from [`crate::world_engine`]: selection/send/migration commands,
+//! the [`CoreCommand`] operation bridge (report-derived directional pairs,
+//! cross-output drag sources, directional migration, domain release), and
+//! the shared reply settlement. Transition entry points stay on
+//! [`crate::world_engine::WorldEngine`]; this module only extends its `impl`.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::boundary::{CoreCommand, CoreEvent, CoreReply, TiledKind};
+use crate::directional::{Direction, OutputId, WindowId};
+use crate::engine::Engine;
+use crate::ids::{CorrelationId, OwnerId};
+use crate::seed::EngineWindow;
+use crate::session::{DomainKey, OutputDomain};
+use crate::workspace_scope::{
+    MigrationRefill, MigrationRequest, PreviousTarget, TrailingSelection, WorkspaceMode,
+    apply_migration, apply_swap_assignments, plan_migration, resolve_numbered,
+    resolve_relative_send, resolve_relative_step, resolve_trailing,
+};
+use crate::world_engine::{
+    KIND_CREATION_EXHAUSTED, KIND_DIRECTION, KIND_FOCUS, KIND_MIGRATION, KIND_OPERATION,
+    KIND_SCOPE_HELD, KIND_SELECT_UNKNOWN, KIND_SEND_TARGET, KIND_SEND_WINDOW, KIND_SNAPSHOT,
+    MSG_CREATION_EXHAUSTED, MSG_DIRECTION, MSG_FOCUS, MSG_MIGRATION, MSG_OPERATION, MSG_SCOPE_HELD,
+    MSG_SELECT_UNKNOWN, MSG_SEND_TARGET, MSG_SEND_WINDOW, MSG_SNAPSHOT, RetainedTransfer,
+    WorldEngine,
+};
+use crate::world_publish::{current_view, homed_occupancy, live_native_order};
+use crate::world_report::CommandResult;
+use crate::world_report::{OneShotEffect, TransferKind, TransferTarget, WorldCommand, WorldReport};
+
+impl WorldEngine {
+    /// Execute one fresh command after the sweep. Returns the emitted
+    /// one-shot effect, if any. Every accepted command advances the
+    /// monotonic command high-watermark; commandless reports never move it.
+    pub(crate) fn execute_command(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &WorldCommand,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        match command {
+            WorldCommand::Focus { window, direction } => {
+                if !matches!(direction.as_str(), "left" | "right" | "up" | "down") {
+                    return CommandApplied::Rejected {
+                        kind: KIND_DIRECTION,
+                        message: MSG_DIRECTION,
+                    };
+                }
+                let known = by_id.contains_key(window)
+                    || self.engine.domain_keys().iter().any(|key| {
+                        self.engine.session(key).is_some_and(|session| {
+                            session
+                                .snapshot()
+                                .windows
+                                .iter()
+                                .any(|link| &link.window == window)
+                                || session.is_exception(window)
+                        })
+                    });
+                if !known {
+                    return CommandApplied::Rejected {
+                        kind: KIND_FOCUS,
+                        message: MSG_FOCUS,
+                    };
+                }
+                self.note_command(command_seq);
+                CommandApplied::Effect(OneShotEffect {
+                    id: format!("fx-{command_seq}"),
+                    kind: crate::world_report::EffectKind::Focus,
+                    target: window.clone(),
+                    issued_revision: self.state_revision + 1,
+                })
+            }
+            WorldCommand::Send {
+                window,
+                target_output,
+                target_workspace,
+                follow,
+            } => self.start_send(
+                report,
+                command_seq,
+                window,
+                target_output,
+                target_workspace,
+                *follow,
+                by_id,
+                held_scopes,
+            ),
+            WorldCommand::SwitchView { output, workspace } => {
+                self.retain_view(report, command_seq, output, workspace)
+            }
+            WorldCommand::SelectWorkspace { output, workspace } => {
+                self.retain_view(report, command_seq, output, workspace)
+            }
+            WorldCommand::SelectNumbered { output, index } => {
+                let Some(target) = self
+                    .resolve_selection_ring(report, output)
+                    .and_then(|ring| resolve_numbered(&ring, *index))
+                else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
+                self.retain_view(report, command_seq, output, &target)
+            }
+            WorldCommand::SelectRelative { output, delta } => {
+                let current = current_view(report, output).unwrap_or_default().to_owned();
+                let Some(target) = self
+                    .resolve_selection_ring(report, output)
+                    .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
+                else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SELECT_UNKNOWN,
+                        message: MSG_SELECT_UNKNOWN,
+                    };
+                };
+                // Global-unique visible-elsewhere swap: exchange views
+                // instead of duplicating the selection.
+                if report.workspace_mode == WorkspaceMode::GlobalUnique
+                    && let Some(plan) = self.global_swap_plan(report, output, &target)
+                {
+                    self.note_command(command_seq);
+                    self.mapping = apply_swap_assignments(&self.mapping, &plan);
+                    self.retained.retain(|r| {
+                        !(matches!(r.target.kind, TransferKind::View)
+                            && (r.target.target_output.0 == plan.active_output
+                                || r.target.target_output.0 == plan.other_output))
+                    });
+                    self.retained.push(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}"),
+                            kind: TransferKind::View,
+                            target_output: OutputId(plan.active_output.clone()),
+                            target_workspace: plan.target.clone(),
+                            follow: false,
+                            held: false,
+                        },
+                        policy: false,
+                        source_output: OutputId(plan.other_output.clone()),
+                        source_workspace: plan.active_current.clone(),
+                    });
+                    self.history.observe(
+                        &plan.active_output,
+                        &plan.target,
+                        &self
+                            .mapping
+                            .get(&plan.active_output)
+                            .cloned()
+                            .unwrap_or_default(),
+                    );
+                    return CommandApplied::NoEffect;
+                }
+                self.retain_view(report, command_seq, output, &target)
+            }
+            WorldCommand::SelectPrevious { output } => {
+                let live: Vec<String> = self.selection_ring(report, output);
+                let current = current_view(report, output).unwrap_or_default().to_owned();
+                match self
+                    .history
+                    .resolve_previous_for(&output.0, &live, &current)
+                {
+                    PreviousTarget::Select(target) => {
+                        self.retain_view(report, command_seq, output, &target)
+                    }
+                    PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
+                        // No-op until the next recorded change: reconcile
+                        // only, never retain or emit.
+                        self.note_command(command_seq);
+                        CommandApplied::NoEffect
+                    }
+                }
+            }
+            WorldCommand::SelectTrailing { output } => {
+                let ring = self.selection_ring(report, output);
+                let occupied = homed_occupancy(report);
+                match resolve_trailing(&ring, &occupied) {
+                    TrailingSelection::Reuse(target) => {
+                        self.retain_view(report, command_seq, output, &target)
+                    }
+                    TrailingSelection::Create => {
+                        let Some(logical) = self.pending_token(output) else {
+                            return CommandApplied::Rejected {
+                                kind: KIND_CREATION_EXHAUSTED,
+                                message: MSG_CREATION_EXHAUSTED,
+                            };
+                        };
+                        self.retain_view(report, command_seq, output, &logical)
+                    }
+                }
+            }
+            WorldCommand::SendRelative {
+                window,
+                output,
+                delta,
+                follow,
+            } => {
+                let Some(source_row) = by_id.get(window) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SEND_WINDOW,
+                        message: MSG_SEND_WINDOW,
+                    };
+                };
+                let current = source_row.workspace.0.clone();
+                let ring = self.send_ring(report, &source_row.output);
+                let Some(target_workspace) = resolve_relative_send(&ring, &current, *delta) else {
+                    return CommandApplied::Rejected {
+                        kind: KIND_SEND_TARGET,
+                        message: MSG_SEND_TARGET,
+                    };
+                };
+                self.start_send(
+                    report,
+                    command_seq,
+                    window,
+                    output,
+                    &target_workspace,
+                    *follow,
+                    by_id,
+                    held_scopes,
+                )
+            }
+            WorldCommand::SendNumbered {
+                window,
+                output,
+                index,
+                follow,
+            } => self.start_numbered_send(
+                report,
+                command_seq,
+                window,
+                output,
+                *index,
+                *follow,
+                by_id,
+                held_scopes,
+            ),
+            WorldCommand::SetWorkspaceTiling {
+                output,
+                workspace,
+                tiled,
+            } => self.set_workspace_tiling(report, command_seq, output, workspace, *tiled),
+            WorldCommand::MigrateWorkspace {
+                source_output,
+                target_output,
+                workspace,
+            } => self.start_migration(report, command_seq, source_output, target_output, workspace),
+            WorldCommand::Operation(command) => {
+                self.execute_operation(report, command_seq, command, by_id, held_scopes)
+            }
+        }
+    }
+}
+
+impl WorldEngine {
+    /// Whole-workspace migration through the pure scope policy (D2)
+    /// plus the retained Engine rekey (R-WS-12): refusal reasons stay in
+    /// the fixed vocabulary with no native writes. The Engine owns the
+    /// transactional tree/order/gaps/float-overlay relocation
+    /// (`Engine::handle` with `MigrateWorkspace`, D8 carry included); this
+    /// path only scopes, retains, and reports. Scope planning runs before
+    /// the Engine commit so a scope refusal never leaves a committed rekey
+    /// behind; an Engine refusal leaves scope, flights, and ordering
+    /// exactly as before.
+    pub(crate) fn start_migration(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        source_output: &OutputId,
+        target_output: &OutputId,
+        workspace: &str,
+    ) -> CommandApplied {
+        let live: BTreeSet<String> = live_native_order(report).into_iter().collect();
+        let target_current = report
+            .topology
+            .iter()
+            .find(|topology| &topology.output == target_output)
+            .map(|topology| topology.current_native.clone())
+            .unwrap_or_default();
+        let source_current = report
+            .topology
+            .iter()
+            .find(|topology| &topology.output == source_output)
+            .map(|topology| topology.current_native.clone());
+        let request = MigrationRequest {
+            mode: report.workspace_mode,
+            live,
+            source: source_output.0.clone(),
+            target: target_output.0.clone(),
+            workspace: workspace.to_owned(),
+            target_current,
+            source_current,
+            previous_before: self.history.previous(&source_output.0),
+            refill: MigrationRefill::MostRecentlyUsed,
+        };
+        let scope_plan = match plan_migration(&self.mapping, &request) {
+            Ok(plan) => plan,
+            Err(_) => {
+                return CommandApplied::Rejected {
+                    kind: KIND_MIGRATION,
+                    message: MSG_MIGRATION,
+                };
+            }
+        };
+        // Retained Engine rekey through the transactional migration plan.
+        // The direction derives from the source scope's carried output
+        // adjacency (no wrap); the target keeps the source workspace id on
+        // the target output with empty target membership (a different
+        // current workspace there stays KDE-native, same-workspace residue
+        // refuses as occupied below).
+        let source_key = DomainKey {
+            output: source_output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        let Some(source_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == source_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        };
+        if report
+            .domains
+            .iter()
+            .any(|d| d.readable && d.domain.key() == target_key && !d.windows.is_empty())
+        {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        let Some((direction, direction_token)) =
+            source_report.domain.adjacent.iter().find_map(|(dir, out)| {
+                (out == target_output).then_some((
+                    *dir,
+                    match dir {
+                        Direction::Left => "left",
+                        Direction::Right => "right",
+                        Direction::Up => "up",
+                        Direction::Down => "down",
+                    },
+                ))
+            })
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        };
+        let _ = direction;
+        // Target scope geometry: the target output's current readable view
+        // when observed, else the source scope (same workspace, same gaps).
+        // Inset by the chosen outer gap exactly like the legacy target
+        // scope; exhaustion refuses with no mutation.
+        let (raw_bounds, raw_gap, raw_outer) = report
+            .domains
+            .iter()
+            .find(|d| {
+                d.readable
+                    && d.domain.id == *target_output
+                    && report.topology.iter().any(|t| {
+                        t.output == *target_output && t.current_native == d.domain.workspace.0
+                    })
+            })
+            .map(|d| (d.domain.bounds, d.domain.gap, d.outer_gap))
+            .unwrap_or((
+                source_report.domain.bounds,
+                source_report.domain.gap,
+                source_report.outer_gap,
+            ));
+        let projected = match crate::geometry::inset_bounds(raw_bounds, raw_outer) {
+            Ok(projected) => projected,
+            Err(_) => {
+                return CommandApplied::Rejected {
+                    kind: KIND_MIGRATION,
+                    message: MSG_MIGRATION,
+                };
+            }
+        };
+        let target_domain = OutputDomain {
+            id: target_output.clone(),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+            bounds: projected,
+            gap: raw_gap,
+            adjacent: BTreeMap::new(),
+        };
+        if !target_domain.validate() {
+            return CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            };
+        }
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&report.owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let accepted = self
+            .engine
+            .session(&source_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&source_report.domain),
+            domain_key: source_key.clone(),
+            outer_gap: source_report.outer_gap,
+            focused_window: source_report.focused.clone(),
+            windows: self.shielded_windows(&source_key, &source_report.windows, &{
+                let mut map: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
+                for candidate in &report.domains {
+                    for window in &candidate.windows {
+                        map.insert(&window.window, window);
+                    }
+                }
+                map
+            }),
+            closed_windows: source_report.closed.clone(),
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: Some((
+                Engine::canonical_component_domain(&target_domain),
+                target_key.clone(),
+            )),
+            target_windows: Vec::new(),
+            command: CoreCommand::MigrateWorkspace {
+                direction: direction_token.to_owned(),
+            },
+        };
+        match self.engine.handle(&event) {
+            CoreReply::MigrateWorkspace(plan) => {
+                // Full relocated member set from the committed target slot
+                // (tiled links plus carried float exceptions, excluding
+                // stayed sticky) with stable window identities: the adapter
+                // actuates each member exactly once under the stable
+                // transfer identity below, with truthful partial feedback.
+                let (members, floats) = self
+                    .engine
+                    .session(&target_key)
+                    .map(|session| {
+                        let mut members: Vec<WindowId> = session
+                            .snapshot()
+                            .windows
+                            .into_iter()
+                            .map(|link| link.window)
+                            .collect();
+                        for observed in session.exception_observed() {
+                            if !members.iter().any(|w| w == &observed.window) {
+                                members.push(observed.window.clone());
+                            }
+                        }
+                        members.sort();
+                        (members, session.exception_count())
+                    })
+                    .unwrap_or_default();
+                let _ = plan;
+                self.command_result = Some(CommandResult::Migration {
+                    direction: match direction_token {
+                        "left" => Direction::Left,
+                        "right" => Direction::Right,
+                        "up" => Direction::Up,
+                        _ => Direction::Down,
+                    },
+                    source: source_key,
+                    target: target_key,
+                    members,
+                    floats,
+                });
+                self.note_command(command_seq);
+                self.mapping = apply_migration(&self.mapping, &scope_plan);
+                self.retained.push(RetainedTransfer {
+                    target: TransferTarget {
+                        operation_id: format!("op-{command_seq}"),
+                        kind: TransferKind::Migration,
+                        target_output: target_output.clone(),
+                        target_workspace: workspace.to_owned(),
+                        follow: false,
+                        held: false,
+                    },
+                    policy: false,
+                    source_output: source_output.clone(),
+                    source_workspace: workspace.to_owned(),
+                });
+                CommandApplied::NoEffect
+            }
+            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
+            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
+                kind: detail,
+                message,
+            },
+            CoreReply::Diverged(reason) => CommandApplied::Rejected {
+                kind: reason.as_str(),
+                message: reason.message(),
+            },
+            _ => CommandApplied::Rejected {
+                kind: KIND_MIGRATION,
+                message: MSG_MIGRATION,
+            },
+        }
+    }
+
+    /// Existing operation route through the full [`CoreEvent`] (D2/D3
+    /// migration path for KDE): the homing (or first readable) domain
+    /// supplies the observation envelope. Send operations retain a window
+    /// transfer exactly like [`WorldCommand::Send`]; directional focus
+    /// emits one at-most-once effect; read-only queries reconcile only.
+    /// Cross-output move/focus carry the report-derived directional pair
+    /// (adjacency-resolved, never silently local); cross-output drag
+    /// sources carry the source-first pair with combined rows; directional
+    /// migration resolves through the world migration path; domain release
+    /// drops the retained session. Anything unresolvable refuses without
+    /// mutation, never silently degrades.
+    pub(crate) fn execute_operation(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        match command {
+            CoreCommand::SendToWorkspace {
+                window,
+                target_output,
+                target_workspace,
+                follow,
+            }
+            | CoreCommand::SendToOutput {
+                window,
+                target_output,
+                target_workspace,
+                follow,
+            } => self.start_send(
+                report,
+                command_seq,
+                &WindowId(window.clone()),
+                &OutputId(target_output.clone()),
+                target_workspace,
+                *follow,
+                by_id,
+                held_scopes,
+            ),
+            CoreCommand::MigrateWorkspace { direction } => {
+                self.operation_migration(report, command_seq, direction, by_id, held_scopes)
+            }
+            CoreCommand::ReleaseDomain => {
+                self.operation_release(report, command_seq, command, by_id, held_scopes)
+            }
+            CoreCommand::Move {
+                window,
+                direction,
+                cross_output_transfer,
+                ..
+            } if *cross_output_transfer => self.operation_directional(
+                report,
+                command_seq,
+                command,
+                window,
+                direction,
+                by_id,
+                held_scopes,
+            ),
+            CoreCommand::Focus {
+                window,
+                direction,
+                cross_output_transfer,
+                ..
+            } if *cross_output_transfer => self.operation_directional(
+                report,
+                command_seq,
+                command,
+                window,
+                direction,
+                by_id,
+                held_scopes,
+            ),
+            CoreCommand::DragDrop { source, .. } | CoreCommand::DragPreview { source, .. }
+                if source.is_some() =>
+            {
+                self.operation_drag(report, command_seq, command, by_id, held_scopes)
+            }
+            CoreCommand::Reconcile
+            | CoreCommand::UpdateGaps
+            | CoreCommand::Move { .. }
+            | CoreCommand::Focus { .. }
+            | CoreCommand::Resize { .. }
+            | CoreCommand::PointerResize { .. }
+            | CoreCommand::ToggleFloat { .. }
+            | CoreCommand::ToggleOrientation { .. }
+            | CoreCommand::DragDrop { .. }
+            | CoreCommand::DragPreview { .. }
+            | CoreCommand::ActiveGroup => {
+                self.run_local_operation(report, command_seq, command, by_id, held_scopes)
+            }
+        }
+    }
+
+    /// Cross-output directional move/focus through the report-derived pair.
+    /// The source is the window's homing domain; the target resolves through
+    /// carried output adjacency (same workspace preferred, else the target
+    /// output's current view, else the first readable domain there). No
+    /// adjacency or no readable target refuses without mutation: a
+    /// cross-output request never silently runs as a local move/focus.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operation_directional(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        window: &str,
+        direction: &str,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let window_id = WindowId(window.to_owned());
+        let Some(source_row) = by_id.get(&window_id) else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let source_key = DomainKey {
+            output: source_row.output.clone(),
+            workspace: source_row.workspace.clone(),
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        let Some(((source_domain, source_key), (target_domain, target_key), target_outer)) =
+            directional_pair_for(report, &source_key, direction, held_scopes)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let Some(source_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == source_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&report.owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let accepted = self
+            .engine
+            .session(&source_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        // Pair convergence builds its observation from the combined
+        // both-domain rows (source first), exactly like the legacy
+        // directional route: source-only rows would starve the target side
+        // and refuse as unchanged.
+        let Some(target_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == target_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let mut combined = self.shielded_windows(&source_key, &source_report.windows, by_id);
+        combined.extend(self.shielded_windows(&target_key, &target_report.windows, by_id));
+        let mut closed = source_report.closed.clone();
+        closed.extend(target_report.closed.clone());
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&source_domain),
+            domain_key: source_key.clone(),
+            outer_gap: source_report.outer_gap,
+            focused_window: source_report.focused.clone(),
+            windows: combined,
+            closed_windows: closed,
+            directional: Some(vec![
+                (source_domain, source_key.clone()),
+                (target_domain, target_key),
+            ]),
+            directional_target_outer_gap: Some(target_outer),
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: command.clone(),
+        };
+        self.finish_operation_event(report, command_seq, &event)
+    }
+
+    /// Cross-output drag preview/drop through the source-first pair. The
+    /// pointer domain (resolved from the carried pointer, never the mover
+    /// homing: native reassignment has not happened yet) is the drop
+    /// target; `source` names the capture domain the mover leaves. The pair
+    /// carries both validated domains with the combined shielded rows,
+    /// exactly like the engine's pair transaction; pointer-inside-source
+    /// keeps the legacy singleton route below.
+    pub(crate) fn operation_drag(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (x, y, source) = match command {
+            CoreCommand::DragDrop { x, y, source, .. }
+            | CoreCommand::DragPreview { x, y, source, .. } => (*x, *y, source.clone()),
+            _ => {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
+        };
+        // Pointer-target destination first: the mover still homes the
+        // source, so window homing can never resolve the destination.
+        let pointer_found = match source {
+            Some(_) => drag_pointer_domain(report, x, y, held_scopes),
+            None => None,
+        };
+        if let Some((domain_key, domain_report)) = pointer_found {
+            let Some(source_key) = source else {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            };
+            if source_key == domain_key {
+                return self.run_local_operation(report, command_seq, command, by_id, held_scopes);
+            }
+            return self.operation_drag_pair(
+                report,
+                command_seq,
+                command,
+                &source_key,
+                &domain_key,
+                domain_report,
+                by_id,
+                held_scopes,
+            );
+        }
+        // No pointer domain (source `None`, or pointer outside every
+        // readable scope with a source): the legacy singleton route, which
+        // refuses resolve-outside through the engine verdict below.
+        let (domain_key, domain_report) =
+            match operation_domain(report, command, by_id, held_scopes) {
+                Some(found) => found,
+                None => {
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
+                }
+            };
+        let Some(source_key) = source else {
+            return self.run_local_operation(report, command_seq, command, by_id, held_scopes);
+        };
+        if source_key == domain_key {
+            return self.run_local_operation(report, command_seq, command, by_id, held_scopes);
+        }
+        self.operation_drag_pair(
+            report,
+            command_seq,
+            command,
+            &source_key,
+            &domain_key,
+            domain_report,
+            by_id,
+            held_scopes,
+        )
+    }
+
+    /// Source-first pair transaction for a validated cross-output drag: the
+    /// pointer domain is the destination, `source_key` the capture domain
+    /// the mover leaves. Combined shielded rows ride source-first, exactly
+    /// like the engine's pair transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn operation_drag_pair(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        source_key: &DomainKey,
+        domain_key: &DomainKey,
+        domain_report: &crate::world_report::DomainReport,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let source_key = source_key.clone();
+        let domain_key = domain_key.clone();
+        let Some(source_report) = report
+            .domains
+            .iter()
+            .find(|d| d.readable && d.domain.key() == source_key)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
+        if held_scopes.contains(&source_key) {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        }
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&report.owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let accepted = self
+            .engine
+            .session(&domain_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let mut combined = self.shielded_windows(&source_key, &source_report.windows, by_id);
+        combined.extend(self.shielded_windows(&domain_key, &domain_report.windows, by_id));
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&domain_report.domain),
+            domain_key: domain_key.clone(),
+            outer_gap: domain_report.outer_gap,
+            focused_window: domain_report.focused.clone(),
+            windows: combined,
+            closed_windows: domain_report.closed.clone(),
+            directional: Some(vec![
+                (source_report.domain.clone(), source_key),
+                (domain_report.domain.clone(), domain_key.clone()),
+            ]),
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: command.clone(),
+        };
+        match self.engine.handle(&event) {
+            CoreReply::Tiled(plan) => {
+                // Cross-output drop arrival needs native actuation: retain
+                // one window transfer under the stable operation identity so
+                // the adapter moves the member (and follows the views)
+                // exactly once. Read-only previews never retain.
+                self.command_result = Self::command_result_from_reply(
+                    &event.command,
+                    &CoreReply::Tiled(plan.clone()),
+                );
+                let is_drop = matches!(command, CoreCommand::DragDrop { .. });
+                if is_drop && let CoreCommand::DragDrop { window, .. } = command {
+                    let window_id = WindowId(window.clone());
+                    let target_key = domain_key.clone();
+                    if let Some(pair) = event.directional.as_ref().and_then(|pair| pair.first()) {
+                        let source_key = pair.1.clone();
+                        self.note_command(command_seq);
+                        self.retained.push(RetainedTransfer {
+                            target: TransferTarget {
+                                operation_id: format!("op-{command_seq}"),
+                                kind: TransferKind::Window(window_id),
+                                target_output: target_key.output,
+                                target_workspace: target_key.workspace.0,
+                                follow: false,
+                                held: false,
+                            },
+                            policy: false,
+                            source_output: source_key.output,
+                            source_workspace: source_key.workspace.0,
+                        });
+                        return CommandApplied::NoEffect;
+                    }
+                }
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::DragPreview(plan) => {
+                self.command_result =
+                    Self::command_result_from_reply(&event.command, &CoreReply::DragPreview(plan));
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::MigrateWorkspace(_) | CoreReply::Released => {
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
+            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
+                kind: detail,
+                message,
+            },
+            CoreReply::Diverged(reason) => CommandApplied::Rejected {
+                kind: reason.as_str(),
+                message: reason.message(),
+            },
+            _ => CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            },
+        }
+    }
+
+    /// Directional whole-workspace migration through the world path: the
+    /// operation domain supplies the source scope and the carried output
+    /// adjacency supplies the target output, reusing the same scope policy
+    /// as the explicit migration command. Refuses without mutation when the
+    /// direction has no adjacent output or the scope policy refuses.
+    pub(crate) fn operation_migration(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        direction: &str,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (domain_key, domain_report) =
+            match operation_domain(report, &CoreCommand::ActiveGroup, by_id, held_scopes) {
+                Some(found) => found,
+                None => {
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
+                }
+            };
+        let Some(target_output) =
+            parse_direction_token(direction).and_then(|d| domain_report.domain.adjacent.get(&d))
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_OPERATION,
+                message: MSG_OPERATION,
+            };
+        };
+        let target_output = target_output.clone();
+        self.start_migration(
+            report,
+            command_seq,
+            &domain_key.output,
+            &target_output,
+            &domain_key.workspace.0,
+        )
+    }
+
+    /// Domain release: drop the retained session for the operation domain.
+    /// The adapter explicitly retired this scope; the next publish carries
+    /// no retained rows for it. Never touches other sessions, flights, or
+    /// ordering beyond consuming the command sequence.
+    pub(crate) fn operation_release(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (domain_key, _) = match operation_domain(report, command, by_id, held_scopes) {
+            Some(found) => found,
+            None => {
+                return CommandApplied::Rejected {
+                    kind: KIND_OPERATION,
+                    message: MSG_OPERATION,
+                };
+            }
+        };
+        self.engine.remove(&domain_key);
+        self.note_command(command_seq);
+        CommandApplied::NoEffect
+    }
+
+    /// Legacy local operation envelope: homing (or first readable) domain,
+    /// no directional pair. Shared by local move/focus, read-only queries,
+    /// resizes, float toggles, and same-domain drag preview/drop.
+    pub(crate) fn run_local_operation(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        command: &CoreCommand,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> CommandApplied {
+        let (domain_key, domain_report) =
+            match operation_domain(report, command, by_id, held_scopes) {
+                Some(found) => found,
+                None => {
+                    return CommandApplied::Rejected {
+                        kind: KIND_OPERATION,
+                        message: MSG_OPERATION,
+                    };
+                }
+            };
+        let owner = report.owner.clone();
+        let (Some(owner), Some(correlation)) = (
+            OwnerId::parse(&owner),
+            CorrelationId::parse(&report.request_id),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: MSG_SNAPSHOT,
+            };
+        };
+        let accepted = self
+            .engine
+            .session(&domain_key)
+            .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
+        let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let event = CoreEvent {
+            owner,
+            generation: self.core_generation.clone(),
+            correlation,
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&domain_report.domain),
+            domain_key: domain_key.clone(),
+            outer_gap: domain_report.outer_gap,
+            focused_window: domain_report.focused.clone(),
+            windows: self.shielded_windows(&domain_key, &domain_report.windows, by_id),
+            closed_windows: domain_report.closed.clone(),
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: command.clone(),
+        };
+        self.finish_operation_event(report, command_seq, &event)
+    }
+
+    /// Correlated per-command outcome from one [`CoreReply`]: `Some` only for
+    /// plans the snapshot cannot express (preview/float/group/migration).
+    /// Move/resize/tiled-admit/focus/send geometry rides the snapshot,
+    /// transfers, and effects, so those map to `None`: the snapshot IS the
+    /// result, never a silent discard.
+    pub(crate) fn command_result_from_reply(
+        command: &CoreCommand,
+        reply: &CoreReply,
+    ) -> Option<CommandResult> {
+        match reply {
+            CoreReply::DragPreview(plan) => Some(CommandResult::DragPreview {
+                rect: plan.preview.proposed_rect,
+                hover: Some(plan.preview.hover_prior()),
+                domain: plan.preview.domain.clone(),
+                source: plan.preview.source_domain.clone(),
+                revision: plan.preview.revision,
+            }),
+            CoreReply::Tiled(plan) if plan.kind == TiledKind::ToggleFloat => {
+                if plan.float_window.is_some() || plan.float_rect.is_some() {
+                    let window = plan.float_window.clone().unwrap_or_else(|| match command {
+                        CoreCommand::ToggleFloat { window, .. } => WindowId(window.clone()),
+                        _ => WindowId(String::new()),
+                    });
+                    Some(CommandResult::Float {
+                        window,
+                        rect: plan.float_rect,
+                    })
+                } else {
+                    // Unfloat-to-tile names the command window with no rect:
+                    // the tiled placement rides the snapshot.
+                    match command {
+                        CoreCommand::ToggleFloat { window, .. } => Some(CommandResult::Float {
+                            window: WindowId(window.clone()),
+                            rect: None,
+                        }),
+                        _ => None,
+                    }
+                }
+            }
+            CoreReply::ActiveGroup(found) => Some(CommandResult::ActiveGroup {
+                base_revision: found.base_revision,
+                group: found.group.clone(),
+                focused_leaf: found.focused_leaf.clone(),
+                focused_window: found.focused_window.clone(),
+                members: found.members.clone(),
+                bounds: found.bounds,
+            }),
+            CoreReply::NoGroup {
+                base_revision,
+                reason,
+            } => Some(CommandResult::NoGroup {
+                base_revision: *base_revision,
+                reason: *reason,
+            }),
+            CoreReply::MigrateWorkspace(plan) => Some(CommandResult::Migration {
+                direction: plan.direction,
+                source: plan.source.clone(),
+                target: plan.target.clone(),
+                members: plan.geometry.iter().map(|g| g.window.clone()).collect(),
+                floats: plan.floats,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Shared reply settlement for operation events: stages the correlated
+    /// command result (preview/float/group only; move/resize/tiled geometry
+    /// rides the snapshot), at-most-once focus effects, sequence
+    /// consumption on success, verbatim refusal passthrough. Never mutates
+    /// on refusal.
+    pub(crate) fn finish_operation_event(
+        &mut self,
+        report: &WorldReport,
+        command_seq: u64,
+        event: &CoreEvent,
+    ) -> CommandApplied {
+        let _ = report;
+        let reply = self.engine.handle(event);
+        self.command_result = Self::command_result_from_reply(&event.command, &reply);
+        // Explicit float placement retains its target under the stable
+        // command operation identity (`op-<cmdSeq>`) so a lost one-shot
+        // result reply never loses the placement: later unrelated replies
+        // still carry the row token until observation confirms it, proven
+        // feedback settles it, or a newer intent replaces it. Unfloat
+        // (no rect) withdraws any outstanding target for the window.
+        // Refusals retain nothing.
+        if let Some(CommandResult::Float { window, rect }) = &self.command_result {
+            let window = window.clone();
+            match rect {
+                Some(target) => {
+                    let source = event
+                        .windows
+                        .iter()
+                        .find(|entry| entry.window == window)
+                        .map(|entry| entry.rect);
+                    let (output, workspace) = event
+                        .windows
+                        .iter()
+                        .find(|entry| entry.window == window)
+                        .map(|entry| (entry.output.clone(), entry.workspace.0.clone()))
+                        .unwrap_or_else(|| {
+                            (
+                                event.domain_key.output.clone(),
+                                event.domain_key.workspace.0.clone(),
+                            )
+                        });
+                    self.retained_floats.retain(|held| held.window != window);
+                    self.retained_floats
+                        .push(crate::world_engine::RetainedFloat {
+                            operation_id: format!("op-{command_seq}"),
+                            window,
+                            target: *target,
+                            source,
+                            output,
+                            workspace,
+                        });
+                }
+                None => {
+                    self.retained_floats.retain(|held| held.window != window);
+                }
+            }
+        }
+        match reply {
+            CoreReply::Tiled(_)
+            | CoreReply::Projection(_)
+            | CoreReply::MoveDirectional(_)
+            | CoreReply::Resize(_)
+            | CoreReply::ActiveGroup(_)
+            | CoreReply::NoGroup { .. }
+            | CoreReply::DragPreview(_) => {
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::FocusDirectional(plan) => {
+                self.note_command(command_seq);
+                CommandApplied::Effect(OneShotEffect {
+                    id: format!("fx-{command_seq}"),
+                    kind: crate::world_report::EffectKind::Focus,
+                    target: plan.to_window.clone(),
+                    issued_revision: self.state_revision + 1,
+                })
+            }
+            CoreReply::SendWorkspace(_) | CoreReply::SendOutput(_) => {
+                // Pair-route sends that surface here (same-domain
+                // carry) retain exactly like an explicit send.
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            // Unreachable through the local subset (migration and
+            // release take dedicated routes above): consume the
+            // sequence without mutating further.
+            CoreReply::MigrateWorkspace(_) | CoreReply::Released => {
+                self.note_command(command_seq);
+                CommandApplied::NoEffect
+            }
+            CoreReply::Rejected { kind, message } => CommandApplied::Rejected { kind, message },
+            CoreReply::SnapshotInvalid { message, detail } => CommandApplied::Rejected {
+                kind: detail,
+                message,
+            },
+            CoreReply::Diverged(reason) => CommandApplied::Rejected {
+                kind: reason.as_str(),
+                message: reason.message(),
+            },
+        }
+    }
+}
+
+pub(crate) enum CommandApplied {
+    Effect(OneShotEffect),
+    NoEffect,
+    Rejected {
+        kind: &'static str,
+        message: &'static str,
+    },
+}
+
+/// Pointer-target domain for a drag preview/drop: the readable non-held
+/// domain whose bounds contain the pointer. The mover still homes the
+/// source (native reassignment has not happened), so homing the window
+/// would resolve the source, never the destination. `None` refuses without
+/// mutation (pointer outside every readable scope: resolve-outside).
+pub(crate) fn drag_pointer_domain<'a>(
+    report: &'a WorldReport,
+    x: i32,
+    y: i32,
+    held_scopes: &BTreeSet<DomainKey>,
+) -> Option<(DomainKey, &'a crate::world_report::DomainReport)> {
+    report
+        .domains
+        .iter()
+        .filter(|d| d.readable && !held_scopes.contains(&d.domain.key()))
+        .find(|d| {
+            let bounds = d.domain.bounds;
+            let (x, y) = (i64::from(x), i64::from(y));
+            let (left, top) = (i64::from(bounds.x), i64::from(bounds.y));
+            x >= left && x < left + i64::from(bounds.w) && y >= top && y < top + i64::from(bounds.h)
+        })
+        .map(|d| (d.domain.key(), d))
+}
+
+/// Observation envelope for one operation command: the homing domain of
+/// its subject window when the window names one, else the first readable
+/// non-held domain. `None` selects the operation refusal without mutation.
+pub(crate) fn operation_domain<'a>(
+    report: &'a WorldReport,
+    command: &CoreCommand,
+    by_id: &BTreeMap<&WindowId, &EngineWindow>,
+    held_scopes: &BTreeSet<DomainKey>,
+) -> Option<(DomainKey, &'a crate::world_report::DomainReport)> {
+    let window = match command {
+        CoreCommand::Move { window, .. }
+        | CoreCommand::Focus { window, .. }
+        | CoreCommand::Resize { window, .. }
+        | CoreCommand::PointerResize { window, .. }
+        | CoreCommand::ToggleFloat { window, .. }
+        | CoreCommand::ToggleOrientation { window, .. }
+        | CoreCommand::DragDrop { window, .. }
+        | CoreCommand::DragPreview { window, .. } => Some(WindowId(window.clone())),
+        CoreCommand::Reconcile
+        | CoreCommand::UpdateGaps
+        | CoreCommand::ActiveGroup
+        | CoreCommand::SendToWorkspace { .. }
+        | CoreCommand::SendToOutput { .. }
+        | CoreCommand::MigrateWorkspace { .. }
+        | CoreCommand::ReleaseDomain => None,
+    };
+    if let Some(window) = window
+        && let Some(row) = by_id.get(&window)
+    {
+        let key = DomainKey {
+            output: row.output.clone(),
+            workspace: row.workspace.clone(),
+        };
+        if !held_scopes.contains(&key)
+            && let Some(domain) = report
+                .domains
+                .iter()
+                .find(|d| d.readable && d.domain.key() == key)
+        {
+            return Some((key, domain));
+        }
+    }
+    report
+        .domains
+        .iter()
+        .filter(|d| d.readable && !held_scopes.contains(&d.domain.key()))
+        .map(|d| (d.domain.key(), d))
+        .next()
+}
+
+/// Parse a validated direction token to the engine axis. The report gate
+/// already restricts the vocabulary; `None` refuses without mutation.
+pub(crate) fn parse_direction_token(direction: &str) -> Option<Direction> {
+    match direction {
+        "left" => Some(Direction::Left),
+        "right" => Some(Direction::Right),
+        "up" => Some(Direction::Up),
+        "down" => Some(Direction::Down),
+        _ => None,
+    }
+}
+
+/// Report-derived directional pair for a cross-output move/focus: the source
+/// domain plus the adjacency-resolved target domain (same workspace
+/// preferred, else the target output's current view, else the first readable
+/// non-held domain there), with the target's validated outer gap. `None`
+/// refuses without mutation: no adjacency, unreadable source, or no
+/// readable target.
+type DirectionalPair = ((OutputDomain, DomainKey), (OutputDomain, DomainKey), i32);
+
+pub(crate) fn directional_pair_for(
+    report: &WorldReport,
+    source_key: &DomainKey,
+    direction: &str,
+    held_scopes: &BTreeSet<DomainKey>,
+) -> Option<DirectionalPair> {
+    let direction = parse_direction_token(direction)?;
+    let source = report
+        .domains
+        .iter()
+        .find(|d| d.readable && d.domain.key() == *source_key)?;
+    if held_scopes.contains(source_key) {
+        return None;
+    }
+    let target_output = source.domain.adjacent.get(&direction)?.clone();
+    let current = report
+        .topology
+        .iter()
+        .find(|t| t.output == target_output)
+        .map(|t| t.current_native.clone());
+    let candidates: Vec<&crate::world_report::DomainReport> = report
+        .domains
+        .iter()
+        .filter(|d| {
+            d.readable && d.domain.id == target_output && !held_scopes.contains(&d.domain.key())
+        })
+        .collect();
+    // Same workspace preferred (directional counterpart), else the target
+    // output's current view, else the first readable domain there.
+    let target = candidates
+        .iter()
+        .find(|d| d.domain.workspace.0 == source.domain.workspace.0)
+        .or_else(|| {
+            let wanted = current.as_deref()?;
+            candidates.iter().find(|d| d.domain.workspace.0 == wanted)
+        })
+        .or_else(|| candidates.first())
+        .copied()?;
+    Some((
+        (source.domain.clone(), source_key.clone()),
+        (target.domain.clone(), target.domain.key()),
+        target.outer_gap,
+    ))
+}

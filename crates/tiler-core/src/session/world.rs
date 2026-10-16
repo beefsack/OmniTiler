@@ -575,6 +575,26 @@ impl super::Session {
         self.minimized_slots.get(window)
     }
 
+    /// Homing of every stored D23 minimize restore slot, sorted by window
+    /// id. Read-only projection for the world reply so minimized lifetimes
+    /// are explicit rows (never silent absence, never inferred closed).
+    #[must_use]
+    pub fn minimized_entries(&self) -> Vec<(WindowId, OutputId, WorkspaceId)> {
+        let mut out: Vec<(WindowId, OutputId, WorkspaceId)> = self
+            .minimized_slots
+            .values()
+            .map(|slot| {
+                (
+                    slot.window.clone(),
+                    slot.output.clone(),
+                    slot.workspace.clone(),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.0.cmp(&b.0.0));
+        out
+    }
+
     /// D23 close cleanup: explicitly forget the stored minimize restore
     /// slot for a window (for example when a minimized window closes; a
     /// bare absence from observation is a minimize, never a close). Without

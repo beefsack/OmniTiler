@@ -1654,16 +1654,18 @@ impl Engine {
             }
         }
         // Fresh floating-aware build: no retained slot, no relocation source,
-        // and floating members present, so the tiled-only seed cannot run. One
+        // and floating/fullscreen members present, so the tiled-only seed cannot run. One
         // empty session plus the same single convergence primitive admits
         // normal members and retains floating exceptions atomically; no staged
-        // or fabricated observations. Fixed-size candidates (D1) ride this
+        // or fabricated observations. Born-fullscreen arrivals (D5) ride this
+        // same build: direct fullscreen observations hold slotless without a
+        // marker so the first exit classifies fresh. Fixed-size candidates (D1) ride this
         // same build: they converge to automatic floating exceptions instead
         // of joining the fitted/seed topology. Relocation candidates always
         // keep the legacy route byte-for-byte, as do all-normal fresh
         // observations.
         if self.session(&event.domain_key).is_none()
-            && (event.windows.iter().any(|w| w.floating) || fixed_present)
+            && (event.windows.iter().any(|w| w.floating || w.fullscreen) || fixed_present)
             && self
                 .find_unique_source_for_target(&event.domain_key)
                 .is_none()

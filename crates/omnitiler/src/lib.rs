@@ -7,3 +7,4 @@ pub(crate) mod float_intent_store;
 pub mod planner_service;
 pub mod tray;
 pub mod tray_endpoint;
+pub mod world_service;
