@@ -130,6 +130,13 @@ mapping, trailing lifecycle and send-stay route do not need to be re-decided.
   `47c3ea8ac0718d2ab14d6b553db764269283cee9b835c534558c5ad0c07dd5ac`.
   The live artifact predates the final offline cleanup repair; live main SHA-256:
   `cd17a01575d5ec985e9ce65229027e28bf11df0457d083309a3485d031bf87cc`.
+- Diagnostic source milestone `977463e` passed all eight hosted jobs:
+  [CI 38866437557](https://github.com/beefsack/OmniTiler/actions/runs/38866437557).
+  A preceding revision's Windows portable run exposed an existing fake-backend
+  race: the observation-pump fixture released its worker before configuring the
+  only readback. The test-only correction configures truth before release;
+  production runtime and the existing oracle are unchanged. Targeted and full
+  macOS tests, strict clippy and format pass after that correction.
 
 ## Continuation and physical acceptance
 

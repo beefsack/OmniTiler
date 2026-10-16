@@ -2133,10 +2133,12 @@ fn hung_observation_pump_cannot_stall_others() {
         "B keeps its lifetime while A is hung"
     );
 
-    // Release A: its pump drains, its (now configured) startup publishes,
-    // and the runtime shuts down clean (no panic, no retained handle).
-    release_gate(&poll_gate);
+    // Release A: configure its snapshot before releasing the pump, so the
+    // post-release readback (startup already failed honestly) deterministically
+    // sees truth; the pump drains, the readback publishes, and the runtime
+    // shuts down clean (no panic, no retained handle).
     configure_snapshot(&fixture, APP_A, vec![win(11, 0, 0, 960, 1080)]);
+    release_gate(&poll_gate);
     wait_desired_names(&fixture, &["1001_11", "1002_21", "1002_22"]);
     shutdown_clean(&fixture);
 }
