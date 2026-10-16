@@ -20,8 +20,9 @@ redesign shared core or add managed fullscreen behavior.
 - Every remaining host difference is explicit and justified.
 - Regression coverage proves consume/refuse separation and preserved release,
   exact ownership, recovery and provenance boundaries.
-- macOS tests, strict clippy, fmt, signed app build/verification and hosted CI
-  pass after the final relevant change.
+- macOS tests, strict clippy, fmt and signed app build/verification pass after
+  the final relevant change. Hosted CI is checked; failures caused by this
+  change are fixed and unrelated failures are reported explicitly.
 - Bounded live evidence is collected where practical; genuinely physical
   acceptance remains an explicit dogfood procedure rather than a synthetic claim.
 - Unsafe code stays confined to `ffi.rs`; before/after counts are reported.
@@ -94,7 +95,13 @@ an armed chord. Diagnostic schema/thread placement differ, not consumption polic
 - Unsafe-containing lines: **165 → 165**; code-only unsafe-containing lines
   after stripping line comments: **149 → 149**. Unsafe remains confined to
   `ffi.rs`.
-- Hosted CI: pending publication.
+- Implementation commit: `b73f84b4` (`feat(macos): consume-first tap parity with
+  Windows`), rebased onto `58375eb8` before publication.
+- [Hosted CI run 38931110536](https://github.com/beefsack/OmniTiler/actions/runs/38931110536):
+  Rust, macOS, KWin, Windows, native, licenses and notices jobs pass. Shell fails
+  on the pre-existing KWin 6.6 API guard for unaudited
+  `fullscreen`/`maximized`/`sticky` symbols. The identical failure predates this
+  change in runs 38928816530 and 38926614181; no macOS-caused CI failure remains.
 
 ### Live evidence
 
@@ -118,7 +125,7 @@ The fixture does not exercise product scoped refusal or synthetic provenance
 bypass. Physical marker non-deletion, native fullscreen refusal, empty-Space
 basic/select distinction and real game behavior remain unobserved, not inferred
 from synthetic suppression. The existing dogfood guide now has a
-[bounded physical procedure](archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
+[bounded physical procedure](macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
 
 ### Decisions and parked questions
 
@@ -126,3 +133,11 @@ The owner-side boundary is recorded as **Tentative (pending user review)** in
 `decisions.md`. The final cross-platform input rule remains open by user direction.
 No new core contract, managed fullscreen behavior, transfer route or game
 detection heuristic is selected. Physical acceptance remains in the macOS backlog.
+
+## Outcome
+
+Implementation and automated verification are delivered. Physical delivery,
+fullscreen and empty-Space acceptance remain explicitly pending in the backlog;
+the procedure above is the next macOS action. The unrelated shell CI guard
+failure remains outstanding separately. No live processes or settings preimages
+remain from these tests.

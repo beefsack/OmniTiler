@@ -3579,7 +3579,7 @@ decisions of 2026-09-24 are under
       Synthetic suppression/release and actual user-disable/re-enable regressions
       pass; **physical acceptance pending** for TextEdit native non-delivery,
       fullscreen refusal and empty-Space select/basic distinction.
-      [Evidence](changes/macos-consume-first-input.md) and
+      [Evidence](changes/archive/macos-consume-first-input.md) and
       [bounded procedure](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
   3. Effects (KDE/Windows parity): active border, group underlay, drag/drop
      overlays.

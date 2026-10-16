@@ -285,7 +285,7 @@ platform API behavior.
     revisited. Implemented 2026-10-17: fullscreen/game foregrounds do **not**
     release armed chords to native delivery; they are consumed and unsafe
     actions refused, as on Windows. Unarmed chords still pass through.
-    [Implementation, evidence and physical acceptance](changes/macos-consume-first-input.md).
+    [Implementation, evidence and physical acceptance](changes/archive/macos-consume-first-input.md).
   - **Tentative (pending user review), 2026-10-17 — consume-first boundary:**
     keep foreground eligibility out of the CGEventTap callback. After suppression,
     the input owner reads the basic/select eligibility caches and drops ineligible
