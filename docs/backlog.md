@@ -3502,8 +3502,7 @@ decisions of 2026-09-24 are under
   Small follow-ups: remove the Carbon diagnostic route (proposed for Simplicity,
   awaiting user confirmation); `just launch` exits nonzero on successful probes;
   Up/Down Mission Control chords, multi-display and the macOS 15 floor remain
-  unexercised; review the `ffi.rs` unsafe surface. Hosted CI failures after the
-  native-Space probe commits are not yet investigated.
+  unexercised; review the `ffi.rs` unsafe surface.
   Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
   [record](changes/archive/macos-native-workspaces.md)): MC AX create/select/remove
   and gesture select work on owned fixtures; direct SLS window move dispatched
