@@ -243,6 +243,13 @@ it predates the later retained-layout changes.
   build and separate verification pass for both bundles and the deployment
   floor. No full-workspace macOS clippy claim (the known core portability
   blocker remains outside this change).
+- Source milestone `c1655e9d` passed hosted macOS, Linux Rust/strict clippy,
+  KWin, native, shell and dependency gates in
+  [CI 38893345659](https://github.com/beefsack/OmniTiler/actions/runs/38893345659).
+  Windows exposed an incorrect Unix-only refusal in the new transaction-lock
+  helper. The causal repair uses portable standard-library locking while
+  preserving Unix no-follow/private-mode safeguards; the same fake-backed
+  ownership assertions run unchanged, rather than being skipped.
 - Unsafe blocks in the existing FFI module: **96 → 100** (four narrowly scoped
   dynamic hotkey SPI resolution/read/enable blocks); no unsafe elsewhere and no
   new dependency. Standard-library locking avoided an additional unsafe block.

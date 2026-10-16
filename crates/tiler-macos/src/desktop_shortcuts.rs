@@ -714,16 +714,19 @@ pub(crate) enum LockRefusal {
 }
 
 /// Acquire the exclusive transaction lock for a leaf path, creating it
-/// (mode `0600`) when absent. Stable std `File::try_lock`: non-blocking
-/// (`WouldBlock` maps to [`LockRefusal::Held`); holding the returned
-/// `File` holds the lock, close-on-drop releases it, and the OS releases
-/// on process loss, so a crash can never wedge later runs — verified by
-/// probe on the pinned toolchain plus the release test below. Secure leaf
-/// handling mirrors the session records: symlink fast-path refusal plus
-/// `O_NOFOLLOW` at open, regular-file check. No unsafe, no dependency.
-#[cfg(unix)]
+/// when absent. Portable core over stable std `File::try_lock`:
+/// non-blocking (`WouldBlock` maps to [`LockRefusal::Held`]); holding the
+/// returned `File` holds the lock, close-on-drop releases it, and the OS
+/// releases on process loss, so a crash can never wedge later runs —
+/// verified by probe on the pinned toolchain plus the release test below.
+/// Secure leaf handling: symlink fast-path refusal plus a regular-file
+/// check on both platforms, `O_NOFOLLOW` at open and mode `0600` on Unix.
+/// No unsafe, no dependency. Non-mac live mutations still never reach here
+/// (the SkyLight SPI is unavailable off macOS, so the live store refuses
+/// per-ID before any publish); the portable core exists so the same
+/// backup discipline is provable on every CI platform over fake temp
+/// paths.
 pub(crate) fn lock_leaf_file(path: &std::path::Path) -> Result<std::fs::File, LockRefusal> {
-    use std::os::unix::fs::OpenOptionsExt;
     if let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.file_type().is_symlink()
     {
@@ -731,14 +734,30 @@ pub(crate) fn lock_leaf_file(path: &std::path::Path) -> Result<std::fs::File, Lo
             "lock path is a symlink; refusing".to_owned(),
         ));
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|e| LockRefusal::Refused(format!("lock open: {e}")))?;
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| LockRefusal::Refused(format!("lock open: {e}")))?
+    };
+    #[cfg(not(unix))]
+    let file = {
+        // No `O_NOFOLLOW` or Unix mode bits here: the symlink fast-path
+        // above plus the regular-file check below still hold the leaf.
+        // Read+write access is what the std lock needs on this platform.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .map_err(|e| LockRefusal::Refused(format!("lock open: {e}")))?
+    };
     if !file.metadata().map(|meta| meta.is_file()).unwrap_or(false) {
         return Err(LockRefusal::Refused(
             "lock path is not a regular file; refusing".to_owned(),
@@ -751,16 +770,6 @@ pub(crate) fn lock_leaf_file(path: &std::path::Path) -> Result<std::fs::File, Lo
         }
     })?;
     Ok(file)
-}
-
-/// Non-Unix fallback: no stable `try_lock` here, so every guarded
-/// transaction refuses honestly instead of running unlocked. All real
-/// targets (macOS product, Linux CI) are Unix.
-#[cfg(not(unix))]
-pub(crate) fn lock_leaf_file(_path: &std::path::Path) -> Result<std::fs::File, LockRefusal> {
-    Err(LockRefusal::Refused(
-        "file locking needs Unix; refusing unlocked".to_owned(),
-    ))
 }
 
 /// Acquire the transaction lock for a preimage path, held across the full
