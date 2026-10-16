@@ -268,7 +268,38 @@ platform API behavior.
     for physical input, focus arrival or shell acceptance. The
     [live guide](live-macos-testing.md#user-run-physical-checks) and
     [copy-paste procedure](changes/archive/macos-dogfood-hardening.md#user-run-physical-script)
-    apply this to timeout recovery, Carbon delivery and manual native transfers.
+     apply this to timeout recovery, Carbon delivery and manual native transfers.
+  - **User 2026-10-16 (input eligibility, may change):** macOS consumes its
+    owned chords first and fences actions afterward, matching Windows, instead
+    of passing a chord through when foreground eligibility is unknown, stale,
+    fullscreen or out of scope. Follow Windows' handling of fullscreen/game
+    foregrounds so [game safety](principles.md#gaming-compatibility) stays
+    consistent across platforms; lock and Secure Input still release
+    interception. The final cross-platform rule is not settled and may be
+    revisited. Implementation pending.
+  - **Tentative tap recovery route, 2026-10-16 (physical evidence):** under a
+    real physical callback stall the OS disabled the tap without delivering a
+    `kCGEventTapDisabledByTimeout` notification; the enabled-state health check
+    detected it and verified same-tap re-enable recovered. Accept health check
+    plus re-enable as the product recovery route; notification handling stays a
+    faster path when one arrives. This supersedes the "pending physical
+    discriminator" clause of the preview input route above.
+    [Physical results](changes/archive/macos-dogfood-hardening.md#user-physical-results-2026-10-16).
+  - **User-approved 2026-10-16 (native workspace route):** a user-run manual
+    check moved an ordinary window to another Space by all three native routes
+    (title-bar drag plus Ctrl+Right, drag plus enabled Ctrl+2, drag onto the
+    Mission Control thumbnail). Build managed native workspaces on these routes:
+    select Spaces through Mission Control AX or the yabai-style Dock-swipe
+    gesture; transfer windows with the Amethyst-style synthetic title-bar drag
+    plus a native Space-switch chord; relative sends use the Ctrl+arrow
+    holders; numbered sends use "Switch to Desktop N" chords that Authentic
+    enables with owned preimages and Revert. The tap must pass the tiler's own
+    synthetic switch chords. Drag transfer is inherently follow; send-stay
+    switches back afterward, with visible transition cost to be judged in
+    dogfooding. Supersedes the 2026-10-16 tentative capability boundary above
+    for route selection; tier 2/SIP-enabled policy unchanged.
+    [Manual route results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16).
+
 - User decisions 2026-10-10 (0.1 release scope and gate):
   - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
     as a development preview and ships in its own later release, requiring

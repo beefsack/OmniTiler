@@ -162,9 +162,8 @@ Set the document's reported window ID, then use this readback before and after
 **each** route (it works regardless of foreground or current Space):
 
 ```sh
-WID=123  # replace with the disposable document's wid
-space_readback() { mise exec -- just launch -- spaces-diagnose --wid "$WID"; }
-space_readback
+# replace 123 with the disposable document's wid (shell-neutral; no variables)
+mise exec -- just launch -- spaces-diagnose --wid 123
 ```
 
 1. Hold the TextEdit **title bar** in a drag; while still holding, press
@@ -185,7 +184,7 @@ desktop switching. Return the document with the thumbnail route between legs.
 Cleanup: return/close only the disposable document, restore Switch to Desktop 2
 to its original enabled state and binding (disable it again if originally off),
 return to the original Desktop and remove only the extra **empty** Desktop with
-its Mission Control **x**. Run `space_readback` before closing the document and
+its Mission Control **x**. Run the `--wid` readback before closing the document and
 `spaces-diagnose` afterward to confirm return/topology. Leave existing windows
 and Spaces in place.
 
@@ -212,3 +211,18 @@ mise exec -- just dev trace
 Report focus result (including markers), gap appearance, idle logging, the two
 probe JSON results and the three transfer outcomes. The unscoped dogfood recheck
 is user-run.
+
+## User physical results 2026-10-16
+
+User-run on one display, following the script above.
+
+| Check | Observed | Verdict |
+| --- | --- | --- |
+| 1. Physical tap stall | Exact Ctrl+h matched and suppressed (2/2); during the 1,500 ms stall the OS disabled the tap but delivered **no** timeout notification (`unnotified_disables=1`, `reenables_after_timeout=0`); the enabled-state health check detected it and verified same-tap re-enable. Probe reported `stage:"stall-disable"` and refused to claim notification recovery; foreground restored to the original app. The helper's audible beeps on plain letters are expected (it has no text input). | Disable plus health-check recovery observed; timeout notification not delivered. Product route accepted tentatively ([decision](../../decisions.md#scope-and-platform-goals)) |
+| 2. Carbon Ctrl+h | Registration accepted (`os_status:0`), three physical presses, `deliveries:0`. Likely cause (unverified): the diagnostic does not run the event loop Carbon dispatch needs. | Not delivered; Carbon is diagnostic-only, not investigated further |
+| 3. Manual Space transfer | All three routes moved the window to Desktop 2 | [Route results](../../research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16) |
+| 4. Dogfood recheck | Three terminal and two TextEdit windows: directional focus (including same-app) and move worked as expected, outer and inner gaps correct, idle log no longer repeats | Pass |
+
+Follow-ups: the `just launch` wrapper exits nonzero even when the probe JSON
+reports success; user procedures must be shell-neutral (avoid POSIX-only
+variable assignment and functions).

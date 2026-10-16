@@ -16,6 +16,14 @@ Project principles, approved by the user.
 - This matters most in complex areas with uncontrolled elements and multiple
   failure modes, where added machinery multiplies the ways things can fail.
 
+## Consistency
+
+- Consistent behavior across target platforms and with the Tier 1 input
+  tilers is a primary product goal and a main reason the project exists.
+- Share defaults and semantics wherever possible, and explicitly document
+  unavoidable host differences, subject to game safety
+  ([Gaming Compatibility](#gaming-compatibility)).
+
 ## Layering
 
 - Push as much logic as is sensible down into the shared, system-agnostic

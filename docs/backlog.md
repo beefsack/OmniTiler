@@ -3482,26 +3482,32 @@ decisions of 2026-09-24 are under
   (distinct from the completed bounded matrix source-fill passes).
   [Evidence](changes/archive/prior-art-catalogue.md).
 - P1 | macOS port | Started 2026-10-14 (user), superseding the after-KDE-0.1
-  sequencing. **Current 2026-10-16:** first dogfood feedback is positive on tiling,
-  moves and inner gaps. [Hardening](changes/archive/macos-dogfood-hardening.md)
-  adds the missing same-app focus raise leg, change-only routine trace records,
-  and shared 8-point visible-frame outer gaps; regressions and scoped evidence
-  recorded. Next: user-run same-app focus/gap/logging recheck, physical timeout
-  recovery and Carbon diagnostics, and the three manual TextEdit Space-transfer
-  routes in the [script](changes/archive/macos-dogfood-hardening.md#user-run-physical-script).
-  [Basic preview guide](changes/macos-dogfood-preview.md); native-Space capability comparison
-  complete for eligible same-display routes
-  ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
-  [record](changes/archive/macos-native-workspaces.md)). MC AX create/select/remove
+  sequencing. **Current 2026-10-16:** basic tiling dogfood preview
+  ([guide](changes/macos-dogfood-preview.md)) user-accepted after
+  [hardening](changes/archive/macos-dogfood-hardening.md): directional focus
+  (including same-app), move, 8-point outer/inner gaps and quiet idle logging pass
+  physically. [Physical results](changes/archive/macos-dogfood-hardening.md#user-physical-results-2026-10-16):
+  OS disabled the tap under a stall without a timeout notification; health-check
+  re-enable recovered (accepted tentatively). Carbon physical delivery failed
+  (diagnostic-only). All three manual native Space-transfer routes moved an
+  ordinary window ([results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16)).
+  **Next, in order:**
+  1. Managed native workspaces (user-approved route 2026-10-16,
+     [decision](decisions.md#scope-and-platform-goals)): MC AX/gesture select,
+     synthetic title-bar drag plus switch chord transfer, Authentic-enabled
+     Desktop-N with Revert; per-display mapping, independent layouts, KDE/Windows
+     workspace actions and bindings.
+  2. Input consume-first parity with Windows (user 2026-10-16, may change).
+  3. Effects: active border, group underlay.
+  Small follow-ups: remove the Carbon diagnostic route (proposed for Simplicity,
+  awaiting user confirmation); `just launch` exits nonzero on successful probes;
+  Up/Down Mission Control chords, multi-display and the macOS 15 floor remain
+  unexercised; review the `ffi.rs` unsafe surface. Hosted CI failures after the
+  native-Space probe commits are not yet investigated.
+  Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
+  [record](changes/archive/macos-native-workspaces.md)): MC AX create/select/remove
   and gesture select work on owned fixtures; direct SLS window move dispatched
-  without effect; bridged dispatcher absent; compat exact metadata restoration
-  and resolved digit/drag routes remain unavailable. Ordinary-window move/inverse
-  blocks the workspace MVP; native Spaces and tier 2 remain selected, no parking
-  substitute. After the physical route results, select a reversible ordinary-window
-  transfer route (or continue authoritative compat-tag/bridged investigation),
-  then per-display workspace mapping/actions/layouts; effects follow.
-  Final temporary-Space removal and ordered topology/current restoration passed;
-  protected ordinary frames/memberships and foreground restored, no probe residue.
+  without effect; bridged dispatcher absent.
   Earlier milestones below retain their original evidence scope. The kickoff
   superseded the sequencing of 2026-10-10. Documentation review and reference-source pins
   done ([kickoff](changes/archive/macos-port-kickoff.md)); Phase 0 decisions

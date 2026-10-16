@@ -150,8 +150,15 @@ experiment.
   synthetic substitutes for a physical-input or shell discriminator.
 - A deliberately stalled callback is allowed only in the explicit bounded
   diagnostic fixture (`input-session --physical-stall --stall-once-ms`), never
-  the product path. Require a real timeout notification, verified re-enable and
-  subsequent suppression; unnotified disabled-state recovery is separate evidence.
+  the product path. A real timeout notification, verified re-enable and
+  subsequent suppression remain the strict fixture oracle. The physical run of
+  2026-10-16 disabled the tap without any notification; health-check re-enable
+  recovered it and is the accepted product route, so do not repeat the stall
+  fixture expecting a notification without a changed hypothesis.
+- User procedures must be copy-pasteable in any shell: no POSIX-only variable
+  assignments, functions or subshell syntax; inline literal values instead.
+- Agent live legs keep the display awake with a bounded `caffeinate -d` child,
+  reaped afterwards; check the session lock state before each leg and stop on lock.
 - Launch physical probes through the signed bundle. Use the launcher's `--stream`
   option for real-time press instructions and a wrapper timeout longer than the
   probe budget. Ctrl+C stops this launch wrapper, not the LaunchServices child;

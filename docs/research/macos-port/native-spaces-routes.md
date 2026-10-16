@@ -126,7 +126,38 @@ version-coupled; the comparison refuses the newer augmented-payload family.
   no members; helpers/probes/taps/display-sleep assertions released and reaped;
   Ghostty frontmost by the full focus oracle. No native preferences changed.
 
+### User manual transfer check — 2026-10-16
+
+User-run, physical input, tiler stopped, one display, one disposable TextEdit
+document window and one temporary Desktop created and later removed through
+Mission Control. All three native routes moved the window from Desktop 1 to
+Desktop 2, with the view following:
+
+| Route | Result |
+| --- | --- |
+| Hold title-bar drag, press enabled Ctrl+Right, release | Moved |
+| Hold title-bar drag, press temporarily enabled Ctrl+2 (Switch to Desktop 2), release | Moved |
+| Drag the window onto Desktop 2's Mission Control thumbnail | Moved |
+
+Evidence is the user's visual observation plus a before readback
+(`spaces-diagnose --wid`, membership `[1]` on a two-Space display); per-route
+after readbacks were not captured. Final cleanup readback showed the original
+single-Space topology. The user reported normal native behavior with no
+unusual jank. This confirms the Amethyst-style drag route is available with SIP
+enabled on the development host; the minimum-supported release, multi-display
+and synthetic (agent-posted) drag remain unverified.
+
+User decision 2026-10-16: build managed native workspaces on these routes
+([decision](../../decisions.md#scope-and-platform-goals)).
+
 ### Exact continuation
+
+**Superseded 2026-10-16 by the user manual check above:** implement synthetic
+title-bar drag plus native switch chord as the transfer route (relative via the
+enabled Ctrl+arrow holders, numbered via Authentic-enabled Desktop-N chords with
+owned preimages and Revert), with membership readback and a drag-back inverse.
+The compat-tag and bridged-dispatcher investigations are no longer on the
+critical path. Original continuation, retained for history:
 
 Find and review a **safe ordinary-window transfer candidate with exact inverse**:
 first investigate an authoritative compat-tag getter/preimage, or a release with
