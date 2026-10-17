@@ -1002,6 +1002,19 @@ mod admission;
 
 mod rows;
 
+// W1 world capture fixtures (offline only): pure source-first observation
+// capture plus its regression fixtures. W1/W2 stay offline until the W3
+// atomic runtime cutover replaces the active Engine path whole; no W1/W2
+// scaffolding wires into production before then.
+#[cfg(test)]
+mod world_capture;
+
+// W1 sequencing boundary fixtures (offline only): the future in-process
+// adapter envelope/ordering/ack over the capture above, sequenced through an
+// offline Windows-profile engine. Same W3 cutover gate as `world_capture`.
+#[cfg(test)]
+mod world_sequencer;
+
 mod reconcile;
 
 mod geometry;

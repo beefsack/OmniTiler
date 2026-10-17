@@ -2,10 +2,11 @@
 
 ## Goal and status
 
-- 2026-10-18: additive constructor prerequisite implemented under the tentative
-  selection below; W1 prototype rejected after correction and withdrawn.
-  Windows observation/actuation migration remains pending.
-  Windows remains on its working legacy domain API. No host behavior change.
+- 2026-10-18: additive constructor prerequisite and W1 offline capture/ordering
+  fixtures delivered under the tentative selection below. The earlier W1
+  prototype remains withdrawn; the replacement starts from native sources.
+  W2-W4 and runtime adoption remain pending. Windows remains on its working
+  legacy domain API. No host behavior change.
 - Goal: complete observed-world reports and host diffs against one full reply;
   move workspace lifecycle, scope, history and mapping policy into the retained
   in-process world state.
@@ -65,8 +66,8 @@
 - No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
   told of this additive core API; notification is pending. Their existing
   constructor calls and behavior remain unchanged. No D23/13f changes included.
-- Exact next action: redesign W1 from actual native capture as described below,
-  using the delivered Windows constructor profile.
+- Exact next action: W2 offline host-diff/feedback fixtures against a native
+  facade, using the accepted W1 capture and sequencing boundary below.
 
 ## Ordered releasable slices
 
@@ -128,7 +129,7 @@
 - Constructor commit `0869f08c`: CI run 39040453638 passed all eight jobs,
   including native Windows/macOS, Rust/KWin and native effect/settings gates.
 
-## W1 acceptance blocker and revised entry point
+## Withdrawn W1 prototype and revised entry point
 
 - Two W1 prototype revisions were reviewed; neither was accepted or landed.
   The first modeled host snapshots in parallel DTOs and lost undelivered
@@ -165,5 +166,79 @@
   frameless unreadable/scope-excluded is not minimize; mismatched lifetime
   cannot inherit lanes; updated feedback and undelivered closes remain dirty
   after an unrelated acknowledgement without an extra native invalidation.
-- No new product decision or core contract gap was discovered. W2-W4 and live
-  smoke remain pending; no desktop mutation or restoration claim was made.
+- No new product decision was selected by the withdrawn prototype. Its source
+  and acknowledgement findings are covered by the accepted replacement below.
+
+## W1 accepted offline outcome and handover
+
+- `tiling_sys/world_capture.rs` consumes the real `TileLoop`,
+  `Option<&[ObservedWindow]>`, `RetainedRow` and `MonitorArea` sources, not
+  parallel input DTOs. Fixtures construct actual managed membership, claims,
+  identities and local/global-unique/shared workspace tables. Existing opaque
+  output tokens bind native device keys without lossy identifier rewriting.
+- Hidden claims require valid claim tags and matching lifetime identities;
+  stored member tags and claim tags remain distinct properties. Capture
+  consumes the existing native lifetime/audit prerequisites, never substitutes
+  for live revalidation. Iconic omission is explicit minimized membership;
+  unreadable, scope-excluded and other unsupported safety states hold rather
+  than fabricate flags or minimize. Failed enumeration holds even empty
+  managed inventories. Only explicit queued closes are reported.
+- Verified fullscreen/maximized, sticky, automatic-fixed and both tile-override
+  lanes retain their distinctions. Ordinary fullscreen reservation is separate
+  from born-fullscreen floating holds. Raw work bounds plus the outer-gap field
+  produce exactly one inset; primary output comes from native monitor order.
+  `fit_excluded` is not treated as generic write authority: unsupported native
+  safety facts use explicit holds, with reply-level regressions.
+- `tiling_sys/world_sequencer.rs` exercises typed reports through an offline
+  Windows-profile `WorldEngine`: explicit generation bootstrap/reset,
+  single-flight observation/request/command ordering, stale-reply catch-up,
+  command consumption and counter-exhaustion refusal. A new command during
+  catch-up is explicitly refused, never silently dropped or replayed.
+- Dirty work includes observation, feedback and native-owned close obligations.
+  Updated feedback and absent-domain closes survive unrelated acknowledgements
+  without another invalidation. Close receipts prune only exact delivered
+  token/homing pairs in the current adapter/core namespace; no append-only
+  close acknowledgement history is retained. Reset clears obsolete feedback
+  before operation identities can be reused. Delayed replies, loss callbacks
+  and deferred receipts cannot consume a newer flight or generation's facts.
+- Capture and sequencing fixtures were independently reviewed before their
+  dependent use. Review corrections include native-source-only inputs, truthful
+  hidden/safety holds, single-inset bounds, explicit command refusal,
+  generation-scoped feedback and correlated exact-fact acknowledgements.
+  Both modules remain `#[cfg(test)]`: the running owner, native properties,
+  recovery ledger and desktop actuation are unchanged. No further shared core,
+  protocol, KDE or macOS edits, dependencies, unsafe code or policy decisions.
+- Final native gates: four-package locked build/test and strict all-target
+  clippy, workspace formatting, unsafe guardrails and `git diff --check` pass.
+  **2,645 passed, 0 failed, 1 ignored across 65 suites**, including 21 capture
+  and 18 sequencing fixtures. No live smoke was run: this slice is offline-only
+  and introduces no behavioral runtime path. Behavioral cutover still requires
+  the bounded owned-window smoke and restoration evidence.
+
+### Exact next slice: W2
+
+- Build the full host-diff/feedback actuator against an offline native facade;
+  preserve current runtime ownership. Start with fresh-native-frame authority,
+  lifetime/gesture/watermark rechecks, overlay/float holds and recovery ownership,
+  then creation binding, occupied removal, transfer ambiguity and follow proof.
+- Do not turn W1/W2 modules on in the running owner before the W3 atomic cutover.
+  Capture currently reads retained float exceptions from the legacy owner;
+  W3 must replace that source with the single world authority, not retain two
+  active Engines or policy caches.
+- Carry these safe-hold limitations into W2/W3, not silent workarounds:
+  - Ordinary hidden members without verified fullscreen evidence hold their
+    domain; show preimages record minimized/maximized, not fullscreen. Prove
+    a truthful native evidence route before runtime adoption rather than
+    defaulting fullscreen false or broadening the recovery claim model casually.
+  - Fresh fullscreen seeds can hold in the existing world sweep, including
+    born dual-flag cases. The fixture proves no unsafe authority, not liveness.
+    Establish parity before W3; any shared semantic change needs separate review
+    and must not overlap the D23/13f work.
+  - Per-workspace tiling overrides are not a `WorldReport` observation field;
+    W3 must prove bootstrap preserves native modes through the existing world
+    command contract before any desired state can actuate.
+  - Adjacency is intentionally empty, matching the native domain builder.
+    W3 must retain existing native cross-output resolution or establish its
+    faithful world-command mapping, not copy KDE topology heuristics.
+- W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
+  The backlog item remains unimplemented until cutover and acceptance.
