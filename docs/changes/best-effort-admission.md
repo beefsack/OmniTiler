@@ -73,6 +73,10 @@
     different window, which would change the layout surprisingly.
   - D6: all capacity-producing routes, with the route rules under Operation
     boundaries as proposed.
+  - D7: float the newest tiles (first successful tiled-admission order) until
+    the retained tree projects, with the proposed protections. Revisit later
+    if needed: alternatives such as float smallest or float biggest may suit
+    better, but this case may prove rare enough.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
