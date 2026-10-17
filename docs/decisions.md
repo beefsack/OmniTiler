@@ -867,10 +867,15 @@ platform API behavior.
     number/menu; restore from fresh geometry when disabled. No longer
     tentative.
   - An amber warning overlay and conflict row identify enabled effective
-    Win+G/F11 chords with known incomplete containment, plus kept Win+L when
-    runtime opt-in allows its unreliable lock override. Disable, rebind-away,
-    Compatible or keyboard takeover off clears the warning; absence of a
-    warning never establishes containment for other unproven chords.
+    Win+G/F11 chords with positively proven incomplete containment (Game Bar
+    package `Registered`, Xbox configuration `Enabled`; unknown, absent, or
+    failed probes warn nowhere and show ordinary no-known-conflict text),
+    plus kept Win+L when runtime opt-in allows its unreliable lock override.
+    Disable, rebind-away, Compatible or keyboard takeover off clears the
+    warning; absence of a warning never establishes containment for other
+    unproven chords. Historical note: before 2026-10-17 Part B the unknown
+    state warned conservatively; that interim is superseded, with no change
+    to Win+L, takeover-off, Compatible, or disable/rebind-away scope.
   - The own-executable Settings control window was unmanaged through dialog
     gates; the user superseded this exclusion on 2026-10-16 below.
   - Status: synthetic native UI/Apply/Revert, geometry/border/SPI and cleanup
@@ -1759,8 +1764,13 @@ platform API behavior.
   or badges. GamingHomeApp: per-user configuration positively
   present/configured only; unknown/absent/unreadable values produce no
   amber/tray/Settings warning. Honest normal-level probe-outcome logs are
-  retained. Code implementation pending Part B; current shipped behavior
-  still warns conservatively until then.
+  retained. Part B implemented offline 2026-10-17 (locked four-package gates:
+  2,500 passed, 0 failed, 1 ignored; fmt, strict clippy, diff-check pass):
+  every warning surface (tray, badge, selected detail/actions, static
+  binding-list/OS text, shortcut preview) obeys the provably-present rule;
+  unknown/absent/failed probes show ordinary no-known-conflict text with no
+  notes, rows, or badges. Historical note: before Part B the shipped behavior
+  warned conservatively on unknown (this sentence supersedes that interim).
   User-approved 2026-10-16 Game Bar rule, amended User 2026-10-17 (see the
   provably-present-conflict decision above): warn only for detected
   installation (positive package query). Successful package-query absence
@@ -1768,8 +1778,11 @@ platform API behavior.
   row; query failure/unknown now counts the same as absence, with no notes,
   conflict rows or badges. A speculative warning for this chord
   would equally justify warnings for every chord. Correction B is delivered
-  offline, including static binding-list and selected OS text; the
-  query-failure warning removal is pending Part B implementation.
+  offline, including static binding-list and selected OS text; Part B
+  (delivered offline 2026-10-17, same gates as above) extends that clearing
+  to query failure/unknown and to every Xbox-unknown surface. Historical
+  note: before Part B a query-failure warning remained; that interim is
+  superseded.
   Game Bar detection uses supported
   current-user Appx package registration queries, not capture switches.
   Probes stay cheap, cached and outside the tile/input hot paths; failure never

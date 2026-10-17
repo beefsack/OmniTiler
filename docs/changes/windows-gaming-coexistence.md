@@ -2,18 +2,21 @@
 
 ## Approved Xbox shortcut-conflict implementation (2026-10-16)
 
-- User review 2026-10-16 confirms conservative Xbox warnings for absent,
-  unreadable or unrecognised `GamingHomeApp`. Game Bar differs: successful
-  package-query absence must clear all Win+G warnings, notes and conflict rows;
-  warn on detected installation, not speculative activation prompts. The user
-  rejected "just in case" reasoning because it would apply to every chord.
-  Correction B is now delivered offline; the residual check in the historical
-  delivery below is superseded.
-- Query-failure handling for review: the existing explicit unknown/query-failed
-  warning remains; only a successful query can establish absence. No new
-  query-failure product decision is claimed. Open review point: retain or revise
-  this existing unknown/query-failed warning. Correction B covers tray, badge,
-  selected detail/actions and static binding-list/OS conflict text.
+- User decision 2026-10-17 (supersedes the 2026-10-16 conservative-warning
+  choices in this snapshot for BOTH Game Bar and GamingHomeApp): warnings only
+  on provably present conflict. Game Bar positive installed query only;
+  failure/unknown same as absence, no notes/conflict rows/badges.
+  GamingHomeApp positively present/configured (enabled AUMID) only;
+  unknown/absent/unreadable no amber/tray/Settings warning. Honest
+  normal-level probe-outcome logs retained. Part B is now delivered offline
+  (see below); the conservative-warning interim described further below is
+  superseded.
+- Query-failure handling delivered by Part B: failure/unknown counts the same
+  as absence for every warning surface (no warning, notes, conflict rows, or
+  badges; ordinary no-known-conflict text). Honest categorical probe logs
+  still record every outcome including failure. Open physical acceptance only;
+  no new query-failure product decision beyond the 2026-10-17 rule. Correction B
+  covers tray, badge, selected detail/actions and static binding-list/OS conflict text.
 - Windows D27 5b review is recorded in [activation decisions](../decisions.md#activation-requests):
   OS-permitted Switch and focus requests are not downgraded over games/fullscreen.
   Implementation remains pending; real-game evidence is not claimed.
@@ -32,8 +35,10 @@
 - Units: Compatible routing and regression coverage; read-only detector and
   cached conflict policy; Settings integration; independent boundary review and
   native/hosted verification. Physical acceptance remains pending below.
-- Acceptance: exact enabled chords drive conflicts; Compatible has neither
-  Xbox conflict; Authentic preserves unknown-state warnings; Settings navigation
+- Acceptance: exact enabled chords drive conflicts only on positive probe
+  proof; Compatible has neither
+  Xbox conflict; Authentic warns only when proven (unknown/absent/failed warn
+  nowhere); Settings navigation
   never claims resolution; hold/repeat/release and unbound-chord behavior stays
   consistent; locked native gates and pushed CI pass.
 - Baseline hosted CI: [38819090626](https://github.com/beefsack/OmniTiler/actions/runs/38819090626)
@@ -41,7 +46,35 @@
   The separately reported KDE `native-effect-kcm-shortcut-selection`
   heap-corruption abort is not reproduced by that run and remains KDE-owned.
 
-### Correction B delivered offline (2026-10-16)
+### Part B delivered offline (2026-10-17)
+
+- Provably-present rule on every surface: only Game Bar `Registered` and Xbox
+  `Enabled` warn. Absence, unknown, and query failure warn nowhere and show
+  ordinary no-known-conflict text: no amber/tray warning, notes, conflict
+  rows, badges, selected detail/actions, or static ownership text. Recognised
+  Xbox off records an honest off status (never a warning); takeover off,
+  Compatible, per-binding disable/rebind-away, and the Win+L opt-in keep their
+  existing behavior exactly.
+- Honest NORMAL-level probe logs retained unchanged: categorical
+  source/outcome/state lines still record every pass including query failure,
+  spawn failure, and probe panic. Logs are not warnings and are never
+  suppressed.
+- Regressions first reproduced the old failure behavior (unknown/failure
+  warned) and now pass the new behavior: presence/absence/failure for BOTH
+  probes across tray, badge, selected conflict, static OS-note projection,
+  and shortcut preview, plus disabled/rebound rows, Compatible effective
+  Ctrl chords, and Compatible rebound-to-authentic re-arming only on proof.
+- Locked four-package Windows build/test: **2,500 passed, 0 failed, 1 ignored**
+  (baseline 2,497/0/1; +3 net new Part B regressions). Full rustfmt, strict
+  all-target clippy and `git diff --check` pass. Workflow note: the CI
+  `windows` job builds/tests five packages (adds `tiler-macos` to this
+  selection); the local gate above is the brief's four-package selection.
+  No live tests, physical shortcut-containment acceptance, KDE or macOS
+  behavior changes are claimed. Queued D23/13f/13g policies remain
+  not implemented. This record stays active for physical acceptance and
+  independent review/verification; do not archive yet.
+
+### Correction B delivered offline (2026-10-16, historical)
 
 - Detected Game Bar registration still warns; successful current-user package
   absence clears all Win+G conflict surfaces. Binding-list and selected `OS:`

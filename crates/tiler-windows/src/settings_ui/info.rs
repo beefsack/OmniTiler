@@ -22,10 +22,10 @@ use super::{
 use crate::gaming_settings::badge_conflict_counts;
 
 /// One listbox row: action, live chord(s), and the honest physical OS
-/// conflict. A successful Game Bar package absence hides the Game Bar
-/// ownership text so the row reports no known OS conflict; a
-/// gaming-kind conflict with no active effective conflict otherwise shows
-/// the cleared-state note, never the stale actionable warning.
+/// conflict. Without positive probe proof (Game Bar `Registered`, Xbox
+/// `Enabled`) the gaming ownership text hides so the row reports no known
+/// OS conflict; a gaming-kind conflict with no active effective conflict
+/// otherwise shows the cleared-state note, never the stale actionable warning.
 pub(super) fn row_text(
     def: &BindingDef,
     work: &Settings,
@@ -58,7 +58,7 @@ pub(super) fn row_text(
                         takeover,
                         xbox,
                     )
-                    .or_else(|| visible_os_note(Some(conflict), gamebar));
+                    .or_else(|| visible_os_note(Some(conflict), gamebar, xbox));
                     match shown {
                         Some(text) => {
                             let short: String = text.chars().take(96).collect();
@@ -108,11 +108,10 @@ pub(super) fn refresh_list(app: &App) {
 }
 
 /// Selected-row editor text: current state, live chords, and the conflict the
-/// OS actually owns at those chords. A successful Game Bar package absence
-/// hides the Game Bar ownership text so the `OS:` line reads as ordinary
-/// generic text; cleared gaming rows (recognised Xbox off, takeover off)
-/// show the honest cleared-state note with no actions; active gaming
-/// conflicts append the full detail and scoped Open buttons.
+/// OS actually owns at those chords. Without positive probe proof the `OS:`
+/// line reads as ordinary generic text; cleared gaming rows (recognised Xbox
+/// off, takeover off) show the honest cleared-state note with no actions;
+/// active gaming conflicts append the full detail and scoped Open buttons.
 /// The readout is a readonly multiline edit with its own vertical scrollbar
 /// and tab stop, so long gaming detail stays readable and keyboard reachable.
 pub(super) fn refresh_info(app: &App) {
@@ -152,7 +151,7 @@ pub(super) fn refresh_info(app: &App) {
                     takeover,
                     snapshot.xbox,
                 )
-                .or_else(|| visible_os_note(Some(conflict), snapshot.gamebar));
+                .or_else(|| visible_os_note(Some(conflict), snapshot.gamebar, snapshot.xbox));
                 match shown {
                     Some(text) => info.push_str(&format!("\nOS: {text}")),
                     None => info.push_str("\nOS: no known conflict"),
@@ -353,34 +352,43 @@ mod tests {
     }
 
     #[test]
-    fn float_row_text_warns_until_package_absence_reads_generic() {
+    fn float_row_text_warns_only_when_registered_else_generic() {
         let work = Settings::default();
         let def = float_def();
-        for gamebar in [GameBarPackage::Registered, GameBarPackage::Unknown] {
-            let text = row_text(&def, &work, true, XboxConfig::Unknown, gamebar);
-            assert!(text.contains("Win+G"), "{gamebar:?}: {text}");
-            assert!(text.contains("Game Bar"), "{gamebar:?}: {text}");
-        }
-        // Successful absence reads as an ordinary generic row: no Game Bar
-        // note, no cleared/status copy, just the standard conflict text.
-        let cleared = row_text(
+        // Positive registration warns; absence, unknown, and query failure
+        // all read as ordinary generic rows (Part B provably-present rule).
+        let text = row_text(
             &def,
             &work,
             true,
             XboxConfig::Unknown,
-            GameBarPackage::Absent,
+            GameBarPackage::Registered,
         );
-        assert!(cleared.contains("Win+G"), "{cleared}");
-        assert!(cleared.contains("no known OS conflict"), "{cleared}");
-        assert!(!cleared.contains("Game Bar"), "{cleared}");
-        assert!(!cleared.contains("cannot fully contain"), "{cleared}");
-        assert!(!cleared.contains("check required"), "{cleared}");
-        assert!(!cleared.contains("unproven"), "{cleared}");
-        assert!(!cleared.contains("no matching"), "{cleared}");
+        assert!(text.contains("Win+G"), "{text}");
+        assert!(text.contains("Game Bar"), "{text}");
+        for gamebar in [GameBarPackage::Absent, GameBarPackage::Unknown] {
+            let cleared = row_text(&def, &work, true, XboxConfig::Unknown, gamebar);
+            assert!(cleared.contains("Win+G"), "{gamebar:?}: {cleared}");
+            assert!(
+                cleared.contains("no known OS conflict"),
+                "{gamebar:?}: {cleared}"
+            );
+            assert!(!cleared.contains("Game Bar"), "{gamebar:?}: {cleared}");
+            assert!(
+                !cleared.contains("cannot fully contain"),
+                "{gamebar:?}: {cleared}"
+            );
+            assert!(
+                !cleared.contains("check required"),
+                "{gamebar:?}: {cleared}"
+            );
+            assert!(!cleared.contains("unproven"), "{gamebar:?}: {cleared}");
+            assert!(!cleared.contains("no matching"), "{gamebar:?}: {cleared}");
+        }
     }
 
     #[test]
-    fn disabled_float_row_hides_gamebar_note_only_on_absence() {
+    fn disabled_float_row_hides_gamebar_note_without_positive_proof() {
         let mut work = Settings::default();
         work.bindings.insert(
             "toggle-float".to_owned(),
@@ -390,37 +398,62 @@ mod tests {
             },
         );
         assert!(crate::settings::validate_settings(&work).is_ok());
-        // Disabled rows still name the live OS owner while the query is
-        // unresolved, but absence must not leak the stale catalog note.
-        for gamebar in [GameBarPackage::Registered, GameBarPackage::Unknown] {
-            let text = row_text(&float_def(), &work, true, XboxConfig::Unknown, gamebar);
-            assert!(text.contains("disabled"), "{gamebar:?}: {text}");
-            assert!(text.contains("Game Bar"), "{gamebar:?}: {text}");
-        }
-        let cleared = row_text(
+        // Disabled rows name the live OS owner only while positively proven;
+        // absence, unknown, and failure hide the stale catalog note.
+        let text = row_text(
             &float_def(),
             &work,
             true,
             XboxConfig::Unknown,
-            GameBarPackage::Absent,
+            GameBarPackage::Registered,
         );
-        assert!(cleared.contains("disabled"), "{cleared}");
-        assert!(cleared.contains("no known OS conflict"), "{cleared}");
-        assert!(!cleared.contains("Game Bar"), "{cleared}");
+        assert!(text.contains("disabled"), "{text}");
+        assert!(text.contains("Game Bar"), "{text}");
+        for gamebar in [GameBarPackage::Absent, GameBarPackage::Unknown] {
+            let cleared = row_text(&float_def(), &work, true, XboxConfig::Unknown, gamebar);
+            assert!(cleared.contains("disabled"), "{gamebar:?}: {cleared}");
+            assert!(
+                cleared.contains("no known OS conflict"),
+                "{gamebar:?}: {cleared}"
+            );
+            assert!(!cleared.contains("Game Bar"), "{gamebar:?}: {cleared}");
+        }
     }
 
     #[test]
-    fn xbox_unknown_row_stays_while_gamebar_absent() {
+    fn xbox_row_text_warns_only_when_enabled_else_generic() {
         let work = Settings::default();
+        // Positive Xbox proof warns; unknown, off, and Game Bar absence all
+        // hide the Xbox warning (off shows its cleared status elsewhere, not
+        // here: this row has no cleared note for unknown).
         let text = row_text(
             &fullscreen_def(),
             &work,
             true,
-            XboxConfig::Unknown,
+            XboxConfig::Enabled,
             GameBarPackage::Absent,
         );
         assert!(text.contains("Win+F11"), "{text}");
         assert!(text.contains("Xbox mode"), "{text}");
+        for xbox in [XboxConfig::Unknown, XboxConfig::Disabled] {
+            let cleared = row_text(&fullscreen_def(), &work, true, xbox, GameBarPackage::Absent);
+            // Disabled carries its cleared off evidence through
+            // `cleared_gaming_note`, not the actionable warning.
+            assert!(
+                !cleared.contains("containment is incomplete"),
+                "{xbox:?}: {cleared}"
+            );
+        }
+        let unknown = row_text(
+            &fullscreen_def(),
+            &work,
+            true,
+            XboxConfig::Unknown,
+            GameBarPackage::Registered,
+        );
+        assert!(unknown.contains("Win+F11"), "{unknown}");
+        assert!(unknown.contains("no known OS conflict"), "{unknown}");
+        assert!(!unknown.contains("Xbox mode"), "{unknown}");
     }
 
     #[test]

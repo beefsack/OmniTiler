@@ -6,9 +6,11 @@
   choices in this snapshot for BOTH Game Bar and GamingHomeApp): warnings only
   on provably present conflict. Game Bar positive installed query only;
   failure/unknown same as absence, no notes/conflict rows/badges.
-  GamingHomeApp positively present/configured only; unknown/absent/unreadable
-  no amber/tray/Settings warning. Honest normal-level probe-outcome logs
-  retained. Code implementation pending Part B.
+  GamingHomeApp positively present/configured (enabled AUMID) only;
+  unknown/absent/unreadable no amber/tray/Settings warning. Honest
+  normal-level probe-outcome logs retained. Part B code implemented offline
+  2026-10-17 (locked gates 2,500/0/1); the "pending Part B" labels elsewhere
+  in this snapshot are superseded by that delivery.
 - Approved 2026-10-16: Compatible uses Ctrl+Win+G (float) and Ctrl+Win+F11
   (fullscreen); Authentic keeps Win+G/F11. Read-only Xbox detection uses the
   undocumented per-user `GamingHomeApp` mapping: exact Xbox AUMID on, present
@@ -247,10 +249,14 @@
   successful navigation. User-approved 2026-10-16 supersedes the proposed
   residual shortcut-check reason: successful package absence clears the whole
   Win+G conflict, with no check note or warning row. Correction B is delivered
-  offline, including static binding-list and selected OS text.
+  offline, including static binding-list and selected OS text. Part B
+  (delivered offline 2026-10-17) extends the clearing to query
+  failure/unknown and to every Xbox-unknown surface; the snapshot's residual
+  query-failure warning and Xbox-unknown warning below are superseded.
   Query errors must not be converted to absence. Xbox enabled-state
   unknown must not masquerade as confirmed enabled or disabled. Exact
-  acknowledgment is not selected; query-failure warning handling remains for review.
+  acknowledgment is not selected; honest probe-outcome logs are retained
+  while warnings require positive proof.
 
 ## 5. Recommended implementation slices and estimate
 

@@ -158,8 +158,13 @@ decisions of 2026-09-24 are under
   failure/unknown same as absence, no notes/conflict rows/badges.
   GamingHomeApp per-user config positively present/configured only;
   unknown/absent/unreadable no amber/tray/Settings warning. Honest
-  normal-level probe outcome logs retained. Code implementation pending
-  Part B; current shipped behavior still warns conservatively until then.
+  normal-level probe outcome logs retained. Part B implemented offline
+  2026-10-17: all warning surfaces (tray, badge, selected detail/actions,
+  static list/OS text, preview) obey the provably-present rule; unknown,
+  absent, and failed probes show ordinary no-known-conflict text. Locked
+  native gates: 2,500 passed, 0 failed, 1 ignored; fmt, strict clippy,
+  diff-check pass. Historical note: before Part B the shipped behavior still
+  warned conservatively on unknown; that interim is superseded.
   Correction B delivered offline:
   detected Game Bar installation warns; successful package
   absence clears all Win+G warnings, notes and conflict rows, including static

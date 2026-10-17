@@ -691,10 +691,22 @@ mod tests {
         }
     }
 
+    fn proven_snapshot() -> GamingSnapshot {
+        GamingSnapshot {
+            xbox: XboxConfig::Enabled,
+            xbox_outcome: XboxOutcome::Matched,
+            gamebar: GameBarPackage::Registered,
+            gamebar_outcome: GameBarOutcome::Counted,
+            generation: 1,
+        }
+    }
+
     #[test]
     fn authentic_preview_lists_two_rows_in_catalog_order() {
         let settings = Settings::default();
-        let conflicts = preview_conflicts(&settings, true, false, &unknown_snapshot());
+        // Part B: only positive proof lists rows; unknown warns nowhere.
+        assert!(preview_conflicts(&settings, true, false, &unknown_snapshot()).is_empty());
+        let conflicts = preview_conflicts(&settings, true, false, &proven_snapshot());
         let ids: Vec<&str> = conflicts.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["toggle-float", "toggle-fullscreen"]);
         assert_eq!(apply_gate(conflicts.len()), ApplyGate::Preview);
@@ -732,7 +744,7 @@ mod tests {
             },
         );
         assert!(validate_settings(&rebound).is_ok());
-        let ids: Vec<&str> = preview_conflicts(&rebound, true, false, &unknown_snapshot())
+        let ids: Vec<&str> = preview_conflicts(&rebound, true, false, &proven_snapshot())
             .iter()
             .map(|c| c.id)
             .collect();
@@ -746,11 +758,14 @@ mod tests {
             },
         );
         assert!(validate_settings(&disabled).is_ok());
-        let ids: Vec<&str> = preview_conflicts(&disabled, true, false, &unknown_snapshot())
+        let ids: Vec<&str> = preview_conflicts(&disabled, true, false, &proven_snapshot())
             .iter()
             .map(|c| c.id)
             .collect();
         assert_eq!(ids, vec!["toggle-fullscreen"]);
+        // Unknown warns nowhere for either shape.
+        assert!(preview_conflicts(&rebound, true, false, &unknown_snapshot()).is_empty());
+        assert!(preview_conflicts(&disabled, true, false, &unknown_snapshot()).is_empty());
     }
 
     #[test]
@@ -758,8 +773,15 @@ mod tests {
         let settings = Settings::default();
         assert!(preview_conflicts(&settings, false, false, &unknown_snapshot()).is_empty());
         assert!(preview_conflicts(&settings, false, true, &unknown_snapshot()).is_empty());
-        // Win+L opt-in adds exactly one warning row after the two conflicts.
-        let with_lock = preview_conflicts(&settings, true, true, &unknown_snapshot());
+        assert!(preview_conflicts(&settings, false, false, &proven_snapshot()).is_empty());
+        assert!(preview_conflicts(&settings, false, true, &proven_snapshot()).is_empty());
+        // Unknown warns nowhere: Win+L opt-in alone lists exactly one row.
+        let unknown_lock = preview_conflicts(&settings, true, true, &unknown_snapshot());
+        let ids: Vec<&str> = unknown_lock.iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec!["focus-right"]);
+        // Win+L opt-in adds exactly one warning row after the two proven
+        // conflicts.
+        let with_lock = preview_conflicts(&settings, true, true, &proven_snapshot());
         let ids: Vec<&str> = with_lock.iter().map(|c| c.id).collect();
         assert_eq!(
             ids,

@@ -2,7 +2,12 @@
 
 Documentation-only record of the user's 2026-10-17 decisions. No code is
 implemented by this note; queued work is marked approved-not-implemented
-where applicable.
+where applicable. Part B implementation status (2026-10-17, after this
+record): item 6 below is now implemented offline (locked four-package gates
+2,500 passed, 0 failed, 1 ignored; fmt, strict clippy, diff-check pass);
+items 1-3 (13g, D23 item 6, 13f) remain approved-not-implemented per the
+brief. This header is the only update to this archive; the numbered items
+below preserve the Part A snapshot verbatim.
 
 1. 13g unsafe route option A: one minimal safe FFI module on `windows-sys`;
    keep the module minimal.

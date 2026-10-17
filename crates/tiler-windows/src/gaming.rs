@@ -12,11 +12,15 @@
 //! `HKCU\...\GamingConfiguration` carries the Xbox home-app AUMID when on
 //! ([`XBOX_HOME_APP_ON`], verified against the research-cited ElevenForum
 //! recipe on 2026-10-16) and the empty string when off. Absent, unreadable,
-//! or unrecognised values stay [`XboxConfig::Unknown`] conservatively: unknown
-//! never claims enabled, disabled, or resolved. Only the recognised empty
-//! (off) value clears the Xbox warning. A successful current-user Game Bar
-//! package-query absence clears the whole `Win+G` conflict (no residual
-//! check); query failure stays unknown and keeps the explicit warning.
+//! or unrecognised values stay [`XboxConfig::Unknown`]: unknown never claims
+//! enabled, disabled, or resolved. User 2026-10-17 provably-present rule:
+//! warnings on every surface require positive proof (Xbox `Enabled`, Game Bar
+//! `Registered`); unknown, absent, or failed probes warn nowhere, show no
+//! notes, conflict rows, or badges. Only the recognised empty (off) value
+//! records the Xbox off state (a cleared status, never a warning). A
+//! successful current-user Game Bar package query decides presence or
+//! absence; query failure counts the same as absence for warnings (no
+//! warning), while honest categorical probe logs still record the failure.
 //!
 //! Logging carries only categorical source/outcome/state: raw registry values
 //! and package inventories never cross into logs.
@@ -321,9 +325,12 @@ pub fn is_xbox_mode_note(note: &str) -> bool {
     note.contains("Xbox mode")
 }
 
-/// Game Bar evidence for one registration state. A successful package-query
-/// absence clears the `Win+G` conflict (no residual check); query failure
-/// stays unknown with the explicit warning below.
+/// Game Bar evidence for one registration state. Positive registration warns;
+/// absence and query failure both warn nowhere (Part B provably-present rule:
+/// failure/unknown counts the same as absence for every warning surface).
+/// The unknown arm is unreachable in warnings (callers only construct
+/// conflicts when registered) and is never rendered; it exists only to keep
+/// the function total.
 #[must_use]
 pub const fn gamebar_evidence(state: GameBarPackage) -> &'static str {
     match state {
@@ -335,9 +342,11 @@ pub const fn gamebar_evidence(state: GameBarPackage) -> &'static str {
     }
 }
 
-/// Xbox evidence for one configuration state. Unknown (absent, unreadable,
-/// unrecognised) keeps the check-required warning; only the recognised empty
-/// (off) value clears it downstream.
+/// Xbox evidence for one configuration state. Only the enabled state warns;
+/// disabled records an honest off status (never a warning) and unknown
+/// (absent, unreadable, unrecognised) warns nowhere. The unknown arm is
+/// unreachable in warnings (callers only construct conflicts when enabled)
+/// and is never rendered; it exists only to keep the function total.
 #[must_use]
 pub const fn xbox_evidence(state: XboxConfig) -> &'static str {
     match state {
@@ -353,9 +362,9 @@ pub const fn xbox_evidence(state: XboxConfig) -> &'static str {
 /// Xbox mode note, each with the cached categorical evidence. Takeover off
 /// silences everything (global pass-through by user choice); Compatible
 /// rebinds/disables carry no gaming note and stay silent; the Win+L opt-in
-/// warning is untouched (never a gaming kind). Successful Game Bar package
-/// absence clears the Game Bar conflict; only recognised Xbox off clears the
-/// Xbox conflict. Query failure keeps its explicit unknown warning.
+/// warning is untouched (never a gaming kind). Part B provably-present rule:
+/// only Game Bar `Registered` and Xbox `Enabled` warn; absence, unknown, and
+/// query failure warn nowhere on every surface.
 #[must_use]
 pub fn gaming_conflicts(
     settings: &Settings,
@@ -371,7 +380,7 @@ pub fn gaming_conflicts(
         .filter_map(|row| {
             let note = row.conflict?;
             if is_gamebar_note(note) {
-                if snapshot.gamebar == GameBarPackage::Absent {
+                if snapshot.gamebar != GameBarPackage::Registered {
                     return None;
                 }
                 return Some(GamingConflict {
@@ -382,7 +391,7 @@ pub fn gaming_conflicts(
                 });
             }
             if is_xbox_mode_note(note) {
-                if snapshot.xbox == XboxConfig::Disabled {
+                if snapshot.xbox != XboxConfig::Enabled {
                     return None;
                 }
                 return Some(GamingConflict {
@@ -397,11 +406,12 @@ pub fn gaming_conflicts(
         .collect()
 }
 
-/// Tray warning rows: the existing [`unresolved_conflicts`] rows minus the
-/// Xbox row once the recognised off value reports Xbox mode off, and minus
-/// the Game Bar row once a successful package query reports absence. Every
-/// other row (query-failed Game Bar, Win+L opt-in) keeps existing behavior
-/// exactly, so with an unknown snapshot this equals [`unresolved_conflicts`].
+/// Tray warning rows: the existing [`unresolved_conflicts`] rows minus every
+/// gaming row without positive proof. Only Game Bar `Registered` and Xbox
+/// `Enabled` rows survive; absence, unknown, and query failure (plus
+/// recognised Xbox off, takeover off, Compatible, and rebind/disable-away)
+/// clear on every surface. The Win+L opt-in row keeps existing behavior
+/// exactly.
 #[must_use]
 pub fn tray_warning_conflicts(
     settings: &Settings,
@@ -413,11 +423,11 @@ pub fn tray_warning_conflicts(
         .into_iter()
         .filter(|conflict| {
             // Note-matched like `gaming_conflicts` (rebound chords keep
-            // their true owner): recognised off clears Xbox rows and a
-            // successful package absence clears Game Bar rows, whatever
-            // binding id carries them.
-            !(is_xbox_mode_note(conflict.note) && snapshot.xbox == XboxConfig::Disabled)
-                && !(is_gamebar_note(conflict.note) && snapshot.gamebar == GameBarPackage::Absent)
+            // their true owner): only positively proven rows survive,
+            // whatever binding id carries them.
+            !(is_xbox_mode_note(conflict.note) && snapshot.xbox != XboxConfig::Enabled)
+                && !(is_gamebar_note(conflict.note)
+                    && snapshot.gamebar != GameBarPackage::Registered)
         })
         .collect()
 }
@@ -903,8 +913,16 @@ mod tests {
     }
 
     #[test]
-    fn authentic_unknown_keeps_both_warnings_with_evidence() {
+    fn authentic_unknown_warns_nowhere_under_provably_present_rule() {
+        // Part B: unknown probes warn nowhere on every surface (no warning,
+        // notes, conflict rows, or badges). Only positive proof warns.
         let conflicts = gaming_conflicts(&authentic(), true, &unknown_snapshot());
+        assert!(conflicts.is_empty());
+        let warnings = tray_warning_conflicts(&authentic(), true, false, &unknown_snapshot());
+        assert!(warnings.is_empty());
+        // Positive proof on both probes restores both warnings with evidence.
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        let conflicts = gaming_conflicts(&authentic(), true, &proven);
         assert_eq!(conflicts.len(), 2);
         let float = conflicts
             .iter()
@@ -912,14 +930,14 @@ mod tests {
             .expect("float warns");
         assert_eq!(float.kind, GamingConflictKind::GameBar);
         assert_eq!(float.chord, "Win+G");
-        assert_eq!(float.evidence, gamebar_evidence(GameBarPackage::Unknown));
+        assert_eq!(float.evidence, gamebar_evidence(GameBarPackage::Registered));
         let fullscreen = conflicts
             .iter()
             .find(|c| c.id == "toggle-fullscreen")
             .expect("fullscreen warns");
         assert_eq!(fullscreen.kind, GamingConflictKind::XboxMode);
         assert_eq!(fullscreen.chord, "Win+F11");
-        assert_eq!(fullscreen.evidence, xbox_evidence(XboxConfig::Unknown));
+        assert_eq!(fullscreen.evidence, xbox_evidence(XboxConfig::Enabled));
     }
 
     #[test]
@@ -932,7 +950,58 @@ mod tests {
     }
 
     #[test]
-    fn recognised_xbox_off_clears_only_the_xbox_warning() {
+    fn gamebar_query_failure_warns_nowhere_like_absence() {
+        // Part B reproduction of the old failure-warning behavior: query
+        // failure (and unknown) must warn nowhere, same as absence.
+        let failed = GamingSnapshot::unknown();
+        assert_eq!(failed.gamebar, GameBarPackage::Unknown);
+        assert_eq!(failed.gamebar_outcome, GameBarOutcome::QueryFailed);
+        assert!(gaming_conflicts(&authentic(), true, &failed).is_empty());
+        assert!(tray_warning_conflicts(&authentic(), true, false, &failed).is_empty());
+        // Honest categorical logs still record the failure (logs are not
+        // warnings and are never suppressed).
+        let lines = failed.log_lines(RefreshReason::Startup);
+        assert_eq!(lines[1]["source"], "gamebar-package");
+        assert_eq!(lines[1]["outcome"], "query-failed");
+        assert_eq!(lines[1]["state"], "unknown");
+    }
+
+    #[test]
+    fn xbox_unknown_warns_nowhere_like_absence() {
+        // Part B reproduction of the old Xbox-unknown warning: absent,
+        // unreadable, and unrecognised (all `Unknown`) warn nowhere.
+        for read in [
+            XboxRead::Absent,
+            XboxRead::Unreadable,
+            XboxRead::Value("None".to_owned()),
+        ] {
+            let (config, _) = classify_xbox(&read);
+            assert_eq!(config, XboxConfig::Unknown);
+            let snapshot = snapshot_with(config, GameBarPackage::Registered);
+            let ids: Vec<&str> = gaming_conflicts(&authentic(), true, &snapshot)
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            assert_eq!(ids, vec!["toggle-float"], "{read:?}");
+            assert!(
+                tray_warning_conflicts(&authentic(), true, false, &snapshot)
+                    .iter()
+                    .all(|c| c.id != "toggle-fullscreen"),
+                "{read:?}"
+            );
+        }
+        // Honest logs still distinguish the Xbox outcomes.
+        let snapshot = GamingSnapshot::unknown();
+        let lines = snapshot.log_lines(RefreshReason::Recheck);
+        assert_eq!(lines[0]["source"], "xbox-config");
+        assert_eq!(lines[0]["state"], "unknown");
+    }
+
+    #[test]
+    fn recognised_xbox_off_warns_nowhere_for_xbox() {
+        // Recognised off is an honest cleared status, never a warning: with
+        // Game Bar registered only float warns; with Game Bar absent nothing
+        // warns.
         let snapshot = snapshot_with(XboxConfig::Disabled, GameBarPackage::Registered);
         let conflicts = gaming_conflicts(&authentic(), true, &snapshot);
         assert_eq!(conflicts.len(), 1);
@@ -940,6 +1009,9 @@ mod tests {
         let warnings = tray_warning_conflicts(&authentic(), true, false, &snapshot);
         let ids: Vec<&str> = warnings.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["toggle-float"]);
+        let silent = snapshot_with(XboxConfig::Disabled, GameBarPackage::Absent);
+        assert!(gaming_conflicts(&authentic(), true, &silent).is_empty());
+        assert!(tray_warning_conflicts(&authentic(), true, false, &silent).is_empty());
     }
 
     #[test]
@@ -955,16 +1027,31 @@ mod tests {
     }
 
     #[test]
-    fn unknown_snapshot_matches_existing_tray_rows() {
-        // With conservative unknown facts the new tray rows equal the
+    fn proven_snapshot_matches_existing_tray_rows_unknown_matches_win_l_only() {
+        // With positive proof on both probes the new tray rows equal the
         // existing chord-driven rows exactly (Win+L gate included).
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
         for (takeover, allow_win_l) in [(true, false), (true, true), (false, false), (false, true)]
         {
             assert_eq!(
-                tray_warning_conflicts(&authentic(), takeover, allow_win_l, &unknown_snapshot()),
+                tray_warning_conflicts(&authentic(), takeover, allow_win_l, &proven),
                 unresolved_conflicts(&authentic(), takeover, allow_win_l),
                 "takeover={takeover} allow_win_l={allow_win_l}"
             );
+        }
+        // Without proof no gaming row survives: only the Win+L opt-in row
+        // (never a gaming kind) can remain.
+        for allow_win_l in [false, true] {
+            let ids: Vec<&str> =
+                tray_warning_conflicts(&authentic(), true, allow_win_l, &unknown_snapshot())
+                    .iter()
+                    .map(|c| c.id)
+                    .collect();
+            if allow_win_l {
+                assert_eq!(ids, vec!["focus-right"]);
+            } else {
+                assert!(ids.is_empty());
+            }
         }
     }
 
@@ -994,7 +1081,47 @@ mod tests {
     }
 
     #[test]
+    fn compatible_rebound_to_authentic_warns_only_on_positive_proof() {
+        // Compatible's effective Ctrl chords stay silent even when proven;
+        // rebounding one row back to its authentic chord re-arms that row's
+        // warning only on positive proof for its owner.
+        use crate::settings::Preset;
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        for (id, chord, kind) in [
+            ("toggle-float", "Win+G", GamingConflictKind::GameBar),
+            ("toggle-fullscreen", "Win+F11", GamingConflictKind::XboxMode),
+        ] {
+            let mut rebound = authentic();
+            apply_preset(&mut rebound, Preset::Compatible);
+            rebound.bindings.insert(
+                id.to_owned(),
+                BindingSetting {
+                    state: BindingState::Rebind,
+                    chord: Some(chord.to_owned()),
+                },
+            );
+            assert!(validate_settings(&rebound).is_ok());
+            // Effective rebound chord carries the authentic owner's note.
+            let conflicts = gaming_conflicts(&rebound, true, &proven);
+            let conflict = conflicts
+                .iter()
+                .find(|c| c.id == id)
+                .expect("rebound warns when proven");
+            assert_eq!(conflict.kind, kind);
+            assert_eq!(conflict.chord, chord);
+            // Unknown, absent, and failed probes warn nowhere for it.
+            assert!(gaming_conflicts(&rebound, true, &unknown_snapshot()).is_empty());
+            let absent = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
+            assert!(gaming_conflicts(&rebound, true, &absent).is_empty());
+            assert!(tray_warning_conflicts(&rebound, true, false, &absent).is_empty());
+        }
+    }
+
+    #[test]
     fn per_binding_disable_and_rebind_away_clear_gaming_rows() {
+        // Proven snapshots drive the assertions: unknown probes warn nowhere,
+        // so per-binding behavior is pinned against positive proof.
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
         for (id, chord) in [
             ("toggle-float", "Win+Q"),
             ("toggle-fullscreen", "Win+Ctrl+F11"),
@@ -1008,7 +1135,7 @@ mod tests {
                 },
             );
             assert!(validate_settings(&rebound).is_ok());
-            let ids: Vec<&str> = gaming_conflicts(&rebound, true, &unknown_snapshot())
+            let ids: Vec<&str> = gaming_conflicts(&rebound, true, &proven)
                 .iter()
                 .map(|c| c.id)
                 .collect();
@@ -1024,11 +1151,13 @@ mod tests {
             },
         );
         assert!(validate_settings(&disabled).is_ok());
-        let ids: Vec<&str> = gaming_conflicts(&disabled, true, &unknown_snapshot())
+        let ids: Vec<&str> = gaming_conflicts(&disabled, true, &proven)
             .iter()
             .map(|c| c.id)
             .collect();
         assert_eq!(ids, vec!["toggle-fullscreen"]);
+        // Unknown probes warn nowhere regardless of bindings.
+        assert!(gaming_conflicts(&authentic(), true, &unknown_snapshot()).is_empty());
     }
 
     #[test]
@@ -1100,7 +1229,8 @@ mod tests {
             },
         );
         assert!(validate_settings(&rebound).is_ok());
-        let conflicts = gaming_conflicts(&rebound, true, &unknown_snapshot());
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        let conflicts = gaming_conflicts(&rebound, true, &proven);
         let ids: Vec<&str> = conflicts.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["toggle-float", "toggle-maximize"]);
         let maximize = conflicts
@@ -1109,14 +1239,21 @@ mod tests {
             .expect("maximize warns at Win+F11");
         assert_eq!(maximize.kind, GamingConflictKind::XboxMode);
         assert_eq!(maximize.chord, "Win+F11");
-        // The recognised off value clears the rebound Xbox row too.
+        // Unknown Xbox warns nowhere, including for the rebound owner.
+        let unknown_ids: Vec<&str> = gaming_conflicts(&rebound, true, &unknown_snapshot())
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert!(unknown_ids.is_empty());
+        // The recognised off value clears the rebound Xbox row too, leaving
+        // only the proven Game Bar row.
         let off = snapshot_with(XboxConfig::Disabled, GameBarPackage::Registered);
         let ids: Vec<&str> = tray_warning_conflicts(&rebound, true, false, &off)
             .iter()
             .map(|c| c.id)
             .collect();
         assert_eq!(ids, vec!["toggle-float"]);
-        let ids: Vec<&str> = tray_warning_conflicts(&rebound, true, false, &unknown_snapshot())
+        let ids: Vec<&str> = tray_warning_conflicts(&rebound, true, false, &proven)
             .iter()
             .map(|c| c.id)
             .collect();
@@ -1462,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_failure_after_off_publishes_unknown() {
+    fn spawn_failure_after_proven_clears_stale_warning_with_unknown() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let spawner: SpawnerFn = {
             let attempts = Arc::clone(&attempts);
@@ -1474,28 +1611,26 @@ mod tests {
                 }
             })
         };
-        let off = snapshot_with(XboxConfig::Disabled, GameBarPackage::Absent);
-        let probe: ProbeFn = Arc::new(move || off);
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        let probe: ProbeFn = Arc::new(move || proven);
         let monitor = GamingMonitor::with_spawner(probe, spawner);
         monitor.request_refresh(RefreshReason::Startup);
         wait_idle(&monitor);
-        assert_eq!(monitor.snapshot().xbox, XboxConfig::Disabled);
-        // Xbox row cleared while off is observed.
-        assert!(
-            tray_warning_conflicts(&authentic(), true, false, &monitor.snapshot())
-                .iter()
-                .all(|c| c.id != "toggle-fullscreen")
-        );
-        // A later spawn failure must not leave the stale off state hiding
-        // the warning: unknown publishes at once with a new generation.
-        monitor.request_refresh(RefreshReason::Recheck);
-        assert_eq!(monitor.snapshot().xbox, XboxConfig::Unknown);
-        assert_eq!(monitor.snapshot().generation, 2);
+        assert_eq!(monitor.snapshot().xbox, XboxConfig::Enabled);
+        // Both proven rows warn while observed.
         let ids: Vec<&str> = tray_warning_conflicts(&authentic(), true, false, &monitor.snapshot())
             .iter()
             .map(|c| c.id)
             .collect();
         assert!(ids.contains(&"toggle-fullscreen"));
+        assert!(ids.contains(&"toggle-float"));
+        // A later spawn failure must not leave the stale proven state
+        // warning: unknown publishes at once with a new generation and warns
+        // nowhere (Part B provably-present rule).
+        monitor.request_refresh(RefreshReason::Recheck);
+        assert_eq!(monitor.snapshot().xbox, XboxConfig::Unknown);
+        assert_eq!(monitor.snapshot().generation, 2);
+        assert!(tray_warning_conflicts(&authentic(), true, false, &monitor.snapshot()).is_empty());
         assert!(
             monitor
                 .drain_logs()
@@ -1523,17 +1658,21 @@ mod tests {
 
     #[test]
     fn gamebar_registration_states_drive_win_g_conflicts() {
-        // Detected installation warns as today.
+        // Detected installation warns for float; Xbox unknown warns nowhere,
+        // so only one conflict surfaces.
         let registered = snapshot_with(XboxConfig::Unknown, GameBarPackage::Registered);
         let conflicts = gaming_conflicts(&authentic(), true, &registered);
-        assert_eq!(conflicts.len(), 2);
+        assert_eq!(conflicts.len(), 1);
         let float = conflicts
             .iter()
             .find(|c| c.id == "toggle-float")
             .expect("float warns when registered");
         assert_eq!(float.kind, GamingConflictKind::GameBar);
-        // Successful absence clears the Win+G rows while Xbox unknown keeps
-        // its fullscreen warning, on both surfaces.
+        // Both proven: both rows warn.
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        assert_eq!(gaming_conflicts(&authentic(), true, &proven).len(), 2);
+        // Successful absence warns nowhere for Game Bar; Xbox unknown warns
+        // nowhere either, so both surfaces stay empty.
         let absent = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
         for ids in [
             gaming_conflicts(&authentic(), true, &absent)
@@ -1545,26 +1684,16 @@ mod tests {
                 .map(|c| c.id)
                 .collect::<Vec<_>>(),
         ] {
-            assert_eq!(ids, vec!["toggle-fullscreen"]);
+            assert!(ids.is_empty());
         }
-        // Query failure is distinct from absence: the exact unknown warning
-        // stays on both surfaces.
+        // Query failure counts the same as absence for warnings (Part B):
+        // neither surface warns, while honest logs keep the failure.
         let failed = GamingSnapshot::unknown();
         assert_eq!(failed.gamebar, GameBarPackage::Unknown);
-        let conflicts = gaming_conflicts(&authentic(), true, &failed);
-        let float = conflicts
-            .iter()
-            .find(|c| c.id == "toggle-float")
-            .expect("float warns on query failure");
-        assert_eq!(
-            float.evidence,
-            "Game Bar registration unknown (query failed); check required"
-        );
-        assert!(
-            tray_warning_conflicts(&authentic(), true, false, &failed)
-                .iter()
-                .any(|c| c.id == "toggle-float")
-        );
+        assert!(gaming_conflicts(&authentic(), true, &failed).is_empty());
+        assert!(tray_warning_conflicts(&authentic(), true, false, &failed).is_empty());
+        let lines = failed.log_lines(RefreshReason::Startup);
+        assert_eq!(lines[1]["outcome"], "query-failed");
     }
 
     #[test]
@@ -1585,19 +1714,26 @@ mod tests {
             },
         );
         assert!(validate_settings(&rebound).is_ok());
-        let conflicts = gaming_conflicts(&rebound, true, &unknown_snapshot());
+        let proven = snapshot_with(XboxConfig::Enabled, GameBarPackage::Registered);
+        let conflicts = gaming_conflicts(&rebound, true, &proven);
         let ids: Vec<&str> = conflicts.iter().map(|c| c.id).collect();
         assert_eq!(ids, vec!["toggle-maximize", "toggle-fullscreen"]);
+        // Unknown and absent probes warn nowhere for the rebound owner.
+        let unknown_ids: Vec<&str> = gaming_conflicts(&rebound, true, &unknown_snapshot())
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        assert!(unknown_ids.is_empty());
         let absent = snapshot_with(XboxConfig::Unknown, GameBarPackage::Absent);
         let ids: Vec<&str> = gaming_conflicts(&rebound, true, &absent)
             .iter()
             .map(|c| c.id)
             .collect();
-        assert_eq!(ids, vec!["toggle-fullscreen"]);
+        assert!(ids.is_empty());
         let ids: Vec<&str> = tray_warning_conflicts(&rebound, true, false, &absent)
             .iter()
             .map(|c| c.id)
             .collect();
-        assert_eq!(ids, vec!["toggle-fullscreen"]);
+        assert!(ids.is_empty());
     }
 }
