@@ -74,3 +74,9 @@ The supplied dogfooding trace contains six successful workspace actions: one sen
 - Offline acceptance is complete for Windows select/send batching and timing. Shared-core and KDE behavior are unchanged; unrelated single-window migration/audit/lifecycle behavior remains outside this change.
 - Tentative choices retained: separate hide and reveal batch deadlines, observed-state confirmation after host notifications, recoverable claims for unconfirmed windows, and focus/z-order only after the existing success barriers.
 - Live verification is pending user dogfooding: confirm real SHOW/HIDE delivery, perceived multi-window latency, partial-failure behavior, and the timing breakdowns with the affected application mix. Retain this record at its current path while that product evidence is pending.
+
+### CI portability repair
+
+- CI run `39004877767` passed Windows (3304 passed, 0 failed, 1 ignored across its broader package set), but Linux/macOS strict clippy found six unused batch-module items: the private module was unconditional while its production consumer is Windows-only.
+- Restrict the module to `cfg(any(windows, test))`: exclude it from non-Windows production libraries while retaining all ten portable fake-native unit tests. No warning suppression, API expansion, or Windows runtime behavior change. The full local four-package gates pass again after this correction; cross-platform confirmation remains for CI.
+- The same run also failed the existing `kwin-66-api-guard` clean-tree/clean-marker checks and native KCM shortcut-selection assertion at `activeborderconfig_shortcut_test.cpp:2875`. Parent run `39002940466` had the identical guard failure but passed native tests; native sources are unchanged across the feature, so the native failure is separate unresolved test evidence, not a batching fix target.
