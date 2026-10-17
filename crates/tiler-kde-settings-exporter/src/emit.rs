@@ -152,6 +152,8 @@ pub fn emit_main_xml() -> String {
         "sameAxisMove",
         "fixedSizePredicate",
         "bornMaximized",
+        "anchorFallback",
+        "noSpaceResult",
         "migrationSourceRefill",
         "innerGap",
         "outerGap",
@@ -414,7 +416,7 @@ pub fn emit_descriptors_header() -> String {
          inline constexpr int kKdeNativePanelCount = {};\n\
          \n\
          static_assert(kKdeTabCount == 4, \"four native tabs\");\n\
-         static_assert(kKdeExposedFieldCount == 14, \"fourteen exposed fields\");\n\
+         static_assert(kKdeExposedFieldCount == 16, \"sixteen exposed fields\");\n\
          static_assert(kKdeNativePanelCount == {}, \"native panels\");\n\
          \n\
          }} // namespace OmnitilerKdeSettings\n\
@@ -539,6 +541,8 @@ mod tests {
             "sameAxisMove",
             "fixedSizePredicate",
             "bornMaximized",
+            "anchorFallback",
+            "noSpaceResult",
             "migrationSourceRefill",
             "innerGap",
             "outerGap",
@@ -589,7 +593,7 @@ mod tests {
         assert!(header.contains("kli18n(\"Fallback border color:\")"));
         assert!(header.contains("kli18n(\"Per output, local\")"));
         assert!(header.contains("kli18n(\"Gap between tiled windows:\")"));
-        assert!(header.contains("static_assert(kKdeExposedFieldCount == 14"));
+        assert!(header.contains("static_assert(kKdeExposedFieldCount == 16"));
         assert!(header.contains("\"below-tabs\""));
         let mut widgets = BTreeSet::new();
         for field in KDE_EXPOSED_FIELDS {

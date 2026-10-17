@@ -164,6 +164,135 @@ pub fn project(tree: &Node, bounds: Rect, gap: i32) -> Result<Vec<ProjectedLeaf>
     Ok(out)
 }
 
+/// D9 positive-overflow projection result: leaf rectangles in child-order
+/// visitation order plus whether any group needed an effective extent above
+/// its assigned slot (capacity overflow, distinct from B6 minimum flags).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlapProjection {
+    pub leaves: Vec<ProjectedLeaf>,
+    pub capacity_overflow: bool,
+}
+
+/// Project `tree` with D9 positive-overflow semantics (selected 2026-10-17).
+///
+/// Same validation as [`project`] (bounds, gap, topology). At each group the
+/// effective extent is `max(assigned, gap*(n-1)+n)` with the existing
+/// reserve-one/share rounding laid out from the assigned origin; the parent
+/// slot is not enlarged. Descendants may overlap other branches or leave the
+/// domain. Cross extents are unchanged; every leaf stays positive. Checked
+/// arithmetic still applies: unrepresentable offsets and leaf extent
+/// endpoints hold truthfully.
+///
+/// [`project`] stays strict and unchanged.
+pub fn project_overlap(
+    tree: &Node,
+    bounds: Rect,
+    gap: i32,
+) -> Result<OverlapProjection, ProjectionError> {
+    if !valid_rect(&bounds) {
+        return Err(error("bounds must have positive extents"));
+    }
+    if gap < 0 {
+        return Err(error("gap must be non-negative"));
+    }
+    validate_tree(tree, &mut HashSet::new())?;
+    let mut leaves = Vec::new();
+    let mut capacity_overflow = false;
+    layout_overlap(tree, bounds, gap, &mut leaves, &mut capacity_overflow)?;
+    Ok(OverlapProjection {
+        leaves,
+        capacity_overflow,
+    })
+}
+
+fn layout_overlap(
+    node: &Node,
+    rect: Rect,
+    gap: i32,
+    out: &mut Vec<ProjectedLeaf>,
+    capacity_overflow: &mut bool,
+) -> Result<(), ProjectionError> {
+    match node {
+        Node::Leaf { id } => {
+            out.push(ProjectedLeaf {
+                leaf: id.clone(),
+                rect,
+            });
+            Ok(())
+        }
+        Node::Group {
+            axis,
+            children,
+            shares,
+            ..
+        } => {
+            let n = children.len();
+            let mut total: u64 = 0;
+            for share in shares {
+                total = total
+                    .checked_add(*share)
+                    .ok_or_else(|| error("group shares total overflows"))?;
+            }
+            if total == 0 {
+                return Err(error("group shares must be positive"));
+            }
+            let assigned: i64 = match axis {
+                Axis::Horizontal => i64::from(rect.w),
+                Axis::Vertical => i64::from(rect.h),
+            };
+            let gaps_total: i64 = i64::from(gap)
+                .checked_mul(n as i64 - 1)
+                .ok_or_else(|| error("gap budget overflows"))?;
+            let floor = gaps_total
+                .checked_add(n as i64)
+                .ok_or_else(|| error("gap budget overflows"))?;
+            let effective = assigned.max(floor);
+            if effective > assigned {
+                *capacity_overflow = true;
+            }
+            let avail = effective - gaps_total;
+            let distributable = avail - n as i64;
+            let sizes = proportional_base_sizes(shares, total, distributable, avail);
+            let mut cursor: i64 = match axis {
+                Axis::Horizontal => i64::from(rect.x),
+                Axis::Vertical => i64::from(rect.y),
+            };
+            for (index, (child, size)) in children.iter().zip(sizes.iter()).enumerate() {
+                let size_i32: i32 = (*size)
+                    .try_into()
+                    .map_err(|_| error("segment size overflows"))?;
+                let child_rect = match axis {
+                    Axis::Horizontal => Rect {
+                        x: i32::try_from(cursor).map_err(|_| error("segment offset overflows"))?,
+                        y: rect.y,
+                        w: size_i32,
+                        h: rect.h,
+                    },
+                    Axis::Vertical => Rect {
+                        x: rect.x,
+                        y: i32::try_from(cursor).map_err(|_| error("segment offset overflows"))?,
+                        w: rect.w,
+                        h: size_i32,
+                    },
+                };
+                if child_rect.x.checked_add(child_rect.w).is_none()
+                    || child_rect.y.checked_add(child_rect.h).is_none()
+                {
+                    return Err(error("segment offset overflows"));
+                }
+                layout_overlap(child, child_rect, gap, out, capacity_overflow)?;
+                if index + 1 < children.len() {
+                    cursor = cursor
+                        .checked_add(*size)
+                        .and_then(|next| next.checked_add(i64::from(gap)))
+                        .ok_or_else(|| error("segment offset overflows"))?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Both callers validate positive shares, nonzero total and `avail >= shares.len()`.
 pub(crate) fn proportional_base_sizes(
     shares: &[u64],

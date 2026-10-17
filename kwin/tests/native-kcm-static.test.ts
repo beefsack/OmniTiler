@@ -42,6 +42,8 @@ const SCRIPT_SETTINGS = {
     sameAxisMove: { type: "Enum", defaultValue: "group-with-neighbor" },
     fixedSizePredicate: { type: "Enum", defaultValue: "both-axes-fixed" },
     bornMaximized: { type: "Enum", defaultValue: "tile-on-launch" },
+    anchorFallback: { type: "Enum", defaultValue: "largest-splittable-window" },
+    noSpaceResult: { type: "Enum", defaultValue: "float" },
     migrationSourceRefill: { type: "Enum", defaultValue: "last-remaining-workspace" },
     innerGap: { type: "Int", defaultValue: "8" },
     outerGap: { type: "Int", defaultValue: "8" },
@@ -125,7 +127,7 @@ describe("native KCM static contract", () => {
         assert.match(unifiedHeader, /::Ui::UnifiedSettings m_ui/);
         // Thin factories carry no widget or reconfigure internals.
         for (const factory of [effectFactory, scriptFactory]) {
-            assert.doesNotMatch(factory, /workspaceModeCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
+            assert.doesNotMatch(factory, /workspaceModeCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|anchorFallbackCombo|noSpaceResultCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
             assert.doesNotMatch(factory, /requestEffectReconfigure|requestScriptReconfigure/);
             assert.doesNotMatch(factory, /Script-omnitiler-kwin/);
         }
@@ -150,6 +152,8 @@ describe("native KCM static contract", () => {
             "sameAxisMoveCombo",
             "fixedSizePredicateCombo",
             "bornMaximizedCombo",
+            "anchorFallbackCombo",
+            "noSpaceResultCombo",
             "migrationSourceRefillCombo",
             "innerGapSpinBox",
             "outerGapSpinBox",
@@ -197,7 +201,7 @@ describe("native KCM static contract", () => {
         }
     });
 
-    it("keeps the seven supported script keys and defaults identical between schema and the unified script KCM", () => {
+    it("keeps the nine supported script keys and defaults identical between schema and the unified script KCM", () => {
         // defaultTiled is schema-only (tray persist + script readConfig for
         // newly discovered workspaces); the unified KCM intentionally owns
         // only workspaceMode/innerGap/outerGap, so it is asserted separately.
@@ -210,7 +214,7 @@ describe("native KCM static contract", () => {
         // Catalog-owned metadata lives in the generated descriptors and the
         // focused adapter: defaults, bounds, tokens and enum rows derive
         // from there, while the module keeps persistence and staging.
-        assert.match(descriptors, /kKdeExposedFieldCount == 14/);
+        assert.match(descriptors, /kKdeExposedFieldCount == 16/);
         assert.match(descriptors, /"workspaceMode", "workspaceModeCombo"/);
         assert.match(descriptors, /"innerGap", "innerGapSpinBox"/);
         assert.match(adapterHeader, /findScriptFieldByKey/);
@@ -270,7 +274,7 @@ describe("native KCM static contract", () => {
         assert.match(unified, /innerGapSpinBox->setValue\(/);
         assert.match(unified, /outerGapSpinBox->setValue\(/);
         for (const factory of [effectFactory, scriptFactory]) {
-            assert.doesNotMatch(factory, /workspaceModeCombo|shortcutProfileCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
+            assert.doesNotMatch(factory, /workspaceModeCombo|shortcutProfileCombo|sameAxisMoveCombo|fixedSizePredicateCombo|bornMaximizedCombo|anchorFallbackCombo|noSpaceResultCombo|migrationSourceRefillCombo|innerGapSpinBox|outerGapSpinBox/);
             assert.doesNotMatch(factory, /Script-omnitiler-kwin/);
         }
     });
@@ -292,6 +296,10 @@ describe("native KCM static contract", () => {
         assert.match(unified, /writeEntry\(QStringLiteral\("fixedSizePredicate"\)/);
         assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("bornMaximized"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("bornMaximized"\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("anchorFallback"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("anchorFallback"\)/);
+        assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("noSpaceResult"\)\)/);
+        assert.match(unified, /writeEntry\(QStringLiteral\("noSpaceResult"\)/);
         assert.match(unified, /findScriptFieldByKey\(QStringLiteral\("migrationSourceRefill"\)\)/);
         assert.match(unified, /writeEntry\(QStringLiteral\("migrationSourceRefill"\)/);
         assert.doesNotMatch(unified, /tilingAlgorithm|automaticSplitTarget|dropOutlinePreview/);
@@ -404,6 +412,8 @@ describe("native KCM static contract", () => {
             ["label_sameAxisMove", "sameAxisMoveCombo"],
             ["label_fixedSizePredicate", "fixedSizePredicateCombo"],
             ["label_bornMaximized", "bornMaximizedCombo"],
+            ["label_anchorFallback", "anchorFallbackCombo"],
+            ["label_noSpaceResult", "noSpaceResultCombo"],
             ["label_migrationSourceRefill", "migrationSourceRefillCombo"],
             ["label_innerGap", "innerGapSpinBox"],
             ["label_outerGap", "outerGapSpinBox"],
@@ -452,7 +462,7 @@ describe("native KCM static contract", () => {
         assert.match(unifiedHeader, /isScriptRestartRequired/);
         assert.match(unifiedHeader, /isGapReconfigurePending/);
         assert.match(unified, /m_gapReconfigurePending/);
-        assert.match(unified, /const bool liveChanged = gapChanged \|\| sameAxisMoveChanged \|\| fixedPredicateChanged \|\| bornMaximizedChanged \|\| refillChanged/);
+        assert.match(unified, /const bool liveChanged = gapChanged \|\| sameAxisMoveChanged \|\| fixedPredicateChanged \|\| bornMaximizedChanged \|\| anchorFallbackChanged \|\| noSpaceChanged \|\| refillChanged/);
         assert.match(unified, /if \(liveChanged \|\| scriptRetryArmed\)/);
         assert.match(unified, /if \(!widgetsChanged\)/);
         assert.match(unified, /This retry saved nothing/);

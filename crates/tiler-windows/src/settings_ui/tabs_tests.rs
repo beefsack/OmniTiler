@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 use super::*;
-use crate::settings::{NATIVE_PANELS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS};
+use crate::settings::{
+    NATIVE_PANELS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS, WINDOWS_UNSUPPORTED_FIELDS,
+};
 use std::collections::BTreeSet;
 use tiler_core::settings_catalog::{ALL_FIELDS, ALL_TABS, find_section, find_tab};
 
@@ -129,6 +131,11 @@ fn native_slots_consumed_once_each() {
 #[test]
 fn control_text_comes_from_the_catalog() {
     for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
+        // Portable fields without a Windows mapping stay off the dialog
+        // until the runtime follow-up (see WINDOWS_UNSUPPORTED_FIELDS).
+        if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id) {
+            continue;
+        }
         let rendered: Vec<u32> = ALL_CONTROL_IDS
             .iter()
             .copied()

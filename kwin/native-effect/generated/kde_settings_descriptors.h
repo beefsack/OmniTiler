@@ -85,6 +85,17 @@ inline constexpr KdeEnumOptionDescriptor kOptionsForBornMaximized[] = {
     {"keep-maximized-overlay", kli18n("Keep maximized overlay"), kli18n("COSMIC, Hyprland")},
 };
 
+inline constexpr KdeEnumOptionDescriptor kOptionsForAnchorFallback[] = {
+    {"largest-splittable-window", kli18n("Largest splittable window"), kli18n("Most remaining area first")},
+    {"closest-splittable-relative", kli18n("Closest splittable relative"), kli18n("Nearest branch first")},
+    {"no-search", kli18n("No search"), kli18n("Go directly to the no-space setting")},
+};
+
+inline constexpr KdeEnumOptionDescriptor kOptionsForNoSpaceResult[] = {
+    {"float", kli18n("Float"), kli18n("Keep tiling intact on a separate layer")},
+    {"allow-overlap", kli18n("Allow overlap"), kli18n("Keep tiled membership with overflowing geometry")},
+};
+
 inline constexpr KdeEnumOptionDescriptor kOptionsForMigrationSourceRefill[] = {
     {"last-remaining-workspace", kli18n("Last remaining workspace"), kli18n("COSMIC")},
     {"most-recently-used-workspace", kli18n("Most recently used workspace"), kli18n("bspwm, i3, awesome")},
@@ -95,6 +106,8 @@ inline constexpr KdeFieldDescriptor kKdeFields[] = {
     {"move.same-axis", "Script-omnitiler-kwin", "sameAxisMove", "sameAxisMoveCombo", kli18n("The same-axis move behavior"), kli18n("Same-axis move behavior:"), "Enum", "group-with-neighbor", "", "", kOptionsForSameAxisMove, 2, "tiling-workspaces"},
     {"admission.fixed-size", "Script-omnitiler-kwin", "fixedSizePredicate", "fixedSizePredicateCombo", kli18n("The fixed-size admission predicate"), kli18n("Fixed-size admission predicate:"), "Enum", "both-axes-fixed", "", "", kOptionsForFixedSizePredicate, 2, "tiling-workspaces"},
     {"admission.born-maximized", "Script-omnitiler-kwin", "bornMaximized", "bornMaximizedCombo", kli18n("The born-maximized admission behavior"), kli18n("Born-maximized admission behavior:"), "Enum", "tile-on-launch", "", "", kOptionsForBornMaximized, 2, "tiling-workspaces"},
+    {"admission.anchor-fallback", "Script-omnitiler-kwin", "anchorFallback", "anchorFallbackCombo", kli18n("When the anchor cannot split"), kli18n("When the anchor cannot split:"), "Enum", "largest-splittable-window", "", "", kOptionsForAnchorFallback, 3, "tiling-workspaces"},
+    {"admission.no-space", "Script-omnitiler-kwin", "noSpaceResult", "noSpaceResultCombo", kli18n("When no split is available"), kli18n("When no split is available:"), "Enum", "float", "", "", kOptionsForNoSpaceResult, 2, "tiling-workspaces"},
     {"migration.refill", "Script-omnitiler-kwin", "migrationSourceRefill", "migrationSourceRefillCombo", kli18n("Source workspace after migration"), kli18n("Source workspace after migration:"), "Enum", "last-remaining-workspace", "", "", kOptionsForMigrationSourceRefill, 2, "tiling-workspaces"},
     {"gaps.inner", "Script-omnitiler-kwin", "innerGap", "innerGapSpinBox", kli18n("Gap between tiled windows"), kli18n("Gap between tiled windows:"), "Int", "8", "0", "64", nullptr, 0, "tiling-workspaces"},
     {"gaps.outer", "Script-omnitiler-kwin", "outerGap", "outerGapSpinBox", kli18n("Gap between tiled windows and the work area edge"), kli18n("Gap between tiled windows and the work area edge:"), "Int", "8", "0", "64", nullptr, 0, "tiling-workspaces"},
@@ -122,11 +135,11 @@ inline constexpr KdePanelDescriptor kKdePanels[] = {
 };
 
 inline constexpr int kKdeTabCount = 4;
-inline constexpr int kKdeExposedFieldCount = 14;
+inline constexpr int kKdeExposedFieldCount = 16;
 inline constexpr int kKdeNativePanelCount = 11;
 
 static_assert(kKdeTabCount == 4, "four native tabs");
-static_assert(kKdeExposedFieldCount == 14, "fourteen exposed fields");
+static_assert(kKdeExposedFieldCount == 16, "sixteen exposed fields");
 static_assert(kKdeNativePanelCount == 11, "native panels");
 
 } // namespace OmnitilerKdeSettings

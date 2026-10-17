@@ -10,7 +10,8 @@
 //! `v`, `revision`, and `bindings` stay native and are never mapped here.
 
 use tiler_core::settings_catalog::{
-    FieldDef, HostCaps, PanelSlot, SectionDef, SettingValue, Timing, Validity, find_field,
+    FIELD_ANCHOR_FALLBACK, FIELD_NO_SPACE, FieldDef, HostCaps, PanelSlot, SectionDef, SettingValue,
+    Timing, Validity, find_field,
 };
 use tiler_core::settings_catalog::{TAB_DESKTOP_INTEGRATION, TAB_SHORTCUTS};
 
@@ -162,6 +163,12 @@ pub struct FieldStorageMap {
     pub field: &'static str,
     pub storage_key: &'static str,
 }
+
+/// Portable fields with no Windows mapping: no storage key, no reader, no
+/// stager, no dialog control. The Windows runtime does not consume these
+/// admission settings (a follow-up owns behavior), so mapping them would
+/// persist values the runtime silently ignores.
+pub const WINDOWS_UNSUPPORTED_FIELDS: &[&str] = &[FIELD_ANCHOR_FALLBACK, FIELD_NO_SPACE];
 
 /// Every scalar Windows-exposed field mapped exactly once (17 portable plus
 /// 4 Windows-only). Storage keys are the existing schema-v1 nested
@@ -516,11 +523,63 @@ mod tests {
             assert!(windows_field_def(entry.field).is_some(), "{}", entry.field);
         }
         for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
+            if WINDOWS_UNSUPPORTED_FIELDS.contains(&field.id) {
+                assert!(
+                    !fields.contains(field.id),
+                    "supported {} must stay mapped",
+                    field.id
+                );
+                continue;
+            }
             assert!(fields.contains(field.id), "unmapped {}", field.id);
         }
         assert!(!keys.contains("v"));
         assert!(!keys.contains("revision"));
         assert!(!keys.iter().any(|key| key.starts_with("bindings")));
+    }
+
+    #[test]
+    fn unsupported_fields_partition_the_catalog() {
+        // Best-effort admission settings stay out of the Windows mapping
+        // until the runtime follow-up: exactly these portable fields, each
+        // a known catalog field with no storage key, no reader, and no
+        // stager. Mapped plus unsupported partition every portable field.
+        assert_eq!(
+            WINDOWS_UNSUPPORTED_FIELDS,
+            &["admission.anchor-fallback", "admission.no-space"]
+        );
+        let mapped: BTreeSet<&str> = WINDOWS_FIELD_MAPPINGS
+            .iter()
+            .map(|entry| entry.field)
+            .collect();
+        for unsupported in WINDOWS_UNSUPPORTED_FIELDS {
+            assert!(
+                tiler_core::settings_catalog::find_field(unsupported).is_some(),
+                "unknown {unsupported}"
+            );
+            assert!(!mapped.contains(unsupported), "mapped {unsupported}");
+            assert!(
+                windows_field_value(&Settings::default(), unsupported).is_none(),
+                "readable {unsupported}"
+            );
+            let mut settings = Settings::default();
+            assert!(
+                stage_windows_field_value(&mut settings, unsupported, &WindowsValue::Bool(true))
+                    .is_err(),
+                "stageable {unsupported}"
+            );
+        }
+        let mut seen = BTreeSet::new();
+        for entry in WINDOWS_FIELD_MAPPINGS {
+            assert!(seen.insert(entry.field), "duplicate {}", entry.field);
+        }
+        for unsupported in WINDOWS_UNSUPPORTED_FIELDS {
+            assert!(seen.insert(*unsupported), "duplicate {unsupported}");
+        }
+        for field in ALL_FIELDS.iter().chain(WINDOWS_ONLY_FIELDS.iter()) {
+            assert!(seen.contains(field.id), "unaccounted {}", field.id);
+        }
+        assert_eq!(seen.len(), ALL_FIELDS.len() + WINDOWS_ONLY_FIELDS.len());
     }
 
     #[test]

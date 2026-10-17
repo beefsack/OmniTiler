@@ -565,6 +565,217 @@ pub fn project_with_hints(
     })
 }
 
+/// D9 hinted overlap result: overlap leaf rectangles plus B6 minimum flags
+/// plus the separate capacity-overflow flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HintedOverlapProjection {
+    pub leaves: Vec<ProjectedLeaf>,
+    pub overconstrained: Vec<NodeId>,
+    pub capacity_overflow: bool,
+}
+
+/// Hinted D9 overlap projection: the [`crate::geometry::project_overlap`]
+/// effective-extent layout per group, then declared-minimum enforcement
+/// under B6 (same borrow-from-sibling-slack rule as [`project_with_hints`]).
+///
+/// B6 never rescues geometric exhaustion: infeasible minimums keep the
+/// overlap base sizes and flag leaves. Strict [`project_with_hints`] stays
+/// unchanged.
+pub fn project_overlap_with_hints(
+    tree: &Node,
+    bounds: Rect,
+    gap: i32,
+    resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
+) -> Result<HintedOverlapProjection, HintProjectionError> {
+    // Overlap validation mirrors the plain overlap projector (never the
+    // strict gap-budget refusal): bounds, gap, then topology below.
+    if bounds.w <= 0
+        || bounds.h <= 0
+        || bounds.x.checked_add(bounds.w).is_none()
+        || bounds.y.checked_add(bounds.h).is_none()
+    {
+        return Err(hint_error("bounds must have positive extents"));
+    }
+    if gap < 0 {
+        return Err(hint_error("gap must be non-negative"));
+    }
+    validate_hinted_topology(tree, &mut BTreeSet::new())?;
+    let mut leaves = Vec::new();
+    let mut overconstrained = Vec::new();
+    let mut seen_over = BTreeSet::new();
+    let mut capacity_overflow = false;
+    layout_hinted_overlap(
+        tree,
+        bounds,
+        gap,
+        resolve,
+        &mut leaves,
+        &mut overconstrained,
+        &mut seen_over,
+        &mut capacity_overflow,
+    )?;
+    Ok(HintedOverlapProjection {
+        leaves,
+        overconstrained,
+        capacity_overflow,
+    })
+}
+
+fn validate_hinted_topology(
+    node: &Node,
+    seen: &mut BTreeSet<NodeId>,
+) -> Result<(), HintProjectionError> {
+    if node.id().0.is_empty() {
+        return Err(hint_error("node identities must be non-empty"));
+    }
+    if !seen.insert(node.id().clone()) {
+        return Err(hint_error("node identities must be unique"));
+    }
+    if let Node::Group {
+        children, shares, ..
+    } = node
+    {
+        if children.len() < 2 {
+            return Err(hint_error("groups must have at least two children"));
+        }
+        if shares.len() != children.len() {
+            return Err(hint_error("group shares must align exactly with children"));
+        }
+        if shares.contains(&0) {
+            return Err(hint_error("group shares must be positive"));
+        }
+        let mut total: u64 = 0;
+        for share in shares {
+            total = total
+                .checked_add(*share)
+                .ok_or_else(|| hint_error("group shares total overflows"))?;
+        }
+        if total == 0 {
+            return Err(hint_error("group shares must be positive"));
+        }
+        for child in children {
+            validate_hinted_topology(child, seen)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_hinted_overlap(
+    node: &Node,
+    rect: Rect,
+    gap: i32,
+    resolve: &dyn Fn(&NodeId) -> WindowSizeHints,
+    out: &mut Vec<ProjectedLeaf>,
+    overconstrained: &mut Vec<NodeId>,
+    seen_over: &mut BTreeSet<NodeId>,
+    capacity_overflow: &mut bool,
+) -> Result<(), HintProjectionError> {
+    // Topology was validated up front; only sizing arithmetic runs here.
+    match node {
+        Node::Leaf { id } => {
+            let hints = resolve(id);
+            if violates_minimum(&rect, &hints) && seen_over.insert(id.clone()) {
+                overconstrained.push(id.clone());
+            }
+            out.push(ProjectedLeaf {
+                leaf: id.clone(),
+                rect,
+            });
+            Ok(())
+        }
+        Node::Group {
+            axis,
+            children,
+            shares,
+            ..
+        } => {
+            let n = children.len();
+            // Shared proportional base with geometry::layout_overlap; minimums
+            // below reallocate from these sizes, never replace the formula.
+            let mut total: u64 = 0;
+            for share in shares {
+                total = total
+                    .checked_add(*share)
+                    .ok_or_else(|| hint_error("group shares total overflows"))?;
+            }
+            if total == 0 {
+                return Err(hint_error("group shares must be positive"));
+            }
+            let assigned: i64 = match axis {
+                Axis::Horizontal => i64::from(rect.w),
+                Axis::Vertical => i64::from(rect.h),
+            };
+            let gaps_total: i64 = i64::from(gap)
+                .checked_mul(n as i64 - 1)
+                .ok_or_else(|| hint_error("gap budget overflows"))?;
+            let floor = gaps_total
+                .checked_add(n as i64)
+                .ok_or_else(|| hint_error("gap budget overflows"))?;
+            let effective = assigned.max(floor);
+            if effective > assigned {
+                *capacity_overflow = true;
+            }
+            let avail: i64 = effective - gaps_total;
+            let distributable = avail - n as i64;
+            let mut sizes = proportional_base_sizes(shares, total, distributable, avail);
+            let gap64 = i64::from(gap);
+            let mins: Vec<i64> = children
+                .iter()
+                .map(|child| subtree_min(child, *axis, gap64, resolve))
+                .collect();
+            let _ = enforce_minimums(&mut sizes, &mins);
+            let mut cursor: i64 = match axis {
+                Axis::Horizontal => i64::from(rect.x),
+                Axis::Vertical => i64::from(rect.y),
+            };
+            for (index, (child, size)) in children.iter().zip(sizes.iter()).enumerate() {
+                let size_i32: i32 = (*size)
+                    .try_into()
+                    .map_err(|_| hint_error("segment size overflows"))?;
+                let child_rect = match axis {
+                    Axis::Horizontal => Rect {
+                        x: i32::try_from(cursor)
+                            .map_err(|_| hint_error("segment offset overflows"))?,
+                        y: rect.y,
+                        w: size_i32,
+                        h: rect.h,
+                    },
+                    Axis::Vertical => Rect {
+                        x: rect.x,
+                        y: i32::try_from(cursor)
+                            .map_err(|_| hint_error("segment offset overflows"))?,
+                        w: rect.w,
+                        h: size_i32,
+                    },
+                };
+                if child_rect.x.checked_add(child_rect.w).is_none()
+                    || child_rect.y.checked_add(child_rect.h).is_none()
+                {
+                    return Err(hint_error("segment offset overflows"));
+                }
+                layout_hinted_overlap(
+                    child,
+                    child_rect,
+                    gap,
+                    resolve,
+                    out,
+                    overconstrained,
+                    seen_over,
+                    capacity_overflow,
+                )?;
+                if index + 1 < children.len() {
+                    cursor = cursor
+                        .checked_add(*size)
+                        .and_then(|next| next.checked_add(i64::from(gap)))
+                        .ok_or_else(|| hint_error("segment offset overflows"))?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn layout_hinted(
     node: &Node,

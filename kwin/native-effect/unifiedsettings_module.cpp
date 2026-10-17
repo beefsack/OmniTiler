@@ -47,7 +47,7 @@ void ShortcutTaskWorker::execute(Task task, quint64 generation)
 namespace
 {
 
-QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fixedPredicateChanged, bool bornMaximizedChanged, bool refillChanged)
+QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fixedPredicateChanged, bool bornMaximizedChanged, bool anchorFallbackChanged, bool noSpaceChanged, bool refillChanged)
 {
     QStringList names;
     if (gapChanged) {
@@ -61,6 +61,12 @@ QStringList liveChangedNames(bool gapChanged, bool sameAxisMoveChanged, bool fix
     }
     if (bornMaximizedChanged) {
         names.append(QStringLiteral("born-maximized"));
+    }
+    if (anchorFallbackChanged) {
+        names.append(QStringLiteral("anchor fallback"));
+    }
+    if (noSpaceChanged) {
+        names.append(QStringLiteral("no-space result"));
     }
     if (refillChanged) {
         names.append(QStringLiteral("migration source refill"));
@@ -125,6 +131,10 @@ UnifiedSettingsModule::UnifiedSettingsModule(QObject *parent, const KPluginMetaD
     connect(m_ui.fixedSizePredicateCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &UnifiedSettingsModule::updateScriptState);
     connect(m_ui.bornMaximizedCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &UnifiedSettingsModule::updateScriptState);
+    connect(m_ui.anchorFallbackCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &UnifiedSettingsModule::updateScriptState);
+    connect(m_ui.noSpaceResultCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &UnifiedSettingsModule::updateScriptState);
     connect(m_ui.migrationSourceRefillCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &UnifiedSettingsModule::updateScriptState);
@@ -1562,6 +1572,8 @@ QVariantMap UnifiedSettingsModule::currentScriptValues() const
         {QStringLiteral("sameAxisMove"), m_ui.sameAxisMoveCombo->currentData()},
         {QStringLiteral("fixedSizePredicate"), m_ui.fixedSizePredicateCombo->currentData()},
         {QStringLiteral("bornMaximized"), m_ui.bornMaximizedCombo->currentData()},
+        {QStringLiteral("anchorFallback"), m_ui.anchorFallbackCombo->currentData()},
+        {QStringLiteral("noSpaceResult"), m_ui.noSpaceResultCombo->currentData()},
         {QStringLiteral("migrationSourceRefill"), m_ui.migrationSourceRefillCombo->currentData()},
         {QStringLiteral("innerGap"), m_ui.innerGapSpinBox->value()},
         {QStringLiteral("outerGap"), m_ui.outerGapSpinBox->value()},
@@ -1611,6 +1623,10 @@ void UnifiedSettingsModule::load()
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("fixedSizePredicate")));
     const QString bornMaximized = KdeSettingsAdapter::readEnumToken(
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("bornMaximized")));
+    const QString anchorFallback = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("anchorFallback")));
+    const QString noSpaceResult = KdeSettingsAdapter::readEnumToken(
+        group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("noSpaceResult")));
     const QString migrationSourceRefill = KdeSettingsAdapter::readEnumToken(
         group, KdeSettingsAdapter::findScriptFieldByKey(QStringLiteral("migrationSourceRefill")));
     const int innerGap = KdeSettingsAdapter::readBoundedInt(
@@ -1629,6 +1645,8 @@ void UnifiedSettingsModule::load()
     select(m_ui.fixedSizePredicateCombo, fixedSizePredicate,
            catalogDefaults.value(QStringLiteral("fixedSizePredicate")).toString());
     select(m_ui.bornMaximizedCombo, bornMaximized, catalogDefaults.value(QStringLiteral("bornMaximized")).toString());
+    select(m_ui.anchorFallbackCombo, anchorFallback, catalogDefaults.value(QStringLiteral("anchorFallback")).toString());
+    select(m_ui.noSpaceResultCombo, noSpaceResult, catalogDefaults.value(QStringLiteral("noSpaceResult")).toString());
     select(m_ui.migrationSourceRefillCombo, migrationSourceRefill,
            catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());
     m_ui.innerGapSpinBox->setValue(innerGap);
@@ -1638,6 +1656,8 @@ void UnifiedSettingsModule::load()
         {QStringLiteral("sameAxisMove"), sameAxisMove},
         {QStringLiteral("fixedSizePredicate"), fixedSizePredicate},
         {QStringLiteral("bornMaximized"), bornMaximized},
+        {QStringLiteral("anchorFallback"), anchorFallback},
+        {QStringLiteral("noSpaceResult"), noSpaceResult},
         {QStringLiteral("migrationSourceRefill"), migrationSourceRefill},
         {QStringLiteral("innerGap"), innerGap},
         {QStringLiteral("outerGap"), outerGap},
@@ -1673,6 +1693,10 @@ void UnifiedSettingsModule::save()
         != m_loadedScriptValues.value(QStringLiteral("fixedSizePredicate"));
     const bool bornMaximizedChanged = current.value(QStringLiteral("bornMaximized"))
         != m_loadedScriptValues.value(QStringLiteral("bornMaximized"));
+    const bool anchorFallbackChanged = current.value(QStringLiteral("anchorFallback"))
+        != m_loadedScriptValues.value(QStringLiteral("anchorFallback"));
+    const bool noSpaceChanged = current.value(QStringLiteral("noSpaceResult"))
+        != m_loadedScriptValues.value(QStringLiteral("noSpaceResult"));
     const bool refillChanged = current.value(QStringLiteral("migrationSourceRefill"))
         != m_loadedScriptValues.value(QStringLiteral("migrationSourceRefill"));
     const bool startupConsumedChanged = workspaceModeChanged;
@@ -1688,7 +1712,7 @@ void UnifiedSettingsModule::save()
         updateScriptState();
     } else {
     // This module owns exactly workspaceMode, sameAxisMove,
-    // fixedSizePredicate, bornMaximized, migrationSourceRefill, innerGap, and outerGap. Any other key in this
+    // fixedSizePredicate, bornMaximized, anchorFallback, noSpaceResult, migrationSourceRefill, innerGap, and outerGap. Any other key in this
     // group (including the hidden shortcutProfile) is never read here
     // beyond the group open and is never written; there is no migration. A
     // pure retry save (pending request, unchanged widgets) skips
@@ -1712,6 +1736,14 @@ void UnifiedSettingsModule::save()
         if (bornMaximizedChanged) {
             group.writeEntry(QStringLiteral("bornMaximized"), current.value(QStringLiteral("bornMaximized")).toString());
             written.append(QStringLiteral("bornMaximized"));
+        }
+        if (anchorFallbackChanged) {
+            group.writeEntry(QStringLiteral("anchorFallback"), current.value(QStringLiteral("anchorFallback")).toString());
+            written.append(QStringLiteral("anchorFallback"));
+        }
+        if (noSpaceChanged) {
+            group.writeEntry(QStringLiteral("noSpaceResult"), current.value(QStringLiteral("noSpaceResult")).toString());
+            written.append(QStringLiteral("noSpaceResult"));
         }
         if (refillChanged) {
             group.writeEntry(QStringLiteral("migrationSourceRefill"), current.value(QStringLiteral("migrationSourceRefill")).toString());
@@ -1743,14 +1775,16 @@ void UnifiedSettingsModule::save()
                         QStringLiteral("keys=%1").arg(startupWritten.join(QStringLiteral(","))));
     }
     // Changed gaps, same-axis moves, fixed-size predicates, born-maximized
-    // modes, and migration
+    // modes, anchor fallbacks, no-space results, and migration
     // source refills request one
     // typed KWin reconfigure after persistence whose pickup is the running
     // controller's Options configChanged live re-read (gaps re-resolve,
     // same-axis applies to subsequent moves with no tree rebuild,
     // fixed-size predicate applies to subsequent admissions with no
     // reclassification, born-maximized applies to subsequent admissions with
-    // no rebuild or reclassification, source refill applies to subsequent
+    // no rebuild or reclassification, anchor fallback and no-space result
+    // apply to subsequent admission or actual capacity-repair decisions with
+    // no reflow, source refill applies to subsequent
     // migrations with no destination/history/lifecycle work).
     // KWin's reconfigure is Q_NOREPLY, so a queued send never proves the
     // running script reread kwinrc. Success reports sent-but-unconfirmed and
@@ -1761,13 +1795,14 @@ void UnifiedSettingsModule::save()
     // was saved by the retry. A queued send never clears a pending
     // session-restart requirement for the startup-consumed setting
     // (workspaceMode) and never claims the running tiler applied saved values.
-    // Same-axis move, fixed-size predicate, born-maximized, and migration
+    // Same-axis move, fixed-size predicate, born-maximized, anchor fallback,
+    // no-space result, and migration
     // source refill
     // changes never set the restart
     // requirement: they apply to subsequent moves/admissions/migrations after the live
     // re-read.
-    const bool liveChanged = gapChanged || sameAxisMoveChanged || fixedPredicateChanged || bornMaximizedChanged || refillChanged;
-    const QString liveNames = liveChangedNames(gapChanged, sameAxisMoveChanged, fixedPredicateChanged, bornMaximizedChanged, refillChanged).join(QStringLiteral(", "));
+    const bool liveChanged = gapChanged || sameAxisMoveChanged || fixedPredicateChanged || bornMaximizedChanged || anchorFallbackChanged || noSpaceChanged || refillChanged;
+    const QString liveNames = liveChangedNames(gapChanged, sameAxisMoveChanged, fixedPredicateChanged, bornMaximizedChanged, anchorFallbackChanged, noSpaceChanged, refillChanged).join(QStringLiteral(", "));
     if (liveChanged || scriptRetryArmed) {
         if (requestScriptReconfigure()) {
             m_gapReconfigurePending = false;
@@ -1799,6 +1834,16 @@ void UnifiedSettingsModule::save()
                         "Settings saved to kwinrc. Reconfigure request sent for live settings including born-maximized; "
                         "application unconfirmed. Session restart remains required for workspace mode. Restart the "
                         "session to guarantee pickup.");
+                } else if (anchorFallbackChanged) {
+                    m_scriptStatus = QStringLiteral(
+                        "Settings saved to kwinrc. Reconfigure request sent for live settings including anchor fallback; "
+                        "application unconfirmed. Session restart remains required for workspace mode. Restart the "
+                        "session to guarantee pickup.");
+                } else if (noSpaceChanged) {
+                    m_scriptStatus = QStringLiteral(
+                        "Settings saved to kwinrc. Reconfigure request sent for live settings including no-space result; "
+                        "application unconfirmed. Session restart remains required for workspace mode. Restart the "
+                        "session to guarantee pickup.");
                 } else if (sameAxisMoveChanged && gapChanged) {
                     m_scriptStatus = QStringLiteral(
                         "Settings saved to kwinrc. Reconfigure request sent for gaps and same-axis move; "
@@ -1826,6 +1871,14 @@ void UnifiedSettingsModule::save()
             } else if (bornMaximizedChanged) {
                 m_scriptStatus = QStringLiteral(
                     "Live settings including born-maximized saved to kwinrc. Reconfigure request sent; application unconfirmed. Restart the "
+                    "session to guarantee pickup.");
+            } else if (anchorFallbackChanged) {
+                m_scriptStatus = QStringLiteral(
+                    "Live settings including anchor fallback saved to kwinrc. Reconfigure request sent; application unconfirmed. Restart the "
+                    "session to guarantee pickup.");
+            } else if (noSpaceChanged) {
+                m_scriptStatus = QStringLiteral(
+                    "Live settings including no-space result saved to kwinrc. Reconfigure request sent; application unconfirmed. Restart the "
                     "session to guarantee pickup.");
             } else if (sameAxisMoveChanged && gapChanged) {
                 m_scriptStatus = QStringLiteral(
@@ -1871,6 +1924,16 @@ void UnifiedSettingsModule::save()
                         "Settings saved to kwinrc. Reconfigure request failed; pickup of "
                         "live settings including born-maximized is unconfirmed. The request will retry on the next save. Session restart remains required for "
                         "workspace mode.");
+                } else if (anchorFallbackChanged) {
+                    m_scriptStatus = QStringLiteral(
+                        "Settings saved to kwinrc. Reconfigure request failed; pickup of "
+                        "live settings including anchor fallback is unconfirmed. The request will retry on the next save. Session restart remains required for "
+                        "workspace mode.");
+                } else if (noSpaceChanged) {
+                    m_scriptStatus = QStringLiteral(
+                        "Settings saved to kwinrc. Reconfigure request failed; pickup of "
+                        "live settings including no-space result is unconfirmed. The request will retry on the next save. Session restart remains required for "
+                        "workspace mode.");
                 } else if (sameAxisMoveChanged && gapChanged) {
                     m_scriptStatus = QStringLiteral(
                         "Settings saved to kwinrc. Reconfigure request failed; pickup of "
@@ -1898,6 +1961,14 @@ void UnifiedSettingsModule::save()
             } else if (bornMaximizedChanged) {
                 m_scriptStatus = QStringLiteral(
                     "Live settings including born-maximized saved to kwinrc. Reconfigure request failed; pickup of live settings "
+                    "is unconfirmed. The request will retry on the next save; restart the session to guarantee pickup.");
+            } else if (anchorFallbackChanged) {
+                m_scriptStatus = QStringLiteral(
+                    "Live settings including anchor fallback saved to kwinrc. Reconfigure request failed; pickup of live settings "
+                    "is unconfirmed. The request will retry on the next save; restart the session to guarantee pickup.");
+            } else if (noSpaceChanged) {
+                m_scriptStatus = QStringLiteral(
+                    "Live settings including no-space result saved to kwinrc. Reconfigure request failed; pickup of live settings "
                     "is unconfirmed. The request will retry on the next save; restart the session to guarantee pickup.");
             } else if (sameAxisMoveChanged && gapChanged) {
                 m_scriptStatus = QStringLiteral(
@@ -1955,6 +2026,12 @@ void UnifiedSettingsModule::defaults()
     KdeSettingsAdapter::selectEnumCombo(m_ui.bornMaximizedCombo,
                                        catalogDefaults.value(QStringLiteral("bornMaximized")).toString(),
                                        catalogDefaults.value(QStringLiteral("bornMaximized")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.anchorFallbackCombo,
+                                       catalogDefaults.value(QStringLiteral("anchorFallback")).toString(),
+                                       catalogDefaults.value(QStringLiteral("anchorFallback")).toString());
+    KdeSettingsAdapter::selectEnumCombo(m_ui.noSpaceResultCombo,
+                                       catalogDefaults.value(QStringLiteral("noSpaceResult")).toString(),
+                                       catalogDefaults.value(QStringLiteral("noSpaceResult")).toString());
     KdeSettingsAdapter::selectEnumCombo(m_ui.migrationSourceRefillCombo,
                                        catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString(),
                                        catalogDefaults.value(QStringLiteral("migrationSourceRefill")).toString());

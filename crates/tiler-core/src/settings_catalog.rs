@@ -8,6 +8,7 @@
 //! read these tables to emit checked-in native descriptors; nothing here
 //! generates or requires generated code.
 
+use crate::admission::{AnchorFallback, NoSpaceResult};
 use crate::born_maximized::BornMaximized;
 use crate::directional::SameAxisMove;
 use crate::output_selection::MigrationSourceRefill;
@@ -243,6 +244,8 @@ pub const FIELD_OUTER_GAP: &str = "gaps.outer";
 pub const FIELD_SAME_AXIS_MOVE: &str = "move.same-axis";
 pub const FIELD_BORN_MAXIMIZED: &str = "admission.born-maximized";
 pub const FIELD_FIXED_SIZE: &str = "admission.fixed-size";
+pub const FIELD_ANCHOR_FALLBACK: &str = "admission.anchor-fallback";
+pub const FIELD_NO_SPACE: &str = "admission.no-space";
 pub const FIELD_MIGRATION_REFILL: &str = "migration.refill";
 pub const FIELD_BORDER_ENABLED: &str = "border.enabled";
 pub const FIELD_BORDER_WIDTH: &str = "border.width";
@@ -352,6 +355,37 @@ pub const FIXED_SIZE_OPTIONS: [EnumOption; 2] = [
     },
 ];
 
+pub const ANCHOR_FALLBACK_OPTIONS: [EnumOption; 3] = [
+    EnumOption {
+        token: AnchorFallback::LargestSplittable.as_wire_str(),
+        label: "Largest splittable window",
+        tip: "Most remaining area first",
+    },
+    EnumOption {
+        token: AnchorFallback::ClosestRelative.as_wire_str(),
+        label: "Closest splittable relative",
+        tip: "Nearest branch first",
+    },
+    EnumOption {
+        token: AnchorFallback::NoSearch.as_wire_str(),
+        label: "No search",
+        tip: "Go directly to the no-space setting",
+    },
+];
+
+pub const NO_SPACE_OPTIONS: [EnumOption; 2] = [
+    EnumOption {
+        token: NoSpaceResult::Float.as_wire_str(),
+        label: "Float",
+        tip: "Keep tiling intact on a separate layer",
+    },
+    EnumOption {
+        token: NoSpaceResult::AllowOverlap.as_wire_str(),
+        label: "Allow overlap",
+        tip: "Keep tiled membership with overflowing geometry",
+    },
+];
+
 pub const MIGRATION_REFILL_OPTIONS: [EnumOption; 2] = [
     EnumOption {
         token: MigrationSourceRefill::LastRemaining.as_wire_str(),
@@ -384,7 +418,7 @@ pub const WORKSPACE_MODE_OPTIONS: [EnumOption; 3] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Portable field table (17 fields)
+// Portable field table (19 fields)
 // ---------------------------------------------------------------------------
 
 /// All portable fields in stable order.
@@ -505,6 +539,40 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &FIXED_SIZE_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent admissions only; retained classifications never change.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
+    },
+    FieldDef {
+        id: FIELD_ANCHOR_FALLBACK,
+        section: SECTION_ADMISSION,
+        label: "When the anchor cannot split",
+        help: "Search this workspace for another tile to split. Geometric positive extent only; declared-minimum overlap remains. Search never leaves the domain; no-search uses the no-space setting directly.",
+        field_type: FieldType::Enum,
+        default: SettingValue::Text(AnchorFallback::LargestSplittable.as_wire_str()),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &ANCHOR_FALLBACK_OPTIONS,
+        timing: Timing::NextAdmission,
+        timing_help: "Applies to subsequent admissions only; admitted windows keep their state.",
+        capabilities: PORTABLE_CAPS,
+        bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
+    },
+    FieldDef {
+        id: FIELD_NO_SPACE,
+        section: SECTION_ADMISSION,
+        label: "When no split is available",
+        help: "Float the window or allow tiled overlap. Overlap keeps positive extents but may cover tiles; declared-minimum overlap remains. Floats stay floating until explicitly tiled.",
+        field_type: FieldType::Enum,
+        default: SettingValue::Text(NoSpaceResult::Float.as_wire_str()),
+        min_int: None,
+        max_int: None,
+        min_float: None,
+        max_float: None,
+        options: &NO_SPACE_OPTIONS,
+        timing: Timing::NextAdmission,
+        timing_help: "Applies to subsequent admission or actual capacity-repair decisions only; existing tiles and floats keep their state, no reflow on Apply.",
         capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
@@ -884,7 +952,7 @@ mod tests {
             assert!(!field.timing_help.is_empty(), "{}", field.id);
             assert!(!field.bounds_reason.is_empty(), "{}", field.id);
         }
-        assert_eq!(ALL_FIELDS.len(), 17);
+        assert_eq!(ALL_FIELDS.len(), 19);
     }
 
     #[test]
@@ -1027,11 +1095,17 @@ mod tests {
             (FIELD_MIGRATION_REFILL, |token| {
                 MigrationSourceRefill::parse_wire(token).is_some()
             }),
+            (FIELD_ANCHOR_FALLBACK, |token| {
+                AnchorFallback::parse_wire(token).is_some()
+            }),
+            (FIELD_NO_SPACE, |token| {
+                NoSpaceResult::parse_wire(token).is_some()
+            }),
             (FIELD_WORKSPACE_MODE, |token| {
                 workspace_scope::WORKSPACE_MODE_TOKENS.contains(&token)
             }),
         ];
-        assert_eq!(tables.len(), 5);
+        assert_eq!(tables.len(), 7);
         for (field_id, parses) in tables {
             let field = find_field(field_id).expect("enum field");
             assert!(!field.options.is_empty(), "{field_id}");

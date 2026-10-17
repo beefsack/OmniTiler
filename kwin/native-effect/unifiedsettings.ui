@@ -72,6 +72,32 @@
                <widget class="QComboBox" name="bornMaximizedCombo"/>
               </item>
               <item row="4" column="0">
+               <widget class="QLabel" name="label_anchorFallback">
+                <property name="buddy">
+                 <cstring>anchorFallbackCombo</cstring>
+                </property>
+               <property name="text">
+                <string>When the anchor cannot split:</string>
+               </property>
+              </widget>
+             </item>
+              <item row="4" column="1">
+              <widget class="QComboBox" name="anchorFallbackCombo"/>
+             </item>
+             <item row="5" column="0">
+              <widget class="QLabel" name="label_noSpaceResult">
+               <property name="buddy">
+                <cstring>noSpaceResultCombo</cstring>
+               </property>
+              <property name="text">
+               <string>When no split is available:</string>
+              </property>
+             </widget>
+            </item>
+             <item row="5" column="1">
+             <widget class="QComboBox" name="noSpaceResultCombo"/>
+            </item>
+              <item row="6" column="0">
                <widget class="QLabel" name="label_migrationSourceRefill">
                 <property name="buddy">
                  <cstring>migrationSourceRefillCombo</cstring>
@@ -81,10 +107,10 @@
                </property>
               </widget>
              </item>
-              <item row="4" column="1">
+              <item row="6" column="1">
               <widget class="QComboBox" name="migrationSourceRefillCombo"/>
              </item>
-              <item row="5" column="0">
+              <item row="7" column="0">
                <widget class="QLabel" name="label_innerGap">
                <property name="buddy">
                 <cstring>innerGapSpinBox</cstring>
@@ -94,7 +120,7 @@
               </property>
              </widget>
             </item>
-              <item row="5" column="1">
+              <item row="7" column="1">
               <widget class="QSpinBox" name="innerGapSpinBox">
             <property name="minimum">
              <number>0</number>
@@ -110,7 +136,7 @@
             </property>
            </widget>
           </item>
-              <item row="6" column="0">
+              <item row="8" column="0">
                <widget class="QLabel" name="label_outerGap">
                <property name="buddy">
                 <cstring>outerGapSpinBox</cstring>
@@ -120,7 +146,7 @@
               </property>
              </widget>
             </item>
-              <item row="6" column="1">
+              <item row="8" column="1">
               <widget class="QSpinBox" name="outerGapSpinBox">
             <property name="minimum">
              <number>0</number>

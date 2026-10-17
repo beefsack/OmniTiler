@@ -10,7 +10,7 @@
 //! no native operations (no Fix/Force/Revert, no shortcut apply); it only
 //! describes mappings for the development-only exporter.
 //!
-//! Coverage: 14 of the 17 portable fields have KCM controls. Two portable
+//! Coverage: 16 of the 19 portable fields have KCM controls. Two portable
 //! bool fields are explicitly unsupported on KDE (no KConfig key, no
 //! widget): `border.enabled` and `underlay.enabled`. One portable field,
 //! `workspace.default-tiled`, is schema-only on KDE (persisted in
@@ -154,7 +154,7 @@ pub fn kde_option_text(field_id: &str, option: &EnumOption) -> (&'static str, &'
     }
 }
 
-/// Every KDE-exposed portable field in native UI row order (14 entries:
+/// Every KDE-exposed portable field in native UI row order (16 entries:
 /// script rows as laid out in the Tiling & Workspaces form, then effect
 /// rows as laid out in the Appearance form).
 pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
@@ -197,6 +197,26 @@ pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
         schema_label: "The born-maximized admission behavior",
         schema_tooltip: "",
         ui_label: "Born-maximized admission behavior:",
+    },
+    KdeField {
+        field_id: settings_catalog::FIELD_ANCHOR_FALLBACK,
+        group: GROUP_SCRIPT,
+        key: "anchorFallback",
+        widget: "anchorFallbackCombo",
+        schema_type: "Enum",
+        schema_label: "When the anchor cannot split",
+        schema_tooltip: "",
+        ui_label: "When the anchor cannot split:",
+    },
+    KdeField {
+        field_id: settings_catalog::FIELD_NO_SPACE,
+        group: GROUP_SCRIPT,
+        key: "noSpaceResult",
+        widget: "noSpaceResultCombo",
+        schema_type: "Enum",
+        schema_label: "When no split is available",
+        schema_tooltip: "",
+        ui_label: "When no split is available:",
     },
     KdeField {
         field_id: settings_catalog::FIELD_MIGRATION_REFILL,
@@ -458,6 +478,12 @@ mod tests {
         ("move.same-axis", "group-with-neighbor", "Enum"),
         ("admission.fixed-size", "both-axes-fixed", "Enum"),
         ("admission.born-maximized", "tile-on-launch", "Enum"),
+        (
+            "admission.anchor-fallback",
+            "largest-splittable-window",
+            "Enum",
+        ),
+        ("admission.no-space", "float", "Enum"),
         ("migration.refill", "last-remaining-workspace", "Enum"),
         ("gaps.inner", "8", "Int"),
         ("gaps.outer", "8", "Int"),
@@ -489,6 +515,15 @@ mod tests {
             &["tile-on-launch", "keep-maximized-overlay"],
         ),
         (
+            "admission.anchor-fallback",
+            &[
+                "largest-splittable-window",
+                "closest-splittable-relative",
+                "no-search",
+            ],
+        ),
+        ("admission.no-space", &["float", "allow-overlap"]),
+        (
             "migration.refill",
             &["last-remaining-workspace", "most-recently-used-workspace"],
         ),
@@ -501,6 +536,8 @@ mod tests {
         "sameAxisMove",
         "fixedSizePredicate",
         "bornMaximized",
+        "anchorFallback",
+        "noSpaceResult",
         "migrationSourceRefill",
         "innerGap",
         "outerGap",
@@ -521,6 +558,8 @@ mod tests {
         "Same-axis move behavior:",
         "Fixed-size admission predicate:",
         "Born-maximized admission behavior:",
+        "When the anchor cannot split:",
+        "When no split is available:",
         "Source workspace after migration:",
         "Gap between tiled windows:",
         "Gap between tiled windows and the work area edge:",
@@ -544,7 +583,7 @@ mod tests {
                 field.field_id
             );
         }
-        assert_eq!(KDE_EXPOSED_FIELDS.len(), 14);
+        assert_eq!(KDE_EXPOSED_FIELDS.len(), 16);
         assert_eq!(KDE_UNSUPPORTED_FIELDS.len(), 2);
         for unsupported in KDE_UNSUPPORTED_FIELDS {
             assert!(

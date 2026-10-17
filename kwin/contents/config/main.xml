@@ -53,6 +53,23 @@
                 <choice name="keep-maximized-overlay" value="keep-maximized-overlay"/>
             </choices>
         </entry>
+        <entry name="anchorFallback" type="Enum">
+            <label>When the anchor cannot split</label>
+            <default>largest-splittable-window</default>
+            <choices>
+                <choice name="largest-splittable-window" value="largest-splittable-window"/>
+                <choice name="closest-splittable-relative" value="closest-splittable-relative"/>
+                <choice name="no-search" value="no-search"/>
+            </choices>
+        </entry>
+        <entry name="noSpaceResult" type="Enum">
+            <label>When no split is available</label>
+            <default>float</default>
+            <choices>
+                <choice name="float" value="float"/>
+                <choice name="allow-overlap" value="allow-overlap"/>
+            </choices>
+        </entry>
         <entry name="migrationSourceRefill" type="Enum">
             <label>Source workspace after migration</label>
             <default>last-remaining-workspace</default>

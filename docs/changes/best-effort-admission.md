@@ -30,6 +30,14 @@
   failure, B6-after ordering and tree-relative directional navigation. Six tests
   pass with strict projection refusing exhausted inputs; no production overlap
   implementation existed when these numeric expectations were accepted.
+- Shared primitives delivered: explicit plain/hinted positive-overflow projectors
+  with separate capacity-overflow flags and checked endpoints; strict projection
+  remains unchanged. Goldens now exercise production, including endpoint failure.
+- Shared catalog and KDE Settings expose `admission.anchor-fallback` and
+  `admission.no-space` (`anchorFallback` / `noSpaceResult` native keys).
+  Windows explicitly partitions these as unsupported until runtime adoption.
+  Workspace tests, exporter freshness, KWin tests and 27 offline native tests pass
+  for this primitive/settings increment. Runtime consumption is not yet wired.
 
 ## Current behavior and evidence
 
