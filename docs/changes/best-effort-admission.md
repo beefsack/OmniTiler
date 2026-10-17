@@ -60,6 +60,8 @@
   - D1: geometric exhaustion only; B6 minimum overlap stays, with a UX
     follow-up on B6 overlap as part of dogfooding.
   - D2: default anchor fallback is largest splittable window.
+  - D3: default no-space result is float; overlap remains the alternative
+    setting value.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
