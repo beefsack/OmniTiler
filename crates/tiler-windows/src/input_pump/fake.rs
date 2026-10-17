@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Portable scripted backend for deterministic install/retry/stop tests. The

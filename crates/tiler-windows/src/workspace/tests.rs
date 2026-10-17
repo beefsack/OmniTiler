@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 fn key(hwnd: u64) -> WindowKey {

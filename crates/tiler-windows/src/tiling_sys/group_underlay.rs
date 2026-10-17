@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Hide the underlay fill with a change-only `group-underlay` log line.
@@ -63,7 +64,7 @@ pub(super) fn hide_preview(state: &mut TileLoop, reason: &str) {
 /// because this samples levels, never sequences edges. Independent of the
 /// keyboard-hook gesture path, so a bare hold with no other key still reads.
 pub(super) fn chord_held_now() -> (bool, bool) {
-    let down = |vk: u32| unsafe { GetAsyncKeyState(vk as i32) } < 0;
+    let down = |vk: u32| crate::ffi::async_key_down(vk);
     aggregate_chord_keys(
         down(VK_LWIN),
         down(VK_RWIN),
@@ -73,10 +74,6 @@ pub(super) fn chord_held_now() -> (bool, bool) {
     )
 }
 
-/// `WM_NCHITTEST` timeout for one move/size classification: bounded like the
-/// minimum-hint query, fail-closed to `Unknown` on timeout or failure.
-const HITTEST_TIMEOUT_MS: u32 = 10;
-
 /// Classify one open move/size gesture at START via the official
 /// `WM_NCHITTEST` result at the current cursor position. `EVENT_SYSTEM_MOVESIZESTART`
 /// does not distinguish move from resize; asking the window itself (through
@@ -85,46 +82,20 @@ const HITTEST_TIMEOUT_MS: u32 = 10;
 /// deferred rect comparison (which cannot show a stationary start). Hung or
 /// unreadable windows classify `Unknown` and never trigger.
 pub(super) fn classify_move_size_start(hwnd_u64: u64) -> MoveSizeKind {
-    let hwnd = hwnd_u64 as isize as HWND;
-    let mut cursor: POINT = unsafe { std::mem::zeroed() };
-    if unsafe { GetCursorPos(&mut cursor) } == 0 {
+    let Some((cx, cy)) = crate::ffi::cursor_pos() else {
         return MoveSizeKind::Unknown;
-    }
-    // MAKELPARAM packing: low word x, high word y (truncation is the packing).
-    let lparam = ((cursor.y as u32) << 16) | (cursor.x as u32 & 0xFFFF);
-    let mut result: usize = 0;
-    let sent = unsafe {
-        SetLastError(0);
-        SendMessageTimeoutW(
-            hwnd,
-            WM_NCHITTEST,
-            0,
-            lparam as usize as LPARAM,
-            SMTO_ABORTIFHUNG,
-            HITTEST_TIMEOUT_MS,
-            &mut result,
-        )
     };
-    if sent == 0 {
+    let Some(hit) = crate::ffi::hit_test_at(hwnd_u64, cx, cy) else {
         return MoveSizeKind::Unknown;
-    }
-    classify_hit_test(result as u32)
+    };
+    classify_hit_test(hit)
 }
 
 /// Fresh outer rectangle for one HWND via a single `GetWindowRect` read.
 /// START-time fallback only, when `stable` has no pre-gesture entry. `None`
 /// on failure: the caller treats the gesture as no-start.
 pub(super) fn live_outer_rect(hwnd_u64: u64) -> Option<Rect> {
-    let hwnd = hwnd_u64 as isize as HWND;
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
-        return None;
-    }
+    let rect = crate::ffi::window_rect(hwnd_u64)?;
     let w = rect.right.saturating_sub(rect.left);
     let h = rect.bottom.saturating_sub(rect.top);
     if w <= 0 || h <= 0 {
@@ -144,29 +115,16 @@ pub(super) fn live_outer_rect(hwnd_u64: u64) -> Option<Rect> {
 /// Engine member (minimized/hidden/cloaked between reconciles) never wins
 /// the lowest-in-z anchor.
 fn underlay_anchor_renderable(hwnd_u64: u64) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
-    if unsafe { IsWindowVisible(hwnd) } == 0 {
+    if !crate::ffi::is_visible(hwnd_u64) {
         return false;
     }
-    if unsafe { IsIconic(hwnd) } != 0 {
+    if crate::ffi::is_iconic(hwnd_u64) {
         return false;
     }
-    let mut cloaked: i32 = 0;
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked as *mut i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        )
-    } != 0
-    {
-        return false;
-    }
-    cloaked == 0
+    crate::ffi::cloaked(hwnd_u64).is_some_and(|cloaked| !cloaked)
 }
 
 /// Map one Engine `no-group` reason to the closed underlay hide vocabulary.
@@ -216,7 +174,7 @@ pub(super) fn refresh_group_underlay(
     }
     let (win_held, shift_held) = chord_held_now();
     let chord = tiler_core::visual::group_underlay_chord_held(win_held, shift_held);
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         hide_underlay(state, "no-target");
         return;
@@ -411,7 +369,7 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "no-group");
         return;
     }
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    let dpi = crate::ffi::dpi_for_window(foreground);
     let Some((width_px, gap_px, _)) = scale_style(&state.border.style, dpi) else {
         hide_underlay(state, "dpi-scale");
         return;
@@ -472,8 +430,7 @@ pub(super) fn refresh_group_underlay(
         hide_underlay(state, "anchor-missing");
         return;
     };
-    let topmost =
-        unsafe { GetWindowLongW(anchor as isize as HWND, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0;
+    let topmost = crate::ffi::window_exstyle(anchor) & WS_EX_TOPMOST != 0;
     let color = (
         state.underlay.style.alpha,
         state.underlay.style.color.0,

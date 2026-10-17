@@ -2,7 +2,8 @@
 
 - Researched 2026-10-16, revised same day. User decision 2026-10-17: option A
   (one minimal safe FFI module on `windows-sys`; keep the module minimal).
-  Route chosen; implementation queued, not started.
+  Route delivered offline 2026-10-17; see the
+  [implementation evidence](../../changes/archive/windows-unsafe-ffi-consolidation.md).
 - Backlog: [13g](../../backlog.md). Principle: [Unsafe Code](../../principles.md#unsafe-code).
   Guardrail: [Rust unsafe guardrail](../../decisions.md#rust-unsafe-guardrail).
 - Snapshot: local source at `aa76633` (2026-10-16); upstream data as served
@@ -160,7 +161,7 @@ internally). No benchmarks run; no build/runtime numbers claimed.
   allocation-free and retain existing safe input/render handoffs; measure
   any changed hot path. No performance measurements were made.
 
-## 6. Recommendation (selected User 2026-10-17: option A; implementation queued, not started)
+## 6. Recommendation (selected User 2026-10-17: option A; delivered offline)
 
 - A (recommended): one boundary module atop `windows-sys`. Lowest churn,
   keeps the Microsoft binding; no verified complete safe replacement in
@@ -170,7 +171,11 @@ internally). No benchmarks run; no build/runtime numbers claimed.
 - C: `winsafe` where covered + raw fallback. Splits idioms, keeps
   concentrated-maintenance dependency for partial gain. Not recommended.
 
-## 7. Follow-through (pending implementation)
+## 7. Follow-through (research-time checklist)
+
+- Delivered 2026-10-17; the checklist below preserves the research-time plan,
+  not the current implementation inventory. The implementation record above
+  lists the final boundary allowlist, lint topology, and verification evidence.
 
 - Root `[workspace.lints.rust] unsafe_code = "forbid"` (absent today).
   Normal crates use `[lints] workspace = true` (inherit forbid).

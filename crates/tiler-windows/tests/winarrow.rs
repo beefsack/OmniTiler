@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::winarrow::{
     Arrow, EVENT_QUEUE_CAP, Edge, EventQueue, HookClassify, QueuedChord, QueuedEvent, QueuedMask,
     VK_CONTROL, VK_DOWN, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MASK, VK_MENU,

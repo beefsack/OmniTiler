@@ -41,6 +41,8 @@ jobs:
         run: nix profile add github:cachix/devenv/v2.4.0
       - name: Rust workspace tests
         run: devenv shell --impure -- cargo test --workspace
+      - name: Unsafe allowlist gate
+        run: devenv shell --impure -- cargo test --locked -p tiler-core --test unsafe_guardrail
       - name: Rust format
         run: devenv shell --impure -- cargo fmt --all -- --check
       - name: Rust strict Clippy
@@ -156,6 +158,8 @@ jobs:
         run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos
       - name: Test portable crates
         run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-windows -p tiler-macos
+      - name: Unsafe allowlist gate
+        run: mise exec -- cargo test --locked -p tiler-core --test unsafe_guardrail
       - name: Rust format
         run: mise exec -- cargo fmt --all -- --check
       - name: Rust strict Clippy
@@ -184,6 +188,8 @@ jobs:
         run: mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
       - name: Test macOS probe plus portable crates
         run: mise exec -- cargo test --locked -p tiler-core -p tiler-protocol -p tiler-kwin-effect-ffi -p tiler-macos
+      - name: Unsafe allowlist gate
+        run: mise exec -- cargo test --locked -p tiler-core --test unsafe_guardrail
       - name: Rust format
         run: mise exec -- cargo fmt --all -- --check
       - name: Rust strict Clippy

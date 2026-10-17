@@ -1,5 +1,6 @@
 //! Unit tests for the settings window helpers (choice staging, tooltip text,
 //! dialog fit). All portable logic; no window is created.
+#![forbid(unsafe_code)]
 
 use super::choice::{
     apply_born_maximized_selection, apply_fixed_size_selection, apply_migration_refill_selection,

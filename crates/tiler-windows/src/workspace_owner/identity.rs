@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Resolve which output a digit chord acts on: the cached active output when

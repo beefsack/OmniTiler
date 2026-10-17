@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Chord-time origin snapshot for one managed window: HWND plus the
@@ -255,7 +256,7 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
         hide_border(state, "disabled");
         return;
     }
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         hide_border(state, "no-target");
         return;
@@ -365,8 +366,8 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // Mirror the target's topmost band so a topmost active window stays
     // bordered; ordinary targets demote a previously topmost ring. Read-only
     // style query, never a foreign write.
-    let topmost = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST != 0;
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    let topmost = crate::ffi::window_exstyle(foreground) & WS_EX_TOPMOST != 0;
+    let dpi = crate::ffi::dpi_for_window(foreground);
     let Some((width_px, gap_px, radius_px)) = scale_style(&state.border.style, dpi) else {
         hide_border(state, "dpi-scale");
         return;

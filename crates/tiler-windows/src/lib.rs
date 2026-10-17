@@ -1,6 +1,10 @@
+#![deny(unsafe_code)]
+
 pub mod active_border;
 #[cfg(windows)]
 pub mod active_border_sys;
+#[cfg(windows)]
+pub mod ffi;
 pub mod gaming;
 pub mod gaming_settings;
 pub mod group_underlay;

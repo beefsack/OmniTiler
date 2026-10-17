@@ -706,11 +706,16 @@ decisions of 2026-09-24 are under
   underlay visual check before 0.1 ([options](changes/archive/kde-dogfood-underlay-options.md)).
 - P1 | Windows unsafe FFI consolidation | Required under user rule 2026-10-13:
   one tiny dedicated FFI module per crate, every other module/crate forbids
-  unsafe. Queue after current Windows release-gate work; timing tentative.
-  Preserve safe input/render handoffs. [Rule](decisions.md#rust-unsafe-guardrail).
+  unsafe. Delivered offline 2026-10-17; safe input/render handoffs preserved.
+  [Rule](decisions.md#rust-unsafe-guardrail).
   User 2026-10-17, item 13g option A: one minimal safe FFI module on
-  `windows-sys`; keep the module minimal. Route chosen, implementation queued,
-  not started. [Research](research/windows-port/safe-win32-wrappers.md).
+  `windows-sys`, implemented as responsibility-split `ffi/` with one unsafe
+  opt-in root. Zero unsafe blocks/functions/impls outside it; workspace lint
+  inheritance and the CI allowlist gate delivered (32/32 policy tests).
+  Windows build/test/fmt/strict-clippy pass: 2,572 passed, 0 failed, 1 ignored.
+  Other-platform CI and runtime smoke remain unverified here.
+  [Research](research/windows-port/safe-win32-wrappers.md),
+  [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
   files toward the [file size](principles.md#file-size) soft caps.
   Behavior-preserving moves between feature deliveries, with two verified

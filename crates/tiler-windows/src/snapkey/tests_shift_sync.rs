@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{KeyboardConfig, SnapOp, VK_LWIN};
 
 fn enabled() -> KeyboardConfig {

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     CallbackDiag, CallbackDiagBuf, CallbackReason, CallbackSource, ChordDisable, ChordRemap,
     KeyboardConfig, MarkedDiagBuf, MarkedKeyDiag, ModDiagBuf, QueuedMask, QueuedSnapEvent,
@@ -9,13 +10,7 @@ use crate::input_handoff::{
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Instant;
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::SystemInformation::GetTickCount;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
-    VK_MENU, VK_SHIFT,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 struct SnapHookState {
@@ -339,7 +334,7 @@ fn callback_origin(st: &SnapHookState) -> Option<SnapOrigin> {
     if !st.active {
         return None;
     }
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     st.origins.get(&foreground).cloned()
 }
 
@@ -348,16 +343,21 @@ fn callback_origin(st: &SnapHookState) -> Option<SnapOrigin> {
 /// hold with a consumed chord sends the E8 mask pair first (with no SNAP
 /// borrow held); the Win-up itself always passes through.
 ///
+/// Safe policy behind the ffi trampoline: the event arrives pre-copied
+/// with no raw pointer, and the verdict selects consume or pass-through.
+/// Injected-event filtering and the no-borrow-across-`SendInput`
+/// RefCell ordering are unchanged from the previous inline callback.
+///
 /// Proof-only diagnostics: accepted marked events (shortcut-proof only)
 /// record one bounded [`super::MarkedKeyDiag`] each, so live runs can
 /// distinguish actual callback modifier delivery from classifier state.
 /// Unmarked input is never recorded.
-unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code as u32 == HC_ACTION {
-        let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        let vk = kb.vkCode;
-        let scan = kb.scanCode;
-        let flags = kb.flags;
+fn handle_key_event(ev: crate::ffi::KeyEvent) -> crate::ffi::HookVerdict {
+    use crate::ffi::HookVerdict;
+    {
+        let vk = ev.vk;
+        let scan = ev.scan;
+        let flags = ev.flags;
         // Trace-only collection switch: one cheap flag read per event.
         // With no trace the hook skips the timing read and all callback
         // filter/push work below (proof `diag`/`mod_diag` are separate
@@ -373,7 +373,7 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
         // callback entry, tick-count domain. No timing work unless
         // tracing.
         if diag_on {
-            let gap = unsafe { GetTickCount() }.saturating_sub(kb.time);
+            let gap = crate::ffi::tick_count().saturating_sub(ev.time);
             crate::input_handoff::record_delivery_gap_ms(gap);
         }
         let injected = flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED) != 0;
@@ -385,7 +385,7 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
         // Accepted marked events fall through as physical; everything
         // else passes through untouched.
         if injected {
-            let extra = kb.dwExtraInfo as u64;
+            let extra = ev.extra;
             let accepted = SNAP.with(|s| {
                 s.borrow()
                     .as_ref()
@@ -492,7 +492,7 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
                     crate::input_handoff::global_windrag_esc_edge()
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
-                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+                return HookVerdict::Pass;
             }
         }
         // Reaching here with `injected` true means the fixed proof marker
@@ -648,7 +648,7 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
                     }
                 });
             }
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            return HookVerdict::Pass;
         }
         // Modifiers may already be held when the hook starts, or arrive
         // injected past the callback guard: when the physical async state
@@ -671,7 +671,7 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
             let mut guard_disagree = false;
             if !is_up && super::is_chord_vk(vk) {
                 let (ctrl, alt, shift) = st.machine.tracked_modifiers();
-                let async_down = |key: i32| unsafe { GetAsyncKeyState(key) } < 0;
+                let async_down = |key: i32| crate::ffi::async_key_down(key as u32);
                 let async_ctrl = async_down(VK_CONTROL as i32);
                 let async_alt = async_down(VK_MENU as i32);
                 async_shift = async_down(VK_SHIFT as i32);
@@ -868,57 +868,18 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
             out
         });
         if consume == Some(true) {
-            return 1;
+            return HookVerdict::Consume;
         }
     }
-    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
-}
-
-struct MaskSend {
-    inserted: u8,
-    release_sent: bool,
+    HookVerdict::Pass
 }
 
 /// Sends the E8 down/up pair. Must be called with no SNAP borrow held
-/// (see llproc). Returns the accepted-event count plus whether the bounded
-/// partial-release ran. Accepted exception to the no-native-I/O callback
-/// rule: the pair must ride the same Win hold at Win-up time.
-fn send_mask_pair() -> MaskSend {
-    unsafe {
-        let mut pair: [INPUT; 2] = std::mem::zeroed();
-        pair[0].r#type = INPUT_KEYBOARD;
-        pair[0].Anonymous.ki = KEYBDINPUT {
-            wVk: super::VK_MASK as u16,
-            wScan: 0,
-            dwFlags: 0,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        pair[1].r#type = INPUT_KEYBOARD;
-        pair[1].Anonymous.ki = KEYBDINPUT {
-            wVk: super::VK_MASK as u16,
-            wScan: 0,
-            dwFlags: KEYEVENTF_KEYUP,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        let size = std::mem::size_of::<INPUT>() as i32;
-        let inserted = SendInput(2, pair.as_ptr(), size);
-        if inserted == 1 {
-            // Partial pair: the E8 down reached the system without its
-            // up. One bounded E8-up release, nothing else repaired.
-            let release = SendInput(1, pair.as_ptr().add(1), size);
-            MaskSend {
-                inserted: 1,
-                release_sent: release == 1,
-            }
-        } else {
-            MaskSend {
-                inserted: inserted as u8,
-                release_sent: false,
-            }
-        }
-    }
+/// (see `handle_key_event`). Returns the accepted-event count plus whether
+/// the bounded partial-release ran. Accepted exception to the no-native-I/O
+/// callback rule: the pair must ride the same Win hold at Win-up time.
+fn send_mask_pair() -> crate::ffi::KeyPairSend {
+    crate::ffi::send_key_pair(super::VK_MASK as u16)
 }
 
 /// Mask evidence line for the owner log: arming chord plus SendInput
@@ -995,7 +956,7 @@ pub fn mask_evidence(mask: &QueuedMask) -> serde_json::Value {
 /// Install the low-level hook on the calling thread. The caller must pump
 /// messages so the callback runs. Fails closed: install failure is an
 /// error, never a silent run without the visible takeover.
-pub fn install(config: KeyboardConfig) -> std::result::Result<HHOOK, String> {
+pub fn install(config: KeyboardConfig) -> std::result::Result<crate::ffi::SnapKeyHook, String> {
     SNAP.with(|s| {
         *s.borrow_mut() = Some(SnapHookState {
             machine: SnapClassify::new(config),
@@ -1015,13 +976,15 @@ pub fn install(config: KeyboardConfig) -> std::result::Result<HHOOK, String> {
             windrag_esc_seq: 0,
         });
     });
-    let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(llproc), hmod, 0) };
-    if hook.is_null() {
-        SNAP.with(|s| *s.borrow_mut() = None);
-        return Err("error: SetWindowsHookExW(WH_KEYBOARD_LL) failed".to_owned());
+    crate::ffi::set_snapkey_sink(handle_key_event);
+    match crate::ffi::install_snapkey_hook() {
+        Some(hook) => Ok(hook),
+        None => {
+            crate::ffi::clear_snapkey_sink();
+            SNAP.with(|s| *s.borrow_mut() = None);
+            Err("error: SetWindowsHookExW(WH_KEYBOARD_LL) failed".to_owned())
+        }
     }
-    Ok(hook)
 }
 
 /// Test-only install for `shortcut-proof`: identical callback, dispatcher,
@@ -1029,7 +992,9 @@ pub fn install(config: KeyboardConfig) -> std::result::Result<HHOOK, String> {
 /// [`super::SHORTCUT_PROOF_MARKER`] in `dwExtraInfo` classifies as
 /// physical (still origin-gated by the owner recheck). All other injected
 /// input passes through. Never used by product `tile`.
-pub fn install_proof(config: KeyboardConfig) -> std::result::Result<HHOOK, String> {
+pub fn install_proof(
+    config: KeyboardConfig,
+) -> std::result::Result<crate::ffi::SnapKeyHook, String> {
     SNAP.with(|s| {
         *s.borrow_mut() = Some(SnapHookState {
             machine: SnapClassify::new(config),
@@ -1049,13 +1014,15 @@ pub fn install_proof(config: KeyboardConfig) -> std::result::Result<HHOOK, Strin
             windrag_esc_seq: 0,
         });
     });
-    let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(llproc), hmod, 0) };
-    if hook.is_null() {
-        SNAP.with(|s| *s.borrow_mut() = None);
-        return Err("error: SetWindowsHookExW(WH_KEYBOARD_LL) failed".to_owned());
+    crate::ffi::set_snapkey_sink(handle_key_event);
+    match crate::ffi::install_snapkey_hook() {
+        Some(hook) => Ok(hook),
+        None => {
+            crate::ffi::clear_snapkey_sink();
+            SNAP.with(|s| *s.borrow_mut() = None);
+            Err("error: SetWindowsHookExW(WH_KEYBOARD_LL) failed".to_owned())
+        }
     }
-    Ok(hook)
 }
 
 /// Owner drain: take all pending proof-only callback diagnostics, oldest
@@ -1163,12 +1130,11 @@ pub fn mask_send_stats() -> (u32, u32) {
 /// can leak through as a passed-through click. The Win-up itself always
 /// passed through, so no stuck keys are possible; a partial E8 pair
 /// resolves to one bounded release attempt at send time.
-pub fn uninstall(hook: &mut HHOOK) -> bool {
-    let ok = unsafe { UnhookWindowsHookEx(*hook) } != 0;
-    if !ok {
+pub fn uninstall(hook: &mut crate::ffi::SnapKeyHook) -> bool {
+    if !crate::ffi::uninstall_snapkey_hook(hook) {
         return false;
     }
-    *hook = std::ptr::null_mut();
+    crate::ffi::clear_snapkey_sink();
     SNAP.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
             st.machine.set_enabled(false);
@@ -1222,9 +1188,12 @@ pub fn take_pump_esc_edges() -> (bool, bool) {
 }
 /// Test-only hook-state installer (no `SetWindowsHookExW`, no native
 /// effects): mirrors [`install`](Self::install)'s TLS init so step tests
-/// drive the production apply/drain logic without hooks.
+/// drive the production apply/drain logic without hooks. Also registers
+/// the production policy with the ffi trampoline so
+/// [`test_drive_llproc`] drives the real callback path.
 #[cfg(test)]
 pub fn test_ensure_state(config: KeyboardConfig) {
+    crate::ffi::set_snapkey_sink(handle_key_event);
     SNAP.with(|s| {
         *s.borrow_mut() = Some(SnapHookState {
             machine: SnapClassify::new(config),
@@ -1249,6 +1218,7 @@ pub fn test_ensure_state(config: KeyboardConfig) {
 /// Test-only state teardown (no native calls).
 #[cfg(test)]
 pub fn test_clear_state() {
+    crate::ffi::clear_snapkey_sink();
     SNAP.with(|s| *s.borrow_mut() = None);
 }
 
@@ -1264,34 +1234,21 @@ pub fn test_push_queued(event: QueuedSnapEvent) -> bool {
     })
 }
 
-/// Test-only synthetic `llproc` drive (no hooks, no `SendInput`): feeds
-/// one fabricated low-level event through the real callback. Safe
-/// inputs only: injected-filtered traffic, Esc downs, and ordinary
-/// physical keys. Never drive a Win-up that could reserve the mask
-/// (that path performs a real `SendInput`).
-///
-/// # Safety
-///
-/// Test-only: the fabricated `KBDLLHOOKSTRUCT` lives on the stack for
-/// the synchronous call; the callback only reads it and passes it to
-/// `CallNextHookEx` (no hook installed, no effects). Callers must not
-/// drive inputs that trigger `SendInput` (see above).
+/// Test-only production-callback drive (no hooks, no `SendInput`): feeds
+/// one fabricated low-level event through the real trampoline plus the
+/// production policy. Safe scalar inputs only: injected-filtered traffic,
+/// Esc downs, and ordinary physical keys. Never drive a Win-up that could
+/// reserve the mask (that path performs a real `SendInput`). Up/Down
+/// outcomes are the production verdicts (`1` = consumed or swallowed,
+/// `CallNextHookEx` result = pass-through).
 #[cfg(test)]
-pub unsafe fn test_drive_llproc(
+pub fn test_drive_llproc(
     vk: u32,
     scan: u32,
     flags: u32,
     extra: u64,
 ) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT;
-    let kb = KBDLLHOOKSTRUCT {
-        vkCode: vk,
-        scanCode: scan,
-        flags,
-        time: 0,
-        dwExtraInfo: extra as usize,
-    };
-    unsafe { llproc(HC_ACTION as i32, 0, &kb as *const KBDLLHOOKSTRUCT as isize) }
+    crate::ffi::drive_snapkey(vk, scan, flags, extra)
 }
 
 #[cfg(test)]

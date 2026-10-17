@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_core::boundary::{CoreCommand, CoreReply};
 use tiler_core::directional::{Direction, WindowId};
 use tiler_core::engine::Engine;

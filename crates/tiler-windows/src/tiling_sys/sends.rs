@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Send the focused window to a same-output workspace, then follow or stay.

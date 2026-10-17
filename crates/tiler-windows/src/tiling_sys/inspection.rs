@@ -1,22 +1,14 @@
+#![forbid(unsafe_code)]
 use super::*;
-
-unsafe extern "system" fn child_proc(hwnd: HWND, state: LPARAM) -> i32 {
-    let out = unsafe { &mut *(state as *mut Vec<isize>) };
-    out.push(hwnd as isize);
-    1
-}
 
 /// Enumerate direct child windows of one parent. `None` on API failure.
 fn enumerate_child_windows(parent: HWND) -> Option<Vec<isize>> {
-    let mut out: Vec<isize> = Vec::new();
-    let ok = unsafe {
-        EnumChildWindows(
-            parent,
-            Some(child_proc),
-            &mut out as *mut Vec<isize> as LPARAM,
-        )
-    };
-    if ok == 0 { None } else { Some(out) }
+    crate::ffi::enumerate_child_windows(parent as usize as u64).map(|children| {
+        children
+            .into_iter()
+            .map(|hwnd| hwnd as usize as isize)
+            .collect()
+    })
 }
 
 /// Live executable paths of a top-level window's hosted children: direct
@@ -30,11 +22,7 @@ fn hosted_child_exes(parent: HWND, top_pid: u32) -> Vec<String> {
         return out;
     };
     for raw in children {
-        let hwnd = raw as HWND;
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-        }
+        let pid = crate::ffi::window_pid(raw as usize as u64);
         if pid == 0 || pid == top_pid {
             continue;
         }
@@ -97,10 +85,7 @@ pub fn cmd_children(options: &ChildrenOptions) -> Result<String> {
         let mut children = Vec::new();
         for raw in raw_children {
             let hwnd = raw as HWND;
-            let mut pid: u32 = 0;
-            unsafe {
-                GetWindowThreadProcessId(hwnd, &mut pid);
-            }
+            let pid = crate::ffi::window_pid(raw as usize as u64);
             let identity = (pid != 0)
                 .then(|| HeldProcess::open(pid).ok())
                 .flatten()
@@ -162,7 +147,7 @@ fn noframe_inspect_report(
     minimized: bool,
     hwnd: HWND,
 ) -> serde_json::Value {
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    let dpi = crate::ffi::dpi_for_window(hwnd as usize as u64);
     serde_json::json!({
         "hwnd": entry.hwnd,
         "pid": identity.pid,
@@ -198,15 +183,15 @@ pub fn cmd_inspect(options: &InspectOptions) -> Result<String> {
     let fulls = monitor_fulls(&areas);
     let allow = read_allowlist(&options.allowlist)?;
     let mut tokens = TokenMap::default();
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     let mut windows = Vec::new();
     for entry in &allow {
         let hwnd = entry.hwnd as isize as HWND;
         // Stateless identity/state first, independent of geometry.
         let ident = window_identity(hwnd, entry.hwnd, &me);
         let matched = ident.as_ref().is_some_and(|i| allow_match(entry, i));
-        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-        let minimized = unsafe { IsIconic(hwnd) } != 0;
+        let visible = crate::ffi::is_visible(entry.hwnd);
+        let minimized = crate::ffi::is_iconic(entry.hwnd);
         match inspect_stateless_verdict(matched, visible, minimized) {
             StatelessVerdict::Report {
                 identity_match,
@@ -236,7 +221,7 @@ pub fn cmd_inspect(options: &InspectOptions) -> Result<String> {
         match observe_window(hwnd, &me, &fulls, &mut tokens) {
             Ok(window) if allow_match(entry, &window.identity) => {
                 let outer = window.outer;
-                let dpi = unsafe { GetDpiForWindow(hwnd) };
+                let dpi = crate::ffi::dpi_for_window(window.hwnd);
                 let (eligible, skip) = match classify(&window.facts) {
                     Ok(()) => (true, None),
                     Err(reason) => (false, Some(reason.as_str().to_owned())),
@@ -295,27 +280,18 @@ pub fn cmd_inspect(options: &InspectOptions) -> Result<String> {
 /// target, ring uncovered) is the achievable correct placement. `(None, None)`
 /// when either endpoint is gone. No writes.
 fn overlay_z_relation(overlay_u64: u64) -> (Option<bool>, Option<bool>) {
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if overlay_u64 == 0 || foreground == 0 || overlay_u64 == foreground {
         return (None, None);
     }
-    if unsafe { IsWindow(foreground as isize as HWND) } == 0
-        || unsafe { IsWindow(overlay_u64 as isize as HWND) } == 0
-    {
+    if !crate::ffi::is_window(foreground) || !crate::ffi::is_window(overlay_u64) {
         return (None, None);
     }
     let order = {
-        unsafe extern "system" fn enum_proc(hwnd: HWND, state: LPARAM) -> i32 {
-            let out = unsafe { &mut *(state as *mut Vec<u64>) };
-            out.push(hwnd as usize as u64);
-            1
-        }
-        let mut out: Vec<u64> = Vec::new();
-        let ok = unsafe { EnumWindows(Some(enum_proc), &mut out as *mut Vec<u64> as LPARAM) };
-        if ok == 0 {
+        let Some(order) = crate::ffi::enumerate_windows() else {
             return (None, None);
-        }
-        out
+        };
+        order
     };
     let mut upper_idx: Option<usize> = None;
     let mut lower_idx: Option<usize> = None;
@@ -373,7 +349,6 @@ pub fn cmd_preview_inspect() -> Result<String> {
 
 /// Shared read-only carrier inspection for one owned overlay class.
 fn inspect_carrier(class: &str) -> Result<String> {
-    use windows_sys::Win32::Foundation::RECT;
     ensure_pm_v2()?;
     let me = medium_caller()?;
     let dir =
@@ -415,34 +390,28 @@ fn inspect_carrier(class: &str) -> Result<String> {
         if class_of(hwnd) != class {
             continue;
         }
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-        }
+        let pid = crate::ffi::window_pid(raw as usize as u64);
         if pid == 0 || pid != record.owner.pid {
             continue;
         }
-        let mut rect: RECT = unsafe { std::mem::zeroed() };
-        if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
-            continue;
-        }
-        let Some(rect) = rect_from_win(rect) else {
+        let Some(rect) = crate::ffi::window_rect(raw as usize as u64).and_then(rect_from_win)
+        else {
             continue;
         };
-        let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+        let exstyle = crate::ffi::window_exstyle(raw as usize as u64);
         let (above_fg, adjacent_fg) = overlay_z_relation(raw as usize as u64);
         overlays.push(serde_json::json!({
             "hwnd": raw as u64,
-            "visible": unsafe { IsWindowVisible(hwnd) } != 0,
+            "visible": crate::ffi::is_visible(raw as usize as u64),
             "rect": rect_array(&rect),
-            "dpi": unsafe { GetDpiForWindow(hwnd) },
+            "dpi": crate::ffi::dpi_for_window(raw as usize as u64),
             "exstyle": format!("{exstyle:08x}"),
             "topmost": exstyle & WS_EX_TOPMOST != 0,
             "above_foreground": above_fg,
             "adjacent_below_foreground": adjacent_fg,
         }));
     }
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     Ok(serde_json::json!({
         "present": !overlays.is_empty(),
         "overlays": overlays,

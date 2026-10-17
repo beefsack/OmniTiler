@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use crate::model::{LedgerError, RecoveryLedger, parse_ledger, validate_ledger};
 use std::fs::File;
 use std::io::Write;
@@ -44,24 +45,7 @@ impl From<std::io::Error> for StorageError {
 
 #[cfg(windows)]
 pub(crate) fn atomic_replace(from: &Path, to: &Path) -> Result<(), StorageError> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-    let from_w: Vec<u16> = from.as_os_str().encode_wide().chain([0]).collect();
-    let to_w: Vec<u16> = to.as_os_str().encode_wide().chain([0]).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            from_w.as_ptr(),
-            to_w.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        Err(StorageError::Io(std::io::Error::last_os_error()))
-    } else {
-        Ok(())
-    }
+    crate::ffi::move_file_replace(from, to).map_err(StorageError::Io)
 }
 
 #[cfg(not(windows))]
@@ -137,27 +121,19 @@ pub fn publish_no_overwrite(
     let tmp = write_tmp(dir, final_name, bytes, tmp_tag)?;
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
-        let from_w: Vec<u16> = tmp.as_os_str().encode_wide().chain([0]).collect();
-        let to_w: Vec<u16> = dir
-            .join(final_name)
-            .as_os_str()
-            .encode_wide()
-            .chain([0])
-            .collect();
         // No REPLACE_EXISTING: a present final fails here instead of being
         // overwritten, so the queued body is never torn or replaced.
-        let ok = unsafe { MoveFileExW(from_w.as_ptr(), to_w.as_ptr(), MOVEFILE_WRITE_THROUGH) };
-        if ok != 0 {
-            return Ok(());
+        match crate::ffi::move_file_no_replace(&tmp, &dir.join(final_name)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                if e.kind() == std::io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(183) {
+                    Err(PublishError::Pending)
+                } else {
+                    Err(PublishError::Io(e))
+                }
+            }
         }
-        let e = std::io::Error::last_os_error();
-        let _ = std::fs::remove_file(&tmp);
-        if e.kind() == std::io::ErrorKind::AlreadyExists || e.raw_os_error() == Some(183) {
-            return Err(PublishError::Pending);
-        }
-        Err(PublishError::Io(e))
     }
     #[cfg(not(windows))]
     {
@@ -197,30 +173,13 @@ pub fn publish_replace(
     let tmp = write_tmp(dir, final_name, bytes, tmp_tag)?;
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        };
-        let from_w: Vec<u16> = tmp.as_os_str().encode_wide().chain([0]).collect();
-        let to_w: Vec<u16> = dir
-            .join(final_name)
-            .as_os_str()
-            .encode_wide()
-            .chain([0])
-            .collect();
-        let ok = unsafe {
-            MoveFileExW(
-                from_w.as_ptr(),
-                to_w.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if ok != 0 {
-            return Ok(());
+        match crate::ffi::move_file_replace(&tmp, &dir.join(final_name)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(PublishError::Io(e))
+            }
         }
-        let e = std::io::Error::last_os_error();
-        let _ = std::fs::remove_file(&tmp);
-        Err(PublishError::Io(e))
     }
     #[cfg(not(windows))]
     {

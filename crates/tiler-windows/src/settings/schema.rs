@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use tiler_core::settings_catalog as catalog;
 use tiler_core::{born_maximized::BornMaximized, directional::SameAxisMove};

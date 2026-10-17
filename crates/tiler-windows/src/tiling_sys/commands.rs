@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// `tile` command: normal user tiling only (explicit `--user-start`).
@@ -406,11 +407,7 @@ pub fn cmd_capture(options: &CaptureOptions) -> Result<String> {
     // Fresh per-HWND pid guard immediately before the write: a recycled
     // HWND between observation and receipt refuses the whole capture.
     for (hwnd_u64, pid) in &guarded {
-        let hwnd = *hwnd_u64 as isize as HWND;
-        let mut current: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut current);
-        }
+        let current = crate::ffi::window_pid(*hwnd_u64);
         if current == 0 || current != *pid {
             return Err(err("refuse: capture target identity changed"));
         }
@@ -434,14 +431,12 @@ pub fn cmd_inventory() -> Result<String> {
     };
     let mut entries = Vec::new();
     for raw in hwnds {
+        let hwnd_u64 = raw as usize as u64;
         let hwnd = raw as HWND;
-        if unsafe { IsWindowVisible(hwnd) } == 0 {
+        if !crate::ffi::is_visible(hwnd_u64) {
             continue;
         }
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-        }
+        let pid = crate::ffi::window_pid(hwnd_u64);
         if pid == 0 {
             continue;
         }
@@ -457,8 +452,8 @@ pub fn cmd_inventory() -> Result<String> {
                     .to_owned()
             })
             .unwrap_or_else(|| "unknown".to_owned());
-        let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-        let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+        let style = crate::ffi::window_style(hwnd_u64);
+        let exstyle = crate::ffi::window_exstyle(hwnd_u64);
         entries.push(serde_json::json!({
             "hwnd": raw as u64,
             "pid": pid,

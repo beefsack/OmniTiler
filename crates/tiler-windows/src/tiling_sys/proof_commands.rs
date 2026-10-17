@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// `tile-proof` command: owned-helpers-only proof loop. Requires a nonempty

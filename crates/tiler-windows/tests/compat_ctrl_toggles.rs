@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::settings::{
     BindingSetting, BindingState, Preset, Settings, apply_preset, binding_catalog, build_disabled,
     build_remap, compatible_disabled_ids, effective_bindings, parse_chord, render_chord,

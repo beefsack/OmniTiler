@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use std::collections::{HashMap, HashSet};
@@ -525,7 +526,7 @@ pub(super) fn dispatch_verified_select(
     // REQ-WS-09 departure memory, same as the tray path: the live
     // foreground resolves through the shared `snap_origins` map (never a
     // carried HWND).
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     if let Some(source_id) = state.workspaces.active_id(output)
         && let Some(origin) = state.snap_origins.get(&foreground_hwnd).cloned()
         && !origin.token.is_empty()

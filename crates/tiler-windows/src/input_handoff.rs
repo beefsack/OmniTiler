@@ -1356,7 +1356,7 @@ mod tests {
 
     #[test]
     fn policy_fence_refuses_fresh_but_keeps_held_pairs_and_mask() {
-        // Production fence helpers under test (the real `llproc` gates call
+        // Production fence helpers under test (the real policy gates call
         // these): fresh refuses fail-closed while pending, held pairs ride
         // stored verdicts, and the mask obligation survives. Generation
         // allocated above the live maxima under the serial guard, published

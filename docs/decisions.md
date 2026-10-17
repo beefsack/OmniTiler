@@ -549,26 +549,33 @@ platform API behavior.
   enforcement: workspace
   `[workspace.lints.rust] unsafe_code = "forbid"`; FFI crates override to
   `deny` and opt in with `#![allow(unsafe_code)]` only on the approved module;
-  CI rejects any other `allow(unsafe_code)`. `windows`/`windows-sys` choice
-  and verification that they keep Win32 calls `unsafe fn` are pending research
-  ([backlog](backlog.md)).
+  CI rejects any other `allow(unsafe_code)`. Delivered 2026-10-17: ordinary
+  crates inherit the workspace lint; the Windows, macOS, and KWin effect FFI
+  crates explicitly deny unsafe and allow only their reviewed boundary roots.
+  The portable `tiler-core` `unsafe_guardrail` integration test checks source
+  attributes and manifest inheritance in Linux, Windows, and macOS CI.
 - `tiler-core`, `tiler-protocol` and existing unsafe-free Windows modules
   already forbid unsafe. Linux planner (`crates/omnitiler`) delivered
   2026-10-13: tests use explicit trace values instead of process-env mutation;
   all planner roots forbid unsafe. The core/protocol test and example roots
-  now also forbid unsafe; no gaps remain outside the two FFI crates.
+  now also forbid unsafe; platform boundaries remain explicit exceptions.
   [Evidence](changes/archive/linux-planner-unsafe-guardrail.md).
-  Windows must consolidate FFI into dedicated modules after its current
-  release-gate work (timing tentative). KWin effect FFI remains a minimal
-  boundary module.
+  Existing KWin native ABI modules remain unchanged apart from lint attributes:
+  `drag_oracle.rs`, `group_highlight.rs`, and `visual.rs` are allowlisted
+  (the last exports edition-2024 `unsafe(no_mangle)` symbols).
 - User decision 2026-10-17, research item 13g option A: one minimal safe
   FFI module on `windows-sys`; keep the module minimal. Route chosen per
-  [research](research/windows-port/safe-win32-wrappers.md); implementation
-  queued, not started ([backlog](backlog.md)).
+  [research](research/windows-port/safe-win32-wrappers.md). Delivered offline
+  2026-10-17 as one `tiler-windows::ffi` directory module, split by native
+  responsibility to respect the file-size cap. Its root alone allows unsafe;
+  all other Windows modules forbid it (crate root denies). Safe APIs own
+  native buffers, callback state, and window/handle lifetimes. Existing macOS
+  `ffi.rs` remains allowlisted without implementation changes.
+  [Evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
 - Stage 2 cross-thread state uses safe standard primitives and owned handles;
   no unsafe Send/Sync, mutable statics, UnsafeCell or cross-thread pointer
-  dereferencing. Existing scattered Win32 FFI call sites are an implementation
-  gap under the new rule. [Delivery evidence](changes/archive/windows-render-thread.md).
+  dereferencing. These handoffs are preserved by the consolidation.
+  [Delivery evidence](changes/archive/windows-render-thread.md).
 
 ## Windows Multi-Output Foundation
 

@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use tiler_core::visual as core;
 
 #[repr(C)]

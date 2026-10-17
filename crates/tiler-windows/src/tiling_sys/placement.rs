@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 #[cfg(test)]
@@ -114,12 +115,11 @@ pub(super) fn live_placement_workspace_coords(hwnd_u64: u64) -> bool {
     }
     #[cfg(not(test))]
     {
-        let hwnd = hwnd_u64 as isize as HWND;
-        if unsafe { IsWindow(hwnd) } == 0 {
+        if !crate::ffi::is_window(hwnd_u64) {
             return true;
         }
-        let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
-        let top_level = unsafe { GetParent(hwnd) }.is_null();
+        let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+        let top_level = crate::ffi::parent_of(hwnd_u64) == 0;
         placement_is_workspace_coords(exstyle, top_level)
     }
 }
@@ -146,15 +146,7 @@ pub(super) fn fresh_arrival_placement(
     }
     #[cfg(not(test))]
     {
-        let hwnd_native = hwnd as isize as HWND;
-        if unsafe { IsWindow(hwnd_native) } == 0 {
-            return None;
-        }
-        let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-        if unsafe { GetWindowPlacement(hwnd_native, &mut placement) } == 0 {
-            return None;
-        }
+        let placement = crate::ffi::window_placement(hwnd)?;
         let w = placement
             .rcNormalPosition
             .right

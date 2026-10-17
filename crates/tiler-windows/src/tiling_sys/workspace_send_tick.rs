@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Drain one bounded batch of item 2 relative workspace-send intents.
@@ -133,7 +134,7 @@ pub(super) fn workspace_relative_send_tick(
             queued_at: intent.tick,
             start: dispatch_start,
         };
-        let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground_hwnd = crate::ffi::foreground_window();
         let origin = intent.origin.clone();
         match origin.filter(|o| o.hwnd == foreground_hwnd) {
             Some(o) if !o.token.is_empty() => {
@@ -337,7 +338,7 @@ pub(super) fn workspace_output_send_tick(
         ensure_workspace_assignments(state, me, &mut observed, &retained, areas);
         clear_maximize_at_admission(state, me, &retained);
         workspace_close_cleanup(state);
-        let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground_hwnd = crate::ffi::foreground_window();
         let origin = intent.origin.clone();
         let Some(o) = origin.filter(|o| o.hwnd == foreground_hwnd) else {
             log_json_at(

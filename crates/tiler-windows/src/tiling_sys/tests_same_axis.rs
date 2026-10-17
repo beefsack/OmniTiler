@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::same_axis_move_for;
 use crate::settings::{LiveSettings, SAME_AXIS_MOVE_SWAP, Settings};
 use tiler_core::directional::SameAxisMove;

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One effective (validated) binding: the persisted state plus the resolved

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Shared `ToggleFloat` candidate for one domain member: assemble rows and
@@ -211,22 +212,17 @@ pub(super) fn apply_float_from_tiled(
         .get(member_key)
         .copied()
         .unwrap_or(current_topmost);
-    let (anchor, flags) = if current_topmost {
-        (std::ptr::null_mut(), SWP_NOACTIVATE | SWP_NOZORDER)
-    } else {
-        (HWND_TOPMOST, SWP_NOACTIVATE)
-    };
-    let placed = unsafe {
-        SetWindowPos(
-            hwnd_u64 as isize as HWND,
-            anchor,
-            outer.x,
-            outer.y,
-            outer.w,
-            outer.h,
-            flags,
+    let (after, flags) = if current_topmost {
+        (
+            crate::ffi::PositionAfter::NoOrderChange,
+            SWP_NOACTIVATE | SWP_NOZORDER,
         )
+    } else {
+        (crate::ffi::PositionAfter::Topmost, SWP_NOACTIVATE)
     };
+    let placed = crate::ffi::set_window_pos_after(
+        hwnd_u64, after, outer.x, outer.y, outer.w, outer.h, flags,
+    );
     let _ = &placement.held;
     let pid_ok = pid_current(hwnd_u64, placement.window.identity.pid);
     if proof_mode {
@@ -250,12 +246,12 @@ pub(super) fn apply_float_from_tiled(
                     "tag": tag,
                 },
                 "flags": if current_topmost { "SWP_NOACTIVATE|SWP_NOZORDER" } else { "SWP_NOACTIVATE|TOPMOST" },
-                "outcome": if placed != 0 && pid_ok { "written" } else if placed == 0 { "setter-failed" } else { "pid-changed" },
+                "outcome": if placed && pid_ok { "written" } else if !placed { "setter-failed" } else { "pid-changed" },
             }),
         );
     }
-    if placed == 0 || !pid_ok {
-        let mut line = settle(if placed == 0 {
+    if !placed || !pid_ok {
+        let mut line = settle(if !placed {
             "setter-failed"
         } else {
             "pid-changed"
@@ -539,7 +535,7 @@ pub(super) fn clear_sticky_mark(
     log_path: &Path,
 ) -> bool {
     let Some(held) = hold_marker_target(state, me, member_key) else {
-        if unsafe { IsWindow(member_key.hwnd as isize as HWND) } == 0
+        if !crate::ffi::is_window(member_key.hwnd)
             || crate::product_hide::sys::read_sticky_marker(member_key.hwnd).is_none()
         {
             return true;
@@ -613,7 +609,7 @@ pub(super) fn clear_float_mark(
     log_path: &Path,
 ) -> bool {
     let Some(held) = hold_marker_target(state, me, member_key) else {
-        if unsafe { IsWindow(member_key.hwnd as isize as HWND) } == 0
+        if !crate::ffi::is_window(member_key.hwnd)
             || !crate::product_hide::sys::read_float_intent_marker(member_key.hwnd)
         {
             return true;
@@ -879,7 +875,7 @@ impl UnfloatClearEffects for NativeUnfloatClear {
     }
 
     fn foreground(&mut self) -> u64 {
-        (unsafe { GetForegroundWindow() }) as usize as u64
+        crate::ffi::foreground_window()
     }
 
     fn suspend_block(

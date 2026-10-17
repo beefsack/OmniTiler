@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// Parsed canonical chord: Win mandatory, optional Shift/Alt/Ctrl, one key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chord {

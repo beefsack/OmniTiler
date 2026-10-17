@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Scoped trailing creation/minimum/cleanup (item 12 stage B).
 //!
 //! One scope contract for every trailing producer (select, follow, stay,

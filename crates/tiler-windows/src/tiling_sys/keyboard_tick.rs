@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::keyboard_directional::dispatch_directional_intent;
 use super::keyboard_overlays::{dispatch_fullscreen_intent, dispatch_maximize_intent};
 use super::*;

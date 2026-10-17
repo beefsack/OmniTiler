@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One whole-workspace migration Engine row with live overlay/class flags.

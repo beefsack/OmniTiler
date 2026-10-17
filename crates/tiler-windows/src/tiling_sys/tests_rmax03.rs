@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     HintCx, RenderFrameHealth, RetainedRow, TileLoop, assemble_domain_rows, workspace_mode_known,
     writable_tokens,

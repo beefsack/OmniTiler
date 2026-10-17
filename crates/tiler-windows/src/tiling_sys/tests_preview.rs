@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     PreviewBound, PreviewFresh, PreviewGate, preview_hide_for_refusal, preview_sample_gate,
 };

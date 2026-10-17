@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 // Pending-drop owner-integration seams (test-only, offline, native-free).
@@ -424,7 +425,7 @@ pub(super) fn live_is_iconic(hwnd: u64) -> bool {
             return INJECTED_ICONIC.with(|slot| slot.borrow().contains(&hwnd));
         }
     }
-    unsafe { IsIconic(hwnd as isize as HWND) != 0 }
+    crate::ffi::is_iconic(hwnd)
 }
 
 /// Test-aware hidden-claim recovery read: injected verdicts stand in for the
@@ -475,21 +476,9 @@ pub(super) fn fresh_arrival_rect(hwnd: u64) -> Option<Rect> {
 /// failure (never the outer rect, never a fabricated value).
 #[cfg(not(test))]
 fn live_visible_rect(hwnd_u64: u64) -> Option<Rect> {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return None;
     }
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } != 0
-    {
-        return None;
-    }
+    let visible_raw = crate::ffi::extended_frame_bounds(hwnd_u64)?;
     rect_from_win(visible_raw)
 }

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Item 1 portable regression: settings catalog/presets, exact Ctrl/Tab
 //! classifier routing, and ManagedWorkspaces history/ring convergence.
 //!

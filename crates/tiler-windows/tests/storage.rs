@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use std::path::PathBuf;
 use tiler_windows::model::{
     LEDGER_SCHEMA_VERSION, ProcessIdentity, RecoveryLedger, WindowClaimKind, WindowIdentity,

@@ -6,14 +6,18 @@
 //! keyboard takeover off) show the honest cleared-state note from
 //! [`cleared_gaming_note`] instead of the actionable warning, mirroring the
 //! tray; active conflicts append the full Settings-only detail and actions.
+//!
+//! All listbox/text/enable effects delegate to
+//! [`crate::ffi::settings_controls`]; no Win32 lives here.
 
+#![forbid(unsafe_code)]
 use crate::gaming::{GameBarPackage, XboxConfig};
 use crate::gaming_settings::{
     cleared_gaming_note, gaming_detail_text, selected_gaming_conflict, visible_os_note,
 };
 use crate::settings::{BindingDef, BindingState, Settings, binding_catalog, effective_bindings};
 
-use super::ctl::{enable, get_text, set_text, wide};
+use super::ctl::{enable, get_text, set_text};
 use super::tabs;
 use super::{
     App, ID_BIND_CHORD, ID_BINDING_INFO, ID_BINDING_LIST, ID_GAMING_OPEN_APP,
@@ -78,31 +82,19 @@ pub(super) fn row_text(
 }
 
 pub(super) fn refresh_list(app: &App) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        LB_ADDSTRING, LB_RESETCONTENT, LB_SETCURSEL, SendMessageW,
-    };
+    use crate::ffi::settings_controls::{list_add, list_reset, list_set_sel};
     let list = app.ctl(ID_BINDING_LIST);
-    unsafe {
-        SendMessageW(list, LB_RESETCONTENT, 0, 0);
-    }
+    list_reset(list);
     let takeover = app.work.core.keyboard.takeover;
     let snapshot = app.gaming.snapshot();
     for def in binding_catalog() {
-        let text = wide(&row_text(
-            &def,
-            &app.work,
-            takeover,
-            snapshot.xbox,
-            snapshot.gamebar,
-        ));
-        unsafe {
-            SendMessageW(list, LB_ADDSTRING, 0, text.as_ptr() as isize);
-        }
+        list_add(
+            list,
+            &row_text(&def, &app.work, takeover, snapshot.xbox, snapshot.gamebar),
+        );
     }
     if let Some(index) = app.selected {
-        unsafe {
-            SendMessageW(list, LB_SETCURSEL, index, 0);
-        }
+        list_set_sel(list, index);
     }
     refresh_info(app);
 }

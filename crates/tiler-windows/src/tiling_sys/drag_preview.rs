@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Cross-output drop-preview refresh for one loop wake: the pointer left the

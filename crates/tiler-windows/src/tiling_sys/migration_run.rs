@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Single causal follow tail for committed workspace migrations (D6): follow
@@ -756,7 +757,7 @@ pub(super) fn run_workspace_migrate(
         #[cfg(test)]
         let present = state.member_tags.contains_key(key);
         #[cfg(not(test))]
-        let present = unsafe { IsWindow(key.hwnd as isize as HWND) } != 0;
+        let present = crate::ffi::is_window(key.hwnd);
         if !present {
             reconcile_tick(state, me, &fresh_fulls, &tail_areas);
             log_migrate("migrate-unverified", serde_json::json!({"window": token}));

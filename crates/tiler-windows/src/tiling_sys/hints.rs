@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Slow or hung managed windows supply unknown instead of blocking the loop.

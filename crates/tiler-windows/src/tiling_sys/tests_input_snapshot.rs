@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{SnapshotOffer, owner_snap_dropped, plan_snapshot_offer};
 use crate::input_handoff::{
     Inbox, InboxItem, InputSnapshot, SharedSnapshot, WindragOrigin, fence_base_generation,

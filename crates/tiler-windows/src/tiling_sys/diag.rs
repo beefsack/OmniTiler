@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Bounded normal-level per-window diagnostics for hint/geometry flaps.
@@ -585,11 +586,7 @@ fn class_fence_pid(hwnd: u64) -> u32 {
     if let Some(pid) = INJECTED_PID.with(|map| map.borrow().get(&hwnd).copied()) {
         return pid;
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd as isize as HWND, &mut pid);
-    }
-    pid
+    crate::ffi::window_pid(hwnd)
 }
 
 fn entry_json(state: &mut TileLoop, token: &str, sample: &WindowDiagSample) -> serde_json::Value {

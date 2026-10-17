@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use serde::Serialize;
 
 use crate::model::ProcessIdentity;
@@ -195,14 +196,20 @@ pub mod sys {
         HELPER_MAX_SECONDS, TEST_WINDOW_CLASS, TEST_WINDOW_H, TEST_WINDOW_PROP, TEST_WINDOW_W,
         TEST_WINDOW_X, TEST_WINDOW_Y, WindowSnapshot,
     };
+    use crate::ffi::{
+        FfiOwnedTestWindow, foreground_window, get_prop, is_iconic, is_visible, is_window,
+        owner_of, parent_of, post_close, set_prop, set_window_pos, show_window, try_class_name,
+        window_pid, window_rect,
+    };
     use crate::lifecycle::exe_paths_equal;
     use crate::model::ProcessIdentity;
     use crate::native::{
         HeldProcess, IdentityError, current_exe_path, current_identity, current_integrity_level,
     };
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SW_SHOWMINNOACTIVE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    };
 
     type SResult<T> = Result<T, super::SnapshotError>;
     fn absent(msg: impl Into<String>) -> super::SnapshotError {
@@ -210,10 +217,6 @@ pub mod sys {
     }
     fn failed(msg: impl Into<String>) -> super::SnapshotError {
         super::SnapshotError::Failed(msg.into())
-    }
-
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain([0]).collect()
     }
 
     pub fn sibling_helper_exe() -> SResult<String> {
@@ -235,35 +238,25 @@ pub mod sys {
         Ok(())
     }
 
-    fn class_of(hwnd: HWND) -> SResult<String> {
-        let mut buf = [0u16; 256];
-        let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
-        if n <= 0 {
-            return Err(absent("unknown class"));
-        }
-        Ok(String::from_utf16_lossy(&buf[..n as usize]))
+    fn class_of(hwnd: u64) -> SResult<String> {
+        try_class_name(hwnd).ok_or_else(|| absent("unknown class"))
     }
 
-    fn prop_tag(hwnd: HWND) -> SResult<String> {
-        let name = wide(super::TEST_WINDOW_PROP);
-        let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
-        if v.is_null() {
+    fn prop_tag(hwnd: u64) -> SResult<String> {
+        let Some(token) = get_prop(hwnd, TEST_WINDOW_PROP) else {
             return Err(absent("missing lifetime property"));
-        }
-        let token = v as usize as u64;
+        };
         if token == 0 {
             return Err(absent("zero lifetime property"));
         }
         Ok(format!("{token:016x}"))
     }
 
-    fn rect_of(hwnd: HWND) -> SResult<(i32, i32, i32, i32)> {
-        let mut r: RECT = unsafe { std::mem::zeroed() };
-        let ok = unsafe { GetWindowRect(hwnd, &mut r) };
-        if ok == 0 {
+    fn rect_of(hwnd: u64) -> SResult<(i32, i32, i32, i32)> {
+        let Some(raw) = window_rect(hwnd) else {
             return Err(failed("GetWindowRect failed"));
-        }
-        Ok((r.left, r.top, r.right, r.bottom))
+        };
+        Ok((raw.left, raw.top, raw.right, raw.bottom))
     }
 
     pub fn query_owned(
@@ -275,14 +268,10 @@ pub mod sys {
         if hwnd_u64 == 0 {
             return Err(absent("zero hwnd"));
         }
-        let hwnd = hwnd_u64 as isize as HWND;
-        if unsafe { IsWindow(hwnd) } == 0 {
+        if !is_window(hwnd_u64) {
             return Err(absent(format!("hwnd={hwnd_u64} absent")));
         }
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut pid);
-        }
+        let pid = window_pid(hwnd_u64);
         if pid == 0 {
             return Err(absent(format!("hwnd={hwnd_u64} no pid")));
         }
@@ -305,23 +294,23 @@ pub mod sys {
             return Err(absent("peer exe mismatch"));
         }
         medium_or_fail(pid, &held)?;
-        let class = class_of(hwnd)?;
-        if class != super::TEST_WINDOW_CLASS {
+        let class = class_of(hwnd_u64)?;
+        if class != TEST_WINDOW_CLASS {
             return Err(absent("class mismatch"));
         }
         // Owned-helper identity: no parent, no owner. The native topmost
         // band (WS_EX_TOPMOST) is approved mutable product state (keep-above
         // float/sticky) and never ownership: exe/class/PID/creation/SID/
         // session/medium/tag above already bind the owner.
-        if !unsafe { GetParent(hwnd) }.is_null() {
+        if parent_of(hwnd_u64) != 0 {
             return Err(absent("parented"));
         }
-        if !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+        if owner_of(hwnd_u64) != 0 {
             return Err(absent("owned window"));
         }
-        let tag = prop_tag(hwnd)?;
-        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-        let (left, top, right, bottom) = rect_of(hwnd)?;
+        let tag = prop_tag(hwnd_u64)?;
+        let visible = is_visible(hwnd_u64);
+        let (left, top, right, bottom) = rect_of(hwnd_u64)?;
         Ok(WindowSnapshot {
             hwnd: hwnd_u64,
             process: ident,
@@ -362,18 +351,15 @@ pub mod sys {
     }
 
     fn foreground_u64() -> u64 {
-        (unsafe { GetForegroundWindow() }) as usize as u64
+        foreground_window()
     }
 
-    fn iconic(hwnd: HWND) -> bool {
-        (unsafe { IsIconic(hwnd) }) != 0
+    fn iconic(hwnd: u64) -> bool {
+        is_iconic(hwnd)
     }
 
     fn pid_of(hwnd_u64: u64) -> Option<u32> {
-        let mut pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd_u64 as isize as HWND, &mut pid);
-        }
+        let pid = window_pid(hwnd_u64);
         (pid != 0).then_some(pid)
     }
 
@@ -424,23 +410,15 @@ pub mod sys {
     /// show without activation or z-order change, then a visibility
     /// readback. There is no hide operation.
     pub fn show_owned(hwnd_u64: u64, expected_tag: &str) -> SResult<String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-        };
         let (snap, held) = bound_target(hwnd_u64, expected_tag)?;
-        let hwnd = snap.hwnd as isize as HWND;
-        let ok = unsafe {
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER,
-            )
-        };
-        if ok == 0 {
+        if !set_window_pos(
+            snap.hwnd,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER,
+        ) {
             return Err(failed("SetWindowPos show failed"));
         }
         // Held liveness spans the write and the readback below.
@@ -462,12 +440,10 @@ pub mod sys {
     /// Minimize without activating: the foreground window must be untouched.
     pub fn minimize_owned(hwnd_u64: u64, expected_tag: &str) -> SResult<String> {
         let (snap, held) = bound_target(hwnd_u64, expected_tag)?;
-        unsafe {
-            ShowWindow(snap.hwnd as isize as HWND, SW_SHOWMINNOACTIVE);
-        }
+        show_window(snap.hwnd, SW_SHOWMINNOACTIVE);
         let _ = &held;
         let back = bound_readback(hwnd_u64, &snap)?;
-        if !iconic(back.hwnd as isize as HWND) {
+        if !iconic(back.hwnd) {
             return Err(failed("minimize readback not iconic"));
         }
         let foreground = foreground_u64();
@@ -483,12 +459,10 @@ pub mod sys {
     /// Restore a minimized helper without activating it.
     pub fn restore_owned(hwnd_u64: u64, expected_tag: &str) -> SResult<String> {
         let (snap, held) = bound_target(hwnd_u64, expected_tag)?;
-        unsafe {
-            ShowWindow(snap.hwnd as isize as HWND, SW_SHOWNOACTIVATE);
-        }
+        show_window(snap.hwnd, SW_SHOWNOACTIVATE);
         let _ = &held;
         let back = bound_readback(hwnd_u64, &snap)?;
-        if iconic(back.hwnd as isize as HWND) || !back.visible {
+        if iconic(back.hwnd) || !back.visible {
             return Err(failed("restore readback not restored"));
         }
         let foreground = foreground_u64();
@@ -505,21 +479,15 @@ pub mod sys {
     /// `SetWindowPos` with `SWP_NOACTIVATE | SWP_NOZORDER`, then a fresh
     /// geometry readback. Owned helper only; never a foreign window.
     pub fn move_owned(target: &super::MoveTarget) -> SResult<String> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOZORDER};
         let (snap, held) = bound_target(target.hwnd, &target.tag)?;
-        let hwnd = snap.hwnd as isize as HWND;
-        let ok = unsafe {
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                target.x,
-                target.y,
-                target.w,
-                target.h,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            )
-        };
-        if ok == 0 {
+        if !set_window_pos(
+            snap.hwnd,
+            target.x,
+            target.y,
+            target.w,
+            target.h,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        ) {
             return Err(failed("SetWindowPos move failed"));
         }
         let _ = &held;
@@ -562,8 +530,7 @@ pub mod sys {
         {
             return Err(absent("tag mismatch"));
         }
-        let ok = unsafe { PostMessageW(fresh.hwnd as isize as HWND, WM_CLOSE, 0, 0) };
-        if ok == 0 {
+        if !post_close(fresh.hwnd) {
             return Err(failed("PostMessage WM_CLOSE failed"));
         }
         Ok(serde_json::json!({"closed": fresh.hwnd, "tag": fresh.tag}).to_string())
@@ -573,44 +540,6 @@ pub mod sys {
         let me = current_identity().map_err(|e| failed(format!("identity {e}")))?;
         let snap = query_owned(hwnd_u64, &me.exe_path, &me.user_sid, me.session_id)?;
         serde_json::to_string(&snap).map_err(|e| failed(format!("json {e}")))
-    }
-
-    unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-        match msg {
-            WM_CLOSE | WM_TIMER => {
-                unsafe { DestroyWindow(hwnd) };
-                0
-            }
-            WM_DESTROY => {
-                unsafe { PostQuitMessage(0) };
-                0
-            }
-            _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
-        }
-    }
-
-    fn write_receipt_atomic(receipt: &std::path::Path, json: &str) -> SResult<()> {
-        let tmp = receipt.with_extension("json.tmp");
-        {
-            let mut opts = std::fs::OpenOptions::new();
-            opts.write(true).create_new(true);
-            let mut f = opts
-                .open(&tmp)
-                .map_err(|e| failed(format!("receipt open: {e}")))?;
-            use std::io::Write;
-            f.write_all(json.as_bytes())
-                .map_err(|e| failed(format!("receipt write: {e}")))?;
-            f.sync_all()
-                .map_err(|e| failed(format!("receipt sync: {e}")))?;
-        }
-        if receipt.exists() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(absent("receipt preexists"));
-        }
-        std::fs::rename(&tmp, receipt).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            failed(format!("receipt rename: {e}"))
-        })
     }
 
     pub fn run_owned_window(
@@ -638,98 +567,82 @@ pub mod sys {
             // The default spike path stays legacy unaware and unchanged.
             crate::tiling_sys::ensure_pm_v2().map_err(|e| failed(format!("dpi awareness {e}")))?;
         }
-        let class_w = wide(TEST_WINDOW_CLASS);
-        let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let mut cls: WNDCLASSW = unsafe { std::mem::zeroed() };
-        cls.lpfnWndProc = Some(wndproc);
-        cls.hInstance = hinst;
-        cls.lpszClassName = class_w.as_ptr();
-        let atom = unsafe { RegisterClassW(&cls) };
-        if atom == 0 {
-            return Err(failed("RegisterClass failed"));
-        }
+        let owned = FfiOwnedTestWindow::create(
+            "OmniTiler owned test",
+            TEST_WINDOW_X,
+            TEST_WINDOW_Y,
+            TEST_WINDOW_W,
+            TEST_WINDOW_H,
+            !passive,
+        )
+        .map_err(|e| failed(e.message()))?;
         // Nonzero opaque lifetime token, fresh each creation.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(1);
         let token = if nanos == 0 { 1 } else { nanos };
-        let title = wide("OmniTiler owned test");
-        let style = if passive {
-            WS_OVERLAPPEDWINDOW
-        } else {
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE
-        };
-        let hwnd = unsafe {
-            CreateWindowExW(
-                0,
-                class_w.as_ptr(),
-                title.as_ptr(),
-                style,
-                TEST_WINDOW_X,
-                TEST_WINDOW_Y,
-                TEST_WINDOW_W,
-                TEST_WINDOW_H,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                hinst,
-                std::ptr::null_mut(),
-            )
-        };
-        if hwnd.is_null() {
-            return Err(failed("CreateWindow failed"));
-        }
-        let kill = || unsafe { DestroyWindow(hwnd) };
-        let prop_w = wide(TEST_WINDOW_PROP);
-        let ok = unsafe { SetPropW(hwnd, prop_w.as_ptr(), token as usize as _) };
-        if ok == 0 {
-            kill();
+        if !set_prop(owned.hwnd(), TEST_WINDOW_PROP, token as usize) {
             return Err(failed("SetProp failed"));
         }
         if !passive {
-            unsafe {
-                ShowWindow(hwnd, SW_SHOWNORMAL);
-            }
+            show_window(owned.hwnd(), SW_SHOWNORMAL);
         }
         // Fresh readback for receipt bounds. Passive helpers stay hidden
-        // until an exact-bound `show` admission.
-        let hwnd_u64 = hwnd as usize as u64;
-        let snap =
-            query_owned(hwnd_u64, &me.exe_path, &me.user_sid, me.session_id).inspect_err(|_| {
-                kill();
-            })?;
+        // until an exact-bound `show` admission. The owned window destroys
+        // itself on drop, so every failure below tears it down.
+        let hwnd_u64 = owned.hwnd();
+        let snap = match query_owned(hwnd_u64, &me.exe_path, &me.user_sid, me.session_id) {
+            Ok(snap) => snap,
+            Err(e) => {
+                drop(owned);
+                return Err(e);
+            }
+        };
         if snap.visible == passive {
-            kill();
+            drop(owned);
             return Err(failed("window visibility mismatch after create"));
         }
-        let json = serde_json::to_string(&snap).map_err(|e| {
-            kill();
-            failed(format!("json {e}"))
-        })?;
-        write_receipt_atomic(receipt, &json).inspect_err(|_| {
-            kill();
-        })?;
-        let timer = unsafe { SetTimer(hwnd, 1, (seconds * 1000) as u32, None) };
-        if timer == 0 {
-            kill();
-            return Err(failed("SetTimer failed"));
+        let json = match serde_json::to_string(&snap) {
+            Ok(json) => json,
+            Err(e) => {
+                drop(owned);
+                return Err(failed(format!("json {e}")));
+            }
+        };
+        if let Err(e) = write_receipt_atomic(receipt, &json) {
+            drop(owned);
+            return Err(e);
         }
-        let mut msg: MSG = unsafe { std::mem::zeroed() };
-        loop {
-            let r = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
-            if r == 0 {
-                break;
-            }
-            if r == -1 {
-                kill();
-                return Err(failed("GetMessage failed"));
-            }
-            unsafe {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
+        if let Err(e) = owned.run_message_loop((seconds * 1000) as u32) {
+            drop(owned);
+            return Err(failed(e.message()));
         }
         Ok(json)
+    }
+
+    fn write_receipt_atomic(receipt: &std::path::Path, json: &str) -> SResult<()> {
+        let tmp = receipt.with_extension("json.tmp");
+        {
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            let mut f = opts
+                .open(&tmp)
+                .map_err(|e| failed(format!("receipt open: {e}")))?;
+            use std::io::Write;
+            f.write_all(json.as_bytes())
+                .map_err(|e| failed(format!("receipt write: {e}")))?;
+            f.sync_all()
+                .map_err(|e| failed(format!("receipt sync: {e}")))?;
+        }
+        if receipt.exists() {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(absent("receipt preexists"));
+        }
+        std::fs::rename(&tmp, receipt).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            failed(format!("receipt rename: {e}"))
+        })
     }
 }
 

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Product hiding and recovery: identity-safe `SW_HIDE` with nonactivating
 //! reveal, commit-before-hide, and a same-executable crash watcher.
 //!

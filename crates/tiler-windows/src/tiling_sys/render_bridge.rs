@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::render_ack::poll_render_carrier;

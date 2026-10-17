@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows-only bounded per-window diagnostics (`window-diag` normal event).
 //
 // Integration shape: every leg drives the production row assembly (real hint

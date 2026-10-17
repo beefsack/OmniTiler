@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Deterministic gaps (need a live desktop, verified later): the positive
 // press actuation itself, the suspend/elevation precheck, and the
 // already-foreground skip all read/actuate the real foreground.

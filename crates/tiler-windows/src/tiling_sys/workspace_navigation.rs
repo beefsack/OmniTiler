@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Drain one bounded batch of workspace digit intents. Select works on empty
@@ -167,7 +168,7 @@ pub(super) fn workspace_tick(
                         // REQ-WS-09 departure memory: the chord-time origin
                         // still holds live foreground, so the source
                         // remembers it before hiding.
-                        let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+                        let foreground_hwnd = crate::ffi::foreground_window();
                         if let Some(source_id) = state.workspaces.active_id(&output)
                             && let Some(origin) = intent.origin.as_ref()
                             && let Some(token) = remember_select_departure(
@@ -253,7 +254,7 @@ pub(super) fn workspace_tick(
                 }
             }
             WorkspaceOp::Send => {
-                let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+                let foreground_hwnd = crate::ffi::foreground_window();
                 let origin = intent.origin.clone();
                 match origin.filter(|o| o.hwnd == foreground_hwnd) {
                     Some(o) if !o.token.is_empty() => {

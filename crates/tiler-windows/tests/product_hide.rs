@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::model::{
     LEDGER_SCHEMA_VERSION, ProcessIdentity, ProductShowRestore, RecoveryLedger, WindowClaimKind,
     WindowIdentity, WindowShowState, generate_claim_tag, parse_ledger, product_show_restore,
@@ -347,70 +348,31 @@ fn project_topmost_gate_only_authenticates_raised_band() {
 
 #[cfg(windows)]
 mod native_topmost_hide {
+    use tiler_windows::ffi::FfiOwnedTestWindow;
     use tiler_windows::model::ProcessIdentity;
     use tiler_windows::product_hide::{project_topmost_hide_allowed, sys};
 
-    const TEST_CLASS: &str = "OmniTilerHideTopmostTest";
-
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain([0]).collect()
-    }
-
-    unsafe extern "system" fn wndproc(
-        hwnd: windows_sys::Win32::Foundation::HWND,
-        msg: u32,
-        wp: windows_sys::Win32::Foundation::WPARAM,
-        lp: windows_sys::Win32::Foundation::LPARAM,
-    ) -> windows_sys::Win32::Foundation::LRESULT {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wp, lp) }
-    }
-
     struct TestWindow {
-        hwnd: u64,
+        owned: FfiOwnedTestWindow,
     }
 
     impl TestWindow {
         fn create(topmost: bool) -> TestWindow {
-            use windows_sys::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS;
-            use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                CreateWindowExW, RegisterClassW, WNDCLASSW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
-            };
-            let class_w = wide(TEST_CLASS);
-            let title_w = wide("hide-topmost-test");
-            let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-            let mut cls: WNDCLASSW = unsafe { std::mem::zeroed() };
-            cls.lpfnWndProc = Some(wndproc);
-            cls.hInstance = hinst;
-            cls.lpszClassName = class_w.as_ptr();
-            let atom = unsafe { RegisterClassW(&cls) };
-            assert!(
-                atom != 0
-                    || unsafe { windows_sys::Win32::Foundation::GetLastError() }
-                        == ERROR_CLASS_ALREADY_EXISTS,
-                "test class registers"
-            );
-            let exstyle = if topmost { WS_EX_TOPMOST } else { 0 };
-            let hwnd = unsafe {
-                CreateWindowExW(
-                    exstyle,
-                    class_w.as_ptr(),
-                    title_w.as_ptr(),
-                    WS_OVERLAPPEDWINDOW,
-                    0,
-                    0,
-                    100,
-                    100,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    hinst,
-                    std::ptr::null(),
-                )
-            };
-            assert!(!hwnd.is_null(), "invisible own-process test window creates");
-            TestWindow {
-                hwnd: hwnd as usize as u64,
+            let owned = if topmost {
+                FfiOwnedTestWindow::create_topmost("hide-topmost-test", 0, 0, 100, 100)
+            } else {
+                FfiOwnedTestWindow::create("hide-topmost-test", 0, 0, 100, 100, false)
             }
+            .expect("invisible own-process test window creates");
+            assert!(
+                owned.hwnd() != 0,
+                "invisible own-process test window creates"
+            );
+            TestWindow { owned }
+        }
+
+        fn hwnd(&self) -> u64 {
+            self.owned.hwnd()
         }
 
         fn refusal_code(status: sys::CandidateStatus) -> Option<&'static str> {
@@ -420,16 +382,6 @@ mod native_topmost_hide {
                 | sys::CandidateStatus::Absent
                 | sys::CandidateStatus::Uncertain => None,
                 sys::CandidateStatus::Refused(code) => Some(code),
-            }
-        }
-    }
-
-    impl Drop for TestWindow {
-        fn drop(&mut self) {
-            use windows_sys::Win32::Foundation::HWND;
-            use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
-            unsafe {
-                let _ = DestroyWindow(self.hwnd as usize as HWND);
             }
         }
     }
@@ -470,15 +422,23 @@ mod native_topmost_hide {
             Some("integrity")
         };
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate(window.hwnd, &owner)),
+            TestWindow::refusal_code(sys::classify_candidate(window.hwnd(), &owner)),
             expected
         );
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, false)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                false
+            )),
             expected
         );
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, true)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                true
+            )),
             expected
         );
         assert!(!project_topmost_hide_allowed(None, false));
@@ -496,11 +456,15 @@ mod native_topmost_hide {
             Some("integrity")
         };
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate(window.hwnd, &owner)),
+            TestWindow::refusal_code(sys::classify_candidate(window.hwnd(), &owner)),
             expected
         );
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, false)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                false
+            )),
             expected
         );
         // Unknown history and preexisting prior never authenticate.
@@ -522,7 +486,11 @@ mod native_topmost_hide {
             Some("integrity")
         };
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, true)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                true
+            )),
             expected
         );
         assert!(project_topmost_hide_allowed(Some(false), true));
@@ -532,7 +500,7 @@ mod native_topmost_hide {
     fn marker_alone_never_authorizes_recycled_identity_refuses() {
         let window = TestWindow::create(true);
         let owner = fake_owner();
-        sys::install_float_intent_marker(window.hwnd).expect("float marker installs");
+        sys::install_float_intent_marker(window.hwnd()).expect("float marker installs");
         // A present float marker without the runtime flag still refuses
         // topmost: markers never authorize hiding. A recycled identity has no
         // exact runtime key (`None`), so it refuses the same way. Non-medium
@@ -548,20 +516,28 @@ mod native_topmost_hide {
             Some("integrity")
         };
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate(window.hwnd, &owner)),
+            TestWindow::refusal_code(sys::classify_candidate(window.hwnd(), &owner)),
             refused
         );
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, false)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                false
+            )),
             refused
         );
         assert!(!project_topmost_hide_allowed(None, true));
         // The authenticated flag still bypasses with the marker present,
         // proving the flag (not the marker) is the authority.
         assert_eq!(
-            TestWindow::refusal_code(sys::classify_candidate_for_hide(window.hwnd, &owner, true)),
+            TestWindow::refusal_code(sys::classify_candidate_for_hide(
+                window.hwnd(),
+                &owner,
+                true
+            )),
             bypassed
         );
-        let _ = sys::remove_float_intent_marker(window.hwnd);
+        let _ = sys::remove_float_intent_marker(window.hwnd());
     }
 }

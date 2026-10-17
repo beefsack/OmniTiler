@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{OwnerWorkGuard, hide_border, hide_underlay};
 use crate::input_health::Health;
 use std::time::{Duration, Instant};

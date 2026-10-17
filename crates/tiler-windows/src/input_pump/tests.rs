@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     FakeBackend, InboxSender, SAFETY_INVALIDATES_CAP, install_backoff_secs, snap_batch_age_us,
 };

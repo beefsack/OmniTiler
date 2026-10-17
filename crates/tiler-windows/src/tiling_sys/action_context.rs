@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Stable per-action context: one opaque correlation for the whole select /

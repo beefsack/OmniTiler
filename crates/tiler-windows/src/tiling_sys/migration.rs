@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Drain one bounded batch of item 14 whole-active-workspace migration intents

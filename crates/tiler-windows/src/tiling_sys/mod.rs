@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Native tiling-only runtime (`cfg(windows)` only).
 //!
 //! One product loop: PMv2 awareness verified first, full `EnumWindows`
@@ -23,39 +24,18 @@ use tiler_core::engine::Engine;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_core::size_hints::WindowSizeHints;
-use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, POINT, RECT, SetLastError};
-use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
-use windows_sys::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
-};
-use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-use windows_sys::Win32::UI::HiDpi::{
-    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
-    GetSystemMetricsForDpi, GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
-};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-};
-#[cfg(not(test))]
-use windows_sys::Win32::UI::WindowsAndMessaging::GetParent;
-use windows_sys::Win32::UI::WindowsAndMessaging::MsgWaitForMultipleObjectsEx;
+use windows_sys::Win32::Foundation::{HWND, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
-    EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, EnumChildWindows, EnumWindows, GW_OWNER,
-    GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetCursorPos, GetDesktopWindow, GetForegroundWindow,
-    GetPropW, GetShellWindow, GetSystemMetrics, GetWindow, GetWindowLongW, GetWindowPlacement,
-    GetWindowRect, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, IsWindow,
-    IsWindowVisible, IsZoomed, MINMAXINFO, MSG, PM_REMOVE, PeekMessageW, QS_ALLINPUT, RemovePropW,
-    SM_CXMAXTRACK, SM_CXMINTRACK, SM_CXSCREEN, SM_CYMAXTRACK, SM_CYMINTRACK, SM_CYSCREEN,
-    SMTO_ABORTIFHUNG, SW_MAXIMIZE, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageTimeoutW, SetForegroundWindow,
-    SetPropW, SetWindowLongW, SetWindowPlacement, SetWindowPos, ShowWindowAsync, TranslateMessage,
-    WINDOWPLACEMENT, WINEVENT_OUTOFCONTEXT, WM_GETMINMAXINFO, WM_NCHITTEST,
-    WPF_ASYNCWINDOWPLACEMENT, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_THICKFRAME,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MOVESIZEEND,
+    EVENT_SYSTEM_MOVESIZESTART, MINMAXINFO, SW_MAXIMIZE, SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, WPF_ASYNCWINDOWPLACEMENT, WS_CAPTION,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_THICKFRAME,
 };
+// `SWP_NOSIZE` is only read under `cfg(not(test))` (the output-migration
+// moves); a plain import would be unused when compiling the test target.
+#[cfg(not(test))]
+use windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE;
 
 use self::action_context::{ActionCtx, ActionLine, ActionTimings, SelectEffect, SendEffect};
 #[cfg(test)]
@@ -175,10 +155,10 @@ use self::observation::{cursor_pos, enumerate_hwnds};
 #[cfg(test)]
 use self::observe::WaitWake;
 use self::observe::{
-    HookEvent, InputWaitSplit, ObservedWindow, OwnerWaitCounts, RenderWaitSplit, class_of,
-    drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue, observe_window,
-    pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned, visibility_generation,
-    window_identity, winevent_proc,
+    HookEvent, InputWaitSplit, LoopEventSink, ObservedWindow, OwnerWaitCounts, RenderWaitSplit,
+    class_of, drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue,
+    observe_window, pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned,
+    visibility_generation, window_identity,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
 use self::output_send::{resolve_output_send_target, run_output_send};
@@ -266,10 +246,7 @@ use self::sends::workspace_do_send;
 #[cfg(test)]
 use self::settings::apply_live_settings;
 use self::settings::{TileRun, poll_live_settings, suspend_read};
-use self::shell::{
-    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, exe_file_name, is_border_shell_popup,
-    is_shell_class, rect_from_win,
-};
+use self::shell::{exe_file_name, is_border_shell_popup, is_shell_class, rect_from_win};
 use self::trace::{log_engine_placement_trace, log_json_at, log_mono_ms, refresh_border_timed};
 use self::visibility_batch::{
     HideAttempt, PhaseBreakdown, action_clock, hide_phase, log_visibility_timing, reveal_phase,

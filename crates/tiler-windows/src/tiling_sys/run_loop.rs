@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 pub(super) fn run_tile_loop(
@@ -376,58 +377,27 @@ pub(super) fn run_tile_loop(
     // transitions queue losslessly, object create/destroy/show/hide wakes,
     // and explicit location-change wakes (a range up to LOCATIONCHANGE would
     // also pull unrelated state-change noise, so it stays separate).
-    let hooks = unsafe {
-        [
-            SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_FOREGROUND,
-                std::ptr::null_mut(),
-                Some(winevent_proc),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            ),
-            SetWinEventHook(
-                EVENT_SYSTEM_MOVESIZESTART,
-                EVENT_SYSTEM_MOVESIZEEND,
-                std::ptr::null_mut(),
-                Some(winevent_proc),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            ),
-            SetWinEventHook(
-                EVENT_OBJECT_CREATE,
-                EVENT_OBJECT_SHOW
-                    .max(EVENT_OBJECT_DESTROY)
-                    .max(EVENT_OBJECT_HIDE),
-                std::ptr::null_mut(),
-                Some(winevent_proc),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            ),
-            SetWinEventHook(
-                EVENT_OBJECT_LOCATIONCHANGE,
-                EVENT_OBJECT_LOCATIONCHANGE,
-                std::ptr::null_mut(),
-                Some(winevent_proc),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            ),
-        ]
-    };
-    if hooks.iter().any(|hook| hook.is_null()) {
-        for hook in hooks {
-            if !hook.is_null() {
-                unsafe {
-                    UnhookWinEvent(hook);
-                }
-            }
-        }
+    // The `extern` trampoline lives in `crate::ffi`; the safe sink below
+    // carries the unchanged hook-queue policy. Guards unhook on drop, so a
+    // failed install cleans up simply by returning.
+    crate::ffi::set_win_event_sink(std::sync::Arc::new(LoopEventSink));
+    let hooks = [
+        (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+        (EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND),
+        (
+            EVENT_OBJECT_CREATE,
+            EVENT_OBJECT_SHOW
+                .max(EVENT_OBJECT_DESTROY)
+                .max(EVENT_OBJECT_HIDE),
+        ),
+        (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+    ]
+    .into_iter()
+    .map(|(min, max)| crate::ffi::install_win_event_hook(min, max))
+    .collect::<Option<Vec<_>>>();
+    let Some(hooks) = hooks else {
         return Err(err("error: SetWinEventHook failed"));
-    }
+    };
     // Owner-owned notification tray (normal owner only; proof owners stay
     // deterministic with no icon). Created after the hooks so no hook-failure
     // early return can leak it, and RAII `Drop` covers every later path.
@@ -763,24 +733,11 @@ pub(super) fn run_tile_loop(
     // owner teardown, and the handle must stay valid until the last clone
     // drops (never a use-after-close on a reused HANDLE value). Shutdown
     // also detaches the hint below.
-    let gaming_wake: Option<Arc<OwnedHandle>> = unsafe {
-        let raw = windows_sys::Win32::System::Threading::CreateEventW(
-            std::ptr::null(),
-            0,
-            0,
-            std::ptr::null(),
-        );
-        if raw.is_null() {
-            None
-        } else {
-            use std::os::windows::io::FromRawHandle as _;
-            Some(Arc::new(OwnedHandle::from_raw_handle(raw)))
-        }
-    };
+    let gaming_wake: Option<Arc<OwnedHandle>> = crate::ffi::create_auto_reset_event().map(Arc::new);
     if let (Some(monitor), Some(wake)) = (gaming.as_ref(), gaming_wake.as_ref()) {
         let owned = Arc::clone(wake);
-        monitor.set_completion_notify(Some(Arc::new(move || unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(owned.as_handle().as_raw_handle());
+        monitor.set_completion_notify(Some(Arc::new(move || {
+            crate::ffi::signal_event(&owned);
         })));
     } else if gaming.is_some() {
         log_json_at(
@@ -1175,11 +1132,7 @@ pub(super) fn run_tile_loop(
     for line in state.render_frames.take_end_of_run(Instant::now()) {
         log_json_at(&log_path, line);
     }
-    for hook in hooks {
-        unsafe {
-            UnhookWinEvent(hook);
-        }
-    }
+    drop(hooks);
     // Render admission closes first: invalidate every carrier epoch (a hide
     // on each carrier bumps the shared safety epoch and drops queued Shows)
     // and signal the renderer to stop, before the input stop wait. No stale

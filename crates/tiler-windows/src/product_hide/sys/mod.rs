@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     HIDE_TIMEOUT_MS, REVEAL_TIMEOUT_MS, STORE_ACQUIRE_TIMEOUT_MS, WATCHER_POLL_MS,
     WATCHER_READY_TIMEOUT_MS, parse_watcher_ready, render_watcher_ready, watcher_ready_filename,
@@ -39,47 +40,25 @@ fn store_err(e: crate::storage::StorageError) -> DynError {
     }
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
-}
-
-fn prop_name() -> Vec<u16> {
-    wide(PRODUCT_CLAIM_PROP)
-}
-
 /// Fresh read of the product nonce. `Ok(None)` means verifiably absent: a
 /// recycled HWND starts without it.
-fn get_nonce(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-) -> std::result::Result<Option<String>, String> {
+fn get_nonce(hwnd_u64: u64) -> std::result::Result<Option<String>, String> {
     #[cfg(test)]
     {
-        let key = hwnd as usize as u64;
-        if fake::active(key) {
-            return Ok(fake::with(key, |w| w.nonce.clone()).flatten());
+        if fake::active(hwnd_u64) {
+            return Ok(fake::with(hwnd_u64, |w| w.nonce.clone()).flatten());
         }
     }
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
-    let name = prop_name();
-    let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
-    if v.is_null() {
-        return Ok(None);
+    match crate::ffi::get_prop(hwnd_u64, PRODUCT_CLAIM_PROP) {
+        None => Ok(None),
+        Some(token) => {
+            let token = token as u64;
+            if token == 0 {
+                return Ok(None);
+            }
+            Ok(Some(format!("{token:016x}")))
+        }
     }
-    let token = v as usize as u64;
-    if token == 0 {
-        return Ok(None);
-    }
-    Ok(Some(format!("{token:016x}")))
-}
-
-fn class_of(hwnd: windows_sys::Win32::Foundation::HWND) -> String {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
-    let mut buf = [0u16; 256];
-    let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
-    if n <= 0 {
-        return String::new();
-    }
-    String::from_utf16_lossy(&buf[..n as usize])
 }
 
 #[derive(Debug, Clone)]
@@ -102,22 +81,16 @@ pub fn query_candidate(
     hwnd_u64: u64,
     owner: &ProcessIdentity,
 ) -> std::result::Result<ProductSnapshot, DynError> {
-    use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GW_OWNER, GWL_EXSTYLE, GetParent, GetWindow, GetWindowLongW, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
     if hwnd_u64 == 0 {
         return Err(err("refuse: zero hwnd"));
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Err(err("absent: hwnd destroyed"));
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(hwnd_u64);
     if pid == 0 {
         return Err(err("absent: hwnd no pid"));
     }
@@ -152,17 +125,17 @@ pub fn query_candidate(
     if !is_medium_rid(rid) {
         return Err(err(format!("refuse: target integrity {rid} is not medium")));
     }
-    let class = class_of(hwnd);
+    let class = crate::ffi::class_name(hwnd_u64);
     if super::shell_class_excluded(&class) {
         return Err(err("refuse: shell window"));
     }
-    if !unsafe { GetParent(hwnd) }.is_null() {
+    if crate::ffi::parent_of(hwnd_u64) != 0 {
         return Err(err("refuse: parented"));
     }
-    if !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+    if crate::ffi::owner_of(hwnd_u64) != 0 {
         return Err(err("refuse: owned dialog"));
     }
-    let ex = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let ex = crate::ffi::window_exstyle(hwnd_u64);
     if ex & WS_EX_TOOLWINDOW != 0 {
         return Err(err("refuse: tool window"));
     }
@@ -178,18 +151,17 @@ pub fn query_candidate(
         return Err(err("refuse: dialog"));
     }
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE, IsZoomed, WS_CAPTION};
-        if unsafe { IsZoomed(hwnd) } != 0 {
+        if crate::ffi::is_zoomed(hwnd_u64) {
             return Err(err("refuse: fullscreen"));
         }
-        let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+        let style = crate::ffi::window_style(hwnd_u64);
         if style & WS_CAPTION == 0 {
             return Err(err("refuse: borderless (possible fullscreen)"));
         }
     }
-    let nonce = get_nonce(hwnd).map_err(|e| err(format!("error: nonce read {e}")))?;
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-    let iconic = unsafe { IsIconic(hwnd) } != 0;
+    let nonce = get_nonce(hwnd_u64).map_err(|e| err(format!("error: nonce read {e}")))?;
+    let visible = crate::ffi::is_visible(hwnd_u64);
+    let iconic = crate::ffi::is_iconic(hwnd_u64);
     Ok(ProductSnapshot {
         hwnd: hwnd_u64,
         pid,
@@ -197,7 +169,7 @@ pub fn query_candidate(
         nonce,
         visible,
         iconic,
-        maximized: unsafe { IsZoomed(hwnd) } != 0,
+        maximized: crate::ffi::is_zoomed(hwnd_u64),
         class,
     })
 }
@@ -218,21 +190,13 @@ pub fn query_recovery(
             return fake::snapshot(hwnd_u64).ok_or_else(|| err("absent: hwnd destroyed"));
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        IsIconic, IsWindow, IsWindowVisible, IsZoomed,
-    };
     if hwnd_u64 == 0 {
         return Err(err("refuse: zero hwnd"));
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Err(err("absent: hwnd destroyed"));
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(hwnd_u64);
     if pid == 0 {
         return Err(err("absent: hwnd no pid"));
     }
@@ -256,9 +220,9 @@ pub fn query_recovery(
     if ident.user_sid != owner.user_sid || ident.session_id != owner.session_id {
         return Err(err("refuse: sid/session mismatch"));
     }
-    let nonce = get_nonce(hwnd).map_err(|e| err(format!("error: nonce read {e}")))?;
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-    let iconic = unsafe { IsIconic(hwnd) } != 0;
+    let nonce = get_nonce(hwnd_u64).map_err(|e| err(format!("error: nonce read {e}")))?;
+    let visible = crate::ffi::is_visible(hwnd_u64);
+    let iconic = crate::ffi::is_iconic(hwnd_u64);
     Ok(ProductSnapshot {
         hwnd: hwnd_u64,
         pid,
@@ -266,7 +230,7 @@ pub fn query_recovery(
         nonce,
         visible,
         iconic,
-        maximized: unsafe { IsZoomed(hwnd) } != 0,
+        maximized: crate::ffi::is_zoomed(hwnd_u64),
         class: String::new(),
     })
 }
@@ -275,8 +239,6 @@ pub fn query_recovery(
 /// back. Only call after [`query_candidate`] admitted the window; the
 /// caller commits the returned tag BEFORE hiding.
 pub fn install_nonce(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
     #[cfg(test)]
     {
         if fake::active(hwnd_u64) {
@@ -291,7 +253,6 @@ pub fn install_nonce(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
             return Err(err("error: SetProp failed"));
         }
     }
-    let hwnd = hwnd_u64 as isize as HWND;
     for _ in 0..4 {
         let tag = generate_claim_tag(owner_pid);
         debug_assert!(valid_claim_tag(&tag));
@@ -299,15 +260,13 @@ pub fn install_nonce(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
         if token == 0 {
             continue;
         }
-        let name = prop_name();
-        let ok = unsafe { SetPropW(hwnd, name.as_ptr(), token as usize as _) };
-        if ok == 0 {
+        if !crate::ffi::set_prop(hwnd_u64, PRODUCT_CLAIM_PROP, token as usize) {
             return Err(err("error: SetProp failed"));
         }
-        match get_nonce(hwnd).map_err(|e| err(format!("error: nonce readback {e}")))? {
+        match get_nonce(hwnd_u64).map_err(|e| err(format!("error: nonce readback {e}")))? {
             Some(back) if back == tag => return Ok(tag),
             _ => {
-                let _ = remove_nonce_inner(hwnd);
+                let _ = remove_nonce_inner(hwnd_u64);
                 return Err(err("error: nonce readback mismatch"));
             }
         }
@@ -315,15 +274,9 @@ pub fn install_nonce(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
     Err(err("error: nonce install failed"))
 }
 
-fn remove_nonce_inner(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::RemovePropW;
-    let name = prop_name();
-    !unsafe { RemovePropW(hwnd, name.as_ptr()) }.is_null()
-        || get_nonce(hwnd).ok().flatten().is_none()
-}
-
-fn member_prop_name() -> Vec<u16> {
-    wide(MEMBER_TAG_PROP)
+fn remove_nonce_inner(hwnd_u64: u64) -> bool {
+    let removed = crate::ffi::take_prop(hwnd_u64, PRODUCT_CLAIM_PROP).is_some();
+    removed || get_nonce(hwnd_u64).ok().flatten().is_none()
 }
 
 /// Fresh read of the visible-membership lifetime tag. `None` means
@@ -337,15 +290,7 @@ pub fn read_member_tag(hwnd_u64: u64) -> Option<String> {
             return fake::with(hwnd_u64, |w| w.member_tag.clone()).flatten();
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
-    let hwnd = hwnd_u64 as isize as HWND;
-    let name = member_prop_name();
-    let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
-    if v.is_null() {
-        return None;
-    }
-    let token = v as usize as u64;
+    let token = crate::ffi::get_prop(hwnd_u64, MEMBER_TAG_PROP)? as u64;
     if token == 0 {
         return None;
     }
@@ -367,9 +312,6 @@ pub fn read_member_tag(hwnd_u64: u64) -> Option<String> {
 /// appeared, and removing here could strip another owner's tag. Inert
 /// residue fails closed on its own.
 pub fn install_member_tag(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    let hwnd = hwnd_u64 as isize as HWND;
     for _ in 0..4 {
         let tag = generate_claim_tag(owner_pid);
         debug_assert!(valid_claim_tag(&tag));
@@ -379,9 +321,7 @@ pub fn install_member_tag(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
         if token == 0 {
             continue;
         }
-        let name = member_prop_name();
-        let ok = unsafe { SetPropW(hwnd, name.as_ptr(), token as usize as _) };
-        if ok == 0 {
+        if !crate::ffi::set_prop(hwnd_u64, MEMBER_TAG_PROP, token as usize) {
             return Err(err("error: SetProp failed"));
         }
         match read_member_tag(hwnd_u64) {
@@ -399,18 +339,6 @@ pub fn nonce_tag_matches(live: Option<&str>, expected: &str) -> bool {
     live.is_some_and(|tag| tag == expected)
 }
 
-fn sticky_prop_name() -> Vec<u16> {
-    wide(STICKY_PROP)
-}
-
-fn float_intent_prop_name() -> Vec<u16> {
-    wide(FLOAT_INTENT_PROP)
-}
-
-fn tile_override_prop_name() -> Vec<u16> {
-    wide(TILE_OVERRIDE_PROP)
-}
-
 /// One honest `GetPropW` read of our own property name. The `GetPropW`
 /// contract promises NULL when the list does not contain the string and
 /// promises no last-error distinction, so NULL reads as
@@ -419,20 +347,15 @@ fn tile_override_prop_name() -> Vec<u16> {
 /// never diagnose as [`MarkerSlot::Unreadable`]. A destroyed HWND reads
 /// absent (the marker dies with the window). Same convention as
 /// [`get_nonce`], [`read_member_tag`], and the helper lifetime read.
-fn read_prop_slot(hwnd_u64: u64, name: &[u16]) -> MarkerSlot {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetPropW, IsWindow};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+fn read_prop_slot(hwnd_u64: u64, name: &str) -> MarkerSlot {
+    if !crate::ffi::is_window(hwnd_u64) {
         return MarkerSlot::Absent;
     }
-    let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
-    if v.is_null() {
-        MarkerSlot::Absent
-    } else {
+    match crate::ffi::get_prop(hwnd_u64, name) {
+        None => MarkerSlot::Absent,
         // Non-NULL handles are nonzero; zero is unrepresentable here
         // (NULL reads absent above), so `Value(0)` never escapes.
-        MarkerSlot::Value(v as usize as u64)
+        Some(v) => MarkerSlot::Value(v as u64),
     }
 }
 
@@ -440,20 +363,20 @@ fn read_prop_slot(hwnd_u64: u64, name: &[u16]) -> MarkerSlot {
 /// is logged no-intent, a failed read is diagnosed no-intent.
 /// Read-only. A recycled HWND starts without our property.
 pub fn peek_sticky_raw(hwnd_u64: u64) -> MarkerSlot {
-    read_prop_slot(hwnd_u64, &sticky_prop_name())
+    read_prop_slot(hwnd_u64, STICKY_PROP)
 }
 
 /// Intentional-float marker slot. Same honest absences as
 /// [`peek_sticky_raw`].
 pub fn peek_float_intent_raw(hwnd_u64: u64) -> MarkerSlot {
-    read_prop_slot(hwnd_u64, &float_intent_prop_name())
+    read_prop_slot(hwnd_u64, FLOAT_INTENT_PROP)
 }
 
 /// Reserved tile-override marker slot (item 13 D7). No admission path
 /// reads it in item 8.
 #[allow(dead_code)]
 pub fn peek_tile_override_raw(hwnd_u64: u64) -> MarkerSlot {
-    read_prop_slot(hwnd_u64, &tile_override_prop_name())
+    read_prop_slot(hwnd_u64, TILE_OVERRIDE_PROP)
 }
 
 /// Fresh read of the sticky-float marker. `None` means not sticky:
@@ -471,13 +394,8 @@ pub fn read_sticky_marker(hwnd_u64: u64) -> Option<bool> {
 /// proof fences. Overwrites only our own property name. A readback
 /// mismatch fails closed with no runtime map change and no removal.
 pub fn install_sticky_marker(hwnd_u64: u64, prior_floating: bool) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    let hwnd = hwnd_u64 as isize as HWND;
     let value = crate::tiling::sticky_marker_value(prior_floating);
-    let name = sticky_prop_name();
-    let ok = unsafe { SetPropW(hwnd, name.as_ptr(), value as usize as _) };
-    if ok == 0 {
+    if !crate::ffi::set_prop(hwnd_u64, STICKY_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
     match read_sticky_marker(hwnd_u64) {
@@ -492,10 +410,7 @@ pub fn install_sticky_marker(hwnd_u64: u64, prior_floating: bool) -> Result<()> 
 /// owns the window now (never touch it). A failed read errors without
 /// mutating. Identity fencing stays with the caller.
 pub fn remove_sticky_marker(hwnd_u64: u64, expected_prior: bool) -> Result<bool> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, RemovePropW};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Ok(true);
     }
     match peek_sticky_raw(hwnd_u64) {
@@ -507,8 +422,7 @@ pub fn remove_sticky_marker(hwnd_u64: u64, expected_prior: bool) -> Result<bool>
             }
         }
     }
-    let name = sticky_prop_name();
-    let _ = unsafe { RemovePropW(hwnd, name.as_ptr()) };
+    crate::ffi::remove_prop(hwnd_u64, STICKY_PROP);
     match peek_sticky_raw(hwnd_u64) {
         MarkerSlot::Absent => Ok(true),
         MarkerSlot::Unreadable => Err(err("error: sticky marker read error")),
@@ -544,13 +458,8 @@ pub fn read_tile_override_marker(hwnd_u64: u64) -> bool {
 /// verified. A readback mismatch fails closed with no runtime map change
 /// and no removal.
 pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    let hwnd = hwnd_u64 as isize as HWND;
     let value = crate::tiling::float_intent_marker_value();
-    let name = float_intent_prop_name();
-    let ok = unsafe { SetPropW(hwnd, name.as_ptr(), value as usize as _) };
-    if ok == 0 {
+    if !crate::ffi::set_prop(hwnd_u64, FLOAT_INTENT_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
     match peek_float_intent_raw(hwnd_u64) {
@@ -566,13 +475,8 @@ pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
 /// for item 13 D7; no caller in item 8.
 #[allow(dead_code)]
 pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    let hwnd = hwnd_u64 as isize as HWND;
     let value = crate::tiling::tile_override_marker_value();
-    let name = tile_override_prop_name();
-    let ok = unsafe { SetPropW(hwnd, name.as_ptr(), value as usize as _) };
-    if ok == 0 {
+    if !crate::ffi::set_prop(hwnd_u64, TILE_OVERRIDE_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
     match peek_tile_override_raw(hwnd_u64) {
@@ -590,10 +494,7 @@ pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
 /// mutating further. Corrupt residue on our own property name is
 /// cleaned under the caller's identity plus lifetime fences.
 pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, RemovePropW};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Ok(());
     }
     match peek_float_intent_raw(hwnd_u64) {
@@ -603,8 +504,7 @@ pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
         }
         MarkerSlot::Value(_) => {}
     }
-    let name = float_intent_prop_name();
-    let _ = unsafe { RemovePropW(hwnd, name.as_ptr()) };
+    crate::ffi::remove_prop(hwnd_u64, FLOAT_INTENT_PROP);
     match peek_float_intent_raw(hwnd_u64) {
         MarkerSlot::Absent => Ok(()),
         MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
@@ -616,10 +516,7 @@ pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
 /// no caller in item 8.
 #[allow(dead_code)]
 pub fn remove_tile_override_marker(hwnd_u64: u64) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, RemovePropW};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Ok(());
     }
     match peek_tile_override_raw(hwnd_u64) {
@@ -629,8 +526,7 @@ pub fn remove_tile_override_marker(hwnd_u64: u64) -> Result<()> {
         }
         MarkerSlot::Value(_) => {}
     }
-    let name = tile_override_prop_name();
-    let _ = unsafe { RemovePropW(hwnd, name.as_ptr()) };
+    crate::ffi::remove_prop(hwnd_u64, TILE_OVERRIDE_PROP);
     match peek_tile_override_raw(hwnd_u64) {
         MarkerSlot::Absent => Ok(()),
         MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),
@@ -673,10 +569,7 @@ pub fn remove_nonce_checked(
             return Ok(true);
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return Ok(true);
     }
     let snap = match query_recovery(hwnd_u64, owner) {
@@ -702,28 +595,19 @@ pub fn remove_nonce_checked(
         Err(e) if e.to_string().starts_with("absent:") => return Ok(false),
         Err(e) => return Err(err(format!("uncertain: nonce remove held {e}"))),
     };
-    let _ = remove_nonce_inner(hwnd);
+    let _ = remove_nonce_inner(hwnd_u64);
     let _ = &held;
     if !held.is_alive() || !pid_current(hwnd_u64, snap.pid) {
         return Err(err("uncertain: nonce remove post-pid changed"));
     }
-    match get_nonce(hwnd).map_err(|e| err(format!("error: nonce remove readback {e}")))? {
+    match get_nonce(hwnd_u64).map_err(|e| err(format!("error: nonce remove readback {e}")))? {
         None => Ok(true),
         Some(_) => Err(err("error: nonce remove failed")),
     }
 }
 
 fn pump_once() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
-    };
-    unsafe {
-        let mut msg: MSG = std::mem::zeroed();
-        while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    crate::ffi::drain_messages();
 }
 
 /// Post one visibility effect without blocking, then pump until the
@@ -872,9 +756,7 @@ fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
             .unwrap_or(false);
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync;
-    unsafe { ShowWindowAsync(hwnd_u64 as isize as HWND, cmd) != 0 }
+    crate::ffi::show_window_async(hwnd_u64, cmd)
 }
 
 /// Fake-aware HWND liveness for the batch prepare path: the scripted `alive`
@@ -885,9 +767,7 @@ fn live_hwnd(hwnd_u64: u64) -> bool {
     if fake::active(hwnd_u64) {
         return fake::with(hwnd_u64, |w| w.alive).unwrap_or(false);
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
-    unsafe { IsWindow(hwnd_u64 as isize as HWND) != 0 }
+    crate::ffi::is_window(hwnd_u64)
 }
 /// Post one hide effect without blocking or waiting (same async contract
 /// as the legacy poll's post, via the shared [`post_async`]); confirmation
@@ -932,13 +812,10 @@ pub(crate) fn batch_is_visible(hwnd_u64: u64) -> Option<bool> {
             return fake::with(hwnd_u64, |w| w.alive.then_some(w.visible)).flatten();
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return None;
     }
-    Some(unsafe { IsWindowVisible(hwnd) } != 0)
+    Some(crate::ffi::is_visible(hwnd_u64))
 }
 
 /// Post-hide finish for one batch member: the post-pid fence plus the
@@ -1106,12 +983,7 @@ fn pid_current(hwnd_u64: u64, pid: u32) -> bool {
             return fake::with(hwnd_u64, |w| w.alive && w.pid == pid).unwrap_or(false);
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
-    let mut current: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd_u64 as isize as HWND, &mut current);
-    }
+    let current = crate::ffi::window_pid(hwnd_u64);
     current != 0 && current == pid
 }
 
@@ -1204,22 +1076,16 @@ pub fn classify_candidate_for_hide(
             .unwrap_or(CandidateStatus::Absent);
         }
     }
-    use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetParent, GetWindow, GetWindowLongW, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
     if hwnd_u64 == 0 {
         return CandidateStatus::Absent;
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return CandidateStatus::Absent;
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(hwnd_u64);
     if pid == 0 {
         return CandidateStatus::Absent;
     }
@@ -1250,17 +1116,17 @@ pub fn classify_candidate_for_hide(
     if !is_medium_rid(rid) {
         return CandidateStatus::Refused("integrity");
     }
-    let class = class_of(hwnd);
+    let class = crate::ffi::class_name(hwnd_u64);
     if super::shell_class_excluded(&class) {
         return CandidateStatus::Refused("shell");
     }
-    if !unsafe { GetParent(hwnd) }.is_null() {
+    if crate::ffi::parent_of(hwnd_u64) != 0 {
         return CandidateStatus::Refused("parented");
     }
-    if !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+    if crate::ffi::owner_of(hwnd_u64) != 0 {
         return CandidateStatus::Refused("owned-dialog");
     }
-    let ex = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let ex = crate::ffi::window_exstyle(hwnd_u64);
     if ex & WS_EX_TOOLWINDOW != 0 {
         return CandidateStatus::Refused("tool");
     }
@@ -1276,13 +1142,13 @@ pub fn classify_candidate_for_hide(
     if crate::tiling::workspace_dialog_refuses(&class, false, &ident.exe_path, &owner.exe_path) {
         return CandidateStatus::Refused("dialog");
     }
-    let Ok(nonce) = get_nonce(hwnd) else {
+    let Ok(nonce) = get_nonce(hwnd_u64) else {
         return CandidateStatus::Uncertain;
     };
     if nonce.is_some() {
         return CandidateStatus::Refused("already-claimed");
     }
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+    let visible = crate::ffi::is_visible(hwnd_u64);
     if !visible {
         return CandidateStatus::Refused("not-visible");
     }
@@ -1292,14 +1158,14 @@ pub fn classify_candidate_for_hide(
         process: ident,
         nonce,
         visible,
-        iconic: unsafe { IsIconic(hwnd) } != 0,
-        maximized: unsafe { IsZoomed(hwnd) } != 0,
+        iconic: crate::ffi::is_iconic(hwnd_u64),
+        maximized: crate::ffi::is_zoomed(hwnd_u64),
         class,
     };
-    if unsafe { IsZoomed(hwnd) } != 0 {
+    if crate::ffi::is_zoomed(hwnd_u64) {
         return CandidateStatus::Retained(snap);
     }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let style = crate::ffi::window_style(hwnd_u64);
     if style & WS_CAPTION == 0 {
         return CandidateStatus::Retained(snap);
     }
@@ -1918,7 +1784,7 @@ pub(crate) mod fake {
                 "absent: target identity changed (recycled)",
             )));
         }
-        let current = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
+        let current = crate::ffi::current_process_id();
         match super::HeldProcess::open(current) {
             Ok(held) => Some(Ok(held)),
             Err(e) => Some(Err(super::err(format!("error: target held {e}")))),

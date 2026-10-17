@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// R-MOV-03 retained-Engine coverage through the Windows reconcile route.
 ///
 /// The rig builds `CoreEvent`s exactly like `keyboard_tick` does

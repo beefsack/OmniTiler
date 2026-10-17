@@ -6,3 +6,6 @@ license = "MIT"
 
 [dev-dependencies]
 serde_json = "1"
+
+[lints]
+workspace = true

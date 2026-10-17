@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::float_send_admits;
 use tiler_core::directional::WindowId;
 

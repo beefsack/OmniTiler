@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 // Active-group highlight policy: Cargo workspace staticlib (AR10).
 //
 // Rust owns group payload parsing/validation, strict schema version checks,

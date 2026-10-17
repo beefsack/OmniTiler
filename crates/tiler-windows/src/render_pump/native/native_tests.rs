@@ -1,10 +1,8 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 fn signaled(handle: &OwnedHandle) -> bool {
-    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-    use windows_sys::Win32::System::Threading::WaitForSingleObject;
-    let raw = handle.as_handle().as_raw_handle();
-    unsafe { WaitForSingleObject(raw, 0) == WAIT_OBJECT_0 }
+    crate::ffi::event_signaled(handle)
 }
 
 fn bare_handle() -> RenderHandle {

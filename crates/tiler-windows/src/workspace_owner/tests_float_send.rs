@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 fn d16_float_frame() -> Rect {

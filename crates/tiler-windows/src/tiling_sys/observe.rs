@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 // Win32 object id for window-scoped events (filters out menu/scrollbar noise).
@@ -62,53 +63,52 @@ fn push_hook(event: HookEvent) {
     }
 }
 
-pub(super) unsafe extern "system" fn winevent_proc(
-    _hook: HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    id_object: i32,
-    _id_child: i32,
-    _thread: u32,
-    _time: u32,
-) {
-    if event == EVENT_SYSTEM_MOVESIZESTART {
-        // Event-time Esc sequence sampled directly from the shared atomic
-        // clock, so a physical Esc between the real START and the owner
-        // drain keeps a newer sequence than the snapshot and still latches.
-        // Delayed batch sequences never decide this comparison.
-        push_hook(HookEvent::MoveSizeStart(
-            hwnd as isize,
-            crate::snapkey::sys::shared_esc_seq(),
-        ));
-    } else if event == EVENT_SYSTEM_MOVESIZEEND {
-        // KDE Finish pointer: capture the release cursor now, at event
-        // time in the callback. The pump only carries it to settle and
-        // never re-reads it later. The END-time Esc sequence is captured
-        // alongside so post-END edges order correctly at the drain.
-        push_hook(HookEvent::MoveSizeEnd(
-            hwnd as isize,
-            cursor_pos(),
-            crate::snapkey::sys::shared_esc_seq(),
-        ));
-    } else if id_object == OBJID_WINDOW
-        && matches!(
-            event,
-            EVENT_SYSTEM_FOREGROUND
-                | EVENT_OBJECT_CREATE
-                | EVENT_OBJECT_DESTROY
-                | EVENT_OBJECT_SHOW
-                | EVENT_OBJECT_HIDE
-                | EVENT_OBJECT_LOCATIONCHANGE
-        )
-    {
-        // Window-scoped SHOW/HIDE additionally bumps the bounded visibility
-        // generation (the `Wake` push below is unchanged). All other edges -
-        // including foreground/create/destroy/location - leave it alone, so
-        // only genuine visibility notifications can wake a joint batch wait.
-        if matches!(event, EVENT_OBJECT_SHOW | EVENT_OBJECT_HIDE) {
-            bump_visibility_generation();
+/// Owner-loop hook-event sink: the `extern` trampoline lives in
+/// `crate::ffi` and forwards here; this filtering (which edges become
+/// wakes, event-time cursor/sequence capture) is unchanged policy.
+pub(super) struct LoopEventSink;
+
+impl crate::ffi::WinEventSink for LoopEventSink {
+    fn on_win_event(&self, ev: crate::ffi::WinEvent) {
+        if ev.event == EVENT_SYSTEM_MOVESIZESTART {
+            // Event-time Esc sequence sampled directly from the shared atomic
+            // clock, so a physical Esc between the real START and the owner
+            // drain keeps a newer sequence than the snapshot and still latches.
+            // Delayed batch sequences never decide this comparison.
+            push_hook(HookEvent::MoveSizeStart(
+                ev.hwnd as isize,
+                crate::snapkey::sys::shared_esc_seq(),
+            ));
+        } else if ev.event == EVENT_SYSTEM_MOVESIZEEND {
+            // KDE Finish pointer: capture the release cursor now, at event
+            // time in the callback. The pump only carries it to settle and
+            // never re-reads it later. The END-time Esc sequence is captured
+            // alongside so post-END edges order correctly at the drain.
+            push_hook(HookEvent::MoveSizeEnd(
+                ev.hwnd as isize,
+                cursor_pos(),
+                crate::snapkey::sys::shared_esc_seq(),
+            ));
+        } else if ev.id_object == OBJID_WINDOW
+            && matches!(
+                ev.event,
+                EVENT_SYSTEM_FOREGROUND
+                    | EVENT_OBJECT_CREATE
+                    | EVENT_OBJECT_DESTROY
+                    | EVENT_OBJECT_SHOW
+                    | EVENT_OBJECT_HIDE
+                    | EVENT_OBJECT_LOCATIONCHANGE
+            )
+        {
+            // Window-scoped SHOW/HIDE additionally bumps the bounded visibility
+            // generation (the `Wake` push below is unchanged). All other edges -
+            // including foreground/create/destroy/location - leave it alone, so
+            // only genuine visibility notifications can wake a joint batch wait.
+            if matches!(ev.event, EVENT_OBJECT_SHOW | EVENT_OBJECT_HIDE) {
+                bump_visibility_generation();
+            }
+            push_hook(HookEvent::Wake(ev.hwnd as isize));
         }
-        push_hook(HookEvent::Wake(hwnd as isize));
     }
 }
 
@@ -117,20 +117,7 @@ pub(super) unsafe extern "system" fn winevent_proc(
 /// wake hint, so work staged on this same thread (hook edges, tray picks,
 /// overlay clicks) never strands behind a blocking wait.
 pub(super) fn drain_owner_messages() -> bool {
-    let mut msg: MSG = unsafe { std::mem::zeroed() };
-    let mut flowed = false;
-    loop {
-        let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has == 0 {
-            break;
-        }
-        flowed = true;
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    flowed
+    crate::ffi::drain_messages()
 }
 
 /// Non-destructive hook-queue probe: true when drained edges already wait.
@@ -170,75 +157,63 @@ pub(super) fn pump_wait_with_intent(
         timeout: false,
         failed: false,
     };
-    unsafe {
+    {
         const MAX_WAIT: usize = 8;
-        let mut handles = [std::ptr::null_mut(); MAX_WAIT];
-        let mut count: u32 = 0;
+        let mut raws = [std::ptr::null_mut(); MAX_WAIT];
+        let mut count: usize = 0;
         if let Some(handle) = wake {
-            handles[0] = handle.as_handle().as_raw_handle();
+            raws[0] = handle.as_handle().as_raw_handle();
             count = 1;
         }
         if let Some(handle) = ack_wake {
-            handles[count as usize] = handle.as_handle().as_raw_handle();
+            raws[count] = handle.as_handle().as_raw_handle();
             count += 1;
         }
         let extra_base = count;
         for raw in extra {
-            if (count as usize) >= MAX_WAIT {
+            if count >= MAX_WAIT {
                 break;
             }
-            handles[count as usize] = *raw;
+            raws[count] = *raw;
             count += 1;
         }
-        let result = if count == 0 {
-            MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0)
-        } else {
-            MsgWaitForMultipleObjectsEx(count, handles.as_ptr(), timeout_ms, QS_ALLINPUT, 0)
-        };
-        const WAIT_OBJECT_0: u32 = 0;
-        const WAIT_TIMEOUT: u32 = 258;
-        if result == WAIT_TIMEOUT {
-            woke.timeout = true;
-        } else if result < WAIT_OBJECT_0 + count {
-            // A satisfied wait object: index 0 is the input wake when
-            // present; the ack wake (when present) is the next index;
-            // anything at or past `extra_base` is an extra notification
-            // handle (directory watch or async completion), all of which
-            // demand a full turn.
-            let has_input = wake.is_some();
-            let index = result - WAIT_OBJECT_0;
-            if has_input && index == 0 {
-                woke.input = true;
-            } else if index < extra_base {
-                woke.ack = true;
-            } else {
-                woke.notify = true;
+        // A satisfied wait object: index 0 is the input wake when
+        // present; the ack wake (when present) is the next index;
+        // anything at or past `extra_base` is an extra notification
+        // handle (directory watch or async completion), all of which
+        // demand a full turn.
+        let has_input = wake.is_some();
+        match crate::ffi::msg_wait(&raws[..count], timeout_ms) {
+            crate::ffi::MsgWaitOutcome::Timeout => {
+                woke.timeout = true;
             }
-        } else if result == WAIT_OBJECT_0 + count {
-            woke.message = true;
-        } else {
-            // WAIT_FAILED or abandoned: counted separately as `failed`, never
-            // merged into `timeout` (genuine 258 only). Control flow keeps the
-            // existing fallback: a failed return takes the periodic-work path
-            // below like before, with no new recovery and no timing claim (a
-            // failed wait returns immediately; not proven delayed).
-            woke.failed = true;
+            crate::ffi::MsgWaitOutcome::Signaled(index) => {
+                if has_input && index == 0 {
+                    woke.input = true;
+                } else if index < extra_base {
+                    woke.ack = true;
+                } else {
+                    woke.notify = true;
+                }
+            }
+            crate::ffi::MsgWaitOutcome::Message => {
+                woke.message = true;
+            }
+            crate::ffi::MsgWaitOutcome::Failed => {
+                // WAIT_FAILED or abandoned: counted separately as `failed`, never
+                // merged into `timeout` (genuine 258 only). Control flow keeps the
+                // existing fallback: a failed return takes the periodic-work path
+                // below like before, with no new recovery and no timing claim (a
+                // failed wait returns immediately; not proven delayed).
+                woke.failed = true;
+            }
         }
     }
-    let mut msg: MSG = unsafe { std::mem::zeroed() };
-    loop {
-        let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has == 0 {
-            break;
-        }
-        // Dispatched callbacks below may queue hook events: once any
-        // message flows, this turn does full owner work even when the wait
-        // itself returned an ack or timeout reason.
+    // Dispatched callbacks below may queue hook events: once any
+    // message flows, this turn does full owner work even when the wait
+    // itself returned an ack or timeout reason.
+    if crate::ffi::drain_messages() {
         woke.message = true;
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
     }
     woke
 }
@@ -404,12 +379,7 @@ pub(super) struct ObservedWindow {
 }
 
 pub(super) fn class_of(hwnd: HWND) -> String {
-    let mut buf = [0u16; 256];
-    let n = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
-    if n <= 0 {
-        return String::new();
-    }
-    String::from_utf16_lossy(&buf[..n as usize])
+    crate::ffi::class_name(hwnd as usize as u64)
 }
 
 pub(super) fn window_identity(
@@ -417,10 +387,7 @@ pub(super) fn window_identity(
     hwnd_u64: u64,
     me: &ProcessIdentity,
 ) -> Option<ObservedTarget> {
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(hwnd as usize as u64);
     // The owner never tiles its own process. Its separate-process Settings
     // UI (same executable, settings class) is an ordinary slotless member
     // via the dialog gate below, not here.
@@ -458,7 +425,7 @@ pub(super) fn window_identity(
 /// fence still applies independently, and the owner re-fences on its next
 /// refresh.
 pub(super) fn foreground_lifetime(me: &ProcessIdentity) -> Option<WindowLifetime> {
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         return None;
     }
@@ -474,16 +441,11 @@ pub(super) fn foreground_lifetime(me: &ProcessIdentity) -> Option<WindowLifetime
 /// absent: generic windows never carry it, so proof allowlists requiring a
 /// nonempty tag reject them before any write.
 fn owned_tag(hwnd: HWND) -> String {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
-    let name: Vec<u16> = crate::test_window::TEST_WINDOW_PROP
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
-    if v.is_null() {
+    let Some(token) =
+        crate::ffi::get_prop(hwnd as usize as u64, crate::test_window::TEST_WINDOW_PROP)
+    else {
         return String::new();
-    }
-    let token = v as usize as u64;
+    };
     if token == 0 {
         return String::new();
     }
@@ -560,7 +522,7 @@ pub(super) fn observe_window(
     tokens: &mut TokenMap,
 ) -> std::result::Result<ObservedWindow, ObserveFailure> {
     use ObserveFailure::{Known, Unknown};
-    if unsafe { IsWindowVisible(hwnd) } == 0 {
+    if !crate::ffi::is_visible(hwnd as usize as u64) {
         return Err(Unknown);
     }
     let hwnd_u64 = hwnd as usize as u64;
@@ -578,53 +540,35 @@ pub(super) fn observe_window(
     };
     // Window state before frames: an iconic window has no composited frame,
     // so its DWM queries would fail spuriously below.
-    if unsafe { IsIconic(hwnd) } != 0 {
+    if crate::ffi::is_iconic(hwnd_u64) {
         return Err(known(SkipReason::Minimized));
     }
-    let mut outer_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe { GetWindowRect(hwnd, &mut outer_raw) } == 0 {
+    let Some(outer_raw) = crate::ffi::window_rect(hwnd_u64) else {
         return Err(known(SkipReason::Unreadable));
-    }
+    };
     let outer = rect_from_win(outer_raw).ok_or_else(|| known(SkipReason::Unreadable))?;
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    let visible = if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } == 0
-    {
-        rect_from_win(visible_raw).ok_or_else(|| known(SkipReason::Unreadable))?
-    } else {
-        return Err(known(SkipReason::Unreadable));
+    let visible = match crate::ffi::extended_frame_bounds(hwnd_u64) {
+        Some(visible_raw) => {
+            rect_from_win(visible_raw).ok_or_else(|| known(SkipReason::Unreadable))?
+        }
+        None => return Err(known(SkipReason::Unreadable)),
     };
     if !tiler_core::bounds::valid_carried_rect(visible.x, visible.y, visible.w, visible.h) {
         return Err(known(SkipReason::Unreadable));
     }
-    let mut cloaked: i32 = 0;
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked as *mut i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        )
-    } != 0
-    {
+    let Some(cloaked) = crate::ffi::cloaked(hwnd_u64) else {
         return Err(known(SkipReason::Unreadable));
-    }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
-    let owned = !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null();
+    };
+    let style = crate::ffi::window_style(hwnd_u64);
+    let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+    let owned = crate::ffi::owner_of(hwnd_u64) != 0;
     let class = class_of(hwnd);
     let captionless = style & WS_CAPTION == 0;
     let facts = WindowFacts {
         visible: true,
-        minimized: unsafe { IsIconic(hwnd) } != 0,
-        maximized: unsafe { IsZoomed(hwnd) } != 0,
-        cloaked: cloaked != 0,
+        minimized: crate::ffi::is_iconic(hwnd_u64),
+        maximized: crate::ffi::is_zoomed(hwnd_u64),
+        cloaked,
         elevated: false,
         shell: is_shell_class(&class),
         tool_window: exstyle & WS_EX_TOOLWINDOW != 0,

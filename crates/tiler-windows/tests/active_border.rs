@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::active_border::{DEFAULT_COLOR_RGB, render_color};
 use tiler_windows::tiling::{
     parse_shortcut_proof_args, parse_tile_args, parse_tile_proof_args, parse_workspace_proof_args,

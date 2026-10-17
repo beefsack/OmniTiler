@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Held ownership gates for one classification-marker native write (`SetProp` /
@@ -186,7 +187,7 @@ pub(super) fn remove_tile_override_mark_best_effort(
     let Some(held) = hold_marker_target(state, me, key) else {
         // No hold, no write: an already-absent marker is clean; a present
         // one stays for later recovery rather than risking a foreign write.
-        if unsafe { IsWindow(key.hwnd as isize as HWND) } == 0
+        if !crate::ffi::is_window(key.hwnd)
             || !crate::product_hide::sys::read_tile_override_marker(key.hwnd)
         {
             return;
@@ -359,15 +360,14 @@ pub(super) fn drop_member_state(state: &mut TileLoop, key: &crate::workspace::Wi
 /// One exact-window foreground check plus a single setter with readback.
 /// Already-foreground takes no setter. Token-safe outcome only.
 fn retain_float_focus(hwnd_u64: u64) -> &'static str {
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == hwnd_u64 {
         return "float-focus-retained";
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { SetForegroundWindow(hwnd) } == 0 {
+    if !crate::ffi::set_foreground_window(hwnd_u64) {
         return "float-focus-failed";
     }
-    if unsafe { GetForegroundWindow() } as usize as u64 == hwnd_u64 {
+    if crate::ffi::foreground_window() == hwnd_u64 {
         "float-focus-retained"
     } else {
         "float-focus-failed"

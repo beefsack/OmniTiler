@@ -34,3 +34,6 @@ objc2-core-foundation = "0.3"
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGError", "CGEvent", "CGEventTypes", "CGRemoteOperation", "CGSession", "libc"] }
 core-foundation = "0.10"
 core-graphics = "0.25"
+
+[lints.rust]
+unsafe_code = "deny"

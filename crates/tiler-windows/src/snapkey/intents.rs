@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::chords::PinnedRoute;
 use super::*;
 

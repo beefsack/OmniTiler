@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// CLI options for the read-only `capture` command: an explicit target list

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     ActionCtx, LedgerStore, MonitorArea, SendTarget, clear_pending_seams, inject_pending_tag,
     pending_counters,

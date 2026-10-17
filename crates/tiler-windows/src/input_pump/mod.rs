@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Dedicated input pump (stage 1, unit 2).
 //!
 //! Both low-level hooks and their synchronous consume/pass classifiers share
@@ -36,7 +37,7 @@
 
 use std::collections::VecDeque;
 #[cfg(windows)]
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, Instant};
 

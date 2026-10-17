@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Event-driven visibility batch: post all, then confirm together.
 //!
 //! One overall deadline per phase covers post work plus confirmation. The

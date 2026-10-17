@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Bounded trace-only health diagnostics for the input path.
 //!
 //! Activity-only windowed summaries (at most one per second, emitted on

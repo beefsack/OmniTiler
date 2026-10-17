@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows explicit output send (REQ-OUT-04, decisions 5.3/5.4) through a
 // real `TileLoop` against the real retained Engine (no HWNDs, hooks, or
 // live effects): four-direction FULL-rectangle selection with stacked/

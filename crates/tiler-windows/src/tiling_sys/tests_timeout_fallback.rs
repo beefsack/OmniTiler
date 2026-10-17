@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows-only last-good declared-hint reuse on native query Timeout.
 // LOG-DERIVED OUTCOMES with synthetic geometry (never a pixel-exact replay):
 // the incident record shows Hint -> Timeout -> (quiet repeats) -> same Hint

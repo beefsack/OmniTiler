@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Windows settings adapter over the shared portable catalog.
 //!
 //! Maps every scalar Windows-exposed field exactly once to its unchanged

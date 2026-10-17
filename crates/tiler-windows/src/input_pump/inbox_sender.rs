@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Fixed cap on distinct stalled-transport invalidated HWNDs held in the

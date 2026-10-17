@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// Privacy-safe foreground veto reason. Bounded vocabulary only: no titles,
 /// paths, HWNDs, PIDs, or content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

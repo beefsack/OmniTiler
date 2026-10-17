@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// START-frozen preview source binding: the exact mover token, source
 /// output/workspace, and accepted revision captured at gesture START
 /// (native MoveSizeStart drain or validated project Win+Left arm). The

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Item 14 whole-active-workspace migration (R-WS-12 D1-D9/G37) through a
 // real `TileLoop` against the real retained Engine (no HWNDs, hooks, or
 // live effects): adjacent FULL-rectangle selection, live-observation row

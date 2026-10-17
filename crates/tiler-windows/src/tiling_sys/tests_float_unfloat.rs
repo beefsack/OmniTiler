@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::UnfloatClearEffects;
 use super::rmax03_adapter_tests::test_state;
 use tiler_core::geometry::Rect;

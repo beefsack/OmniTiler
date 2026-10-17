@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::chords::{
     digit_repeat_live, history_repeat_live, index_direction, is_letter_l, resize_mode_for_action,
     resize_repeat_live, snap_op_admits, snap_repeat_live,

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::snapkey::{QueuedFullscreenIntent, QueuedMaximizeIntent};
 
@@ -91,7 +92,7 @@ pub(super) fn dispatch_maximize_intent(
     // stamped, and the cleared window converges as eligible next tick.
     clear_maximize_at_admission(state, me, &retained);
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
-    let foreground_hwnd = Some(unsafe { GetForegroundWindow() } as usize as u64);
+    let foreground_hwnd = Some(crate::ffi::foreground_window());
     let (from, _) = match resolve_origin(
         &origin,
         foreground_hwnd,
@@ -392,7 +393,7 @@ pub(super) fn dispatch_fullscreen_intent(
     // stamped, and the cleared window converges as eligible next tick.
     clear_maximize_at_admission(state, me, &retained);
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
-    let foreground_hwnd = Some(unsafe { GetForegroundWindow() } as usize as u64);
+    let foreground_hwnd = Some(crate::ffi::foreground_window());
     let (from, _) = match resolve_origin(
         &origin,
         foreground_hwnd,

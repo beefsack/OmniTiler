@@ -12,10 +12,12 @@
 //!
 //! The drawing carrier (create/paint/move/hide/destroy) is reusable for the
 //! later group underlay, which is not implemented here.
+#![forbid(unsafe_code)]
 
 use tiler_core::geometry::Rect;
 
 use crate::active_border::{ActiveBorderStyle, SystemAccent, effective_color, ring_covers};
+use crate::ffi::{dwm_colorization, take_accent_dirty};
 
 #[path = "active_border_sys/carrier.rs"]
 mod carrier;
@@ -70,45 +72,8 @@ pub const fn preview_bounds_valid(outer: Rect) -> bool {
     outer.w > 0 && outer.h > 0 && outer.w <= 16384 && outer.h <= 16384
 }
 
-// Stable Win32 broadcast ids (no new dependency): the overlay WndProc only
+// Stable Win32 broadcast ids (no new dependency): the overlay procedure only
 // flags on these; the loop thread re-queries and repaints.
-const WM_SETTINGCHANGE: u32 = 0x001A;
-const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
-
-fn accent_dirty_flag() -> &'static std::sync::atomic::AtomicBool {
-    use std::sync::atomic::AtomicBool;
-    static DIRTY: AtomicBool = AtomicBool::new(false);
-    &DIRTY
-}
-
-/// Sticky accent-refresh request from the overlay WndProc. Consumed by
-/// `show_at`: sticky, so coalesced broadcasts still refresh exactly once.
-fn take_accent_dirty() -> bool {
-    use std::sync::atomic::Ordering;
-    accent_dirty_flag().swap(false, Ordering::SeqCst)
-}
-
-fn mark_accent_dirty() {
-    use std::sync::atomic::Ordering;
-    accent_dirty_flag().store(true, Ordering::SeqCst);
-}
-
-/// Overlay window procedure: accent broadcasts only flag a refresh, every
-/// other message keeps default handling. Never paints, hides, or destroys:
-/// no feedback into the loop-owned overlay state.
-unsafe extern "system" fn overlay_wnd_proc(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    msg: u32,
-    wparam: windows_sys::Win32::Foundation::WPARAM,
-    lparam: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW;
-    if msg == WM_DWMCOLORIZATIONCOLORCHANGED || msg == WM_SETTINGCHANGE {
-        mark_accent_dirty();
-        return 0;
-    }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
 
 /// Read-only system accent query: the official DWM colorization colour
 /// (`DwmGetColorizationColor`, `0xAARRGGBB`), the Windows analogue of the KDE
@@ -116,15 +81,7 @@ unsafe extern "system" fn overlay_wnd_proc(
 /// the API fails: callers fall back to the configured colour. No writes, no
 /// settings changes, no parameters consumed.
 fn query_system_accent() -> Option<SystemAccent> {
-    use windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor;
-    let mut dword: u32 = 0;
-    let mut opaque: i32 = 0;
-    let hr = unsafe { DwmGetColorizationColor(&mut dword, &mut opaque) };
-    if hr == 0 {
-        Some(SystemAccent::from_colorization_dword(dword))
-    } else {
-        None
-    }
+    dwm_colorization().map(SystemAccent::from_colorization_dword)
 }
 
 /// Outcome of one overlay update, for bounded logging.

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{born_maximized_keep_overlay_for, rmax03_adapter_tests::test_state};
 use crate::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings};
 use tiler_core::geometry::Rect;

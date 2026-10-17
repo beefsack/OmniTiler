@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![cfg(windows)]
 
 use tiler_windows::native::{current_identity, current_integrity_level, ledger_directory};

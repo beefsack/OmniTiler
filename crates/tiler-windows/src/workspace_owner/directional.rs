@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08).

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Joint hide/reveal batch phases for workspace select/send/rollback.
 //!
 //! For every workspace select/send phase operation this driver posts all

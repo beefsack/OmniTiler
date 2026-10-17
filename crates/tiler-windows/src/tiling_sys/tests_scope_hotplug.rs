@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Mode-aware disconnect/reconnect topology tests (item 12 stage C).
 //!
 //! Offline simulated topology: drive the real production

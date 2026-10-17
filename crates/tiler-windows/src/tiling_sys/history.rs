@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Move one migrating float window across outputs (move-only, never a resize
@@ -15,21 +16,18 @@ pub(super) fn move_float_to_output(hwnd_u64: u64, moved: Rect) -> bool {
     }
     #[cfg(not(test))]
     {
-        let hwnd = hwnd_u64 as isize as HWND;
-        if unsafe { IsWindow(hwnd) } == 0 {
+        if !crate::ffi::is_window(hwnd_u64) {
             return false;
         }
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                HWND_NOTOPMOST,
-                moved.x,
-                moved.y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            ) != 0
-        }
+        crate::ffi::set_window_pos_after(
+            hwnd_u64,
+            crate::ffi::PositionAfter::NotTopmost,
+            moved.x,
+            moved.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
     }
 }
 
@@ -90,21 +88,18 @@ pub(super) fn move_overlay_to_output(
                 workspace_coords,
             );
         }
-        let hwnd = hwnd_u64 as isize as HWND;
-        if unsafe { IsWindow(hwnd) } == 0 {
+        if !crate::ffi::is_window(hwnd_u64) {
             return false;
         }
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                HWND_NOTOPMOST,
-                moved.x,
-                moved.y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            ) != 0
-        }
+        crate::ffi::set_window_pos_after(
+            hwnd_u64,
+            crate::ffi::PositionAfter::NotTopmost,
+            moved.x,
+            moved.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
     }
 }
 
@@ -153,15 +148,12 @@ fn remap_placement_normal_rect(
     target_full: Rect,
     workspace_coords: bool,
 ) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
-    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+    let Some(mut placement) = crate::ffi::window_placement(hwnd_u64) else {
         return false;
-    }
+    };
     let orig_w = placement
         .rcNormalPosition
         .right
@@ -185,7 +177,7 @@ fn remap_placement_normal_rect(
     placement.rcNormalPosition.right = raw.x.saturating_add(raw.w);
     placement.rcNormalPosition.bottom = raw.y.saturating_add(raw.h);
     placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
-    unsafe { SetWindowPlacement(hwnd, &placement) != 0 }
+    crate::ffi::set_window_placement(hwnd_u64, &placement)
 }
 
 /// Production maximized-overlay normal remap: single live `GetWindowPlacement`
@@ -210,15 +202,12 @@ fn remap_maximized_normal_to_output(
     // rides the same live style/parent read; no retained fallback, no
     // observed-maximized-frame reuse.
     let _ = workspace_coords;
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
-    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+    let Some(mut placement) = crate::ffi::window_placement(hwnd_u64) else {
         return false;
-    }
+    };
     let w = placement
         .rcNormalPosition
         .right
@@ -236,8 +225,8 @@ fn remap_maximized_normal_to_output(
         w,
         h,
     };
-    let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
-    let top_level = unsafe { GetParent(hwnd) }.is_null();
+    let exstyle = crate::ffi::window_exstyle(hwnd_u64);
+    let top_level = crate::ffi::parent_of(hwnd_u64) == 0;
     let basis = placement_is_workspace_coords(exstyle, top_level);
     let target_raw = translate_placement_normal_to_target(
         source_raw,
@@ -252,7 +241,7 @@ fn remap_maximized_normal_to_output(
     placement.rcNormalPosition.right = target_raw.x.saturating_add(target_raw.w);
     placement.rcNormalPosition.bottom = target_raw.y.saturating_add(target_raw.h);
     placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
-    unsafe { SetWindowPlacement(hwnd, &placement) != 0 }
+    crate::ffi::set_window_placement(hwnd_u64, &placement)
 }
 
 /// Drain one bounded batch of workspace history intents (item 1). Toggle and
@@ -410,7 +399,7 @@ pub(super) fn workspace_history_tick(
         match target {
             Some(id) => {
                 // REQ-WS-09 departure memory, same as the numbered select.
-                let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+                let foreground_hwnd = crate::ffi::foreground_window();
                 if let Some(source_id) = state.workspaces.active_id(&output)
                     && let Some(origin) = intent.origin.as_ref()
                     && let Some(token) = remember_select_departure(

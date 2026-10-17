@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{fixed_predicate_for, rmax03_adapter_tests::test_state};
 use crate::settings::{FIXED_SIZE_EITHER_AXIS, LiveSettings, Settings};
 use tiler_core::directional::WindowId;

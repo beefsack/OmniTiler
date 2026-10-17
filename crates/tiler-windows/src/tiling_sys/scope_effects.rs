@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Scoped multi-output select effects (item 12 stage B).
 //!
 //! Native global-unique visible-elsewhere swap plus shared multi-output
@@ -66,7 +67,6 @@ use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::CorrelationId;
 use tiler_core::workspace_scope::SwapPlan;
-use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{
     ActionCtx, ApplySummary, HideAttempt, HintCx, MonitorArea, ObservedWindow, RetainedRow,
@@ -294,7 +294,7 @@ fn converge_tail(
     let mut focus_window: Option<String> = None;
     let mut focus_ms: u64 = 0;
     if suppress_focus {
-        let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground = crate::ffi::foreground_window();
         let observed = focus_hint.is_some_and(|hint| hint.hwnd != 0 && foreground == hint.hwnd);
         if observed {
             focus_outcome = "focus-ok";

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Stable output key for a rectangle center: the monitor containing the
@@ -39,14 +40,11 @@ pub(super) fn output_for_point(areas: &[MonitorArea], x: i32, y: i32) -> Option<
 }
 
 fn foreground_output(areas: &[MonitorArea]) -> Option<String> {
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground.is_null() {
+    let foreground = crate::ffi::foreground_window();
+    if foreground == 0 {
         return None;
     }
-    let mut raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe { GetWindowRect(foreground, &mut raw) } == 0 {
-        return None;
-    }
+    let raw = crate::ffi::window_rect(foreground)?;
     rect_from_win(raw).map(|r| output_for_rect(areas, &r))
 }
 

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 #[cfg(test)]
@@ -6,16 +7,6 @@ use super::hints::test_hint_for;
 /// `SendMessageTimeoutW` timeout failure code: distinguishes a hung-window
 /// abort from any other setter failure.
 const ERROR_TIMEOUT: u32 = 1460;
-/// One system-metrics read at the window's current DPI. `GetSystemMetricsForDpi`
-/// first, plain `GetSystemMetrics` fallback: a zero read fails closed to zero
-/// and the seeder leaves that field zero rather than inventing a size.
-fn system_metric_for_dpi(index: i32, dpi: u32) -> i32 {
-    let sized = unsafe { GetSystemMetricsForDpi(index, dpi) };
-    if sized > 0 {
-        return sized;
-    }
-    unsafe { GetSystemMetrics(index) }
-}
 
 /// Correctly seeded Rust `MINMAXINFO` for one window: minimum track from the
 /// window's current DPI, maximum track plus maximized size/position per the
@@ -24,28 +15,7 @@ fn system_metric_for_dpi(index: i32, dpi: u32) -> i32 {
 /// leaves a field untouched therefore reports the system default instead of a
 /// fabricated zero absence.
 fn seed_minmaxinfo(hwnd: HWND) -> MINMAXINFO {
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
-    let dpi = if dpi == 0 { 96 } else { dpi };
-    let mut info: MINMAXINFO = unsafe { std::mem::zeroed() };
-    let min_w = system_metric_for_dpi(SM_CXMINTRACK, dpi);
-    let min_h = system_metric_for_dpi(SM_CYMINTRACK, dpi);
-    if min_w > 0 && min_h > 0 {
-        info.ptMinTrackSize.x = min_w;
-        info.ptMinTrackSize.y = min_h;
-    }
-    let max_track_w = system_metric_for_dpi(SM_CXMAXTRACK, dpi);
-    let max_track_h = system_metric_for_dpi(SM_CYMAXTRACK, dpi);
-    if max_track_w > 0 && max_track_h > 0 {
-        info.ptMaxTrackSize.x = max_track_w;
-        info.ptMaxTrackSize.y = max_track_h;
-    }
-    let scr_w = system_metric_for_dpi(SM_CXSCREEN, dpi);
-    let scr_h = system_metric_for_dpi(SM_CYSCREEN, dpi);
-    if scr_w > 0 && scr_h > 0 {
-        info.ptMaxSize.x = scr_w;
-        info.ptMaxSize.y = scr_h;
-    }
-    info
+    crate::ffi::seed_minmax_info(crate::ffi::dpi_for_window(hwnd as usize as u64))
 }
 
 /// Fresh outer track sizes plus what the native attempt cost: `(minimum,
@@ -116,9 +86,8 @@ impl FreshHint {
 /// unknown maximums never classify under R-SPC-04 D1). No geometry, style,
 /// or resizeable inference is involved.
 fn query_outer_tracks(hwnd: HWND, cx: &HintCx) -> OuterTracks {
-    let mut info = seed_minmaxinfo(hwnd);
+    let info = seed_minmaxinfo(hwnd);
     let seed_max = (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y);
-    let mut result: usize = 0;
     // Actual offered timeout recomputed at the native call, not the stale
     // pre-read the row loop took before identity/frame prework.
     let timeout_ms = cx.timeout_ms();
@@ -126,29 +95,19 @@ fn query_outer_tracks(hwnd: HWND, cx: &HintCx) -> OuterTracks {
         return (None, None, HintOutcome::Budget, QueryCost::default());
     }
     let started = Instant::now();
-    let sent = unsafe {
-        SetLastError(0);
-        SendMessageTimeoutW(
-            hwnd,
-            WM_GETMINMAXINFO,
-            0,
-            &mut info as *mut MINMAXINFO as LPARAM,
-            SMTO_ABORTIFHUNG,
-            timeout_ms,
-            &mut result,
-        )
-    };
+    let query = crate::ffi::query_minmax(hwnd as usize as u64, timeout_ms);
+    let info = query.info;
     // Capture the error code before any other call: even timing reads must
     // not interleave between the native call and `GetLastError`, or a
     // Timeout could misreport as Failed (or vice versa).
-    let code = unsafe { GetLastError() };
+    let code = query.error;
     // Native round-trip only: identity and frame prework ran before this
     // call and are never folded into the elapsed label.
     let cost = QueryCost {
         offered_ms: timeout_ms,
         elapsed_us: started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
     };
-    if sent == 0 {
+    if !query.sent {
         if code == ERROR_TIMEOUT {
             return (None, None, HintOutcome::Timeout, cost);
         }
@@ -194,28 +153,18 @@ pub(super) fn fixed_birth_for_slotless(
         return false;
     }
     let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
-    let mut outer_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe { GetWindowRect(hwnd, &mut outer_raw) } == 0 {
+    let Some(outer_raw) = crate::ffi::window_rect(hwnd_u64) else {
         return false;
-    }
+    };
     let Some(outer) = rect_from_win(outer_raw) else {
         return false;
     };
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } != 0
-    {
+    let Some(visible_raw) = crate::ffi::extended_frame_bounds(hwnd_u64) else {
         return false;
-    }
+    };
     let Some(visible) = rect_from_win(visible_raw) else {
         return false;
     };
@@ -324,13 +273,10 @@ pub(super) fn hidden_hint_for(
         };
     }
     let hwnd = key.hwnd as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(key.hwnd) {
         return FreshHint::unperformed(HintOutcome::Invalid);
     }
-    let mut live_pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut live_pid);
-    }
+    let live_pid = crate::ffi::window_pid(key.hwnd);
     if live_pid == 0 || live_pid != key.pid {
         return FreshHint::unperformed(HintOutcome::Invalid);
     }
@@ -351,25 +297,15 @@ pub(super) fn hidden_hint_for(
     if !crate::workspace_owner::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
         return FreshHint::unperformed(HintOutcome::Invalid);
     }
-    let mut outer_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe { GetWindowRect(hwnd, &mut outer_raw) } == 0 {
+    let Some(outer_raw) = crate::ffi::window_rect(key.hwnd) else {
         return FreshHint::unperformed(HintOutcome::Failed);
-    }
+    };
     let Some(outer) = rect_from_win(outer_raw) else {
         return FreshHint::unperformed(HintOutcome::Invalid);
     };
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } != 0
-    {
+    let Some(visible_raw) = crate::ffi::extended_frame_bounds(key.hwnd) else {
         return FreshHint::unperformed(HintOutcome::Failed);
-    }
+    };
     let Some(visible) = rect_from_win(visible_raw) else {
         return FreshHint::unperformed(HintOutcome::Invalid);
     };

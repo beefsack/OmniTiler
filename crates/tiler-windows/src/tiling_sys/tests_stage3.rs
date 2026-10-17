@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use crate::input_handoff::{INBOX_CAP, Inbox, InboxItem};
 use crate::input_pump::{InboxSender, SAFETY_INVALIDATES_CAP};
 use crate::render_handoff::{

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Maximum hydration-candidate rows carried in one normal rejection detail

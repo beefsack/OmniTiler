@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::settings::{NATIVE_PANELS, WINDOWS_FIELD_MAPPINGS, WINDOWS_ONLY_FIELDS};
 use std::collections::BTreeSet;

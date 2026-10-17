@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 pub const DEFAULT_RUN_SECONDS: u64 = 120;
 pub const MAX_RUN_SECONDS: u64 = 600;
 pub const STOP_REQUEST_FILE: &str = "stop.request";
@@ -428,7 +429,6 @@ pub mod sys {
         me: &crate::model::ProcessIdentity,
         expect: &crate::model::WindowIdentity,
     ) -> Result<()> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
         let helper_exe =
             crate::test_window::sys::sibling_helper_exe().map_err(|e| err(e.to_string()))?;
         let fresh = owned(hwnd, &helper_exe, &me.user_sid, me.session_id, "")?;
@@ -437,8 +437,10 @@ pub mod sys {
         }
         let _held = hold_helper_verified(fresh.process.pid, &fresh.process)?;
         // Write-before-hide: ledger commit precedes this ShowWindow.
-        let raw = hwnd as isize as windows_sys::Win32::Foundation::HWND;
-        if unsafe { ShowWindow(raw, SW_HIDE) } == 0 {
+        if !crate::ffi::show_window_prev_visible(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+        ) {
             return Err(err("refuse: hide not previously visible"));
         }
         let back = owned(hwnd, &helper_exe, &me.user_sid, me.session_id, "")?;
@@ -989,7 +991,6 @@ pub mod sys {
         helper_exe: &str,
         owner: &crate::model::ProcessIdentity,
     ) -> Result<()> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNA, ShowWindow};
         let pre = format!("restore pre-read {} ", w.hwnd);
         let fresh = owned(w.hwnd, helper_exe, &owner.user_sid, owner.session_id, &pre)?;
         if !snap_matches(&fresh, w, w.hwnd, false) {
@@ -999,12 +1000,10 @@ pub mod sys {
             )));
         }
         let _held = hold_helper_verified(fresh.process.pid, &fresh.process)?;
-        let _prev = unsafe {
-            ShowWindow(
-                w.hwnd as isize as windows_sys::Win32::Foundation::HWND,
-                SW_SHOWNA,
-            )
-        };
+        crate::ffi::show_window(
+            w.hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNA,
+        );
         let ctx = format!("restore readback {} ", w.hwnd);
         let back = owned(w.hwnd, helper_exe, &owner.user_sid, owner.session_id, &ctx)?;
         if !snap_matches(&back, w, w.hwnd, true) {

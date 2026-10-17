@@ -1,26 +1,20 @@
+#![forbid(unsafe_code)]
 use super::*;
-
-unsafe extern "system" fn enum_proc(hwnd: HWND, state: LPARAM) -> i32 {
-    let out = unsafe { &mut *(state as *mut Vec<isize>) };
-    out.push(hwnd as isize);
-    1
-}
 
 /// Enumerate top-level HWNDs. `None` on API failure: the caller retains Engine
 /// state and skips the tick, never treating a failed enumeration as a
 /// complete (possibly empty) observation.
 pub(super) fn enumerate_hwnds() -> Option<Vec<isize>> {
-    let mut out: Vec<isize> = Vec::new();
-    let ok = unsafe { EnumWindows(Some(enum_proc), &mut out as *mut Vec<isize> as LPARAM) };
-    if ok == 0 { None } else { Some(out) }
+    crate::ffi::enumerate_windows().map(|hwnds| {
+        hwnds
+            .into_iter()
+            .map(|hwnd| hwnd as usize as isize)
+            .collect()
+    })
 }
 
 pub(super) fn cursor_pos() -> Option<(i32, i32)> {
-    let mut point = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&mut point) } == 0 {
-        return None;
-    }
-    Some((point.x, point.y))
+    crate::ffi::cursor_pos()
 }
 
 impl TileLoop {
@@ -382,7 +376,7 @@ impl TileLoop {
     }
 
     pub(super) fn focused_token(&self, observed: &[ObservedWindow]) -> Option<WindowId> {
-        let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground = crate::ffi::foreground_window();
         observed
             .iter()
             .find(|w| w.hwnd == foreground)

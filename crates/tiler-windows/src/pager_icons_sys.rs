@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Background icon lookup (`cfg(windows)` only).
 //!
 //! One worker thread serves the tile loop's [`IconChannel`]: it pops one
@@ -25,16 +26,18 @@
 //!    the packaged app's icon); exact AUMID shell resolution stays
 //!    deferred, so such minis keep the plain rectangle.
 //!
-//! Borrowed `WM_GETICON`/class handles are copied with `CopyIcon` and the
-//! originals are never destroyed; extracted handles are owned and destroyed
-//! exactly once. Every DC, DIB section, and process handle is RAII-released;
-//! drawing failures return a miss, never a gray hit.
+//! Icon handles, DIB sections, and every Win32 call live in
+//! [`crate::ffi`]: borrowed handles are copied there and the originals are
+//! never destroyed, extracted handles arrive owned and are destroyed
+//! exactly once there, and drawing failures return a miss, never a gray
+//! hit. This module holds only the chain policy: identity verification,
+//! source order, and the worker service.
 //!
-//! Alpha semantics, stated honestly: `DrawIconEx(DI_NORMAL)` blends the
-//! artwork over a [`MINI_GRAY`](crate::pager_icons::MINI_GRAY)-filled 32-bit
-//! top-down DIB at lookup time. The returned buffer is opaque (alpha bytes
-//! forced to `0xFF`); the painter blits it with `StretchDIBits(SRCCOPY)`,
-//! which ignores alpha. Icon translucency is therefore flattened onto the
+//! Alpha semantics, stated honestly: artwork blends over a
+//! [`MINI_GRAY`](crate::pager_icons::MINI_GRAY)-filled 32-bit top-down DIB
+//! at lookup time. The returned buffer is opaque (alpha bytes forced to
+//! `0xFF`); the painter blits it with `StretchDIBits(SRCCOPY)`, which
+//! ignores alpha. Icon translucency is therefore flattened onto the
 //! miniature gray once, never composited per paint, and the opaque overlay
 //! hosting is unchanged.
 //!
@@ -45,123 +48,21 @@
 //! claim is made that all work is bounded. No foreign query or wait ever
 //! runs on the tile loop or in the paint path.
 
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
-use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, GdiFlush, HBITMAP, HDC, SelectObject,
-};
-use windows_sys::Win32::UI::Shell::ExtractIconExW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, DrawIconEx, GetClassLongPtrW, GetWindowThreadProcessId, HICON, IsWindow,
-    SendMessageTimeoutW,
-};
-
+use crate::ffi::{self, AppIcon};
 use crate::native::HeldProcess;
 use crate::pager_icons::{
     ICON_RENDER_PX, IconChannel, IconImage, IconResult, IconSource, MINI_GRAY,
 };
 use crate::workspace::WindowKey;
 
-const WM_GETICON: u32 = 0x007F;
-const ICON_SMALL: usize = 0;
-const ICON_BIG: usize = 1;
-const ICON_SMALL2: usize = 2;
-const SMTO_ABORTIFHUNG: u32 = 0x0002;
-const ICON_MSG_TIMEOUT_MS: u32 = 50;
-const GCLP_HICONSM: i32 = -34;
-const GCLP_HICON: i32 = -14;
-const DI_NORMAL: u32 = 0x0003;
 /// `ApplicationFrameHost.exe` owns UWP windows; its exe icon is not the app.
 const FRAME_HOST_EXE: &str = "applicationframehost.exe";
-
-/// Owned icon handle: destroyed exactly once.
-struct OwnedIcon(HICON);
-
-impl Drop for OwnedIcon {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                DestroyIcon(self.0);
-            }
-        }
-    }
-}
-
-struct DcGuard(HDC);
-
-impl Drop for DcGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                DeleteDC(self.0);
-            }
-        }
-    }
-}
-
-struct BitmapGuard(HBITMAP);
-
-impl Drop for BitmapGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                DeleteObject(self.0 as _);
-            }
-        }
-    }
-}
-
-fn copy_borrowed(raw: HICON) -> Option<OwnedIcon> {
-    if raw.is_null() {
-        return None;
-    }
-    let owned = unsafe { CopyIcon(raw) };
-    if owned.is_null() {
-        None
-    } else {
-        Some(OwnedIcon(owned))
-    }
-}
-
-/// Classic `WM_GETICON` chain: `ICON_SMALL2`, `ICON_SMALL`, `ICON_BIG`.
-fn message_icon(hwnd: HWND) -> Option<OwnedIcon> {
-    for kind in [ICON_SMALL2, ICON_SMALL, ICON_BIG] {
-        let mut result: usize = 0;
-        let sent = unsafe {
-            SendMessageTimeoutW(
-                hwnd,
-                WM_GETICON,
-                kind,
-                0,
-                SMTO_ABORTIFHUNG,
-                ICON_MSG_TIMEOUT_MS,
-                &mut result,
-            )
-        };
-        if sent != 0
-            && let Some(icon) = copy_borrowed(result as HICON)
-        {
-            return Some(icon);
-        }
-    }
-    None
-}
-
-fn class_icon(hwnd: HWND) -> Option<OwnedIcon> {
-    for index in [GCLP_HICONSM, GCLP_HICON] {
-        let raw = unsafe { GetClassLongPtrW(hwnd, index) } as HICON;
-        if let Some(icon) = copy_borrowed(raw) {
-            return Some(icon);
-        }
-    }
-    None
-}
 
 fn is_frame_host(exe: &str) -> bool {
     exe.rsplit(['\\', '/'])
@@ -169,19 +70,10 @@ fn is_frame_host(exe: &str) -> bool {
         .is_some_and(|base| base.eq_ignore_ascii_case(FRAME_HOST_EXE))
 }
 
-/// Live pid behind one HWND, or `None` when the window is gone.
-fn window_pid(hwnd: HWND) -> Option<u32> {
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut pid);
-    }
-    (pid != 0).then_some(pid)
-}
-
 /// Verified owner of one lookup: the HWND plus its held process (the open
 /// handle pins the process against pid reuse for the whole lookup).
 struct VerifiedOwner {
-    hwnd: HWND,
+    hwnd: u64,
     process: HeldProcess,
     exe: String,
 }
@@ -194,11 +86,10 @@ fn verify_before(key: &WindowKey) -> Option<VerifiedOwner> {
     if key.hwnd == 0 {
         return None;
     }
-    let hwnd = key.hwnd as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !ffi::is_window(key.hwnd) {
         return None;
     }
-    if window_pid(hwnd) != Some(key.pid) {
+    if ffi::window_pid(key.hwnd) != key.pid {
         return None;
     }
     let process = HeldProcess::open(key.pid).ok()?;
@@ -207,7 +98,7 @@ fn verify_before(key: &WindowKey) -> Option<VerifiedOwner> {
         return None;
     }
     Some(VerifiedOwner {
-        hwnd,
+        hwnd: key.hwnd,
         process,
         exe: identity.exe_path,
     })
@@ -217,129 +108,14 @@ fn verify_before(key: &WindowKey) -> Option<VerifiedOwner> {
 /// and the held process must still be alive. Catches window close and HWND
 /// reuse across processes mid-lookup.
 fn verify_after(key: &WindowKey, owner: &VerifiedOwner) -> bool {
-    window_pid(owner.hwnd) == Some(key.pid) && owner.process.is_alive()
+    ffi::window_pid(owner.hwnd) == key.pid && owner.process.is_alive()
 }
 
-/// Executable fallback from the already-verified exe path: never presents
-/// the UWP host exe as app artwork. `ExtractIconExW` reads the file only
-/// (no `SHGetFileInfo`, no COM) and returns owned handles.
-fn exe_icon(exe: &str) -> Option<OwnedIcon> {
-    if is_frame_host(exe) {
-        return None;
-    }
-    let path: Vec<u16> = exe.encode_utf16().chain([0]).collect();
-    let mut large: HICON = std::ptr::null_mut();
-    let mut small: HICON = std::ptr::null_mut();
-    let count = unsafe { ExtractIconExW(path.as_ptr(), 0, &mut large, &mut small, 1) };
-    if count == 0 || count == u32::MAX {
-        return None;
-    }
-    // Small matches the miniature scale; the unused handle is destroyed.
-    if !small.is_null() {
-        if !large.is_null() {
-            unsafe {
-                DestroyIcon(large);
-            }
-        }
-        Some(OwnedIcon(small))
-    } else if !large.is_null() {
-        Some(OwnedIcon(large))
-    } else {
-        None
-    }
-}
-
-/// Render one owned icon onto a miniature-gray DIB and return the opaque
-/// bytes. Alpha flattens here; paint only copies. Any failure (DIB, select,
-/// draw) returns a miss: a gray hit would lie about artwork presence.
-fn render_icon(icon: &OwnedIcon) -> Option<IconImage> {
-    let size = ICON_RENDER_PX as i32;
-    let hdc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
-    if hdc.is_null() {
-        return None;
-    }
-    let _dc = DcGuard(hdc);
-    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
-    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = size;
-    bmi.bmiHeader.biHeight = -size;
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-    let bitmap = unsafe {
-        CreateDIBSection(
-            hdc,
-            &bmi,
-            DIB_RGB_COLORS,
-            &mut bits,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if bitmap.is_null() {
-        return None;
-    }
-    // A null backing store with a live bitmap would leak the section on the
-    // early return below: release it before bailing.
-    if bits.is_null() {
-        unsafe {
-            DeleteObject(bitmap as _);
-        }
-        return None;
-    }
-    let _bitmap = BitmapGuard(bitmap);
-    let old = unsafe { SelectObject(hdc, bitmap as _) };
-    if old.is_null() {
-        return None;
-    }
-    // From here the bitmap is selected in: restore before every return so
-    // the guards never free a selected object.
-    let restore = |hdc: HDC, old: windows_sys::Win32::Graphics::Gdi::HGDIOBJ| unsafe {
-        SelectObject(hdc, old);
-    };
-    // Opaque miniature-gray backing: transparent artwork regions read gray.
-    let stride = size as usize * 4;
-    let total = stride * size as usize;
-    let drawn = unsafe {
-        let pixels = std::slice::from_raw_parts_mut(bits as *mut u8, total);
-        for i in 0..total / 4 {
-            let px = &mut pixels[i * 4..i * 4 + 4];
-            px[0] = MINI_GRAY.2;
-            px[1] = MINI_GRAY.1;
-            px[2] = MINI_GRAY.0;
-            px[3] = 0xFF;
-        }
-        let drawn = DrawIconEx(
-            hdc,
-            0,
-            0,
-            icon.0,
-            size,
-            size,
-            0,
-            std::ptr::null_mut(),
-            DI_NORMAL,
-        );
-        GdiFlush();
-        drawn
-    };
-    if drawn == 0 {
-        restore(hdc, old);
-        return None;
-    }
-    let bgra = unsafe {
-        let mut bgra = vec![0u8; total];
-        bgra.copy_from_slice(std::slice::from_raw_parts(bits as *const u8, total));
-        // `SRCCOPY` ignores the alpha byte, but keep the buffer honestly
-        // opaque: icon blending may leave the alpha lane untouched.
-        for i in 0..total / 4 {
-            bgra[i * 4 + 3] = 0xFF;
-        }
-        bgra
-    };
-    restore(hdc, old);
-    let image = IconImage::new(ICON_RENDER_PX, ICON_RENDER_PX, bgra);
+/// Render one owned icon to worker pixels, or `None` on any draw failure
+/// (a gray hit would lie about artwork presence).
+fn render_icon(icon: &AppIcon) -> Option<IconImage> {
+    let pixels = ffi::render_icon(icon, ICON_RENDER_PX, MINI_GRAY)?;
+    let image = IconImage::new(pixels.size, pixels.size, pixels.bgra);
     image.is_valid().then_some(image)
 }
 
@@ -365,7 +141,7 @@ fn lookup_icon(key: &WindowKey) -> LookupOutcome {
     // never destroyed. Extracted handles arrive owned. Each stage verifies
     // identity before accepting pixels; a failed verification refuses at
     // once instead of trying a possibly-recycled next stage.
-    if let Some(icon) = message_icon(owner.hwnd) {
+    if let Some(icon) = ffi::message_icon(owner.hwnd) {
         if !verify_after(key, &owner) {
             return refused();
         }
@@ -381,7 +157,7 @@ fn lookup_icon(key: &WindowKey) -> LookupOutcome {
             return refused();
         }
     }
-    if let Some(icon) = class_icon(owner.hwnd) {
+    if let Some(icon) = ffi::class_icon(owner.hwnd) {
         if !verify_after(key, &owner) {
             return refused();
         }
@@ -397,7 +173,10 @@ fn lookup_icon(key: &WindowKey) -> LookupOutcome {
             return refused();
         }
     }
-    if let Some(icon) = exe_icon(&owner.exe)
+    // Executable fallback from the already-verified exe path: never presents
+    // the UWP host exe as app artwork.
+    if !is_frame_host(&owner.exe)
+        && let Some(icon) = ffi::exe_icon(&owner.exe)
         && verify_after(key, &owner)
         && let Some(image) = render_icon(&icon)
         && verify_after(key, &owner)
@@ -428,9 +207,7 @@ struct WorkerShared {
 
 fn signal_completed(shared: &WorkerShared) {
     if let Some(handle) = shared.completed.as_ref() {
-        unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-        }
+        ffi::signal_event(handle);
     }
 }
 
@@ -500,23 +277,10 @@ impl PagerIconService {
     /// host retries every five seconds and the pager stays icon-less).
     #[must_use]
     pub fn try_new() -> Option<Self> {
-        let completed = unsafe {
-            let raw = windows_sys::Win32::System::Threading::CreateEventW(
-                std::ptr::null(),
-                0,
-                0,
-                std::ptr::null(),
-            );
-            if raw.is_null() {
-                None
-            } else {
-                Some(OwnedHandle::from_raw_handle(raw))
-            }
-        };
         let shared = Arc::new(WorkerShared {
             channel: Mutex::new(IconChannel::new()),
             wake: Condvar::new(),
-            completed,
+            completed: ffi::create_auto_reset_event(),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let worker_shared = Arc::clone(&shared);

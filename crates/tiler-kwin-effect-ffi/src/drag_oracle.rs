@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use std::sync::{
     LazyLock, Mutex,
     atomic::{AtomicU64, Ordering},

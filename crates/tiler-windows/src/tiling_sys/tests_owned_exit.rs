@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// Scripted owned-exit native effects (test-only): a fake style word plus
 /// a scripted metadata store, with a call log pinning production
 /// ordering. No live HWND API is ever touched; the suite runs wherever

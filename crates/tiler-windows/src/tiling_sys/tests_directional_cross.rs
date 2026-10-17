@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows multi-output directional foundation (REQ-OUT-01..03, REQ-MOV-08)
 // through a real `TileLoop` against the real retained Engine (no HWNDs,
 // hooks, or live effects): synthetic two-output FULL/work topologies with

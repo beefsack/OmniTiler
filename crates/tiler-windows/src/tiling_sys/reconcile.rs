@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::focus_actuation::overlay_expected;
 use super::geometry::{ApplyInput, apply_geometry};
 use super::rows::assemble_domain_rows;

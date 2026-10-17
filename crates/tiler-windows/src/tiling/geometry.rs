@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Shipped KDE parity: inner gap 8, outer gap 8 (`kwin/src/domain-gap.ts`).

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One planned geometry write extracted from an Engine reply: the portable

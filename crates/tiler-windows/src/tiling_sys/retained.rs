@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One hidden member: the committed ledger claim (carrying the durable

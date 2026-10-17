@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::rmax03_adapter_tests::test_state;
 use super::{
     LaunchBackend, SystemLaunchBackend, dispatch_launch_intent, dispatch_workspace_tiling_intent,

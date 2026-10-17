@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 fn rect(x: i32, y: i32) -> Rect {

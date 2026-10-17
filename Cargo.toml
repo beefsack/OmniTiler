@@ -1,3 +1,6 @@
 [workspace]
 members = ["crates/tiler-core", "crates/tiler-protocol", "crates/omnitiler", "crates/tiler-kwin-effect-ffi", "crates/tiler-windows", "crates/tiler-macos", "crates/tiler-kde-settings-exporter"]
 resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

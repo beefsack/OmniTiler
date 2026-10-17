@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Native foreground veto read: one fresh pass over the live foreground with
@@ -49,8 +50,8 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
             cloaked,
         )
     };
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground.is_null() {
+    let foreground = crate::ffi::foreground_window();
+    if foreground == 0 {
         // No foreground window: nothing covering.
         return allow(
             ForegroundVetoReason::None,
@@ -61,7 +62,7 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
             false,
         );
     }
-    if unsafe { IsWindow(foreground) } == 0 {
+    if !crate::ffi::is_window(foreground) {
         // `IsWindowVisible` returns false for invalid handles, so validity is
         // checked first and fails closed.
         return settled(
@@ -79,43 +80,27 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
     // Exact known desktop shell handles are the desktop, not a fullscreen
     // application. Narrow API identity only: no class-name, exe, tool/popup,
     // or unmanaged exceptions.
-    let shell = unsafe { GetShellWindow() };
-    let desktop_handle = unsafe { GetDesktopWindow() };
-    let is_desktop = (!shell.is_null() && shell == foreground)
-        || (!desktop_handle.is_null() && desktop_handle == foreground);
+    let shell = crate::ffi::shell_window();
+    let desktop_handle = crate::ffi::desktop_window();
+    let is_desktop = (shell != 0 && shell == foreground)
+        || (desktop_handle != 0 && desktop_handle == foreground);
     // Fresh unambiguous visibility read on the valid handle: invisible
     // windows cannot be covering fullscreen.
-    let visible = unsafe { IsWindowVisible(foreground) } != 0;
-    let style = unsafe {
-        SetLastError(0);
-        GetWindowLongW(foreground, GWL_STYLE)
-    } as u32;
-    let style_err = unsafe { GetLastError() };
-    let style_ok = style != 0 || style_err == 0;
+    let visible = crate::ffi::is_visible(foreground);
+    let style = crate::ffi::window_style_checked(foreground);
+    let style_ok = style.is_some();
+    let style = style.unwrap_or(0);
     let captioned = style & WS_CAPTION != 0;
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    let dwm_ok = unsafe {
-        DwmGetWindowAttribute(
-            foreground,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } == 0;
+    let visible_raw = crate::ffi::extended_frame_bounds(foreground);
+    let dwm_ok = visible_raw.is_some();
     // Fresh cloak fact on the same valid handle: a cloaked foreground is
     // invisible to the compositor and never a covering fullscreen, even
     // with a monitor-spanning frame. Query failure fails closed (unreadable)
     // like the frame read, matching the admission and hold gates.
-    let mut cloak_val: i32 = 0;
-    let cloak_ok = unsafe {
-        DwmGetWindowAttribute(
-            foreground,
-            DWMWA_CLOAKED,
-            (&mut cloak_val as *mut i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        )
-    } == 0;
-    if unsafe { IsWindow(foreground) } == 0 {
+    let cloak = crate::ffi::cloaked(foreground);
+    let cloak_ok = cloak.is_some();
+    let cloak_val = cloak.is_some_and(|cloaked| cloaked);
+    if !crate::ffi::is_window(foreground) {
         return settled(
             crate::workspace_owner::ForegroundVeto {
                 block: true,
@@ -130,7 +115,8 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
     }
     let readable = dwm_ok && style_ok;
     let covers_monitor = readable
-        && rect_from_win(visible_raw)
+        && visible_raw
+            .and_then(rect_from_win)
             .is_some_and(|visible| is_borderless_fullscreen(true, visible, fulls));
     let veto = classify_foreground(ForegroundFacts {
         valid: true,
@@ -139,17 +125,10 @@ fn foreground_read(fulls: &[Rect]) -> ForegroundRead {
         captioned,
         dwm_readable: readable,
         cloak_readable: cloak_ok,
-        cloaked: cloak_val != 0,
+        cloaked: cloak_val,
         covers_monitor,
     });
-    settled(
-        veto,
-        is_desktop,
-        visible,
-        captioned,
-        readable,
-        cloak_val != 0,
-    )
+    settled(veto, is_desktop, visible, captioned, readable, cloak_val)
 }
 
 /// Managed-aware suspend read: the raw foreground veto, except a real
@@ -207,7 +186,7 @@ pub(super) fn suspend_read(
     if raw.veto.reason != ForegroundVetoReason::Fullscreen {
         return raw;
     }
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == 0 {
         return raw;
     }

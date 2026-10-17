@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Win+G float toggle (KDE Meta+G parity): fresh observation, exact origin
@@ -34,36 +35,10 @@ impl LaunchBackend for SystemLaunchBackend {
 fn launch_default_browser() -> std::result::Result<(), String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        let op: Vec<u16> = std::ffi::OsStr::new("open")
-            .encode_wide()
-            .chain([0])
-            .collect();
-        let url: Vec<u16> = std::ffi::OsStr::new("https://")
-            .encode_wide()
-            .chain([0])
-            .collect();
-        // SAFETY: minimal Win32 FFI call site. Both pointers are
-        // nul-terminated UTF-16 buffers alive for the call; the remaining
-        // parameters are null and no returned pointer is retained.
-        // SW_SHOWNORMAL = 1.
-        let rc = unsafe {
-            windows_sys::Win32::UI::Shell::ShellExecuteW(
-                std::ptr::null_mut(),
-                op.as_ptr(),
-                url.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                1, // SW_SHOWNORMAL
-            )
-        };
-        if (rc as usize) <= 32 {
-            return Err(format!(
-                "ShellExecuteW open https:// failed: {}",
-                rc as usize
-            ));
-        }
-        Ok(())
+        // SW_SHOWNORMAL = 1 inside the boundary; `Err(rc)` carries the
+        // `ShellExecuteW` return, as before.
+        crate::ffi::open_url("https://")
+            .map_err(|rc| format!("ShellExecuteW open https:// failed: {rc}"))
     }
     #[cfg(not(windows))]
     {

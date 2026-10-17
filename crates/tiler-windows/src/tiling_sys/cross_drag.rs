@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Cross-output drag-drop settle (REQ-MOU-03): native title-bar and Win-drag

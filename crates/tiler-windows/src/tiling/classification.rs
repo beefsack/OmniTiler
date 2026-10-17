@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Stable opaque per-run window tokens (`w1`, `w2`, ...). Keyed by

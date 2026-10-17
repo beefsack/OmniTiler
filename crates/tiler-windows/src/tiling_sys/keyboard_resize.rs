@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Keyboard resize dispatch (Win+Alt grow outwards, Win+Shift+Alt shrink

@@ -1,8 +1,5 @@
+#![forbid(unsafe_code)]
 use super::*;
-
-// Extended-frame-bounds and cloaked attribute ids (stable DWM ABI).
-pub(super) const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
-pub(super) const DWMWA_CLOAKED: u32 = 14;
 
 /// Shell classes that are never tile targets.
 pub(super) fn is_shell_class(class: &str) -> bool {

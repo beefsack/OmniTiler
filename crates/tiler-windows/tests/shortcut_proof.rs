@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::snapkey::{
     KeyboardConfig, SHORTCUT_PROOF_MARKER, SnapClassify, VK_LWIN, accept_proof_injected,
 };

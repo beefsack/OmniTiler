@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 // Keyboard resize catalog/settings: 8 logical rows (letter plus arrow alias

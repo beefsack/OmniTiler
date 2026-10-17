@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::input_handoff::{
     InboxItem, InputSnapshot, SharedSnapshot, TaggedBatch, WindragOrigin, global_esc_clock,
@@ -639,14 +640,10 @@ fn stalled_overflow_escalates_and_resumes_through_pump_seam() {
         );
         // Latch suspend-clear edges through the real callback, prove
         // latched, re-latch for the cycle.
-        unsafe {
-            test_drive_llproc(VK_ESCAPE, 0, 0, 0);
-        }
+        test_drive_llproc(VK_ESCAPE, 0, 0, 0);
         assert!(take_esc_edge());
         assert!(take_windrag_esc_edge());
-        unsafe {
-            test_drive_llproc(VK_ESCAPE, 0, 0, 0);
-        }
+        test_drive_llproc(VK_ESCAPE, 0, 0, 0);
         // Stall with harmless idempotent filler (unknown HWNDs touch
         // nothing), then churn far past the fixed cap plus the
         // suspend-clear obligation.
@@ -1046,15 +1043,10 @@ fn esc_clocks_are_process_singletons() {
 }
 
 fn wake_signaled(channels: &InputChannels) -> bool {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     let Some(handle) = channels.intent_wake() else {
         panic!("intent wake missing");
     };
-    let raw = handle.as_handle().as_raw_handle();
-    unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    }
+    crate::ffi::event_signaled(handle)
 }
 
 fn dummy_snap() -> crate::snapkey::QueuedSnapEvent {
@@ -1254,17 +1246,13 @@ fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
     assert_eq!(crate::snapkey::sys::chord_levels(), (false, false));
-    unsafe {
-        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_LWIN, 0, 0, 0);
-    }
+    crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_LWIN, 0, 0, 0);
     assert_eq!(crate::snapkey::sys::chord_levels(), (true, false));
     assert!(!core.step());
     // Win alone leaves the chord quiet: no batch, no transition wake.
     assert!(!wake_signaled(&channels));
     assert!(!channels.snap_outbox.occupied());
-    unsafe {
-        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, 0, 0);
-    }
+    crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, 0, 0);
     assert_eq!(crate::snapkey::sys::chord_levels(), (true, true));
     assert!(!core.step());
     // Transition with empty outboxes: the wake is transition-only.
@@ -1275,9 +1263,7 @@ fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
     // Steady hold: no repeated wake.
     assert!(!core.step());
     assert!(!wake_signaled(&channels));
-    unsafe {
-        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, LLKHF_UP, 0);
-    }
+    crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, LLKHF_UP, 0);
     assert_eq!(crate::snapkey::sys::chord_levels(), (true, false));
     assert!(!core.step());
     assert!(wake_signaled(&channels));
@@ -1304,9 +1290,7 @@ fn esc_edge_signals_once_without_stealing_the_owner_latch() {
     crate::win_mouse::sys::test_ensure_state();
     let (channels, signals) = test_channels();
     let mut core = installed_core(&channels, &signals);
-    unsafe {
-        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_ESCAPE, 1, 0, 0);
-    }
+    crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_ESCAPE, 1, 0, 0);
     assert!(!core.step());
     assert!(wake_signaled(&channels), "cancel edge wakes the owner");
     assert!(channels.snap_outbox.take().is_none());
@@ -1469,15 +1453,10 @@ fn stalled_retry_survives_drain_between_refusal_and_flag_store() {
 }
 
 fn work_signaled(channels: &InputChannels) -> bool {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     let Some(handle) = channels.work_wake() else {
         panic!("work wake missing");
     };
-    let raw = handle.as_handle().as_raw_handle();
-    unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    }
+    crate::ffi::event_signaled(handle)
 }
 
 #[test]

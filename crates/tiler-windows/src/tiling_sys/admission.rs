@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Otherwise-eligible check for an admission-clear candidate: every safety
@@ -223,11 +224,7 @@ pub(super) fn clear_maximize_at_admission(
         // Fresh identity: the live window must still be the retained one with
         // a same-session, medium-integrity identity. Scope, hosted-child, and
         // proof gates match observation admission exactly.
-        let hwnd = row.key.hwnd as isize as HWND;
-        let mut live_pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, &mut live_pid);
-        }
+        let live_pid = crate::ffi::window_pid(row.key.hwnd);
         if live_pid == 0 || live_pid != row.key.pid {
             continue;
         }
@@ -312,14 +309,10 @@ pub(super) fn clear_maximize_at_admission(
         let Ok(pid_u32) = pid.parse::<u32>() else {
             return false;
         };
-        let hwnd_ptr = hwnd_u64 as isize as HWND;
-        if unsafe { IsWindow(hwnd_ptr) } == 0 {
+        if !crate::ffi::is_window(hwnd_u64) {
             return false;
         }
-        let mut live_pid: u32 = 0;
-        unsafe {
-            GetWindowThreadProcessId(hwnd_ptr, &mut live_pid);
-        }
+        let live_pid = crate::ffi::window_pid(hwnd_u64);
         live_pid == pid_u32 && {
             let key = crate::workspace::WindowKey {
                 hwnd: hwnd_u64,

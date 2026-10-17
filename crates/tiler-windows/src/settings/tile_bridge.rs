@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Portable `TileOptions` construction from settings. Every explicit CLI

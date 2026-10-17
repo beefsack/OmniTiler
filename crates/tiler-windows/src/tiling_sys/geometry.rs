@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::rows::desired_entries;
 use super::*;
 
@@ -278,19 +279,16 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             skipped.push((entry.window.0.clone(), "fullscreen-foreground".to_owned()));
             continue;
         }
-        let hwnd = target.window.hwnd as isize as HWND;
+        let hwnd_u64 = target.window.hwnd;
         outer_targets.insert(entry.window.0.clone(), outer);
-        let ok = unsafe {
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            )
-        };
+        let ok = crate::ffi::set_window_pos(
+            hwnd_u64,
+            outer.x,
+            outer.y,
+            outer.w,
+            outer.h,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
         // The held process keeps liveness authority across the write; recheck
         // the HWND pid afterward against recycling.
         let _ = &target.held;
@@ -325,7 +323,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
                         "tag": tag,
                     },
                     "flags": "SWP_NOACTIVATE|SWP_NOZORDER",
-                    "outcome": if ok != 0 && pid_ok { "written" } else if ok == 0 { "setter-failed" } else { "pid-changed" },
+                    "outcome": if ok && pid_ok { "written" } else if !ok { "setter-failed" } else { "pid-changed" },
                 }),
             );
         }
@@ -333,7 +331,7 @@ pub(super) fn apply_geometry(state: &mut TileLoop, input: ApplyInput<'_>) -> Opt
             skipped.push((entry.window.0.clone(), "pid-changed".to_owned()));
             continue;
         }
-        if ok == 0 {
+        if !ok {
             skipped.push((entry.window.0.clone(), "setter-failed".to_owned()));
             state
                 .refused

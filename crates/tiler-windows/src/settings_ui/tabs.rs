@@ -1,5 +1,6 @@
 //! Catalog-driven tab layout for the native Win32 settings window.
 //!
+#![forbid(unsafe_code)]
 //! Geometry (native Win32 metrics) plus text rendered from the shared
 //! portable catalog (`tiler_core::settings_catalog`) and the Windows
 //! adapter (`crate::settings`). The native shell (`super`, `ctl`) owns

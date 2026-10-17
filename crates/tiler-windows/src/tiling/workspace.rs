@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// CLI options for the read-only `children` command: explicit top-level

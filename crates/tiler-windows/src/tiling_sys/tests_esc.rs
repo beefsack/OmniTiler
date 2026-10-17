@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::esc_edge_cancels;
 
 #[test]

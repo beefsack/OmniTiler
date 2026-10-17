@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use std::collections::HashMap;
 use tiler_core::boundary::{CoreCommand, CoreReply};

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 /// One on-window marker slot read (item 8, R-RST-01/R-FLT-05). `Value`
 /// carries the live `GetProp` value, always nonzero (native NULL/zero reads
 /// as [`MarkerSlot::Absent`); a `Value(0)` only arises in unit tests and

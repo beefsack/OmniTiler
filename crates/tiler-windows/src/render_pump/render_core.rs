@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Portable renderer core: drains latest-wins frames, honors safety

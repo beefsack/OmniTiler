@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::SendPreflight;
 use crate::workspace_owner::SendFenceSnapshot;
 

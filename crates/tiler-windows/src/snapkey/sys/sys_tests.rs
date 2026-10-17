@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::input_handoff::{
     global_esc_clock, global_esc_edge, global_windrag_esc_clock, global_windrag_esc_edge,
@@ -31,10 +32,8 @@ fn own_e8_reentry_passes_through_with_no_state_change() {
             })
             .unwrap_or((0, 0, 0, 0))
     });
-    unsafe {
-        test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
-        test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED | LLKHF_UP, 0);
-    }
+    test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
+    test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED | LLKHF_UP, 0);
     // Thread-local state untouched (process-global clocks are shared
     // with parallel tests, so only TLS effects assert exactly here).
     let tls_after = SNAP.with(|s| {
@@ -59,9 +58,7 @@ fn own_e8_reentry_passes_through_with_no_state_change() {
             st.cb_diag_enabled = true;
         }
     });
-    unsafe {
-        test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
-    }
+    test_drive_llproc(super::super::VK_MASK, 0, LLKHF_INJECTED, 0);
     let diags = drain_callback_diag();
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].reason, CallbackReason::InjectedFiltered);
@@ -77,9 +74,7 @@ fn physical_esc_sets_both_edges_and_bumps_both_clocks() {
     fresh_state();
     let esc_before = global_esc_clock().load();
     let windrag_before = global_windrag_esc_clock().load();
-    unsafe {
-        test_drive_llproc(super::super::VK_ESCAPE, 1, 0, 0);
-    }
+    test_drive_llproc(super::super::VK_ESCAPE, 1, 0, 0);
     let (edge, windrag_edge) = SNAP.with(|s| {
         s.borrow()
             .as_ref()
@@ -102,9 +97,7 @@ fn injected_esc_sets_only_the_windrag_edge() {
     // same global-edge race as the physical Esc test above.
     let _guard = crate::input_handoff::fence_test_serial();
     fresh_state();
-    unsafe {
-        test_drive_llproc(super::super::VK_ESCAPE, 1, LLKHF_INJECTED, 0);
-    }
+    test_drive_llproc(super::super::VK_ESCAPE, 1, LLKHF_INJECTED, 0);
     let (edge, windrag_edge, esc_seq_delta) = SNAP.with(|s| {
         s.borrow()
             .as_ref()
@@ -123,9 +116,7 @@ fn untracked_win_up_passes_without_mask_send() {
     // (no real `SendInput`), and always passes through.
     fresh_state();
     let (sends_before, _) = mask_send_stats();
-    unsafe {
-        test_drive_llproc(super::super::VK_LWIN, 0, LLKHF_UP, 0);
-    }
+    test_drive_llproc(super::super::VK_LWIN, 0, LLKHF_UP, 0);
     let (sends_after, _) = mask_send_stats();
     assert_eq!(sends_before, sends_after);
     test_clear_state();
@@ -133,7 +124,7 @@ fn untracked_win_up_passes_without_mask_send() {
 
 #[test]
 fn publication_fence_refuses_fresh_chord_through_real_callback() {
-    // Real `llproc` through the test-drive seam: while the fence is
+    // Real policy through the test-drive seam: while the fence is
     // pending (policy published, pump not yet applied) a fresh chord
     // passes through instead of consuming under stale policy; after
     // the pump applies, fresh chords consume, and a consumed hold
@@ -152,15 +143,13 @@ fn publication_fence_refuses_fresh_chord_through_real_callback() {
             st.active = true;
         }
     });
-    unsafe {
-        test_drive_llproc(super::super::VK_LWIN, 0, 0, 0);
-    }
+    test_drive_llproc(super::super::VK_LWIN, 0, 0, 0);
     assert!(SNAP.with(|s| { s.borrow().as_ref().is_some_and(|st| st.machine.win_held()) }));
     // Fence pending: the fresh H down passes through the real
     // callback (never swallowed under stale policy).
     note_policy_published(base + 1);
     assert!(!keyboard_fresh_gate(true));
-    let verdict = unsafe { test_drive_llproc(super::super::VK_H, 0, 0, 0) };
+    let verdict = test_drive_llproc(super::super::VK_H, 0, 0, 0);
     assert_ne!(verdict, 1);
     assert!(SNAP.with(|s| {
         s.borrow()
@@ -170,7 +159,7 @@ fn publication_fence_refuses_fresh_chord_through_real_callback() {
     // Pump applies: a new fresh chord consumes through the callback.
     note_policy_applied(base + 1);
     assert!(keyboard_fresh_gate(true));
-    let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, 0, 0) };
+    let verdict = test_drive_llproc(super::super::VK_J, 0, 0, 0);
     assert_eq!(verdict, 1);
     // A newer policy publishes mid-hold: the repeat still rides the
     // stored consumed verdict, the mask obligation survives, and the
@@ -178,7 +167,7 @@ fn publication_fence_refuses_fresh_chord_through_real_callback() {
     // passing (never stolen).
     note_policy_published(base + 2);
     assert!(!keyboard_fresh_gate(true));
-    let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, 0, 0) };
+    let verdict = test_drive_llproc(super::super::VK_J, 0, 0, 0);
     assert_eq!(verdict, 1);
     let mask_armed = SNAP.with(|s| {
         let mut borrow = s.borrow_mut();
@@ -192,9 +181,9 @@ fn publication_fence_refuses_fresh_chord_through_real_callback() {
         )
     });
     assert!(mask_armed);
-    let verdict = unsafe { test_drive_llproc(super::super::VK_J, 0, LLKHF_UP, 0) };
+    let verdict = test_drive_llproc(super::super::VK_J, 0, LLKHF_UP, 0);
     assert_eq!(verdict, 1);
-    let verdict = unsafe { test_drive_llproc(super::super::VK_H, 0, LLKHF_UP, 0) };
+    let verdict = test_drive_llproc(super::super::VK_H, 0, LLKHF_UP, 0);
     assert_ne!(verdict, 1);
     note_policy_applied(base + 2);
     assert!(keyboard_fresh_gate(true));

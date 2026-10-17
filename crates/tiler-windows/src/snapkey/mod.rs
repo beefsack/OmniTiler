@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Product keyboard takeover: Win+H/J/K/L and Win+arrows for focus/move,
 //! plus Win+Alt(+Shift) chords for keyboard resize, plus Win+Ctrl+Alt chords
 //! for explicit directional output send (item 5: follow by default, stay

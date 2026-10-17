@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Ordinary trailing lifecycle after a stay send filled the trailing empty:

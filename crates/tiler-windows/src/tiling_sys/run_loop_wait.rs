@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 // Per-turn WinEvent edge drain for the tile loop: takes the queued hook

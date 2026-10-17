@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::chords::is_modifier_vk;
 use super::*;
 

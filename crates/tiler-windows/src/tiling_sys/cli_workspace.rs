@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Exact-owner out-of-hook fullscreen toggle for the normal `tile` loop only
@@ -50,7 +51,7 @@ fn dispatch_fullscreen_cli_toggle(
     clear_maximize_at_admission(state, me, &retained);
     // Live-foreground origin through the same map the hook binds chords
     // against; never a carried HWND, never a retarget.
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     let origin = state.snap_origins.get(&foreground_hwnd).cloned();
     let Some(origin) = origin.filter(|o| !o.token.is_empty()) else {
         log_json_at(&state.log_path, settle("unmanaged"));
@@ -248,7 +249,7 @@ fn dispatch_float_cli_toggle(
     // against; never a carried HWND, never a retarget. The dispatch
     // re-resolves it against its own fresh observation, so a foreground
     // change between here and there refuses instead of misacting.
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     let origin = state.snap_origins.get(&foreground_hwnd).cloned();
     let Some(origin) = origin.filter(|o| !o.token.is_empty()) else {
         state.tick += 1;
@@ -320,7 +321,7 @@ fn dispatch_sticky_cli_toggle(
         );
         return;
     }
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     let origin = state.snap_origins.get(&foreground_hwnd).cloned();
     let Some(origin) = origin.filter(|o| !o.token.is_empty()) else {
         state.tick += 1;
@@ -589,7 +590,7 @@ pub(super) fn poll_workspace_cli_request(
             WorkspaceAction::Send | WorkspaceAction::Stay => request.index,
             _ => 0,
         };
-        let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground_hwnd = crate::ffi::foreground_window();
         let origin = state.snap_origins.get(&foreground_hwnd).cloned();
         match origin.filter(|o| !o.token.is_empty()) {
             Some(o) => {
@@ -742,7 +743,7 @@ pub(super) fn poll_workspace_cli_request(
     // REQ-WS-09 departure memory for the CLI select/previous/relative path:
     // the live foreground resolves through the same `snap_origins` map the
     // hook binds chords against (never a carried HWND).
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     if let Some(source_id) = state.workspaces.active_id(&output)
         && let Some(origin) = state.snap_origins.get(&foreground_hwnd).cloned()
         && !origin.token.is_empty()

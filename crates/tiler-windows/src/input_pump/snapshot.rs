@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Oldest snap-batch queue age in microseconds. `u64::MAX` saturates the

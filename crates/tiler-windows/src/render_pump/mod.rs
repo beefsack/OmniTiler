@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Dedicated render thread (stage 2, unit: option B renderer).
 //!
 //! The renderer creates, pumps, presents and destroys the active border,

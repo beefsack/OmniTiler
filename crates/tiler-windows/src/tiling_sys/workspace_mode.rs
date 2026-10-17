@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Session workspace-mode gate: tiled workspaces run every Engine/geometry
@@ -13,30 +14,16 @@ pub(super) fn workspace_mode_tiled(state: &TileLoop, output: &str, workspace: &s
 
 /// Fresh `WS_EX_TOPMOST` read on one HWND (official Win32 topmost band).
 pub(super) fn read_topmost_now(hwnd_u64: u64) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    (unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) }) as u32 & WS_EX_TOPMOST != 0
+    crate::ffi::window_exstyle(hwnd_u64) & WS_EX_TOPMOST != 0
 }
 
 /// Set one window's topmost band without moving, sizing, or activating it.
 /// Returns whether the setter accepted; the caller re-reads for proof.
 pub(super) fn set_topmost_band(hwnd_u64: u64, top: bool) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
-    let after: HWND = if top { HWND_TOPMOST } else { HWND_NOTOPMOST };
-    let placed = unsafe {
-        SetWindowPos(
-            hwnd,
-            after,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        )
-    };
-    placed != 0
+    crate::ffi::set_topmost(hwnd_u64, top)
 }
 
 /// Reset fixed-size admission lanes for one released domain (R-SPC-04 D6):

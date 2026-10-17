@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Style bits the project-owned fullscreen toggle clears on entry
@@ -31,10 +32,6 @@ const FULLSCREEN_H_PROP: &str = "OmniTilerFullscreenH";
 /// values run `1..=2^32`, so NULL (0) is never a valid encoding.
 const FRAME_BIAS: i64 = 0x8000_0000;
 
-fn prop_wide(name: &str) -> Vec<u16> {
-    name.encode_utf16().chain([0]).collect()
-}
-
 /// Owned restoration metadata for one project-toggled fullscreen window: the
 /// exact style bits cleared on entry, whether the window was maximized
 /// before (fullscreen wins over maximize; exit reasserts it), and the
@@ -64,22 +61,15 @@ pub(super) fn decode_frame_value(stored: usize) -> Option<i32> {
 /// maximized entry), `Ok(Some(v))` when valid, `Err(())` when present but
 /// undecodable (corrupt metadata, never guessed).
 fn get_frame_value(hwnd: HWND, name: &str) -> std::result::Result<Option<i32>, ()> {
-    let raw = unsafe { GetPropW(hwnd, prop_wide(name).as_ptr()) };
-    if raw.is_null() {
+    let raw = crate::ffi::get_prop(hwnd as usize as u64, name);
+    let Some(raw) = raw else {
         return Ok(None);
-    }
-    decode_frame_value(raw as usize).map(Some).ok_or(())
+    };
+    decode_frame_value(raw).map(Some).ok_or(())
 }
 
 fn set_frame_value(hwnd: HWND, name: &str, value: i32) -> bool {
-    let stored = unsafe {
-        SetPropW(
-            hwnd,
-            prop_wide(name).as_ptr(),
-            encode_frame_value(value) as _,
-        )
-    };
-    stored != 0
+    crate::ffi::set_prop(hwnd as usize as u64, name, encode_frame_value(value))
 }
 
 /// Read the owned fullscreen metadata. `None` means app-owned or absent:
@@ -92,26 +82,22 @@ fn set_frame_value(hwnd: HWND, name: &str, value: i32) -> bool {
 /// preimage (`frame: None`); maximized entries never carry a frame.
 pub(super) fn read_fullscreen_meta(hwnd_u64: u64) -> Option<FullscreenMeta> {
     let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return None;
     }
-    let marker = unsafe { GetPropW(hwnd, prop_wide(FULLSCREEN_PROP).as_ptr()) };
-    if marker.is_null() || marker as usize != FULLSCREEN_MARKER {
+    let marker = crate::ffi::get_prop(hwnd_u64, FULLSCREEN_PROP);
+    if marker.is_none_or(|m| m != FULLSCREEN_MARKER) {
         return None;
     }
-    let bits = unsafe { GetPropW(hwnd, prop_wide(FULLSCREEN_STYLE_PROP).as_ptr()) };
-    if bits.is_null() {
-        return None;
-    }
-    let changed = u32::try_from((bits as usize).checked_sub(1)?).ok()?;
+    let bits = crate::ffi::get_prop(hwnd_u64, FULLSCREEN_STYLE_PROP);
+    bits?;
+    let changed = u32::try_from(bits.expect("prop present").checked_sub(1)?).ok()?;
     if changed & !FULLSCREEN_STYLE_BITS != 0 {
         return None;
     }
-    let max = unsafe { GetPropW(hwnd, prop_wide(FULLSCREEN_MAX_PROP).as_ptr()) };
-    if max.is_null() {
-        return None;
-    }
-    let was_maximized = match max as usize {
+    let max = crate::ffi::get_prop(hwnd_u64, FULLSCREEN_MAX_PROP);
+    max?;
+    let was_maximized = match max.expect("prop present") {
         1 => false,
         2 => true,
         _ => return None,
@@ -142,6 +128,7 @@ pub(super) fn read_fullscreen_meta(hwnd_u64: u64) -> Option<FullscreenMeta> {
 /// Remove one owned metadata property set best-effort. Used to clean partial
 /// `SetProp` writes so a failed entry never leaves a trusted-looking residue.
 fn remove_fullscreen_meta_props(hwnd: HWND) {
+    let hwnd_u64 = hwnd as usize as u64;
     for name in [
         FULLSCREEN_PROP,
         FULLSCREEN_STYLE_PROP,
@@ -151,9 +138,7 @@ fn remove_fullscreen_meta_props(hwnd: HWND) {
         FULLSCREEN_W_PROP,
         FULLSCREEN_H_PROP,
     ] {
-        unsafe {
-            RemovePropW(hwnd, prop_wide(name).as_ptr());
-        }
+        crate::ffi::remove_prop(hwnd_u64, name);
     }
 }
 
@@ -164,7 +149,7 @@ fn remove_fullscreen_meta_props(hwnd: HWND) {
 /// always carry their pre-fullscreen frame; maximized entries carry none.
 fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
     let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
     if !meta.was_maximized && meta.frame.is_none_or(|frame| frame.w <= 0 || frame.h <= 0) {
@@ -175,35 +160,14 @@ fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
     }
     let stored_bits = (meta.changed as usize).wrapping_add(1);
     let stored_max = if meta.was_maximized { 2usize } else { 1usize };
-    if unsafe {
-        SetPropW(
-            hwnd,
-            prop_wide(FULLSCREEN_PROP).as_ptr(),
-            FULLSCREEN_MARKER as _,
-        )
-    } == 0
-    {
+    if !crate::ffi::set_prop(hwnd_u64, FULLSCREEN_PROP, FULLSCREEN_MARKER) {
         return false;
     }
-    if unsafe {
-        SetPropW(
-            hwnd,
-            prop_wide(FULLSCREEN_STYLE_PROP).as_ptr(),
-            stored_bits as _,
-        )
-    } == 0
-    {
+    if !crate::ffi::set_prop(hwnd_u64, FULLSCREEN_STYLE_PROP, stored_bits) {
         remove_fullscreen_meta_props(hwnd);
         return false;
     }
-    if unsafe {
-        SetPropW(
-            hwnd,
-            prop_wide(FULLSCREEN_MAX_PROP).as_ptr(),
-            stored_max as _,
-        )
-    } == 0
-    {
+    if !crate::ffi::set_prop(hwnd_u64, FULLSCREEN_MAX_PROP, stored_max) {
         remove_fullscreen_meta_props(hwnd);
         return false;
     }
@@ -229,7 +193,7 @@ fn write_fullscreen_meta(hwnd_u64: u64, meta: &FullscreenMeta) -> bool {
 /// exit still finds its preimage rather than stranding the frame.
 pub(super) fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
     let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return false;
     }
     remove_fullscreen_meta_props(hwnd);
@@ -239,19 +203,10 @@ pub(super) fn clear_fullscreen_meta(hwnd_u64: u64) -> bool {
 /// Live style read for stale-metadata retirement: `None` when the window is
 /// dead or the style word is unreadable (fail closed, never guessed).
 pub(super) fn live_style_for_retire(hwnd_u64: u64) -> Option<u32> {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return None;
     }
-    unsafe {
-        SetLastError(0);
-    }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    let style_err = unsafe { GetLastError() };
-    if style == 0 && style_err != 0 {
-        return None;
-    }
-    Some(style)
+    crate::ffi::window_style_checked(hwnd_u64)
 }
 
 /// Shared stale-retirement ordering for owned fullscreen markers (user
@@ -343,14 +298,13 @@ pub(super) fn effective_stale_meta_via_effects(
 /// effect happened (the fresh preimage is cleared, nothing is left trusted).
 /// No automatic retries on any path.
 pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return "threw";
     }
     if read_fullscreen_meta(hwnd_u64).is_some() {
         return "dispatched";
     }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    let style = crate::ffi::window_style(hwnd_u64);
     let was_maximized = is_zoomed_now(hwnd_u64);
     let frame = if was_maximized {
         None
@@ -369,30 +323,23 @@ pub(super) fn enter_fullscreen(hwnd_u64: u64, full: Rect) -> &'static str {
         return "threw";
     }
     let next = (style & !FULLSCREEN_STYLE_BITS) as i32;
-    unsafe {
-        SetLastError(0);
-    }
-    let prev = unsafe { SetWindowLongW(hwnd, GWL_STYLE, next) };
-    let style_err = unsafe { GetLastError() };
+    let (prev, style_err) = crate::ffi::set_window_style(hwnd_u64, next);
     if prev == 0 && style_err != 0 {
         clear_fullscreen_meta(hwnd_u64);
         return "threw";
     }
-    let placed = unsafe {
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            full.x,
-            full.y,
-            full.w,
-            full.h,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        )
-    };
-    if placed == 0 {
+    let placed = crate::ffi::set_window_pos(
+        hwnd_u64,
+        full.x,
+        full.y,
+        full.w,
+        full.h,
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
+    );
+    if !placed {
         return "dispatched";
     }
-    if unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32 & FULLSCREEN_STYLE_BITS == 0 {
+    if crate::ffi::window_style(hwnd_u64) & FULLSCREEN_STYLE_BITS == 0 {
         "fullscreen"
     } else {
         "dispatched"
@@ -439,63 +386,38 @@ struct NativeOwnedExit;
 
 impl OwnedExitEffects for NativeOwnedExit {
     fn is_window(&mut self, hwnd: u64) -> bool {
-        let hwnd = hwnd as isize as HWND;
-        let live = unsafe { IsWindow(hwnd) };
-        live != 0
+        crate::ffi::is_window(hwnd)
     }
 
     fn current_style(&mut self, hwnd: u64) -> u32 {
-        let style = unsafe { GetWindowLongW(hwnd as isize as HWND, GWL_STYLE) };
-        style as u32
+        crate::ffi::window_style(hwnd)
     }
 
     fn restore_style(&mut self, hwnd: u64, next: i32) -> (i32, u32) {
-        unsafe {
-            SetLastError(0);
-        }
-        let prev = unsafe { SetWindowLongW(hwnd as isize as HWND, GWL_STYLE, next) };
-        let err = unsafe { GetLastError() };
-        (prev, err)
+        crate::ffi::set_window_style(hwnd, next)
     }
 
     fn reapply_frame(&mut self, hwnd: u64) -> bool {
-        let placed = unsafe {
-            SetWindowPos(
-                hwnd as isize as HWND,
-                std::ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            )
-        };
-        placed != 0
+        crate::ffi::reapply_frame(hwnd)
     }
 
     fn restore_rect(&mut self, hwnd: u64, rect: Rect) -> bool {
-        let placed = unsafe {
-            SetWindowPos(
-                hwnd as isize as HWND,
-                std::ptr::null_mut(),
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            )
-        };
-        placed != 0
+        crate::ffi::set_window_pos(
+            hwnd,
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
     }
 
     fn style_readback(&mut self, hwnd: u64) -> u32 {
-        let style = unsafe { GetWindowLongW(hwnd as isize as HWND, GWL_STYLE) };
-        style as u32
+        crate::ffi::window_style(hwnd)
     }
 
     fn reassert_maximize(&mut self, hwnd: u64) -> bool {
-        let shown = unsafe { ShowWindowAsync(hwnd as isize as HWND, SW_MAXIMIZE) };
-        shown != 0
+        crate::ffi::show_window_async(hwnd, SW_MAXIMIZE)
     }
 
     fn clear_meta(&mut self, hwnd: u64) -> bool {
@@ -559,14 +481,10 @@ pub(super) fn holdable_key(
     if hwnd_u64 == 0 {
         return None;
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return None;
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(hwnd_u64);
     if pid == 0 || pid == me.pid {
         return None;
     }
@@ -581,39 +499,28 @@ pub(super) fn holdable_key(
     if held.integrity().ok().is_none_or(|rid| !is_medium_rid(rid)) {
         return None;
     }
-    if unsafe { IsIconic(hwnd) } != 0 {
+    if crate::ffi::is_iconic(hwnd_u64) {
         return None;
     }
-    let class = class_of(hwnd);
+    let class = class_of(hwnd_u64 as isize as HWND);
     // Own Settings is an ordinary slotless member (never a dialog);
     // generic unowned `#32770` dialogs still refuse here while owned
     // windows (including owned dialogs) refuse at the owned gate below.
-    let owned_live = !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null();
+    let owned_live = crate::ffi::owner_of(hwnd_u64) != 0;
     if is_shell_class(&class)
         || crate::tiling::workspace_dialog_refuses(&class, owned_live, &live.exe_path, &me.exe_path)
     {
         return None;
     }
-    if !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
+    if crate::ffi::owner_of(hwnd_u64) != 0 {
         return None;
     }
-    let exstyle = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let exstyle = crate::ffi::window_exstyle(hwnd_u64);
     if exstyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) != 0 {
         return None;
     }
-    let mut cloaked: i32 = 0;
-    if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked as *mut i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        )
-    } != 0
-    {
-        return None;
-    }
-    if cloaked != 0 {
+    let cloaked = crate::ffi::cloaked(hwnd_u64)?;
+    if cloaked {
         return None;
     }
     if !scope_allows(&state.scope, &live.exe_path) {

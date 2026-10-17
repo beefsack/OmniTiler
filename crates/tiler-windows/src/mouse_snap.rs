@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Session-only mouse-Snap (`SPI_SETWINARRANGING`) prevention.
 //!
 //! Portable preimage/restore decisions live in [`crate::model`]; the native
@@ -10,10 +11,6 @@
 
 #[cfg(windows)]
 pub mod sys {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SPI_GETWINARRANGING, SPI_SETWINARRANGING, SPIF_SENDCHANGE, SystemParametersInfoW,
-    };
-
     type DynError = Box<dyn std::error::Error>;
     type Result<T> = std::result::Result<T, DynError>;
 
@@ -23,14 +20,7 @@ pub mod sys {
 
     /// Exact live `SPI_GETWINARRANGING` boolean. Fails closed on API error.
     pub fn get() -> Result<bool> {
-        let mut value: i32 = 0;
-        let ok = unsafe {
-            SystemParametersInfoW(SPI_GETWINARRANGING, 0, (&mut value as *mut i32).cast(), 0)
-        };
-        if ok == 0 {
-            return Err(err("error: SPI_GETWINARRANGING read failed"));
-        }
-        Ok(value != 0)
+        crate::ffi::get_win_arranging().ok_or_else(|| err("error: SPI_GETWINARRANGING read failed"))
     }
 
     /// Set the live value session-only (no `SPIF_UPDATEINIFILE`) and verify
@@ -46,15 +36,7 @@ pub mod sys {
     /// `mismatch`, independent restore `mismatch`), while `uiParam = 1` with
     /// `pvParam` NULL restores `TRUE` with a 3x readback and PEN 35 intact.
     pub fn set_verified(enabled: bool) -> Result<bool> {
-        let ok = unsafe {
-            SystemParametersInfoW(
-                SPI_SETWINARRANGING,
-                u32::from(enabled),
-                std::ptr::null_mut(),
-                SPIF_SENDCHANGE,
-            )
-        };
-        if ok == 0 {
+        if !crate::ffi::set_win_arranging_session(enabled) {
             return Err(err("error: SPI_SETWINARRANGING write failed"));
         }
         get()
@@ -62,9 +44,11 @@ pub mod sys {
 
     #[cfg(test)]
     mod spi_constant_tests {
-        use super::{SPI_GETWINARRANGING, SPI_SETWINARRANGING, SPIF_SENDCHANGE};
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             SPI_GETPENVISUALIZATION, SPI_SETPENVISUALIZATION,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETWINARRANGING, SPI_SETWINARRANGING, SPIF_SENDCHANGE,
         };
 
         #[test]

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};

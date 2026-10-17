@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Test-needed exact-owner keyboard-resize poll for the normal `tile` loop
@@ -140,7 +141,7 @@ pub(super) fn poll_resize_cli_request(
     // against; never a carried HWND, never a retarget. The dispatch
     // re-resolves it against its own fresh observation, so a foreground
     // change between here and there refuses instead of misacting.
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     let origin = state.snap_origins.get(&foreground_hwnd).cloned();
     let Some(origin) = origin.filter(|o| !o.token.is_empty()) else {
         state.tick += 1;

@@ -1,12 +1,8 @@
+#![forbid(unsafe_code)]
 use super::pump_wait_with_intent;
 
 fn wake_signaled(handle: &std::os::windows::io::OwnedHandle) -> bool {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    let raw = handle.as_handle().as_raw_handle();
-    unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    }
+    crate::ffi::event_signaled(handle)
 }
 
 #[test]
@@ -37,24 +33,12 @@ fn wait_reports_ack_only_without_input_or_message() {
     // reposting, reconciling, or settings/input work. A bare wait with
     // nothing signaled normally reports timeout (the periodic full turn).
     use super::WaitWake;
-    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use std::os::windows::io::OwnedHandle;
     fn event() -> OwnedHandle {
-        let raw = unsafe {
-            windows_sys::Win32::System::Threading::CreateEventW(
-                std::ptr::null(),
-                0,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(!raw.is_null());
-        unsafe { OwnedHandle::from_raw_handle(raw) }
+        crate::ffi::create_auto_reset_event().expect("event created")
     }
     fn signal(handle: &OwnedHandle) {
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-        unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-        }
+        crate::ffi::signal_event(handle);
     }
     let intent = event();
     let ack = event();
@@ -124,24 +108,12 @@ fn wait_wakes_on_either_intent_or_ack_without_consuming_peer() {
     // Two wakes share the outer wait: each signal returns immediately,
     // and waiting observes only the signaled one (auto-reset events
     // stay pending until a wait actually observes them).
-    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use std::os::windows::io::OwnedHandle;
     fn event() -> OwnedHandle {
-        let raw = unsafe {
-            windows_sys::Win32::System::Threading::CreateEventW(
-                std::ptr::null(),
-                0,
-                0,
-                std::ptr::null(),
-            )
-        };
-        assert!(!raw.is_null());
-        unsafe { OwnedHandle::from_raw_handle(raw) }
+        crate::ffi::create_auto_reset_event().expect("event created")
     }
     fn signal(handle: &OwnedHandle) {
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-        unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-        }
+        crate::ffi::signal_event(handle);
     }
     let intent = event();
     let ack = event();

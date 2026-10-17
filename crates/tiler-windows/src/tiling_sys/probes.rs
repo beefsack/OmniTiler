@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Revalidate one write target immediately before `SetWindowPos`: fresh
@@ -24,10 +25,7 @@ pub(super) fn revalidate_target(
     allow_maximized: bool,
 ) -> std::result::Result<WriteTarget, &'static str> {
     let hwnd = expected.hwnd as isize as HWND;
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(expected.hwnd);
     if pid == 0 || pid != expected.identity.pid {
         return Err("pid-changed");
     }
@@ -105,19 +103,13 @@ pub(super) fn revalidate_target(
 
 /// Recheck the HWND's current pid after the write (recycled-HWND guard).
 pub(super) fn pid_current(hwnd_u64: u64, pid: u32) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    let mut current: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, &mut current);
-    }
+    let current = crate::ffi::window_pid(hwnd_u64);
     current != 0 && current == pid
 }
 
 /// Fresh maximized read on one HWND (single `IsZoomed` query, no frame read).
 pub(super) fn is_zoomed_now(hwnd_u64: u64) -> bool {
-    let hwnd = hwnd_u64 as isize as HWND;
-    let zoomed = unsafe { IsZoomed(hwnd) };
-    zoomed != 0
+    crate::ffi::is_zoomed(hwnd_u64)
 }
 
 /// Live overlay flags for one HWND (item 20): maximized from `IsZoomed`,
@@ -133,29 +125,16 @@ pub fn live_overlay_flags(hwnd_u64: u64, fulls: &[Rect]) -> (bool, Option<bool>)
     if let Some(flags) = INJECTED_OVERLAY.with(|slot| slot.borrow_mut().pop_front()) {
         return flags;
     }
-    let hwnd = hwnd_u64 as isize as HWND;
-    let maximized = unsafe { IsZoomed(hwnd) } != 0;
-    unsafe {
-        SetLastError(0);
-    }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    let style_err = unsafe { GetLastError() };
-    let style_ok = style != 0 || style_err == 0;
+    let maximized = crate::ffi::is_zoomed(hwnd_u64);
+    let style_opt = crate::ffi::window_style_checked(hwnd_u64);
+    let style_ok = style_opt.is_some();
+    let style = style_opt.unwrap_or(0);
     if style_ok && style & WS_CAPTION != 0 {
         return (maximized, Some(false));
     }
-    let mut visible_raw: RECT = unsafe { std::mem::zeroed() };
-    let dwm_ok = unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            (&mut visible_raw as *mut RECT).cast(),
-            std::mem::size_of::<RECT>() as u32,
-        )
-    } == 0;
-    if !dwm_ok {
+    let Some(visible_raw) = crate::ffi::extended_frame_bounds(hwnd_u64) else {
         return (maximized, None);
-    }
+    };
     let covering = rect_from_win(visible_raw)
         .is_some_and(|visible| is_borderless_fullscreen(true, visible, fulls));
     if covering {
@@ -177,7 +156,7 @@ pub(super) fn restore_wake_probe(
         .member_tokens
         .get(&wake.key)
         .is_none_or(|live| *live != wake.token)
-        || unsafe { IsWindow(wake.key.hwnd as isize as HWND) } == 0;
+        || !crate::ffi::is_window(wake.key.hwnd);
     (expired, lost, !is_zoomed_now(wake.key.hwnd))
 }
 
@@ -191,20 +170,17 @@ pub(super) fn restore_wake_probe(
 /// accepted but the async completion is still pending (converges next tick),
 /// `threw` when nothing was dispatched.
 pub(super) fn restore_zoom_placement(hwnd_u64: u64) -> &'static str {
-    let hwnd = hwnd_u64 as isize as HWND;
     // Immediate pre-placement revalidation: a window that closed (or already
     // restored) between the tick observation and this write takes no write.
-    if unsafe { IsWindow(hwnd) } == 0 {
+    if !crate::ffi::is_window(hwnd_u64) {
         return "threw";
     }
     if !is_zoomed_now(hwnd_u64) {
         return "restored";
     }
-    let mut placement: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-    if unsafe { GetWindowPlacement(hwnd, &mut placement) } == 0 {
+    let Some(mut placement) = crate::ffi::window_placement(hwnd_u64) else {
         return "threw";
-    }
+    };
     if placement.showCmd != SW_SHOWMAXIMIZED as u32 {
         return if is_zoomed_now(hwnd_u64) {
             "dispatched"
@@ -214,7 +190,7 @@ pub(super) fn restore_zoom_placement(hwnd_u64: u64) -> &'static str {
     }
     placement.showCmd = SW_SHOWNOACTIVATE as u32;
     placement.flags |= WPF_ASYNCWINDOWPLACEMENT;
-    if unsafe { SetWindowPlacement(hwnd, &placement) } == 0 {
+    if !crate::ffi::set_window_placement(hwnd_u64, &placement) {
         return "threw";
     }
     if is_zoomed_now(hwnd_u64) {
@@ -231,9 +207,8 @@ pub(super) fn restore_zoom_placement(hwnd_u64: u64) -> &'static str {
 /// whenever the setter accepted but native completion is still pending
 /// (converges next tick; the waiter proves `IsZoomed` separately).
 pub(super) fn toggle_zoom_async(hwnd_u64: u64, wanted: bool) -> &'static str {
-    let hwnd = hwnd_u64 as isize as HWND;
     if wanted {
-        if unsafe { ShowWindowAsync(hwnd, SW_MAXIMIZE) } == 0 {
+        if !crate::ffi::show_window_async(hwnd_u64, SW_MAXIMIZE) {
             return "threw";
         }
     } else {

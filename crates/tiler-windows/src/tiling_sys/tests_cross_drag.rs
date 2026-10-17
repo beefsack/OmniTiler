@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows cross-output drag-drop (REQ-MOU-03) through a real `TileLoop`
 // against the real retained Engine (no HWNDs, hooks, or live effects):
 // pointer-resolved destination current views over a negative-x secondary

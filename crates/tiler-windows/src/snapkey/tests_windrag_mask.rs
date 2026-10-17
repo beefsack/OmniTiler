@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{KeyboardConfig, MaskTrigger, SnapClassify, VK_LWIN, VK_RWIN};
 
 fn enabled() -> KeyboardConfig {

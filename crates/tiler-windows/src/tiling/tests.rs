@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 fn hints(min_w: Option<i32>, min_h: Option<i32>) -> tiler_core::size_hints::WindowSizeHints {

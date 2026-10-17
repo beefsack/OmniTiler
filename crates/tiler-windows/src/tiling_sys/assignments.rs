@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Assign newly seen eligible windows to the active workspace of their

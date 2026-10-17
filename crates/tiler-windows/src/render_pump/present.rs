@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Native present outcome for one carrier: what actually happened plus the

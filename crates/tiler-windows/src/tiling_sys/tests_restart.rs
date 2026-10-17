@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Production-preamble adoption through a real `TileLoop` against an
 // owned message-only window: real `SetProp` markers, real `GetProp`
 // reads, real Engine commits. Message-only windows are invisible,
@@ -13,71 +14,19 @@ use tiler_core::session::DomainKey;
 
 const ADOPT_TEST_CLASS: &str = "OmniTilerRestartAdoptTest";
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain([0]).collect()
-}
-
-unsafe extern "system" fn adopt_wndproc(
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    msg: u32,
-    wp: windows_sys::Win32::Foundation::WPARAM,
-    lp: windows_sys::Win32::Foundation::LPARAM,
-) -> windows_sys::Win32::Foundation::LRESULT {
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wp, lp) }
-}
-
 struct AdoptWindow {
     hwnd: u64,
+    _window: crate::ffi::TestWindow,
 }
 
 impl AdoptWindow {
     fn create() -> AdoptWindow {
-        use windows_sys::Win32::Foundation::{ERROR_CLASS_ALREADY_EXISTS, GetLastError};
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, HWND_MESSAGE, RegisterClassW, WNDCLASSW,
-        };
-        let class_w = wide(ADOPT_TEST_CLASS);
-        let title_w = wide("restart-adopt-test");
-        let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let mut cls: WNDCLASSW = unsafe { std::mem::zeroed() };
-        cls.lpfnWndProc = Some(adopt_wndproc);
-        cls.hInstance = hinst;
-        cls.lpszClassName = class_w.as_ptr();
-        let atom = unsafe { RegisterClassW(&cls) };
-        assert!(
-            atom != 0 || unsafe { GetLastError() } == ERROR_CLASS_ALREADY_EXISTS,
-            "test class registers"
-        );
-        let hwnd = unsafe {
-            CreateWindowExW(
-                0,
-                class_w.as_ptr(),
-                title_w.as_ptr(),
-                0,
-                0,
-                0,
-                0,
-                0,
-                HWND_MESSAGE,
-                std::ptr::null_mut(),
-                hinst,
-                std::ptr::null_mut(),
-            )
-        };
-        assert!(!hwnd.is_null(), "message-only test window creates");
+        let window =
+            crate::ffi::TestWindow::create_message_only(ADOPT_TEST_CLASS, "restart-adopt-test")
+                .expect("message-only test window creates");
         AdoptWindow {
-            hwnd: hwnd as usize as u64,
-        }
-    }
-}
-
-impl Drop for AdoptWindow {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
-        unsafe {
-            DestroyWindow(self.hwnd as usize as HWND);
+            hwnd: window.hwnd(),
+            _window: window,
         }
     }
 }
@@ -368,17 +317,13 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
     // prune each hydrate nothing. Message-only windows are invisible
     // and destroyed at test end; no other window is touched.
     use crate::settings::{BORN_MAXIMIZED_OVERLAY, BORN_MAXIMIZED_TILE, LiveSettings, Settings};
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetParent, GetWindowLongW, SetPropW,
-    };
     let real = crate::native::current_identity().expect("current identity reads");
     let medium = runner_is_medium();
     let win = AdoptWindow::create();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
         .expect("member tag installs on the owned window");
-    let style_before = unsafe { GetWindowLongW(win.hwnd as usize as HWND, GWL_EXSTYLE) };
-    let parent_before = unsafe { GetParent(win.hwnd as usize as HWND) };
+    let style_before = crate::ffi::window_exstyle(win.hwnd);
+    let parent_before = crate::ffi::parent_of(win.hwnd);
     for born in [BORN_MAXIMIZED_TILE, BORN_MAXIMIZED_OVERLAY] {
         let mut state = test_state();
         let mut settings = Settings::default();
@@ -439,12 +384,12 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
             "born {born}: hydration stages no Engine commit"
         );
         assert_eq!(
-            unsafe { GetWindowLongW(win.hwnd as usize as HWND, GWL_EXSTYLE) },
+            crate::ffi::window_exstyle(win.hwnd),
             style_before,
             "born {born}: no native restyle"
         );
         assert_eq!(
-            unsafe { GetParent(win.hwnd as usize as HWND) },
+            crate::ffi::parent_of(win.hwnd),
             parent_before,
             "born {born}: no reparenting"
         );
@@ -501,15 +446,11 @@ fn retained_max_marker_hydrates_durable_before_auto_and_clear() {
     }
     // Corrupt value on our property name: diagnosed, no intent.
     {
-        fn wide(s: &str) -> Vec<u16> {
-            s.encode_utf16().chain([0]).collect()
-        }
         let win = AdoptWindow::create();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, real.pid)
             .expect("member tag installs");
-        let name = wide(crate::model::TILE_OVERRIDE_PROP);
-        let ok = unsafe { SetPropW(win.hwnd as usize as HWND, name.as_ptr(), 99usize as _) };
-        assert_ne!(ok, 0, "foreign value plants on the owned window");
+        let ok = crate::ffi::set_prop(win.hwnd, crate::model::TILE_OVERRIDE_PROP, 99);
+        assert!(ok, "foreign value plants on the owned window");
         let mut state = test_state();
         let (key, token, output, _) = seed_real_member(&mut state, win.hwnd, &tag, &real);
         let retained = vec![retained_max(&key, &token)];
@@ -779,23 +720,12 @@ fn absent_markers_read_silent_never_unreadable() {
 fn corrupt_marker_adopts_nothing_without_side_effects() {
     // A foreign value on our property name classifies corrupt through
     // the production preamble: diagnosed, no intent, no state change.
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain([0]).collect()
-    }
     let win = AdoptWindow::create();
     let pid = std::process::id();
     let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
         .expect("member tag installs on the owned window");
-    let name = wide(crate::model::FLOAT_INTENT_PROP);
-    let ok = unsafe {
-        SetPropW(
-            win.hwnd as usize as windows_sys::Win32::Foundation::HWND,
-            name.as_ptr(),
-            99usize as _,
-        )
-    };
-    assert_ne!(ok, 0, "foreign value plants on the owned window");
+    let ok = crate::ffi::set_prop(win.hwnd, crate::model::FLOAT_INTENT_PROP, 99);
+    assert!(ok, "foreign value plants on the owned window");
     let mut state = test_state();
     state.log_path = std::path::PathBuf::from("NUL");
     let (key, token, output, _active) = seed_member(&mut state, win.hwnd, &tag);
@@ -1429,10 +1359,6 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
     // Corrupt values and replaced lifetime tags never stage, so a stale
     // hold clears and rebuilds to empty: no persistent protection without
     // a currently valid marker plus exact lifetime.
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain([0]).collect()
-    }
     super::clear_test_hints();
     // Corrupt float-intent value on our property name.
     {
@@ -1440,15 +1366,8 @@ fn invalid_marker_and_replaced_lifetime_never_hold() {
         let pid = std::process::id();
         let tag = crate::product_hide::sys::install_member_tag(win.hwnd, pid)
             .expect("member tag installs on the owned window");
-        let name = wide(crate::model::FLOAT_INTENT_PROP);
-        let planted = unsafe {
-            SetPropW(
-                win.hwnd as usize as windows_sys::Win32::Foundation::HWND,
-                name.as_ptr(),
-                99usize as _,
-            )
-        };
-        assert_ne!(planted, 0, "foreign value plants on the owned window");
+        let planted = crate::ffi::set_prop(win.hwnd, crate::model::FLOAT_INTENT_PROP, 99);
+        assert!(planted, "foreign value plants on the owned window");
         let mut state = test_state();
         state.log_path = std::path::PathBuf::from("NUL");
         let (key, token, output, _) = seed_member(&mut state, win.hwnd, &tag);

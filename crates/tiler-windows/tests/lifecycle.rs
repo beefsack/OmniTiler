@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::lifecycle::{is_medium_rid, parse_run_args, stop_request_matches};
 
 fn strings(args: &[&str]) -> Vec<String> {

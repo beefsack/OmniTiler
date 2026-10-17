@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::directional_resolution::output_for_rect;
@@ -27,7 +28,7 @@ pub(super) fn tray_focused_output(
     owner_hwnd: u64,
 ) -> Option<String> {
     let keys = state.workspaces.output_keys();
-    let foreground_hwnd = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground_hwnd = crate::ffi::foreground_window();
     // Exact owned-UI match only (nonzero owner): a missing foreground keeps
     // the ordinary fallback, and any other real foreground recomputes, so
     // the stale fence never weakens for actual other-output app focus.
@@ -55,14 +56,11 @@ pub(super) fn tray_focused_output(
 /// frame). Same rectangle rule as directional placement; unknown monitors
 /// never invent a key (the caller filters against live output keys).
 fn foreground_monitor(areas: &[MonitorArea]) -> Option<String> {
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground.is_null() {
+    let foreground = crate::ffi::foreground_window();
+    if foreground == 0 {
         return None;
     }
-    let mut raw: RECT = unsafe { std::mem::zeroed() };
-    if unsafe { GetWindowRect(foreground, &mut raw) } == 0 {
-        return None;
-    }
+    let raw = crate::ffi::window_rect(foreground)?;
     rect_from_win(raw).map(|rect| output_for_rect(areas, &rect))
 }
 

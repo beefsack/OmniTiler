@@ -6,6 +6,7 @@
 //! is only the QObject/D-Bus boundary, native identity/signal observation,
 //! and outline/repaint shim.
 
+#![deny(unsafe_code)]
 // Preserve the existing C signatures and explicit panic-result branches at
 // the FFI boundary; callers supply valid borrowed POD pointers.
 #![allow(

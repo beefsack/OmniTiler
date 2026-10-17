@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::chords::{
     PIN_KEYS, PinnedRoute, Route, collide_refusal, collide_trigger, index_direction,
     is_modifier_vk, migrate_direction, resize_action_for_mode, resize_mode_for_shift,

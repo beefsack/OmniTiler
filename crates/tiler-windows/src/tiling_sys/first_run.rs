@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Deferred first-run inputs for the normal `tile` owner only. The parsed

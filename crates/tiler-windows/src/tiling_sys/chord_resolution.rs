@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 pub(super) struct ChordObserved {
@@ -53,7 +54,7 @@ pub(super) fn resolve_chord_target(
         window: None,
     };
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
-    let foreground_hwnd = Some(unsafe { GetForegroundWindow() } as usize as u64);
+    let foreground_hwnd = Some(crate::ffi::foreground_window());
     let from = match resolve_origin(origin, foreground_hwnd, &fresh, state.snap_advance.as_ref()) {
         OriginVerdict::Dispatch { token, .. } => token,
         OriginVerdict::Reject(reason) => {

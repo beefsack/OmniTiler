@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Mode-aware monitor topology sync (item 12 stage C).
 //!
 //! Dispatcher plus the non-local arms for `sync_monitor_outputs`: the
@@ -23,7 +24,6 @@ use std::collections::BTreeSet;
 
 use tiler_core::session::DomainKey;
 use tiler_core::workspace_scope::WorkspaceMode;
-use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{MonitorArea, OUTER_GAP, TileLoop};
 use crate::workspace_scope_owner::mapping_from_workspaces;
@@ -35,7 +35,7 @@ pub(super) fn sync_monitor_outputs(state: &mut TileLoop, areas: &[MonitorArea]) 
     match state.scope_owner.adopted() {
         WorkspaceMode::PerOutputLocal => super::sync_monitor_outputs_local(state, areas),
         WorkspaceMode::GlobalUnique => {
-            let fg = unsafe { GetForegroundWindow() } as usize as u64;
+            let fg = crate::ffi::foreground_window();
             let loc = foreground_loc(state, fg);
             sync_global_with_foreground(state, areas, loc);
         }

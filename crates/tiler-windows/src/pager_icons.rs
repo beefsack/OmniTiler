@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Pager miniature icons: portable sizing, cache, and queues.
 //!
-//! The painter stays an opaque GDI surface (`crate::pager_sys`): icons are
+//! The painter stays an opaque GDI surface (`crate::ffi`): icons are
 //! worker-produced owned pixel buffers, already flattened onto the miniature
 //! gray, so paint only blits opaque bytes with `StretchDIBits(SRCCOPY)`.
 //! There is no alpha channel in the overlay and no cross-thread `HICON`:

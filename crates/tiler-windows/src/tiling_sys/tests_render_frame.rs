@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     RENDER_SUMMARY_WINDOW, RenderBridge, RenderCarrier, RenderFrameHealth, RenderFrameSample,
     render_same_thread_gate,

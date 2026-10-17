@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::snapkey::QueuedIntent;
 
@@ -82,7 +83,7 @@ pub(super) fn dispatch_directional_intent(
     // stamped, and the cleared window converges as eligible next tick.
     clear_maximize_at_admission(state, me, &retained);
     let fresh: Vec<SnapOrigin> = state.snap_origins.values().cloned().collect();
-    let foreground_hwnd = Some(unsafe { GetForegroundWindow() } as usize as u64);
+    let foreground_hwnd = Some(crate::ffi::foreground_window());
     let (from, continued) = match resolve_origin(
         &origin,
         foreground_hwnd,
@@ -447,7 +448,7 @@ pub(super) fn dispatch_directional_intent(
         } else {
             true
         };
-        let same_focus_pre = unsafe { GetForegroundWindow() } as usize as u64 == member_key.hwnd;
+        let same_focus_pre = crate::ffi::foreground_window() == member_key.hwnd;
         let read = suspend_read(state, me, fulls);
         let elevated = foreground_elevated(me);
         // Fresh fullscreen precedence on the revalidated
@@ -606,7 +607,7 @@ pub(super) fn dispatch_directional_intent(
                 .workspaces
                 .active_id(&home.output)
                 .is_some_and(|active| active == loc.workspace);
-        let same_focus = unsafe { GetForegroundWindow() } as usize as u64 == member_key.hwnd;
+        let same_focus = crate::ffi::foreground_window() == member_key.hwnd;
         // Post-clear fullscreen fence through the shared
         // derivation (same as the B9 route): the fresh observed
         // captionless flag plus the retained row flag plus a
@@ -940,18 +941,14 @@ pub(super) fn dispatch_directional_intent(
             );
             return;
         }
-        let hwnd = target.window.hwnd as isize as HWND;
-        let ok = unsafe {
-            SetWindowPos(
-                hwnd,
-                std::ptr::null_mut(),
-                outer.x,
-                outer.y,
-                outer.w,
-                outer.h,
-                SWP_NOACTIVATE | SWP_NOZORDER,
-            )
-        };
+        let ok = crate::ffi::set_window_pos(
+            target.window.hwnd,
+            outer.x,
+            outer.y,
+            outer.w,
+            outer.h,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
         // The held process keeps liveness authority across the
         // write; recheck the HWND pid afterward against recycling.
         let _ = &target.held;
@@ -967,7 +964,7 @@ pub(super) fn dispatch_directional_intent(
                     "requested": [half.x, half.y, half.w, half.h],
                     "outer": [outer.x, outer.y, outer.w, outer.h],
                     "flags": "SWP_NOACTIVATE|SWP_NOZORDER",
-                    "outcome": if ok != 0 && pid_ok { "written" } else if ok == 0 { "setter-failed" } else { "pid-changed" },
+                    "outcome": if ok && pid_ok { "written" } else if !ok { "setter-failed" } else { "pid-changed" },
                 }),
             );
         }
@@ -990,7 +987,7 @@ pub(super) fn dispatch_directional_intent(
             );
             return;
         }
-        if ok == 0 {
+        if !ok {
             state.snap_advance = None;
             log_json_at(
                 log_path,

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Throwaway Win+Arrow hook spike (not product input).
 //!
 //! Hook-only run: installs once with no focus-gated start, stays installed for

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Event-driven owner-wait regressions: deadline selection, directory-watch
 //! rearm ordering, ledger name-only vs settings full-mask scoping,
 //! extra-handle wakes, atomic request publishing, and async completion
@@ -253,26 +254,11 @@ fn missing_directory_reports_none_for_degraded_poll() {
 }
 
 fn wake_signaled(handle: &std::os::windows::io::OwnedHandle) -> bool {
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-    let raw = handle.as_handle().as_raw_handle();
-    unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    }
+    crate::ffi::event_signaled(handle)
 }
 
 fn auto_event() -> std::os::windows::io::OwnedHandle {
-    use std::os::windows::io::FromRawHandle as _;
-    let raw = unsafe {
-        windows_sys::Win32::System::Threading::CreateEventW(
-            std::ptr::null(),
-            0,
-            0,
-            std::ptr::null(),
-        )
-    };
-    assert!(!raw.is_null());
-    unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) }
+    crate::ffi::create_auto_reset_event().expect("event created")
 }
 
 #[test]
@@ -284,9 +270,7 @@ fn extra_notify_handle_wakes_and_consumes_without_touching_peers() {
     let intent = auto_event();
     let ack = auto_event();
     let notify = auto_event();
-    unsafe {
-        windows_sys::Win32::System::Threading::SetEvent(notify.as_handle().as_raw_handle());
-    }
+    crate::ffi::signal_event(&notify);
     let raw = notify.as_handle().as_raw_handle();
     let woke = pump_wait_with_intent(0, Some(&intent), Some(&ack), std::slice::from_ref(&raw));
     assert!(woke.notify, "extra handle reports notify");
@@ -325,14 +309,9 @@ fn icon_service_completion_handle_signals_on_result() {
     // HWND 0 refuses before any native call (hermetic, no desktop
     // effects): the finished lookup still signals completion so results
     // never strand behind an idle wait.
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     let service = crate::pager_icons_sys::PagerIconService::try_new().expect("icon worker spawns");
     let handle = service.completion_handle().expect("completion event");
-    let raw = handle.as_handle().as_raw_handle();
-    let signaled = || unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    };
+    let signaled = || crate::ffi::event_signaled(handle);
     assert!(!signaled(), "no spurious completion wake");
     service.request(vec![crate::workspace::WindowKey {
         hwnd: 0,
@@ -375,7 +354,6 @@ fn gaming_completion_survives_owner_teardown() {
     // closure owns a shared event clone, so the handle stays valid until
     // the last clone drops (never a use-after-close on a reused HANDLE),
     // and detaching first keeps a delayed pass safe and quiet.
-    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -397,8 +375,8 @@ fn gaming_completion_survives_owner_teardown() {
     let event = Arc::new(auto_event());
     let observer = Arc::clone(&event);
     let owned = Arc::clone(&event);
-    monitor.set_completion_notify(Some(Arc::new(move || unsafe {
-        windows_sys::Win32::System::Threading::SetEvent(owned.as_handle().as_raw_handle());
+    monitor.set_completion_notify(Some(Arc::new(move || {
+        crate::ffi::signal_event(&owned);
     })));
     // Owner teardown drops its clone while the pass is still blocked.
     drop(event);
@@ -415,11 +393,7 @@ fn gaming_completion_survives_owner_teardown() {
     wait_monitor_idle(&monitor);
     // The worker-held clone signaled a live handle: exactly the
     // use-after-teardown path that a raw captured HANDLE would break.
-    let raw = observer.as_handle().as_raw_handle();
-    let signaled = unsafe {
-        windows_sys::Win32::System::Threading::WaitForSingleObject(raw, 0)
-            == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-    };
+    let signaled = crate::ffi::event_signaled(&observer);
     assert!(signaled, "delayed completion signals a live handle");
     assert_eq!(monitor.drain_logs().len(), 2);
     // Detach then run again: safe, quiet, still completes.

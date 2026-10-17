@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Deterministic scripted backend for renderer-core tests. No threads, no

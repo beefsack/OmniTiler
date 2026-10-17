@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// True when the foreground window's process is not medium integrity:
@@ -8,14 +9,11 @@ pub(super) fn foreground_elevated(me: &ProcessIdentity) -> bool {
         let _ = me;
         return elevated;
     }
-    let foreground = unsafe { GetForegroundWindow() };
-    if foreground.is_null() {
+    let foreground = crate::ffi::foreground_window();
+    if foreground == 0 {
         return false;
     }
-    let mut pid: u32 = 0;
-    unsafe {
-        GetWindowThreadProcessId(foreground, &mut pid);
-    }
+    let pid = crate::ffi::window_pid(foreground);
     if pid == 0 || pid == me.pid {
         return false;
     }
@@ -40,7 +38,7 @@ pub(super) fn poll_foreground_workspace(
     areas: &[MonitorArea],
     observed: &mut [ObservedWindow],
 ) -> Option<SelectEffect> {
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     if foreground == 0 || foreground == state.last_foreground {
         return None;
     }
@@ -128,7 +126,7 @@ pub(super) fn poll_foreground_workspace(
 /// drift was re-hidden; `retired` means the claim died and the retirement
 /// reveal outcome rides the detail; anything else names the failing leg.
 fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) {
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     let keys: Vec<crate::workspace::WindowKey> = state.hidden_claims.keys().cloned().collect();
     for key in keys {
         if key.hwnd == foreground {
@@ -137,7 +135,7 @@ fn rehide_pass(state: &mut TileLoop, me: &ProcessIdentity, store: &LedgerStore) 
         let Some(record) = state.hidden_claims.get(&key).cloned() else {
             continue;
         };
-        let visible = unsafe { IsWindowVisible(key.hwnd as isize as HWND) } != 0;
+        let visible = crate::ffi::is_visible(key.hwnd);
         if !visible {
             continue;
         }
@@ -238,7 +236,7 @@ pub(super) fn sync_monitor_outputs_local(state: &mut TileLoop, areas: &[MonitorA
     // same-process HWND reuse racing the disconnect never activates the wrong
     // workspace.
     let fg_workspace: Option<(String, String)> = {
-        let fg = unsafe { GetForegroundWindow() } as usize as u64;
+        let fg = crate::ffi::foreground_window();
         let fg_tag = crate::product_hide::sys::read_member_tag(fg);
         state
             .member_tokens

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // D23 Windows adapter boundary through a real `TileLoop` against the real
 // retained Engine (no HWNDs, hooks, or live effects): minimized windows
 // omit their Engine rows so convergence releases the leaf, reflows

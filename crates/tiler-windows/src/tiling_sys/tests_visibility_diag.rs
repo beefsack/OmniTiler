@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Windows-only bounded normal-level visibility diagnostics (`visibility-
 // transition`, `exception-transition`, `workspace-reveal` outcome mapping,
 // gesture floating-cause split, monotonic log clock).

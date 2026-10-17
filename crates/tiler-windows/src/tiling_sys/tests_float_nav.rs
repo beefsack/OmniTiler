@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Items 10 + 18 adapter seams through a real `TileLoop` against the real
 // retained Engine (no HWNDs, hooks, or live effects): float-subject
 // classification reads the Engine exception lane, candidate assembly

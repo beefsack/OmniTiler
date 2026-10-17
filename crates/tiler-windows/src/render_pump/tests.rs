@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 use crate::render_handoff::{RenderCarrier, RenderOutcome, UnderlayCandidate};
 use tiler_core::geometry::Rect;

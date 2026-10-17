@@ -1,18 +1,16 @@
+#![forbid(unsafe_code)]
 //! Two/three-choice option controls for the settings window.
 //!
-//! Radio selection/staging helpers plus the native tooltip buffers naming the
-//! reference WM per choice. Functional labels stay in the dialog; WM
-//! references live only in the tooltips.
-
-use windows_sys::Win32::Foundation::HWND;
+//! Radio selection/staging helpers plus the native tooltip text buffers
+//! naming the reference WM per choice. Functional labels stay in the dialog;
+//! WM references live only in the tooltips. Tooltip attach lives in
+//! [`crate::ffi::settings_window`]; no Win32 lives here.
 
 use crate::settings::Settings;
 
-use super::ctl::wide;
-use super::{
-    App, ID_BORN_MAX_OVERLAY, ID_BORN_MAX_TILE, ID_FIXED_SIZE_BOTH, ID_FIXED_SIZE_EITHER,
-    ID_MIGRATION_REFILL_LAST, ID_MIGRATION_REFILL_MRU, ID_SAME_AXIS_GROUP, ID_SAME_AXIS_SWAP,
-};
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain([0]).collect()
+}
 
 /// R-MOV-03 radio selection from saved/draft settings: true selects the
 /// flat-swap radio, false the group default. Unknown values (possible only
@@ -155,79 +153,4 @@ pub(super) fn choice_tip_texts() -> [Vec<u16>; 8] {
     let [c0, c1] = fixed;
     let [d0, d1] = refill;
     [a0, a1, b0, b1, c0, c1, d0, d1]
-}
-
-/// Attach native tooltips naming the reference WM to the two R-MOV-03
-/// radios, the two R-MAX-06 born-maximized radios, the two R-SPC-04 D1
-/// fixed-size radios and the two R-WS-12e G-37 migration-refill radios. One
-/// `tooltips_class32` child (`TTS_ALWAYSTIP`) with `TTF_SUBCLASS` tools, so
-/// hover tracking needs no manual relay. Text pointers ride the `App`-owned
-/// `tip_text` buffers (see the field docs for the lifetime). Best-effort: a
-/// failed tooltip leaves the functional dialog untouched.
-pub(super) fn attach_choice_tips(
-    app: &App,
-    hwnd: HWND,
-    hinst: windows_sys::Win32::Foundation::HINSTANCE,
-) {
-    use windows_sys::Win32::UI::Controls::{
-        ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TTF_IDISHWND, TTF_SUBCLASS,
-        TTM_ADDTOOLW, TTS_ALWAYSTIP, TTTOOLINFOW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, SendMessageW, WS_POPUP};
-    let icc = INITCOMMONCONTROLSEX {
-        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_BAR_CLASSES,
-    };
-    unsafe {
-        InitCommonControlsEx(&icc);
-    }
-    let class_w = wide("tooltips_class32");
-    let tip = unsafe {
-        CreateWindowExW(
-            0,
-            class_w.as_ptr(),
-            std::ptr::null(),
-            WS_POPUP | TTS_ALWAYSTIP,
-            0,
-            0,
-            0,
-            0,
-            hwnd,
-            std::ptr::null_mut(),
-            hinst,
-            std::ptr::null(),
-        )
-    };
-    if tip.is_null() {
-        return;
-    }
-    for (id, text) in [
-        (ID_SAME_AXIS_GROUP, &app.tip_text[0]),
-        (ID_SAME_AXIS_SWAP, &app.tip_text[1]),
-        (ID_BORN_MAX_TILE, &app.tip_text[2]),
-        (ID_BORN_MAX_OVERLAY, &app.tip_text[3]),
-        (ID_FIXED_SIZE_BOTH, &app.tip_text[4]),
-        (ID_FIXED_SIZE_EITHER, &app.tip_text[5]),
-        (ID_MIGRATION_REFILL_LAST, &app.tip_text[6]),
-        (ID_MIGRATION_REFILL_MRU, &app.tip_text[7]),
-    ] {
-        let control = app.ctl(id);
-        if control.is_null() {
-            continue;
-        }
-        let info = TTTOOLINFOW {
-            cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
-            uFlags: TTF_IDISHWND | TTF_SUBCLASS,
-            hwnd,
-            uId: control as usize,
-            rect: unsafe { std::mem::zeroed() },
-            hinst: std::ptr::null_mut(),
-            lpszText: text.as_ptr() as *mut u16,
-            lParam: 0,
-            lpReserved: std::ptr::null_mut(),
-        };
-        unsafe {
-            SendMessageW(tip, TTM_ADDTOOLW, 0, &info as *const TTTOOLINFOW as isize);
-        }
-    }
 }

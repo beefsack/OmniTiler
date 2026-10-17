@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Joint hide/reveal batch regressions (offline, native-free): the real
 //! select/send/rollback phase state machine with the real recovery ledger
 //! plus injected native windows (sys fake backend) and a scripted joint-wait

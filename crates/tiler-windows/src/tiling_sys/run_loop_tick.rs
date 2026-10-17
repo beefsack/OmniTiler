@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::owner_work::OwnerWorkGuard;

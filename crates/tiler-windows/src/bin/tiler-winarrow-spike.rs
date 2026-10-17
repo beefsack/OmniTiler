@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]

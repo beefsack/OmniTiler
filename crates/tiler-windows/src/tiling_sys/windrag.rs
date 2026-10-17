@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// END-bound Esc latch decision: a physical Esc down cancels the gesture
@@ -208,7 +209,7 @@ pub(super) fn windrag_down(
         return Err("focus-skipped-fence");
     }
     let token = snapshot.origin.token.clone();
-    if unsafe { GetForegroundWindow() } as usize as u64 == hwnd {
+    if crate::ffi::foreground_window() == hwnd {
         // Already exact foreground: no prime, no setter, no wait.
         let log_path = state.log_path.clone();
         let tick = state.tick;

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Shared input channels owned by the owner handle and the pump thread.
@@ -53,19 +54,14 @@ pub struct InputChannels {
 /// Create the owner-intent wake: auto-reset, initially non-signaled.
 #[cfg(windows)]
 fn create_intent_event() -> Result<OwnedHandle, String> {
-    let handle = unsafe {
-        windows_sys::Win32::System::Threading::CreateEventW(
-            std::ptr::null(),
-            0,
-            0,
-            std::ptr::null(),
-        )
-    };
-    if handle.is_null() {
-        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        return Err(format!("error: intent wake creation failed: win32-{code}"));
-    }
-    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+    crate::ffi::create_auto_reset_event()
+        .ok_or_else(|| "error: intent wake creation failed".to_owned())
+        .map_err(|message| {
+            // Preserve the previous `win32-{code}` vocabulary via the
+            // thread's last error, read here at creation-failure time.
+            let code = crate::ffi::process::last_error();
+            format!("{message}: win32-{code}")
+        })
 }
 
 impl InputChannels {
@@ -101,9 +97,7 @@ impl InputChannels {
     /// No-op when creation failed; the owner keeps its periodic fallback.
     pub fn notify_intent(&self) {
         if let Some(handle) = self.intent_wake.as_ref() {
-            unsafe {
-                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-            }
+            crate::ffi::signal_event(handle);
         }
     }
 
@@ -117,9 +111,7 @@ impl InputChannels {
     /// deadlines and message-queue wake.
     pub fn notify_work(&self) {
         if let Some(handle) = self.work_wake.as_ref() {
-            unsafe {
-                windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-            }
+            crate::ffi::signal_event(handle);
         }
     }
 }

@@ -1,11 +1,9 @@
+#![forbid(unsafe_code)]
 use super::*;
 
-use std::os::windows::ffi::OsStrExt;
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
-    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FindCloseChangeNotification,
-    FindFirstChangeNotificationW, FindNextChangeNotification,
+    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
 };
 
 /// Directory-change wake for the ledger (stop/workspace/resize requests)
@@ -46,14 +44,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 /// bounded poll with an explicit reason and retries setup there.
 ///
 /// The raw notification handle closes with `FindCloseChangeNotification`
-/// (never `CloseHandle`), so it is held raw with a manual `Drop`, never
-/// an `OwnedHandle`.
+/// (never `CloseHandle`); ownership lives in `crate::ffi`.
 pub(super) struct DirWatch {
-    raw: HANDLE,
-}
-
-fn wide_dir(dir: &Path) -> Vec<u16> {
-    dir.as_os_str().encode_wide().chain([0]).collect()
+    inner: crate::ffi::ChangeNotification,
 }
 
 impl DirWatch {
@@ -81,17 +74,12 @@ impl DirWatch {
     }
 
     fn arm(dir: &Path, filter: u32) -> Option<Self> {
-        let wide = wide_dir(dir);
-        let raw = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 0, filter) };
-        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-            return None;
-        }
-        Some(Self { raw })
+        crate::ffi::watch_directory(dir, filter).map(|inner| Self { inner })
     }
 
     /// Raw waitable notification handle for the owner's wait set.
-    pub(super) fn raw(&self) -> HANDLE {
-        self.raw
+    pub(super) fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        crate::ffi::watch_raw_handle(&self.inner)
     }
 
     /// Non-blocking signaled probe (zero-timeout): true when a change is
@@ -99,8 +87,7 @@ impl DirWatch {
     /// the blocking wait set plus the rearm-before-inspect contract.
     #[cfg(test)]
     pub(super) fn pending(&self) -> bool {
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        unsafe { WaitForSingleObject(self.raw, 0) == 0 }
+        crate::ffi::watch_signaled(&self.inner)
     }
 
     /// Re-arm after a wait, BEFORE inspecting the files (see the contract
@@ -109,14 +96,6 @@ impl DirWatch {
     /// watch broke; the caller drops it and degrades.
     #[must_use]
     pub(super) fn rearm(&self) -> bool {
-        unsafe { FindNextChangeNotification(self.raw) != 0 }
-    }
-}
-
-impl Drop for DirWatch {
-    fn drop(&mut self) {
-        unsafe {
-            FindCloseChangeNotification(self.raw);
-        }
+        crate::ffi::rearm_watch(&self.inner)
     }
 }

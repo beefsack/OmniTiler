@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Resolve one item 5 explicit output-send target through the shared

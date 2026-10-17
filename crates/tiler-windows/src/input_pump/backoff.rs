@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Bounded install-retry backoff in seconds: 5s doubling, 60s cap. Mirrors

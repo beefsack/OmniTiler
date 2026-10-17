@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Send target selector resolved once before transfer (item 2): numbered

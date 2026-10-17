@@ -1,8 +1,8 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::owner_work::OwnerWorkGuard;
 use super::pager_host::sync_taskbar_pager;
-use windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
 
 // Per-turn input intake for the tile loop: input-pump maintenance, snap hook
 // install, live settings, tray sync, snap/windrag batch takes with partition
@@ -33,7 +33,7 @@ pub(super) fn pump_intake(
     proof: bool,
     shortcut_proof: bool,
     workspace_proof: bool,
-    snap_hook: &mut Option<HHOOK>,
+    snap_hook: &mut Option<crate::ffi::SnapKeyHook>,
     snap_failures: &mut u32,
     snap_retry_at: &mut Option<Instant>,
     windrag_available: bool,

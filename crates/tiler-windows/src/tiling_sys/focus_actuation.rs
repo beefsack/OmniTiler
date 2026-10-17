@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Outcome of one Engine focus actuation plus setter/readback trace.
@@ -30,45 +31,7 @@ pub(super) struct FocusActuation {
 /// stays held. Runs on the owner loop thread, never in the LL callback, with
 /// no wait, no `AttachThreadInput`, no Alt, and no policy/registry effect.
 fn prime_foreground_rights() -> u8 {
-    let inserted = unsafe {
-        let mut pair: [INPUT; 2] = std::mem::zeroed();
-        pair[0].r#type = INPUT_KEYBOARD;
-        pair[0].Anonymous.ki = KEYBDINPUT {
-            wVk: VK_MASK as u16,
-            wScan: 0,
-            dwFlags: 0,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        pair[1].r#type = INPUT_KEYBOARD;
-        pair[1].Anonymous.ki = KEYBDINPUT {
-            wVk: VK_MASK as u16,
-            wScan: 0,
-            dwFlags: KEYEVENTF_KEYUP,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        let size = std::mem::size_of::<INPUT>() as i32;
-        SendInput(2, pair.as_ptr(), size)
-    };
-    if inserted == 1 {
-        // Bounded release of the lone E8 down; the count stays 1 (no clean
-        // pair) so evidence never claims a full prime.
-        unsafe {
-            let mut up: INPUT = std::mem::zeroed();
-            up.r#type = INPUT_KEYBOARD;
-            up.Anonymous.ki = KEYBDINPUT {
-                wVk: VK_MASK as u16,
-                wScan: 0,
-                dwFlags: KEYEVENTF_KEYUP,
-                time: 0,
-                dwExtraInfo: 0,
-            };
-            let size = std::mem::size_of::<INPUT>() as i32;
-            SendInput(1, &up, size);
-        }
-    }
-    inserted.min(u32::from(u8::MAX)) as u8
+    crate::ffi::prime_foreground_key(VK_MASK as u16)
 }
 
 /// Exact write/focus expectation for one managed window: the eligible
@@ -212,8 +175,7 @@ pub(super) fn actuate_focus(
         Ok(target) => target,
         Err(reason) => return unsettled(reason),
     };
-    let hwnd = target.window.hwnd as isize as HWND;
-    if unsafe { GetForegroundWindow() } as usize as u64 == target.window.hwnd {
+    if crate::ffi::foreground_window() == target.window.hwnd {
         // Already exact foreground: no input and no setter needed.
         return FocusActuation {
             outcome: "focus-ok",
@@ -246,21 +208,19 @@ pub(super) fn actuate_focus(
     // `GetWindowThreadProcessId` RETURNS the thread id and writes the process
     // id to its out-param: the tid comes from the return value, never from
     // the pid slot (a pid-as-tid attach was the 024139 false negative).
-    let current_tid = unsafe { GetCurrentThreadId() };
-    let foreground_before = unsafe { GetForegroundWindow() };
-    let foreground_tid = if foreground_before.is_null() {
+    let current_tid = crate::ffi::current_thread_id();
+    let foreground_before = crate::ffi::foreground_window();
+    let foreground_tid = if foreground_before == 0 {
         0
     } else {
-        unsafe { GetWindowThreadProcessId(foreground_before, std::ptr::null_mut()) }
+        crate::ffi::window_thread_id(foreground_before)
     };
     let attach_ok = foreground_tid != 0
         && foreground_tid != current_tid
-        && unsafe { AttachThreadInput(current_tid, foreground_tid, 1) } != 0;
-    let setter_accepted = unsafe { SetForegroundWindow(hwnd) } != 0;
+        && crate::ffi::attach_thread_input(current_tid, foreground_tid, true);
+    let setter_accepted = crate::ffi::set_foreground_window(target.window.hwnd);
     if attach_ok {
-        unsafe {
-            AttachThreadInput(current_tid, foreground_tid, 0);
-        }
+        crate::ffi::attach_thread_input(current_tid, foreground_tid, false);
     }
     // The held process keeps liveness authority across the call; recheck the
     // HWND pid afterward against recycling.
@@ -275,7 +235,7 @@ pub(super) fn actuate_focus(
             deferred: false,
         };
     }
-    if unsafe { GetForegroundWindow() } as usize as u64 == target.window.hwnd {
+    if crate::ffi::foreground_window() == target.window.hwnd {
         return FocusActuation {
             outcome: "focus-ok",
             setter_accepted,
@@ -292,7 +252,7 @@ pub(super) fn actuate_focus(
     let mut eventual = false;
     for _ in 0..FOCUS_SETTLE_ROUNDS {
         pump_wait(FOCUS_SETTLE_POLL_MS);
-        if unsafe { GetForegroundWindow() } as usize as u64 == target.window.hwnd {
+        if crate::ffi::foreground_window() == target.window.hwnd {
             eventual = true;
             break;
         }

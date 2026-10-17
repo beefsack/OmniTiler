@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::trace::log_json_at;

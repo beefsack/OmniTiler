@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Bounded pending gesture drop for the bridged finish path. Owns every

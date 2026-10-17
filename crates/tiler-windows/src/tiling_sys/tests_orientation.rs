@@ -1,9 +1,9 @@
+#![forbid(unsafe_code)]
 use super::rmax03_adapter_tests::test_state;
 use super::{
     MonitorArea, dispatch_orientation_intent, keyboard_tick, orientation_overlay_refusal,
     orientation_plan, resolve_chord_target, workspace_domain_for, writable_tokens,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 /// Null/disposable-handle harness: every HWND below is fake (101/102 are
 /// never live windows), `me` is fabricated so every pre-write identity
@@ -276,7 +276,7 @@ fn orientation_resolver_fences_settle_without_mutation() {
     // Lifetime-stale member behind an owner-advanced continuation: mirror
     // the live foreground into the advance so only the lifetime fence
     // refuses.
-    let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+    let foreground = crate::ffi::foreground_window();
     let advance = crate::snapkey::SnapOrigin {
         hwnd: foreground,
         token: "w1".to_owned(),

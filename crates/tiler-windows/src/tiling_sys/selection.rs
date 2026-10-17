@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// REQ-WS-09 departure memory for an explicit workspace select: the
@@ -405,7 +406,7 @@ pub(super) fn workspace_do_select(
         // No setter, no priming, no MRU fallback actuation: compare the fresh
         // foreground against the mover hint only. Native reveal may have
         // focused the mover; anything else stays explicitly suppressed.
-        let foreground = unsafe { GetForegroundWindow() } as usize as u64;
+        let foreground = crate::ffi::foreground_window();
         let observed = focus_hint.is_some_and(|hint| hint.hwnd != 0 && foreground == hint.hwnd);
         if observed {
             focus_outcome = "focus-ok";

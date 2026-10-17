@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Snapshot of the product keyboard policy for one owner run.

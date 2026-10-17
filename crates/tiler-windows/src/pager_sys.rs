@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Owned per-output taskbar pager overlays (`cfg(windows)` only).
 //!
 //! Mechanism: one process-owned external overlay window per served output
@@ -19,6 +20,12 @@
 //! is not used here at all: only app-local window messages (paint, click,
 //! `TaskbarCreated`, display/DPI broadcasts).
 //!
+//! Native effects (owned windows, GDI paint, per-window frames, click and
+//! calibration delivery, taskbar reads, calibration flags) live in
+//! [`crate::ffi`]; this module holds only portable policy: the overlay
+//! manager, the latest-click handoff, taskbar-fact mapping, and the
+//! change-gated frame sync.
+//!
 //! Tray exclusion is structural: strips are refused unless they end 2px left
 //! of the proven `TrayNotifyWnd` edge (see [`crate::pager`]); secondary
 //! taskbars always refuse because their clock area cannot be proven.
@@ -31,16 +38,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tiler_core::geometry::Rect;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-
-use crate::pager::{OutputPager, TaskbarFacts, TaskbarKind, cell_at};
-use crate::pager_icons::{IconImage, icon_rect_for_mini};
+use crate::ffi::{
+    IconBlit, MiniSlot, PagerCalibrationSink, PagerClick, PagerClickSink, PagerFrame, PagerWindow,
+};
+use crate::pager::{OutputPager, TaskbarFacts, TaskbarKind};
+use crate::pager_icons::icon_rect_for_mini;
 use crate::tray_pager::SelectScope;
 
 type DynError = Box<dyn std::error::Error>;
@@ -49,13 +54,10 @@ fn err(msg: impl Into<String>) -> DynError {
     Box::new(std::io::Error::other(msg.into()))
 }
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
-
 /// Overlay window class (distinct from tray/border/underlay/preview so
-/// residue audits count the carrier exactly).
-pub const PAGER_OVERLAY_CLASS: &str = "OmniTilerTaskbarPager";
+/// residue audits count the carrier exactly). Owned by [`crate::ffi`];
+/// re-exported here so audits keep one name.
+pub use crate::ffi::PAGER_WINDOW_CLASS as PAGER_OVERLAY_CLASS;
 /// Latest pending pager click: overlay windows overwrite this, the loop
 /// thread drains it once. Only the newest click survives: a click rendered
 /// under an old frame is stale and must never replay after a newer one.
@@ -67,402 +69,29 @@ const ZASSERT_INTERVAL: Duration = Duration::from_secs(2);
 /// recovers promptly once Explorer returns while never busy-looping pumps.
 const RETRY_SECS: u64 = 5;
 
-static REDISCOVER: AtomicBool = AtomicBool::new(false);
-static TASKBAR_MSG: AtomicU32 = AtomicU32::new(0);
-/// Set when a display/DPI/settings broadcast lands: the loop thread hides
-/// every strip at once and revalidates from fresh facts before showing again,
-/// so no stale pixels survive a calibration change.
-static STALE_HIDE: AtomicBool = AtomicBool::new(false);
-
 /// Whether Explorer (or display/DPI calibration) asked for rediscovery.
 #[must_use]
 pub fn take_rediscover() -> bool {
-    REDISCOVER.swap(false, Ordering::SeqCst)
+    crate::ffi::take_pager_rediscover()
 }
 
 /// Whether a calibration broadcast asked for an immediate hide plus
 /// revalidation (consumed once by the host).
 #[must_use]
 pub fn take_stale_hide() -> bool {
-    STALE_HIDE.swap(false, Ordering::SeqCst)
+    crate::ffi::take_pager_stale_hide()
 }
 
-fn want_rediscover() {
-    REDISCOVER.store(true, Ordering::SeqCst);
-}
+/// Stateless `ABS_AUTOHIDE` test for one `ABM_GETSTATE` result (native
+/// query lives in [`crate::ffi`]).
+pub use crate::ffi::pager_autohide_from_state as autohide_from_state;
 
-fn want_stale_hide() {
-    STALE_HIDE.store(true, Ordering::SeqCst);
-    want_rediscover();
-}
-
-/// Per-window painted frame plus the latest click slot (boxed into
-/// `GWLP_USERDATA`, reclaimed by the owner on destroy).
-struct WindowState {
-    ids: Vec<String>,
-    output: String,
-    cells: Vec<Rect>,
-    active: usize,
-    minis: Vec<Vec<Rect>>,
-    /// Owned artwork bytes parallel to `minis` (flattened by the worker, so
-    /// paint only copies). `Arc` keeps per-pump frame stores cheap.
-    icons: Vec<Vec<Option<Arc<IconImage>>>>,
-    /// Overlay DPI the frame was laid out for (icon sizing).
-    dpi: u32,
-    font: windows_sys::Win32::Graphics::Gdi::HFONT,
-    queue: PendingClick,
-}
-
-fn window_state_of(hwnd: HWND) -> *mut WindowState {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GWLP_USERDATA, GetWindowLongPtrW};
-    unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState }
-}
-
-fn rgb(r: u32, g: u32, b: u32) -> u32 {
-    r | (g << 8) | (b << 16)
-}
-
-/// Blit one worker-flattened icon into its centered slot. The buffer is
-/// opaque by construction, so `SRCCOPY` is exact: no alpha channel travels
-/// the paint path and the overlay stays a plain opaque GDI surface.
-fn paint_icon(hdc: windows_sys::Win32::Graphics::Gdi::HDC, dest: RECT, image: &IconImage) {
-    use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, StretchDIBits,
-    };
-    const SRCCOPY: u32 = 0x00CC0020;
-    if !image.is_valid() {
-        return;
-    }
-    let w = dest.right - dest.left;
-    let h = dest.bottom - dest.top;
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    let mut bmi: BITMAPINFO = unsafe { std::mem::zeroed() };
-    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = image.width as i32;
-    bmi.bmiHeader.biHeight = -(image.height as i32);
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-    unsafe {
-        StretchDIBits(
-            hdc,
-            dest.left,
-            dest.top,
-            w,
-            h,
-            0,
-            0,
-            image.width as i32,
-            image.height as i32,
-            image.bgra.as_ptr().cast(),
-            &bmi,
-            DIB_RGB_COLORS,
-            SRCCOPY,
-        );
-    }
-}
-
-fn paint_frame(hwnd: HWND, state: &WindowState) {
-    use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, CreatePen, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
-        DeleteObject, DrawTextW, EndPaint, FillRect, LineTo, MoveToEx, PAINTSTRUCT, PS_SOLID,
-        SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-    let mut ps: PAINTSTRUCT = unsafe { std::mem::zeroed() };
-    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
-    if hdc.is_null() {
-        return;
-    }
-    let mut client: RECT = unsafe { std::mem::zeroed() };
-    unsafe {
-        GetClientRect(hwnd, &mut client);
-    }
-    for (index, cell) in state.cells.iter().enumerate() {
-        let origin_x = state.cells.first().map(|first| first.x).unwrap_or(0);
-        let local = RECT {
-            left: cell.x - origin_x,
-            top: 0,
-            right: cell.x - origin_x + cell.w,
-            bottom: cell.h,
-        };
-        let active = index == state.active;
-        let (r, g, b) = if active { (42, 130, 218) } else { (58, 58, 58) };
-        let brush = unsafe { CreateSolidBrush(rgb(r, g, b)) };
-        if !brush.is_null() {
-            unsafe {
-                FillRect(hdc, &local, brush);
-                DeleteObject(brush as _);
-            }
-        }
-        // Miniature lighter window rectangles from the real workspace rects,
-        // each with its centered application icon when artwork landed.
-        let empty_icons: Vec<Option<Arc<IconImage>>> = Vec::new();
-        let cell_icons = state.icons.get(index).unwrap_or(&empty_icons);
-        for (pos, mini) in state
-            .minis
-            .get(index)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-        {
-            let mini = *mini;
-            let local_mini = RECT {
-                left: mini.x - origin_x,
-                top: mini.y - cell.y,
-                right: mini.x - origin_x + mini.w,
-                bottom: mini.y - cell.y + mini.h,
-            };
-            let fill = unsafe { CreateSolidBrush(rgb(168, 168, 168)) };
-            if !fill.is_null() {
-                unsafe {
-                    FillRect(hdc, &local_mini, fill);
-                    DeleteObject(fill as _);
-                }
-            }
-            let pen = unsafe { CreatePen(PS_SOLID, 1, rgb(215, 215, 215)) };
-            if !pen.is_null() {
-                unsafe {
-                    let old = SelectObject(hdc, pen as _);
-                    MoveToEx(hdc, local_mini.left, local_mini.top, std::ptr::null_mut());
-                    LineTo(hdc, local_mini.right - 1, local_mini.top);
-                    LineTo(hdc, local_mini.right - 1, local_mini.bottom - 1);
-                    LineTo(hdc, local_mini.left, local_mini.bottom - 1);
-                    LineTo(hdc, local_mini.left, local_mini.top);
-                    SelectObject(hdc, old);
-                    DeleteObject(pen as _);
-                }
-            }
-            // Owned artwork blits opaquely into the centered slot (omitted
-            // when the miniature cannot fit a legible icon).
-            if let Some(image) = cell_icons.get(pos).and_then(|slot| slot.as_ref())
-                && let Some(slot) = icon_rect_for_mini(mini, state.dpi)
-            {
-                paint_icon(
-                    hdc,
-                    RECT {
-                        left: slot.x - origin_x,
-                        top: slot.y - cell.y,
-                        right: slot.x - origin_x + slot.w,
-                        bottom: slot.y - cell.y + slot.h,
-                    },
-                    image,
-                );
-            }
-        }
-        // Light 1px cell border.
-        let pen = unsafe { CreatePen(PS_SOLID, 1, rgb(200, 200, 200)) };
-        if !pen.is_null() {
-            unsafe {
-                let old = SelectObject(hdc, pen as _);
-                MoveToEx(hdc, local.left, local.top, std::ptr::null_mut());
-                LineTo(hdc, local.right - 1, local.top);
-                LineTo(hdc, local.right - 1, local.bottom - 1);
-                LineTo(hdc, local.left, local.bottom - 1);
-                LineTo(hdc, local.left, local.top);
-                SelectObject(hdc, old);
-                DeleteObject(pen as _);
-            }
-        }
-        // Active outline plus the 1-based number on every cell.
-        if active {
-            let pen = unsafe { CreatePen(PS_SOLID, 2, rgb(255, 255, 255)) };
-            if !pen.is_null() {
-                unsafe {
-                    let old = SelectObject(hdc, pen as _);
-                    MoveToEx(hdc, local.left + 1, local.top + 1, std::ptr::null_mut());
-                    LineTo(hdc, local.right - 2, local.top + 1);
-                    LineTo(hdc, local.right - 2, local.bottom - 2);
-                    LineTo(hdc, local.left + 1, local.bottom - 2);
-                    LineTo(hdc, local.left + 1, local.top + 1);
-                    SelectObject(hdc, old);
-                    DeleteObject(pen as _);
-                }
-            }
-        }
-        let label = wide(&(index + 1).to_string());
-        let mut text_rect = local;
-        unsafe {
-            SetBkMode(hdc, TRANSPARENT as i32);
-            SetTextColor(hdc, rgb(255, 255, 255));
-            // Scalable per-overlay font (created at the overlay DPI, deleted
-            // with the window). A failed font falls back to the stock font:
-            // numbers stay legible, never missing.
-            let old_font = if state.font.is_null() {
-                std::ptr::null_mut()
-            } else {
-                SelectObject(hdc, state.font as _)
-            };
-            DrawTextW(
-                hdc,
-                label.as_ptr(),
-                -1,
-                &mut text_rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-            );
-            if !old_font.is_null() {
-                SelectObject(hdc, old_font);
-            }
-        }
-    }
-    unsafe {
-        EndPaint(hwnd, &ps);
-    }
-}
-
-unsafe extern "system" fn pager_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CREATESTRUCTW, DefWindowProcW, GWLP_USERDATA, SetWindowLongPtrW, WM_CREATE, WM_DESTROY,
-        WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDOWN, WM_MOUSEACTIVATE, WM_PAINT,
-        WM_SETTINGCHANGE,
-    };
-    if msg == WM_CREATE {
-        let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
-        unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
-        }
-        return 0;
-    }
-    // Explorer restarts arrive as the registered broadcast, never WM_CREATE.
-    if msg == TASKBAR_MSG.load(Ordering::SeqCst) && msg != 0 {
-        want_rediscover();
-        return 0;
-    }
-    if msg == WM_DISPLAYCHANGE || msg == WM_SETTINGCHANGE || msg == WM_DPICHANGED {
-        // Geometry/DPI calibration may have moved the taskbar: hide this
-        // overlay at once (app-local, no foreign interaction) and let the
-        // loop thread revalidate from fresh facts before showing again, so
-        // no stale pixels survive the change. Also flags one monitor
-        // re-read there (topology may have moved with the calibration).
-        crate::tiling_sys::mark_monitor_dirty();
-        want_stale_hide();
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
-                hwnd,
-                windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
-            );
-            windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
-        }
-        return 0;
-    }
-    if msg == WM_MOUSEACTIVATE {
-        use windows_sys::Win32::UI::WindowsAndMessaging::MA_NOACTIVATE;
-        return MA_NOACTIVATE as LRESULT;
-    }
-    if msg == WM_PAINT {
-        let raw = window_state_of(hwnd);
-        if !raw.is_null() {
-            paint_frame(hwnd, unsafe { &*raw });
-        }
-        return 0;
-    }
-    if msg == WM_LBUTTONDOWN {
-        let raw = window_state_of(hwnd);
-        if !raw.is_null() {
-            let state = unsafe { &*raw };
-            let x = (lparam & 0xffff) as i32;
-            let y = ((lparam >> 16) & 0xffff) as i32;
-            let origin = state.cells.first().map(|first| (first.x, first.y));
-            if let Some((ox, oy)) = origin
-                && let Some(index) = cell_at(&state.cells, ox + x, oy + y)
-                && let Some(workspace) = state.ids.get(index)
-            {
-                let ordinal = index as u32 + 1;
-                // Keep-latest only: overwrite any undrained click so a stale
-                // cell never replays after a newer one.
-                if let Ok(mut slot) = state.queue.lock() {
-                    *slot = Some(SelectScope::new(&state.output, workspace, ordinal));
-                }
-            }
-        }
-        return 0;
-    }
-    if msg == WM_DESTROY {
-        // Owned by `PagerOverlays` (detach-then-destroy there): never free
-        // here, so exactly one owner exists either way.
-        let _ = wparam;
-        return 0;
-    }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
-/// Verify Per-Monitor-V2 awareness before any overlay geometry (same
-/// fail-closed contract as the loop's own check; duplicated here because the
-/// loop's monitor module is not visible from the crate root).
-fn ensure_pm_v2() -> Result<(), DynError> {
-    use windows_sys::Win32::UI::HiDpi::{
-        AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-        GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
-    };
-    let current = unsafe { GetThreadDpiAwarenessContext() };
-    if unsafe { AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-        != 0
-    {
-        return Ok(());
-    }
-    if unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } == 0 {
-        return Err(err("refuse: pager SetProcessDpiAwarenessContext failed"));
-    }
-    let current = unsafe { GetThreadDpiAwarenessContext() };
-    if unsafe { AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
-        == 0
-    {
-        return Err(err("refuse: pager PMv2 awareness not active"));
-    }
-    Ok(())
-}
-
-fn rect_from_raw(raw: RECT) -> Option<Rect> {
-    if raw.right <= raw.left || raw.bottom <= raw.top {
-        return None;
-    }
-    let w = raw.right.saturating_sub(raw.left);
-    let h = raw.bottom.saturating_sub(raw.top);
-    // 16384px sanity bound: rejects corrupt/off-screen rects before layout.
-    if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
-        return None;
-    }
-    Some(Rect {
-        x: raw.left,
-        y: raw.top,
-        w,
-        h,
-    })
-}
-
-fn window_rect(hwnd: HWND) -> Option<Rect> {
-    let mut raw: RECT = unsafe { std::mem::zeroed() };
-    if hwnd.is_null()
-        || unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut raw) }
-            == 0
-    {
-        return None;
-    }
-    rect_from_raw(raw)
-}
-
-unsafe extern "system" fn secondary_enum(hwnd: HWND, state: LPARAM) -> i32 {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
-    let out = unsafe { &mut *(state as *mut Vec<HWND>) };
-    // 64 wide chars: window class names are short (`Shell_SecondaryTrayWnd`
-    // is 22), so this always holds the full name for comparison.
-    let mut name = [0u16; 64];
-    let len = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
-    if len > 0 {
-        let class = String::from_utf16_lossy(&name[..len as usize]);
-        if class == "Shell_SecondaryTrayWnd" {
-            out.push(hwnd);
-        }
-    }
-    1
+/// Query the live auto-hide switch via `SHAppBarMessage(ABM_GETSTATE)`.
+/// Read-only: `cbSize`-only `APPBARDATA`, no window handle, no callback, no
+/// registration, never `ABM_SETSTATE`.
+#[must_use]
+pub fn taskbar_autohide_enabled() -> bool {
+    autohide_from_state(crate::ffi::query_appbar_state())
 }
 
 /// Read the primary taskbar fresh: `Shell_TrayWnd` rect and visibility plus
@@ -475,61 +104,19 @@ unsafe extern "system" fn secondary_enum(hwnd: HWND, state: LPARAM) -> i32 {
 /// `ABM_GETSTATE` query reads as not-auto-hiding (fail-open on the switch
 /// only): geometry/visibility refusals still fail closed, and a positive
 /// auto-hide bit always refuses.
-/// Stateless `ABS_AUTOHIDE` test for one `ABM_GETSTATE` result: only a
-/// positive auto-hide bit hides. Zero (query failed or switch off) reads as
-/// not-auto-hiding; unrelated state bits never hide.
-#[must_use]
-pub fn autohide_from_state(state: usize) -> bool {
-    use windows_sys::Win32::UI::Shell::ABS_AUTOHIDE;
-    (state as u32 & ABS_AUTOHIDE) != 0
-}
-
-/// Query the live auto-hide switch via `SHAppBarMessage(ABM_GETSTATE)`.
-/// Read-only: `cbSize`-only `APPBARDATA`, no window handle, no callback, no
-/// registration, never `ABM_SETSTATE`.
-#[must_use]
-pub fn taskbar_autohide_enabled() -> bool {
-    use windows_sys::Win32::UI::Shell::{ABM_GETSTATE, APPBARDATA, SHAppBarMessage};
-    let mut data: APPBARDATA = unsafe { std::mem::zeroed() };
-    data.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
-    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) };
-    autohide_from_state(state)
-}
-
 #[must_use]
 pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
-    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, IsWindowVisible,
-    };
-    let tray = unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null()) };
-    if tray.is_null() {
-        return None;
-    }
-    let rect = window_rect(tray)?;
-    let notify = unsafe {
-        FindWindowExW(
-            tray,
-            std::ptr::null_mut(),
-            wide("TrayNotifyWnd").as_ptr(),
-            std::ptr::null(),
-        )
-    };
-    let tray_left = (!notify.is_null())
-        .then(|| window_rect(notify))
-        .flatten()
-        .map(|notify_rect| notify_rect.x);
-    let dpi = unsafe { GetDpiForWindow(tray) };
+    let probe = crate::ffi::read_primary_taskbar_probe()?;
     Some(TaskbarFacts {
-        rect,
-        tray_left,
+        rect: probe.bar?,
+        tray_left: probe.tray_left,
         kind: TaskbarKind::Primary,
-        visible: unsafe { IsWindowVisible(tray) } != 0,
-        autohide: taskbar_autohide_enabled(),
-        dpi: if dpi == 0 {
+        visible: probe.visible,
+        autohide: autohide_from_state(probe.autohide_state),
+        dpi: if probe.dpi == 0 {
             crate::pager::PAGER_BASE_DPI
         } else {
-            dpi
+            probe.dpi
         },
     })
 }
@@ -540,67 +127,119 @@ pub fn read_primary_taskbar() -> Option<TaskbarFacts> {
 /// unprovable there, so this only feeds refusal logging, never positions.
 #[must_use]
 pub fn discover_secondaries() -> Vec<TaskbarFacts> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible};
-    let mut bars = Vec::new();
-    let mut secondaries: Vec<HWND> = Vec::new();
-    unsafe {
-        EnumWindows(
-            Some(secondary_enum),
-            &mut secondaries as *mut Vec<HWND> as LPARAM,
-        );
-    }
-    for hwnd in secondaries {
-        if let Some(rect) = window_rect(hwnd) {
-            bars.push(TaskbarFacts {
-                rect,
+    crate::ffi::discover_secondary_taskbars()
+        .into_iter()
+        .filter_map(|probe| {
+            Some(TaskbarFacts {
+                rect: probe.bar?,
                 tray_left: None,
                 kind: TaskbarKind::Secondary,
-                visible: unsafe { IsWindowVisible(hwnd) } != 0,
+                visible: probe.visible,
                 autohide: false,
                 dpi: crate::pager::PAGER_BASE_DPI,
-            });
-        }
-    }
-    bars
+            })
+        })
+        .collect()
 }
 
+/// Verify Per-Monitor-V2 awareness before any overlay geometry (same
+/// fail-closed contract as the loop's own check; duplicated here because the
+/// loop's monitor module is not visible from the crate root).
+fn ensure_pm_v2() -> Result<(), DynError> {
+    if crate::ffi::thread_pm_v2_active() {
+        return Ok(());
+    }
+    if !crate::ffi::set_process_pm_v2() {
+        return Err(err("refuse: pager SetProcessDpiAwarenessContext failed"));
+    }
+    if !crate::ffi::thread_pm_v2_active() {
+        return Err(err("refuse: pager PMv2 awareness not active"));
+    }
+    Ok(())
+}
+
+/// Convert one portable frame to the owned native snapshot. Artwork stays
+/// shared (`Arc` clone, never re-buffered); icon destination slots use the
+/// canonical miniature sizing, so illegible miniatures keep the plain
+/// rectangle exactly as the painter always has.
+fn pager_frame(pager: &OutputPager) -> PagerFrame {
+    PagerFrame {
+        ids: pager.ids.clone(),
+        output: pager.output.clone(),
+        cells: pager.cells.iter().map(|cell| cell.rect).collect(),
+        active: pager.active_index,
+        minis: pager
+            .cells
+            .iter()
+            .map(|cell| {
+                cell.minis
+                    .iter()
+                    .zip(cell.mini_icons.iter())
+                    .map(|(mini, icon)| MiniSlot {
+                        rect: *mini,
+                        icon: icon.as_ref().and_then(|image| {
+                            icon_rect_for_mini(*mini, pager.dpi).map(|dest| IconBlit {
+                                image: Arc::clone(image),
+                                dest,
+                            })
+                        }),
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
+/// Same field set the native store compared before: workspace ids, output,
+/// cell rects, active index, miniatures, and artwork (`Arc` equality
+/// short-circuits on pointer identity, so steady-state artwork costs one
+/// pointer compare per miniature, not a byte walk).
+fn frames_equal(a: &OutputPager, b: &OutputPager) -> bool {
+    a.ids == b.ids
+        && a.output == b.output
+        && a.active_index == b.active_index
+        && a.cells.len() == b.cells.len()
+        && a.cells
+            .iter()
+            .zip(b.cells.iter())
+            .all(|(x, y)| x.rect == y.rect && x.minis == y.minis && x.mini_icons == y.mini_icons)
+}
+
+/// Pure maintenance-deadline combination (windows are opaque values, so
+/// tests drive this directly instead of fabricating ids).
+fn maintenance_due(
+    has_windows: bool,
+    last_zassert: Option<Instant>,
+    retry_at: Option<Instant>,
+) -> Option<Instant> {
+    let zassert = if has_windows {
+        Some(
+            last_zassert
+                .map(|at| at + ZASSERT_INTERVAL)
+                .unwrap_or_else(Instant::now),
+        )
+    } else {
+        None
+    };
+    match (zassert, retry_at) {
+        (None, None) => None,
+        (Some(at), None) | (None, Some(at)) => Some(at),
+        (Some(first), Some(second)) => Some(first.max(second)),
+    }
+}
 /// Live owner pager: one overlay window per served output plus the shared
 /// latest-click slot the loop thread drains. The slot is owned by the loop
 /// (so suppression can drop it with no windows present); each window carries
-/// a clone for its click path.
+/// a sink clone for its click path.
 pub struct PagerOverlays {
-    windows: HashMap<String, (HWND, u32)>,
-    queue: PendingClick,
+    windows: HashMap<String, PagerWindow>,
+    frames: HashMap<String, OutputPager>,
+    sink: PagerClickSink,
+    calibration: PagerCalibrationSink,
     log_path: Option<PathBuf>,
     retry_at: Option<Instant>,
     last_zassert: Option<Instant>,
     last_hash: u64,
-}
-
-/// Scalable per-overlay number font at `dpi` (9pt Segoe UI, like the
-/// first-run dialog). Null when creation fails: paint then falls back to the
-/// stock font instead of skipping numbers.
-fn pager_font(dpi: u32) -> windows_sys::Win32::Graphics::Gdi::HFONT {
-    use windows_sys::Win32::Graphics::Gdi::CreateFontW;
-    let height = -((9 * dpi.max(1) as i32 + 36) / 72);
-    unsafe {
-        CreateFontW(
-            height,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            wide("Segoe UI").as_ptr(),
-        )
-    }
 }
 
 impl PagerOverlays {
@@ -609,37 +248,33 @@ impl PagerOverlays {
     /// already did, so this is normally a no-op verification). `queue` is
     /// the loop-owned latest-click slot every window overwrites.
     pub fn new(log_path: Option<PathBuf>, queue: &PendingClick) -> Result<Self, DynError> {
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CS_HREDRAW, CS_VREDRAW, IDC_ARROW, LoadCursorW, RegisterClassW, RegisterWindowMessageW,
-            WNDCLASSW,
-        };
         ensure_pm_v2()?;
-        let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let class_w = wide(PAGER_OVERLAY_CLASS);
-        let mut cls: WNDCLASSW = unsafe { std::mem::zeroed() };
-        cls.style = CS_HREDRAW | CS_VREDRAW;
-        cls.lpfnWndProc = Some(pager_wnd_proc);
-        cls.hInstance = hinst;
-        cls.hCursor = unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) };
-        cls.lpszClassName = class_w.as_ptr();
-        let atom = unsafe { RegisterClassW(&cls) };
-        if atom == 0 {
-            let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-            if code != 1410 {
-                return Err(err("error: pager RegisterClass failed"));
-            }
+        if !crate::ffi::ensure_pager_class() {
+            return Err(err("error: pager RegisterClass failed"));
         }
-        let taskbar_created =
-            unsafe { RegisterWindowMessageW(wide(crate::tray::TASKBAR_CREATED_MESSAGE).as_ptr()) };
-        if taskbar_created == 0 {
+        if !crate::ffi::register_taskbar_message(crate::tray::TASKBAR_CREATED_MESSAGE) {
             return Err(err("error: pager TaskbarCreated register failed"));
         }
-        TASKBAR_MSG.store(taskbar_created, Ordering::SeqCst);
-        want_rediscover();
+        // Keep-latest only: overwrite any undrained click so a stale
+        // cell never replays after a newer one.
+        let clicks = Arc::clone(queue);
+        let sink: PagerClickSink = Arc::new(move |click: PagerClick| {
+            if let Ok(mut slot) = clicks.lock() {
+                *slot = Some(SelectScope::new(
+                    &click.output,
+                    &click.workspace,
+                    click.ordinal,
+                ));
+            }
+        });
+        // Calibration hook at broadcast time (the exact monitor-dirty
+        // timing the owner has always relied on).
+        let calibration: PagerCalibrationSink = Arc::new(crate::tiling_sys::mark_monitor_dirty);
         Ok(Self {
             windows: HashMap::new(),
-            queue: Arc::clone(queue),
+            frames: HashMap::new(),
+            sink,
+            calibration,
             log_path,
             retry_at: None,
             last_zassert: None,
@@ -678,20 +313,7 @@ impl PagerOverlays {
     /// deadline wakes the retry, and the reassert follows on that same
     /// turn, preserving the 2s z-order contract after backoff.
     pub fn maintenance_due_at(&self) -> Option<Instant> {
-        let zassert = if self.windows.is_empty() {
-            None
-        } else {
-            Some(
-                self.last_zassert
-                    .map(|at| at + ZASSERT_INTERVAL)
-                    .unwrap_or_else(Instant::now),
-            )
-        };
-        match (zassert, self.retry_at) {
-            (None, None) => None,
-            (Some(at), None) | (None, Some(at)) => Some(at),
-            (Some(first), Some(second)) => Some(first.max(second)),
-        }
+        maintenance_due(!self.windows.is_empty(), self.last_zassert, self.retry_at)
     }
 
     /// Present one pump's frames: create/move/show served outputs, destroy
@@ -700,10 +322,6 @@ impl PagerOverlays {
     /// retry forever. Steady-state visibility reads stay (correctness over
     /// syscall counting); moves and repaints are change-gated.
     pub fn sync(&mut self, pagers: &[OutputPager], now: Instant) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            HWND_TOPMOST, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-            SetWindowPos, ShowWindow,
-        };
         let hash = crate::pager::snapshot_hash(pagers);
         // Drop overlays for outputs no longer served.
         let live: Vec<String> = pagers.iter().map(|pager| pager.output.clone()).collect();
@@ -714,9 +332,8 @@ impl PagerOverlays {
             .cloned()
             .collect();
         for output in gone {
-            if let Some((hwnd, _)) = self.windows.remove(&output) {
-                self.detach_and_destroy(hwnd);
-            }
+            self.windows.remove(&output);
+            self.frames.remove(&output);
         }
         if !self.retry_due(now) {
             return;
@@ -726,46 +343,51 @@ impl PagerOverlays {
         for pager in pagers {
             // A DPI change recreates the overlay so the font and geometry
             // match the new facts; anything else reuses the window.
-            if let Some((hwnd, dpi)) = self.windows.get(&pager.output).copied()
-                && dpi != pager.dpi
+            if self
+                .windows
+                .get(&pager.output)
+                .is_some_and(|window| window.dpi() != pager.dpi)
             {
-                self.detach_and_destroy(hwnd);
                 self.windows.remove(&pager.output);
+                self.frames.remove(&pager.output);
             }
-            let hwnd = match self.windows.get(&pager.output) {
-                Some((hwnd, _)) => *hwnd,
-                None => match self.create_window(pager) {
-                    Some(hwnd) => {
-                        self.windows.insert(pager.output.clone(), (hwnd, pager.dpi));
+            let mut fresh = false;
+            if !self.windows.contains_key(&pager.output) {
+                match PagerWindow::create(
+                    pager.strip,
+                    pager_frame(pager),
+                    pager.dpi,
+                    &self.sink,
+                    &self.calibration,
+                ) {
+                    Some(window) => {
+                        self.windows.insert(pager.output.clone(), window);
+                        self.frames.insert(pager.output.clone(), pager.clone());
                         created += 1;
-                        hwnd
+                        fresh = true;
                     }
                     None => {
                         failed += 1;
                         continue;
                     }
-                },
+                }
+            }
+            let Some(window) = self.windows.get_mut(&pager.output) else {
+                failed += 1;
+                continue;
             };
-            let frame_changed = self.store_frame(hwnd, pager);
-            if frame_changed || created > 0 {
-                unsafe {
-                    SetWindowPos(
-                        hwnd,
-                        HWND_TOPMOST,
-                        pager.strip.x,
-                        pager.strip.y,
-                        pager.strip.w,
-                        pager.strip.h,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                    );
-                    windows_sys::Win32::Graphics::Gdi::InvalidateRect(hwnd, std::ptr::null(), 1);
+            let frame_changed = match self.frames.get(&pager.output) {
+                Some(last) if frames_equal(last, pager) => false,
+                _ => {
+                    window.set_frame(pager_frame(pager));
+                    self.frames.insert(pager.output.clone(), pager.clone());
+                    true
                 }
+            };
+            if frame_changed || fresh {
+                window.move_show(pager.strip);
             }
-            if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) } == 0 {
-                unsafe {
-                    ShowWindow(hwnd, SW_SHOWNA);
-                }
-            }
+            window.ensure_shown();
         }
         if failed > 0 {
             self.note_failure(now);
@@ -793,18 +415,8 @@ impl PagerOverlays {
             .is_none_or(|at| now.duration_since(at) >= ZASSERT_INTERVAL)
         {
             self.last_zassert = Some(now);
-            for (hwnd, _) in self.windows.values() {
-                unsafe {
-                    SetWindowPos(
-                        *hwnd,
-                        HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                    );
-                }
+            for window in self.windows.values() {
+                window.reassert_topmost();
             }
         }
         self.last_hash = hash;
@@ -813,150 +425,71 @@ impl PagerOverlays {
     /// Hide every strip (suppression turns): windows persist for the next
     /// safe turn, so no destroy/create churn hides information.
     pub fn hide_all(&mut self) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
-        for (hwnd, _) in self.windows.values() {
-            unsafe {
-                ShowWindow(*hwnd, SW_HIDE);
-            }
-        }
-    }
-
-    fn create_window(&self, pager: &OutputPager) -> Option<HWND> {
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-            WS_VISIBLE,
-        };
-        let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-        let class_w = wide(PAGER_OVERLAY_CLASS);
-        let title_w = wide("OmniTiler taskbar pager");
-        let state = Box::new(WindowState {
-            ids: pager.ids.clone(),
-            output: pager.output.clone(),
-            cells: pager.cells.iter().map(|cell| cell.rect).collect(),
-            active: pager.active_index,
-            minis: pager.cells.iter().map(|cell| cell.minis.clone()).collect(),
-            icons: pager
-                .cells
-                .iter()
-                .map(|cell| cell.mini_icons.clone())
-                .collect(),
-            dpi: pager.dpi,
-            font: pager_font(pager.dpi),
-            queue: Arc::clone(&self.queue),
-        });
-        let raw = Box::into_raw(state);
-        let hwnd = unsafe {
-            CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-                class_w.as_ptr(),
-                title_w.as_ptr(),
-                WS_POPUP | WS_VISIBLE,
-                pager.strip.x,
-                pager.strip.y,
-                pager.strip.w,
-                pager.strip.h,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                hinst,
-                raw.cast(),
-            )
-        };
-        if hwnd.is_null() {
-            // Creation failed: the frame box owns a live HFONT here (it is
-            // normally freed in `detach_and_destroy`), so release it before
-            // dropping the box. No `Drop` on `WindowState` exists precisely
-            // to avoid double-freeing fonts of successfully created windows.
-            unsafe {
-                let state = Box::from_raw(raw);
-                if !state.font.is_null() {
-                    windows_sys::Win32::Graphics::Gdi::DeleteObject(state.font as _);
-                }
-            }
-            return None;
-        }
-        Some(hwnd)
-    }
-
-    /// Store one frame into its window; true when anything the paint reads
-    /// changed, so moves and repaints stay change-gated without cloning on
-    /// every pump.
-    fn store_frame(&self, hwnd: HWND, pager: &OutputPager) -> bool {
-        let raw = window_state_of(hwnd);
-        if raw.is_null() {
-            return false;
-        }
-        let state = unsafe { &mut *raw };
-        let cells: Vec<Rect> = pager.cells.iter().map(|cell| cell.rect).collect();
-        let minis: Vec<Vec<Rect>> = pager.cells.iter().map(|cell| cell.minis.clone()).collect();
-        // `Arc` equality short-circuits on pointer identity, so steady-state
-        // artwork costs one pointer compare per miniature, not a byte walk.
-        let icons: Vec<Vec<Option<Arc<IconImage>>>> = pager
-            .cells
-            .iter()
-            .map(|cell| cell.mini_icons.clone())
-            .collect();
-        if state.ids == pager.ids
-            && state.output == pager.output
-            && state.cells == cells
-            && state.active == pager.active_index
-            && state.minis == minis
-            && state.icons == icons
-        {
-            return false;
-        }
-        state.ids = pager.ids.clone();
-        state.output = pager.output.clone();
-        state.cells = cells;
-        state.active = pager.active_index;
-        state.minis = minis;
-        state.icons = icons;
-        true
-    }
-
-    fn detach_and_destroy(&self, hwnd: HWND) {
-        use windows_sys::Win32::Graphics::Gdi::DeleteObject;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            DestroyWindow, GWLP_USERDATA, SetWindowLongPtrW,
-        };
-        let raw = window_state_of(hwnd);
-        unsafe {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            DestroyWindow(hwnd);
-            if !raw.is_null() {
-                let state = Box::from_raw(raw);
-                if !state.font.is_null() {
-                    DeleteObject(state.font as _);
-                }
-            }
+        for window in self.windows.values() {
+            window.hide();
         }
     }
 }
 
 impl Drop for PagerOverlays {
-    /// Plain RAII teardown: every overlay destroyed, every frame box freed
-    /// exactly once. Process exit destroys them implicitly (no residue).
+    /// Plain RAII teardown: every overlay destroyed exactly once by its
+    /// window value. Process exit destroys them implicitly (no residue).
     fn drop(&mut self) {
-        let hwnds: Vec<HWND> = self.windows.values().map(|(hwnd, _)| *hwnd).collect();
-        for hwnd in hwnds {
-            self.detach_and_destroy(hwnd);
-        }
         self.windows.clear();
+        self.frames.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pager_icons::IconImage;
+    use crate::workspace::WindowKey;
+    use tiler_core::geometry::Rect;
 
     fn empty_overlays() -> PagerOverlays {
         PagerOverlays {
             windows: HashMap::new(),
-            queue: Arc::new(Mutex::new(None)),
+            frames: HashMap::new(),
+            sink: Arc::new(|_click: PagerClick| {}),
+            calibration: Arc::new(|| {}),
             log_path: None,
             retry_at: None,
             last_zassert: None,
             last_hash: 0,
+        }
+    }
+
+    fn pager_fixture(ids: &[&str], active: usize) -> OutputPager {
+        use crate::pager::PagerCell;
+        OutputPager {
+            output: "mon-a".to_owned(),
+            strip: Rect {
+                x: 0,
+                y: 0,
+                w: 144,
+                h: 40,
+            },
+            ids: ids.iter().map(|id| id.to_string()).collect(),
+            cells: ids
+                .iter()
+                .enumerate()
+                .map(|(index, _)| PagerCell {
+                    rect: Rect {
+                        x: index as i32 * 72,
+                        y: 0,
+                        w: 72,
+                        h: 40,
+                    },
+                    active: index == active,
+                    ordinal: index as u32 + 1,
+                    minis: Vec::new(),
+                    mini_keys: Vec::new(),
+                    mini_icons: Vec::new(),
+                })
+                .collect(),
+            active_index: active,
+            dpi: 96,
         }
     }
 
@@ -973,17 +506,55 @@ mod tests {
     }
 
     #[test]
-    fn stale_hide_flag_hides_once_and_requests_rediscover() {
-        // Drain any residue so the consume-once assertion is hermetic (no
-        // other test in this module touches these flags).
-        let _ = take_stale_hide();
-        let _ = take_rediscover();
-        // The calibration-broadcast path sets both: the host hides every
-        // strip at once, then revalidates from fresh facts on the next pump.
-        want_stale_hide();
-        assert!(take_stale_hide(), "host must observe the hide once");
-        assert!(!take_stale_hide(), "hide never replays a second pump");
-        assert!(take_rediscover(), "revalidation still follows the hide");
+    fn frame_gate_compares_ids_cells_and_artwork() {
+        let base = pager_fixture(&["ws-a", "ws-b"], 0);
+        assert!(frames_equal(&base, &base.clone()));
+        // Active move, id change, and geometry change all gate a repaint.
+        let mut moved = base.clone();
+        moved.active_index = 1;
+        assert!(!frames_equal(&base, &moved));
+        let mut renamed = base.clone();
+        renamed.ids[0] = "ws-x".to_owned();
+        assert!(!frames_equal(&base, &renamed));
+        let mut resized = base.clone();
+        resized.cells[0].rect.w = 73;
+        assert!(!frames_equal(&base, &resized));
+        // Artwork arrival (shared, not copied) gates a repaint; steady
+        // state with the same `Arc` does not.
+        let image = Arc::new(IconImage::new(32, 32, vec![4; 32 * 32 * 4]));
+        let mut iconic = base.clone();
+        iconic.cells[0].mini_icons.push(Some(Arc::clone(&image)));
+        iconic.cells[0].minis.push(Rect {
+            x: 1,
+            y: 1,
+            w: 10,
+            h: 10,
+        });
+        iconic.cells[0].mini_keys.push(WindowKey {
+            hwnd: 9,
+            pid: 7,
+            creation: "c1".to_owned(),
+        });
+        assert!(!frames_equal(&base, &iconic));
+        assert!(frames_equal(&iconic, &iconic.clone()));
+    }
+
+    #[test]
+    fn native_frame_shares_artwork_without_copying() {
+        // `pager_frame` hands the worker `Arc` straight through: the
+        // pointer the painter blits is the cache's own allocation.
+        let image = Arc::new(IconImage::new(32, 32, vec![4; 32 * 32 * 4]));
+        let mut pager = pager_fixture(&["ws-a"], 0);
+        pager.cells[0].mini_icons.push(Some(Arc::clone(&image)));
+        pager.cells[0].minis.push(Rect {
+            x: 1,
+            y: 1,
+            w: 20,
+            h: 20,
+        });
+        let frame = pager_frame(&pager);
+        let slot = frame.minis[0][0].icon.as_ref().expect("legible mini blits");
+        assert!(Arc::ptr_eq(&slot.image, &image));
     }
 
     #[test]
@@ -1006,44 +577,36 @@ mod tests {
 
     #[test]
     fn maintenance_due_combines_retry_and_zassert_without_spin() {
+        let now = Instant::now();
         // No overlay windows: no deadline (hidden/suppressed pager never
         // polls for z-order recovery).
-        let overlays = empty_overlays();
-        assert!(overlays.maintenance_due_at().is_none());
+        assert_eq!(maintenance_due(false, None, None), None);
         // Served windows with no reassert yet: due immediately so the
         // first sync establishes the cadence.
-        let mut overlays = empty_overlays();
-        overlays
-            .windows
-            .insert("out".to_owned(), (12345 as HWND, 0));
-        let due = overlays
-            .maintenance_due_at()
-            .expect("served strips arm a due time");
-        assert!(due <= Instant::now(), "first reassert is due at once");
+        assert!(
+            maintenance_due(true, None, None).is_some_and(|due| due <= Instant::now()),
+            "first reassert is due at once"
+        );
         // After a reassert the next due time is one interval out.
-        let now = Instant::now();
-        overlays.last_zassert = Some(now);
         assert_eq!(
-            overlays.maintenance_due_at(),
+            maintenance_due(true, Some(now), None),
             Some(now + Duration::from_secs(2))
         );
         // Failed creation arms the backoff even with no zassert arm: the
         // retry still wakes the owner (no strand while windows are absent).
-        let mut failed = empty_overlays();
-        failed.retry_at = Some(now + Duration::from_secs(5));
         assert_eq!(
-            failed.maintenance_due_at(),
+            maintenance_due(false, None, Some(now + Duration::from_secs(5))),
             Some(now + Duration::from_secs(5))
         );
         // Past-due zassert under an active backoff: the backoff wins (no
         // zero-timeout spin while `sync` early-returns), and the reassert
         // follows on the retry turn.
-        let mut backed = empty_overlays();
-        backed.windows.insert("out".to_owned(), (12345 as HWND, 0));
-        backed.last_zassert = Some(now - Duration::from_secs(60));
-        backed.retry_at = Some(now + Duration::from_secs(5));
         assert_eq!(
-            backed.maintenance_due_at(),
+            maintenance_due(
+                true,
+                Some(now - Duration::from_secs(60)),
+                Some(now + Duration::from_secs(5)),
+            ),
             Some(now + Duration::from_secs(5)),
             "backoff suppresses the past-due zassert"
         );

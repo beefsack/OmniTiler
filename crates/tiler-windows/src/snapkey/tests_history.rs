@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     ChordAction, ChordDisable, ChordRemap, Classified, KeyboardConfig, MaskTrigger, SnapClassify,
     SnapEdge, VK_CONTROL, VK_DOWN, VK_H, VK_J, VK_K, VK_L, VK_LEFT, VK_LWIN, VK_MENU, VK_RIGHT,

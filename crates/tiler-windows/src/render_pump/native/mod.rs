@@ -1,6 +1,7 @@
+#![forbid(unsafe_code)]
 //! `cfg(windows)` renderer thread: creator-side carrier lifecycle,
-//! message pump, readiness/stop/failure reporting. Minimal Win32 FFI
-//! `unsafe` at call sites only; all handoff state stays in safe
+//! message pump, readiness/stop/failure reporting. All Win32 effects go
+//! through safe [`crate::ffi`] primitives; all handoff state stays in safe
 //! [`crate::render_handoff`] primitives.
 
 use super::{FreshQuery, Present, PresentOutcome, RenderCore, ResolvedAnchor};
@@ -13,17 +14,13 @@ use crate::render_handoff::{
     RenderOutcome, RenderStopReport, UnderlayCandidate, UnderlayDesired, WindowLifetime,
     render_slot_release, render_slot_try_reserve,
 };
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{SyncSender, sync_channel},
 };
 use std::time::{Duration, Instant};
-
-/// `DWMWA_CLOAKED` (14): mirrors the owner anchor probe in `tiling_sys`
-/// (`underlay_anchor_renderable`); cloak-query failure fails closed.
-const DWMWA_CLOAKED: u32 = 14;
 
 /// Native renderer backend: the three owned carriers live here, on the
 /// renderer thread, for the whole renderer lifetime. Creation,
@@ -87,14 +84,7 @@ impl NativePresent {
     /// (process query plus a property read); never owner observation,
     /// Engine, or foreign writes. Unreadable fails closed.
     fn lifetime_matches(hwnd_u64: u64, expected: &WindowLifetime) -> bool {
-        use windows_sys::Win32::Foundation::HWND;
-        let mut pid: u32 = 0;
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
-                hwnd_u64 as usize as HWND,
-                &mut pid,
-            );
-        }
+        let pid = crate::ffi::window_pid(hwnd_u64);
         if pid == 0 || pid != expected.pid {
             return false;
         }
@@ -111,43 +101,27 @@ impl NativePresent {
 
     /// DWM cloak read on a live window: uncloaked only; query failure
     /// fails closed (not renderable, not visible).
-    fn dwm_uncloaked(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-        use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
-        let mut cloaked: i32 = 0;
-        if unsafe {
-            DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_CLOAKED,
-                (&mut cloaked as *mut i32).cast(),
-                std::mem::size_of::<i32>() as u32,
-            )
-        } != 0
-        {
-            return false;
-        }
-        cloaked == 0
+    fn dwm_uncloaked(hwnd_u64: u64) -> bool {
+        crate::ffi::cloaked(hwnd_u64) == Some(false)
     }
 
     /// Fresh renderable probe for one HWND: live, visible, non-iconic,
     /// non-cloaked. Mirrors the owner anchor probe so the renderer
     /// re-resolves over the same population the owner chose from.
     fn anchor_renderable(hwnd_u64: u64) -> bool {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow, IsWindowVisible};
         if hwnd_u64 == 0 {
             return false;
         }
-        let hwnd = hwnd_u64 as usize as HWND;
-        if unsafe { IsWindow(hwnd) } == 0 {
+        if !crate::ffi::is_window(hwnd_u64) {
             return false;
         }
-        if unsafe { IsWindowVisible(hwnd) } == 0 {
+        if !crate::ffi::is_visible(hwnd_u64) {
             return false;
         }
-        if unsafe { IsIconic(hwnd) } != 0 {
+        if crate::ffi::is_iconic(hwnd_u64) {
             return false;
         }
-        Self::dwm_uncloaked(hwnd)
+        Self::dwm_uncloaked(hwnd_u64)
     }
 
     /// One enriched candidate validates individually: the pid fence is
@@ -159,25 +133,17 @@ impl NativePresent {
         candidate: &UnderlayCandidate,
         fulls: &[tiler_core::geometry::Rect],
     ) -> bool {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
         if candidate.hwnd == 0 {
             return false;
         }
-        let mut pid: u32 = 0;
-        unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
-                candidate.hwnd as usize as HWND,
-                &mut pid,
-            );
-        }
+        let pid = crate::ffi::window_pid(candidate.hwnd);
         if pid == 0 || pid != candidate.lifetime.pid {
             return false;
         }
         if !Self::anchor_renderable(candidate.hwnd) {
             return false;
         }
-        if unsafe { IsZoomed(candidate.hwnd as usize as HWND) } != 0 {
+        if crate::ffi::is_zoomed(candidate.hwnd) {
             return false;
         }
         if Self::captionless_fullscreen(candidate.hwnd, fulls).unwrap_or(true) {
@@ -192,38 +158,15 @@ impl NativePresent {
     /// caption bit plus a fresh DWM extended-frame read. `None` when
     /// either read is unreadable (the caller fails closed).
     fn captionless_fullscreen(hwnd_u64: u64, fulls: &[tiler_core::geometry::Rect]) -> Option<bool> {
-        use windows_sys::Win32::Foundation::{HWND, RECT};
-        use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW, WS_CAPTION};
-        /// `DWMWA_EXTENDED_FRAME_BOUNDS` (9): mirrors the owner probe.
-        const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+        use windows_sys::Win32::UI::WindowsAndMessaging::WS_CAPTION;
         if hwnd_u64 == 0 {
             return None;
         }
-        let hwnd = hwnd_u64 as usize as HWND;
-        unsafe {
-            windows_sys::Win32::Foundation::SetLastError(0);
-        }
-        let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-        let style_err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        if style == 0 && style_err != 0 {
-            return None;
-        }
+        let style = crate::ffi::window_style_checked(hwnd_u64)?;
         if style & WS_CAPTION != 0 {
             return Some(false);
         }
-        let mut frame: RECT = unsafe { std::mem::zeroed() };
-        if unsafe {
-            DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
-                (&mut frame as *mut RECT).cast(),
-                std::mem::size_of::<RECT>() as u32,
-            )
-        } != 0
-        {
-            return None;
-        }
+        let frame = crate::ffi::extended_frame_bounds(hwnd_u64)?;
         let visible = tiler_core::geometry::Rect {
             x: frame.left,
             y: frame.top,
@@ -237,16 +180,11 @@ impl NativePresent {
 
     /// Fresh `WS_EX_TOPMOST` band read on one HWND (read-only).
     fn read_topmost(hwnd_u64: u64) -> Option<bool> {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GWL_EXSTYLE, GetWindowLongW, WS_EX_TOPMOST,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST;
         if hwnd_u64 == 0 {
             return None;
         }
-        let band = unsafe { GetWindowLongW(hwnd_u64 as usize as HWND, GWL_EXSTYLE) } as u32
-            & WS_EX_TOPMOST
-            != 0;
+        let band = crate::ffi::window_exstyle(hwnd_u64) & WS_EX_TOPMOST != 0;
         Some(band)
     }
 
@@ -284,15 +222,10 @@ impl Default for NativePresent {
 
 impl Present for NativePresent {
     fn check_fresh(&self, carrier: RenderCarrier, hwnd: u64, query: &FreshQuery<'_>) -> FreshFacts {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, IsIconic, IsWindow, IsWindowVisible, IsZoomed,
-        };
         if hwnd == 0 {
             return Self::dead_facts();
         }
-        let raw = hwnd as usize as HWND;
-        if unsafe { IsWindow(raw) } == 0 {
+        if !crate::ffi::is_window(hwnd) {
             return Self::dead_facts();
         }
         // Recycled-HWND fence first: a live window with a dead identity
@@ -320,11 +253,11 @@ impl Present for NativePresent {
         } else {
             Self::captionless_fullscreen(hwnd, query.fulls)
         };
-        let visible = unsafe { IsWindowVisible(raw) } != 0
-            && unsafe { IsIconic(raw) } == 0
-            && Self::dwm_uncloaked(raw)
+        let visible = crate::ffi::is_visible(hwnd)
+            && !crate::ffi::is_iconic(hwnd)
+            && Self::dwm_uncloaked(hwnd)
             && fs_read.is_some();
-        let zoom_ok = unsafe { IsZoomed(raw) } == 0;
+        let zoom_ok = !crate::ffi::is_zoomed(hwnd);
         // Renderer-evaluated suppression: the captionless-fullscreen
         // predicate over the carried monitor fulls, honoring only the
         // explicit owner bypass behind a tag-proven lifetime. Preview
@@ -345,7 +278,7 @@ impl Present for NativePresent {
         let foreground_ok = match query.foreground {
             None => false,
             Some(expected) => {
-                let fg = unsafe { GetForegroundWindow() } as usize as u64;
+                let fg = crate::ffi::foreground_window();
                 fg != 0 && Self::lifetime_matches(fg, expected)
             }
         };
@@ -367,18 +300,15 @@ impl Present for NativePresent {
         topmost: bool,
         foreground: Option<&WindowLifetime>,
     ) -> FreshFacts {
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindowVisible};
         if hwnd == 0 {
             return Self::dead_facts();
         }
-        let raw = hwnd as usize as HWND;
         if !crate::active_border_sys::overlay_window_alive(hwnd) {
             return Self::dead_facts();
         }
-        let visible = unsafe { IsWindowVisible(raw) } != 0;
+        let visible = crate::ffi::is_visible(hwnd);
         let band_ok = Self::read_topmost(hwnd).is_some_and(|band| band == topmost);
-        let fg = unsafe { GetForegroundWindow() } as usize as u64;
+        let fg = crate::ffi::foreground_window();
         let foreground_ok = match foreground {
             None => false,
             Some(expected) => fg != 0 && Self::lifetime_matches(fg, expected),
@@ -640,19 +570,10 @@ impl RenderSignals {
 
 /// Create one auto-reset kernel event, initially non-signaled.
 fn create_event() -> Result<OwnedHandle, String> {
-    let handle = unsafe {
-        windows_sys::Win32::System::Threading::CreateEventW(
-            std::ptr::null(),
-            0,
-            0,
-            std::ptr::null(),
-        )
-    };
-    if handle.is_null() {
-        let code = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        return Err(format!("error: render wake creation failed: win32-{code}"));
-    }
-    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+    crate::ffi::create_auto_reset_event().ok_or_else(|| {
+        let code = crate::ffi::process::last_error();
+        format!("error: render wake creation failed: win32-{code}")
+    })
 }
 
 /// Duplicate one wake handle for the renderer thread: each side owns its
@@ -666,9 +587,7 @@ fn duplicate_event(handle: &OwnedHandle) -> Result<OwnedHandle, String> {
 
 /// Signal one owned wake best-effort. Never waits, never logs.
 fn signal_owned(handle: &OwnedHandle) {
-    unsafe {
-        windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
-    }
+    crate::ffi::signal_event(handle);
 }
 
 /// Owner handle for exactly one renderer thread. All logging stays on
@@ -961,36 +880,12 @@ fn classify_render_wait(result: u32) -> RenderWait {
 /// explicit wake or deadline. Returns the native wait reason (one per
 /// wait) for the cumulative trace counters.
 fn pump_messages(timeout_ms: u32, work_wake: &OwnedHandle) -> RenderWait {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, MSG, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
-        TranslateMessage,
-    };
-    let mut msg: MSG = unsafe { std::mem::zeroed() };
-    loop {
-        let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has == 0 {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    let result = unsafe {
-        let raw = work_wake.as_handle().as_raw_handle();
-        MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0)
-    };
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    crate::ffi::drain_messages();
+    let raw = work_wake.as_handle().as_raw_handle();
+    let result = crate::ffi::msg_wait_raw(std::slice::from_ref(&raw), timeout_ms);
     let reason = classify_render_wait(result);
-    loop {
-        let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has == 0 {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    crate::ffi::drain_messages();
     reason
 }
 

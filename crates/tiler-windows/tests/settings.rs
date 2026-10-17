@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use std::path::PathBuf;
 use tiler_windows::settings::{
     BindingSetting, BindingState, LoadOutcome, PollOutcome, Preset, Settings, build_disabled,

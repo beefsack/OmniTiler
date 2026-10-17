@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 pub fn watcher_ready_path(dir: &Path, owner_creation: &str) -> PathBuf {

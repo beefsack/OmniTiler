@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Which runtime arm a catalog action belongs to. Directional/workspace arms

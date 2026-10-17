@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use crate::product_hide::ProductTeardown;
@@ -524,22 +525,8 @@ fn fenced_visibility(
     if let Some(probe) = INJECTED_VIS.with(|map| map.borrow().get(&key.hwnd).copied()) {
         return (Some(probe.0), probe.1);
     }
-    let hwnd = key.hwnd as isize as HWND;
-    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-    let mut cloaked_raw: i32 = 0;
-    let cloaked = if unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked_raw as *mut i32).cast(),
-            std::mem::size_of::<i32>() as u32,
-        )
-    } == 0
-    {
-        Some(cloaked_raw != 0)
-    } else {
-        None
-    };
+    let visible = crate::ffi::is_visible(key.hwnd);
+    let cloaked = crate::ffi::cloaked(key.hwnd);
     (Some(visible), cloaked)
 }
 

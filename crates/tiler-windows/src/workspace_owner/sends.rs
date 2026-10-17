@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One Engine window row: token, last-known rectangle, fresh

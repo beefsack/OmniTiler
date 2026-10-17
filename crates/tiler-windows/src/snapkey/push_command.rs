@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::chords::{
     index_direction, migrate_direction, output_repeat_live, relative_send_repeat_live,
 };

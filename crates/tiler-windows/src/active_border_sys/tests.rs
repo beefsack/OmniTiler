@@ -1,15 +1,5 @@
+#![forbid(unsafe_code)]
 use super::*;
-
-#[test]
-fn accent_dirty_flag_is_sticky_until_consumed() {
-    // WndProc broadcast path without a live window: marks coalesce into
-    // one refresh, and consumption resets exactly once.
-    assert!(!take_accent_dirty());
-    mark_accent_dirty();
-    mark_accent_dirty();
-    assert!(take_accent_dirty());
-    assert!(!take_accent_dirty());
-}
 
 #[test]
 fn z_verdict_repairs_underlay_above_but_preserves_border() {

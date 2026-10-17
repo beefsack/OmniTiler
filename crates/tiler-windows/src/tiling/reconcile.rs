@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Portable observed target identity for frozen-allowlist matching.

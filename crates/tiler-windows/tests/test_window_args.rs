@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::test_window::{
     HELPER_DEFAULT_SECONDS, parse_close_args, parse_helper_run_args, parse_hwnd,
     parse_tagged_hwnd_args,

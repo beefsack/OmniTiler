@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     GestureIntent, MonitorArea, ObservedWindow, RenderBridge, RenderCarrier, RetainedRow,
     clear_pending_seams, hide_render_carrier, inject_monitor_areas, inject_pending_elevated,

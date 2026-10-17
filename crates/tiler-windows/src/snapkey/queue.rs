@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// One Start-menu mask reservation: the arming chord plus the Win-up instant

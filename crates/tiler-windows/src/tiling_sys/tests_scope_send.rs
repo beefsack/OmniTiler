@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Scoped send tests (item 12 stage B).
 //!
 //! Path-included from `tiling_sys.rs` (`#[path]`), so `super` is the

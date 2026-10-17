@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Items 14/19 portable wiring: the saved `core.migration_source_refill`
 //! setting drives `ManagedWorkspaces::migrate_workspace` through the shared
 //! G-37 selector, with no core changes and no per-window-send simulation.

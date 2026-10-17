@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use tiler_windows::model::{
     ObservedWindow, ProcessIdentity, RefuseReason, RestoreDecision, WindowClaimKind,
     WindowIdentity, restore_eligibility,

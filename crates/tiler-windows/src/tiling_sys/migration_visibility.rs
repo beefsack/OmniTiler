@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 /// Flush one honest hide-leg omission summary for the migration target-prior

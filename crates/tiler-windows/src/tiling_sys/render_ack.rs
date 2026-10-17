@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::*;
 
 use super::render_bridge::{PostedNote, render_hide_reason, render_record_applied};

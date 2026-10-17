@@ -2,6 +2,10 @@
 //! collecting them back into a validated document, and the binding editor,
 //! Apply/Revert/preset staging. Nothing here writes except `do_apply`'s
 //! single atomic save (after stale-content refusal).
+//!
+//! All control effects delegate to [`crate::ffi::settings_controls`];
+//! dialogs go through [`super::dialogs`]; no Win32 lives here.
+#![forbid(unsafe_code)]
 
 use crate::settings::{
     BindingSetting, BindingState, LoadOutcome, Settings, apply_preset, binding_catalog,

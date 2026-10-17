@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{InputChannels, install_backoff_secs, snap_batch_age_us};
 use crate::input_handoff::{
     InboxItem, InputDiag, InputSnapshot, OUTBOX_BATCH_CAP, PumpLifecycle, SharedSnapshot,
@@ -6,17 +7,13 @@ use crate::input_handoff::{
 use crate::snapkey::{KeyboardConfig, QueuedSnapEvent};
 use crate::win_mouse::WinDragEdge;
 use std::collections::VecDeque;
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU32, Ordering},
     mpsc::{SyncSender, sync_channel},
 };
 use std::time::{Duration, Instant};
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MSG, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
-    TranslateMessage,
-};
 
 /// Native hook backend seam: real `sys` calls in production, scripted
 /// fakes in tests. The same [`PumpCore`] step drives both, so install /
@@ -24,7 +21,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// Implementations must never perform native effects in tests: fake
 /// backends record calls and return scripted results with no hooks.
 pub trait NativeHooks {
-    /// Installed keyboard hook token (real `HHOOK`, fake unit).
+    /// Installed keyboard hook token (real ffi owner, fake unit).
     type KeyboardHook;
     /// Installed mouse hook token.
     type MouseHook;
@@ -57,8 +54,8 @@ pub trait NativeHooks {
 /// message pump. Both hooks stay together on this thread.
 pub struct RealHooks;
 impl NativeHooks for RealHooks {
-    type KeyboardHook = windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
-    type MouseHook = windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
+    type KeyboardHook = crate::ffi::SnapKeyHook;
+    type MouseHook = crate::ffi::WinMouseHook;
 
     fn install_keyboard(&mut self, config: KeyboardConfig) -> Result<Self::KeyboardHook, String> {
         crate::snapkey::sys::install(config)
@@ -468,17 +465,7 @@ impl InputHandle {
 /// not deliver this thread's callbacks anyway, and LL delivery stays
 /// isolated here.
 fn drain_messages() {
-    let mut msg: MSG = unsafe { std::mem::zeroed() };
-    loop {
-        let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
-        if has == 0 {
-            break;
-        }
-        unsafe {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
+    crate::ffi::drain_messages();
 }
 
 /// Wait for owner work, queued hook-callback messages, or the deadline.
@@ -489,16 +476,14 @@ fn drain_messages() {
 /// native wait reason; failed/unrecognized codes classify as `Failed`
 /// with no behavior change (the step keeps its existing fallthrough).
 fn wait_messages(timeout_ms: u32, work_wake: Option<&OwnedHandle>) -> super::InputWaitReason {
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _, RawHandle};
     let has_work = work_wake.is_some();
-    let result = unsafe {
-        match work_wake {
-            Some(wake) => {
-                let raw = wake.as_handle().as_raw_handle();
-                MsgWaitForMultipleObjectsEx(1, &raw, timeout_ms, QS_ALLINPUT, 0)
-            }
-            None => MsgWaitForMultipleObjectsEx(0, std::ptr::null(), timeout_ms, QS_ALLINPUT, 0),
-        }
+    let raw = work_wake.map(|wake| wake.as_handle().as_raw_handle());
+    let handles: &[RawHandle] = match &raw {
+        Some(handle) => std::slice::from_ref(handle),
+        None => &[],
     };
+    let result = crate::ffi::msg_wait_raw(handles, timeout_ms);
     super::classify_input_wait(result, has_work)
 }
 

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use super::{
     Edge, HOOK_ENABLED_SECONDS, MethodReport, MethodState, RELEASE_CHECK_SECONDS, RestoreReport,
     SPIKE_HARD_SECONDS, SPIKE_LEDGER_SECONDS, SpikeReport, arrow_index, events_path_for,
@@ -11,15 +12,7 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM};
-use windows_sys::Win32::Storage::FileSystem::{
-    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_CONTROL,
-    VK_MENU, VK_SHIFT,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_MENU, VK_SHIFT};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 type DynError = Box<dyn std::error::Error>;
@@ -44,24 +37,16 @@ thread_local! {
 }
 
 fn hook_foreground(st: &HookState) -> bool {
-    if unsafe { GetForegroundWindow() } as usize as u64 != st.helper_hwnd {
+    if crate::ffi::foreground_window() != st.helper_hwnd {
         return false;
     }
-    let mut pid: u32 = 0;
-    unsafe { GetWindowThreadProcessId(st.helper_hwnd as isize as HWND, &mut pid) };
-    if pid != st.helper_pid {
+    if crate::ffi::window_pid(st.helper_hwnd) != st.helper_pid {
         return false;
     }
-    let v = unsafe {
-        GetPropW(
-            st.helper_hwnd as isize as HWND,
-            windows_sys::w!("OmniTilerLifetime"),
-        )
-    };
-    if v.is_null() {
-        return false;
+    match crate::ffi::get_prop(st.helper_hwnd, "OmniTilerLifetime") {
+        Some(v) => v as u64 == st.helper_tag,
+        None => false,
     }
-    v as usize as u64 == st.helper_tag
 }
 
 /// Minimal callback: modifier/chord bookkeeping plus one bounded queue
@@ -70,18 +55,23 @@ fn hook_foreground(st: &HookState) -> bool {
 /// log and passed through to the system. A physical Win-up that closes a
 /// hold with a consumed chord sends the E8 mask pair first (with no HOOK
 /// borrow held); the Win-up itself always passes through.
-unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code as u32 == HC_ACTION {
-        let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        let vk = kb.vkCode;
-        let flags = kb.flags;
+///
+/// Safe policy behind the ffi trampoline: the event arrives pre-copied
+/// with no raw pointer, and the verdict selects consume or pass-through.
+/// The injected-event guard and the no-borrow-across-`SendInput` RefCell
+/// ordering are unchanged from the previous inline callback.
+fn handle_winarrow_event(ev: crate::ffi::KeyEvent) -> crate::ffi::HookVerdict {
+    use crate::ffi::HookVerdict;
+    {
+        let vk = ev.vk;
+        let flags = ev.flags;
         let injected = flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED) != 0;
         // Own-injection guard BEFORE any HOOK borrow: the SendInput pair
         // below reenters this callback on the same thread, and
         // re-borrowing the RefCell would panic. Injected events always
         // pass through untouched.
         if injected {
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            return HookVerdict::Pass;
         }
         let is_up = flags & LLKHF_UP != 0;
         if is_up && super::is_win_vk(vk) {
@@ -111,16 +101,16 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
                     }
                 });
             }
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            return HookVerdict::Pass;
         }
         // Modifiers may already be held when the hook starts.
         if !is_up
             && super::Arrow::from_vk(vk).is_some()
             && [VK_CONTROL, VK_MENU, VK_SHIFT]
                 .iter()
-                .any(|key| unsafe { GetAsyncKeyState(i32::from(*key)) } < 0)
+                .any(|key| crate::ffi::async_key_down(u32::from(*key)))
         {
-            return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            return HookVerdict::Pass;
         }
         let consume = HOOK.with(|h| {
             let mut h = h.borrow_mut();
@@ -138,57 +128,18 @@ unsafe extern "system" fn llproc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
             )
         });
         if consume == Some(true) {
-            return 1;
+            return HookVerdict::Consume;
         }
     }
-    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
-}
-
-struct MaskSend {
-    inserted: u8,
-    release_sent: bool,
+    HookVerdict::Pass
 }
 
 /// Sends the E8 down/up pair: two keyboard INPUT records with the
 /// unassigned VK and no scancode masquerading as a Ctrl modifier. Must be
-/// called with no HOOK borrow held (see llproc). Returns the
-/// accepted-event count plus whether the bounded partial-release ran.
-fn send_mask_pair() -> MaskSend {
-    unsafe {
-        let mut pair: [INPUT; 2] = std::mem::zeroed();
-        pair[0].r#type = INPUT_KEYBOARD;
-        pair[0].Anonymous.ki = KEYBDINPUT {
-            wVk: super::VK_MASK as u16,
-            wScan: 0,
-            dwFlags: 0,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        pair[1].r#type = INPUT_KEYBOARD;
-        pair[1].Anonymous.ki = KEYBDINPUT {
-            wVk: super::VK_MASK as u16,
-            wScan: 0,
-            dwFlags: KEYEVENTF_KEYUP,
-            time: 0,
-            dwExtraInfo: 0,
-        };
-        let size = std::mem::size_of::<INPUT>() as i32;
-        let inserted = SendInput(2, pair.as_ptr(), size);
-        if inserted == 1 {
-            // Partial pair: the E8 down reached the system without its
-            // up. One bounded E8-up release, nothing else repaired.
-            let release = SendInput(1, pair.as_ptr().add(1), size);
-            MaskSend {
-                inserted: 1,
-                release_sent: release == 1,
-            }
-        } else {
-            MaskSend {
-                inserted: inserted as u8,
-                release_sent: false,
-            }
-        }
-    }
+/// called with no HOOK borrow held (see `handle_winarrow_event`). Returns
+/// the accepted-event count plus whether the bounded partial-release ran.
+fn send_mask_pair() -> crate::ffi::KeyPairSend {
+    crate::ffi::send_key_pair(super::VK_MASK as u16)
 }
 
 /// Per-event log writer. All filesystem serialization happens on the
@@ -340,7 +291,7 @@ fn hold_helper(pid: u32, expected: &ProcessIdentity) -> std::result::Result<Held
 }
 
 fn foreground_exact(base: &WindowSnapshot) -> bool {
-    (unsafe { GetForegroundWindow() }) as usize as u64 == base.hwnd
+    crate::ffi::foreground_window() == base.hwnd
 }
 
 /// Best-effort status title on the verified helper only; skips silently on
@@ -364,10 +315,7 @@ fn set_helper_title(base: &WindowSnapshot, helper_exe: &str, text: &str) {
     if !held.is_alive() {
         return;
     }
-    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
-    unsafe {
-        SetWindowTextW(base.hwnd as isize as HWND, wide.as_ptr());
-    }
+    crate::ffi::set_window_text(base.hwnd, text);
 }
 
 /// Single owned-geometry writer for nudge and final restore.
@@ -389,28 +337,22 @@ fn set_owned_rect(
         return Err("refuse: helper identity changed".to_owned());
     }
     let held = hold_helper(pre.process.pid, &base.process)?;
-    let raw = base.hwnd as isize as HWND;
-    if restoring && (unsafe { IsIconic(raw) } != 0 || unsafe { IsZoomed(raw) } != 0) {
-        unsafe { ShowWindow(raw, SW_SHOWNOACTIVATE) };
-        if unsafe { IsIconic(raw) } != 0 || unsafe { IsZoomed(raw) } != 0 {
+    if restoring && (crate::ffi::is_iconic(base.hwnd) || crate::ffi::is_zoomed(base.hwnd)) {
+        crate::ffi::show_window(base.hwnd, SW_SHOWNOACTIVATE);
+        if crate::ffi::is_iconic(base.hwnd) || crate::ffi::is_zoomed(base.hwnd) {
             return Err("refuse: helper still minimized/maximized".to_owned());
         }
     }
-    let ok = unsafe {
-        SetWindowPos(
-            raw,
-            std::ptr::null_mut(),
-            want[0],
-            want[1],
-            want[2] - want[0],
-            want[3] - want[1],
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        )
-    };
-    if ok == 0 {
-        return Err(format!("error: SetWindowPos win32-{}", unsafe {
-            GetLastError()
-        }));
+    let (ok, code) = crate::ffi::set_window_pos_detailed(
+        base.hwnd,
+        want[0],
+        want[1],
+        want[2] - want[0],
+        want[3] - want[1],
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    if !ok {
+        return Err(format!("error: SetWindowPos win32-{code}"));
     }
     if !held.is_alive() {
         return Err("refuse: helper exited during move".to_owned());
@@ -450,24 +392,13 @@ fn nudge(
 }
 
 fn write_report(path: &Path, report: &SpikeReport) -> std::result::Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
     let json = serde_json::to_string(report).map_err(|e| format!("error: report json {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, json.as_bytes()).map_err(|e| format!("error: report write: {e}"))?;
-    let from_w: Vec<u16> = tmp.as_os_str().encode_wide().chain([0]).collect();
-    let to_w: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            from_w.as_ptr(),
-            to_w.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
+    if let Err(e) = crate::ffi::move_file_replace(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
-        return Err(format!("error: report replace win32-{}", unsafe {
-            GetLastError()
-        }));
+        let code = e.raw_os_error().unwrap_or(0);
+        return Err(format!("error: report replace win32-{code}"));
     }
     Ok(())
 }
@@ -543,7 +474,7 @@ fn pull_hook_counts(method: &mut MethodReport) {
 }
 
 fn release_now(
-    hook: &mut HHOOK,
+    hook: &mut Option<crate::ffi::WinArrowHook>,
     live: &mut bool,
     method: &mut MethodReport,
 ) -> std::result::Result<(), String> {
@@ -557,17 +488,32 @@ fn release_now(
         }
     });
     pull_hook_counts(method);
-    if unsafe { UnhookWindowsHookEx(*hook) } == 0 {
-        let e = format!("win32-{}", unsafe { GetLastError() });
+    // `live` implies an installed handle (both set together), so `take`
+    // yields `Some` on every reachable path; `None` keeps the failure
+    // vocabulary instead of fabricating success.
+    let taken = hook.take();
+    let ok = match taken {
+        Some(mut installed) => {
+            let ok = crate::ffi::uninstall_winarrow_hook(&mut installed);
+            if !ok {
+                *hook = Some(installed);
+            }
+            ok
+        }
+        None => false,
+    };
+    if ok {
+        crate::ffi::clear_winarrow_sink();
+        HOOK.with(|h| *h.borrow_mut() = None);
+        method.release_ok = true;
+        method.release_error = None;
+        Ok(())
+    } else {
+        let e = format!("win32-{}", crate::ffi::process::last_error());
         method.release_ok = false;
         method.release_error = Some(e.clone());
-        return Err(e);
+        Err(e)
     }
-    *hook = std::ptr::null_mut();
-    HOOK.with(|h| *h.borrow_mut() = None);
-    method.release_ok = true;
-    method.release_error = None;
-    Ok(())
 }
 
 /// Drain the bounded queue on the message-loop thread: act on consumed
@@ -662,11 +608,10 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
     if !base.visible {
         return Err(err("refuse: helper not visible"));
     }
-    let raw = base.hwnd as isize as HWND;
-    if unsafe { IsIconic(raw) } != 0 {
+    if crate::ffi::is_iconic(base.hwnd) {
         return Err(err("refuse: helper minimized"));
     }
-    if unsafe { IsZoomed(raw) } != 0 {
+    if crate::ffi::is_zoomed(base.hwnd) {
         return Err(err("refuse: helper maximized"));
     }
     if report.exists() {
@@ -695,16 +640,15 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
     // Prime the thread queue so the loop can run, then a single 100ms
     // thread timer for stop/deadline/drain checks plus a 1s sub-tick for
     // the status title and focus-change evidence.
-    let mut prime: MSG = unsafe { std::mem::zeroed() };
-    unsafe { PeekMessageW(&mut prime, std::ptr::null_mut(), 0, 0, PM_NOREMOVE) };
-    let timer_id = unsafe { SetTimer(std::ptr::null_mut(), 0, TICK_MS, None) };
+    crate::ffi::prime_thread_queue();
+    let timer_id = crate::ffi::set_thread_timer(TICK_MS);
     if timer_id == 0 {
         return Err(err("error: SetTimer failed"));
     }
 
     // Install once with no focus gate. Timing-only fallback when the tag
     // is bad or the install fails; the report says so honestly.
-    let mut hook: HHOOK = std::ptr::null_mut();
+    let mut hook: Option<crate::ffi::WinArrowHook> = None;
     let mut live = false;
     let mut released = false;
     let tag_num = u64::from_str_radix(base.tag.trim(), 16).unwrap_or(0);
@@ -714,7 +658,6 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
         method.release_ok = true;
         released = true;
     } else {
-        let hmod = unsafe { GetModuleHandleW(std::ptr::null()) };
         HOOK.with(|h| {
             *h.borrow_mut() = Some(HookState {
                 helper_hwnd: base.hwnd,
@@ -724,32 +667,35 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
                 queue: super::EventQueue::new(),
             });
         });
-        let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(llproc), hmod, 0) };
-        if h.is_null() {
-            let code = unsafe { GetLastError() };
-            method.hook_installed = Some(false);
-            method.hook_error = Some(code);
-            method
-                .note
-                .push_str(&format!("hook install failed win32-{code}. "));
-            method.release_ok = true;
-            released = true;
-            HOOK.with(|h| *h.borrow_mut() = None);
-        } else {
-            hook = h;
-            live = true;
-            method.hook_installed = Some(true);
-            method.note.push_str("hook installed. ");
+        crate::ffi::set_winarrow_sink(handle_winarrow_event);
+        match crate::ffi::install_winarrow_hook() {
+            None => {
+                crate::ffi::clear_winarrow_sink();
+                let code = crate::ffi::process::last_error();
+                method.hook_installed = Some(false);
+                method.hook_error = Some(code);
+                method
+                    .note
+                    .push_str(&format!("hook install failed win32-{code}. "));
+                method.release_ok = true;
+                released = true;
+                HOOK.with(|h| *h.borrow_mut() = None);
+            }
+            Some(h) => {
+                hook = Some(h);
+                live = true;
+                method.hook_installed = Some(true);
+                method.note.push_str("hook installed. ");
+            }
         }
     }
     let mut log = EventLog::create(&events_path).map_err(|e| {
         if live && !released {
             let mut m = method.clone();
-            let mut h = hook;
             let mut l = live;
-            let _ = release_now(&mut h, &mut l, &mut m);
+            let _ = release_now(&mut hook, &mut l, &mut m);
         }
-        unsafe { KillTimer(std::ptr::null_mut(), timer_id) };
+        crate::ffi::kill_thread_timer(timer_id);
         HOOK.with(|h| *h.borrow_mut() = None);
         err(e)
     })?;
@@ -769,11 +715,10 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
     .map_err(|e| {
         if live && !released {
             let mut m = method.clone();
-            let mut h = hook;
             let mut l = live;
-            let _ = release_now(&mut h, &mut l, &mut m);
+            let _ = release_now(&mut hook, &mut l, &mut m);
         }
-        unsafe { KillTimer(std::ptr::null_mut(), timer_id) };
+        crate::ffi::kill_thread_timer(timer_id);
         HOOK.with(|h| *h.borrow_mut() = None);
         err(e)
     })?;
@@ -790,11 +735,10 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
     snap(&method, &restore, &exit, &exit_error).map_err(|e| {
         if live && !released {
             let mut m = method.clone();
-            let mut h = hook;
             let mut l = live;
-            let _ = release_now(&mut h, &mut l, &mut m);
+            let _ = release_now(&mut hook, &mut l, &mut m);
         }
-        unsafe { KillTimer(std::ptr::null_mut(), timer_id) };
+        crate::ffi::kill_thread_timer(timer_id);
         HOOK.with(|h| *h.borrow_mut() = None);
         err(e)
     })?;
@@ -807,18 +751,16 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
     let mut last_fg = Some(fg0);
     let mut last_tick = Instant::now();
     let loop_out: std::result::Result<bool, String> = (|| {
-        let mut msg: MSG = unsafe { std::mem::zeroed() };
         loop {
-            let r = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
-            if r == 0 {
-                exit = "interrupted".to_owned();
-                break;
-            }
-            if r == -1 {
-                return Err("error: message loop".to_owned());
-            }
-            if msg.message != WM_TIMER {
-                continue;
+            match crate::ffi::wait_timer_message() {
+                crate::ffi::TimerMessage::Quit => {
+                    exit = "interrupted".to_owned();
+                    break;
+                }
+                crate::ffi::TimerMessage::Failed => {
+                    return Err("error: message loop".to_owned());
+                }
+                crate::ffi::TimerMessage::Tick => {}
             }
             if stop_requested(dir, &me.process_creation)? {
                 stopped = true;
@@ -994,7 +936,7 @@ fn spike_body(dir: &Path, me: &ProcessIdentity, helper_hwnd: u64, report: &Path)
         }
     }
     let _ = log.flush();
-    unsafe { KillTimer(std::ptr::null_mut(), timer_id) };
+    crate::ffi::kill_thread_timer(timer_id);
     HOOK.with(|h| *h.borrow_mut() = None);
     let _ = released;
     if let Err(e) = write_report(
