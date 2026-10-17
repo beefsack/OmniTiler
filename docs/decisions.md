@@ -2102,6 +2102,76 @@ platform API behavior.
     observed. The wake is an observation window, not hint expiry or a latency
     guarantee; physical timing remains user-owned.
 
+## Best-Effort Admission
+
+- User 2026-10-17, D1: capacity means geometric exhaustion: a whole-tree
+  projection cannot give every tile positive extent after gaps. Declared
+  minimum infeasibility alone still uses B6 origin+minimum overlap. This
+  supersedes the full-state reply change's temporary capacity hold, not B6.
+- D2: try the ordinary anchor/topology first, then the selected fallback.
+  Default `largest-splittable-window` ranks plain allocation area descending,
+  child-order DFS then lifetime identity ascending. Alternative
+  `closest-splittable-relative` searches sibling-subtree leaves through
+  successive ancestor rings, sibling index-distance then child order/DFS;
+  `no-search` goes directly to D3. Splittability requires whole-tree strict
+  and normal hinted projection; minimum-overconstraint flags do not refuse.
+  Fallback wraps the chosen leaf old/new equally on its plain long edge
+  (square vertical). No short-axis retry, ancestor wrapping, rebalancing,
+  automatic workspace/output search or spill.
+- D3/D4: default no-space result is `float`; `allow-overlap` is the explicit
+  alternative. A capacity float has no tile slot/frame authority and keeps its
+  opening frame; eviction keeps the last live frame. It is an ordinary float
+  for navigation, decoration, movement and explicit tiling. `capacity` origin
+  is diagnostic only, distinct from automatic fixed-size admission. Focus the
+  fresh newcomer, never the alternate anchor, whether it tiles or floats;
+  existing native activation/game/overlay, gesture and at-most-once fences
+  still apply. Repair/eviction never issues a native focus setter.
+- D5: no automatic re-tile after close, growth, smaller gaps, visits, replies
+  or disable/enable. Explicit tile retries once; no-space leaves the float
+  intact with no false successful-tile override. Persist float membership
+  across restart exactly like user floats. Diagnostic origin and tiled
+  admission history need not survive core restart; neither changes ordinary
+  float behavior. Close/identity replacement clears live origin/order.
+- D6: applies to fresh/rejoin admission, explicit tile, startup/enable, sends,
+  R4, drag and retained-geometry capacity repair. Named sends search only the
+  destination. R4 keeps its exact whole-target directional wrap, with D3 but
+  no D2. Transfers preserve source until the existing arrival/transaction
+  proof; same-output floats preserve their frame, cross-output floats use the
+  established native move-only remap once, never a guessed frame. Drag keeps
+  resolved target/side and fresh preview/finish agreement; without an honest
+  float preview it refuses/snaps back, never floats only at finish. Promised
+  old slots/migration first preserve retained topology, then D7/D9 rather
+  than silently choosing a new anchor. Host capabilities remain gates.
+- D7: float the shortest newest-first eligible victim prefix until retained
+  projection succeeds, contracting branches with existing survivor-share
+  rules. Order is first successful tiled admission, preserved for the same
+  lifetime across moves/re-tiles; ties use descending lifetime identity.
+  Clean-fit adoption shares one initial sequence; serial legs retain their
+  actual successful order, not identifier sort order. Protect reserved
+  fullscreen/maximized slots, fixed explicit-tile overrides and unsafe/excluded
+  members; defer during gestures. Impossible protected remainder or invalid
+  usable area remains narrowly held. Evictions persist as ordinary floats.
+- D8: preserve clean/tolerance-valid minimum-feasible recursive-cut adoption
+  first; otherwise retain spatial `(y,x,h,w)`, focus-last serial seed with
+  stable adapter-order ties and D2/D3 per leg. Commit the complete mixed roster
+  atomically. Persisted floats stay floating; no balanced optimizer or claimed
+  native burst-order parity.
+- D9: overlap-only projection uses each group's effective axis extent
+  `max(assigned, gap*(children-1)+children)` with existing reserve-one/share
+  rounding, unchanged assigned origin/cross extent, recursively. Parent slots
+  do not grow; branches may overlap or overflow. Apply B6 afterward, flag
+  capacity overflow separately, keep strict projection unchanged, and hold
+  unrepresentable targets. Numeric geometry/navigation goldens preceded code.
+- D10: two global shared-catalog enums under Tiling & Workspaces > Admission:
+  `admission.anchor-fallback` and `admission.no-space` (KDE `anchorFallback`
+  and `noSpaceResult`). Apply changes subsequent admission/actual capacity
+  decisions only: no reflow, retry or reclassification merely on Apply.
+  Native validity and saved/requested/confirmed state remain separate.
+- Core/KDE delivered offline 2026-10-18; Windows/macOS native consumption and
+  KDE live acceptance remain pending. This explicitly supersedes earlier
+  no-geometric-fallback wording, while minimum-only B6 remains unchanged.
+  [Implementation, evidence and live re-check](changes/archive/best-effort-admission.md).
+
 ## Engine Architecture and Convergence
 
 - User 2026-10-16, full-state replies D1: retain the stateful, side-effect-free

@@ -1,6 +1,6 @@
 # Best-effort admission when space runs out
 
-- Status: implementation in progress, 2026-10-17; D1-D10 selected below.
+- Status: core/KDE delivered offline 2026-10-18; live re-check pending.
 - Goal: replace geometric-capacity holds with deterministic best effort without
   degenerate native rectangles, implicit workspace changes or repeated effects.
 - Direction: user 2026-10-16 requests anchor fallback and float/overlap settings,
@@ -37,14 +37,14 @@
   `admission.no-space` (`anchorFallback` / `noSpaceResult` native keys).
   Windows explicitly partitions these as unsupported until runtime adoption.
   Workspace tests, exporter freshness, KWin tests and 27 offline native tests pass
-  for this primitive/settings increment. Runtime consumption is not yet wired.
+  for this primitive/settings increment. Runtime delivery and final evidence follow.
 
-## Current behavior and evidence
+## Historical source audit
 
 - Locators below were checked against `b244646b`; source evidence, not native
   acceptance. Tier 1 evidence remains
-  [R-MIN-04](../spec/reference-outcomes/minimum-size.md#r-min-04-pure-geometry-exhaustion)
-  and [R-INS-09](../spec/reference-outcomes/insertion.md#r-ins-09-burst-of-maps-versus-roster-delivered-together):
+  [R-MIN-04](../../spec/reference-outcomes/minimum-size.md#r-min-04-pure-geometry-exhaustion)
+  and [R-INS-09](../../spec/reference-outcomes/insertion.md#r-ins-09-burst-of-maps-versus-roster-delivered-together):
   splitting at the anchor, not alternate-target search or capacity floating.
 
 | Surface | Current behavior / locator |
@@ -68,13 +68,15 @@
 - Selected policies to preserve unless explicitly superseded: B6, clean-fit
   startup, D03 after-focused insertion, D16 float carry, D23 minimize slots,
   R4 whole-target wrap and native safety. See
-  [placement/minimum/startup](../decisions.md#placement-minimums-and-startup-adoption).
+  [placement/minimum/startup](../../decisions.md#placement-minimums-and-startup-adoption).
 
-## Decisions needed
+## User selections and historical options
 
-- Every recommendation below is **unselected** unless listed here. D1 is
-  especially material: default capacity floating alone does **not**
-  eliminate B6 minimum overlap.
+- The selected D1-D10 are promoted to
+  [durable decisions](../../decisions.md#best-effort-admission). The original
+  options table is historical: the User selections override conflicting
+  recommendations, especially float focus and persistence. Default capacity
+  floating alone does **not** eliminate B6 minimum overlap.
 - User selections 2026-10-17:
   - D1: geometric exhaustion only; B6 minimum overlap stays, with a UX
     follow-up on B6 overlap as part of dogfooding.
@@ -119,7 +121,7 @@
 | D9: Meaning of geometric overlap | **Positive overflowing projection:** keep hierarchy/order/shares, expand an infeasible group's effective extent to its gap-plus-one-pixel floor without expanding the parent's assigned slot; descendants can overlap other branches/overflow the domain. **Zero/negative tiles:** invalid host requests. **Stack a newcomer over an unchanged tile:** requires a new capacity-stack allocation/navigation model. | First option, explicit overlap-only projector; keep strict projection unchanged. This is a host-limitation deviation, not native-tiler parity. It needs golden geometry/navigation cases before coding; never pretend B6 alone solves zero-hint exhaustion. |
 | D10: Settings boundary, placement and timing | **Shared global settings:** consistent portable policy, native storage/controls. **Per-workspace overrides:** more state and precedence not requested. **Immediate reclassification on Apply:** surprising reflows; **next decision only:** existing settled floats/tiles stay stable. | Two portable global enum fields in shared catalog, Tiling & Workspaces > Admission, with capacity help. Apply to subsequent admission or actual capacity-repair decisions only, no tree rebuild/retry just because settings changed. Native capability gating and saved/requested/confirmed state remain separate. |
 
-## Candidate semantics (if recommendations are selected)
+## Selected semantics (subject to User selections above)
 
 ### Splittable, ordering and split
 
@@ -184,7 +186,8 @@
   origin without re-tiling; return/growth/gap reduction does not restore an old
   tile slot. Minimize/restore preserves float status without creating a D23
   tiled slot. Ordinary disable/enable does not clear live capacity exceptions;
-  a fresh restart can lose the session-local reason and run fresh adoption.
+  a fresh restart retains ordinary float membership through the existing user
+  float store. Diagnostic reason and tiled-admission history are not persisted.
 - D7 protects overlays and explicit fixed-tile safety from capacity eviction;
   never classify a game, stubborn resize or missing hint as exhaustion. A
   protected-only impossible tree, nonpositive usable area or unsafe gesture
@@ -226,9 +229,9 @@
   refused/ambiguous-property settlement. Real new capacity input can cause one
   repair, not an idle audit or periodic retry.
 
-## Settings proposal
+## Settings delivery
 
-- Proposed functional labels/tokens (not existing APIs):
+- Selected functional labels/tokens:
   - `When the anchor cannot split`: `largest-splittable-window` (default),
     `closest-splittable-relative`, `no-search`.
   - `When no split is available`: `float` (default), `allow-overlap`.
@@ -238,35 +241,105 @@
   labels: this is an explicit host-limitation deviation from the tier rule.
 - Extend the existing core `tiling.admission` catalog section
   (`crates/tiler-core/src/settings_catalog.rs:61-68,101-105`). KDE native controls
-  follow the approved checked-in descriptor/exporter direction; Windows consumes
-  shared definitions, preserving additive schema-v1 native mappings and strict
-  invalid/last-good behavior. KDE retains tolerant fallback. No generic setter
-  invokes native remediation. Do not invent macOS persistence/UI before its
-  consumer exists; core policy and truthful lifetime echo still need parity.
-- Missing values use selected defaults only after approval. Exact stable field
-  IDs/native storage keys remain implementation naming, not renamed old keys.
+  follow the approved checked-in descriptor/exporter direction. The fields are
+  `admission.anchor-fallback` / `admission.no-space`, native keys
+  `anchorFallback` / `noSpaceResult`. KDE retains tolerant fallback. Windows
+  explicitly partitions these catalog fields as unsupported until adoption;
+  no ignored schema keys or macOS UI were added. No generic setter invokes
+  native remediation. Missing/invalid KDE values use selected defaults.
 
-## Verification and risks
+## Delivered implementation and accepted evidence
 
-- Proposed implementation evidence: table-driven geometric/axis/ordering tests
-  (including square/equal-area ties), B6-only fixtures, 800x600 gap-8 seed, mixed
-  roster atomicity, shrink protected survivors and victim order, stable replay,
-  close/identity cleanup, explicit retry, refused transfers, drag preview/finish,
-  and catalog decode/default/timing parity. No universal 13/14-window cap.
-- Native acceptance remains TBD for all fallback frames, focus, float navigation,
-  resize/shrink, explicit transfers and preview. No live testing performed here.
-- Main risks: retaining B6 overlap may undershoot user intent; overlap projection
-  deliberately violates containment; newest-first eviction can remove more tiles
-  than an optimizer; session-local reason can change on restart; full-world-only
-  delivery would strand Windows/macOS; protected extreme geometries still hold.
-- Documentation evidence/outcome: source audit and independent contract review
-  accepted; cited Windows rejection handling, transactional fixed override and
-  KDE minimum helper inspected directly. Eleven discriminating variants and
-  eight new OPEN requirements capture the proposal; no decisions promoted.
-  Requirement recount: 138 NORMATIVE / 38 OPEN / 176 total; all 24 added local
-  Markdown targets resolve, and the new section anchor resolves. Whitespace and
-  ASCII checks pass. A broader link scan found a pre-existing stale Windows
-  `settings.rs` link in the spec; left unchanged, outside this proposal.
-- Exact next action: user selects D1-D10 (including the specified semantics), then
-  promote accepted decisions and implement shared classification/projection plus
-  all consumers, with offline evidence before separately authorized native checks.
+- Commits: `91f1da86` numeric geometry/navigation goldens before production;
+  `1caadf15` shared settings, explicit plain/hinted overlap projectors and KDE
+  controls; `cf422d2f` transactional core policy and KDE runtime integration.
+  `26c88a8d` defers native-gesture capacity repair and supplies defaults in
+  Windows-only full-world fixture constructors; `c75fe675` aligns stale native
+  Windows preview/restart fixtures without runtime adoption; `b7da8fb9` keeps
+  first-successful-admission age monotonic across independent Engine domains.
+- Core: ordinary-anchor/fallback admission, positive-overflow projection,
+  first-successful-admission ordering, protected newest-first capacity repair,
+  fit-first atomic mixed startup roster and overlap-aware operations. Default
+  800x600 gap-8 fourteen-window seed now tiles rather than holds; genuinely tiny
+  domains exercise mixed tile/float rosters. No universal window-count limit.
+- KDE: complete explicit float rows, diagnostic-only capacity origin, ordinary
+  float echo and the existing private restart-intent store; no phantom slot or
+  capacity frame setter. Explicit failed retry reports no-space without a tile
+  override. One-shot newcomer focus preserves ordinary float focus bookkeeping
+  and D01 overlay/game activation ownership; fresh maps into previously empty
+  controlled domains focus, startup/enable adoption does not steal focus.
+- Sends/R4: distinct `move-to-float` transaction, exact R4 wrap first/no D2,
+  survivor-only geometry, source/arrival/follow proof and native cross-output
+  remap once. Cross-output capacity floats claim no source-coordinate target
+  frame. Same-output sends carry the actual observed live frame, not canonical
+  allocation. Drag float fallback honestly refuses/snaps back until a matching
+  preview exists; overlap preview/finish share fresh validation.
+- Independent review corrected batch-order eviction, current-frame transfer
+  handling and exact size accounting. Regression fixes also pin real geometry
+  changes versus settings-only overlap retention, protected activation and
+  mid-gesture at-most-once focus disposal. Final evidence follows all fixes.
+- Final Rust workspace: **3092 passed, 0 failed, 86 suites**; format and strict
+  workspace clippy pass. KWin: **1824 passed, 0 failed, 274 suites**, typecheck
+  and bundle build pass. Shared exporter freshness, portable/shell API guards,
+  15 headless shell suites and unsafe guardrail pass. Hermetic native effect
+  **34/34** and native settings **27/27** tests pass. Concurrent native-platform
+  changes were preserved. [CI 39076930351](https://github.com/beefsack/OmniTiler/actions/runs/39076930351)
+  passes all eight jobs at `b7da8fb9`, including Windows/macOS supported-target
+  build/tests/clippy, Rust, KWin, shell, native, licenses and notices.
+- Native-gesture regression: shrinking/changing gaps during a title-bar gesture
+  retains topology, admission order and float status under a truthful gesture
+  hold; the next accepted clear-gesture report repairs once using live frames.
+- Cross-domain age regression: chronological admissions in independently seeded
+  domains use one Engine-wide counter; sending them together preserves lifetime
+  ages, and shrink evicts the actual newest, not a colliding local sequence.
+- D1-D10 promoted, capacity requirement rows selected: **148 NORMATIVE /
+  28 OPEN / 176 total**. Windows/macOS consumption is a separate follow-up, not
+  claimed by compiling their transitional domain callers.
+
+## Residual risks and exact live re-check
+
+- No live test performed. B6 minimum overlap remains; overlap mode deliberately
+  permits overflow and tiny allocations. Newest-first is not an optimizer.
+  Protected/invalid geometry still holds. Ordinary float persistence retains
+  membership, not topology, diagnostic cause or admission history. Existing
+  lost/stale/gesture focus effects are dropped, never replayed later.
+- Use disposable ordinary windows on an isolated test workspace; keep unrelated
+  clients and fullscreen/game sessions outside the test. Save current settings.
+  Script changes require **`just dev-off` then `just dev`** (or `just dev-on`
+  after the build is current). **`just reload` reloads only the Planner** and
+  does not pick up script changes.
+1. Open Settings > Tiling & Workspaces > Admission. Confirm defaults Largest
+   splittable window / Float, all three anchor choices and both no-space choices.
+   Save/reopen, Cancel and Defaults; confirm status reports saved/requested,
+   never falsely confirmed. Applying these policies alone must not move tiles.
+2. Temporarily select No search / Float and a larger inner gap (up to 64).
+   Repeatedly open disposable ordinary clients at the focused newest tile until
+   that anchor cannot split. The newcomer must keep its opening frame, focus
+   once and behave as an ordinary float; existing tiles keep tiling. A client
+   minimum alone may still cause B6 overlap and is not this exhaustion test.
+3. Leave a large tile elsewhere. Apply Largest splittable window without any
+   movement; explicitly tile the floated newcomer with Meta+G. If a strict
+   alternate split fits, it must tile there and keep newcomer focus. Repeat
+   using Closest splittable relative to distinguish the sibling-ring choice.
+4. With a capacity float present, close/grow/reduce gaps and switch workspaces:
+   it stays float. Explicit Meta+G retries once; still-full remains float and
+   reports no-space, while feasible tiles. Minimize/restore, then restart with
+   `just dev-off` followed by `just dev`: float membership remains, with no
+   arbitrary replacement victim. Repeat ordinary disable/enable.
+5. Settle known older/newer tiles, increase gaps until retained geometry fails:
+   newest eligible tiles float first at last live frames, survivor tree contracts,
+   active native focus stays unchanged. Repeated updates do not refocus/reset
+   frames. A retained maximized/fullscreen slot must not be cleared or evicted;
+   no game probe is required.
+6. Select Allow overlap (no immediate reflow), then make a new exhausted split:
+   every target remains positive, navigation remains deterministic, and repeated
+   reports do not rewrite floats or reapply focus. Switch back to Float: existing
+   overlap remains until an actual later capacity decision.
+7. With two outputs, send a tiled client into an exhausted destination (follow
+   and stay), then try directional R4. Destination remains explicit, R4 never
+   redirects to another leaf/output, source reflows only after the transfer
+   proof, native remap keeps the mover visible, no duplicate transfer/focus.
+   Drag to an exhausted edge: preview/drop agree or refuse/snap back, never a
+   hidden finish-only float. Restore saved settings and close test clients.
+- Exact next action: user-owned live re-check above; Windows/macOS adoption is
+  tracked separately. No open product decision.

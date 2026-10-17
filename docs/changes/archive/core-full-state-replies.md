@@ -134,6 +134,10 @@ Reply {
 - D4=A: one bounded 4 MiB request/reply budget, with actual size/latency/memory measurements and narrow recoverable overflow.
 - D5=A: event-driven full reports, dirty/ack recovery and anomaly rescans; no idle polling. A missed final native event remains undetectable until another wake.
 - Capacity B: preserve existing topology and publish a narrow, recoverable constraint hold with complete held lifetime rows when projection runs out of space. Keep the hold policy in one replaceable location. Admission fallback is explicitly separate work under "Best-effort admission when space runs out"; reference research is R-MIN-04/R-INS-09.
+  Superseded for geometric capacity by the selected core/KDE
+  [best-effort admission delivery](best-effort-admission.md), 2026-10-18.
+  Protected/invalid geometry still retains truthful narrow holds; historical
+  evidence below describes the earlier capacity-B implementation.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |

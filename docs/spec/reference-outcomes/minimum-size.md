@@ -241,8 +241,9 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
   KDE via the shared Engine. `S(S-ours-admission-capacity)` +
   `S(S-ours-ins)` + `S(S-ours-admit)` @15faf1e4; exact geometry and native
   settlement TBD, no universal cap
-- Variant hook: Ours-to-be anchor fallback and float/overlap settings under the
-  user's 2026-10-16 host-limitation direction. Defaults, scope relative to B6,
-  recovery and interactions remain OPEN; see the
+- Selected update (User 2026-10-17, D1-D10): shared core/KDE geometric-only
+  fallback delivered offline 2026-10-18, largest-splittable/float defaults,
+  ordinary persisted floats and explicit-only retry. B6 is unchanged. The
+  source audit above remains historical; exact native outcomes remain TBD. See the
   [capacity discriminators](../reference-outcomes.md#best-effort-capacity-discriminators-ours-to-be-open)
-  and [D1-D10 proposal](../../changes/best-effort-admission.md).
+  and [D1-D10 delivery](../../changes/archive/best-effort-admission.md).

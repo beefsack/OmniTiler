@@ -12,8 +12,8 @@ decisions of 2026-09-24 are under
 
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies; (3) KDE Settings core-catalog
-  migration (delivered offline; best-effort settings can now land once in the
-  catalog); (4) best-effort admission core+KDE; (5) KDE dual-output live
+  migration (delivered offline); (4) best-effort admission core+KDE (delivered
+  offline; live re-check below); (5) KDE dual-output live
   testing and fixes; (6) KDE shared window-policy adoption; (7) 0.1 triage live
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
@@ -127,35 +127,39 @@ decisions of 2026-09-24 are under
   input, drag/visual UX and remaining permutations are pending
   ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
   Windows/macOS adoption is
-  tracked separately below. Geometric exhaustion preserves topology with
-  complete recoverable constraint-held rows, not an admission fallback.
-- P1 | Best-effort admission when space runs
-  out | The full-state change returns a recoverable hold when a domain's
-  projection cannot give every tile a positive extent after gaps (14 fresh
-  windows in an 800x600 gap-8 domain); clear that hold. User 2026-10-16:
-  rejecting the layout is bad UX; we cannot override client limits the way
-  native tilers do (Tier 1 keep splitting at the anchor into degenerate tiles,
-  [R-MIN-04, R-INS-09](spec/reference-outcomes.md)), so do the most sensible
-  best-effort thing. Proposed two settings (host-limitation deviation from the
-  tier setting rule, user direction):
-  - Anchor too small to split: largest splittable window / closest splittable
-    relative (sibling, then parent) / do nothing (go straight to no-space).
-  - No space for the window: float it / allow overlap. User prefers floating
-    over overlap (overlap looks bad and confuses navigation/movement);
-    opening on another workspace is rejected.
-  [Proposal](changes/best-effort-admission.md) delivered; user selected
-  D1-D10 on 2026-10-16/17 (geometric exhaustion only, largest-splittable and
-  float defaults, capacity floats are ordinary floats persisted across
-  restart, newest-first eviction on shrink, all capacity routes, positive
-  overflow for overlap, global catalog settings). Core+KDE implemented
-  (`cf422d2f`, `26c88a8d`); Windows test fixtures aligned (`c75fe675`,
-  [record](changes/windows-admission-ci-compatibility.md)).
-  Follow-up during dogfooding: review the UX of B6 minimum-size overlap.
-- P1 | Windows best-effort admission adoption | Adopt the approved D1-D10
-  capacity behavior (float/overlap recovery, eviction on shrink, catalog
-  settings) in the Windows runtime, matching KDE where sensible per host.
-  Not started; determine first whether it depends on the parked full
-  world-state reply adoption below.
+  tracked separately below. The temporary geometric-capacity hold is cleared
+  by best-effort admission below; protected/invalid geometry still holds.
+- P1 | Best-effort admission live re-check | Core/KDE delivered offline
+  2026-10-18 under selected D1-D10; the full-state geometric-capacity hold is
+  cleared. Largest-splittable/float defaults, atomic mixed seed, ordinary
+  persisted capacity floats, newest-first protected repair and positive-overflow
+  alternative are wired through shared catalog settings and KDE. Rust workspace
+  **3092 passed**, KWin **1824 passed**, native effect/settings **34/27 passed**;
+  exporter/API/shell checks and all eight CI jobs pass (`b7da8fb9`, run
+  39076930351). No live acceptance claimed.
+  [Delivery and exact script-restart re-check](changes/archive/best-effort-admission.md#residual-risks-and-exact-live-re-check).
+  Windows/macOS consumption remains separate below. B6 declared-minimum overlap
+  is unchanged; review its UX during dogfooding.
+- P1 | Windows best-effort admission adoption | Consume the shared D1-D10 policy
+  and Admission catalog settings. Not started; first determine whether adoption
+  depends on the parked full-world migration below. Windows fixtures are aligned
+  (`c75fe675`, [record](changes/windows-admission-ci-compatibility.md));
+  remove the explicit unsupported catalog partition when runtime consumes them.
+  Echo capacity floats as ordinary floats, persist membership like user floats,
+  preserve opening/last-live frames and explicit-retry semantics, consume mixed
+  rosters, protected newest-first repair and positive-overflow targets. Adapt
+  sends/R4 with native arrival/follow/refusal fences; keep drag preview/drop
+  honest. Native regression acceptance remains separate. Shared primitives and
+  compiling legacy API do not establish Windows behavioral adoption.
+- P1 | macOS: adopt best-effort admission | Consume the shared D1-D10 policy
+  with full-world adoption below; retain/echo ordinary float classification
+  through AX observations and restart persistence, no capacity-specific behavior.
+  Add native settings only through its eventual catalog consumer. Verify mixed
+  startup rosters, focus-on-admission subject to native safety, explicit retry,
+  protected newest-first shrink repair and overlap navigation. Preserve AX/thread
+  ownership and native-Space capability refusals; no automatic Space relocation
+  or unsupported transfer/remap inferred from shared core. Native acceptance
+  remains separately required.
 - P1 | KDE maximize/fullscreen asynchronous-settlement false refusals | Native
   callbacks logged refusal/shortcut failure before the requested state settled
   successfully. Replace same-stack final-outcome inference: confirm once at a
@@ -176,8 +180,8 @@ decisions of 2026-09-24 are under
 - P1 | KDE two-domain tiled send-back `scope-held` diagnosis | One tiled
   send-follow passed; the subsequent observe published a hold and send-stay back
   refused without movement. This may be the capacity hold that best-effort
-  admission clears: re-check after admission lands before investigating. If it
-  persists, retain full reports/replies and endpoint hold reasons, then replay
+  admission clears: re-check the delivered admission change before investigating.
+  If it persists, retain full reports/replies and endpoint hold reasons, then replay
   send-follow/observe/send-back offline. Cause remains unclassified; later retries
   after the first refusal are not clean acceptance.
   [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).

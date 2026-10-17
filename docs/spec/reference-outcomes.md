@@ -25,32 +25,33 @@ trivially different start state.
 - Enable/adoption ordering and geometry preservation: reuse
   [R-START-01..03](reference-outcomes/restart-persistence.md#r-start-01-enable-over-a-2x2-float-field);
   the neighboring toggle/layout-switch/restart/reload discriminators are in
-  that section. Existing B6/startup decisions stand; the following proposal
-  selects nothing new.
+  that section. B6/startup decisions stand, with selected geometric fallback
+  and complete mixed-roster seeding below.
 
-### Best-effort capacity discriminators (Ours-to-be OPEN)
+<a id="best-effort-capacity-discriminators-ours-to-be-open"></a>
+### Best-effort capacity discriminators
 
-- User direction 2026-10-16: propose anchor fallback and float/overlap settings;
-  float preferred, automatic spill to another workspace rejected. Explicit user
-  workspace sends are not rejected by that direction.
-- [Source audit, D1-D10 options and candidate semantics](../changes/best-effort-admission.md).
+- User selected D1-D10 2026-10-17: largest-splittable/float defaults, no automatic
+  workspace spill; explicit sends remain supported.
+- [Selected semantics](../decisions.md#best-effort-admission) and
+  [delivery/evidence](../changes/archive/best-effort-admission.md).
   These are variants of R-MIN-04, R-INS-09, R-START-01..03 and the named
-  send/move/drag rows, not new reference evidence. All candidate outcomes and
-  defaults remain **unselected**; exact reference/native outcomes remain TBD.
+  send/move/drag rows, not new reference evidence. Core/KDE delivered offline;
+  exact reference/native outcomes remain TBD. Windows/macOS adoption is pending.
 
-| Variant | Minimal action sequence | Ours-to-be discriminator / recommendation (OPEN) | Unsupported outcome / decision |
+| Variant | Minimal action sequence | Selected discriminator / offline contract | Unsupported outcome / native evidence |
 | --- | --- | --- | --- |
-| Minimum versus geometric exhaustion | Run R-MIN-01 with all logical extents positive but infeasible declared minima; independently run zero-hint R-MIN-04 | D1 recommends geometric-only capacity policy, preserving B6 in the first leg; minimum-aware search/float would instead supersede B6. Float default alone does not remove minimum overlap | D1 scope TBD; no new minimum threshold or native squeeze inferred |
-| Largest versus relative versus no-search | In R-MIN-04 make B unsplittable, sibling C splittable, and outside A strictly larger than C; open N while B focused | D2: largest chooses A; relative chooses C; no-search invokes D3 on original B. Default largest recommended; long edge of chosen plain allocation, old/new equal wrapper, N tiled focus, not target focus | Defaults and native activation TBD; no axis/rebalance/output/workspace search selected |
-| Relative rings and equal-area ties | Make B's immediate sibling subtree contain two splittable leaves; put a larger splittable leaf at the next ancestor; open N. Repeat with equal-area candidates on opposite sides of the anchor | D2 recommends sibling-subtree leaves before higher ancestor rings, index-distance then child-order DFS; largest ties use DFS then lifetime ID. Wrapping the parent instead is a distinct unselected interpretation | Precise relative semantics/ties TBD; no screen-distance/MRU assumption |
-| No split anywhere | In a positive 1x1 usable domain with gap 8 and ordinary zero-hint A, open N; repeat one accepted report | D3/D4: float N at observed frame with capacity origin, keep A tiled; alternative D9 creates positive overflowing tiles. Do not erase a lifetime or issue zero/negative geometry | Float/overlap semantics and native frame/focus TBD; no universal window-count cap |
-| Capacity return and explicit retry | Capacity-float N; close another tiled leaf or enlarge output; revisit workspace and repeat report; explicitly tile N; repeat with still-insufficient space | D5 recommends no automatic retry on capacity return/visit/reply; explicit retry tiles once if feasible, otherwise N remains float without a false tile override | Recovery trigger/persistence TBD; no retained old tile slot selected |
-| Enable/startup clean fit versus exhausted seed | Enable over a clean 2x2 field; separately enable over overlapping many-window geometry whose sequential focused anchor exhausts; repeat after restart | D8 preserves clean recursive-cut adoption; declined fit uses existing spatial/focus-last serial seed with D2/D3 per leg, complete mixed roster not whole-seed loss. D5 keeps live exceptions across ordinary enable, but session-local reason can be lost at restart | Startup mixed-roster semantics/restart reason TBD; native batch ordering and original reference enable discriminators remain TBD |
+| Minimum versus geometric exhaustion | Run R-MIN-01 with all logical extents positive but infeasible declared minima; independently run zero-hint R-MIN-04 | D1 geometric-only policy preserves B6 in the first leg. Float default does not remove declared-minimum overlap | Native settlement TBD; no new minimum threshold or native squeeze inferred |
+| Largest versus relative versus no-search | In R-MIN-04 make B unsplittable, sibling C splittable, and outside A strictly larger than C; open N while B focused | D2: largest chooses A (default); relative chooses C; no-search invokes D3 on original B. Plain long-edge equal old/new wrapper, focus newcomer whether tiled/floated, never anchor | Native activation TBD; no short-axis/rebalance/output/workspace search |
+| Relative rings and equal-area ties | Make B's immediate sibling subtree contain two splittable leaves; put a larger splittable leaf at the next ancestor; open N. Repeat with equal-area candidates on opposite sides of the anchor | D2 sibling-subtree leaves before higher rings, index-distance then child-order DFS; largest ties use DFS then lifetime ID; never wrap parent | Exact native geometry TBD; no screen-distance/MRU interpretation |
+| No split anywhere | In a positive 1x1 usable domain with gap 8 and ordinary zero-hint A, open N; repeat one accepted report | D3/D4 default float N at opening frame, diagnostic capacity origin, keep A tiled; D9 alternative positive overflow. Focus N once subject to existing safety/freshness fences | Native frame/focus TBD; no universal window-count cap |
+| Capacity return and explicit retry | Capacity-float N; close another tiled leaf or enlarge output; revisit workspace and repeat report; explicitly tile N; repeat with still-insufficient space | D5 no automatic retry; explicit retry tiles once if feasible, otherwise stays float without false override. Membership persists like ordinary floats across restart | Native restart/retry TBD; no retained old tile slot |
+| Enable/startup clean fit versus exhausted seed | Enable over a clean 2x2 field; separately enable over overlapping many-window geometry whose sequential focused anchor exhausts; repeat after restart | D8 clean fit first, otherwise existing spatial/focus-last serial seed with D2/D3, complete atomic mixed roster. D5 persisted floats remain floated; diagnostic cause may normalize to ordinary | Native batch order and original reference enable discriminators remain TBD |
 | Named send versus R4 whole-wrap | Send tiled N to an exhausted destination with room at another leaf; independently move N across an output edge where the mandated whole-target R4 wrap cannot project | D6: named send may use D2 within destination, then D3; R4 preserves whole-target shape, bypasses D2, then D3. No spill to a third workspace/output; source retained until verified transfer | Capacity transfer/follow/stay/frame remap TBD; macOS native-Space sends remain capability-gated |
-| Drag fallback preview agreement | Drag N to a resolved exhausted edge; observe preview; release there; repeat after a capacity change between preview and finish | D6 recommends showing the same float/overlap result before finish, no alternate-target search. Revalidate stale preview; unavailable truthful fallback preview keeps existing refusal/snap-back, never finish-only surprise float | Preview representation and native release/remap TBD |
-| Existing geometry becomes impossible | Settle unequal-age A/B/C; increase gaps or shrink bounds until strict projection fails; repeat report, restore capacity | D7 float mode removes shortest newest-first eligible victim prefix; preserve survivor topology/shares, native focus and floated frame; no re-tile on restoration. D9 overlap mode instead retains links with positive overflowing projection | Eviction order/protection versus retained hold/reseed TBD; declared-minimum-only shrink still B6 under D1 |
-| Protected remainder and game safety | Put a retained fullscreen/maximized reserved slot beside normal A; shrink until projection fails; repeat with only protected slots or nonpositive usable area | D7 recommends evicting only safe normal tiles, never clearing overlays/fixed overrides or treating host refusal as capacity; impossible protected remainder remains narrowly held | Remaining hold and native safety outcomes TBD; no live game probe authorized |
-| Apply settings versus repeated full replies | Capacity-float N; change anchor/no-space settings; resend identical observations, including after manual focus/frame changes; separately start a new admission | D10/D5/D4 recommend next-decision settings, not reclassification; D1-D10 require stable lifetime/provenance/targets, no repeated focus/raise/transfer/frame reset. New input may cause one capacity decision | Contract extension/consumer parity TBD; world-only fallback does not establish Windows/macOS support |
+| Drag fallback preview agreement | Drag N to a resolved exhausted edge; observe preview; release there; repeat after a capacity change between preview and finish | D6 same preview/finish, no alternate-target search, fresh validation. Float fallback currently refuses/snaps back without an honest float preview; overlap uses the same gate | Native preview/release/remap TBD |
+| Existing geometry becomes impossible | Settle unequal-age A/B/C; increase gaps or shrink bounds until strict projection fails; repeat report, restore capacity | D7 float shortest newest-successful-admission-first prefix, preserve survivor topology/shares, native focus and live frame, persist floats, no automatic re-tile. D9 alternative retains positive overflowing tiles | Native shrink settlement TBD; minimum-only shrink stays B6 |
+| Protected remainder and game safety | Put a retained fullscreen/maximized reserved slot beside normal A; shrink until projection fails; repeat with only protected slots or nonpositive usable area | D7 only safe eligible victims, preserve overlays/fixed overrides, defer gestures, never classify refusal as capacity; impossible protected remainder stays narrowly held | Native safety TBD; no live game probe performed |
+| Apply settings versus repeated full replies | Capacity-float N; change anchor/no-space settings; resend identical observations, including after manual focus/frame changes; separately start a new admission | D10 next-decision only, no reclassification/retry; stable targets/operation identities, no repeated focus/raise/transfer/frame reset. Actual new geometry may repair once | Windows/macOS consumer adoption and native settings pickup TBD |
 
 ### Full-state reply settlement discriminators
 
@@ -5353,8 +5354,9 @@ Legend:
   R-WS-15..20, R-MOV-09..13, R-LAY-05/06, R-OUT-07), 8 Q2 discriminators
   R-SPC-06..13, 2 Q3 restart research discriminators, 6 Q4 migration
   discriminators R-WS-21..26, and R-WS-27 two-candidate migration selection
-  (User decision 2026-10-09, reference outcomes TBD), plus 2 OPEN
-  admission-geometry evidence rows (R-MIN-04, R-INS-09, nothing selected):
+  (User decision 2026-10-09, reference outcomes TBD), plus 2
+  admission-geometry evidence rows (R-MIN-04, R-INS-09; D1-D10 selected
+  2026-10-17, core/KDE delivered offline, native outcomes TBD):
   58+67+14+8+2+6+1+2 = 158.
   Their 196 Then bullets distinguish selected targets (with delivery evidence where available)
   from reference outcomes that were TBD at addition. Established source-fill
@@ -5402,8 +5404,8 @@ only: 125 expansion-baseline scenarios, plus 14 decision discriminators
 2026-10-07, 8 Q2 fixed-size discriminators, 2 Q3 restart research
 discriminators and 6 Q4 workspace migration discriminators 2026-10-08:
 156 scenarios total (R-WS-27 two-candidate migration selection added User
-decision 2026-10-09 with reference outcomes TBD), plus OPEN R-MIN-04 and
-R-INS-09 (158 total, nothing selected).
+decision 2026-10-09 with reference outcomes TBD), plus R-MIN-04 and
+R-INS-09 (158 total; D1-D10 selected 2026-10-17, native outcomes TBD).
 This index retains purpose, row-addition rule, notation,
 profiles, evidence tags/legend, variant hooks, and deferred. All 158
 scenarios use the GWT form below; no wide-table rows remain.
@@ -5412,7 +5414,7 @@ minimum-size stays a supplemental file (not nested in resize).
 
 | Area | File | Scenarios | Candidates |
 |---|---|---|---|
-| Insertion | [insertion.md](reference-outcomes/insertion.md) | R-INS-01..09 (9) | R-INS-09 burst-vs-together ordering (OPEN, nothing selected); R-INS-03..08 landed in piece B1 |
+| Insertion | [insertion.md](reference-outcomes/insertion.md) | R-INS-01..09 (9) | R-INS-09 fit-first/spatial-focus-last atomic mixed seed selected D8, core/KDE delivered offline; exact native burst order TBD; R-INS-03..08 landed in piece B1 |
 | Focus | [focus.md](reference-outcomes/focus.md) | R-FOC-01..04 (4) | none (landed in piece B2) |
 | Move | [move.md](reference-outcomes/move.md) | R-MOV-01..13 (13) | R-MOV-09..13 added 2026-10-07; reference source legs filled, unsupported legs TBD; KDE items 3/5 delivered offline; Windows item 3 delivered 2026-10-11 (`755aab8`), native Settings/no-rebuild observed, physical moves pending; Windows item 5 pending |
 | Resize | [resize.md](reference-outcomes/resize.md) | R-RSZ-01..04 (4) | none (landed in piece B4) |
@@ -5429,7 +5431,7 @@ minimum-size stays a supplemental file (not nested in resize).
 | Activation | [activation.md](reference-outcomes/activation.md) | R-ACT-01..02 (2) | none (landed; no backfill: no prior rows) |
 | Restart / persistence | [restart-persistence.md](reference-outcomes/restart-persistence.md) | R-START-01..03 + R-CTL-01..07 + R-RST-01..04 (14) | Q3 KDE intentional membership implemented offline under user-selected NORMATIVE D1-D4 (User 2026-10-08; fixed-window tile-override persistence pending); R-RST-03/04 cover frame drift and automatic-vs-intent origin; startup-vs-restart-vs-reload discriminator table added (no new scenario); native, Windows and unsupported reference legs TBD |
 | Column mechanics | [column-mechanics.md](reference-outcomes/column-mechanics.md) | R-COL-01..10 (10) | none (landed) |
-| Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..04 (4) | R-MIN-04 pure geometry exhaustion (OPEN, B6 unchanged, nothing selected); R-MIN-01..03 piece B4; R-MNZ icon-minimize is separate |
+| Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..04 (4) | R-MIN-04 geometric best effort selected D1-D10, core/KDE delivered offline, B6 unchanged; native outcomes TBD; R-MIN-01..03 piece B4; R-MNZ icon-minimize is separate |
 
 ## macOS drag/drop discriminators
 

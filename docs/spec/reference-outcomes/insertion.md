@@ -407,10 +407,10 @@ ancestry claims. Ours cells cite Engine + adapter source at `9241c94`
   seed-order leg as Ours KDE via the shared Engine.
   `S(S-ours-admission-capacity)` + `S(S-ours-ins)` @15faf1e4; native
   event-order/timing TBD, no universal cap
-- Variant hook: none (OPEN; user decision required for any burst-ordering
-  policy, nothing selected). The
-  [best-effort capacity proposal](../../changes/best-effort-admission.md) recommends
-  preserving the existing clean-fit/spatial-seed order while allowing a mixed
-  tile/float roster; it does not establish native burst ordering or change the
-  source-evidenced outcomes above. See the
+- Selected update (User 2026-10-17 D8):
+  [best-effort capacity delivery](../../changes/archive/best-effort-admission.md)
+  preserves clean-fit/spatial-focus-last seed order and commits the complete
+  mixed tile/float roster atomically, rather than per-member revisions. This
+  supersedes the historical shared-core audit above, not reference evidence;
+  exact native burst ordering remains TBD. See the
   [capacity discriminators](../reference-outcomes.md#best-effort-capacity-discriminators-ours-to-be-open).
