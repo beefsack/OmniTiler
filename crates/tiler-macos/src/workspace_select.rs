@@ -61,6 +61,7 @@ pub(crate) fn fresh_display_count() -> Result<usize, String> {
 /// order plus the current Space; proven non-user Spaces omitted, never
 /// invented). The indicator and its click mapping share one consistent read
 /// with the topology revision this way.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn user_row_from_rows(
     rows: &[crate::ffi::SlsDisplayRow],
     display: usize,
