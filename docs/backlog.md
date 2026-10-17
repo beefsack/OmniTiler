@@ -10,11 +10,21 @@ decisions of 2026-09-24 are under
 
 ## Open work
 
-- DELIVERED | KDE Settings shortcut Apply failure | Operation-scoped bounds,
-  responsive KCM execution and Lock reporting fixed; user 2026-10-14 removes
-  pre-release previous-identity handling and omits unchanged Lock exempt lines;
-  live 43-holder Force (136 writes) and full Apply (93 writes) passed in about
-  250/187 ms, configuration restored. [Record](changes/archive/kde-shortcut-apply-failure.md).
+- Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
+  KDE acceptance of full-state replies; (3) best-effort admission core+KDE;
+  (4) KDE dual-output live testing and fixes; (5) KDE Settings core-catalog
+  migration; (6) KDE shared window-policy adoption; (7) 0.1 triage live
+  checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
+  KDE module-size refactoring. Live passes recorded before the full-state
+  route (2026-10-17) need repeating where that route changed the path.
+- P0 | KDE Meta+G unfloat does not re-tile until focus changes | User live
+  2026-10-17 on the full-state route: workspace with two tiled terminals;
+  Meta+G floats one correctly; Meta+G again opens a gap in the tiling for it,
+  but the window stays floating at its old frame and only moves into the gap
+  after focus switches to the other terminal. Suggests the unfloat reply's
+  geometry for the toggled window is not applied (or is deferred until the
+  next report) on KDE. Investigate from the user's dev log and source, add a
+  producer-shaped regression, fix, and have the user re-check.
 - P0 | KDE dual-output live testing and fixes | Comprehensive native
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),
@@ -96,12 +106,15 @@ decisions of 2026-09-24 are under
   fallback, both KCM identities, settings-only packaging and native shortcut/
   conflict operations; no generic setter may invoke Fix/Force/Revert. Follow
   the [approved boundary](research/shared-settings-schema.md#recommended-boundary-and-compatibility).
-- P1 | Core update replies carry workspace state | Core and KDE delivered
+- P0 | Core update replies carry workspace state | Core and KDE delivered
   offline 2026-10-17 under selected D1-D5: complete world reports/replies,
   generation/revision/input-watermark fences, Planner-owned workspace policy,
   retained transfer/view/property targets, explicit holds and a bounded 4 MiB
   transport. [Contract, measurements and live checks](changes/archive/core-full-state-replies.md).
-  User-owned live KDE acceptance remains pending; Windows/macOS adoption is
+  User-owned live KDE acceptance remains pending (raised to P0 2026-10-17:
+  two live regressions, rejected actions and lost outer gap, were fixed in
+  `3c94a819`, `9eaea71a`, `9fe0e79b`; the outer gap fix was confirmed live);
+  Windows/macOS adoption is
   tracked separately below. Geometric exhaustion preserves topology with
   complete recoverable constraint-held rows, not an admission fallback.
 - P1 (next after full-state replies) | Best-effort admission when space runs
@@ -125,11 +138,6 @@ decisions of 2026-09-24 are under
   overflow for overlap, global catalog settings). Ready for core+KDE
   implementation; Windows/macOS adoption follow-ups to be added then.
   Follow-up during dogfooding: review the UX of B6 minimum-size overlap.
-- P1 | Research: stateless core with caller-owned state | Resolved by user
-  D1 (2026-10-16): retain the stateful Engine with a full world boundary and
-  explicit deterministic replay tests; no caller-owned/serialized core state.
-  A pure typed transition is optional only for a demonstrated later need.
-  [Comparison, selected decisions and delivery](changes/archive/core-full-state-replies.md).
 - P1 | Windows: adopt full world-state core replies | Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
@@ -225,7 +233,7 @@ decisions of 2026-09-24 are under
   dependency. Check 2 additionally needs a third output (user to arrange).
   General live-test reference environments remain parked.
 
-- P0/P1 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
+- P0 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
   [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
   reliability (sleep/wake, output plug/unplug, resolution/scaling changes,
   fullscreen applications, underlying configuration changes), gaming/fullscreen
@@ -3937,13 +3945,6 @@ decisions of 2026-09-24 are under
   for MVP. Read-only investigation queued: behavior of `Meta+Shift+1..9` and
   the US shifted-symbol aliases on German, AZERTY, UK and Nordic layouts.
   [change](changes/shortcuts.md)
-- P3 | AR6/AR7 workspace model + portable policy in core | Deferred until a
-  non-KWin host needs it; current KWin is the "native workspaces" mode.
-  Portable layout/domain relocation is shared; remaining host mapping is
-  not proven extracted. Revisit when macOS starts; candidates and gates are in the
-  cross-platform audit.
-  [design](changes/architecture-review-ar6-workspaces.md)
-  [audit](research/cross-platform-core/extraction.md)
 - PARKED | Live-test reference environments | Deferred until after 0.1;
   revisit when a specific decision needs live reference evidence or tabbed
   stacks are designed (user 2026-10-10). Exception 2026-10-13: the narrowed

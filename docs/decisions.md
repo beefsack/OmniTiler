@@ -2096,10 +2096,10 @@ platform API behavior.
   classification stay in the KWin script; revisit when macOS starts, using the
   candidates and boundary costs in the
   [post-Windows audit](research/cross-platform-core/post-windows-audit.md).
-  Pending remainder stays in the backlog. Moving the workspace model and
-  remaining portable policy to core is deferred until a non-KWin host needs
-  it; the current KWin logical-workspace implementation is the "native
-  workspaces" mode of that future choice.
+  Pending remainder stays in the backlog. The former AR6/AR7 deferral of the
+  workspace model to core is closed as superseded (user 2026-10-17): the
+  full-state replies made the Planner the sole workspace-policy authority
+  (see [Workspaces](#workspaces)).
 - KDE current approach is retained after the non-native research (user
   2026-10-10): no new follow-up items; Rust-owned layout, KWin observation/
   actuation, host-parented visuals and explicit shortcut lifecycle remain.
