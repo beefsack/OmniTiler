@@ -2096,6 +2096,18 @@ platform API behavior.
   classification stay in the KWin script; revisit when macOS starts, using the
   candidates and boundary costs in the
   [post-Windows audit](research/cross-platform-core/post-windows-audit.md).
+  KWin-to-Rust direction (user 2026-10-17): accept the staged path in the
+  [migration research](research/kwin-rust-migration.md) as the post-0.1
+  direction for Push code down: extend the out-of-process Planner first
+  (route A), starting with one bounded admission slice (born-maximized
+  preparation, then D06 output selection); move decisions before lifecycles;
+  Rust in the Settings KCMs for catalog/conflict logic (route F), reconciled
+  with the KDE catalog migration; measure interaction before any native
+  replacement; effect-linked Rust (route B) only for optional acceleration;
+  a native KWin plugin (route C) only on a measured latency need. Refresh the
+  research inventory first (it predates the full-state replies). User
+  reasoning: reaching 0.1 feature parity on KDE, Windows and macOS first
+  validates the plan and the focus.
   Pending remainder stays in the backlog. The former AR6/AR7 deferral of the
   workspace model to core is closed as superseded (user 2026-10-17): the
   full-state replies made the Planner the sole workspace-policy authority

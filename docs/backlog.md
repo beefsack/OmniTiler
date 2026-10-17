@@ -220,10 +220,6 @@ decisions of 2026-09-24 are under
   next code: unsafe planner explicit-config
   rework plus crate-wide forbid, third-party notices, then KWin-to-Rust
   migration research (delivered below). Native verification remains queued.
-- P2 | KWin-to-Rust migration research | [Options and recommendation](research/kwin-rust-migration.md)
-  delivered 2026-10-13; recommendation pending user review. Informs post-0.1
-  Push code down and KDE interaction performance/threading; no implementation
-  or 0.1 schedule change.
 - PRE-0.1 | KDE multi-output test environment | Narrowed slice promoted
   2026-10-13: provide a user-operated two-output environment for the must-pass
   gate. [Research and coverage](research/two-output-test-environment.md)
@@ -323,6 +319,9 @@ decisions of 2026-09-24 are under
   ([record](changes/kde-dual-output-live.md#focused-output-admission-correction-and-breadth-repeat-2026-10-14)).
   Link with KDE interaction performance/threading and
   [Live sibling reflow while dragging](#open-work).
+  User 2026-10-17 accepted the staged KWin-to-Rust path as this item's
+  direction ([decision](decisions.md#engine-architecture-and-convergence),
+  [research](research/kwin-rust-migration.md)); refresh its inventory first.
 - P2 | KDE interaction performance and threading | New post-0.1 research,
   not a current priority (user 2026-10-13; no significant KDE jank). Windows
   input/render threading drastically improved UX. Explore dynamic resizing
