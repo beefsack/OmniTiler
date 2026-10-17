@@ -2,7 +2,10 @@
 
 ## Goal and status
 
-- 2026-10-18: additive constructor prerequisite and W1 offline capture/ordering
+- 2026-10-18: **parked: native-to-world cross-output migration mapping is
+  unresolved; core-produced migration/refill acceptance cannot run.** The
+  compiling W2 prototype and diagnostic fixtures are preserved offline, not
+  accepted for runtime adoption. Additive constructor and W1 capture/ordering
   fixtures delivered under the tentative selection below. The earlier W1
   prototype remains withdrawn; the replacement starts from native sources.
   W2-W4 and runtime adoption remain pending. Windows remains on its working
@@ -66,8 +69,8 @@
 - No KDE, macOS or wire/protocol changes. The KDE and macOS streams should be
   told of this additive core API; notification is pending. Their existing
   constructor calls and behavior remain unchanged. No D23/13f changes included.
-- Exact next action: W2 offline host-diff/feedback fixtures against a native
-  facade, using the accepted W1 capture and sequencing boundary below.
+- Exact next action: choose the native-to-world migration mapping described
+  in the parked handover below before resuming W2 acceptance.
 
 ## Ordered releasable slices
 
@@ -242,3 +245,151 @@
     faithful world-command mapping, not copy KDE topology heuristics.
 - W2-W4, runtime/live adoption and physical/two-output acceptance remain pending.
   The backlog item remains unimplemented until cutover and acceptance.
+
+## W2 setter and attempt-ownership design (tentative)
+
+- This bounded redesign keeps W2 offline and reuses native classification,
+  lifetime/tag checks, `RefusedTracker` and proof-gated follow. It adds no
+  shared semantics, native capability or policy owner. Core operation ids
+  remain the only feedback identities; local setter-phase fences are not new
+  protocol operations. Independent design review is required before code.
+- Every setter requires current reply/watermark, controlled property and
+  scope, resolved native binding, fresh matching lifetime/tag and live safety
+  evidence. Row-local safety drift holds; identity/watermark failure stops.
+  Geometry additionally requires no gesture, hidden/iconic/unreadable state,
+  overlay, sticky or fit-excluded lane. A stable explicit float token does
+  not bypass these gates. Preserve legitimate floating placement: ordinary
+  float intent alone is not a new refusal. Only `effective_frame` is writable.
+- Attempt memory is generation-scoped and pruned to live desired operations.
+  Membership and view are distinct local setter phases even when a follow or
+  migration uses one core operation id. Keep the existing transfer ambiguity
+  fence, plus a view-attempt fence keyed by its owning core id, marked BEFORE
+  dispatch. Membership arrival may settle membership but never clear a spent
+  view phase. Exact target-view proof can complete a spent phase without a
+  setter; otherwise it cannot dispatch again. Reset/retirement, not a repeated
+  full reply or membership proof, retires phase ownership.
+
+| Hazard | Setter permission and owner | Feedback and proof |
+| --- | --- | --- |
+| Float safety drift | `frame_operation` owns the explicit placement. Apply the same fresh sticky/fit-excluded/overlay and lifetime gates as tiled frames, retaining strict native eligibility. Ordinary frame refusal stays in `RefusedTracker`; explicit float is armed before its setter. | Float `Applied` needs exact readback. `RefusedProven` needs explicit refusal plus unchanged preimage. Unreadable/partial/throw stays `PossiblyExecuted`; no write means no fabricated refusal. |
+| False view refusal | A retained view id owns its single view phase. Capture the immediately preceding view, fence before switching, then read the exact target output. | Target proof is `Applied`; explicit refusal AND proven unchanged preimage is `RefusedProven`; success with old/unreadable proof or unresolved throw is `PossiblyExecuted`; fresh third-location proof is `SupersededExternal`, never refusal. Feedback is queued after proof and retained through W1 acknowledgement. |
+| Repeated follow switch | Parent window-transfer id owns membership and follow-view phases. Only proven arrival permits follow; do not clear view-attempt memory when arrival clears membership ambiguity. Scope/held authority and freshness still gate each possible view setter. | Emit one transfer outcome, not a synthetic view id. `Applied` requires arrival plus exact target view for follow; a possibly executed follow remains fenced. A subsequent proof can complete without another switch. Follow focus still requires live view proof and never replays an effect. |
+| Held migration refill | Parent migration id owns member moves and target-view phase. Actual paired `{parent}-refill` view id separately owns refill phase. All members must arrive before target view; target view must prove before refill. Refill needs its own unheld transfer, controlled scope, resolved binding and unspent phase. | Held refill never switches or emits invented refusal. Each attempted view uses the same proof truth table. Parent cannot be declared fully applied while a required refill remains unresolved; preserve partial progress and each phase fence, without replaying successful members/views. |
+| Stale focus membership | The one-shot effect owns focus and is spent before dispatch. After lifetime/safety revalidation, source membership from fresh `NativeOps::read_homing`, require that live scope controlled and `read_view(live_output) == live_workspace`, not observation-time membership. | Foreground readback alone proves focus success. Missing homing/view holds without focus. Effects emit no invented core feedback. A dispatch remains spent regardless of setter result. |
+
+- Existing Windows comparison: `send_native.rs` rechecks lifetime tags and
+  overlay snapshots before committed membership and verifies the transfer;
+  `send_follow.rs` selects only after that proof, reports only verified focus
+  and does not replay a failed tail. `focus_actuation.rs` revalidates live
+  identities and foreground proof. `tiling/reconcile.rs` owns clamp/transient
+  refusal context. Reuse these mechanisms, not a new retry policy.
+- KDE comparison: `kwin/src/world-apply.ts` separates explicit float authority,
+  membership arrival, exact-output view proof, migration/refill ordering and
+  one-shot focus. Its stable operation/attempt model is the reference, not an
+  excuse to copy a setter-return shortcut or clear a follow fence early.
+  `crates/omnitiler/src/world_service.rs` provides authenticated single-flight
+  discovery/report transport; settlement remains in `WorldEngine`, not service
+  policy. No KDE/service edits are part of W2.
+- Acceptance floor: preserve all 40 fixtures (the eight diagnostic failures
+  are mandatory), add core-produced creation/binding and follow/migration
+  roundtrips through capture/sequencing/feedback, and cover repeated target-view
+  attempts after late membership proof plus ambiguous refill outcomes. No
+  fixture weakening. If review requires a shared contract change or material
+  architecture choice, stop rather than conceal that gap in the facade.
+- Independent design review accepted this facade-local design. Binding
+  clarifications: spend float/view phases only after every safety/authority
+  gate passes; fresh focus scope follows live homing, and foreground proof
+  remains authoritative even after a throwing setter. Keep distinct view-phase
+  memory until operation retirement/reset, not membership settlement.
+- Existing shared limitation, not a new guarantee: window-transfer settlement
+  confirms membership alone (`WorldEngine::settle_retained`). Follow-view
+  failure feedback cannot keep a proven-arrived transfer alive indefinitely;
+  the tail is best-effort and cannot be replayed after retirement. W2 must
+  prove truthful failure/no-repeat and next-report convergence, not claim
+  guaranteed eventual follow. Guaranteed follow would require separately
+  approved shared-contract work and is outside this change.
+
+## W2 prototype history and blocking evidence
+
+- W1 commit `c73e4cc7`: CI run 39046589869 completed successfully across all
+  eight jobs, including the native Windows gate.
+- W2 is not accepted. The preserved `world_diff.rs` facade and
+  `world_diff_tests.rs` remain test-only; the legacy runtime, desktop actuation,
+  recovery ledger, core/protocol semantics and other platform adapters are
+  unchanged. Do not enable this prototype for W3.
+- An initial implementation and its correction did not establish the required
+  safety/settlement invariants. Review of the correction initially missed
+  remaining hazards; focused regressions reproduced them and acceptance was
+  withdrawn. The implementation and failing fixtures are preserved for diagnosis.
+- Pre-redesign reproducible evidence:
+  `mise exec -- cargo test --locked -p tiler-windows --lib world_diff_tests`
+  reports **32 passed, 8 failed**. `git diff --check` passes. The eight failures
+  cover five remaining hazards:
+  - Explicit float placements write after live sticky or fit-excluded drift;
+    their fresh setter gate checks native classification but omits these
+    adapter safety lanes.
+  - A view setter returning success with unreadable or third-location proof
+    incorrectly emits `RefusedProven`; neither result proves non-execution.
+  - The follow-view path can dispatch again after a possibly-executed switch;
+    membership proof clears the transfer fence before the view attempt.
+  - The inline migration-refill path ignores its held transfer/scope authority
+    and can switch a view that must remain untouched.
+  - Focus gates the observation-time homing instead of fresh native homing;
+    a moved lifetime can be focused while its actual workspace is not shown.
+- Earlier passing prototype gates were not accepted W2 evidence. The single
+  design-first attempt and current outcome supersede that failure count below.
+
+## Parked W2 outcome and handover
+
+- Independent design review accepted the setter/phase-ownership design above.
+  Implementation review verified all five hazard fixes but **rejected W2
+  acceptance**: real Windows reports cannot produce the required migration and
+  paired-refill roundtrip. No further facade redesign was made.
+- Current evidence: **50 W2 fixtures pass, 0 fail**, including all 40 original
+  fixtures with their assertions preserved. Formatting and a `clone_on_copy`
+  helper correction do not change fixture meaning. New core-produced tests
+  prove follow success/failure/no-repeat and homing settlement, view refusal,
+  explicit float placement settled by re-observation, and creation/binding
+  inventory reconciliation. Target-view late-proof and ambiguous-refill
+  no-repeat/third-location tests remain synthetic, not migration integration.
+- Exact blocker: `core_migration_refused_without_adjacency` builds two native
+  outputs, managed inventories/bindings and monitor areas through W1 capture
+  and sequencing. `MigrateWorkspace` returns `migration-refused`. Capture
+  preserves the native domain builder's empty adjacency; both shared migration
+  routes require carried adjacency (`world_commands.rs`, `start_migration`
+  and `operation_migration`). No core-produced migration/refill can be tested
+  on that boundary until the mapping choice is resolved. Do not synthesize
+  KDE adjacency solely to turn this into a passing integration test.
+- Existing native resolution is not missing: `migration.rs` pins the active
+  workspace and resolves the target with `select_migration_target` over full
+  monitor rectangles. What is unresolved is how that existing native choice
+  maps faithfully into one world authority without importing KDE heuristics
+  or preserving competing active policy paths.
+- Options:
+  1. Recommended: approve a bounded native-to-world mapping design reusing
+     that existing Windows selector, then prove actual core-produced migration
+     and refill through capture, feedback and re-observation before accepting
+     W2. Keep the runtime on the legacy owner until the W3 atomic cutover.
+  2. Defer world adoption and retain the working legacy Windows path. Keep
+     this prototype offline as diagnostic evidence; no parity claim.
+  3. Broaden the shared command contract for directly resolved targets. This
+     requires separate coordinated core/protocol review and is not needed or
+     authorized by this facade change; prefer option 1 if it can preserve the
+     existing contract.
+- Residual evidence boundaries: float clamp/throw fixtures transport synthetic
+  ids and prove facade no-repeat/feedback retention, not actual retained-float
+  core settlement. Follow remains best-effort under membership-only shared
+  confirmation. No live smoke or physical/two-output native acceptance was
+  performed. Hidden/fullscreen and tiling-bootstrap prerequisites remain.
+- Preservation is releasable scaffolding, not W2 delivery: both modules remain
+  `#[cfg(test)]`, including `NativeOps` and `FakeNative`. The only supporting
+  capture edit exposes the unchanged classifier to sibling test modules.
+  Runtime, ledger, native properties and desktop behavior are unchanged;
+  no new core/protocol/KDE/macOS/dependency/unsafe edits.
+- Current four-package locked build/test and strict all-target clippy pass;
+  **2,695 passed, 0 failed, 1 ignored across 65 suites**. Workspace formatting,
+  unsafe guardrails and `git diff --check` pass. These gates establish that the
+  parked code keeps the existing release build working, not W2 acceptance.
+- Exact next action: user decision on option 1 versus continued deferral;
+  then design/review the mapping and resume the blocked migration/refill
+  acceptance. W3 remains blocked; do not enable the facade.
