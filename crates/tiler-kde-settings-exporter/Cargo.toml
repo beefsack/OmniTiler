@@ -1,0 +1,12 @@
+[package]
+name = "tiler-kde-settings-exporter"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "tiler-kde-settings-exporter"
+path = "src/main.rs"
+
+[dependencies]
+tiler-core = { path = "../tiler-core" }

@@ -45,6 +45,8 @@ jobs:
         run: devenv shell --impure -- cargo fmt --all -- --check
       - name: Rust strict Clippy
         run: devenv shell --impure -- cargo clippy --workspace --all-targets -- -D warnings
+      - name: KDE settings exporter freshness
+        run: devenv shell --impure -- cargo run --locked -p tiler-kde-settings-exporter -- --check
 
   shell:
     runs-on: ubuntu-latest
