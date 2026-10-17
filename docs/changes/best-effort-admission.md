@@ -81,6 +81,8 @@
   - D8: preserve clean-fit adoption first, then the existing spatial
     focus-last serial seed with D2/D3 fallback, committing all tile/float
     classifications atomically as one roster; persisted floats stay floating.
+  - D9: overlap mode uses the positive-overflow projector as proposed, with
+    golden geometry/navigation cases agreed before coding.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
