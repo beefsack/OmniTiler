@@ -3065,3 +3065,242 @@ fn maximized_focus_fence_holds_by_default_and_releases_for_windows() {
     assert_eq!(reply.effects[0].id, "fx-15");
     assert_eq!(reply.effects[0].target.0, "win-b");
 }
+
+#[test]
+fn native_gesture_defers_capacity_repair_until_clear() {
+    // D7: geometric capacity repair defers during a native titlebar
+    // gesture (`gesture_barrier` without an explicit Session drag). A
+    // bounds/gap shrink mid-gesture must not evict: the scope holds as
+    // gesture-barrier with topology/order retained, a repeated report
+    // repairs nothing further, and the first report after the gesture
+    // clears repairs once, newest-first, with live frames.
+    fn gesture_report(
+        request_seq: u64,
+        observation_seq: u64,
+        bounds: Rect,
+        gap: i32,
+        gesture: bool,
+    ) -> WorldReport {
+        let mut report = base_report(request_seq, observation_seq);
+        report.domains = vec![DomainReport {
+            domain: OutputDomain {
+                id: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                bounds,
+                gap,
+                adjacent: BTreeMap::new(),
+            },
+            outer_gap: 0,
+            focused: WindowId("win-a".to_owned()),
+            windows: vec![
+                win("win-a", "out", "ws1", 0),
+                win("win-b", "out", "ws1", 150),
+            ],
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        }];
+        report.topology = vec![OutputTopology {
+            output: OutputId("out".to_owned()),
+            native_order: vec!["ws1".to_owned()],
+            current_native: "ws1".to_owned(),
+            complete: true,
+            geometry: None,
+            primary: false,
+        }];
+        report.bindings = vec![WorkspaceBinding {
+            logical_id: "desk-1".to_owned(),
+            native_id: "ws1".to_owned(),
+            output: OutputId("out".to_owned()),
+            pinned: false,
+            displaced: false,
+            managed: true,
+        }];
+        report.gesture_barrier = gesture;
+        report
+    }
+
+    let key = DomainKey {
+        output: OutputId("out".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws1".to_owned()),
+    };
+    let session = |engine: &WorldEngine| {
+        engine
+            .engine()
+            .session(&key)
+            .expect("retained session")
+            .clone()
+    };
+    let scope_of = |reply: &WorldReply| {
+        reply
+            .scopes
+            .iter()
+            .find(|s| s.scope == "out/ws1")
+            .expect("ws1 scope")
+            .authority
+    };
+    fn row_of<'a>(reply: &'a WorldReply, id: &str) -> &'a crate::world_report::WindowDesire {
+        reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == id)
+            .expect("window row")
+    }
+
+    let roomy = rect(0, 0, 300, 100);
+    let shrunk = rect(0, 0, 1, 100);
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let seed = accepted_reply(&mut engine, &gesture_report(1, 1, roomy, 0, false));
+    assert_eq!(scope_of(&seed), ScopeAuthority::Controlled);
+    assert!(!row_of(&seed, "win-a").floating && !row_of(&seed, "win-b").floating);
+    assert_eq!(
+        engine
+            .engine()
+            .session(&key)
+            .expect("session")
+            .capacity_float_count(),
+        0
+    );
+    let seq_a = session(&engine).admission_sequence(&WindowId("win-a".to_owned()));
+    let seq_b = session(&engine).admission_sequence(&WindowId("win-b".to_owned()));
+    // Deterministic newest-first victim: higher sequence first, untracked
+    // oldest, identity descending for ties.
+    let expected_victim = match (seq_a, seq_b) {
+        (Some(a), Some(b)) if a > b => "win-a",
+        (Some(a), Some(b)) if a < b => "win-b",
+        (Some(_), None) => "win-a",
+        _ => "win-b",
+    };
+    let live_frame = |id: &str| {
+        gesture_report(2, 2, shrunk, 4, true).domains[0]
+            .windows
+            .iter()
+            .find(|w| w.window.0 == id)
+            .expect("observed window")
+            .rect
+    };
+
+    // Shrink mid-gesture: no eviction, no float intent, no focus effects,
+    // bounds/gap not settled.
+    let held = accepted_reply(&mut engine, &gesture_report(2, 2, shrunk, 4, true));
+    assert_eq!(
+        scope_of(&held).hold_reason(),
+        Some(HoldReason::GestureBarrier),
+        "shrunk scope holds as gesture, never repairs"
+    );
+    assert!(held.effects.is_empty(), "no focus effects mid-gesture");
+    assert!(
+        held.windows.iter().all(|w| w.frame_operation.is_none()),
+        "no float intent minted mid-gesture"
+    );
+    for id in ["win-a", "win-b"] {
+        let row = row_of(&held, id);
+        assert!(!row.floating, "{id} stays tiled mid-gesture");
+        assert_eq!(
+            row.allocation, None,
+            "{id} carries no allocation while held"
+        );
+        assert_eq!(
+            row.frame_authority.hold_reason(),
+            Some(HoldReason::GestureBarrier),
+            "{id} frame held as gesture"
+        );
+        assert_eq!(
+            row.membership_authority.hold_reason(),
+            Some(HoldReason::GestureBarrier),
+            "{id} membership held as gesture"
+        );
+    }
+    let mid = session(&engine);
+    assert_eq!(
+        mid.capacity_float_count(),
+        0,
+        "no capacity floats mid-gesture"
+    );
+    assert_eq!(mid.admission_sequence(&WindowId("win-a".to_owned())), seq_a);
+    assert_eq!(mid.admission_sequence(&WindowId("win-b".to_owned())), seq_b);
+    assert!(engine.retained_floats.is_empty());
+    let retained = mid
+        .domains()
+        .iter()
+        .find(|d| d.key() == key)
+        .expect("domain");
+    assert_eq!(
+        (retained.bounds, retained.gap),
+        (roomy, 0),
+        "bounds/gap unsettled mid-gesture"
+    );
+
+    // Repeated report under the same gesture: still nothing evicted,
+    // order untouched, rows stable.
+    let again = accepted_reply(&mut engine, &gesture_report(3, 3, shrunk, 4, true));
+    assert_eq!(
+        scope_of(&again).hold_reason(),
+        Some(HoldReason::GestureBarrier)
+    );
+    assert_eq!(
+        again.windows, held.windows,
+        "repeated gesture report refreshes nothing"
+    );
+    assert!(again.effects.is_empty());
+    let repeated = session(&engine);
+    assert_eq!(repeated.capacity_float_count(), 0);
+    assert_eq!(
+        repeated.admission_sequence(&WindowId("win-a".to_owned())),
+        seq_a
+    );
+    assert_eq!(
+        repeated.admission_sequence(&WindowId("win-b".to_owned())),
+        seq_b
+    );
+    assert!(engine.retained_floats.is_empty());
+
+    // Gesture clears with the same shrunk geometry: exactly one
+    // deterministic newest-first repair with the live frame.
+    let repaired = accepted_reply(&mut engine, &gesture_report(4, 4, shrunk, 4, false));
+    assert_eq!(scope_of(&repaired), ScopeAuthority::Controlled);
+    assert!(
+        repaired.effects.is_empty(),
+        "repair issues no native focus setter"
+    );
+    let victim = row_of(&repaired, expected_victim);
+    assert!(victim.floating, "newest victim floats after clear");
+    assert_eq!(
+        victim.float_origin,
+        Some(crate::world_report::FloatOrigin::Capacity),
+        "victim carries diagnostic capacity origin"
+    );
+    assert_eq!(
+        victim.effective_frame,
+        Some(live_frame(expected_victim)),
+        "victim keeps its live frame"
+    );
+    let survivor_id = if expected_victim == "win-a" {
+        "win-b"
+    } else {
+        "win-a"
+    };
+    let survivor = row_of(&repaired, survivor_id);
+    assert!(!survivor.floating, "survivor stays tiled");
+    assert!(
+        survivor.allocation.is_some(),
+        "survivor keeps live geometry"
+    );
+    assert_eq!(repaired.windows.iter().filter(|w| w.floating).count(), 1);
+    let settled = session(&engine);
+    assert_eq!(
+        settled.capacity_float_count(),
+        1,
+        "exactly one repair eviction"
+    );
+    let retained = settled
+        .domains()
+        .iter()
+        .find(|d| d.key() == key)
+        .expect("domain");
+    assert_eq!(
+        (retained.bounds, retained.gap),
+        (shrunk, 4),
+        "bounds/gap settle after repair"
+    );
+}

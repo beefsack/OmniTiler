@@ -749,7 +749,14 @@ impl WorldEngine {
             if self.floating_scopes.contains(&key) {
                 continue;
             }
-            self.sweep_domain(domain, &by_id, owner, correlation, &mut held_scopes);
+            self.sweep_domain(
+                domain,
+                &by_id,
+                owner,
+                correlation,
+                &mut held_scopes,
+                report.gesture_barrier,
+            );
         }
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
@@ -1213,7 +1220,14 @@ impl WorldEngine {
 
     /// Reconcile one readable domain through the retained engine sweep.
     /// Failures hold the scope explicitly; floating callers never reach
-    /// here.
+    /// here. A native gesture (`gesture_barrier`) without an explicit
+    /// Session drag defers geometric capacity repair (D7): when the
+    /// carried bounds/gaps changed, membership still converges at the
+    /// retained geometry, but gap adoption and victim repair wait for the
+    /// first report after the gesture clears. The scope holds as
+    /// [`HoldReason::GestureBarrier`] with topology/order retained, so no
+    /// float intent persists mid-gesture and no classification runs.
+    /// Unchanged shapes converge exactly as without the barrier.
     pub(crate) fn sweep_domain(
         &mut self,
         domain: &crate::world_report::DomainReport,
@@ -1221,17 +1235,25 @@ impl WorldEngine {
         owner: &OwnerId,
         correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
+        gesture_barrier: bool,
     ) {
         let key = domain.domain.key();
         // Legacy parity: the Engine retains the outer-inset work area.
         // Inset exhaustion holds geometrically (capacity B), never seeds
-        // an empty domain or drops retained topology.
+        // an empty domain or drops retained topology. This protected hold
+        // stands even mid-gesture: the barrier defers repair, never
+        // exhaustion.
         let Some(inset) = inset_world_domain(&domain.domain, domain.outer_gap) else {
             self.hold_reasons
                 .insert(key.clone(), HoldReason::ConstraintClamp);
             held_scopes.insert(key);
             return;
         };
+        if gesture_barrier
+            && self.defer_gesture_repair(domain, &inset, by_id, owner, correlation, held_scopes)
+        {
+            return;
+        }
         let windows = self.shielded_windows(&key, &domain.windows, by_id);
         let accepted = self
             .engine
@@ -1297,6 +1319,95 @@ impl WorldEngine {
         }
     }
 
+    /// Gesture repair deferral for one domain (D7): true when the barrier
+    /// owned this domain (the caller returns without sweeping further).
+    /// Convergence-only at the retained bounds/gaps when those changed:
+    /// membership still reconciles through the ordinary [`Engine::handle`]
+    /// path at retained geometry (a `Reconcile` there never adopts gaps or
+    /// repairs), then the scope holds as [`HoldReason::GestureBarrier`]
+    /// with retained topology, order, focus, and float state untouched.
+    /// Unchanged shapes return false so the ordinary sweep converges them
+    /// fully (the barrier only withholds frame writes at publish). Fresh
+    /// seeds (no retained session) also return false. A failed
+    /// convergence keeps its classified hold: the barrier postpones
+    /// repair, never real failures.
+    fn defer_gesture_repair(
+        &mut self,
+        domain: &crate::world_report::DomainReport,
+        inset: &OutputDomain,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        owner: &OwnerId,
+        correlation: &CorrelationId,
+        held_scopes: &mut BTreeSet<DomainKey>,
+    ) -> bool {
+        let key = domain.domain.key();
+        let retained = self.engine.session(&key).and_then(|session| {
+            let geometry = session
+                .domains()
+                .iter()
+                .find(|d| d.key() == key)
+                .map(|d| (d.bounds, d.gap))?;
+            let outer = self.engine.outer_gap(&key)?;
+            Some((
+                geometry.0,
+                geometry.1,
+                outer,
+                session.accepted_revision(),
+                session.accepted_fingerprint(),
+            ))
+        });
+        let Some((bounds, gap, outer, revision, fingerprint)) = retained else {
+            return false;
+        };
+        if bounds == inset.bounds && gap == inset.gap && outer == domain.outer_gap {
+            return false;
+        }
+        let windows = self.shielded_windows(&key, &domain.windows, by_id);
+        let retained_domain = OutputDomain {
+            id: key.output.clone(),
+            workspace: key.workspace.clone(),
+            bounds,
+            gap,
+            adjacent: BTreeMap::new(),
+        };
+        let event = CoreEvent {
+            owner: owner.clone(),
+            generation: self.core_generation.clone(),
+            correlation: correlation.clone(),
+            revision,
+            fingerprint,
+            domain: Engine::canonical_component_domain(&retained_domain),
+            domain_key: key.clone(),
+            outer_gap: outer,
+            focused_window: domain.focused.clone(),
+            windows,
+            closed_windows: domain.closed.clone(),
+            directional: None,
+            directional_target_outer_gap: None,
+            target_domain: None,
+            target_windows: Vec::new(),
+            command: CoreCommand::Reconcile,
+        };
+        match self.engine.handle(&event) {
+            CoreReply::Projection(_)
+            | CoreReply::Tiled(_)
+            | CoreReply::Released
+            | CoreReply::NoGroup { .. } => {}
+            refused => {
+                // Single-policy classification (capacity B): the staged
+                // reason publishes with the held scope and its rows.
+                self.hold_reasons
+                    .insert(key.clone(), Self::classify_sweep_hold(&refused));
+                held_scopes.insert(key);
+                return true;
+            }
+        }
+        self.hold_reasons
+            .insert(key.clone(), HoldReason::GestureBarrier);
+        held_scopes.insert(key);
+        true
+    }
+
     /// Re-sweep domains a command just re-tiled: the pre-command floating
     /// set skipped them, so without this pass a floating-to-tiled flip
     /// would publish no session rows until the next report. Only domains
@@ -1311,6 +1422,7 @@ impl WorldEngine {
         held_scopes: &mut BTreeSet<DomainKey>,
         was_floating: &BTreeSet<DomainKey>,
     ) {
+        let gesture_barrier = report.gesture_barrier;
         for domain in &report.domains {
             if !domain.readable {
                 continue;
@@ -1323,7 +1435,14 @@ impl WorldEngine {
             {
                 continue;
             }
-            self.sweep_domain(domain, by_id, owner, correlation, held_scopes);
+            self.sweep_domain(
+                domain,
+                by_id,
+                owner,
+                correlation,
+                held_scopes,
+                gesture_barrier,
+            );
         }
     }
 
