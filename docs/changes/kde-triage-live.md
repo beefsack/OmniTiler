@@ -91,6 +91,8 @@
   was restored by exact atomic replacement while the Planner was unowned and
   controller unloaded, then independently compared; its two original memberships
   and private file mode are retained. No development restart was used to restore it.
+  Byte equality does not include metadata: `kwinrc` and runtime-store modification
+  times differ from the captured originals.
 - Desktop identities/current desktop, single-output configuration, loaded effects,
   project shortcut tuples and KGlobalAccel component/action inventories match the
   captured baseline semantically. KWin remained alive; disposable clients and
