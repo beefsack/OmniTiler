@@ -175,7 +175,8 @@ decisions of 2026-09-24 are under
   send-follow/observe/send-back offline. Cause remains unclassified; later retries
   after the first refusal are not clean acceptance.
   [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
-- P1 | Windows: adopt full world-state core replies | Replace
+- P1 | Windows: adopt full world-state core replies | parked: native-to-world
+  migration mapping unresolved; core-produced migration/refill acceptance blocked. Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
   into the world state; preserve recovery ledger/window properties/native
@@ -189,9 +190,11 @@ decisions of 2026-09-24 are under
   Tentative constructor prerequisite selected 2026-10-18, pending user review:
   additive core configuration preserves existing defaults and Windows send/
   maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
-  constructor prerequisite delivered in `0869f08c` (CI green). W1 observation
-  prototype rejected before landing for hidden/unknown-state and dirty-ack
-  gaps; source-first capture redesign and runtime adoption remain pending.
+  constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
+  sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved on
+  `wip/windows-world-diff` with 50 passing fixtures; acceptance rejected for
+  the mapping gap, not delivered W2. Runtime adoption remains pending;
+  handover lists options and concurrent native-gate failures.
 - P1 | macOS: adopt full world-state core replies | Replace per-domain reply
   concatenation/cursors with world revision and input watermark, preserving
   AppKit/engine/AX thread ownership, per-app generations, latest-wins frame
