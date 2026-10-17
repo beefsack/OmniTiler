@@ -245,7 +245,7 @@ fn countdown(backend: &mut LiveDiagBackend, secs: u64, instruction: &str) -> Res
 fn platform_check(mode: &str) -> Result<(), (i32, String)> {
     #[cfg(not(target_os = "macos"))]
     {
-        return Err((
+        Err((
             1,
             refused_body(
                 mode,
@@ -253,7 +253,7 @@ fn platform_check(mode: &str) -> Result<(), (i32, String)> {
                 "drag-diag is macOS-only (HID posts unavailable)",
                 &[],
             ),
-        ));
+        ))
     }
     #[cfg(target_os = "macos")]
     {
