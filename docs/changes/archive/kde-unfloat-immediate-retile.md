@@ -65,4 +65,16 @@ behavior or live acceptance is included.
    immediately occupies its tile and the other terminal reflows; no vacant
    tile should remain waiting for a focus change.
 4. Repeat the toggle pair, then change focus. Confirm there is no delayed snap
-   into a previously vacant tile.
+    into a previously vacant tile.
+
+## Native callback observation, 2026-10-17/18
+
+- Two KDE editor clients completed two callback-driven float/unfloat pairs,
+  with immediate native tile occupation after each unfloat and stable geometry
+  across subsequent focus changes. Physical Meta+G delivery was not tested.
+- The fixture changed a pre-existing empty desktop's backing identity and
+  continued after that baseline surprise. Functional observations therefore do
+  not complete clean physical acceptance. The changed inventory was subsequently
+  captured as the new fixture baseline (tentative, pending user review).
+  See the [acceptance continuation](../kde-live-acceptance.md) for evidence,
+  offline gates, retained configuration differences and the stopped live checks.
