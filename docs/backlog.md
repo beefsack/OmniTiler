@@ -191,7 +191,8 @@ decisions of 2026-09-24 are under
   additive core configuration preserves existing defaults and Windows send/
   maximized policies without wire changes. [Slices and evidence](changes/windows-full-world-state-replies.md);
   constructor prerequisite delivered in `0869f08c` and replacement W1 capture/
-  sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved with
+  sequencing in `c73e4cc7` (CI green). W2 test-only prototype preserved on
+  `wip/windows-world-diff` with
   50 passing fixtures; implementation acceptance rejected for the mapping gap,
   not delivered W2. Runtime adoption remains pending; handover lists options.
 - P1 | macOS: adopt full world-state core replies | Replace per-domain reply

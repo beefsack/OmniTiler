@@ -4,7 +4,8 @@
 
 - 2026-10-18: **parked: native-to-world cross-output migration mapping is
   unresolved; core-produced migration/refill acceptance cannot run.** The
-  compiling W2 prototype and diagnostic fixtures are preserved offline, not
+  W2 prototype and diagnostic fixtures are preserved offline on
+  `wip/windows-world-diff`, not
   accepted for runtime adoption. Additive constructor and W1 capture/ordering
   fixtures delivered under the tentative selection below. The earlier W1
   prototype remains withdrawn; the replacement starts from native sources.
@@ -381,15 +382,32 @@
   core settlement. Follow remains best-effort under membership-only shared
   confirmation. No live smoke or physical/two-output native acceptance was
   performed. Hidden/fullscreen and tiling-bootstrap prerequisites remain.
-- Preservation is releasable scaffolding, not W2 delivery: both modules remain
+- Preservation is branch-only scaffolding, not W2 delivery: both modules remain
   `#[cfg(test)]`, including `NativeOps` and `FakeNative`. The only supporting
   capture edit exposes the unchanged classifier to sibling test modules.
   Runtime, ledger, native properties and desktop behavior are unchanged;
   no new core/protocol/KDE/macOS/dependency/unsafe edits.
-- Current four-package locked build/test and strict all-target clippy pass;
+- Before integrating concurrent best-effort admission, four-package locked
+  build/test and strict all-target clippy passed;
   **2,695 passed, 0 failed, 1 ignored across 65 suites**. Workspace formatting,
   unsafe guardrails and `git diff --check` pass. These gates establish that the
-  parked code keeps the existing release build working, not W2 acceptance.
+  parked code kept the prior release build working, not W2 acceptance.
+- After integrating `cf422d2f`, newly required report/desire fields initially
+  broke Windows test compilation. A mechanical fixture-only update supplies
+  shared admission defaults and explicit non-float classification for tiled
+  synthetic rows. No assertion or facade semantic change was made. Build,
+  strict all-target clippy, formatting and whitespace gates pass, but full
+  tests stop with **2,349 passed, 3 failed, 1 ignored across 45 suites** (partial
+  run): `preview_sticky_journey_agrees_with_drop`,
+  `rejected_hydration_holds_float_writes_for_one_observation` and
+  `next_consistent_observation_revalidates_after_rejection`. These existing
+  Windows preview/restart tests require separate admission-adoption triage;
+  their assertions were not changed. No current green full-gate claim.
+- The prototype plus mechanical compatibility update is preserved on
+  `wip/windows-world-diff`, not merged into `main`. Main retains this analysis
+  and backlog status only; upstream native compile/behavior reconciliation
+  remains separately required. CI does not run on preservation-branch pushes
+  under the current workflow; no branch CI success is claimed.
 - Exact next action: user decision on option 1 versus continued deferral;
   then design/review the mapping and resume the blocked migration/refill
   acceptance. W3 remains blocked; do not enable the facade.

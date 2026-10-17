@@ -292,6 +292,8 @@ impl WorldSequencer {
             minimized: captured.minimized.clone(),
             fixed_size_predicate: captured.fixed_size_predicate,
             migration_source_refill: captured.migration_source_refill,
+            anchor_fallback: Default::default(),
+            no_space_result: Default::default(),
             default_tiled: captured.default_tiled,
             focused_global: captured.focused_global.clone(),
             inventory_complete: captured.inventory_complete,

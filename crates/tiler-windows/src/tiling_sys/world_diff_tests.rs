@@ -226,6 +226,8 @@ fn tiled_row(ws: &str, token: &str, target: Rect) -> WindowDesire {
         effective_frame: Some(target),
         frame_authority: Auth::Controlled,
         membership_authority: Auth::Controlled,
+        floating: false,
+        float_origin: None,
         frame_operation: None,
     }
 }
@@ -239,6 +241,8 @@ fn membership_row(ws: &str, token: &str) -> WindowDesire {
         effective_frame: None,
         frame_authority: Auth::Untouched,
         membership_authority: Auth::Controlled,
+        floating: false,
+        float_origin: None,
         frame_operation: None,
     }
 }
@@ -929,6 +933,8 @@ fn migration_partial_holds_views_then_completes() {
             effective_frame: None,
             frame_authority: Auth::Untouched,
             membership_authority: Auth::Controlled,
+            floating: false,
+            float_origin: None,
             frame_operation: None,
         });
     }
@@ -1964,6 +1970,8 @@ fn migration_refill_held_does_not_actuate() {
             effective_frame: None,
             frame_authority: Auth::Untouched,
             membership_authority: Auth::Controlled,
+            floating: false,
+            float_origin: None,
             frame_operation: None,
         });
     }
@@ -2015,6 +2023,8 @@ fn migration_refill_scope_held_does_not_actuate() {
             effective_frame: None,
             frame_authority: Auth::Untouched,
             membership_authority: Auth::Controlled,
+            floating: false,
+            float_origin: None,
             frame_operation: None,
         });
     }
@@ -2273,6 +2283,8 @@ fn migration_target_view_no_repeat_after_late_member_proof() {
             effective_frame: None,
             frame_authority: Auth::Untouched,
             membership_authority: Auth::Controlled,
+            floating: false,
+            float_origin: None,
             frame_operation: None,
         });
     }
@@ -2359,6 +2371,8 @@ fn ambiguous_refill_no_repeat_and_third_location() {
             effective_frame: None,
             frame_authority: Auth::Untouched,
             membership_authority: Auth::Controlled,
+            floating: false,
+            float_origin: None,
             frame_operation: None,
         });
     }
