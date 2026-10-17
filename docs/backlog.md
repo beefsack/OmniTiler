@@ -413,6 +413,14 @@ decisions of 2026-09-24 are under
     fresh-reopen fixture now proves fresh admission offline with no old-slot
     restoration; exact native ratio/order/focus evidence remains pending.
     D18 has no setting; D20 needs raise-order proof, not a lower action.
+  - 2026-10-18 single-output attempt: blocked before any D-unit journey; no
+    acceptance advanced. Owned-desktop selection refused, later selection
+    summaries lacked canonical wire evidence, and an empty backing desktop
+    retired. Original desktop identity/name was not restored; runtime float-intent
+    preimage was missed by the helper. Preserve both pending disposition, repair
+    capture, then discriminate fixture mapping from adoption/view application
+    before any product fix. Options and producer-shaped outline:
+    [native triage record](changes/kde-triage-live.md#blockers-and-next-discriminator).
   - Windows: D05 shares the proven Engine route; D14's keyboard trigger gap is already
     handoff item 6 (include R-RSZ-02/03 acceptance there). D02's owned-dialog
     exclusion is the approved divergence; D17 remembered focus and D19 hide/
