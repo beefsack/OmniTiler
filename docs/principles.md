@@ -104,3 +104,11 @@ Project principles, approved by the user.
   and whether it recovered.
 - Logs report outcomes honestly and never imply more certainty than is known.
 - Observability must never change product behavior or expose secrets or user content.
+
+## Testing
+
+- Test data should look like real data. Fixtures at host, process and wire
+  boundaries use values shaped exactly as real producers send them
+  (sentinel values, native container types, identifier formats, objects
+  that disappear on removal), preferably captured from real runs.
+  Idealized mocks hide the failures that matter most.
