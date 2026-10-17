@@ -71,6 +71,8 @@
     behaves as for any float. Capacity floats persist across restart like
     user floats, so restart adoption cannot re-tile one and capacity-float a
     different window, which would change the layout surprisingly.
+  - D6: all capacity-producing routes, with the route rules under Operation
+    boundaries as proposed.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
