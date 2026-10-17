@@ -896,6 +896,35 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
+                    // Clear settled floats and record unfloat tile overrides
+                    // before capture: otherwise stale floating/fitExcluded
+                    // flags hold the tile frame until another native event.
+                    // Float arrivals stay after capture because explicit
+                    // placement needs the pre-command tile classification.
+                    // Native overlay reads and safety gates stay unchanged.
+                    {
+                        const untouched = new Set<string>();
+                        for (const row of parsed.windows) {
+                            if (row.frame_auth === "untouched" && row.frame_hold === "") {
+                                untouched.add(row.win);
+                            }
+                        }
+                        for (const id of [...floatingIds]) {
+                            if (!untouched.has(id)) {
+                                floatingIds.delete(id);
+                            }
+                        }
+                        try {
+                            if (
+                                parsed.result !== null && parsed.result.op === "toggle-float" &&
+                                parsed.result.rect === null
+                            ) {
+                                tileIds.add(parsed.result.win);
+                            }
+                        } catch (error) {
+                            void error;
+                        }
+                    }
                     let fresh = capture();
                     if (fresh === null) {
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
@@ -950,12 +979,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             }
                         }
                     }
-                    // Converge intentional-float membership from the accepted
-                    // exception rows (observation input only): untouched frame
-                    // authority on a live non-overlay row reads as floating;
-                    // controlled rows clear. Prune ids no longer observed.
-                    // Minimized lifetimes are included so a minimized float
-                    // keeps its membership.
+                    // Add float arrivals after capture so explicit placement
+                    // keeps its pre-command classification. Untouched rows
+                    // identify intentional floats; minimized lifetimes count
+                    // as observed so their membership survives.
                     {
                         const obsWins = new Set<string>();
                         for (const domain of fresh.domains) {
@@ -966,10 +993,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         for (const m of fresh.minimized) {
                             obsWins.add(m.win);
                         }
-                        floatingIds.clear();
                         for (const row of parsed.windows) {
                             if (row.frame_auth === "untouched" && row.frame_hold === "" && obsWins.has(row.win)) {
                                 floatingIds.add(row.win);
+                            }
+                        }
+                        // Prune departed lifetimes, retaining the same settled
+                        // membership as the accepted rows and live inventory.
+                        for (const id of [...floatingIds]) {
+                            if (!obsWins.has(id)) {
+                                floatingIds.delete(id);
                             }
                         }
                         // Fixed-window tile overrides persist locally: they
@@ -981,20 +1014,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             }
                         }
                     }
-                    // Intentional-float tile overrides (D3/D7, fixed-size
-                    // included): an accepted unfloat (no placement rect)
-                    // records the explicit user tile win for the live client
-                    // so the fixed-size classifier cannot re-float it; a
-                    // re-float withdraws it. Membership itself converges
-                    // from the untouched exception rows above; both sets
-                    // persist through WriteFloatIntent below.
+                    // Withdraw re-float tile overrides after capture, keeping
+                    // fixed-size clients tile-classified for explicit float
+                    // placement. Both sets persist through WriteFloatIntent.
                     try {
-                        if (parsed.result !== null && parsed.result.op === "toggle-float") {
-                            if (parsed.result.rect === null) {
-                                tileIds.add(parsed.result.win);
-                            } else {
-                                tileIds.delete(parsed.result.win);
-                            }
+                        if (
+                            parsed.result !== null && parsed.result.op === "toggle-float" &&
+                            parsed.result.rect !== null
+                        ) {
+                            tileIds.delete(parsed.result.win);
                         }
                     } catch (error) {
                         void error;

@@ -18,14 +18,13 @@ decisions of 2026-09-24 are under
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
-- P0 | KDE Meta+G unfloat does not re-tile until focus changes | User live
-  2026-10-17 on the full-state route: workspace with two tiled terminals;
-  Meta+G floats one correctly; Meta+G again opens a gap in the tiling for it,
-  but the window stays floating at its old frame and only moves into the gap
-  after focus switches to the other terminal. Suggests the unfloat reply's
-  geometry for the toggled window is not applied (or is deferred until the
-  next report) on KDE. Investigate from the user's dev log and source, add a
-  producer-shaped regression, fix, and have the user re-check.
+- P0 | KDE Meta+G unfloat does not re-tile until focus changes | Fixed offline
+  2026-10-17, pending user re-check. The apply observation retained stale
+  floating/fit-excluded flags after accepted unfloat; settle float departures
+  and tile overrides before capture while preserving float placement timing.
+  Producer-shaped production-entry regressions fail before the correction and
+  pass after it; Rust workspace **2888 passed**, KWin **1772 passed**.
+  [Evidence and script-restart re-check](changes/archive/kde-unfloat-immediate-retile.md).
 - P0 | KDE dual-output live testing and fixes | Comprehensive native
   two-output pass (mixed scale, offset outputs) over the multi-output
   must-pass checks ([coverage](research/two-output-test-environment.md),
