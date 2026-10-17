@@ -10,11 +10,6 @@ use crate::pager::{
 use crate::pager_icons::IconImage;
 use crate::workspace::WindowKey;
 
-/// Slow secondary-taskbar enumeration cadence (the primary bar is re-read
-/// every pump; secondaries only feed refusal logging, never positions):
-/// 5s notices added/removed monitors promptly without enumerating windows
-/// every pump.
-const PAGER_REVALIDATE_SECS: u64 = 5;
 /// Owner-creation retry when overlay registration fails: fixed 5s, forever,
 /// so a failed registration retries promptly without busy-looping pumps.
 const PAGER_CREATE_RETRY_SECS: u64 = 5;
@@ -96,12 +91,11 @@ pub(super) fn sync_taskbar_pager(
             }),
         );
     }
-    // Slow secondary enumeration (refusal logging only, never positions).
+    // Slow secondary enumeration (refusal logging only, never positions):
+    // the native rediscovery broadcast or a monitor-topology change
+    // revalidates; no timer arm (the owner wait is event-driven).
     let areas_fp = areas_fingerprint(areas);
-    if crate::pager_sys::take_rediscover()
-        || now >= state.pager_revalidate_at
-        || state.pager_areas_fp != areas_fp
-    {
+    if crate::pager_sys::take_rediscover() || state.pager_areas_fp != areas_fp {
         let secondaries = crate::pager_sys::discover_secondaries();
         if secondaries.len() != state.pager_secondaries.len() {
             log_json_at(
@@ -115,7 +109,6 @@ pub(super) fn sync_taskbar_pager(
         }
         state.pager_secondaries = secondaries;
         state.pager_areas_fp = areas_fp;
-        state.pager_revalidate_at = now + Duration::from_secs(PAGER_REVALIDATE_SECS);
     }
     let gate = PagerGate {
         enabled: state.taskbar_pager,

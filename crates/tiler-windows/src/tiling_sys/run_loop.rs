@@ -208,7 +208,6 @@ pub(super) fn run_tile_loop(
         pager_clicks: Arc::new(Mutex::new(None)),
         pager_served: Vec::new(),
         pager_retry_at: None,
-        pager_revalidate_at: Instant::now(),
         pager_areas_fp: 0,
         pager_primary: None,
         pager_secondaries: Vec::new(),
@@ -260,7 +259,14 @@ pub(super) fn run_tile_loop(
         esc_latched: HashSet::new(),
         gesture_esc_seq: HashMap::new(),
         gesture_end_seq: HashMap::new(),
-        underlay_chord_last: false,
+        // Baseline from the physical levels at startup: a chord already
+        // held across owner start must not count as a fresh transition on
+        // the first wake (event-driven sampling has no 100ms poll to
+        // absorb it).
+        underlay_chord_last: {
+            let (win_held, shift_held) = chord_held_now();
+            tiler_core::visual::group_underlay_chord_held(win_held, shift_held)
+        },
         float_topmost_prev: std::collections::BTreeMap::new(),
         float_rects: HashMap::new(),
         floated: BTreeSet::new(),
@@ -699,13 +705,115 @@ pub(super) fn run_tile_loop(
         }
     }
     let deadline = seconds.map(|s| Instant::now() + Duration::from_secs(s));
-    let mut slow_last = Instant::now();
+    // Event-driven file wakes: one directory watch over the ledger dir
+    // (stop plus workspace/resize requests) and one over the settings dir,
+    // deduped when both name the same directory. The files themselves are
+    // still polled and validated by the existing paths; these handles only
+    // wake the wait. Setup failure degrades to a bounded poll with an
+    // explicit reason (never a wedge, never a spin); setup retries on
+    // every degraded wake.
+    //
+    // The ledger watch carries file-name events only: every request file
+    // is published atomically, so a signaled rename always exposes
+    // complete content, while the owner's own per-turn trace-log appends
+    // (content-only) never wake it. When the settings dir is the ledger
+    // dir, the ledger watch keeps the full mask instead: external
+    // in-place settings edits have no rename to catch, and that shared
+    // configuration accepts the log self-wakes to keep them prompt.
+    let settings_same_dir = state.settings_dir.as_ref().is_some_and(|d| d == dir);
+    let mut ledger_watch = if settings_same_dir {
+        DirWatch::watched(dir)
+    } else {
+        DirWatch::watched_names(dir)
+    };
+    if ledger_watch.is_none() {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"dir-watch","dir":"ledger","outcome":"degraded-poll","retry_ms": DEGRADED_POLL_MS}),
+        );
+    }
+    let settings_same_dir = state.settings_dir.as_ref().is_some_and(|d| d == dir);
+    let mut settings_watch = if state.settings_dir.is_none() || settings_same_dir {
+        if settings_same_dir {
+            log_json_at(
+                &log_path,
+                serde_json::json!({"event":"dir-watch","dir":"settings","outcome":"deduped-ledger"}),
+            );
+        }
+        None
+    } else {
+        let watched = state
+            .settings_dir
+            .as_ref()
+            .and_then(|d| DirWatch::watched(d));
+        if watched.is_none() {
+            log_json_at(
+                &log_path,
+                serde_json::json!({"event":"dir-watch","dir":"settings","outcome":"degraded-poll","retry_ms": DEGRADED_POLL_MS}),
+            );
+        }
+        watched
+    };
+    // Async gaming completion wake: the worker signals this auto-reset
+    // event after every pass (same pattern as the input/render wakes), so
+    // queued categorical lines drain promptly instead of stranding behind
+    // an idle wait. Bursts coalesce; the interval deadline below still
+    // bounds the Settings-made external-change cadence. The closure owns a
+    // shared clone of the event: the detached worker may complete after
+    // owner teardown, and the handle must stay valid until the last clone
+    // drops (never a use-after-close on a reused HANDLE value). Shutdown
+    // also detaches the hint below.
+    let gaming_wake: Option<Arc<OwnedHandle>> = unsafe {
+        let raw = windows_sys::Win32::System::Threading::CreateEventW(
+            std::ptr::null(),
+            0,
+            0,
+            std::ptr::null(),
+        );
+        if raw.is_null() {
+            None
+        } else {
+            use std::os::windows::io::FromRawHandle as _;
+            Some(Arc::new(OwnedHandle::from_raw_handle(raw)))
+        }
+    };
+    if let (Some(monitor), Some(wake)) = (gaming.as_ref(), gaming_wake.as_ref()) {
+        let owned = Arc::clone(wake);
+        monitor.set_completion_notify(Some(Arc::new(move || unsafe {
+            windows_sys::Win32::System::Threading::SetEvent(owned.as_handle().as_raw_handle());
+        })));
+    } else if gaming.is_some() {
+        log_json_at(
+            &log_path,
+            serde_json::json!({"event":"gaming-wake","outcome":"degraded-interval-only"}),
+        );
+    }
+    // Windowless monitor fallback cadence (tray-less runs only): display
+    // broadcasts flag a monitor re-read through the owner windows, so only
+    // runs with no top-level window keep a bounded monitor poll.
+    let mut monitor_last = Instant::now();
+    // Trace-only pump-waits reporting throttle (trace runs only): elapsed
+    // time only, never a wait deadline. A due throttle emits on the next
+    // naturally occurring owner turn; quiet runs flush one final read-only
+    // summary at clean loop exit instead of waking for it.
+    let mut trace_last = Instant::now();
     // Trace-only health window (input ages, owner work, windrag transport):
     // plain local, never shared across threads. Each loop iteration lends
     // it to its `OwnerWorkGuard` for the turn; the pending end-of-run
     // summary flushes after the loop below. Untouched (and unborrowed)
     // when tracing is off, so default runs pay nothing here.
     let mut health = Health::new();
+    // Trace-only outer-wait return counts (outer product wait only;
+    // focus/proof `pump_wait` calls never touch these). `waits` counts
+    // outer returns, `ack_only` the ack-only subset that returns early
+    // before maintenance, and the reason hits count `WaitWake` flags
+    // per return (combinations possible: ack plus messages is common, so
+    // reason hits can exceed `waits`). Native wait returns only, never
+    // thread context switches. Counted only when tracing so default runs
+    // pay no counter work. Declared outside the loop closure so the
+    // clean-exit flush below can report the accumulated split even for
+    // runs that never saw a monitor event.
+    let mut ow_counts = OwnerWaitCounts::default();
     let result = (|| -> Result<()> {
         let fulls = monitor_fulls(&areas);
         // Mouse prevention is deferred until an actual active tick or resume:
@@ -754,15 +862,6 @@ pub(super) fn run_tile_loop(
         // window summaries log.
         let mut trace_last_turns: u64 = 0;
         let mut trace_last_offers: u64 = 0;
-        // Trace-only outer-wait return counts (outer product wait only;
-        // focus/proof `pump_wait` calls never touch these). `waits` counts
-        // outer returns, `ack_only` the ack-only subset that returns early
-        // before slow maintenance, and the reason hits count `WaitWake` flags
-        // per return (combinations possible: ack plus messages is common, so
-        // reason hits can exceed `waits`). Native wait returns only, never
-        // thread context switches. Counted only when tracing so default runs
-        // pay no counter work.
-        let mut ow_counts = OwnerWaitCounts::default();
         loop {
             if stop_requested(dir, me)? || tray.as_ref().is_some_and(|t| t.stop_requested()) {
                 return Ok(());
@@ -770,8 +869,85 @@ pub(super) fn run_tile_loop(
             if deadline.is_some_and(|end| Instant::now() >= end) {
                 return Ok(());
             }
-            let wait = pump_wait_with_intent(
-                TICK_POLL_MS,
+            // Same-thread pre-drain: hook callbacks, tray picks, and overlay
+            // clicks dispatched here stage work on this thread. Anything
+            // staged skips the block below with a zero-timeout collect, so
+            // no same-thread wake ever strands behind an idle wait. The
+            // blocking wait itself stays atomic (queue plus handles), so no
+            // cross-thread wake is lost either.
+            let pre_messages = drain_owner_messages();
+            let staged = pre_messages || hook_edges_pending() || tray_staged_pending(&state, &tray);
+            // Event-driven wait: infinite at healthy idle; otherwise the
+            // minimum over the armed deadlines (retries, restore, gaming,
+            // monitor fallback, bounded run, open-gesture sampling,
+            // degraded watch poll). Trace reporting never arms the wait:
+            // its throttle rides naturally occurring turns only. Extra
+            // handles carry the directory watches plus the async
+            // completion wakes.
+            let timeout = if staged {
+                0
+            } else {
+                owner_timeout_ms(
+                    Instant::now(),
+                    &OwnerDeadlines {
+                        restore_until: state.restore_wake.as_ref().map(|wake| wake.until),
+                        pending_until: state
+                            .render_bridge
+                            .as_ref()
+                            .and_then(|bridge| bridge.pending.as_ref())
+                            .map(|pending| pending.deadline),
+                        pager_maintenance_at: if state.pager_suppress_last.is_none() {
+                            state
+                                .pager_overlays
+                                .as_ref()
+                                .and_then(|overlays| overlays.maintenance_due_at())
+                        } else {
+                            None
+                        },
+                        snap_retry_at,
+                        pager_retry_at: state.pager_retry_at,
+                        pager_icon_retry_at: state.pager_icon_retry_at,
+                        gaming_due_at: gaming.as_ref().and_then(|m| m.interval_due_at()),
+                        monitor_due_at: if tray.is_none() {
+                            monitor_last.checked_add(Duration::from_secs(MONITOR_FALLBACK_SECS))
+                        } else {
+                            None
+                        },
+                        run_end: deadline,
+                        gesture_open: gesture_sampling_open(&state),
+                        degraded_poll: ledger_watch.is_none()
+                            || (state.settings_dir.is_some()
+                                && !settings_same_dir
+                                && settings_watch.is_none()),
+                    },
+                )
+            };
+            let mut extras = [std::ptr::null_mut(); 4];
+            let mut extra_count: usize = 0;
+            if let Some(watch) = ledger_watch.as_ref() {
+                extras[extra_count] = watch.raw();
+                extra_count += 1;
+            }
+            if let Some(watch) = settings_watch.as_ref() {
+                extras[extra_count] = watch.raw();
+                extra_count += 1;
+            }
+            if let Some(handle) = state
+                .pager_icon_service
+                .as_ref()
+                .and_then(|service| service.completion_handle())
+            {
+                extras[extra_count] = handle.as_handle().as_raw_handle();
+                extra_count += 1;
+            }
+            if extra_count < extras.len()
+                && let Some(wake) = gaming_wake.as_ref()
+            {
+                extras[extra_count] = wake.as_handle().as_raw_handle();
+                extra_count += 1;
+            }
+            let mut wait = pump_wait_with_intent(
+                timeout,
                 state
                     .input_bridge
                     .as_ref()
@@ -781,7 +957,58 @@ pub(super) fn run_tile_loop(
                     .as_ref()
                     .and_then(|bridge| bridge.handle.as_ref())
                     .map(|handle| handle.ack_wake()),
+                &extras[..extra_count],
             );
+            // Pre-drain traffic counts as a message wake: it was dispatched,
+            // so this turn does full owner work like the post-drain below.
+            wait.message |= pre_messages;
+            // Race-safe rearm BEFORE any file inspection: changes concurrent
+            // with the inspection below re-signal and return the next wait
+            // immediately instead of being lost. A broken watch degrades to
+            // the bounded poll (logged once per transition); setup retries
+            // on every degraded turn.
+            if let Some(watch) = ledger_watch.as_ref()
+                && !watch.rearm()
+            {
+                ledger_watch = None;
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"dir-watch","dir":"ledger","outcome":"degraded-poll","retry_ms": DEGRADED_POLL_MS}),
+                );
+            }
+            if let Some(watch) = settings_watch.as_ref()
+                && !watch.rearm()
+            {
+                settings_watch = None;
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"dir-watch","dir":"settings","outcome":"degraded-poll","retry_ms": DEGRADED_POLL_MS}),
+                );
+            }
+            if ledger_watch.is_none()
+                && let Some(watched) = (if settings_same_dir {
+                    DirWatch::watched(dir)
+                } else {
+                    DirWatch::watched_names(dir)
+                })
+            {
+                ledger_watch = Some(watched);
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"dir-watch","dir":"ledger","outcome":"armed"}),
+                );
+            }
+            if settings_watch.is_none()
+                && !settings_same_dir
+                && let Some(settings_dir) = state.settings_dir.clone()
+                && let Some(watched) = DirWatch::watched(&settings_dir)
+            {
+                settings_watch = Some(watched);
+                log_json_at(
+                    &log_path,
+                    serde_json::json!({"event":"dir-watch","dir":"settings","outcome":"armed"}),
+                );
+            }
             // Trace-only owner-work clock starts here: `busy_us` excludes the
             // wait above plus callbacks delivered inside it. Scoped to this
             // iteration so every `continue`/error path below still samples.
@@ -814,13 +1041,13 @@ pub(super) fn run_tile_loop(
             drain_render_failures(&mut state);
             poll_render_acks(&mut state, Instant::now());
             service_pending_drop(&mut state, me, &fulls, &areas);
-            // Ack-only turns (renderer ack with no input, message, timeout,
-            // or hook-callback event) loop here without reposting frames,
-            // reconciling, polling settings, or touching input: an ack alone
-            // never triggers owner work, so the ack wake cannot feed back
-            // into a post/ack/post loop. Hook events above force a full
-            // turn, so no input starves; the timeout preserves the timed
-            // follow/reassert cadence, and the pending finish above still
+            // Ack-only turns (renderer ack with no input, message,
+            // notification, timeout, or hook-callback event) loop here without
+            // reposting frames, reconciling, polling settings, or touching
+            // input: an ack alone never triggers owner work, so the ack wake
+            // cannot feed back into a post/ack/post loop. Hook events above
+            // force a full turn, so no input starves; armed deadlines wake
+            // with a genuine timeout, and the pending finish above still
             // completes with no added latency.
             if !(wait.full_turn() || woke) {
                 if state.trace {
@@ -829,7 +1056,24 @@ pub(super) fn run_tile_loop(
                 continue;
             }
             let now = Instant::now();
-            let slow = now.duration_since(slow_last).as_millis() >= u128::from(SLOW_POLL_MS);
+            // Monitor re-read rides the display-broadcast dirty flag plus
+            // the windowless fallback below; hook/intent/file wakes cannot
+            // change topology, so they skip the enumeration. Trace
+            // reporting rides no deadline of its own: past this point
+            // every iteration is a natural full turn (ack-only already
+            // continued above), so a due throttle emits on whatever work
+            // woke the loop, independent of any monitor check.
+            let monitor_check = take_monitor_dirty()
+                || (tray.is_none()
+                    && now.duration_since(monitor_last).as_secs() >= MONITOR_FALLBACK_SECS);
+            if monitor_check {
+                monitor_last = now;
+            }
+            let trace_emit =
+                state.trace && now.duration_since(trace_last).as_secs() >= TRACE_REPORT_SECS;
+            if trace_emit {
+                trace_last = now;
+            }
             let Intake {
                 woke: woke_out,
                 snap: snap_events,
@@ -873,9 +1117,9 @@ pub(super) fn run_tile_loop(
                 &mut areas,
                 &mut monitor,
                 &mut monitor_count,
-                &mut slow_last,
                 now,
-                slow,
+                monitor_check,
+                trace_emit,
                 woke,
                 &log_path,
                 &mut owner_work,
@@ -900,6 +1144,13 @@ pub(super) fn run_tile_loop(
             }
         }
     })();
+    // Detach the gaming completion hint now that the wait set is gone: a
+    // delayed worker pass must not signal the torn-down event. The closure
+    // owns a shared clone, so even a pass already past the detach still
+    // signals a live handle harmlessly (never a use-after-close).
+    if let Some(monitor) = gaming.as_ref() {
+        monitor.set_completion_notify(None);
+    }
     // Pending end-of-run health summary (trace-only, at most one marked
     // line per stream): retained activity below the window age still
     // reports instead of dying with the loop.
@@ -907,6 +1158,17 @@ pub(super) fn run_tile_loop(
         for line in health.take_end_of_run(Instant::now()) {
             log_json_at(&log_path, line);
         }
+        // Final accumulated outer-wait split (trace-only, read-only): the
+        // counters rode every natural turn above, so even a run that never
+        // saw a monitor event leaves one measurable line. Snapshot reads
+        // only (one diag-slot lock plus renderer atomics/ack seq); no
+        // drain, no wake, no actuation. Runs after stop/file-request and
+        // bounded-run exits alike, before any teardown waits.
+        let (input, render) = pump_waits_snapshots(&state);
+        log_json_at(
+            &log_path,
+            pump_waits_line(&ow_counts, input, render, Some("end-of-run")),
+        );
     }
     // Pending routine-frame activity flushes regardless of trace mode so
     // aggregated repaints never die with the loop.

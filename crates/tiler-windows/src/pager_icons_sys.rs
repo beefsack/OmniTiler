@@ -45,6 +45,7 @@
 //! claim is made that all work is bounded. No foreign query or wait ever
 //! runs on the tile loop or in the paint path.
 
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -417,6 +418,20 @@ fn lookup_icon(key: &WindowKey) -> LookupOutcome {
 struct WorkerShared {
     channel: Mutex<IconChannel>,
     wake: Condvar,
+    /// Owner completion hint: auto-reset event signaled after every pushed
+    /// result so an event-driven owner drains promptly instead of stranding
+    /// artwork behind an idle wait. `None` when event creation failed (the
+    /// owner keeps draining on its other wakes). Best-effort, never waited
+    /// on, never logged; bursts coalesce to one wake.
+    completed: Option<OwnedHandle>,
+}
+
+fn signal_completed(shared: &WorkerShared) {
+    if let Some(handle) = shared.completed.as_ref() {
+        unsafe {
+            windows_sys::Win32::System::Threading::SetEvent(handle.as_handle().as_raw_handle());
+        }
+    }
 }
 
 fn lock_shared(shared: &WorkerShared) -> std::sync::MutexGuard<'_, IconChannel> {
@@ -456,8 +471,12 @@ fn worker_loop(shared: Arc<WorkerShared>, stop: Arc<AtomicBool>) {
                     generation,
                 };
                 // A stale (pre-suppression) result is refused at push and
-                // simply dropped here.
+                // simply dropped here. Every finished lookup (hit or miss)
+                // signals the owner completion hint so results never strand
+                // behind an idle wait; the owner drains and filters by live
+                // membership.
                 lock_shared(&shared).push_result(result);
+                signal_completed(&shared);
             }
             None => {
                 // Spurious wake with an empty queue: loop back to the wait.
@@ -481,9 +500,23 @@ impl PagerIconService {
     /// host retries every five seconds and the pager stays icon-less).
     #[must_use]
     pub fn try_new() -> Option<Self> {
+        let completed = unsafe {
+            let raw = windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                0,
+                0,
+                std::ptr::null(),
+            );
+            if raw.is_null() {
+                None
+            } else {
+                Some(OwnedHandle::from_raw_handle(raw))
+            }
+        };
         let shared = Arc::new(WorkerShared {
             channel: Mutex::new(IconChannel::new()),
             wake: Condvar::new(),
+            completed,
         });
         let stop = Arc::new(AtomicBool::new(false));
         let worker_shared = Arc::clone(&shared);
@@ -535,6 +568,13 @@ impl PagerIconService {
     /// the worker stays asleep until the next request.
     pub fn clear(&self) {
         lock_shared(&self.shared).clear();
+    }
+
+    /// Borrow the owner completion hint signaled after every finished
+    /// lookup, if event creation succeeded. The owner includes it in its
+    /// event-driven wait set alongside the input and render wakes.
+    pub fn completion_handle(&self) -> Option<&OwnedHandle> {
+        self.shared.completed.as_ref()
     }
 }
 

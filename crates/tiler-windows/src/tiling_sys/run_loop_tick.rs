@@ -3,8 +3,9 @@ use super::*;
 use super::owner_work::OwnerWorkGuard;
 use super::pager_host::poll_pager_select;
 
-// Active-tick phases for the tile loop: slow poll, CLI wakes, the idle gate,
-// suspend/resume, gesture settle and dispatch, plus the end-of-turn commit.
+// Active-tick phases for the tile loop: monitor/taskbar refresh, CLI wakes,
+// the idle gate, suspend/resume, gesture settle and dispatch, plus the
+// end-of-turn commit.
 // Outer-loop `continue`s become `TickFlow` returns; nested loop control flow
 // below is untouched.
 pub(super) enum TickFlow {
@@ -23,9 +24,9 @@ pub(super) fn run_active_tick(
     areas: &mut Vec<MonitorArea>,
     monitor: &mut MonitorArea,
     monitor_count: &mut usize,
-    slow_last: &mut Instant,
     now: Instant,
-    slow: bool,
+    monitor_check: bool,
+    trace_emit: bool,
     mut woke: bool,
     log_path: &Path,
     owner_work: &mut OwnerWorkGuard<'_>,
@@ -45,8 +46,11 @@ pub(super) fn run_active_tick(
     history_events: Vec<QueuedWorkspaceHistoryIntent>,
     tray: &mut Option<crate::tray_sys::TrayOwner>,
 ) -> Result<TickFlow> {
-    if slow {
-        *slow_last = now;
+    // Monitor re-read on the display-broadcast dirty flag and on the
+    // windowless fallback cadence: a changed topology relocates Engine
+    // sessions exactly like before, only the trigger is event-driven
+    // instead of a fixed 2s poll.
+    if monitor_check {
         let fresh = all_monitors()?;
         let devices: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
         let fresh_devices: Vec<String> = fresh.iter().map(|a| a.device.clone()).collect();
@@ -104,81 +108,36 @@ pub(super) fn run_active_tick(
             }
             woke = true;
         }
-        // Trace-only pump-wait summary at the existing slow cadence:
-        // one cumulative line per slow tick, no new timer or events.
-        // Reads only (diag snapshot plus renderer atomics/ack seq);
-        // never arms owner work and never signals a pump wake, so the
-        // summary cannot induce a wake. Owner counts cover outer
-        // product waits only (focus/proof nested waits excluded by
-        // construction); ack-only turns counted in `owner_ack_only`
-        // return before this block, so this line rides full turns.
-        // Input `turns` counts completed iterations and equals
-        // `input_waits`; stop before the wait increments neither;
-        // `*_timeout` fields count genuine `WAIT_TIMEOUT` (258)
-        // expiries only while `*_failed` counts `WAIT_FAILED` /
-        // unrecognized codes separately (a failed wait returns
-        // immediately; not proven delayed). Reason splits count native
-        // wait returns only, never context switches; render acks ride
-        // `render_acks` (`ack_seq`), never the wait counts. The input
-        // struct arrives under one diag-slot lock (one coherent
-        // snapshot); the renderer tuple is four independent atomic
-        // loads, so a concurrent bump can skew the sum by one, and
-        // cross-pump coherence is not claimed. Idle diffs take
-        // start/end lines from one traced run; stop short-circuits
-        // (owner return, input early return, renderer counted stop
-        // wait) are the only lifecycle exclusions.
-        if state.trace {
-            let (in_turns, in_waits, in_work, in_msg, in_timeout, in_failed) =
-                match state.input_bridge.as_ref() {
-                    Some(bridge) => {
-                        let diag = bridge.channels.diag.snapshot();
-                        (
-                            diag.turns,
-                            diag.waits,
-                            diag.wait_work,
-                            diag.wait_msg,
-                            diag.wait_timeout,
-                            diag.wait_failed,
-                        )
-                    }
-                    None => (0, 0, 0, 0, 0, 0),
-                };
-            let (re_waits, re_work, re_msg, re_timeout, re_failed, re_acks) =
-                match state.render_bridge.as_ref() {
-                    Some(bridge) => {
-                        let (waits, work, msg, timeout, failed) = bridge.channels.wait_counts();
-                        (waits, work, msg, timeout, failed, bridge.channels.ack_seq())
-                    }
-                    None => (0, 0, 0, 0, 0, 0),
-                };
-            log_json_at(
-                log_path,
-                serde_json::json!({
-                    "event": "pump-waits",
-                    "owner_waits": ow_counts.waits,
-                    "owner_ack_only": ow_counts.ack_only,
-                    "owner_input": ow_counts.input,
-                    "owner_ack": ow_counts.ack,
-                    "owner_msg": ow_counts.msg,
-                    "owner_timeout": ow_counts.timeout,
-                    "owner_failed": ow_counts.failed,
-                    "input_turns": in_turns,
-                    "input_waits": in_waits,
-                    "input_work": in_work,
-                    "input_msg": in_msg,
-                    "input_timeout": in_timeout,
-                    "input_failed": in_failed,
-                    "render_waits": re_waits,
-                    "render_work": re_work,
-                    "render_msg": re_msg,
-                    "render_timeout": re_timeout,
-                    "render_failed": re_failed,
-                    "render_acks": re_acks,
-                    "scope": "outer-only-plus-native-waits",
-                    "excludes": "focus-proof-nested-waits,stop-short-circuit",
-                }),
-            );
-        }
+    }
+    // Trace-only pump-waits summary on the elapsed throttle, riding this
+    // existing natural turn only (never a diagnostic wake, never tied to
+    // a monitor check): one cumulative read-only line per due turn. This
+    // tick runs only on full turns (ack-only returns continue before it),
+    // so the throttle never reconciles or wakes on its own. Reads only
+    // (diag snapshot plus renderer atomics/ack seq); never arms owner
+    // work and never signals a pump wake, so the summary cannot induce a
+    // wake. Owner counts cover outer product waits only (focus/proof
+    // nested waits excluded by construction); ack-only turns counted in
+    // `owner_ack_only` return before this tick, so this line rides full
+    // turns. Input `turns` counts completed iterations and equals
+    // `input_waits`; stop before the wait increments neither; `*_timeout`
+    // fields count genuine `WAIT_TIMEOUT` (258) expiries only while
+    // `*_failed` counts `WAIT_FAILED` / unrecognized codes separately (a
+    // failed wait returns immediately; not proven delayed). Reason splits
+    // count native wait returns only, never context switches; render acks
+    // ride `render_acks` (`ack_seq`), never the wait counts. The input
+    // struct arrives under one diag-slot lock (one coherent snapshot);
+    // the renderer tuple is four independent atomic loads, so a
+    // concurrent bump can skew the sum by one, and cross-pump coherence
+    // is not claimed. Start/end diffs take both lines from one traced
+    // run; stop short-circuits (owner return, input early return,
+    // renderer counted stop wait) are the only lifecycle exclusions; a
+    // quiet run additionally flushes one final `end-of-run` line at clean
+    // loop exit. The `owner_notify` hit counts directory-watch and
+    // async-completion wakes.
+    if trace_emit {
+        let (input, render) = pump_waits_snapshots(state);
+        log_json_at(log_path, pump_waits_line(ow_counts, input, render, None));
     }
     // Exact-owner out-of-hook select wakes the loop even with no other
     // event; the poll itself consumes once and dispatches through the
@@ -188,10 +147,11 @@ pub(super) fn run_active_tick(
         woke = true;
     }
     // Bare-chord edge wake: GetAsyncKeyState levels are sampled here,
-    // before the idle skip, so a Win+Shift press/release with no
-    // WinEvent wakes the visual refresh on the 100ms pump cadence
-    // instead of waiting for the 2s slow poll. Steady hold stays
-    // quiet; the suspend/fullscreen path below still gates the
+    // before the idle skip, so a Win+Shift press/release with no WinEvent
+    // wakes the visual refresh on the transition's own wake (input-pump
+    // chord signal on the product path, hook-callback messages on the
+    // legacy path) instead of waiting for an unrelated event. Steady hold
+    // stays quiet; the suspend/fullscreen path below still gates the
     // refresh, and tiling reconciliation keeps its normal pacing
     // (only transition ticks reconcile). No hook, no new framework.
     {
@@ -216,37 +176,32 @@ pub(super) fn run_active_tick(
             state.restore_wake = None;
         }
     }
-    // An open managed gesture wakes the 100ms pump for the
-    // drop-preview track: pointer moves coalesce into one Engine
-    // preview sample per tick on both the native frame-following
-    // and the stationary Win+Left producers. The refresh itself
-    // gates resize/unknown/invalid holds; the wake only needs START
-    // capture.
-    if !woke
-        && state
-            .active
-            .iter()
-            .any(|hwnd| state.managed.contains(hwnd) && state.gesture_before.contains_key(hwnd))
-    {
+    // An open managed gesture holds the loop for the drop-preview track:
+    // pointer moves coalesce into one Engine preview sample per tick on
+    // both the native frame-following and the stationary Win+Left
+    // producers, driven by the armed gesture-sampling deadline (pointer
+    // motion itself produces no owner wake). The refresh itself gates
+    // resize/unknown/invalid holds; the wake only needs START capture.
+    if !woke && gesture_sampling_open(state) {
         woke = true;
     }
-    // Trace-only owner-work gate: quiet short-poll iterations drop the
+    // Trace-only owner-work gate: quiet event-less iterations drop the
     // disabled guard silently above via `continue`. Active wakes arm
     // the single sample; RAII then records suspend/held/error exits.
-    // Due window summaries also flush on the idle path below (no new
+    // Due health summaries also flush on the idle path below (no new
     // wake: the check rides this existing turn, and quiet windows
     // with no activity emit nothing).
-    if state.trace && (woke || slow) {
+    if state.trace && (woke || monitor_check) {
         let gesture_held = state.active.iter().any(|hwnd| state.managed.contains(hwnd));
         owner_work.arm(ow_batch_total, ow_wakes, ow_starts, ow_ends, gesture_held);
     }
     // Per-turn maintenance-quiet flag for the trailing health
     // flush at the end of the turn (set on the quiet branch).
     let mut maintenance_quiet = false;
-    if state.trace && !(woke || slow) {
+    if state.trace && !(woke || monitor_check) {
         owner_work.finish_turn(false);
     }
-    if !(woke || slow) {
+    if !(woke || monitor_check) {
         return Ok(TickFlow::Idle);
     }
     let fulls = monitor_fulls(areas);
@@ -631,8 +586,8 @@ pub(super) fn run_active_tick(
                 Some("gesture"),
             );
         }
-        // Drop-preview track on the 100ms pump while held: fresh
-        // observation plus the shared Engine resolver per moved
+        // Drop-preview track on the armed gesture-sampling deadline while
+        // held: fresh observation plus the shared Engine resolver per moved
         // pointer, on both producers. No focus, no geometry writes.
         refresh_drag_preview(state, me, &fulls, areas);
         // Due routine-frame summaries flush on this existing turn so

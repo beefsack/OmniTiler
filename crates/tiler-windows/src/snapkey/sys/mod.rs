@@ -104,6 +104,25 @@ pub fn shared_windrag_esc_seq() -> u64 {
     global_windrag_esc_clock().load()
 }
 
+/// Pump-thread sample of the tracked Win+Shift chord level: `(win, shift)`
+/// from the classifier's callback-observed key state on this thread. The
+/// input pump samples this between message drains to wake the owner on a
+/// bare-chord transition that queues no batch (modifier-only traffic never
+/// reaches an outbox). Read-only, never waits, never touches owner state.
+/// `(false, false)` when the hook state is absent, so a hookless pump
+/// samples a steady level and never signals.
+pub fn chord_levels() -> (bool, bool) {
+    SNAP.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| {
+                let (_, _, shift) = st.machine.tracked_modifiers();
+                (st.machine.win_held(), shift)
+            })
+            .unwrap_or((false, false))
+    })
+}
+
 /// Owner publish: cached origin map for the callback. Cheap clone of the
 /// last observation's managed set; exactness stays with the owner's
 /// per-intent recheck against fresh observation.
@@ -1184,6 +1203,23 @@ pub fn test_keyboard_origins() -> HashMap<u64, SnapOrigin> {
     })
 }
 
+/// Pump-thread drain of this thread's hook-state Esc-cancel edges (no
+/// hooks: `(false, false)`). The input pump calls this between message
+/// drains to wake the owner once per edge; the product owner latches
+/// through the process-global edges, so consuming here steals nothing.
+/// Legacy same-thread owners never share this thread's state.
+pub fn take_pump_esc_edges() -> (bool, bool) {
+    SNAP.with(|s| {
+        let mut borrow = s.borrow_mut();
+        let Some(st) = borrow.as_mut() else {
+            return (false, false);
+        };
+        let edges = (st.esc_edge, st.windrag_esc_edge);
+        st.esc_edge = false;
+        st.windrag_esc_edge = false;
+        edges
+    })
+}
 /// Test-only hook-state installer (no `SetWindowsHookExW`, no native
 /// effects): mirrors [`install`](Self::install)'s TLS init so step tests
 /// drive the production apply/drain logic without hooks.

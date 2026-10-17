@@ -94,6 +94,7 @@ use self::diag::{
 use self::diag::{
     clear_diag_classes, clear_diag_pids, diag_class_cached, inject_diag_class, inject_diag_pid,
 };
+use self::dir_watch::DirWatch;
 use self::directional_cross::run_directional_cross;
 use self::directional_resolution::{
     chord_output, directional_arrival_verified, directional_live, directional_outputs_from_areas,
@@ -169,12 +170,14 @@ use self::migration_visibility::{flush_migrate_hide_summary, flush_migrate_revea
 use self::minmax::{FreshHint, QueryCost, fixed_birth_for_slotless, hidden_hint_for, min_hint_for};
 pub(crate) use self::monitors::ensure_pm_v2;
 use self::monitors::{MonitorArea, all_monitors, monitor_fulls};
+pub(crate) use self::monitors::{mark_monitor_dirty, take_monitor_dirty};
 use self::observation::{cursor_pos, enumerate_hwnds};
 #[cfg(test)]
 use self::observe::WaitWake;
 use self::observe::{
-    HookEvent, ObservedWindow, OwnerWaitCounts, class_of, foreground_lifetime, hook_queue,
-    observe_window, pump_wait, pump_wait_with_intent, verify_proof_owned, window_identity,
+    HookEvent, InputWaitSplit, ObservedWindow, OwnerWaitCounts, RenderWaitSplit, class_of,
+    drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue, observe_window,
+    pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned, window_identity,
     winevent_proc,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
@@ -247,7 +250,10 @@ use self::rows::{
 use self::run_loop::run_tile_loop;
 use self::run_loop_intake::{Intake, pump_intake};
 use self::run_loop_tick::{TickFlow, run_active_tick};
-use self::run_loop_wait::drain_hook_edges;
+use self::run_loop_wait::{
+    DEGRADED_POLL_MS, MONITOR_FALLBACK_SECS, OwnerDeadlines, TRACE_REPORT_SECS, drain_hook_edges,
+    gesture_sampling_open, owner_timeout_ms, pump_waits_snapshots, tray_staged_pending,
+};
 use self::selection::remember_select_departure;
 use self::selection::workspace_do_select;
 use self::send_follow::workspace_send_follow;
@@ -357,7 +363,6 @@ fn err(msg: impl Into<String>) -> DynError {
 }
 
 const TICK_POLL_MS: u32 = 100;
-const SLOW_POLL_MS: u64 = 2000;
 // Pumped focus-settle bound: re-reads of `GetForegroundWindow` after an
 // accepted setter, 50 ms pumped each so the LL-hook message pump stays live.
 // No foreign wait: `pump_wait` only services the owner's own queue.
@@ -567,13 +572,13 @@ struct TileLoop {
     /// forever, so a failed registration retries promptly without
     /// busy-looping pumps.
     pager_retry_at: Option<Instant>,
-    /// Slow secondary-taskbar enumeration deadline plus the last topology
-    /// fingerprint. The primary bar is re-read every pump; secondaries only
-    /// here (they only feed refusal logging, never positions).
-    pager_revalidate_at: Instant,
+    /// Last monitor-topology fingerprint for the secondary-taskbar
+    /// rediscovery gate. The primary bar is re-read every pump; secondaries
+    /// only revalidate on the native rediscovery broadcast or a topology
+    /// change (they only feed refusal logging, never positions).
     pager_areas_fp: u64,
-    /// Cached primary taskbar facts from the last pump (fresh, <=100ms) and
-    /// cached secondaries from the last slow revalidate.
+    /// Cached primary taskbar facts from the last pump (fresh per wake) and
+    /// cached secondaries from the last event-driven revalidate.
     pager_primary: Option<crate::pager::TaskbarFacts>,
     pager_secondaries: Vec<crate::pager::TaskbarFacts>,
     /// Live identity-verified pager frames per managed member key, refreshed
@@ -1096,6 +1101,7 @@ mod gesture_tick;
 
 mod settings;
 
+mod dir_watch;
 mod run_loop;
 mod run_loop_intake;
 mod run_loop_tick;
@@ -1218,6 +1224,10 @@ mod windrag_press_focus_tests;
 #[cfg(test)]
 #[path = "tests_intent_wake.rs"]
 mod intent_wake_tests;
+
+#[cfg(test)]
+#[path = "tests_owner_wait.rs"]
+mod owner_wait_tests;
 
 #[cfg(test)]
 #[path = "tests_launch.rs"]

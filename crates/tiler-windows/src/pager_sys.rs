@@ -340,7 +340,9 @@ unsafe extern "system" fn pager_wnd_proc(
         // Geometry/DPI calibration may have moved the taskbar: hide this
         // overlay at once (app-local, no foreign interaction) and let the
         // loop thread revalidate from fresh facts before showing again, so
-        // no stale pixels survive the change.
+        // no stale pixels survive the change. Also flags one monitor
+        // re-read there (topology may have moved with the calibration).
+        crate::tiling_sys::mark_monitor_dirty();
         want_stale_hide();
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
@@ -665,6 +667,33 @@ impl PagerOverlays {
         self.retry_at = Some(now + Duration::from_secs(RETRY_SECS));
     }
 
+    /// Next pager maintenance due time for the owner's event-driven wait,
+    /// or `None` when nothing is outstanding. Covers both the
+    /// creation-retry backoff (`retry_at`, including partial failures with
+    /// existing windows and total failures with none) and the topmost
+    /// reassert (`last_zassert` plus the interval, only with overlay
+    /// windows to reassert). Taking the maximum prevents a past-due
+    /// zassert from spinning zero-timeout turns while a creation backoff
+    /// holds `sync` in early-return: after the backoff the combined
+    /// deadline wakes the retry, and the reassert follows on that same
+    /// turn, preserving the 2s z-order contract after backoff.
+    pub fn maintenance_due_at(&self) -> Option<Instant> {
+        let zassert = if self.windows.is_empty() {
+            None
+        } else {
+            Some(
+                self.last_zassert
+                    .map(|at| at + ZASSERT_INTERVAL)
+                    .unwrap_or_else(Instant::now),
+            )
+        };
+        match (zassert, self.retry_at) {
+            (None, None) => None,
+            (Some(at), None) | (None, Some(at)) => Some(at),
+            (Some(first), Some(second)) => Some(first.max(second)),
+        }
+    }
+
     /// Present one pump's frames: create/move/show served outputs, destroy
     /// departed ones, repaint on frame change, and reassert topmost only on
     /// the safe cadence. Creation failures retry on a fixed delay and
@@ -973,5 +1002,50 @@ mod tests {
             assert!(!overlays.retry_due(now));
             assert!(overlays.retry_due(now + Duration::from_secs(5)));
         }
+    }
+
+    #[test]
+    fn maintenance_due_combines_retry_and_zassert_without_spin() {
+        // No overlay windows: no deadline (hidden/suppressed pager never
+        // polls for z-order recovery).
+        let overlays = empty_overlays();
+        assert!(overlays.maintenance_due_at().is_none());
+        // Served windows with no reassert yet: due immediately so the
+        // first sync establishes the cadence.
+        let mut overlays = empty_overlays();
+        overlays
+            .windows
+            .insert("out".to_owned(), (12345 as HWND, 0));
+        let due = overlays
+            .maintenance_due_at()
+            .expect("served strips arm a due time");
+        assert!(due <= Instant::now(), "first reassert is due at once");
+        // After a reassert the next due time is one interval out.
+        let now = Instant::now();
+        overlays.last_zassert = Some(now);
+        assert_eq!(
+            overlays.maintenance_due_at(),
+            Some(now + Duration::from_secs(2))
+        );
+        // Failed creation arms the backoff even with no zassert arm: the
+        // retry still wakes the owner (no strand while windows are absent).
+        let mut failed = empty_overlays();
+        failed.retry_at = Some(now + Duration::from_secs(5));
+        assert_eq!(
+            failed.maintenance_due_at(),
+            Some(now + Duration::from_secs(5))
+        );
+        // Past-due zassert under an active backoff: the backoff wins (no
+        // zero-timeout spin while `sync` early-returns), and the reassert
+        // follows on the retry turn.
+        let mut backed = empty_overlays();
+        backed.windows.insert("out".to_owned(), (12345 as HWND, 0));
+        backed.last_zassert = Some(now - Duration::from_secs(60));
+        backed.retry_at = Some(now + Duration::from_secs(5));
+        assert_eq!(
+            backed.maintenance_due_at(),
+            Some(now + Duration::from_secs(5)),
+            "backoff suppresses the past-due zassert"
+        );
     }
 }

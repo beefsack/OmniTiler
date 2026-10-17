@@ -34,6 +34,28 @@ pub(super) struct MonitorArea {
     pub(super) full: Rect,
 }
 
+/// Display-topology dirty flag, set by the owner-window procedures on
+/// `WM_DISPLAYCHANGE` / `WM_DPICHANGED` / `WM_SETTINGCHANGE` broadcasts
+/// and consumed once by the owner loop to re-read monitors. Sticky until
+/// consumed, so coalesced broadcasts still refresh exactly once (same
+/// pattern as the pager rediscover and accent flags). Topology changes
+/// always broadcast; with no owner window to receive them (tray-less runs)
+/// the windowless fallback deadline covers instead.
+static MONITOR_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark a possibly-changed display topology (window-procedure context:
+/// never waits, never logs).
+pub(crate) fn mark_monitor_dirty() {
+    MONITOR_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Take a pending topology change for one monitor re-read. Sticky bits
+/// set after the take stay pending for the next turn; quiet turns never
+/// enumerate.
+pub(crate) fn take_monitor_dirty() -> bool {
+    MONITOR_DIRTY.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
 unsafe extern "system" fn monitor_enum(
     monitor: HMONITOR,
     _hdc: HDC,

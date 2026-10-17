@@ -1190,8 +1190,23 @@ pub mod sys {
             held.terminate()
                 .map_err(|e| err(format!("error: terminate {e}")))?;
         } else {
-            std::fs::write(dir.join(STOP_REQUEST_FILE), &record.owner.process_creation)
-                .map_err(|e| err(format!("error: stop request write: {e}")))?;
+            // Atomic stop publish (same-directory temp plus rename-replace,
+            // overwriting any pending stop): the ledger watch carries
+            // file-name events only, so the signaled rename must expose
+            // complete content — a direct write could wake the owner on the
+            // create before the body lands and lose the stop. Overwrite
+            // semantics preserved: repeated stops replace, never refuse.
+            match crate::storage::publish_replace(
+                &dir,
+                STOP_REQUEST_FILE,
+                record.owner.process_creation.as_bytes(),
+                "stop",
+            ) {
+                Ok(()) => {}
+                Err(e) => {
+                    return Err(err(format!("error: stop request write: {e}")));
+                }
+            }
         }
         let exited = held.wait(STOP_WAIT_MS);
         if !exited {

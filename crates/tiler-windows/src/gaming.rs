@@ -460,6 +460,11 @@ type ThreadBody = Box<dyn FnOnce() + Send + 'static>;
 pub type SpawnerFn =
     Arc<dyn Fn(ThreadBody) -> std::io::Result<std::thread::JoinHandle<()>> + Send + Sync>;
 
+/// Owner completion hint: invoked once per finished worker pass (or
+/// synchronous degradation) after the categorical lines queue. Never
+/// blocks, never logs; a missing hint simply leaves the owner to its
+/// interval deadline.
+pub type CompletionNotify = Arc<dyn Fn() + Send + Sync>;
 /// Bound for queued categorical log lines drained on the owner pump (eight
 /// passes at two lines each). Overflow drops the oldest; the cache itself
 /// always holds the latest pass.
@@ -485,6 +490,11 @@ struct MonitorInner {
     /// while idle, so slow probes restart the cadence instead of requeueing.
     last_attempt: Mutex<Option<Instant>>,
     last_revision: Mutex<Option<u64>>,
+    /// Optional owner wake hint invoked (never blocking, never logging)
+    /// after every completed or degraded pass so an event-driven owner
+    /// drains promptly instead of stranding results behind an idle wait.
+    /// Plain function object: the worker never waits on the owner.
+    notify: Mutex<Option<CompletionNotify>>,
     /// Completed-pass categorical lines for the owner pump to drain and
     /// write (single-writer log integrity: the worker never writes the log).
     logs: Mutex<std::collections::VecDeque<serde_json::Value>>,
@@ -521,8 +531,41 @@ impl GamingMonitor {
                 last_attempt: Mutex::new(None),
                 last_revision: Mutex::new(None),
                 logs: Mutex::new(std::collections::VecDeque::new()),
+                notify: Mutex::new(None),
             }),
         }
+    }
+
+    /// Install the owner completion hint invoked after every finished pass
+    /// (or synchronous degradation). Replaces any previous hint; `None`
+    /// clears it. The hint must never block or log.
+    pub fn set_completion_notify(&self, notify: Option<CompletionNotify>) {
+        *self
+            .inner
+            .notify
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = notify;
+    }
+
+    /// Next interval re-read due time for an event-driven owner's wait
+    /// deadline, or `None` while a pass runs (the completion hint wakes
+    /// the owner instead, so a running pass never arms a deadline that
+    /// would busy-loop on attempt-gating). Attempt-gated like
+    /// [`GamingMonitor::maybe_refresh`]: a slow probe restarts the
+    /// cadence on completion instead of requeueing.
+    #[must_use]
+    pub fn interval_due_at(&self) -> Option<Instant> {
+        if self.inner.in_flight.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(
+            self.inner
+                .last_attempt
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .map(|at| at + REFRESH_INTERVAL)
+                .unwrap_or_else(Instant::now),
+        )
     }
 
     /// Current cached facts (non-blocking brief lock; the worker holds it
@@ -667,6 +710,23 @@ fn spawn_pass(inner: &Arc<MonitorInner>, reason: RefreshReason) {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = None;
         publish_unknown(&failed, reason, "spawn-failed");
+        // Synchronous degradation still wakes an event-driven owner so
+        // the honest line drains promptly.
+        notify_owner(&failed);
+    }
+}
+
+/// Invoke the owner completion hint, if one is installed. Panic-isolated:
+/// a misbehaving hint must never take down the detached worker (which
+/// would strand `in_flight` set and silence all future deadlines).
+fn notify_owner(inner: &MonitorInner) {
+    let notify = inner
+        .notify
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    if let Some(notify) = notify {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (notify)()));
     }
 }
 
@@ -746,6 +806,11 @@ fn worker_loop(worker: &Arc<MonitorInner>, reason: RefreshReason) {
             .unwrap_or(current);
         spawn_pass(worker, rerun);
     }
+    // Completion (or the tail rerun's own completion) wakes an
+    // event-driven owner after `in_flight` settles, so queued lines never
+    // strand behind an idle wait. A tail rerun notifies again on its own
+    // completion; draining works regardless of the flag.
+    notify_owner(worker);
 }
 
 #[cfg(test)]
@@ -1310,6 +1375,59 @@ mod tests {
         assert_eq!(lines[0]["outcome"], "spawn-failed");
         assert_eq!(lines[0]["state"], "unknown");
         assert_eq!(lines[0]["reason"], "startup");
+    }
+
+    #[test]
+    fn completion_hint_fires_after_pass_and_on_spawn_failure() {
+        // Event-driven owners sleep behind an idle wait: every finished
+        // pass (and every synchronous degradation) invokes the hint once
+        // queued lines are ready to drain, so nothing strands.
+        let fired = Arc::new(AtomicBool::new(false));
+        let (monitor, _) = scripted_monitor(vec![GamingSnapshot::unknown()]);
+        monitor.set_completion_notify(Some(Arc::new({
+            let fired = Arc::clone(&fired);
+            move || fired.store(true, Ordering::SeqCst)
+        })));
+        monitor.request_refresh(RefreshReason::Startup);
+        wait_idle(&monitor);
+        assert!(fired.load(Ordering::SeqCst), "pass completion hints");
+        assert_eq!(monitor.drain_logs().len(), 2);
+        // Synchronous spawn failure hints too (the honest line above must
+        // also drain promptly).
+        let failed = Arc::new(AtomicBool::new(false));
+        let probe: ProbeFn = Arc::new(GamingSnapshot::unknown);
+        let spawner: SpawnerFn = Arc::new(|_| Err(std::io::Error::other("thread cap")));
+        let degraded = GamingMonitor::with_spawner(probe, spawner);
+        degraded.set_completion_notify(Some(Arc::new({
+            let failed = Arc::clone(&failed);
+            move || failed.store(true, Ordering::SeqCst)
+        })));
+        degraded.request_refresh(RefreshReason::Recheck);
+        assert!(failed.load(Ordering::SeqCst), "degradation hints");
+        assert_eq!(degraded.drain_logs().len(), 1);
+    }
+
+    #[test]
+    fn interval_due_tracks_attempt_and_suppresses_while_running() {
+        // The owner deadline input: no deadline while a pass runs (the
+        // completion hint wakes instead, so attempt-gating can never
+        // busy-loop); otherwise the last attempt plus the interval.
+        let (monitor, _, entered, release) = gated_monitor();
+        monitor.request_refresh(RefreshReason::Startup);
+        wait_flag(&entered);
+        assert!(
+            monitor.interval_due_at().is_none(),
+            "running pass arms no deadline"
+        );
+        release.store(true, Ordering::SeqCst);
+        wait_idle(&monitor);
+        let due = monitor
+            .interval_due_at()
+            .expect("idle pass arms a due time");
+        assert!(
+            due > Instant::now() + REFRESH_INTERVAL - Duration::from_secs(10),
+            "due is one interval past the completed attempt"
+        );
     }
 
     #[test]

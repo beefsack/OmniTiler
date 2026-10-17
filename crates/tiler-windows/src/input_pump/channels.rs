@@ -41,6 +41,13 @@ pub struct InputChannels {
     /// when creation failed (spawn refuses cleanly).
     #[cfg(windows)]
     pub work_wake: Option<OwnedHandle>,
+    /// Stalled-retry flag (owner sets, pump consumes): true while the owner
+    /// holds a refused snapshot retry or outstanding sender payloads. The
+    /// pump signals the intent wake exactly once per successful inbox drain
+    /// while set, so the retry re-offers promptly instead of waiting for an
+    /// unrelated owner wake. No feedback loop: the flag clears on signal
+    /// and re-arms only if the retry turn still finds no room.
+    pub inbox_stalled: Arc<AtomicBool>,
 }
 
 /// Create the owner-intent wake: auto-reset, initially non-signaled.
@@ -74,6 +81,7 @@ impl InputChannels {
             applied_policy_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             acked_stale: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             stop_flag: Arc::new(AtomicBool::new(false)),
+            inbox_stalled: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             intent_wake: create_intent_event().ok(),
             #[cfg(windows)]

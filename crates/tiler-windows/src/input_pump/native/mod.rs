@@ -534,6 +534,13 @@ pub(crate) struct PumpCore<B: NativeHooks> {
     applied: Option<SharedSnapshot>,
     /// Last mouse gate pushed (snapshot gate plus keyboard presence).
     last_mouse_gate: Option<bool>,
+    /// Last sampled Win+Shift chord level for the transition-only owner
+    /// wake. `None` until the first sample with the keyboard hook
+    /// installed, so install itself never wakes. Only genuine
+    /// transitions signal (steady hold and release stay quiet); the owner
+    /// still samples the physical levels itself on the wake, so this is
+    /// purely a wake hint with no policy content.
+    last_chord: Option<bool>,
     pending_snap: Option<TaggedBatch<QueuedSnapEvent>>,
     pending_windrag: Option<TaggedBatch<WinDragEdge>>,
     diag: InputDiag,
@@ -574,6 +581,7 @@ impl<B: NativeHooks> PumpCore<B> {
             latest: None,
             applied: None,
             last_mouse_gate: None,
+            last_chord: None,
             pending_snap: None,
             pending_windrag: None,
             diag: InputDiag::default(),
@@ -810,6 +818,48 @@ impl<B: NativeHooks> PumpCore<B> {
         }
     }
 
+    /// Sample the tracked Win+Shift chord level and signal the owner
+    /// wake on a genuine transition only. Runs on the pump thread
+    /// between message drains (never in the hook callback, which stays
+    /// non-blocking): bare modifier traffic queues no batch, so without
+    /// this the owner would sleep through a chord press/release. Steady
+    /// levels stay quiet; hookless sampling baselines silently. The owner
+    /// still samples the physical levels itself on the wake, so this is
+    /// purely a wake hint with no policy content.
+    fn sample_chord_edge(&mut self) {
+        if self.keyboard_hook.is_none() {
+            return;
+        }
+        let (win, shift) = crate::snapkey::sys::chord_levels();
+        let chord = tiler_core::visual::group_underlay_chord_held(win, shift);
+        match self.last_chord {
+            None => self.last_chord = Some(chord),
+            Some(last) if last != chord => {
+                self.last_chord = Some(chord);
+                self.channels.notify_intent();
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Drain the hook-state Esc-cancel edges on this thread and signal the
+    /// owner wake when either was set. The Esc downs queue no batch, yet an
+    /// open gesture must latch and hide its preview promptly (previously
+    /// the fixed poll delivered this; an event-driven owner would otherwise
+    /// wait for the END). Consumes only this thread's edges: the product
+    /// owner latches through the process-global edges, so this steals
+    /// nothing, and one edge fires exactly one wake instead of signaling
+    /// every step while the global stays set pending the owner drain.
+    fn sample_cancel_edge(&mut self) {
+        if self.keyboard_hook.is_none() {
+            return;
+        }
+        let (esc, windrag) = crate::snapkey::sys::take_pump_esc_edges();
+        if esc || windrag {
+            self.channels.notify_intent();
+        }
+    }
+
     /// Drain classifier queues into tagged outbox batches. Occupied
     /// outboxes skip draining so records wait in the real queues under
     /// their own bounds; refused offers park thread-locally with their
@@ -1019,6 +1069,13 @@ impl<B: NativeHooks> PumpCore<B> {
                 for item in &items {
                     self.apply_item(item);
                 }
+                // Capacity freed: a stalled owner retry (refused snapshot
+                // or outstanding sender payloads) gets exactly one wake to
+                // re-offer. No feedback loop: the flag clears on signal and
+                // re-arms only if the retry turn still finds no room.
+                if self.channels.inbox_stalled.swap(false, Ordering::SeqCst) {
+                    self.channels.notify_intent();
+                }
             }
             None => self.contention = true,
         }
@@ -1028,6 +1085,8 @@ impl<B: NativeHooks> PumpCore<B> {
         let pre_start = Instant::now();
         self.backend.drain_messages();
         self.offer_batches();
+        self.sample_chord_edge();
+        self.sample_cancel_edge();
         let pre_us = pre_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         // Deadline-driven wait: install retries plus one bounded
         // transient-contention retry; fully idle waits indefinitely.
@@ -1066,6 +1125,8 @@ impl<B: NativeHooks> PumpCore<B> {
         let post_start = Instant::now();
         self.backend.drain_messages();
         self.offer_batches();
+        self.sample_chord_edge();
+        self.sample_cancel_edge();
         let post_us = post_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         if self.contention {
             self.contention_retry_at = Some(Instant::now() + super::CONTENTION_RETRY);

@@ -134,13 +134,32 @@ pub(super) fn offer_input_snapshot(
         bridge.last_clear_seen = bridge.sender.windrag_cleared();
         bridge.force_snapshot = true;
     }
+    // Refusal this turn (set in the `Err` arms below): after the flag
+    // settle, nudge the pump so a stalled inbox drains promptly. Ordered
+    // after the store so the prompted drain always observes the armed flag
+    // (a drain slipping between the failed offer and the store can no
+    // longer lose the wake); the pump's bounded contention retry covers a
+    // contended prompted drain.
+    let mut refused = false;
     match plan_snapshot_offer(
         bridge.last_snapshot.as_ref(),
         &candidate,
         bridge.retry_gen,
         bridge.force_snapshot,
     ) {
-        SnapshotOffer::Skip => return,
+        SnapshotOffer::Skip => {
+            // No offer attempted, but sender payloads may still be stuck
+            // from an earlier failed flush: arm and nudge together so the
+            // retry does not wait for an unrelated wake.
+            if bridge.sender.pending_len() + bridge.sender.safety_len() > 0 {
+                bridge
+                    .channels
+                    .inbox_stalled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                bridge.channels.notify_work();
+            }
+            return;
+        }
         SnapshotOffer::Retry(generation) => {
             // Reuse the armed generation for the current desired content
             // (the fence is already armed and `pending_ack` already pairs
@@ -167,7 +186,9 @@ pub(super) fn offer_input_snapshot(
                 }
                 Err(_) => {
                     // Still stalled: the retry stays armed for the next tick.
-                    // Fault counted by the sender.
+                    // Fault counted by the sender. The post-settle nudge
+                    // below prompts the pump drain that observes the flag.
+                    refused = true;
                 }
             }
         }
@@ -205,13 +226,26 @@ pub(super) fn offer_input_snapshot(
                     // (last_snapshot unchanged, so change detection
                     // re-offers). A refused policy change arms the retry so
                     // the fence still pairs exactly once, even across a
-                    // revert. Fault counted by the sender.
+                    // revert. Fault counted by the sender. The post-settle
+                    // nudge below prompts the pump drain that observes the
+                    // flag.
                     if policy_changed {
                         bridge.retry_gen = Some(bridge.published_gen);
                     }
+                    refused = true;
                 }
             }
         }
+    }
+    // Stalled-retry flag for the pump's capacity-freed wake: true while a
+    // refused retry or sender payloads are outstanding, false once clear.
+    // Self-maintaining every offer (no separate clear path to forget).
+    bridge.channels.inbox_stalled.store(
+        bridge.retry_gen.is_some() || bridge.sender.pending_len() + bridge.sender.safety_len() > 0,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    if refused {
+        bridge.channels.notify_work();
     }
     log_input_faults(bridge, &log_path);
 }

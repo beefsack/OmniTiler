@@ -1239,6 +1239,101 @@ fn occupied_snap_waits_without_wake_and_retry_signals() {
 }
 
 #[test]
+fn chord_transition_signals_with_empty_batches_and_steady_stays_quiet() {
+    // Modifier-only traffic queues no batch, yet a bare Win+Shift
+    // transition must still wake the owner; steady levels must not. Drives
+    // the real callback (no hooks, no `SendInput`: Win-up is never driven,
+    // Shift carries no mask obligation) and asserts the wake arrives with
+    // both outboxes empty, so it is the transition-only path, not a batch.
+    use windows_sys::Win32::UI::WindowsAndMessaging::LLKHF_UP;
+    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+        takeover: true,
+        allow_win_l: false,
+    });
+    crate::win_mouse::sys::test_ensure_state();
+    let (channels, signals) = test_channels();
+    let mut core = installed_core(&channels, &signals);
+    assert_eq!(crate::snapkey::sys::chord_levels(), (false, false));
+    unsafe {
+        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_LWIN, 0, 0, 0);
+    }
+    assert_eq!(crate::snapkey::sys::chord_levels(), (true, false));
+    assert!(!core.step());
+    // Win alone leaves the chord quiet: no batch, no transition wake.
+    assert!(!wake_signaled(&channels));
+    assert!(!channels.snap_outbox.occupied());
+    unsafe {
+        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, 0, 0);
+    }
+    assert_eq!(crate::snapkey::sys::chord_levels(), (true, true));
+    assert!(!core.step());
+    // Transition with empty outboxes: the wake is transition-only.
+    assert!(wake_signaled(&channels));
+    assert!(!wake_signaled(&channels));
+    assert!(!channels.snap_outbox.occupied());
+    assert!(!channels.windrag_outbox.occupied());
+    // Steady hold: no repeated wake.
+    assert!(!core.step());
+    assert!(!wake_signaled(&channels));
+    unsafe {
+        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_SHIFT, 0, LLKHF_UP, 0);
+    }
+    assert_eq!(crate::snapkey::sys::chord_levels(), (true, false));
+    assert!(!core.step());
+    assert!(wake_signaled(&channels));
+    assert!(!wake_signaled(&channels));
+    assert!(!channels.snap_outbox.occupied());
+    crate::snapkey::sys::test_clear_state();
+    crate::win_mouse::sys::test_clear_state();
+}
+
+#[test]
+fn esc_edge_signals_once_without_stealing_the_owner_latch() {
+    // An Esc down queues no batch, yet it must wake the owner once so an
+    // open gesture latches promptly; the pump consumes only its own
+    // thread-local edge while the process-global latch stays set for the
+    // owner drain, so a second step stays quiet. Serial guard: the global
+    // edge assertions race concurrent pump `ClearEsc` applies and sibling
+    // Esc tests.
+    use std::sync::atomic::Ordering;
+    let _guard = crate::input_handoff::fence_test_serial();
+    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+        takeover: true,
+        allow_win_l: false,
+    });
+    crate::win_mouse::sys::test_ensure_state();
+    let (channels, signals) = test_channels();
+    let mut core = installed_core(&channels, &signals);
+    unsafe {
+        crate::snapkey::sys::test_drive_llproc(crate::snapkey::VK_ESCAPE, 1, 0, 0);
+    }
+    assert!(!core.step());
+    assert!(wake_signaled(&channels), "cancel edge wakes the owner");
+    assert!(channels.snap_outbox.take().is_none());
+    assert!(
+        crate::input_handoff::global_esc_edge().load(Ordering::SeqCst),
+        "owner latch survives the pump drain"
+    );
+    // Edge consumed pump-side: no repeated wake while the owner latch
+    // pends its own drain.
+    assert!(!core.step());
+    assert!(!wake_signaled(&channels));
+    assert!(
+        crate::input_handoff::global_esc_edge().load(Ordering::SeqCst),
+        "still latched for the owner"
+    );
+    // Owner-side consumption (as the tick drain does) quiets everything.
+    crate::input_handoff::global_esc_edge().store(false, Ordering::SeqCst);
+    crate::input_handoff::global_windrag_esc_edge().store(false, Ordering::SeqCst);
+    crate::snapkey::sys::clear_esc_edge();
+    crate::snapkey::sys::clear_windrag_esc_edge();
+    assert!(!core.step());
+    assert!(!wake_signaled(&channels));
+    crate::snapkey::sys::test_clear_state();
+    crate::win_mouse::sys::test_clear_state();
+}
+
+#[test]
 fn windrag_offer_signals_while_diag_only_step_does_not() {
     // Mouse batches wake; a diagnostics-only turn never does.
     crate::snapkey::sys::test_ensure_state(KeyboardConfig {
@@ -1256,6 +1351,119 @@ fn windrag_offer_signals_while_diag_only_step_does_not() {
     // Diagnostics publish every turn; with empty queues nothing wakes.
     assert!(!core.step());
     assert!(!wake_signaled(&channels));
+    crate::snapkey::sys::test_clear_state();
+    crate::win_mouse::sys::test_clear_state();
+}
+
+#[test]
+fn stalled_retry_wakes_once_on_capacity_freed() {
+    // Refusal then drain: a full inbox refuses the owner's snapshot
+    // (stalled retry, no owner wake pending), the pump's next successful
+    // drain signals exactly one wake, and the freed capacity accepts the
+    // retry with no unrelated event and no repeat signal. Serial
+    // guard: the inbox holds `ClearEsc` (process-global edges) plus a
+    // snapshot generation applied process-globally, racing fence/edge
+    // tests.
+    use std::sync::atomic::Ordering;
+    let _guard = crate::input_handoff::fence_test_serial();
+    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+        takeover: true,
+        allow_win_l: false,
+    });
+    crate::win_mouse::sys::test_ensure_state();
+    let (channels, signals) = test_channels();
+    let mut core = installed_core(&channels, &signals);
+    // Fill the inbox to its cap through the real bounded push.
+    for _ in 0..crate::input_handoff::INBOX_CAP {
+        let mut slot = None;
+        assert!(
+            channels
+                .inbox
+                .try_push(crate::input_handoff::InboxItem::ClearEsc, &mut slot)
+        );
+    }
+    // Owner-side sender over the same inbox: the first snapshot buffers
+    // and closes admission, the second refuses (mirrors the production
+    // `offer_input_snapshot` refusal that arms `retry_gen`).
+    let mut sender = crate::input_pump::InboxSender::new(Arc::clone(&channels.inbox));
+    let snapshot = || crate::input_handoff::InboxItem::Snapshot(snapshot_with(1, true));
+    assert!(sender.offer(snapshot()).is_ok(), "first buffers");
+    assert!(
+        sender.offer(snapshot()).is_err(),
+        "second refuses while full"
+    );
+    assert!(sender.flush() > 0, "flush still outstanding");
+    // Owner arms the stalled flag as `offer_input_snapshot` does.
+    channels.inbox_stalled.store(true, Ordering::SeqCst);
+    // Pump drains the full inbox: exactly one wake, no unrelated event.
+    assert!(!core.step());
+    assert!(wake_signaled(&channels), "capacity-freed wakes the retry");
+    assert!(!wake_signaled(&channels), "bursts coalesce to one wake");
+    // Freed capacity accepts the retry; the flag clears so the next
+    // drain stays quiet.
+    assert_eq!(sender.flush(), 0, "drain freed the inbox");
+    assert!(sender.offer(snapshot()).is_ok(), "retry accepted");
+    channels.inbox_stalled.store(false, Ordering::SeqCst);
+    assert!(!core.step());
+    assert!(!wake_signaled(&channels), "no repeat signal once clear");
+    crate::snapkey::sys::test_clear_state();
+    crate::win_mouse::sys::test_clear_state();
+}
+
+#[test]
+fn stalled_retry_survives_drain_between_refusal_and_flag_store() {
+    // Exact lost-wake interleaving: the owner's offer refuses (inbox
+    // full), then a pump drain lands BEFORE the owner stores the stalled
+    // flag (room freed with no signal — the old loss). The owner then
+    // settles the flag and nudges the pump in production order
+    // (`offer_input_snapshot`: store, then `notify_work` on refusal), and
+    // the nudged step must still wake the retry with no unrelated event.
+    // Serial guard: the inbox holds `ClearEsc` plus a snapshot
+    // generation applied process-globally (and the retry step applies
+    // it), racing fence/edge tests.
+    use std::sync::atomic::Ordering;
+    let _guard = crate::input_handoff::fence_test_serial();
+    crate::snapkey::sys::test_ensure_state(KeyboardConfig {
+        takeover: true,
+        allow_win_l: false,
+    });
+    crate::win_mouse::sys::test_ensure_state();
+    let (channels, signals) = test_channels();
+    let mut core = installed_core(&channels, &signals);
+    for _ in 0..crate::input_handoff::INBOX_CAP {
+        let mut slot = None;
+        assert!(
+            channels
+                .inbox
+                .try_push(crate::input_handoff::InboxItem::ClearEsc, &mut slot)
+        );
+    }
+    let mut sender = crate::input_pump::InboxSender::new(Arc::clone(&channels.inbox));
+    let snapshot = || crate::input_handoff::InboxItem::Snapshot(snapshot_with(1, true));
+    assert!(sender.offer(snapshot()).is_ok(), "first buffers");
+    assert!(
+        sender.offer(snapshot()).is_err(),
+        "second refuses while full"
+    );
+    // Adversarial drain between refusal and flag establishment: empties
+    // the inbox with no signal, since the flag is not yet set.
+    let drained = channels.inbox.try_drain().expect("drain succeeds");
+    assert!(!drained.is_empty(), "drain actually freed room");
+    assert!(!wake_signaled(&channels), "pre-flag drain signals nothing");
+    // Owner resumes in production order: settle the flag, then nudge.
+    channels.inbox_stalled.store(true, Ordering::SeqCst);
+    channels.notify_work();
+    // Nudged pump step: the drain succeeds (empty but successful) and
+    // observes the armed flag, so exactly one wake follows.
+    assert!(!core.step());
+    assert!(wake_signaled(&channels), "nudged drain recovers the retry");
+    assert!(!wake_signaled(&channels), "bursts coalesce to one wake");
+    // Retry accepted on the freed capacity; quiet after.
+    assert_eq!(sender.flush(), 0, "retry flushes into freed room");
+    assert!(sender.offer(snapshot()).is_ok(), "retry accepted");
+    channels.inbox_stalled.store(false, Ordering::SeqCst);
+    assert!(!core.step());
+    assert!(!wake_signaled(&channels), "no repeat signal once clear");
     crate::snapkey::sys::test_clear_state();
     crate::win_mouse::sys::test_clear_state();
 }

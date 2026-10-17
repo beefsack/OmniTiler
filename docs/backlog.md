@@ -951,10 +951,16 @@ decisions of 2026-09-24 are under
     Xbox-mode-off targets F11 only, GameDVR capture policy is not a Win+G
     suppression guarantee. Exact-chord containment remains open; bounded
     visibility/reveal/exception diagnostics needed before another recovery repro.
-  - M16 gaming-cost measurement: compare the existing 100 ms pump's
-    incremental CPU, frame-time and input cost against a without-tiler game
-    baseline, including suspended work/effects. Cost remains unmeasured;
-    suspension and nominal tick frequency are not acceptance evidence.
+  - M16 gaming-cost measurement: compare the event-driven owner's incremental
+    CPU, frame-time and input cost against a without-tiler game baseline,
+    including suspended work/effects. The unconditional 100 ms owner poll was
+    removed 2026-10-17; non-game idle evidence showed 75-98% less CPU before
+    the final log-notification correction. Final post-correction live matrix,
+    physical input/preview and pager change-response checks remain pending;
+    retain visible-pager 2 s recovery pending a complete native wake source or
+    an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).
+    Game cost remains unmeasured; idle improvement, suspension and nominal
+    wake frequency are not game acceptance evidence.
     Apply the M04 bar: aim for zero; demonstrate any unavoidable residual
     minimal and imperceivable. Physical game measurements are user-owned.
     [principle](principles.md#gaming-compatibility)
@@ -966,7 +972,7 @@ decisions of 2026-09-24 are under
   [decision](decisions.md#gaming-safety)
 - P0 | Windows release gate | Own later release (user 2026-10-10): managed
   per-monitor workspaces (multi-output), gaming coexistence (Win+G/F11
-  containment review, Xbox mode detection, M16 100ms pump measurement),
+  containment review, Xbox mode detection, M16 event-driven owner measurement),
   combined workspace-presentation research (hidden-workspace Alt+Tab/taskbar
   semantics plus taskbar indicator parity 10), restart persistence (item 8,
   on-window markers selected 2026-10-10) and package/update channel decision (short research refresh

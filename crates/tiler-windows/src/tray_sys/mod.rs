@@ -572,7 +572,8 @@ unsafe extern "system" fn tray_wnd_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, DefWindowProcW, EndMenu, GWLP_USERDATA, SetWindowLongPtrW, WM_CREATE,
-        WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
+        WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE,
+        WM_TIMER,
     };
     if msg == WM_CREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
@@ -614,6 +615,12 @@ unsafe extern "system" fn tray_wnd_proc(
         // Owned by `TrayOwner::drop` (detach-then-destroy there): never
         // free here, so exactly one owner exists either way.
         return 0;
+    }
+    if msg == WM_DISPLAYCHANGE || msg == WM_SETTINGCHANGE || msg == WM_DPICHANGED {
+        // Display/DPI calibration may have changed topology: flag one
+        // monitor re-read on the owner loop (sticky, consumed once).
+        // Falls through to `DefWindowProcW` below like any broadcast.
+        crate::tiling_sys::mark_monitor_dirty();
     }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
@@ -817,6 +824,16 @@ impl TrayOwner {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .take()
+    }
+
+    /// True when a workspace-toggle pick waits (non-draining peek so the
+    /// pre-wait probe can skip the block before the dispatch site drains
+    /// it once).
+    pub fn has_toggle_request(&self) -> bool {
+        self.toggle
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .is_some()
     }
 
     /// True when a pager-select pick waits (non-draining peek so the pump

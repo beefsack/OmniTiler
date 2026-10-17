@@ -11,6 +11,159 @@ pub(super) struct EdgeDrain {
     pub ends: u64,
 }
 
+/// Gesture-open pointer-sampling cadence: while a managed gesture holds the
+/// loop, pointer motion changes the drop preview without moving any target
+/// window, and pointer motion produces no WinEvent, message, or input-pump
+/// batch for the owner. This armed-only deadline keeps the existing ~100ms
+/// preview sampling while held only; healthy idle carries no timer for it.
+pub(super) const GESTURE_SAMPLE_MS: u64 = 100;
+/// Trace-only pump-waits reporting throttle in seconds. This is never an
+/// armed wait deadline: healthy trace idle still blocks infinitely, and a
+/// due throttle only emits on a naturally occurring owner turn (never a
+/// diagnostic-induced wake or reconcile). The counters accumulate across
+/// idle, so a delayed line loses nothing; quiet runs additionally flush one
+/// final read-only summary at clean loop exit.
+pub(super) const TRACE_REPORT_SECS: u64 = 2;
+/// Windowless monitor fallback cadence, armed only when the owner has no
+/// top-level window to receive display-change broadcasts (tray-less runs).
+/// Tray-carrying runs re-read monitors on message wakes instead, so healthy
+/// idle carries no timer for this either.
+pub(super) const MONITOR_FALLBACK_SECS: u64 = 2;
+/// Degraded directory-watch fallback cadence, armed only when a watch
+/// cannot be established or breaks. Bounds stop/request/settings latency
+/// while unwatched; setup retries on every fallback wake.
+pub(super) const DEGRADED_POLL_MS: u64 = 100;
+
+/// Armed deadlines for one owner wait. Every field is `None`/false at
+/// healthy idle (no retries, no restore, unbounded run, no gesture), which
+/// selects an infinite wait. Each armed entry carries its own specific
+/// reason; there is no unconditional poll. Trace reporting is deliberately
+/// not a member: diagnostics must never wake or reconcile the owner.
+pub(super) struct OwnerDeadlines {
+    pub restore_until: Option<Instant>,
+    /// Bridged gesture-finish hide-ack bound (`FINISH_WAIT` past END):
+    /// without it an absent ack strands the pending slot behind an idle
+    /// wait. The timeout path still refuses with no drop and no actuation,
+    /// so the hide-before-drop contract is unchanged; this only guarantees
+    /// the service turn that observes it.
+    pub pending_until: Option<Instant>,
+    /// Visible-pager maintenance bound (creation-retry backoff and topmost
+    /// reassert combined, armed only while overlay strips show): without it
+    /// a failed creation or a covering topmost window strands with no
+    /// recovery until an unrelated wake. Hidden/suppressed pagers arm
+    /// nothing, so this is never a global poll.
+    pub pager_maintenance_at: Option<Instant>,
+    pub snap_retry_at: Option<Instant>,
+    pub pager_retry_at: Option<Instant>,
+    pub pager_icon_retry_at: Option<Instant>,
+    pub gaming_due_at: Option<Instant>,
+    pub monitor_due_at: Option<Instant>,
+    pub run_end: Option<Instant>,
+    pub gesture_open: bool,
+    pub degraded_poll: bool,
+}
+
+/// Read-only wait-counter snapshots for one `pump-waits` line: the input
+/// six-tuple `(turns, waits, work, msg, timeout, failed)` under one
+/// diag-slot lock plus the renderer six-tuple `(waits, work, msg,
+/// timeout, failed, acks)` from atomics. No drains, no signals: safe on
+/// any natural turn and at loop exit, and incapable of waking or actuating
+/// anything.
+pub(super) fn pump_waits_snapshots(state: &TileLoop) -> (InputWaitSplit, RenderWaitSplit) {
+    let input = match state.input_bridge.as_ref() {
+        Some(bridge) => {
+            let diag = bridge.channels.diag.snapshot();
+            (
+                diag.turns,
+                diag.waits,
+                diag.wait_work,
+                diag.wait_msg,
+                diag.wait_timeout,
+                diag.wait_failed,
+            )
+        }
+        None => (0, 0, 0, 0, 0, 0),
+    };
+    let render = match state.render_bridge.as_ref() {
+        Some(bridge) => {
+            let (waits, work, msg, timeout, failed) = bridge.channels.wait_counts();
+            (waits, work, msg, timeout, failed, bridge.channels.ack_seq())
+        }
+        None => (0, 0, 0, 0, 0, 0),
+    };
+    (input, render)
+}
+
+/// Next owner wait timeout in milliseconds (`u32::MAX` is the Win32
+/// `INFINITE`): the minimum over the armed deadlines, or infinite at
+/// healthy idle. Pure (no handles, no syscalls): unit-testable.
+pub(super) fn owner_timeout_ms(now: Instant, deadlines: &OwnerDeadlines) -> u32 {
+    let mut earliest: Option<Instant> = None;
+    let mut push = |at: Option<Instant>| {
+        if let Some(at) = at {
+            earliest = Some(earliest.map_or(at, |prev| prev.min(at)));
+        }
+    };
+    push(deadlines.restore_until);
+    push(deadlines.pending_until);
+    push(deadlines.pager_maintenance_at);
+    push(deadlines.snap_retry_at);
+    push(deadlines.pager_retry_at);
+    push(deadlines.pager_icon_retry_at);
+    push(deadlines.gaming_due_at);
+    push(deadlines.monitor_due_at);
+    push(deadlines.run_end);
+    if deadlines.gesture_open {
+        push(now.checked_add(Duration::from_millis(GESTURE_SAMPLE_MS)));
+    }
+    let mut timeout = match earliest {
+        None => u32::MAX,
+        Some(at) => at
+            .saturating_duration_since(now)
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32,
+    };
+    if deadlines.degraded_poll {
+        timeout = timeout.min(DEGRADED_POLL_MS as u32);
+    }
+    timeout
+}
+
+/// Open-gesture sampling demand: a managed gesture with START capture holds
+/// the loop and needs the periodic preview sample. Mirrors the tick's wake
+/// condition exactly (same sets, same order).
+pub(super) fn gesture_sampling_open(state: &TileLoop) -> bool {
+    state
+        .active
+        .iter()
+        .any(|hwnd| state.managed.contains(hwnd) && state.gesture_before.contains_key(hwnd))
+}
+
+/// Same-thread staged-work probe for the pre-wait skip: tray stop, toggle,
+/// and select picks plus pager clicks are staged on this thread during
+/// message dispatch, so a peek right after the pre-drain sees everything
+/// the wait would otherwise strand. Brief mutex takes, never waits; all
+/// peeks are non-draining (the intake and tick dispatch drain once below).
+pub(super) fn tray_staged_pending(
+    state: &TileLoop,
+    tray: &Option<crate::tray_sys::TrayOwner>,
+) -> bool {
+    if tray.as_ref().is_some_and(|t| t.stop_requested()) {
+        return true;
+    }
+    if tray.as_ref().is_some_and(|t| t.has_toggle_request()) {
+        return true;
+    }
+    if tray.as_ref().is_some_and(|t| t.has_select_request()) {
+        return true;
+    }
+    state
+        .pager_clicks
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false)
+}
+
 pub(super) fn drain_hook_edges(
     state: &mut TileLoop,
     me: &ProcessIdentity,

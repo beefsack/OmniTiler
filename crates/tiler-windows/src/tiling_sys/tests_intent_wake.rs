@@ -18,16 +18,16 @@ fn wait_consumes_pending_wake_and_keeps_fallback() {
     let channels = crate::input_pump::InputChannels::new();
     let wake = channels.intent_wake().expect("wake created");
     channels.notify_intent();
-    let woke = pump_wait_with_intent(0, Some(wake), None);
+    let woke = pump_wait_with_intent(0, Some(wake), None, &[]);
     assert!(woke.input && woke.full_turn());
     assert!(!wake_signaled(wake), "pending wake is consumed by the wait");
-    let woke = pump_wait_with_intent(0, Some(wake), None);
+    let woke = pump_wait_with_intent(0, Some(wake), None, &[]);
     // No signal and no pump traffic: genuine timeout (which is a full
     // turn by design, preserving the timed cadence), an ambient message,
     // or the pre-existing failed-wait fallback (also a full turn).
     assert!(woke.timeout || woke.message || woke.failed);
     assert!(!wake_signaled(wake));
-    let _ = pump_wait_with_intent(0, None, None);
+    let _ = pump_wait_with_intent(0, None, None, &[]);
 }
 
 #[test]
@@ -59,13 +59,13 @@ fn wait_reports_ack_only_without_input_or_message() {
     let intent = event();
     let ack = event();
     signal(&ack);
-    let woke = pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    let woke = pump_wait_with_intent(0, Some(&intent), Some(&ack), &[]);
     assert!(!wake_signaled(&ack), "outer wait consumes the ack");
     assert!(!wake_signaled(&intent), "peer wake stays unsignaled");
     // Zero timeout with no signal and no pump traffic reports timeout:
     // either a pure timeout or a timeout plus ambient messages (a busy
     // desktop may deliver broadcasts through the pump drains).
-    let idle = pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    let idle = pump_wait_with_intent(0, Some(&intent), Some(&ack), &[]);
     assert!(idle.timeout || idle.message || idle.failed);
     assert!(!idle.input && !idle.ack);
     // Reason bits compose honestly: ack-only is never a full turn, while
@@ -74,6 +74,7 @@ fn wait_reports_ack_only_without_input_or_message() {
         input: false,
         ack: true,
         message: false,
+        notify: false,
         timeout: false,
         failed: false,
     };
@@ -84,6 +85,7 @@ fn wait_reports_ack_only_without_input_or_message() {
             input: true,
             ack: false,
             message: false,
+            notify: false,
             timeout: false,
             failed: false,
         }
@@ -94,11 +96,26 @@ fn wait_reports_ack_only_without_input_or_message() {
             input: false,
             ack: false,
             message: false,
+            notify: false,
             timeout: false,
             failed: true,
         }
         .full_turn(),
         "failed keeps the existing fallback path; only the counter differs"
+    );
+    // An extra notification handle alone is a full turn (its file or
+    // result still needs the poll/drain), and it never claims to be
+    // input, an ack, or a message.
+    assert!(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: true,
+            timeout: false,
+            failed: false,
+        }
+        .full_turn()
     );
 }
 
@@ -129,14 +146,14 @@ fn wait_wakes_on_either_intent_or_ack_without_consuming_peer() {
     let intent = event();
     let ack = event();
     signal(&ack);
-    pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    pump_wait_with_intent(0, Some(&intent), Some(&ack), &[]);
     assert!(!wake_signaled(&ack), "outer wait consumes the ack");
     assert!(!wake_signaled(&intent), "peer wake stays unsignaled");
     signal(&intent);
-    pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    pump_wait_with_intent(0, Some(&intent), Some(&ack), &[]);
     assert!(!wake_signaled(&intent), "outer wait consumes the intent");
     assert!(!wake_signaled(&ack), "peer wake stays unsignaled");
-    pump_wait_with_intent(0, Some(&intent), Some(&ack));
+    pump_wait_with_intent(0, Some(&intent), Some(&ack), &[]);
 }
 
 #[test]
@@ -164,6 +181,7 @@ fn outer_wait_counts_split_reasons_with_ack_only_subset() {
         input: false,
         ack: true,
         message: true,
+        notify: true,
         timeout: false,
         failed: false,
     });
@@ -172,6 +190,7 @@ fn outer_wait_counts_split_reasons_with_ack_only_subset() {
         input: false,
         ack: false,
         message: false,
+        notify: false,
         timeout: true,
         failed: false,
     });
@@ -179,12 +198,14 @@ fn outer_wait_counts_split_reasons_with_ack_only_subset() {
         input: false,
         ack: false,
         message: false,
+        notify: false,
         timeout: false,
         failed: true,
     });
     assert_eq!(counts.waits, 3);
     assert_eq!(counts.ack_only, 1);
     assert_eq!((counts.ack, counts.msg, counts.timeout), (1, 1, 1));
+    assert_eq!(counts.notify, 1);
     assert_eq!(counts.failed, 1);
     assert_eq!(counts.input, 0);
 }

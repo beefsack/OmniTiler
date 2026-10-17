@@ -134,46 +134,7 @@ pub fn publish_no_overwrite(
     bytes: &[u8],
     tmp_tag: &str,
 ) -> Result<(), PublishError> {
-    if final_name.is_empty()
-        || final_name.contains(['/', '\\'])
-        || final_name == "."
-        || final_name == ".."
-    {
-        return Err(PublishError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "invalid final name",
-        )));
-    }
-    std::fs::create_dir_all(dir).map_err(PublishError::Io)?;
-    let mut attempt = 0u64;
-    let tmp = loop {
-        let name = publish_tmp_name(final_name, tmp_tag, attempt);
-        let path = dir.join(&name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if let Err(e) = (|| -> std::io::Result<()> {
-                    use std::io::Write;
-                    file.write_all(bytes)?;
-                    file.sync_all()?;
-                    Ok(())
-                })() {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    return Err(PublishError::Io(e));
-                }
-                drop(file);
-                break path;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
-                attempt += 1;
-            }
-            Err(e) => return Err(PublishError::Io(e)),
-        }
-    };
+    let tmp = write_tmp(dir, final_name, bytes, tmp_tag)?;
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -216,6 +177,110 @@ pub fn publish_no_overwrite(
             }
         }
     }
+}
+
+/// Publish `bytes` to `dir/final_name` without ever exposing a partial body,
+/// replacing any existing final atomically: same synced same-directory temp
+/// as [`publish_no_overwrite`], committed with replace semantics (Windows
+/// `MoveFileExW` with `REPLACE_EXISTING | WRITE_THROUGH`; elsewhere a
+/// rename). Readers either see the old complete body or the new complete
+/// body, never a mix. For request files whose publishers must stay visible
+/// to a file-name-only directory watch (e.g. the stop request): the
+/// signaled rename always exposes complete content, with overwrite
+/// preserved for repeated requests.
+pub fn publish_replace(
+    dir: &Path,
+    final_name: &str,
+    bytes: &[u8],
+    tmp_tag: &str,
+) -> Result<(), PublishError> {
+    let tmp = write_tmp(dir, final_name, bytes, tmp_tag)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+        let from_w: Vec<u16> = tmp.as_os_str().encode_wide().chain([0]).collect();
+        let to_w: Vec<u16> = dir
+            .join(final_name)
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let ok = unsafe {
+            MoveFileExW(
+                from_w.as_ptr(),
+                to_w.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok != 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        let _ = std::fs::remove_file(&tmp);
+        Err(PublishError::Io(e))
+    }
+    #[cfg(not(windows))]
+    {
+        if let Err(e) = std::fs::rename(&tmp, dir.join(final_name)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(PublishError::Io(e));
+        }
+        Ok(())
+    }
+}
+
+/// Validated synced same-directory temp body shared by both publishers.
+/// Returns the temp path; removes it on every error path.
+fn write_tmp(
+    dir: &Path,
+    final_name: &str,
+    bytes: &[u8],
+    tmp_tag: &str,
+) -> Result<PathBuf, PublishError> {
+    if final_name.is_empty()
+        || final_name.contains(['/', '\\'])
+        || final_name == "."
+        || final_name == ".."
+    {
+        return Err(PublishError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid final name",
+        )));
+    }
+    std::fs::create_dir_all(dir).map_err(PublishError::Io)?;
+    let mut attempt = 0u64;
+    let tmp = loop {
+        let name = publish_tmp_name(final_name, tmp_tag, attempt);
+        let path = dir.join(&name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = (|| -> std::io::Result<()> {
+                    use std::io::Write;
+                    file.write_all(bytes)?;
+                    file.sync_all()?;
+                    Ok(())
+                })() {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(PublishError::Io(e));
+                }
+                drop(file);
+                break path;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
+                attempt += 1;
+            }
+            Err(e) => return Err(PublishError::Io(e)),
+        }
+    };
+    Ok(tmp)
 }
 
 pub struct LedgerStore {

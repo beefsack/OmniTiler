@@ -479,6 +479,18 @@ platform API behavior.
   existing 100 ms maintenance cadence. Input transfers callback work before
   blocking and after return; transient transport contention gets a bounded
   retry, while occupied outboxes resume on owner drain notification.
+- Owner idle follow-up, 2026-10-17: supersedes the 100 ms owner-maintenance
+  exception above. Healthy owner waits block on messages, input/render signals,
+  request/settings directory changes and asynchronous completion events, with
+  explicit armed-operation deadlines. Modifier-only transitions and saturated
+  input recovery have explicit wakes; hide-before-drop refusal retains its
+  500 ms deadline. Ledger name notifications exclude log appends; request/stop
+  publication is atomic. Diagnostics add no deadline or reconcile. Preserve
+  the existing visible-pager 2 s topmost-recovery contract and degraded setup
+  fallbacks with specific reasons, rather than a global poll. Non-game idle
+  measurements improved; final post-correction live and physical-input/game
+  acceptance remain pending. See the
+  [idle record](changes/archive/windows-owner-event-idle.md).
 - Input clean stop requires successful hook release and successful finished
   thread join; repeated terminal waits return the cached result. Missing or
   unclean completion keeps the process reservation. Render stop signals its

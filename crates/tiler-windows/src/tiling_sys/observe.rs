@@ -80,41 +80,67 @@ pub(super) unsafe extern "system" fn winevent_proc(
     }
 }
 
-/// Product outer wait: pump loop-thread messages (delivering hook callbacks)
-/// then wait for more plus the input-pump intent wake and the renderer ack
-/// wake. Returns what woke the wait so the loop can drain an ack-only wake
-/// without reposting frames, reconciling, or polling settings: renderer acks
-/// wake the owner immediately with no polling latency, but an ack alone
-/// never triggers owner work by itself, so the ack wake cannot feed back
-/// into a post/ack/post busy loop. A pending wake (offered before this wait)
-/// returns immediately; bursts coalesce to one wake; the timeout keeps the
-/// periodic follow cadence (timed native reassert included). One thread owns
-/// install, pump, and uninstall: no join, no hang.
-pub(super) fn pump_wait_with_intent(
-    timeout_ms: u32,
-    wake: Option<&OwnedHandle>,
-    ack_wake: Option<&OwnedHandle>,
-) -> WaitWake {
+/// Drain pending loop-thread messages (delivering hook callbacks) without
+/// waiting. Returns true when anything flowed: the caller treats that as a
+/// wake hint, so work staged on this same thread (hook edges, tray picks,
+/// overlay clicks) never strands behind a blocking wait.
+pub(super) fn drain_owner_messages() -> bool {
     let mut msg: MSG = unsafe { std::mem::zeroed() };
+    let mut flowed = false;
     loop {
         let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
         if has == 0 {
             break;
         }
+        flowed = true;
         unsafe {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
+    flowed
+}
+
+/// Non-destructive hook-queue probe: true when drained edges already wait.
+/// The blocking wait below still collects them; this only lets the caller
+/// skip the block with a zero-timeout collect when work is already staged.
+pub(super) fn hook_edges_pending() -> bool {
+    hook_queue()
+        .lock()
+        .map(|queue| !queue.is_empty())
+        .unwrap_or(false)
+}
+
+/// Product outer wait: pump loop-thread messages (delivering hook callbacks)
+/// then wait for more plus the input-pump intent wake, the renderer ack
+/// wake, and extra notification handles (directory watches, async
+/// completion events). Returns what woke the wait so the loop can drain an ack-only wake
+/// without reposting frames, reconciling, or polling settings: renderer acks
+/// wake the owner immediately with no polling latency, but an ack alone
+/// never triggers owner work by itself, so the ack wake cannot feed back
+/// into a post/ack/post busy loop. A pending wake (offered before this wait)
+/// returns immediately; bursts coalesce to one wake; the timeout is the
+/// caller-computed minimum over the armed deadlines (`u32::MAX` blocks at
+/// healthy idle). One thread owns install, pump, and uninstall: no join,
+/// no hang.
+pub(super) fn pump_wait_with_intent(
+    timeout_ms: u32,
+    wake: Option<&OwnedHandle>,
+    ack_wake: Option<&OwnedHandle>,
+    extra: &[std::os::windows::io::RawHandle],
+) -> WaitWake {
+    drain_owner_messages();
     let mut woke = WaitWake {
         input: false,
         ack: false,
         message: false,
+        notify: false,
         timeout: false,
         failed: false,
     };
     unsafe {
-        let mut handles = [std::ptr::null_mut(); 2];
+        const MAX_WAIT: usize = 8;
+        let mut handles = [std::ptr::null_mut(); MAX_WAIT];
         let mut count: u32 = 0;
         if let Some(handle) = wake {
             handles[0] = handle.as_handle().as_raw_handle();
@@ -122,6 +148,14 @@ pub(super) fn pump_wait_with_intent(
         }
         if let Some(handle) = ack_wake {
             handles[count as usize] = handle.as_handle().as_raw_handle();
+            count += 1;
+        }
+        let extra_base = count;
+        for raw in extra {
+            if (count as usize) >= MAX_WAIT {
+                break;
+            }
+            handles[count as usize] = *raw;
             count += 1;
         }
         let result = if count == 0 {
@@ -135,12 +169,18 @@ pub(super) fn pump_wait_with_intent(
             woke.timeout = true;
         } else if result < WAIT_OBJECT_0 + count {
             // A satisfied wait object: index 0 is the input wake when
-            // present, else the ack wake; index 1 is the ack wake.
+            // present; the ack wake (when present) is the next index;
+            // anything at or past `extra_base` is an extra notification
+            // handle (directory watch or async completion), all of which
+            // demand a full turn.
             let has_input = wake.is_some();
-            if result == WAIT_OBJECT_0 && has_input {
+            let index = result - WAIT_OBJECT_0;
+            if has_input && index == 0 {
                 woke.input = true;
-            } else {
+            } else if index < extra_base {
                 woke.ack = true;
+            } else {
+                woke.notify = true;
             }
         } else if result == WAIT_OBJECT_0 + count {
             woke.message = true;
@@ -153,6 +193,7 @@ pub(super) fn pump_wait_with_intent(
             woke.failed = true;
         }
     }
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
     loop {
         let has = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
         if has == 0 {
@@ -173,30 +214,41 @@ pub(super) fn pump_wait_with_intent(
 /// What woke the product outer wait: any combination may hold (an ack plus
 /// queued messages is common). `timeout` is the genuine deadline expiry
 /// (`WAIT_TIMEOUT` 258) only; `failed` is `WAIT_FAILED`/abandoned, counted
-/// separately and never merged into timeout. Ack-only turns drain acks and
-/// service the pending finish without reposting, reconciling, or
-/// settings/input work.
+/// separately and never merged into timeout. `notify` is any extra
+/// notification handle (directory watch or async completion): always a full
+/// turn, since the file or result still needs its poll/drain. Ack-only turns
+/// drain acks and service the pending finish without reposting, reconciling,
+/// or settings/input work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct WaitWake {
     pub(super) input: bool,
     pub(super) ack: bool,
     pub(super) message: bool,
+    pub(super) notify: bool,
     pub(super) timeout: bool,
     pub(super) failed: bool,
 }
 
 impl WaitWake {
-    /// Full owner turn: fresh input, real messages, the genuine periodic
-    /// timeout (which preserves the timed follow/reassert cadence), or the
-    /// pre-existing failed-wait fallback path (unchanged control flow; only
-    /// the counter differs). Hook-callback events collected after the wait
-    /// also force a full turn at the call site, so no input starves behind
-    /// ack traffic.
+    /// Full owner turn: fresh input, real messages, an extra notification,
+    /// the genuine deadline expiry (which preserves the armed retry /
+    /// restore cadences), or the pre-existing failed-wait fallback
+    /// path (unchanged control flow; only the counter differs).
+    /// Hook-callback events collected after the wait also force a full turn
+    /// at the call site, so no input starves behind ack traffic.
     #[must_use]
     pub(super) const fn full_turn(self) -> bool {
-        self.input || self.message || self.timeout || self.failed
+        self.input || self.message || self.notify || self.timeout || self.failed
     }
 }
+
+/// Input pump wait split `(turns, waits, work, msg, timeout, failed)` for
+/// one [`pump_waits_line`] report: one coherent diag-slot snapshot.
+pub(super) type InputWaitSplit = (u64, u64, u64, u64, u64, u64);
+/// Renderer wait split `(waits, work, msg, timeout, failed, acks)` for one
+/// [`pump_waits_line`] report: four independent atomic loads plus the ack
+/// sequence, so a concurrent bump can skew the sum by one.
+pub(super) type RenderWaitSplit = (u64, u64, u64, u64, u64, u64);
 
 /// Trace-only outer-wait return counts (outer product wait only; the
 /// focus/proof `pump_wait` path never constructs one of these). Reason hits
@@ -211,6 +263,7 @@ pub(super) struct OwnerWaitCounts {
     pub(super) input: u64,
     pub(super) ack: u64,
     pub(super) msg: u64,
+    pub(super) notify: u64,
     pub(super) timeout: u64,
     pub(super) failed: u64,
 }
@@ -228,6 +281,9 @@ impl OwnerWaitCounts {
         if wait.message {
             self.msg = self.msg.saturating_add(1);
         }
+        if wait.notify {
+            self.notify = self.notify.saturating_add(1);
+        }
         if wait.timeout {
             self.timeout = self.timeout.saturating_add(1);
         }
@@ -242,6 +298,53 @@ impl OwnerWaitCounts {
     }
 }
 
+/// Pure trace-only pump-waits report line shared by the periodic throttle
+/// (emitted on naturally occurring owner turns only, never tied to a
+/// monitor check) and the clean-loop-exit final flush (so quiet runs still
+/// leave one measurable accumulated wait split). Takes only read-only
+/// snapshots: the owner counts plus the input-diag six-tuple
+/// `(turns, waits, work, msg, timeout, failed)` and the renderer six-tuple
+/// `(waits, work, msg, timeout, failed, acks)`. No locks, no drains, no
+/// syscalls: calling it twice changes nothing, and it cannot wake, arm, or
+/// actuate anything. `flushed` marks the lifecycle (`"end-of-run"` on the
+/// final flush, `None` on periodic lines).
+pub(super) fn pump_waits_line(
+    ow: &OwnerWaitCounts,
+    input: InputWaitSplit,
+    render: RenderWaitSplit,
+    flushed: Option<&str>,
+) -> serde_json::Value {
+    let mut line = serde_json::json!({
+        "event": "pump-waits",
+        "owner_waits": ow.waits,
+        "owner_ack_only": ow.ack_only,
+        "owner_input": ow.input,
+        "owner_ack": ow.ack,
+        "owner_msg": ow.msg,
+        "owner_notify": ow.notify,
+        "owner_timeout": ow.timeout,
+        "owner_failed": ow.failed,
+        "input_turns": input.0,
+        "input_waits": input.1,
+        "input_work": input.2,
+        "input_msg": input.3,
+        "input_timeout": input.4,
+        "input_failed": input.5,
+        "render_waits": render.0,
+        "render_work": render.1,
+        "render_msg": render.2,
+        "render_timeout": render.3,
+        "render_failed": render.4,
+        "render_acks": render.5,
+        "scope": "outer-only-plus-native-waits",
+        "excludes": "focus-proof-nested-waits,stop-short-circuit",
+    });
+    if let Some(flushed) = flushed {
+        line["flushed"] = serde_json::Value::from(flushed);
+    }
+    line
+}
+
 /// Message-only wait for the focus-settle and proof paths: the same pump as
 /// [`pump_wait_with_intent`] with no intent or ack wake, so those paths never
 /// consume or spin on the owner wakes. The recursive focus-settle pump
@@ -251,7 +354,7 @@ impl OwnerWaitCounts {
 /// count, so the trace summary distinguishes outer returns from
 /// focus/proof waits by construction.
 pub(super) fn pump_wait(timeout_ms: u32) {
-    pump_wait_with_intent(timeout_ms, None, None);
+    pump_wait_with_intent(timeout_ms, None, None, &[]);
 }
 
 #[derive(Debug, Clone)]
