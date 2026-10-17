@@ -207,6 +207,43 @@ describe("world migration apply", () => {
         assert.ok(world.switchViewCalls.some((c) => c === "out-a->wl-1"), "source refills");
     });
 
+    it("prefers the core-retained refill view over the rows-lowest fallback", () => {
+        const reply = loadReply();
+        // Two remaining source rows: wa0 sorts first, but the core-retained
+        // refill view (R-WS-12 G-37, from the validated report setting)
+        // names wl-1 and must win. The adapter never selects the refill.
+        for (const ws of reply.workspaces) {
+            if (ws.id === "wl-1" && ws.out === "out-a") {
+                ws.bind = "wl-1";
+            }
+        }
+        reply.workspaces.push({
+            id: "wa0", out: "out-a", bind: "wa0", logical: "l0",
+            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "",
+        });
+        reply.transfers.push({
+            op: "op-22-refill", kind: "view", win: "", out: "out-a",
+            ws: "wl-1", follow: false, held: false,
+        });
+        const world: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const state = freshState(reply);
+        applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->wl-1"), "core refill wins");
+        assert.ok(!world.switchViewCalls.some((c) => c === "out-a->wa0"), "rows-lowest loses");
+    });
+
     it("holds partial progress truthfully without repeating ambiguity", () => {
         const reply = loadReply();
         const world: FakeWorld = {
@@ -234,6 +271,9 @@ describe("world migration apply", () => {
         });
         assert.equal(world.sendToOutputCalls.length, 1, "no repeated ambiguous move");
         assert.ok(second.held >= 1);
+        // Partial member failure switches NO follow or refill view: the
+        // target view stays untouched until all member arrival proof.
+        assert.equal(world.switchViewCalls.length, 0, "zero source and target view calls");
         void first;
     });
 
@@ -323,5 +363,158 @@ describe("world migration apply", () => {
         });
         assert.equal(removed, 0, "no native removal on incomplete inventory");
         assert.ok(out.held >= 1);
+    });
+});
+
+describe("world migration refill gating", () => {
+    // Reply with the core-retained paired refill child (R-WS-12 G-37):
+    // migration op-22 plus the exact paired view op-22-refill naming the
+    // core-chosen wl-1 source refill with wa0 as the rows-lowest decoy.
+    function loadPairedReply(): WorldReply {
+        const reply = loadReply();
+        for (const ws of reply.workspaces) {
+            if (ws.id === "wl-1" && ws.out === "out-a") {
+                ws.bind = "wl-1";
+            }
+        }
+        reply.workspaces.push({
+            id: "wa0", out: "out-a", bind: "wa0", logical: "l0",
+            scope: "out-a", order: 0, mode: "tiled", exist: true, hold: "",
+        });
+        reply.transfers.push({
+            op: "op-22-refill", kind: "view", win: "", out: "out-a",
+            ws: "wl-1", follow: false, held: false,
+        });
+        return reply;
+    }
+
+    function pairedWorld(): FakeWorld {
+        return {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+    }
+
+    it("stale held policy views are never chosen as the refill", () => {
+        const reply = loadPairedReply();
+        // A stale possibly-executed leftover naming an unlisted workspace:
+        // exact pairing rejects it, so the rows can never refill there.
+        reply.transfers.push({
+            op: "op-9", kind: "view", win: "", out: "out-a",
+            ws: "ws-gone", follow: false, held: true,
+        });
+        const world = pairedWorld();
+        const state = freshState(reply);
+        const applied = applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.ok(!world.switchViewCalls.some((c) => c === "out-a->ws-gone"), "conflicting view not chosen");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->wl-1"), "paired refill wins");
+        assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target follows");
+        assert.ok(applied.viewWrites >= 2);
+    });
+
+    it("delayed member arrival settles the refill once with no member replay", () => {
+        const reply = loadPairedReply();
+        const world = pairedWorld();
+        world.lieMembership = true;
+        const state = freshState(reply);
+        // First apply: the member move never lands, so no follow or refill
+        // view switches at all.
+        const first = applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 1, "member attempted once");
+        assert.equal(world.switchViewCalls.length, 0, "zero view calls without member proof");
+        assert.ok(first.held >= 1);
+        void first;
+        // The move lands externally (no adapter call): the ambiguous parent
+        // accepts the late full-membership proof without member replay,
+        // then switches both views exactly once.
+        world.homing.set("win-a", { out: "out-b", ws: "wa1" });
+        world.lieMembership = false;
+        const second = applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 1, "no member replay on late proof");
+        assert.deepEqual(
+            world.switchViewCalls,
+            ["out-b->wa1", "out-a->wl-1"],
+            "target and refill switch exactly once each",
+        );
+        assert.ok(second.viewWrites >= 2);
+        void second;
+        // Repeated snapshots with converged observation duplicate nothing.
+        const third = applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 1);
+        assert.equal(world.setMembershipCalls.length, 0);
+        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->wl-1"], "no duplicate views");
+        void third;
+    });
+
+    it("a refill switch that never shows on the exact output proves nothing and never retries", () => {
+        const reply = loadPairedReply();
+        const world = pairedWorld();
+        const state = freshState(reply);
+        const env = makeEnv(state, world);
+        // The source switch records but never lands; the target lands.
+        const lying = {
+            ...env,
+            switchView: (desktopRef: object, outRef: object) => {
+                const out = (outRef as { name: string }).name;
+                const ws = (desktopRef as { id: string }).id;
+                world.switchViewCalls.push(`${out}->${ws}`);
+                if (out === "out-b") {
+                    world.currents.set(out, ws);
+                }
+                return true;
+            },
+        };
+        const first = applyWorldReply({ ...lying, observation: makeObservation(world), reply });
+        assert.ok(world.switchViewCalls.some((c) => c === "out-a->wl-1"), "refill attempted once");
+        assert.ok(first.held >= 1, "unproven refill holds");
+        void first;
+        // A repeat under the fresh revision retries nothing ambiguous.
+        const second = applyWorldReply({ ...lying, observation: makeObservation(world), reply });
+        assert.deepEqual(
+            world.switchViewCalls.filter((c) => c === "out-a->wl-1"),
+            ["out-a->wl-1"],
+            "ambiguous refill never retried",
+        );
+        assert.ok(second.held >= 1);
+        void second;
+    });
+
+    it("an already-shown refill proves on the exact output with no new call", () => {
+        const reply = loadPairedReply();
+        const world = pairedWorld();
+        // Members already homed at the target, both views already shown.
+        world.homing.set("win-a", { out: "out-b", ws: "wa1" });
+        world.currents.set("out-b", "wa1");
+        world.currents.set("out-a", "wl-1");
+        const state = freshState(reply);
+        const applied = applyWorldReply({
+            ...makeEnv(state, world),
+            observation: makeObservation(world),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 0, "no member replay");
+        assert.equal(world.switchViewCalls.length, 0, "exact-output proof needs no call");
+        assert.equal(applied.viewWrites, 0);
     });
 });

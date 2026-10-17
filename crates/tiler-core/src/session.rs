@@ -3430,6 +3430,311 @@ mod tests {
             .expect("admit verify");
     }
 
+    /// Admit helper with explicit observed flags and caller exceptions:
+    /// proposes, acknowledges, and verifies, returning the plan for
+    /// operation/allocation assertions.
+    fn admit_flags(
+        session: &mut Session,
+        window: &str,
+        observed: ExceptionFlags,
+        exceptions: ExceptionFlags,
+        exception_behavior: Option<ExceptionBehavior>,
+    ) -> SessionPlan {
+        let rev = session.accepted_revision();
+        let window_id = WindowId(window.to_owned());
+        let mut windows = obs_windows(session);
+        windows.push(ObservedWindow {
+            window: window_id.clone(),
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            floating: observed.floating,
+            fullscreen: observed.fullscreen,
+            maximized: observed.maximized,
+            sticky: observed.sticky,
+            fixed_auto: false,
+            fixed_suppress: false,
+            hints: crate::size_hints::WindowSizeHints::none(),
+        });
+        let command = SessionCommand::Admit {
+            window: window_id.clone(),
+            output: OutputId("out-1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+            exceptions,
+            exception_behavior,
+            placement_bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            suppress_fixed_float: false,
+        };
+        let observation = SessionObservation {
+            observation: Observation::new(owner(), generation(), rev, 100 + rev),
+            windows,
+        };
+        let correlation = corr(&format!("corr-admit-{window}"));
+        let plan = session
+            .propose(
+                &command,
+                &observation,
+                &correlation,
+                &LifecycleCapabilities::full(),
+            )
+            .expect("admit propose");
+        session
+            .acknowledge(&AdapterAck::new(
+                correlation.clone(),
+                owner(),
+                generation(),
+                rev,
+                AckOutcome::Accepted,
+            ))
+            .expect("admit ack");
+        // Deferred admissions verify fixed preconditions; normal tiled
+        // admissions verify the plan's own dispatch preconditions.
+        let (preconditions, operation) = if exceptions.any() {
+            (
+                vec![
+                    crate::contract::LifecyclePrecondition::WindowObserved,
+                    crate::contract::LifecyclePrecondition::DesiredTopologyValid,
+                    crate::contract::LifecyclePrecondition::AdapterMustVerifyPostconditions,
+                ],
+                crate::contract::LifecycleOperation::AdmitDeferred {
+                    window: window_id,
+                    output: OutputId("out-1".to_owned()),
+                    workspace: WorkspaceId("ws-1".to_owned()),
+                },
+            )
+        } else {
+            (
+                plan.dispatch.preconditions.clone(),
+                plan.dispatch.operation.clone(),
+            )
+        };
+        session
+            .verify_lifecycle(&LifecyclePostObservation::new(
+                Observation::new(owner(), generation(), rev, 200 + rev),
+                correlation,
+                true,
+                preconditions,
+                operation,
+            ))
+            .expect("admit verify");
+        plan
+    }
+
+    #[test]
+    fn explicit_defer_maximize_only_preserves_flags_slotless() {
+        // Previously-valid explicit deferred admission with
+        // exceptions.maximized=true must not trip the R-MAX-06
+        // maximized-only tile-carrier normalization into
+        // PartialObservation.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        let max_only = ExceptionFlags {
+            floating: false,
+            fullscreen: false,
+            maximized: true,
+            sticky: false,
+        };
+        let plan = admit_flags(
+            &mut session,
+            "win-max",
+            max_only,
+            max_only,
+            Some(ExceptionBehavior::Defer),
+        );
+        assert!(
+            matches!(
+                plan.dispatch.operation,
+                crate::contract::LifecycleOperation::AdmitDeferred { .. }
+            ),
+            "maximize-only defer stays slotless"
+        );
+        assert!(
+            plan.desired_snapshot.windows.is_empty(),
+            "deferred admission takes no tile slot"
+        );
+        let observed = session.exception_observed();
+        assert_eq!(observed.len(), 1, "one deferred exception stored");
+        assert_eq!(observed[0].flags(), max_only, "maximized flag preserved");
+        assert!(
+            session.snapshot().windows.is_empty(),
+            "committed deferred admission stays slotless"
+        );
+    }
+
+    #[test]
+    fn explicit_defer_floating_maximized_preserves_flags_slotless() {
+        // A floating+maximized combo with matching caller exceptions
+        // defers with both flags intact (never normalized away).
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        let combo = ExceptionFlags {
+            floating: true,
+            fullscreen: false,
+            maximized: true,
+            sticky: false,
+        };
+        let plan = admit_flags(
+            &mut session,
+            "win-float-max",
+            combo,
+            combo,
+            Some(ExceptionBehavior::Defer),
+        );
+        assert!(
+            matches!(
+                plan.dispatch.operation,
+                crate::contract::LifecycleOperation::AdmitDeferred { .. }
+            ),
+            "floating+max defer stays slotless"
+        );
+        let observed = session.exception_observed();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].flags(), combo, "combo flags preserved");
+        assert!(session.snapshot().windows.is_empty());
+    }
+
+    #[test]
+    fn normal_maximized_only_carrier_admits_tiled_with_alloc() {
+        // The ordinary normal carrier (maximized-only birth, no caller
+        // exceptions) still admits as a tile with a safe approved
+        // allocation for the adapter clear phase.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        let plan = admit_flags(
+            &mut session,
+            "win-max",
+            ExceptionFlags {
+                floating: false,
+                fullscreen: false,
+                maximized: true,
+                sticky: false,
+            },
+            ExceptionFlags::none(),
+            None,
+        );
+        assert!(
+            matches!(
+                plan.dispatch.operation,
+                crate::contract::LifecycleOperation::Admit { .. }
+            ),
+            "max-only carrier takes a tile slot"
+        );
+        assert!(
+            !plan.desired_geometry.is_empty(),
+            "approved allocation rides the plan"
+        );
+        assert_eq!(plan.desired_snapshot.windows.len(), 1);
+        assert_eq!(session.snapshot().windows.len(), 1);
+    }
+
+    #[test]
+    fn admit_binding_mismatch_stays_refused() {
+        // Exception-binding invariants hold: only the maximized-only tile
+        // carrier relaxes matching; anything else binds observed flags
+        // exactly, and unselected behavior still refuses.
+        let mut session = Session::new(owner(), generation(), 0, 7, vec![domain()]).expect("new");
+        let rev = session.accepted_revision();
+        let propose = |session: &mut Session,
+                       window: &str,
+                       floating: bool,
+                       maximized: bool,
+                       exceptions: ExceptionFlags,
+                       behavior: Option<ExceptionBehavior>| {
+            let window_id = WindowId(window.to_owned());
+            let mut windows = obs_windows(session);
+            windows.push(ObservedWindow {
+                window: window_id.clone(),
+                output: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                floating,
+                fullscreen: false,
+                maximized,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            });
+            let command = SessionCommand::Admit {
+                window: window_id,
+                output: OutputId("out-1".to_owned()),
+                workspace: WorkspaceId("ws-1".to_owned()),
+                exceptions,
+                exception_behavior: behavior,
+                placement_bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 100,
+                    h: 50,
+                },
+                suppress_fixed_float: false,
+            };
+            let observation = SessionObservation {
+                observation: Observation::new(owner(), generation(), rev, 100 + rev),
+                windows,
+            };
+            session.propose(
+                &command,
+                &observation,
+                &corr(&format!("corr-admit-{window}")),
+                &LifecycleCapabilities::full(),
+            )
+        };
+        // Maximized-only observed with a floating exception selected.
+        let err = propose(
+            &mut session,
+            "win-a",
+            false,
+            true,
+            ExceptionFlags {
+                floating: true,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+            },
+            Some(ExceptionBehavior::Defer),
+        )
+        .expect_err("cross-flag binding refuses");
+        assert!(matches!(
+            err,
+            ProposeError::Refused(RefusalKind::PartialObservation)
+        ));
+        // Floating observed with no exceptions selected.
+        let err = propose(
+            &mut session,
+            "win-b",
+            true,
+            false,
+            ExceptionFlags::none(),
+            None,
+        )
+        .expect_err("overlay without behavior refuses");
+        assert!(matches!(
+            err,
+            ProposeError::Refused(RefusalKind::PartialObservation)
+        ));
+        // Maximized-only observed with a maximized exception but no
+        // behavior selected.
+        let err = propose(
+            &mut session,
+            "win-c",
+            false,
+            true,
+            ExceptionFlags {
+                floating: false,
+                fullscreen: false,
+                maximized: true,
+                sticky: false,
+            },
+            None,
+        )
+        .expect_err("unselected behavior refuses");
+        assert!(matches!(
+            err,
+            ProposeError::Refused(RefusalKind::ExceptionBehaviorUnselected)
+        ));
+    }
+
     /// Two tiled windows: root `H[leaf-win-1 (0-60), leaf-win-2 (60-120)]`,
     /// focus `win-2`.
     fn session_two() -> Session {

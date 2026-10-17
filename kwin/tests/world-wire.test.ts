@@ -89,7 +89,7 @@ function makeSurface() {
 const RUST_REQUIRED_KEYS = [
     "v", "owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq",
     "command", "mode", "topology", "bindings", "domains", "minimized",
-    "predicate", "defaultTiled", "focused", "complete", "gesture", "feedback",
+    "predicate", "refill", "defaultTiled", "focused", "complete", "gesture", "feedback",
 ];
 
 function isCanonicalU64(text: unknown): boolean {
@@ -144,6 +144,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(isCanonicalU64(body["obs"]));
         assert.ok(isCanonicalU64(body["reqSeq"]));
         assert.equal(body["predicate"], "both-axes-fixed");
+        assert.equal(body["refill"], "last-remaining-workspace", "validated refill rides every report (default)");
         assert.equal(body["defaultTiled"], true, "saved default rides every report (backfill true)");
         const topo = body["topology"] as Array<Record<string, unknown>>;
         assert.equal(topo.length, 1);

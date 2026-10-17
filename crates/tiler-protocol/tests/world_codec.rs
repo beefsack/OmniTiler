@@ -31,7 +31,7 @@ fn request_json(
          \"domains\":[{{\"id\":\"out\",\"ws\":\"ws\",\"bounds\":[0,0,800,600],\"gap\":8,\
          \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
          \"windows\":[{domain_windows}],\"closed\":[]}}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}"
     )
 }
@@ -145,6 +145,28 @@ fn minimized_predicate_and_new_commands_decode() {
     let bad = one_window_request().replace("both-axes-fixed", "sometimes-fixed");
     let error = decode_request(&bad).expect_err("bad predicate refuses");
     assert_eq!(error.kind, "unknown-value");
+    // Ingress migration source-refill decodes typed: the default rides the
+    // helper envelope, MRU decodes explicitly, unknown tokens refuse without
+    // echo, and a missing key refuses (no silent default at this boundary).
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(
+        report.migration_source_refill,
+        tiler_core::output_selection::MigrationSourceRefill::LastRemaining
+    );
+    let mru =
+        one_window_request().replace("last-remaining-workspace", "most-recently-used-workspace");
+    let report = decode_request(&mru).expect("mru decodes");
+    assert_eq!(
+        report.migration_source_refill,
+        tiler_core::output_selection::MigrationSourceRefill::MostRecentlyUsed
+    );
+    let bad = one_window_request().replace("last-remaining-workspace", "mru");
+    let error = decode_request(&bad).expect_err("bad refill refuses");
+    assert_eq!(error.kind, "unknown-value");
+    let mut missing: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    missing.as_object_mut().expect("object").remove("refill");
+    decode_request(&missing.to_string()).expect_err("missing refill refuses");
     // Minimized overlap with live membership refuses as snapshot-invalid.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["minimized"] = serde_json::json!([{"win": "win-a", "out": "out", "ws": "ws"}]);
@@ -211,7 +233,7 @@ fn request_estimate_bounds_actual_wire_bytes() {
          \"hints\":{{\"minW\":1,\"minH\":null,\"maxW\":16384,\"maxH\":null}}}}],\
          \"closed\":[]}}],\
          \"minimized\":[{{\"win\":\"win-m\",\"out\":\"out\",\"ws\":\"ws\"}}],\
-         \"predicate\":\"either-axis-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"predicate\":\"either-axis-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\
          \"feedback\":[{{\"op\":\"op-9\",\"kind\":\"property\",\"outcome\":\"applied\",\
          \"hold\":\"constraint-clamp\"}}]}}"
@@ -429,7 +451,7 @@ fn golden_reply_bytes_lock_wire_shape() {
         \"scope\":\"out\",\"order\":1,\"mode\":\"tiled\",\"exist\":true,\"hold\":\"\"}],\
         \"outputs\":[{\"out\":\"out\",\"view\":\"\",\"mode\":\"tiled\",\"hold\":\"\"}],\
         \"windows\":[{\"win\":\"win-a\",\"out\":\"out\",\"ws\":\"ws\",\
-        \"alloc\":[0,0,800,600],\"frame\":[0,0,800,600],\
+        \"alloc\":[4,4,792,592],\"frame\":[4,4,792,592],\
         \"frame_auth\":\"controlled\",\"frame_hold\":\"\",\
         \"member_auth\":\"controlled\",\"member_hold\":\"\",\"frame_op\":\"\"}],\
         \"transfers\":[],\"effects\":[],\"result\":null}";
@@ -567,7 +589,7 @@ fn many_window_request_capped(
          \"command\":null,\"mode\":\"per-output-local\",\
          \"topology\":[{{\"out\":\"out\",\"order\":[{}],\"current\":\"ws-000\",\
          \"complete\":true,\"rect\":null,\"primary\":false}}],\"bindings\":[],\"domains\":[{}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         order.join(","),
         domain_rows.join(",")
@@ -851,6 +873,28 @@ fn shared_fixture_reply_golden_regeneration() {
     std::fs::write(dir.join("reply-golden.json"), encode_reply(&reply)).expect("write golden");
 }
 
+/// Outer-gap fixture: real TS producer bytes (800x600, inner 8, outer
+/// 12) regenerate the inset reply golden. Runs only with
+/// UPDATE_WORLD_FIXTURES=1; the gate below pins semantic edge geometry,
+/// never a bare byte compare.
+#[test]
+fn shared_fixture_outer_gap_golden_regeneration() {
+    if std::env::var("UPDATE_WORLD_FIXTURES").as_deref() != Ok("1") {
+        return;
+    }
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire");
+    let json =
+        std::fs::read_to_string(dir.join("report-outer-gap.json")).expect("TS fixture present");
+    let report = decode_request(&json).expect("TS fixture decodes");
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    std::fs::write(dir.join("reply-outer-gap.json"), encode_reply(&reply)).expect("write golden");
+}
+
 /// Correlated-result fixtures: real engine replies carrying `result`
 /// sections (drag-preview rect+hover, whole-workspace migration members)
 /// for the kwin production-entry suite to parse and apply. Regenerated
@@ -883,7 +927,7 @@ fn preview_fixture_request() -> String {
     value["cmdSeq"] = serde_json::Value::String("21".to_owned());
     value["command"] = serde_json::json!({
         "op": "operation",
-        "command": {"op": "drag-preview", "win": "win-a", "x": 410, "y": 300, "hover": null, "source": null},
+        "command": {"op": "drag-preview", "win": "win-a", "x": 100, "y": 300, "hover": null, "source": null},
     });
     value.to_string()
 }
@@ -903,7 +947,7 @@ fn migrate_fixture_seed() -> String {
          {{\"id\":\"out-b\",\"ws\":\"wb1\",\"bounds\":[800,0,800,600],\"gap\":8,\
          \"outer\":4,\"focused\":\"win-b\",\"readable\":true,\"hold\":\"\",\
          \"adjacent\":{{\"left\":\"out-a\"}},\"windows\":[{win_b}],\"closed\":[]}}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         win_a = window_in_json("win-a", "out-a", "wa1", 0),
         win_b = window_in_json("win-b", "out-b", "wb1", 0),
@@ -1113,6 +1157,10 @@ const FIXTURE_SIZE_HINTS: &str =
     include_str!("../../../test-fixtures/world-wire/report-kwin-size-hints.json");
 const FIXTURE_SIZE_HINTS_SELECT: &str =
     include_str!("../../../test-fixtures/world-wire/report-kwin-size-hints-select.json");
+const FIXTURE_OUTER_GAP_REPORT: &str =
+    include_str!("../../../test-fixtures/world-wire/report-outer-gap.json");
+const FIXTURE_OUTER_GAP_GOLDEN: &str =
+    include_str!("../../../test-fixtures/world-wire/reply-outer-gap.json");
 
 #[test]
 fn shared_fixture_actual_bytes_gate() {
@@ -1221,6 +1269,37 @@ fn shared_fixture_actual_bytes_gate() {
 }
 
 #[test]
+fn shared_fixture_outer_gap_insets_all_edges() {
+    // Real TS producer bytes: 800x600 work area, inner 8, outer 12, two
+    // windows. Semantic edge assertions (never a bare golden compare):
+    // inset gives 776x576 at (12,12) with one canonical inner gap of 8.
+    let report = decode_request(FIXTURE_OUTER_GAP_REPORT).expect("decodes");
+    assert_eq!(report.domains.len(), 1);
+    assert_eq!(report.domains[0].domain.gap, 8);
+    assert_eq!(report.domains[0].outer_gap, 12);
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let reply = match engine.handle_report(&report) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert_eq!(encode_reply(&reply), FIXTURE_OUTER_GAP_GOLDEN);
+    let mut frames: Vec<(i32, i32, i32, i32)> = reply
+        .windows
+        .iter()
+        .filter_map(|w| w.effective_frame.map(|r| (r.x, r.y, r.w, r.h)))
+        .collect();
+    assert_eq!(frames.len(), 2);
+    frames.sort();
+    assert_eq!(frames[0], (12, 12, 384, 576), "left tile at inset edge");
+    assert_eq!(frames[1], (404, 12, 384, 576), "right tile at inset edge");
+    assert_eq!(
+        frames[1].0 - (frames[0].0 + frames[0].2),
+        8,
+        "canonical inner gap"
+    );
+}
+
+#[test]
 fn kwin_real_size_hints_accept_through_repeated_observes() {
     // Native Qt QSize shapes (see the TS-captured
     // report-kwin-size-hints.json gate below for the actual producer
@@ -1254,7 +1333,7 @@ fn kwin_real_size_hints_accept_through_repeated_observes() {
              \"domains\":[{{\"id\":\"out\",\"ws\":\"ws\",\"bounds\":[0,0,800,600],\"gap\":8,\
              \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
              \"windows\":[{windows}],\"closed\":[]}}],\
-             \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\
+             \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\
              \"focused\":\"\",\"complete\":true,\"gesture\":false,\"feedback\":[]}}"
         )
     }

@@ -38,9 +38,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::{CoreCommand, CoreEvent, CoreReply};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::engine::Engine;
+use crate::geometry::Rect;
 use crate::ids::{CorrelationId, GenerationId, OwnerId};
 use crate::seed::EngineWindow;
-use crate::session::DomainKey;
+use crate::session::{DomainKey, OutputDomain};
 use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
 use crate::world_publish::{current_view, migration_confirmed, observed_closed, observed_homing};
@@ -104,6 +105,23 @@ pub(crate) const MSG_SELECT_UNKNOWN: &str = "selection target is not a known wor
 pub(crate) const MSG_MIGRATION: &str = "workspace migration refused by scope policy";
 pub(crate) const MSG_OPERATION: &str = "operation route refused without mutation";
 pub(crate) const MSG_TILING_TARGET: &str = "tiling target is not a known live workspace";
+
+/// Inset one carried world domain by its outer gap (legacy planner-protocol
+/// parity): the Engine retains the already-inset work area, never the raw
+/// client area. `None` when the inset exhausts the bounds (geometric
+/// exhaustion, held as constraint-clamp by the caller, never a silent
+/// empty). Preserves id/workspace/gap/adjacency; only bounds shrink.
+#[must_use]
+pub(crate) fn inset_world_domain(domain: &OutputDomain, outer_gap: i32) -> Option<OutputDomain> {
+    let inset: Rect = crate::geometry::inset_bounds(domain.bounds, outer_gap).ok()?;
+    Some(OutputDomain {
+        id: domain.id.clone(),
+        workspace: domain.workspace.clone(),
+        bounds: inset,
+        gap: domain.gap,
+        adjacent: domain.adjacent.clone(),
+    })
+}
 
 /// Retained transfer plus the source homing needed for shielding and
 /// settlement. The reply projects only the [`TransferTarget`]. Policy
@@ -933,19 +951,54 @@ impl WorldEngine {
         held_scopes: &mut BTreeSet<DomainKey>,
     ) {
         let key = domain.domain.key();
+        // Legacy parity: the Engine retains the outer-inset work area.
+        // Inset exhaustion holds geometrically (capacity B), never seeds
+        // an empty domain or drops retained topology.
+        let Some(inset) = inset_world_domain(&domain.domain, domain.outer_gap) else {
+            self.hold_reasons
+                .insert(key.clone(), HoldReason::ConstraintClamp);
+            held_scopes.insert(key);
+            return;
+        };
         let windows = self.shielded_windows(&key, &domain.windows, by_id);
         let accepted = self
             .engine
             .session(&key)
             .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
         let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        // Gap/bounds changes adopt through the topology-preserving
+        // update-gaps path (legacy parity); unchanged shapes reconcile.
+        // Unknown sessions reconcile (fresh seed), never update-gaps
+        // (which refuses unknown domains so the fresh route seeds them).
+        let command = match self.engine.session(&key) {
+            Some(session) => {
+                let retained_gap = session
+                    .domains()
+                    .iter()
+                    .find(|d| d.key() == key)
+                    .map(|d| (d.bounds, d.gap));
+                let retained_outer = self.engine.outer_gap(&key);
+                match (retained_gap, retained_outer) {
+                    (Some((bounds, gap)), Some(outer))
+                        if bounds == inset.bounds
+                            && gap == inset.gap
+                            && outer == domain.outer_gap =>
+                    {
+                        CoreCommand::Reconcile
+                    }
+                    (Some(_), Some(_)) => CoreCommand::UpdateGaps,
+                    _ => CoreCommand::Reconcile,
+                }
+            }
+            None => CoreCommand::Reconcile,
+        };
         let event = CoreEvent {
             owner: owner.clone(),
             generation: self.core_generation.clone(),
             correlation: correlation.clone(),
             revision,
             fingerprint,
-            domain: Engine::canonical_component_domain(&domain.domain),
+            domain: Engine::canonical_component_domain(&inset),
             domain_key: key.clone(),
             outer_gap: domain.outer_gap,
             focused_window: domain.focused.clone(),
@@ -955,7 +1008,7 @@ impl WorldEngine {
             directional_target_outer_gap: None,
             target_domain: None,
             target_windows: Vec::new(),
-            command: CoreCommand::Reconcile,
+            command,
         };
         match self.engine.handle(&event) {
             CoreReply::Projection(_)

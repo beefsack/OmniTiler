@@ -59,6 +59,16 @@ impl super::super::Session {
                     .floating_geometry
                     .or_else(|| self.retained_float_geometry.get(window).copied()),
             };
+            // B9 maximized unfloat guard: a floating window still observed
+            // maximized refuses the unfloat (pre-clear state); the adapter
+            // clears the native overlay once, and the unmaximized
+            // observation fresh-admits below. This holds independently of
+            // the R-MAX-06 fresh-max carrier (maximized-only births admit
+            // as tiles in `propose_admit`): an unfloat always requires a
+            // post-clear observation.
+            if target.maximized {
+                return Err(ProposeError::Refused(RefusalKind::PartialObservation));
+            }
             let mut candidate = self.clone();
             candidate.exceptions.remove(window);
             if let Some(rect) = retained {

@@ -326,11 +326,33 @@ impl WorldEngine {
                 _ => None,
             };
             let frame_hold = report.gesture_barrier;
+            // Legacy parity: project the outer-inset work area, never the
+            // raw client area. Inset exhaustion here mirrors the sweep
+            // hold (the sweep already held, so this is only a backstop).
+            let Some(inset) =
+                crate::world_engine::inset_world_domain(&domain.domain, domain.outer_gap)
+            else {
+                if let Some(scope) = scopes.last_mut() {
+                    scope.authority = ScopeAuthority::Hold(HoldReason::ConstraintClamp);
+                }
+                for window in &domain.windows {
+                    live.remove(&window.window.0);
+                }
+                Self::push_held_lifetimes(
+                    session,
+                    &key,
+                    HoldReason::ConstraintClamp,
+                    &live,
+                    &mut emitted,
+                    &mut windows,
+                );
+                continue;
+            };
             let plan = project_retained_tiled_geometry(
                 session,
                 &key,
-                domain.domain.bounds,
-                domain.domain.gap,
+                inset.bounds,
+                inset.gap,
                 focus_pair,
                 ProjectionKind::Reconcile,
                 &hints,

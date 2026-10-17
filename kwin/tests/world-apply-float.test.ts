@@ -20,7 +20,10 @@ const FIXTURE = path.resolve("..", "test-fixtures", "world-wire", "reply-float.j
 // Stable core property operation identity for the float command that
 // produced the shared fixture (matches the protocol byte gate cmdSeq).
 const OP = "op-24";
-const TARGET = { x: 160, y: 120, w: 480, h: 360 };
+// Centered 60% float placement in the outer-inset work area (800x600 inset
+// by outer 4 gives 792x592 at (4,4); 60% is 475x355 centered at
+// (162,122)): respects the screen-edge gap like tiled frames.
+const TARGET = { x: 162, y: 122, w: 475, h: 355 };
 
 function loadReply(): WorldReply {
     const parsed = parseWorldReply(fs.readFileSync(FIXTURE, "utf8"));
@@ -152,7 +155,7 @@ describe("world float placement", () => {
             observation: makeObservation(world),
             reply,
         });
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.ok(first.geometryWrites >= 1);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
         assert.equal(feedback(state, OP)?.outcome, "applied");
@@ -164,7 +167,7 @@ describe("world float placement", () => {
             reply,
         });
         assert.equal(second.geometryWrites, 0);
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
     });
 
     it("recovers a lost result reply through the retained row token on the next snapshot", () => {
@@ -192,7 +195,7 @@ describe("world float placement", () => {
             reply: later,
         });
         assert.ok(applied.geometryWrites >= 1);
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
         assert.equal(feedback(state, OP)?.outcome, "applied");
     });
@@ -228,7 +231,7 @@ describe("world float placement", () => {
             reply: later,
         });
         assert.equal(again.geometryWrites, 0);
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
     });
 
@@ -383,7 +386,7 @@ describe("world float placement", () => {
             reply: { ...reply, rev: "3", result: null },
         });
         assert.equal(moved.geometryWrites, 0);
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.deepEqual(world.frames.get("win-a"), { x: 300, y: 300, w: 200, h: 150 });
         assert.equal(feedback(state, OP)?.outcome, "superseded-external");
     });
@@ -447,7 +450,7 @@ describe("world float placement", () => {
             observation: makeObservation(world),
             reply,
         });
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.equal(feedback(state, OP)?.outcome, "applied");
         void placed;
     });
@@ -470,7 +473,7 @@ describe("world float placement", () => {
         for (let i = 0; i < 5; i += 1) {
             applyWorldReply({ ...env, observation: makeObservation(world), reply });
         }
-        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@160,120,480,360"]);
+        assert.deepEqual(world.sets.filter((c) => c.startsWith("win-a@")), ["win-a@162,122,475,355"]);
         assert.equal(feedback(state, OP)?.outcome, "applied");
     });
 });

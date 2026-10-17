@@ -456,7 +456,7 @@ mod tests {
              \"gen\":\"gen-stale\",\"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\
              \"cmdSeq\":null,\"command\":null,\"mode\":\"per-output-local\",\
              \"topology\":[],\"bindings\":[],\"domains\":[],\"minimized\":[],\
-             \"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+             \"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
              \"complete\":true,\
              \"gesture\":false,\"feedback\":[]}"
             .to_owned();
@@ -516,7 +516,7 @@ mod tests {
             "{{\"v\":1,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"{stale}\",\
              \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\"command\":null,\
              \"mode\":\"per-output-local\",\"topology\":[],\"bindings\":[],\"domains\":[],\
-             \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\
+             \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\
              \"focused\":\"\",\
              \"complete\":true,\"gesture\":false,\"feedback\":[]}}"
         );

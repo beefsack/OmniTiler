@@ -28,7 +28,7 @@
 //! ```text
 //! {v:1, owner, adapter, gen, obs:"u64", reqSeq:"u64", req, cmdSeq:"u64"|null,
 //!  command:{op,...}|null, mode, topology, bindings, domains,
-//!  minimized, predicate, defaultTiled:bool, focused:""|id, complete:bool,
+//!  minimized, predicate, refill, defaultTiled:bool, focused:""|id, complete:bool,
 //!  gesture:bool, feedback}
 //! topology[]: {out, order:[native...], current, complete:bool,
 //!              rect:[x,y,w,h]|null, primary:bool}
@@ -40,6 +40,7 @@
 //!             fixedSuppress:bool, hints:{minW,maxW,minH,maxH: i32|null}}
 //! minimized[]: {win, out, ws}
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
+//! refill: "last-remaining-workspace"|"most-recently-used-workspace"
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
 //!                      superseded-external|applied, hold:""|token}
@@ -1006,6 +1007,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "domains",
             "minimized",
             "predicate",
+            "refill",
             "defaultTiled",
             "focused",
             "complete",
@@ -1063,6 +1065,9 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     let predicate =
         tiler_core::size_hints::FixedSizePredicate::parse_wire(req_str(map, "predicate")?)
             .ok_or_else(unknown_value)?;
+    let refill =
+        tiler_core::output_selection::MigrationSourceRefill::parse_wire(req_str(map, "refill")?)
+            .ok_or_else(unknown_value)?;
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         owner: req_bounded(map, "owner", MAX_OWNER_LEN, is_owner_text)?,
@@ -1079,6 +1084,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         domains,
         minimized,
         fixed_size_predicate: predicate,
+        migration_source_refill: refill,
         default_tiled: req_bool(map, "defaultTiled")?,
         focused_global: {
             let text = req_str(map, "focused")?;

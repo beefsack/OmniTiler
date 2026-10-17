@@ -295,7 +295,11 @@ impl WorldEngine {
             target_current,
             source_current,
             previous_before: self.history.previous(&source_output.0),
-            refill: MigrationRefill::MostRecentlyUsed,
+            // Ingress R-WS-12 G-37 setting (main.xml `migrationSourceRefill`,
+            // catalog `migration.refill`): the validated report value selects
+            // the source refill for this migration only. Retained history and
+            // already-committed state never reset on a setting change.
+            refill: MigrationRefill::from(report.migration_source_refill),
         };
         let scope_plan = match plan_migration(&self.mapping, &request) {
             Ok(plan) => plan,
@@ -415,13 +419,21 @@ impl WorldEngine {
             .session(&source_key)
             .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
         let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let Some(inset_source) =
+            crate::world_engine::inset_world_domain(&source_report.domain, source_report.outer_gap)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
             revision,
             fingerprint,
-            domain: Engine::canonical_component_domain(&source_report.domain),
+            domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_report.outer_gap,
             focused_window: source_report.focused.clone(),
@@ -487,6 +499,31 @@ impl WorldEngine {
                 });
                 self.note_command(command_seq);
                 self.mapping = apply_migration(&self.mapping, &scope_plan);
+                // R-WS-12 G-37 source-refill actuation: retain the
+                // core-chosen refill view on the source output so the
+                // adapter shows it from the core result (retained views win
+                // in plan_outputs and actuate through the shared view path).
+                // Never a TS selection. An emptied source (no refill) retains
+                // nothing; ordinary trailing lifecycle converges later.
+                if let Some(refill) = scope_plan.refill.clone() {
+                    self.retained.retain(|r| {
+                        !(matches!(&r.target.kind, TransferKind::View)
+                            && r.target.target_output == *source_output)
+                    });
+                    self.retained.push(RetainedTransfer {
+                        target: TransferTarget {
+                            operation_id: format!("op-{command_seq}-refill"),
+                            kind: TransferKind::View,
+                            target_output: source_output.clone(),
+                            target_workspace: refill,
+                            follow: false,
+                            held: false,
+                        },
+                        policy: false,
+                        source_output: source_output.clone(),
+                        source_workspace: workspace.to_owned(),
+                    });
+                }
                 self.retained.push(RetainedTransfer {
                     target: TransferTarget {
                         operation_id: format!("op-{command_seq}"),
@@ -698,21 +735,30 @@ impl WorldEngine {
         combined.extend(self.shielded_windows(&target_key, &target_report.windows, by_id));
         let mut closed = source_report.closed.clone();
         closed.extend(target_report.closed.clone());
+        let (Some(inset_source), Some(inset_target)) = (
+            crate::world_engine::inset_world_domain(&source_domain, source_report.outer_gap),
+            crate::world_engine::inset_world_domain(&target_domain, target_outer),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
             revision,
             fingerprint,
-            domain: Engine::canonical_component_domain(&source_domain),
+            domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_report.outer_gap,
             focused_window: source_report.focused.clone(),
             windows: combined,
             closed_windows: closed,
             directional: Some(vec![
-                (source_domain, source_key.clone()),
-                (target_domain, target_key),
+                (inset_source, source_key.clone()),
+                (inset_target, target_key),
             ]),
             directional_target_outer_gap: Some(target_outer),
             target_domain: None,
@@ -855,21 +901,30 @@ impl WorldEngine {
         let (revision, fingerprint) = accepted.unwrap_or((0, 0));
         let mut combined = self.shielded_windows(&source_key, &source_report.windows, by_id);
         combined.extend(self.shielded_windows(&domain_key, &domain_report.windows, by_id));
+        let (Some(inset_source), Some(inset_target)) = (
+            crate::world_engine::inset_world_domain(&source_report.domain, source_report.outer_gap),
+            crate::world_engine::inset_world_domain(&domain_report.domain, domain_report.outer_gap),
+        ) else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
             revision,
             fingerprint,
-            domain: Engine::canonical_component_domain(&domain_report.domain),
+            domain: Engine::canonical_component_domain(&inset_target),
             domain_key: domain_key.clone(),
             outer_gap: domain_report.outer_gap,
             focused_window: domain_report.focused.clone(),
             windows: combined,
             closed_windows: domain_report.closed.clone(),
             directional: Some(vec![
-                (source_report.domain.clone(), source_key),
-                (domain_report.domain.clone(), domain_key.clone()),
+                (inset_source, source_key),
+                (inset_target, domain_key.clone()),
             ]),
             directional_target_outer_gap: None,
             target_domain: None,
@@ -1041,13 +1096,21 @@ impl WorldEngine {
             .session(&domain_key)
             .map(|s| (s.accepted_revision(), s.accepted_fingerprint()));
         let (revision, fingerprint) = accepted.unwrap_or((0, 0));
+        let Some(inset) =
+            crate::world_engine::inset_world_domain(&domain_report.domain, domain_report.outer_gap)
+        else {
+            return CommandApplied::Rejected {
+                kind: KIND_SCOPE_HELD,
+                message: MSG_SCOPE_HELD,
+            };
+        };
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
             revision,
             fingerprint,
-            domain: Engine::canonical_component_domain(&domain_report.domain),
+            domain: Engine::canonical_component_domain(&inset),
             domain_key: domain_key.clone(),
             outer_gap: domain_report.outer_gap,
             focused_window: domain_report.focused.clone(),

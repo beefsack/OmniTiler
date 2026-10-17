@@ -885,6 +885,17 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.stoppedMidApply = true;
             break;
         }
+        // Paired migration-refill children stay owned by 3b while their
+        // parent migration is outstanding in this reply: switching the
+        // source view before member arrival proof would hide unmoved
+        // members. Once the parent settles (absent here), this normal
+        // path actuates the child.
+        const refillParentPending = reply.transfers.some(
+            (m) => m.kind === "migration" && t.op === `${m.op}-refill`,
+        );
+        if (refillParentPending) {
+            continue;
+        }
         const topo = observation.topology.find((entry) => entry.out === t.out);
         // Read-back confirmation first: the TARGET output actually showing
         // the target settles even a held/ambiguous operation with no new
@@ -948,8 +959,8 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
     }
     // 3b. Whole-workspace migration: one retained migration transfer moves
     // the full member set plus the follow views (the target output shows the
-    // migrated workspace, the source refills to its first remaining desired
-    // row). Members come from the correlated command result when it names
+    // migrated workspace, the source refills to the core-retained refill
+    // view, else its first remaining desired row). Members come from the correlated command result when it names
     // this transfer's target, else from the desired rows homed at the
     // target; never invented. The source output comes from the result, else
     // from the pending members' shared observed homing. Each member
@@ -991,10 +1002,21 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             result.held += 1;
             continue;
         }
-        // Source output for the refill view: the result names it, else the
-        // pending members' shared observed homing (all members leave the
-        // same source scope).
+        // Paired refill child: the core-chosen refill view for THIS
+        // migration only (exact stable op pairing). Any other view to
+        // the source (stale selects, policy views) is never chosen as
+        // the refill.
+        const pairedRefill = reply.transfers.find(
+            (v) => v.kind === "view" && v.op === `${t.op}-refill` && v.ws !== "",
+        );
+        // Source output for the refill view: the correlated result names
+        // it, else the paired refill child, else the pending members'
+        // shared observed homing (all members leave the same source
+        // scope). Never the target where members already arrived.
         let sourceOut: string | null = migrationResult !== null ? migrationResult.sourceOut : null;
+        if (sourceOut === null && pairedRefill !== undefined && pairedRefill.out !== "") {
+            sourceOut = pairedRefill.out;
+        }
         if (sourceOut === null) {
             const firstId = members.length > 0 ? members[0] as string : "";
             const first = firstId !== "" ? byWin.get(firstId) : undefined;
@@ -1003,8 +1025,28 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             }
         }
         if (t.held || state.isHeldAmbiguous(t.op)) {
-            result.held += 1;
-            continue;
+            // Late full-membership proof settles an ambiguous parent
+            // without member replay (proof before hold); anything less
+            // holds without another native call.
+            let lateProof = members.length > 0;
+            for (const id of members) {
+                const observed = byWin.get(id);
+                let home: { out: string; ws: string } | null = null;
+                try {
+                    home = observed !== undefined ? env.readLiveMembership(observed.ref) : null;
+                } catch (error) {
+                    void error;
+                    home = null;
+                }
+                if (home === null || home.out !== t.out || home.ws !== t.ws) {
+                    lateProof = false;
+                    break;
+                }
+            }
+            if (!lateProof) {
+                result.held += 1;
+                continue;
+            }
         }
         const liveHomeOf = (ref: object): { out: string; ws: string } | null => {
             try {
@@ -1148,14 +1190,37 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             continue;
         }
         // Follow views under the same stable operation: the target output
-        // shows the migrated workspace; the source refills to its first
-        // remaining desired row (lowest order, existing, bound, not the
-        // migrated workspace itself). Each proves independently on its exact
-        // output; the transfer settles applied only with all members homed
-        // and both views proven. Wrong-output visibility never proves.
+        // shows the migrated workspace; the source refills to the paired
+        // refill child (R-WS-12 G-37 core result), else to its first
+        // remaining desired row (replies predating the refill transfer
+        // only). NO follow/refill view switches until ALL fresh member
+        // arrival proof is in: a partial failure or stale membership
+        // leaves every view untouched so unmoved members stay visible.
+        // Each proves independently on its exact output; the transfer
+        // settles applied only with all members homed and both views
+        // proven. Wrong-output visibility never proves.
+        const membersProven = !failed && !unproven;
         const targetShown = liveViewShowsOn(env, t.out, t.ws);
+        let refillChild = pairedRefill;
+        // Newer external input supersedes a proven-then-abandoned refill
+        // child (same rule as the general view loop): drop it for this
+        // apply and let the rows-lowest fallback serve pre-transfer
+        // replies; the next core report converges without it.
+        if (refillChild !== undefined && sourceOut !== null) {
+            const appliedView = state.appliedViewTarget.get(sourceOut);
+            const topoNow = observation.topology.find((entry) => entry.out === sourceOut);
+            if (appliedView !== undefined && appliedView.op === refillChild.op &&
+                topoNow !== undefined && topoNow.current !== appliedView.ws) {
+                state.settleAttempt(refillChild.op, "superseded-external", "");
+                refillChild = undefined;
+            }
+        }
         let refillWs: string | null = null;
-        if (sourceOut !== null) {
+        let refillOp = t.op;
+        if (refillChild !== undefined) {
+            refillWs = refillChild.ws;
+            refillOp = refillChild.op;
+        } else if (sourceOut !== null) {
             const candidates = reply.workspaces
                 .filter((w) => w.out === sourceOut && w.exist && w.bind !== "" && w.bind !== t.ws)
                 .sort((a, b) => a.order - b.order);
@@ -1165,16 +1230,39 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
         const refillShown = refillWs === null || (sourceOut !== null && liveViewShowsOn(env, sourceOut, refillWs));
         let viewsProven = targetShown && refillShown;
-        if (!viewsProven && replyFresh(env, reply, entryObs)) {
+        if (membersProven && !viewsProven && replyFresh(env, reply, entryObs)) {
             if (!targetShown) {
                 if (actuateViewForTransfer(env, reply, entryObs, t)) {
                     result.viewWrites += 1;
                 }
             }
             if (refillWs !== null && sourceOut !== null && !liveViewShowsOn(env, sourceOut, refillWs)) {
-                const refillTransfer = { ...t, out: sourceOut, ws: refillWs };
-                if (actuateViewForTransfer(env, reply, entryObs, refillTransfer)) {
-                    result.viewWrites += 1;
+                if (refillChild !== undefined) {
+                    if (state.isHeldAmbiguous(refillOp)) {
+                        // Never retry an ambiguous refill view under a fresh
+                        // revision: hold for proof instead of a second call.
+                        result.held += 1;
+                    } else {
+                        // Stable child op identity arms possibly-executed
+                        // BEFORE the view setter, with proof/refusal
+                        // feedback.
+                        state.armPossiblyExecuted(refillOp, "view", `${sourceOut}/${refillWs}`);
+                        if (actuateViewForTransfer(env, reply, entryObs, { ...refillChild, follow: false })) {
+                            result.viewWrites += 1;
+                            state.settleAttempt(refillOp, "applied", "");
+                            state.noteAppliedViewTarget(sourceOut, refillOp, refillWs);
+                        } else {
+                            result.held += 1;
+                        }
+                    }
+                } else {
+                    // Legacy fallback for replies predating the refill
+                    // transfer: the refill rides the parent operation with
+                    // no separate arming, exactly as before.
+                    const refillTransfer = { ...t, out: sourceOut, ws: refillWs };
+                    if (actuateViewForTransfer(env, reply, entryObs, refillTransfer)) {
+                        result.viewWrites += 1;
+                    }
                 }
             }
             viewsProven = liveViewShowsOn(env, t.out, t.ws) &&

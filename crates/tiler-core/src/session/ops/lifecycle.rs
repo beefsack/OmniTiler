@@ -183,7 +183,36 @@ impl super::super::Session {
         else {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         };
-        if &entry.output != output || &entry.workspace != workspace || entry.flags() != exceptions {
+        // R-MAX-06 fresh-max carrier: a maximized-only birth with no caller
+        // exceptions admits as an ordinary tile (the adapter clears the
+        // native overlay once, then the approved allocation applies).
+        // Every other admission binds the full observed flags exactly, so
+        // an explicit deferred maximize-only (alone or in a floating+max
+        // combo) keeps its flags. Maximized never selects exception
+        // behavior, matching `converge_observation` normal admission which
+        // tiles maximized windows; floating, fullscreen, and sticky still
+        // require explicit behavior selection below.
+        let entry_flags = entry.flags();
+        let max_only_tile_carrier = !exceptions.any()
+            && entry_flags
+                == crate::session::world::ExceptionFlags {
+                    floating: false,
+                    fullscreen: false,
+                    maximized: true,
+                    sticky: false,
+                };
+        let observed_binding = if max_only_tile_carrier {
+            crate::session::world::ExceptionFlags {
+                maximized: false,
+                ..entry_flags
+            }
+        } else {
+            entry_flags
+        };
+        if &entry.output != output
+            || &entry.workspace != workspace
+            || observed_binding != exceptions
+        {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // Known-window observation bindings must match stored state.
@@ -352,11 +381,14 @@ impl super::super::Session {
                 desired_geometry: Vec::new(),
             });
         }
-        // Normal tiled admission stays fail-closed on overlays: an
-        // observed floating/fullscreen/maximized/sticky window without an
-        // explicit exception selection is refused exactly as before (the
-        // relaxed membership binding above never admits overlays here).
-        if entry.floating || entry.fullscreen || entry.maximized || entry.sticky {
+        // Normal tiled admission stays fail-closed on overlays, except a
+        // maximized-only birth (R-MAX-06 fresh-max carrier): it admits as
+        // an ordinary tile so the ready reply seeds the approved
+        // allocation, and the adapter clears the native overlay once
+        // before applying it. An observed floating/fullscreen/sticky
+        // window without an explicit exception selection is refused
+        // exactly as before.
+        if entry.floating || entry.fullscreen || entry.sticky {
             return Err(ProposeError::Refused(RefusalKind::PartialObservation));
         }
         // Normal tiled admission.

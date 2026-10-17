@@ -20,6 +20,56 @@ export type WorldShortcutRegisterFn =
     | ((name: string, text: string, sequence: string, callback: () => void) => boolean)
     | undefined;
 
+// Protocol u32 bound for the resize key-repeat index (mirrors the Rust
+// `press_index: u32` gate): the counter saturates here instead of wrapping
+// or losing precision, so a never-reset streak can never exceed the wire.
+export const RESIZE_PRESS_MAX = 4294967295;
+
+// Shared key-repeat press counter with legacy parity (plan-adapter
+// `requestResize`/`noteObservation`): the key is window+direction+mode,
+// index 0 is the initial press (12px per the core step schedule), each
+// repeat increments by one. A changed structural signature (membership or
+// focus, never geometry) resets to 0, exactly like the legacy fingerprint
+// gate; the signature reader is the entry's fresh observation. Without a
+// signature reader the counter still keys correctly but cannot see layout
+// changes (offline-test degraded path only).
+export function createResizePressCounter(
+    readSignature?: () => string | null,
+): (win: string, direction: string, mode: string) => number {
+    let lastKey = "";
+    let lastSignature: string | null = null;
+    let signatureSeen = false;
+    let next = 0;
+    return (win: string, direction: string, mode: string): number => {
+        const key = win + "\u0000" + direction + "\u0000" + mode;
+        let signature: string | null = null;
+        if (readSignature !== undefined) {
+            try {
+                signature = readSignature();
+            } catch (error) {
+                void error;
+                signature = null;
+            }
+        }
+        if (signature !== null) {
+            if (signatureSeen && signature !== lastSignature) {
+                lastKey = "";
+                next = 0;
+            }
+            lastSignature = signature;
+            signatureSeen = true;
+        }
+        if (key === lastKey) {
+            const press = next;
+            next = next >= RESIZE_PRESS_MAX ? RESIZE_PRESS_MAX : next + 1;
+            return press;
+        }
+        lastKey = key;
+        next = 1;
+        return 0;
+    };
+}
+
 export interface WorldShortcutsEnv {
     readProp: (value: object, property: string) => unknown;
     isDirection: (value: unknown) => value is "left" | "right" | "up" | "down";
@@ -46,6 +96,11 @@ export interface WorldShortcutsEnv {
     currentScopeId: () => string;
     getWorkspaceTilingSnapshot: () => { scope: string; tiled: boolean; defaultTiled: boolean };
     registerShortcutFn?: WorldShortcutRegisterFn;
+    readSameAxisMove?: () => string;
+    // Structural membership/focus signature for the resize key-repeat
+    // counter (legacy fingerprint parity): the entry supplies its fresh
+    // observation signature; absent means key-only counting.
+    readResizeSignature?: () => string | null;
 }
 
 export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
@@ -76,6 +131,16 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         };
         const outName = (): string | null => activeOutputName();
         const focusedWin = (): string | null => activeWindowId();
+        const sameAxis = (): string => {
+            try {
+                const value = env.readSameAxisMove !== undefined ? env.readSameAxisMove() : "group-with-neighbor";
+                return value === "swap-with-neighbor" ? value : "group-with-neighbor";
+            } catch (error) {
+                void error;
+                return "group-with-neighbor";
+            }
+        };
+        const nextPress = createResizePressCounter(env.readResizeSignature);
         // Directional catalog (legacy parity): focus/move on Meta+HJKL plus
         // arrows, resize out/in on Meta+Alt(+Shift) plus arrows. Every action
         // routes a Planner world command; failures close with one bounded
@@ -128,7 +193,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
             // Same cross-output scope as focus: crossing applies only with
             // a live adjacent output there, else the move stays local.
-            if (!isDirection(d) || !submitCommand({ op: "operation", command: { op: "move", win: w, direction: d, crossOutput: crossForDirection(d), sameAxis: "group-with-neighbor" } }, `move-${d}`)) {
+            if (!isDirection(d) || !submitCommand({ op: "operation", command: { op: "move", win: w, direction: d, crossOutput: crossForDirection(d), sameAxis: sameAxis() } }, `move-${d}`)) {
                 shortcutFailed(`move-${d}`);
             }
         };
@@ -138,7 +203,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 shortcutFailed(`resize-${mode}-${d}`);
                 return;
             }
-            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction: d, mode, press: 1 } }, `resize-${mode}-${d}`)) {
+            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction: d, mode, press: nextPress(w, d, mode) } }, `resize-${mode}-${d}`)) {
                 shortcutFailed(`resize-${mode}-${d}`);
             }
         };

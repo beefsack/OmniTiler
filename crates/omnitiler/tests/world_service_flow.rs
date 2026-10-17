@@ -42,7 +42,7 @@ fn report_json(
          {{\"id\":\"out\",\"ws\":\"ws2\",\"bounds\":[0,0,800,600],\"gap\":8,\
          \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\
          \"adjacent\":{{}},\"windows\":[],\"closed\":[]}}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         window_json("win-a", "ws1", 0)
     )
@@ -177,7 +177,7 @@ fn geometric_exhaustion_holds_truthfully_over_json() {
          \"domains\":[{{\"id\":\"out\",\"ws\":\"ws\",\"bounds\":[0,0,800,600],\"gap\":8,\
          \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
          \"windows\":[{}],\"closed\":[]}}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         windows.join(",")
     );
@@ -219,7 +219,7 @@ fn geometric_exhaustion_holds_truthfully_over_json() {
          \"domains\":[{{\"id\":\"out\",\"ws\":\"ws\",\"bounds\":[0,0,800,600],\"gap\":8,\
          \"outer\":4,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
          \"windows\":[{}],\"closed\":[]}}],\
-         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         fitting_windows.join(",")
     );

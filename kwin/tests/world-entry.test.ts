@@ -135,7 +135,7 @@ function fakeSignal(): FakeSignal {
     };
 }
 
-function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true): Harness {
+function makeHarness(mode: unknown = "per-output-local", gesture = false, defaultTiled: unknown = true, refillFn?: () => unknown): Harness {
     const world = makeWorld();
     const calls: CapturedCall[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -260,6 +260,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         },
         readWorkspaceModeFn: () => mode,
         readDefaultTiledFn: () => defaultTiled,
+        ...(refillFn !== undefined ? { readMigrationSourceRefillFn: refillFn } : {}),
     });
     assert.ok(handle !== null);
     const runTimers = (maxDelay = 120): void => {
@@ -497,6 +498,22 @@ describe("world entry discovery and observation", () => {
         const wins = domains.flatMap((d) => d["windows"] as Array<Record<string, unknown>>);
         assert.ok(!wins.some((w) => (w as Record<string, unknown>)["win"] === "win-b"));
         assert.equal(req["predicate"], "both-axes-fixed");
+        assert.equal(req["refill"], "last-remaining-workspace");
+    });
+
+    it("carries the validated refill token live per report", () => {
+        let refill: unknown = "most-recently-used-workspace";
+        const h = makeHarness("per-output-local", false, true, () => refill);
+        discover(h);
+        assert.equal(requestOf(h)["refill"], "most-recently-used-workspace");
+        // A setting change applies to the next report only: invalid values
+        // fall back to the default without touching committed state.
+        refill = "bogus";
+        const before = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.handle?.requestWorkspaceRelative(1);
+        h.runTimers();
+        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, before + 1);
+        assert.equal(requestOf(h)["refill"], "last-remaining-workspace");
     });
 
     it("rediscovers on generation mismatch without replaying the command", () => {

@@ -108,6 +108,7 @@ fn base_report(request_seq: u64, observation_seq: u64) -> WorldReport {
         ],
         minimized: Vec::new(),
         fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+        migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -1282,6 +1283,7 @@ fn migration_retained_then_confirmed_by_topology() {
             ],
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,
@@ -1347,6 +1349,349 @@ fn migration_retained_then_confirmed_by_topology() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "migration-refused"),
         other => panic!("expected migration refusal, got {other:?}"),
     }
+}
+
+#[test]
+fn migration_refill_supersedes_older_pending_view_for_source() {
+    use crate::output_selection::MigrationSourceRefill;
+    // Latest-per-output supersession: an older pending select view on the
+    // source output never coexists with the migration refill. Only the new
+    // refill view wins; conflicting view targets are not left behind.
+    fn report(request_seq: u64, current_a: &str) -> WorldReport {
+        WorldReport {
+            contract_version: WORLD_CONTRACT_VERSION,
+            owner: "owner-a".to_owned(),
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq: request_seq,
+            request_seq,
+            request_id: format!("req-{request_seq}"),
+            command_seq: None,
+            command: None,
+            workspace_mode: WorkspaceMode::PerOutputLocal,
+            topology: vec![
+                OutputTopology {
+                    output: OutputId("out-a".to_owned()),
+                    native_order: vec!["wa1".to_owned(), "wa2".to_owned()],
+                    current_native: current_a.to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: true,
+                },
+                OutputTopology {
+                    output: OutputId("out-b".to_owned()),
+                    native_order: vec!["wb1".to_owned()],
+                    current_native: "wb1".to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: false,
+                },
+            ],
+            bindings: ["wa1", "wa2"]
+                .iter()
+                .map(|id| WorkspaceBinding {
+                    logical_id: (*id).to_owned(),
+                    native_id: (*id).to_owned(),
+                    output: OutputId("out-a".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                })
+                .chain([WorkspaceBinding {
+                    logical_id: "wb1".to_owned(),
+                    native_id: "wb1".to_owned(),
+                    output: OutputId("out-b".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                }])
+                .collect(),
+            domains: ["wa1", "wa2"]
+                .iter()
+                .map(|id| {
+                    domain_report(
+                        "out-a",
+                        id,
+                        &format!("win-{id}"),
+                        vec![win(&format!("win-{id}"), "out-a", id, 0)],
+                    )
+                })
+                .chain([domain_report(
+                    "out-b",
+                    "wb1",
+                    "win-b",
+                    vec![win("win-b", "out-b", "wb1", 0)],
+                )])
+                .collect(),
+            minimized: Vec::new(),
+            fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: MigrationSourceRefill::LastRemaining,
+            default_tiled: true,
+            focused_global: String::new(),
+            inventory_complete: true,
+            gesture_barrier: false,
+            feedback: Vec::new(),
+        }
+    }
+    fn adjacent(report: &mut WorldReport) {
+        for domain in &mut report.domains {
+            if domain.domain.id.0 == "out-a" {
+                domain.domain.adjacent.insert(
+                    crate::directional::Direction::Right,
+                    OutputId("out-b".to_owned()),
+                );
+            } else if domain.domain.id.0 == "out-b" {
+                domain.domain.adjacent.insert(
+                    crate::directional::Direction::Left,
+                    OutputId("out-a".to_owned()),
+                );
+            }
+        }
+    }
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(&mut engine, &report(1, "wa1"));
+    // Older pending select view on out-a.
+    let mut select = report(2, "wa1");
+    adjacent(&mut select);
+    with_command(
+        &mut select,
+        2,
+        71,
+        WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: "wa2".to_owned(),
+        },
+    );
+    let selected = accepted_reply(&mut engine, &select);
+    assert!(
+        selected
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::View) && t.target_output.0 == "out-a"),
+        "select retains its view"
+    );
+    // Migration evicts it: only the new refill view wins for out-a.
+    let mut migrate = report(3, "wa1");
+    adjacent(&mut migrate);
+    with_command(
+        &mut migrate,
+        3,
+        72,
+        WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: "wa1".to_owned(),
+        },
+    );
+    let reply = accepted_reply(&mut engine, &migrate);
+    let views: Vec<_> = reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(t.kind, TransferKind::View) && t.target_output.0 == "out-a")
+        .collect();
+    assert_eq!(views.len(), 1, "no conflicting view targets remain");
+    assert_eq!(views[0].operation_id, "op-72-refill");
+    assert_eq!(views[0].target_workspace, "wa2");
+    let view = reply
+        .outputs
+        .iter()
+        .find(|o| o.output.0 == "out-a")
+        .and_then(|o| o.logical_view.clone());
+    assert_eq!(view.as_deref(), Some("wa2"));
+}
+
+#[test]
+fn fresh_maximized_seeds_ready_controlled_tile() {
+    // R-MAX-06 carrier premise: a fresh maximized birth on a tiled,
+    // controlled scope publishes as a controlled tile row (allocation
+    // present) in the ready reply, so the adapter clears natively once
+    // and then applies the approved allocation. A floating scope keeps
+    // the overlay instead (no controlled tile to prove).
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let mut born = base_report(1, 1);
+    born.domains[0].windows[0].maximized = true;
+    let reply = accepted_reply(&mut engine, &born);
+    assert!(reply.ready);
+    let row = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .expect("birth row");
+    assert_eq!(
+        row.frame_authority,
+        crate::world_report::ScopeAuthority::Controlled
+    );
+    assert!(
+        row.allocation.is_some(),
+        "approved allocation rides the reply"
+    );
+    let scope = reply
+        .scopes
+        .iter()
+        .find(|s| s.scope == "out/ws1")
+        .expect("birth scope");
+    assert_eq!(
+        scope.authority,
+        crate::world_report::ScopeAuthority::Controlled
+    );
+}
+
+#[test]
+fn migration_source_refill_report_value_selects_source_refill() {
+    use crate::output_selection::MigrationSourceRefill;
+    fn refill_report(
+        request_seq: u64,
+        observation_seq: u64,
+        current_a: &str,
+        refill: MigrationSourceRefill,
+    ) -> WorldReport {
+        let ids = ["wa1", "wa2", "wa3", "wa4"];
+        WorldReport {
+            contract_version: WORLD_CONTRACT_VERSION,
+            owner: "owner-a".to_owned(),
+            adapter_incarnation: "adapter-1".to_owned(),
+            core_generation: "gen-1".to_owned(),
+            observation_seq,
+            request_seq,
+            request_id: format!("req-{request_seq}"),
+            command_seq: None,
+            command: None,
+            workspace_mode: WorkspaceMode::PerOutputLocal,
+            topology: vec![
+                OutputTopology {
+                    output: OutputId("out-a".to_owned()),
+                    native_order: ids.iter().map(|id| id.to_string()).collect(),
+                    current_native: current_a.to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: true,
+                },
+                OutputTopology {
+                    output: OutputId("out-b".to_owned()),
+                    native_order: vec!["wb1".to_owned()],
+                    current_native: "wb1".to_owned(),
+                    complete: true,
+                    geometry: None,
+                    primary: false,
+                },
+            ],
+            bindings: ids
+                .iter()
+                .map(|id| WorkspaceBinding {
+                    logical_id: (*id).to_owned(),
+                    native_id: (*id).to_owned(),
+                    output: OutputId("out-a".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                })
+                .chain([WorkspaceBinding {
+                    logical_id: "wb1".to_owned(),
+                    native_id: "wb1".to_owned(),
+                    output: OutputId("out-b".to_owned()),
+                    pinned: false,
+                    displaced: false,
+                    managed: true,
+                }])
+                .collect(),
+            domains: ids
+                .iter()
+                .map(|id| {
+                    domain_report(
+                        "out-a",
+                        id,
+                        &format!("win-{id}"),
+                        vec![win(&format!("win-{id}"), "out-a", id, 0)],
+                    )
+                })
+                .chain([domain_report(
+                    "out-b",
+                    "wb1",
+                    "win-b",
+                    vec![win("win-b", "out-b", "wb1", 0)],
+                )])
+                .collect(),
+            minimized: Vec::new(),
+            fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: refill,
+            default_tiled: true,
+            focused_global: String::new(),
+            inventory_complete: true,
+            gesture_barrier: false,
+            feedback: Vec::new(),
+        }
+    }
+    fn adjacent(report: &mut WorldReport) {
+        for domain in &mut report.domains {
+            if domain.domain.id.0 == "out-a" {
+                domain.domain.adjacent.insert(
+                    crate::directional::Direction::Right,
+                    OutputId("out-b".to_owned()),
+                );
+            } else if domain.domain.id.0 == "out-b" {
+                domain.domain.adjacent.insert(
+                    crate::directional::Direction::Left,
+                    OutputId("out-a".to_owned()),
+                );
+            }
+        }
+    }
+    fn source_view(reply: &WorldReply, out: &str) -> Option<String> {
+        reply
+            .outputs
+            .iter()
+            .find(|o| o.output.0 == out)
+            .and_then(|o| o.logical_view.clone())
+    }
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    accepted_reply(
+        &mut engine,
+        &refill_report(1, 1, "wa1", MigrationSourceRefill::LastRemaining),
+    );
+    // Verified view wa1 -> wa2 records previous wa1 for out-a.
+    let mut shown = refill_report(2, 2, "wa2", MigrationSourceRefill::LastRemaining);
+    adjacent(&mut shown);
+    accepted_reply(&mut engine, &shown);
+    // Migrate the shown wa2 under the default: remaining [wa1, wa3, wa4]
+    // with the current gone refills the last remaining id.
+    let mut migrate = refill_report(3, 3, "wa2", MigrationSourceRefill::LastRemaining);
+    adjacent(&mut migrate);
+    with_command(
+        &mut migrate,
+        3,
+        71,
+        WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: "wa2".to_owned(),
+        },
+    );
+    let reply = accepted_reply(&mut engine, &migrate);
+    assert_eq!(source_view(&reply, "out-a").as_deref(), Some("wa4"));
+    // The setting change never resets committed state: wa2 stays migrated
+    // and the next migration alone follows the new mode. Visit wa1 then
+    // wa3 so previous names wa1 while wa4 stays last remaining.
+    let mut visit = refill_report(4, 4, "wa1", MigrationSourceRefill::MostRecentlyUsed);
+    adjacent(&mut visit);
+    accepted_reply(&mut engine, &visit);
+    let mut visit = refill_report(5, 5, "wa3", MigrationSourceRefill::MostRecentlyUsed);
+    adjacent(&mut visit);
+    accepted_reply(&mut engine, &visit);
+    let mut migrate = refill_report(6, 6, "wa3", MigrationSourceRefill::MostRecentlyUsed);
+    adjacent(&mut migrate);
+    with_command(
+        &mut migrate,
+        6,
+        72,
+        WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: "wa3".to_owned(),
+        },
+    );
+    let reply = accepted_reply(&mut engine, &migrate);
+    // MRU refills the remembered wa1 instead of the last remaining wa4.
+    assert_eq!(source_view(&reply, "out-a").as_deref(), Some("wa1"));
 }
 
 #[test]
@@ -1700,6 +2045,7 @@ fn command_result_migration_rekeys_engine_with_members() {
             ],
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
+            migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,
@@ -1928,4 +2274,543 @@ fn world_route_carries_linux_policy_opt_ins() {
     assert!(engine.engine().fixed_size_admission());
     assert!(engine.engine().maximized_focus_fence());
     assert!(!Engine::new().fixed_size_admission());
+}
+
+#[test]
+fn outer_gap_insets_all_edges_with_canonical_inner_gap() {
+    // Regression: the world sweep must inset the raw client area by the
+    // carried outer gap (legacy planner-protocol parity). 800x600 with
+    // inner 8 / outer 12 tiles two windows at the inset edges with one
+    // canonical inner gap, and a settings-reload repeat never double
+    // insets or resets history.
+    fn gap_report(request_seq: u64, observation_seq: u64) -> WorldReport {
+        let mut report = base_report(request_seq, observation_seq);
+        report.domains = vec![DomainReport {
+            domain: OutputDomain {
+                id: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                bounds: rect(0, 0, 800, 600),
+                gap: 8,
+                adjacent: BTreeMap::new(),
+            },
+            outer_gap: 12,
+            focused: WindowId("win-a".to_owned()),
+            windows: vec![
+                EngineWindow {
+                    window: WindowId("win-a".to_owned()),
+                    output: OutputId("out".to_owned()),
+                    workspace: WorkspaceId("ws1".to_owned()),
+                    rect: rect(0, 0, 400, 600),
+                    floating: false,
+                    fit_excluded: false,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    hints: crate::size_hints::WindowSizeHints::none(),
+                },
+                EngineWindow {
+                    window: WindowId("win-b".to_owned()),
+                    output: OutputId("out".to_owned()),
+                    workspace: WorkspaceId("ws1".to_owned()),
+                    rect: rect(400, 0, 400, 600),
+                    floating: false,
+                    fit_excluded: false,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                    fixed_auto: false,
+                    fixed_suppress: false,
+                    hints: crate::size_hints::WindowSizeHints::none(),
+                },
+            ],
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        }];
+        report.topology = vec![OutputTopology {
+            output: OutputId("out".to_owned()),
+            native_order: vec!["ws1".to_owned()],
+            current_native: "ws1".to_owned(),
+            complete: true,
+            geometry: None,
+            primary: false,
+        }];
+        report.bindings = vec![WorkspaceBinding {
+            logical_id: "desk-1".to_owned(),
+            native_id: "ws1".to_owned(),
+            output: OutputId("out".to_owned()),
+            pinned: false,
+            displaced: false,
+            managed: true,
+        }];
+        report
+    }
+
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let reply = accepted_reply(&mut engine, &gap_report(1, 1));
+    let frame = |id: &str| {
+        reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime.0 == id)
+            .and_then(|w| w.effective_frame)
+            .expect("tiled frame")
+    };
+    let left = frame("win-a");
+    let right = frame("win-b");
+    // Inset 800x600 by 12 on every side: 776x576 at (12,12); two leaves
+    // split 776 with one inner gap of 8. Seed order is spatial with
+    // focus last, so either window may take either leaf: assert the set.
+    let mut frames = [left, right];
+    frames.sort_by_key(|r| r.x);
+    assert_eq!(frames[0], rect(12, 12, 384, 576), "left tile at inset edge");
+    assert_eq!(
+        frames[1],
+        rect(404, 12, 384, 576),
+        "right tile at inset edge"
+    );
+    assert_eq!(
+        frames[1].x - (frames[0].x + frames[0].w),
+        8,
+        "canonical inner gap between tiles"
+    );
+    for edge in frames {
+        assert!(edge.x >= 12 && edge.y >= 12, "inset from top-left {edge:?}");
+        assert!(
+            edge.x + edge.w <= 788 && edge.y + edge.h <= 588,
+            "inset from bottom-right {edge:?}"
+        );
+    }
+    // Settings-reload repeat: identical observation reconciles to the
+    // exact same frames with no double inset, no hold, and no history
+    // reset (revision advances exactly once per accepted report).
+    let reply2 = accepted_reply(&mut engine, &gap_report(2, 2));
+    assert_eq!(reply2.windows, reply.windows, "no double inset on reload");
+    assert!(
+        reply2
+            .scopes
+            .iter()
+            .all(|s| s.authority == ScopeAuthority::Controlled),
+        "no hold on identical reload"
+    );
+    assert_eq!(engine.state_revision(), 2);
+    // Subsequent command on the same generation still routes (focus
+    // effect proves the retained inset topology survived the reload).
+    let mut focus = gap_report(3, 3);
+    with_command(&mut focus, 3, 7, focus_command("win-b"));
+    let reply3 = accepted_reply(&mut engine, &focus);
+    assert_eq!(reply3.effects.len(), 1);
+    // Generation rebind reconstructs the same inset geometry from a
+    // fresh engine (no history carried, same projection).
+    let mut fresh = WorldEngine::new("gen-2").expect("valid");
+    let mut rebind = gap_report(1, 1);
+    rebind.core_generation = "gen-2".to_owned();
+    let reply4 = accepted_reply(&mut fresh, &rebind);
+    assert_eq!(reply4.windows, reply.windows, "rebind projects same inset");
+}
+
+#[test]
+fn outer_gap_value_changes_adopt_without_double_inset() {
+    use crate::boundary::CoreCommand;
+    use crate::directional::SameAxisMove;
+    // Gap VALUE changes (not just repeats): inner 8/outer 12 -> inner
+    // 16/outer 20 -> repeat -> back to 8/12 -> zero gaps. Every step
+    // adopts through the topology-preserving update-gaps path: leaf
+    // identities survive, edges track the new inset exactly, and no step
+    // double-insets or holds.
+    fn gap_report_with(
+        request_seq: u64,
+        observation_seq: u64,
+        gap: i32,
+        outer_gap: i32,
+        bounds: Rect,
+    ) -> WorldReport {
+        let mut report = base_report(request_seq, observation_seq);
+        let windows = vec![
+            EngineWindow {
+                window: WindowId("win-a".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                rect: rect(0, 0, 400, 600),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+            EngineWindow {
+                window: WindowId("win-b".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                rect: rect(400, 0, 400, 600),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+        ];
+        report.domains = vec![DomainReport {
+            domain: OutputDomain {
+                id: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                bounds,
+                gap,
+                adjacent: BTreeMap::new(),
+            },
+            outer_gap,
+            focused: WindowId("win-a".to_owned()),
+            windows,
+            closed: Vec::new(),
+            readable: true,
+            hold: None,
+        }];
+        report.topology = vec![OutputTopology {
+            output: OutputId("out".to_owned()),
+            native_order: vec!["ws1".to_owned()],
+            current_native: "ws1".to_owned(),
+            complete: true,
+            geometry: None,
+            primary: false,
+        }];
+        report.bindings = vec![WorkspaceBinding {
+            logical_id: "desk-1".to_owned(),
+            native_id: "ws1".to_owned(),
+            output: OutputId("out".to_owned()),
+            pinned: false,
+            displaced: false,
+            managed: true,
+        }];
+        report
+    }
+
+    fn sorted_frames(reply: &WorldReply) -> Vec<Rect> {
+        let mut frames: Vec<Rect> = reply
+            .windows
+            .iter()
+            .filter_map(|w| w.effective_frame)
+            .collect();
+        frames.sort_by_key(|r| (r.x, r.y, r.w, r.h));
+        frames
+    }
+
+    fn leaves(engine: &WorldEngine, key: &DomainKey) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = engine
+            .engine()
+            .session(key)
+            .expect("retained session")
+            .snapshot()
+            .windows
+            .iter()
+            .map(|l| (l.window.0.clone(), l.leaf.0.clone()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn assert_controlled(reply: &WorldReply) {
+        assert!(
+            reply
+                .scopes
+                .iter()
+                .all(|s| s.authority == ScopeAuthority::Controlled),
+            "no hold, got {:?}",
+            reply.scopes,
+        );
+    }
+
+    let key = DomainKey {
+        output: OutputId("out".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws1".to_owned()),
+    };
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    // Step 1: inner 8 / outer 12 on 800x600 -> 776x576 at (12,12),
+    // two 384-wide leaves with one 8px inner gap.
+    let reply = accepted_reply(
+        &mut engine,
+        &gap_report_with(1, 1, 8, 12, rect(0, 0, 800, 600)),
+    );
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(12, 12, 384, 576), rect(404, 12, 384, 576)],
+    );
+    let first_leaves = leaves(&engine, &key);
+    assert_eq!(engine.state_revision(), 1);
+    // Step 2: inner 16 / outer 20 -> 760x560 at (20,20), two 372-wide
+    // leaves with one 16px inner gap; leaf identities survive the
+    // update-gaps adoption.
+    let reply = accepted_reply(
+        &mut engine,
+        &gap_report_with(2, 2, 16, 20, rect(0, 0, 800, 600)),
+    );
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(20, 20, 372, 560), rect(408, 20, 372, 560)],
+    );
+    assert_eq!(
+        sorted_frames(&reply)[1].x - (sorted_frames(&reply)[0].x + sorted_frames(&reply)[0].w),
+        16,
+        "inner gap tracks the new value on all of left/top/right/bottom",
+    );
+    assert_eq!(leaves(&engine, &key), first_leaves, "topology stable");
+    assert_eq!(engine.state_revision(), 2);
+    // Step 3: identical repeat -> byte-identical windows, no double
+    // inset, no hold.
+    let reply = accepted_reply(
+        &mut engine,
+        &gap_report_with(3, 3, 16, 20, rect(0, 0, 800, 600)),
+    );
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(20, 20, 372, 560), rect(408, 20, 372, 560)],
+        "repeat never double-insets",
+    );
+    assert_eq!(leaves(&engine, &key), first_leaves);
+    assert_eq!(engine.state_revision(), 3);
+    // Step 4: back to inner 8 / outer 12 -> exact original frames and
+    // the original leaf mapping (no update-gaps state corruption).
+    let reply = accepted_reply(
+        &mut engine,
+        &gap_report_with(4, 4, 8, 12, rect(0, 0, 800, 600)),
+    );
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(12, 12, 384, 576), rect(404, 12, 384, 576)],
+    );
+    assert_eq!(leaves(&engine, &key), first_leaves);
+    // Step 5: zero gaps -> identity inset, edge-to-edge tiles with no
+    // inner gap.
+    let reply = accepted_reply(
+        &mut engine,
+        &gap_report_with(5, 5, 0, 0, rect(0, 0, 800, 600)),
+    );
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(0, 0, 400, 600), rect(400, 0, 400, 600)],
+    );
+    assert_eq!(
+        leaves(&engine, &key),
+        first_leaves,
+        "zero gaps keep topology"
+    );
+    // Steps 6-7: a Move and a Resize after the gap changes still route
+    // on the retained inset topology. They run on a clone so the exact
+    // share assertions below stay pristine; shares legitimately change
+    // under commands, while edges and the inner gap must keep tracking
+    // the carried values.
+    let mut fork = engine.clone();
+    let mut step = gap_report_with(6, 6, 16, 20, rect(0, 0, 800, 600));
+    with_command(
+        &mut step,
+        6,
+        71,
+        WorldCommand::Operation(CoreCommand::Move {
+            window: "win-a".to_owned(),
+            direction: "left".to_owned(),
+            cross_output_transfer: false,
+            same_axis_move: SameAxisMove::GroupWithNeighbor,
+        }),
+    );
+    let reply = accepted_reply(&mut fork, &step);
+    assert!(reply.command_result.is_none());
+    assert_controlled(&reply);
+    let mut step = gap_report_with(7, 7, 16, 20, rect(0, 0, 800, 600));
+    with_command(
+        &mut step,
+        7,
+        72,
+        WorldCommand::Operation(CoreCommand::Resize {
+            window: "win-a".to_owned(),
+            direction: "right".to_owned(),
+            mode: "outwards".to_owned(),
+            press_index: 0,
+        }),
+    );
+    let reply = accepted_reply(&mut fork, &step);
+    assert!(reply.command_result.is_none());
+    assert_controlled(&reply);
+    let current = sorted_frames(&reply);
+    assert_eq!(current[0].x, 20, "post-command left edge tracks inset");
+    assert_eq!(
+        current[1].x + current[1].w,
+        780,
+        "post-command right edge tracks inset"
+    );
+    assert_eq!(
+        current[1].x - (current[0].x + current[0].w),
+        16,
+        "post-command inner gap tracks value"
+    );
+    // Adapter rebind on the same (pristine-share) engine reproduces the
+    // zero-gap projection exactly; a fresh generation bootstraps the new
+    // inset identically from observation.
+    let mut rebind = gap_report_with(8, 8, 0, 0, rect(0, 0, 800, 600));
+    rebind.adapter_incarnation = "adapter-2".to_owned();
+    let reply = accepted_reply(&mut engine, &rebind);
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(0, 0, 400, 600), rect(400, 0, 400, 600)],
+        "adapter rebind keeps the current inset projection",
+    );
+    let mut fresh = WorldEngine::new("gen-2").expect("valid");
+    let mut rebind = gap_report_with(1, 1, 16, 20, rect(0, 0, 800, 600));
+    rebind.core_generation = "gen-2".to_owned();
+    let reply = accepted_reply(&mut fresh, &rebind);
+    assert_controlled(&reply);
+    assert_eq!(
+        sorted_frames(&reply),
+        vec![rect(20, 20, 372, 560), rect(408, 20, 372, 560)],
+        "generation bootstrap uses the new inset",
+    );
+}
+
+#[test]
+fn outer_gap_float_overlay_and_exhaustion_hold() {
+    // A floating overlay member never takes frame authority (no
+    // unintended writes), and an outer gap that exhausts the bounds
+    // holds the whole scope as constraint-clamp with explicit held rows
+    // until a fitting value recovers it.
+    let mut engine = WorldEngine::new("gen-1").expect("valid");
+    let mut report = base_report(1, 1);
+    report.domains = vec![DomainReport {
+        domain: OutputDomain {
+            id: OutputId("out".to_owned()),
+            workspace: WorkspaceId("ws1".to_owned()),
+            bounds: rect(0, 0, 800, 600),
+            gap: 8,
+            adjacent: BTreeMap::new(),
+        },
+        outer_gap: 12,
+        focused: WindowId("win-a".to_owned()),
+        windows: vec![
+            EngineWindow {
+                window: WindowId("win-a".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                rect: rect(0, 0, 400, 600),
+                floating: false,
+                fit_excluded: false,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+            EngineWindow {
+                window: WindowId("win-float".to_owned()),
+                output: OutputId("out".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+                rect: rect(100, 100, 200, 200),
+                floating: true,
+                fit_excluded: true,
+                fullscreen: false,
+                maximized: false,
+                sticky: false,
+                fixed_auto: false,
+                fixed_suppress: false,
+                hints: crate::size_hints::WindowSizeHints::none(),
+            },
+        ],
+        closed: Vec::new(),
+        readable: true,
+        hold: None,
+    }];
+    report.topology = vec![OutputTopology {
+        output: OutputId("out".to_owned()),
+        native_order: vec!["ws1".to_owned()],
+        current_native: "ws1".to_owned(),
+        complete: true,
+        geometry: None,
+        primary: false,
+    }];
+    report.bindings = vec![WorkspaceBinding {
+        logical_id: "desk-1".to_owned(),
+        native_id: "ws1".to_owned(),
+        output: OutputId("out".to_owned()),
+        pinned: false,
+        displaced: false,
+        managed: true,
+    }];
+    let reply = accepted_reply(&mut engine, &report);
+    let float_row = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-float")
+        .expect("float row");
+    assert_eq!(
+        float_row.frame_authority,
+        ScopeAuthority::Untouched,
+        "held overlay takes no frame writes"
+    );
+    assert_eq!(
+        float_row.membership_authority,
+        ScopeAuthority::Untouched,
+        "ordinary float takes no membership writes"
+    );
+    // Exhaustion: outer 64 on a 100x100 work area cannot inset (100 -
+    // 128 < 0), so the scope holds as constraint-clamp with explicit
+    // held rows instead of projecting or dropping inventory.
+    let mut exhausted = report.clone();
+    exhausted.request_seq = 2;
+    exhausted.request_id = "req-2".to_owned();
+    exhausted.observation_seq = 2;
+    exhausted.domains[0].domain.bounds = rect(0, 0, 100, 100);
+    exhausted.domains[0].outer_gap = 64;
+    let reply = accepted_reply(&mut engine, &exhausted);
+    let scope = reply
+        .scopes
+        .iter()
+        .find(|s| s.scope == "out/ws1")
+        .expect("held scope");
+    assert_eq!(
+        scope.authority.hold_reason(),
+        Some(HoldReason::ConstraintClamp),
+    );
+    assert!(
+        !reply.windows.is_empty(),
+        "held inventory stays explicit, never silent absence"
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .all(|w| w.frame_authority.hold_reason().is_some()),
+        "every row held while exhausted"
+    );
+    // Recovery: a fitting value returns the scope to controlled with
+    // exact inset frames.
+    let mut recovered = report.clone();
+    recovered.request_seq = 3;
+    recovered.request_id = "req-3".to_owned();
+    recovered.observation_seq = 3;
+    let reply = accepted_reply(&mut engine, &recovered);
+    assert!(
+        reply
+            .scopes
+            .iter()
+            .all(|s| s.authority == ScopeAuthority::Controlled),
+        "recovery clears the hold"
+    );
+    let tile = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .and_then(|w| w.effective_frame)
+        .expect("recovered tile frame");
+    assert_eq!(tile, rect(12, 12, 776, 576), "sole tile fills the inset");
 }

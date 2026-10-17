@@ -212,9 +212,15 @@ describe("world command result entry", () => {
         assert.equal(sets.length, 1);
         const first = sets[0] as { args: ReadonlyArray<unknown> };
         const payload = JSON.parse(first.args[0] as string) as Record<string, unknown>;
-        assert.deepEqual(payload["bounds"], { x: 0, y: 0, w: 800, h: 600 });
-        assert.deepEqual(payload["members"], ["win-a", "win-b"]);
-        assert.equal(payload["group"], "fit-g0");
+        // Group union respects the outer gap: 800x600 inset by outer 4
+        // gives 792x592 at (4,4), never the raw client area. Members are
+        // the same pair (order follows the inset fallback seed).
+        assert.deepEqual(payload["bounds"], { x: 4, y: 4, w: 792, h: 592 });
+        assert.deepEqual([...(payload["members"] as Array<string>)].sort(), ["win-a", "win-b"]);
+        // Fallback seed under the inset (synthetic edge windows decline
+        // fit, which checks containment in the inset work area): same
+        // members, inset bounds, stable fallback group identity.
+        assert.equal(payload["group"], "grp-win-a-r1");
         h.handle?.stop();
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
@@ -296,10 +302,11 @@ describe("world command result entry", () => {
         // A real unfloat reply re-admits the window tiled: the untouched
         // exception row is gone, so membership leaves the float set while
         // the tile override records.
+        // Re-admitted tile respects the outer gap (outer 4 fixture).
         unfloat["windows"] = [
             {
                 win: "win-a", out: "out", ws: "ws",
-                alloc: [0, 0, 800, 600], frame: [0, 0, 800, 600],
+                alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",

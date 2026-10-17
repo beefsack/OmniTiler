@@ -54,7 +54,9 @@ import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { createWorldCloseTracker } from "./world-close-tracker";
-import { readDomainGaps } from "./domain-gap";
+import { createWorldCommandContext } from "./world-command-context";
+import { createWorldSettingsLive } from "./world-settings-live";
+import { WorldBornMaximizedAdmission } from "./world-born-maximized";
 
 export const WORLD_DBUS_SERVICE = "com.omnitiler.Planner";
 export const WORLD_DBUS_OBJECT = "/com/omnitiler/Planner";
@@ -78,6 +80,10 @@ export interface WorldEntryOverrides {
     readonly gestureActive?: () => boolean;
     readonly registerShortcutFn?: (name: string, text: string, sequence: string, callback: () => void) => boolean;
     readonly readWorkspaceModeFn?: () => unknown;
+    // Startup-consumed shortcut profile seam (main.xml `shortcutProfile`,
+    // legacy `readProfileFn` parity): validated once at startup, never
+    // re-read for behavior. Offline only, no KGlobalAccel writes.
+    readonly readProfileFn?: () => unknown;
     // Saved default-tiling seam (legacy `defaultTiled` parity): the raw
     // saved value for the core seed policy. Defaults to the KWin script
     // `defaultTiled` config key (backfill `true`); never per-workspace
@@ -85,6 +91,16 @@ export interface WorldEntryOverrides {
     readonly readDefaultTiledFn?: () => unknown;
     readonly readInnerGapFn?: () => unknown;
     readonly readOuterGapFn?: () => unknown;
+    readonly readSameAxisMoveFn?: () => unknown;
+    // R-MAX-06 born-maximized seam (main.xml `bornMaximized`): resolved
+    // live per admission so a deliberate Options reload applies to
+    // subsequent admissions with no restart and no state rebuild.
+    readonly readBornMaximizedFn?: () => unknown;
+    // Validated R-WS-12 G-37 migration source-refill seam (main.xml
+    // `migrationSourceRefill`): resolved live per report so a deliberate
+    // Options reload applies to subsequent migrations with no restart.
+    // Changing it never moves an already-migrated workspace.
+    readonly readMigrationSourceRefillFn?: () => unknown;
     // Native-only seams (never workspace policy): the drag-oracle D-Bus
     // caller (LastVerdict pull shape differs from the world payload shape),
     // the fixed-size predicate reader, and the fixed-origin decorator.
@@ -262,42 +278,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // routing, per-gesture preview) lives in world-drag; created below once
     // observation and transport exist.
 
-    const readMode = (): unknown => {
-        if (overrides.readWorkspaceModeFn !== undefined) {
-            try {
-                return overrides.readWorkspaceModeFn();
-            } catch (error) {
-                void error;
-                return "per-output-local";
-            }
-        }
-        try {
-            return readConfig("workspaceMode", "per-output-local");
-        } catch (error) {
-            void error;
-            return "per-output-local";
-        }
-    };
-    const gaps = readDomainGaps({ readInnerGapFn: overrides.readInnerGapFn, readOuterGapFn: overrides.readOuterGapFn });
-    // Saved default tiling (legacy `defaultTiled` parity): validated raw
-    // saved value for the core seed policy. Non-boolean values backfill
-    // `true`, matching the legacy default.
-    const readDefaultTiled = (): boolean => {
-        if (overrides.readDefaultTiledFn !== undefined) {
-            try {
-                return overrides.readDefaultTiledFn() !== false;
-            } catch (error) {
-                void error;
-                return true;
-            }
-        }
-        try {
-            return readConfig("defaultTiled", true) !== false;
-        } catch (error) {
-            void error;
-            return true;
-        }
-    };
+    // Live settings seams (startup snapshots plus per-dispatch
+    // re-reads) live in world-settings-live; the entry only consumes
+    // them here. Behavior identical to the previous inline closures.
+    const settings = createWorldSettingsLive(overrides);
+
     const gestureActive = (): boolean => {
         if (overrides.gestureActive !== undefined) {
             try {
@@ -310,63 +295,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return false;
     };
 
-    // Native workspace ids referenced by one world command: direct workspace
-    // targets plus operation inner targets/sources. Positional commands
-    // (numbered/relative/trailing) resolve in core and name no native.
-    const commandWorkspaceRefs = (command: WorldCommand | null): Set<string> => {
-        const refs = new Set<string>();
-        if (command === null) {
-            return refs;
-        }
-        const rec = command as unknown as Record<string, unknown>;
-        const take = (value: unknown): void => {
-            if (isOpaqueId(value)) {
-                refs.add(value as string);
-            }
-        };
-        const op = rec["op"];
-        if (op === "send" || op === "switch-view" || op === "select-workspace") {
-            take(rec["ws"]);
-            take(rec["workspace"]);
-        } else if (op === "migrate-workspace") {
-            take(rec["ws"]);
-        } else if (op === "operation") {
-            const inner = rec["command"];
-            if (typeof inner === "object" && inner !== null) {
-                const m = inner as Record<string, unknown>;
-                take(m["ws"]);
-                take(m["target_workspace"]);
-                const src = m["source"];
-                if (typeof src === "object" && src !== null) {
-                    take((src as Record<string, unknown>)["ws"]);
-                }
-            }
-        }
-        return refs;
-    };
-
-    // Adapter-asserted binding retention for the core trailing policy
-    // (core retains pinned/displaced natives against cleanup): true while
-    // the native id carries adapter-retained intent, an outstanding
-    // creation binding or a workspace referenced by the dispatched
-    // command. Hotplug displacement state lives in core (WorldEngine
-    // displaced units, published as ordinary rows under the survivor),
-    // never in the adapter: the adapter reports no per-workspace
-    // displacement flag of its own, so `disp` stays false here and live
-    // membership is pruned post-accept as before.
-    const pinRetained = (nativeId: string): boolean => {
-        for (const c of state.pendingCreations) {
-            if (c.bound === nativeId) {
-                return true;
-            }
-        }
-        const cmd = state.observationOnlyCatchup ? null : pendingCommand;
-        if (cmd !== null && commandWorkspaceRefs(cmd).has(nativeId)) {
-            return true;
-        }
-        return false;
-    };
-
     const capture = (): WorldObservation | null => {
         try {
             closeTracker.syncLive(surface);
@@ -375,9 +303,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         return captureWorldObservation({
         workspace: surface,
-        readMode,
-        readGap: () => gaps.innerGap,
-        readOuterGap: () => gaps.outerGap,
+        readMode: settings.readMode,
+        readGap: () => settings.readGapLive(),
+        readOuterGap: () => settings.readOuterGapLive(),
         gestureActive,
         knownClosed: () => closeTracker.snapshotClosed(),
         logicalBindingOf: (nativeId) => {
@@ -387,7 +315,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             return {
                 logical: base.logical, out: base.out,
-                pin: pinRetained(nativeId), disp: false, managed: true,
+                pin: route.pinRetained(nativeId), disp: false, managed: true,
             };
         },
         isFloating: (win) => floatingIds.has(win),
@@ -461,46 +389,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return null;
     };
 
-    const observeForCommand = (): WorldObservation | null => capture();
-
-    // Cross-output scope for one press direction: true only when the
-    // focused window's live domain reports an adjacent output there.
-    // The core refuses cross-output requests without adjacency, so an
-    // unconditional cross flag would refuse every directional action on
-    // a single-output host (and at any edgeless side); without adjacency
-    // the command stays local single-domain. Unreadable state fails
-    // closed to local scope.
-    const crossForDirection = (direction: string): boolean => {
-        if (!isDirection(direction)) {
-            return false;
-        }
-        const w = activeWindowId();
-        const obs = observeForCommand();
-        if (w === null || obs === null) {
-            return false;
-        }
-        for (const domain of obs.domains) {
-            for (const win of domain.windows) {
-                if (win.win === w) {
-                    return domain.adjacent[direction] !== undefined;
-                }
-            }
-        }
-        return false;
-    };
-
-    const adjacentTarget = (obs: WorldObservation, out: string, direction: string): { out: string; ws: string } | null => {
-        const domain = obs.domains.find((d) => d.id === out);
-        const targetOut = domain?.adjacent[direction] ?? null;
-        if (targetOut === null) {
-            return null;
-        }
-        const topo = obs.topology.find((t) => t.out === targetOut);
-        if (topo === undefined || topo.current === "") {
-            return null;
-        }
-        return { out: targetOut, ws: topo.current };
-    };
+    // Observation-derived local command context (workspace refs,
+    // retention, resize signature, cross-output scope, adjacent targets)
+    // lives in world-command-context; lifecycle state stays here.
+    const route = createWorldCommandContext({
+        observe: () => capture(),
+        activeWindowId,
+        isDirection,
+        isCreationBound: (nativeId) => state.pendingCreations.some((c) => c.bound === nativeId),
+        activeCommand: () => state.observationOnlyCatchup ? null : pendingCommand,
+    });
 
     const liveRefById = (id: string): object | null => {
         // Window-list cap mirrors the observer bound.
@@ -570,7 +468,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         log,
         isBusy: () => state.inFlightReq !== null || pendingCommand !== null,
         activeWindowId,
-        observe: observeForCommand,
+        observe: route.observeForCommand,
         liveRefById,
         submitCommand,
         invalidate: () => {
@@ -585,13 +483,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // output plus its current desktop; core owns the membership decision.
     // Without adjacency or a readable target view, refuse with no writes.
     const submitOutputSend = (direction: string, follow: boolean): boolean => {
-        const obs = observeForCommand();
+        const obs = route.observeForCommand();
         const out = activeOutputName();
         const w = activeWindowId();
         if (obs === null || out === null || w === null || !isDirection(direction)) {
             return false;
         }
-        const target = adjacentTarget(obs, out, direction);
+        const target = route.adjacentTarget(obs, out, direction);
         if (target === null) {
             return false;
         }
@@ -602,7 +500,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // adjacent output and the source's current workspace; the scope policy
     // decision stays in core. Without adjacency, refuse with no writes.
     const submitMigration = (direction: string): boolean => {
-        const obs = observeForCommand();
+        const obs = route.observeForCommand();
         const out = activeOutputName();
         if (obs === null || out === null || !isDirection(direction)) {
             return false;
@@ -757,7 +655,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         log,
         token,
         readProp,
-        observeForCommand,
+        observeForCommand: route.observeForCommand,
         submitCommand,
         isStopped: () => stopped,
         trackDetach: (detach) => {
@@ -822,6 +720,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
+    // R-MAX-06 born-maximized admission (legacy parity, adapter-owned).
+    // The clear phase runs ONLY after a ready full reply (bootstrap never
+    // actuates), with a current tiled/controlled scope proof from the
+    // reply, before unsafe geometry application. Mode re-resolves per
+    // admission (future admissions only, attempts never reset).
+    const bornMaxAdmission = new WorldBornMaximizedAdmission(overrides.readBornMaximizedFn);
+
     const dispatch = (isCatchup: boolean): void => {
         void isCatchup;
         if (stopped || state.boundGen === null) {
@@ -850,7 +755,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             boundGen: state.boundGen,
             currentObs: state.currentObs,
             pendingFeedback: state.pendingFeedback,
-            defaultTiled: readDefaultTiled(),
+            defaultTiled: settings.readDefaultTiled(),
+            refill: settings.readRefillLive(),
         });
         if (json === null) {
             state.noteRejectedOrTransportError();
@@ -926,6 +832,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         state.dirty = true;
                         return;
                     }
+                    // Previous accepted snapshot for born-maximized applied
+                    // evidence: the new reply contains birth rows and must
+                    // not misclassify them as later maximizes.
+                    const prevReply = state.lastReply;
                     const verdict = state.acceptReply(parsed, dispatchObs);
                     if (!verdict.applied) {
                         log(`omnitiler:world:stale reason=${token(verdict.reason)} recovery=catchup`);
@@ -972,16 +882,60 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Ack the closes that rode the accepted dispatch BEFORE the
                     // post-accept fresh capture: that capture may promote new
                     // event-gated closes that have never been reported and
-                    // must survive until their own accepted reply.
+                    // must survive until their own accepted reply. The
+                    // pre-ack snapshot also prunes born-maximized lifetimes
+                    // (explicit close only, never minimized absence).
+                    const closedBeforeAck = closeTracker.snapshotClosed();
                     try {
                         closeTracker.ack();
                     } catch (error) {
                         void error;
                     }
-                    const fresh = capture();
+                    try {
+                        bornMaxAdmission.pruneClosed(closedBeforeAck);
+                    } catch (error) {
+                        void error;
+                    }
+                    let fresh = capture();
                     if (fresh === null) {
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
                         return;
+                    }
+                    // R-MAX-06 post-ready clear phase: eligible births clear
+                    // once natively BEFORE unsafe geometry application, with
+                    // a same-canonical-ID readback proof. On any clear the
+                    // apply below uses recaptured truth and the next
+                    // dispatch is observation-only catchup (commands never
+                    // replay).
+                    if (bornMaxAdmission.runAfterReady({
+                        readProp,
+                        liveRefById,
+                        log,
+                        token,
+                        invalidate: () => {
+                            state.invalidate();
+                        },
+                    }, fresh, parsed, prevReply)) {
+                        state.observationOnlyCatchup = true;
+                        state.dirty = true;
+                        const recaptured = capture();
+                        if (recaptured === null) {
+                            log("omnitiler:world:observe-invalid recovery=on-next-event");
+                            return;
+                        }
+                        fresh = recaptured;
+                    }
+                    // Settle the admitted lifetime AFTER the birth decision
+                    // above: ids the core provably knew stay admitted across
+                    // a Planner generation rebind (null previous snapshot),
+                    // so a kept, fixed, or floating maximize is never
+                    // reclassified as a new birth. Never native-actuates;
+                    // unknown/held scopes and still-held fullscreen births
+                    // never mark.
+                    try {
+                        bornMaxAdmission.noteAcceptedReply(fresh, parsed);
+                    } catch (error) {
+                        void error;
                     }
                     {
                         const liveNatives = new Set<string>();
@@ -1166,7 +1120,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
         })();
         if (typeof optionsGlobal === "object" && optionsGlobal !== null) {
-            const detach = connectSignal(readSignal(optionsGlobal as object, "configChanged"), onNativeInvalidation);
+            // Startup-consumed drift note: workspaceMode and
+            // shortcutProfile never re-read for behavior here. Drift is
+            // restart-required, never adopted; live settings (gaps,
+            // same-axis, refill, born-maximized, default-tiling) re-resolve
+            // per dispatch independently.
+            const onConfigChanged = (): void => {
+                try {
+                    const drifted = settings.checkStartupDrift();
+                    if (drifted.length > 0) {
+                        log(`omnitiler:world:config-reloaded stage=restart-required keys=${drifted.join(",")}`);
+                    }
+                } catch (error) {
+                    void error;
+                }
+                onNativeInvalidation();
+            };
+            const detach = connectSignal(readSignal(optionsGlobal as object, "configChanged"), onConfigChanged);
             if (detach !== null) {
                 detaches.push(detach);
             }
@@ -1185,7 +1155,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // tiled seed.
     const getWorkspaceTilingSnapshot = (): { scope: string; tiled: boolean; defaultTiled: boolean } => {
         const scope = currentScopeId();
-        const saved = readDefaultTiled();
+        const saved = settings.readDefaultTiled();
         if (scope === "") {
             return { scope: "", tiled: saved, defaultTiled: saved };
         }
@@ -1213,7 +1183,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (out === null) {
             return "";
         }
-        const obs = observeForCommand();
+        const obs = route.observeForCommand();
         const topo = obs?.topology.find((t) => t.out === out);
         return topo?.current ?? "";
     };
@@ -1300,8 +1270,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         activeWindowRef,
         currentScopeId,
         getWorkspaceTilingSnapshot,
-        crossForDirection,
+        crossForDirection: route.crossForDirection,
         registerShortcutFn: overrides.registerShortcutFn,
+        readSameAxisMove: () => settings.readSameAxisLive(),
+        readResizeSignature: () => route.resizeSignature(),
     });
 
     return {
@@ -1346,7 +1318,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("focus");
                 return;
             }
-            const cross = (direction === "left" || direction === "right") && crossForDirection(direction);
+            const cross = (direction === "left" || direction === "right") && route.crossForDirection(direction);
             if (!submitCommand({ op: "operation", command: { op: "focus", win: w, direction, crossOutput: cross, floatSubject: false } }, "focus")) {
                 shortcutFailed("focus");
             }
@@ -1367,7 +1339,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const w = activeWindowId();
             if (w === null || !submitCommand({
                 op: "operation",
-                command: { op: "move", win: w, direction, crossOutput: crossForDirection(direction), sameAxis: "group-with-neighbor" },
+                command: { op: "move", win: w, direction, crossOutput: route.crossForDirection(direction), sameAxis: settings.readSameAxisLive() },
             }, "move")) {
                 shortcutFailed("move");
             }
@@ -1378,7 +1350,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("resize");
                 return;
             }
-            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction, mode, press: 1 } }, "resize")) {
+            if (!submitCommand({ op: "operation", command: { op: "resize", win: w, direction, mode, press: route.nextResizePress(w, direction, mode) } }, "resize")) {
                 shortcutFailed("resize");
             }
         },

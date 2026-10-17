@@ -654,6 +654,17 @@ pub enum MigrationRefill {
     MostRecentlyUsed,
 }
 
+impl From<crate::output_selection::MigrationSourceRefill> for MigrationRefill {
+    fn from(value: crate::output_selection::MigrationSourceRefill) -> Self {
+        match value {
+            crate::output_selection::MigrationSourceRefill::LastRemaining => Self::LastRemaining,
+            crate::output_selection::MigrationSourceRefill::MostRecentlyUsed => {
+                Self::MostRecentlyUsed
+            }
+        }
+    }
+}
+
 /// Pure whole-workspace migration refusal reasons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationRefusal {

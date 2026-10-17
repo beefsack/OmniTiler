@@ -156,6 +156,7 @@ fn report(
         domains,
         minimized: Vec::new(),
         fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
+        migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
         default_tiled: true,
         focused_global: focused_global.to_owned(),
         inventory_complete: true,

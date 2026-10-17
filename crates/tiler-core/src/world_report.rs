@@ -502,6 +502,11 @@ pub struct WorldReport {
     /// applies it to subsequent admissions only, never reclassifying
     /// retained windows.
     pub fixed_size_predicate: crate::size_hints::FixedSizePredicate,
+    /// Ingress migration source-refill mode (R-WS-12 G-37, main.xml
+    /// `migrationSourceRefill`, catalog `migration.refill`): the core
+    /// applies it to subsequent migrations only, never moving an
+    /// already-migrated workspace. Never reset committed state on change.
+    pub migration_source_refill: crate::output_selection::MigrationSourceRefill,
     /// Global active window id ("" when none): the adapter-observed
     /// foreground lifetime across all outputs. Drives focus-conditioned
     /// policy (hotplug survivor/return views); never focus proof.
@@ -661,7 +666,7 @@ pub fn classify_request(
 /// homing, frame, every safety flag, size-hint bounds), closes, topology
 /// (output, native order, current view, completeness), bindings (logical,
 /// native, output, pin/displacement/managed flags), inventory completeness,
-/// the default-tiling seed, the global focus, the gesture barrier, and
+/// the default-tiling seed, the migration source-refill mode, the global focus, the gesture barrier, and
 /// feedback (identity, kind, outcome, hold).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
@@ -707,6 +712,8 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     sep(&mut hash);
     flag(&mut hash, report.gesture_barrier);
     feed(&mut hash, report.fixed_size_predicate.as_wire_str());
+    sep(&mut hash);
+    feed(&mut hash, report.migration_source_refill.as_wire_str());
     sep(&mut hash);
     for entry in &report.minimized {
         for part in [

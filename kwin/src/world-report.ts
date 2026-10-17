@@ -6,6 +6,7 @@
 
 import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, WORLD_CONTRACT_VERSION } from "./world-seq";
 import type { WorldObservation } from "./world-observe";
+import type { MigrationSourceRefill } from "./migration-source-refill";
 
 export type WorldMode = "per-output-local" | "global-unique" | "shared";
 export type WorldCommand =
@@ -518,6 +519,11 @@ export interface WorldReportJsonInput {
     readonly currentObs: string;
     readonly pendingFeedback: ReadonlyArray<{ op: string; kind: string; outcome: string; hold: string }>;
     readonly defaultTiled: boolean;
+    // Validated R-WS-12 G-37 migration source-refill token (main.xml
+    // `migrationSourceRefill`): the core applies it to subsequent
+    // migrations only. Resolved live per report by the entry, never
+    // defaulted here.
+    readonly refill: MigrationSourceRefill;
 }
 
 export function buildWorldReportJson(input: WorldReportJsonInput): string | null {
@@ -553,5 +559,5 @@ export function buildWorldReportJson(input: WorldReportJsonInput): string | null
     ).join(",");
     const commandJson = command === null ? "null" : JSON.stringify(command);
     const defaultTiled = input.defaultTiled;
-    return `{"v":${WORLD_CONTRACT_VERSION},"owner":${esc(input.owner)},"adapter":${esc(input.adapter)},"gen":${esc(input.boundGen as string)},"obs":"${input.currentObs}","reqSeq":"${reqSeq}","req":${esc(reqId)},"cmdSeq":${cmdSeq === null ? "null" : `"${cmdSeq}"`},"command":${commandJson},"mode":${esc(observation.mode)},"topology":[${topology}],"bindings":[${bindings}],"domains":[${domains}],"minimized":[${minimized}],"predicate":${esc(observation.predicate)},"defaultTiled":${defaultTiled ? "true" : "false"},"focused":${esc(observation.focusedGlobal)},"complete":${observation.complete ? "true" : "false"},"gesture":${observation.gesture ? "true" : "false"},"feedback":[${feedback}]}`;
+    return `{"v":${WORLD_CONTRACT_VERSION},"owner":${esc(input.owner)},"adapter":${esc(input.adapter)},"gen":${esc(input.boundGen as string)},"obs":"${input.currentObs}","reqSeq":"${reqSeq}","req":${esc(reqId)},"cmdSeq":${cmdSeq === null ? "null" : `"${cmdSeq}"`},"command":${commandJson},"mode":${esc(observation.mode)},"topology":[${topology}],"bindings":[${bindings}],"domains":[${domains}],"minimized":[${minimized}],"predicate":${esc(observation.predicate)},"refill":${esc(input.refill)},"defaultTiled":${defaultTiled ? "true" : "false"},"focused":${esc(observation.focusedGlobal)},"complete":${observation.complete ? "true" : "false"},"gesture":${observation.gesture ? "true" : "false"},"feedback":[${feedback}]}`;
 }

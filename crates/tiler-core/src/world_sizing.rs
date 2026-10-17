@@ -315,7 +315,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 /// per-row overhead derived field-by-field from the protocol wire layout
 /// (`v`, `owner`, `adapter`, `gen`, `obs`/`reqSeq`/`cmdSeq` decimal strings,
 /// nullable command, `mode`, `topology`, `bindings`, `domains`,
-/// `minimized`, `predicate`, `defaultTiled`/`focused`/`complete`/`gesture`
+/// `minimized`, `predicate`, `refill`, `defaultTiled`/`focused`/`complete`/`gesture`
 /// values, `feedback`).
 /// Conservative: any compact encoding of the report fits within this
 /// bound (locked by `request_estimate_bounds_actual_wire_bytes`). The
@@ -325,7 +325,7 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
 pub fn report_estimate(report: &WorldReport) -> usize {
     // Envelope fixed bytes: {"v":1,"owner":,"adapter":,"gen":,"obs":"","reqSeq":"",
     // "req":,"cmdSeq":,"command":,"mode":,"topology":[],"bindings":[],"domains":[],
-    // "minimized":[],"predicate":,"defaultTiled":,"complete":,"gesture":,"feedback":[]} = 212
+    // "minimized":[],"predicate":,"refill":,"defaultTiled":,"complete":,"gesture":,"feedback":[]} = 222
     // plus the version digits, and the "focused" key (,"focused": = 11)
     // with its string value below. Values counted separately below; nullable
     // command slots count `null` (4) when absent.
@@ -337,6 +337,7 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + json_string_len(&report.request_id)
         + json_string_len(mode_token(report.workspace_mode))
         + json_string_len(report.fixed_size_predicate.as_wire_str())
+        + json_string_len(report.migration_source_refill.as_wire_str())
         + u64_len(report.request_seq)
         + u64_len(report.observation_seq)
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
@@ -353,10 +354,11 @@ pub fn report_estimate(report: &WorldReport) -> usize {
             + json_string_len(&entry.workspace.0);
     }
     // "minimized" key plus array brackets (,"minimized":[] = 15), the
-    // "predicate" key (,"predicate": = 13), and the "defaultTiled" key
+    // "predicate" key (,"predicate": = 13), the "refill" key
+    // (,"refill": = 10), and the "defaultTiled" key
     // (,"defaultTiled": = 16); values counted above. The "focused" key
     // (11) counts in the envelope above; its string value counts below.
-    bytes += 44;
+    bytes += 54;
     for topology in &report.topology {
         // {"out":S,"order":[S...],"current":S,"complete":B,"rect":R|null,"primary":B}
         // = 61 fixed plus the bool widths, the rect ints (or `null`),

@@ -198,13 +198,19 @@ impl WorldEngine {
         // Source-only in `windows`, target-only in `target_windows`:
         // the engine combines them for pair convergence, so
         // concatenating here would duplicate every row.
+        let (Some(inset_source), Some(inset_target)) = (
+            crate::world_engine::inset_world_domain(&source_domain.domain, source_domain.outer_gap),
+            crate::world_engine::inset_world_domain(&target_domain.domain, target_domain.outer_gap),
+        ) else {
+            return Err((KIND_SCOPE_HELD, MSG_SCOPE_HELD));
+        };
         let event = CoreEvent {
             owner,
             generation: self.core_generation.clone(),
             correlation,
             revision: 0,
             fingerprint: 0,
-            domain: Engine::canonical_component_domain(&source_domain.domain),
+            domain: Engine::canonical_component_domain(&inset_source),
             domain_key: source_key.clone(),
             outer_gap: source_domain.outer_gap,
             focused_window: source_domain.focused.clone(),
@@ -213,7 +219,7 @@ impl WorldEngine {
             directional: None,
             directional_target_outer_gap: None,
             target_domain: Some((
-                Engine::canonical_component_domain(&target_domain.domain),
+                Engine::canonical_component_domain(&inset_target),
                 target_key.clone(),
             )),
             target_windows: target_domain.windows.clone(),
