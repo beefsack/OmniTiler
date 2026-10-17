@@ -534,6 +534,33 @@ pub(crate) fn domain_member_apps(
     out
 }
 
+/// Read-only retained occupancy grouping for the menu-bar indicator: every
+/// known domain (current and hidden alike, via `known_domains` so
+/// memberless domains ride with empty membership) mapped to its
+/// exactly-homed retained `(pid, wid)` members, sorted and deduplicated.
+/// Pure over retained state — the caller joins workspace keys and current
+/// flags from the shared context and proves completeness via the context
+/// revision. No titles, no bundles, no paths.
+pub(crate) fn retained_occupancy(retained: &RetainedCore) -> BTreeMap<DomainKey, Vec<(u32, u32)>> {
+    let mut out: BTreeMap<DomainKey, Vec<(u32, u32)>> = BTreeMap::new();
+    for key in retained.known_domains.keys() {
+        out.entry(key.clone()).or_default();
+    }
+    for (pid, app) in &retained.apps {
+        for w in &app.windows {
+            let id = window_id(*pid, w.wid);
+            if let Some(key) = retained.window_domains.get(&id) {
+                out.entry(key.clone()).or_default().push((*pid, w.wid));
+            }
+        }
+    }
+    for members in out.values_mut() {
+        members.sort();
+        members.dedup();
+    }
+    out
+}
+
 /// Drop every window→domain mapping for one PID (terminate/relaunch).
 /// Domain events converge full retained membership, so a dead lifetime's
 /// mappings must go before planning — otherwise the closed windows would
@@ -1098,6 +1125,79 @@ mod tests {
             minimized: false,
             hidden: false,
         }
+    }
+
+    fn retained_with(
+        apps: &[(u32, Vec<ObservedWindow>)],
+        homing: &[(&str, DomainKey)],
+        known: &[DomainKey],
+    ) -> RetainedCore {
+        let mut retained = RetainedCore::default();
+        for (pid, windows) in apps {
+            retained.apps.insert(
+                *pid,
+                RetainedApp {
+                    generation: 1,
+                    seq_last: 1,
+                    cmd_counter: 0,
+                    windows: windows.clone(),
+                    focused_wid: None,
+                },
+            );
+        }
+        for (id, key) in homing {
+            retained
+                .window_domains
+                .insert((*id).to_owned(), (*key).clone());
+        }
+        for key in known {
+            retained
+                .known_domains
+                .insert(key.clone(), retired_domain_placeholder(key));
+        }
+        retained
+    }
+
+    #[test]
+    fn retained_occupancy_groups_current_and_hidden_members() {
+        use tiler_core::directional::OutputId;
+        let d1 = DomainKey {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-11".to_owned()),
+        };
+        let d2 = DomainKey {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-12".to_owned()),
+        };
+        let d3 = DomainKey {
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-13".to_owned()),
+        };
+        let retained = retained_with(
+            &[
+                (
+                    100,
+                    vec![observed(1, 10, 10, 100, 100), observed(2, 10, 10, 50, 50)],
+                ),
+                (200, vec![observed(5, 10, 10, 100, 100)]),
+                // PID 300 reports a window with no homing: unmapped, never
+                // a member anywhere.
+                (300, vec![observed(9, 10, 10, 100, 100)]),
+            ],
+            &[
+                ("100_1", d1.clone()),
+                ("100_2", d1.clone()),
+                ("200_5", d2.clone()),
+            ],
+            &[d1.clone(), d2.clone(), d3.clone()],
+        );
+        let grouped = retained_occupancy(&retained);
+        // Every known domain rides — including the memberless one (the
+        // caller proves emptiness via the context revision, never here).
+        assert_eq!(grouped.get(&d1), Some(&vec![(100, 1), (100, 2)]));
+        assert_eq!(grouped.get(&d2), Some(&vec![(200, 5)]));
+        assert_eq!(grouped.get(&d3), Some(&vec![]));
+        assert_eq!(grouped.len(), 3, "no unmapped window invents a domain");
     }
 
     #[test]

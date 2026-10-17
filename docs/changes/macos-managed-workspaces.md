@@ -113,6 +113,14 @@ mise exec -- just launch -- spaces-desktop-status
 mise exec -- just tile --user-start --scope com.apple.TextEdit --input tap --preset authentic --seconds 60
 ```
 
+At the start of the bounded run, inspect the menu-bar workspace numbers: all
+existing desktops should be visible in order, the current one highlighted, and
+unknown occupancy marked `?`. Check that the strip is legible and unobtrusive;
+optional `--workspace-indicator-icons` adds one representative app icon alongside
+each available number. Report crowding, missing numbers or unwanted focus changes.
+This appearance check remains pending; see the
+[indicator record](macos-workspace-indicator.md) for live-proof limitations.
+
 During the bounded run press **Ctrl+2** (empty Desktop 2), **Ctrl+Cmd+J**
 (wrap to Desktop 1), **Ctrl+Cmd+Tab** (previous Desktop 2), then **Ctrl+1**
 (return). Wait for each transition and inspect the `dev select` outcome and

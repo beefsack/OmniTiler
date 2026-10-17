@@ -173,6 +173,10 @@ pub struct TileRequest {
     /// Startup drag-preview configuration (master switch plus fill).
     /// Startup-only: a running session never re-reads it.
     pub drag: crate::drag_drop::DragOptions,
+    /// Startup workspace-indicator configuration (display mode plus
+    /// representative icons). Startup-only: a running session never
+    /// re-reads it.
+    pub indicator: crate::workspace_indicator::IndicatorOptions,
 }
 
 impl TileRequest {
@@ -338,6 +342,12 @@ pub struct TileOutcome {
     /// Armed select-only actions refused before enqueue (no topology yet,
     /// or a select already claimed/pending).
     pub input_select_refused: u64,
+    /// Indicator segment/menu rebuilds applied to the native status item
+    /// (change-only; 0 when the indicator is off or hidden).
+    pub indicator_updates: u64,
+    /// Indicator segment clicks submitted through the guarded engine lane
+    /// (accepted submissions; refusals log with static reasons).
+    pub indicator_clicks: u64,
     pub observations_published: u64,
     pub observation_failures: u64,
     /// Pushed border carrier effects (main-thread controller): creates,
@@ -395,6 +405,8 @@ impl TileOutcome {
             input_refused_no_focus: 0,
             input_select_enqueued: 0,
             input_select_refused: 0,
+            indicator_updates: 0,
+            indicator_clicks: 0,
             observations_published: 0,
             observation_failures: 0,
             border_shows: 0,
@@ -485,6 +497,9 @@ pub fn run_tile(request: TileRequest) -> Result<String, (i32, String)> {
         Err((1, "tile is macOS-only".to_owned()))
     }
 }
+
+#[cfg(target_os = "macos")]
+pub(crate) use native::IndicatorGuard;
 
 #[cfg(target_os = "macos")]
 mod native {
@@ -668,13 +683,446 @@ mod native {
         }
     }
 
+    /// Owned menu-bar indicator state on the tile main thread: one native
+    /// status item showing every Space as a directly clickable segment in
+    /// the bar itself (plus a mirror menu), driven change-only from the
+    /// pure [`IndicatorDriver`] pipeline, plus the click-binding channel
+    /// the per-segment AppKit targets forward into. Created only when the
+    /// mode is not off; the status item itself exists only while the
+    /// projection is visible (single display, provable row). Occupancy
+    /// comes from the engine's retained domains (managed windows only —
+    /// no independent desktop scan); the icon cache resolves
+    /// representative bundles on rebuild only (no added polls). Teardown
+    /// removes the item explicitly on every path (`Drop` runs on all
+    /// returns past construction — the watchdog forced exit excepted,
+    /// where the OS reaps the item with the process).
+    ///
+    /// [`IndicatorDriver`]: crate::workspace_indicator::IndicatorDriver
+    ///
+    /// The live-proof fixture
+    /// ([`crate::workspace_indicator_proof`]) hosts this same guard
+    /// directly (never a rebuilt lookalike): construction, tick, drain,
+    /// and teardown below are `pub(crate)` for that harness.
+    pub(crate) struct IndicatorGuard {
+        mtm: objc2::MainThreadMarker,
+        options: crate::workspace_indicator::IndicatorOptions,
+        tx: Option<std::sync::mpsc::SyncSender<crate::workspace_indicator::IndicatorClick>>,
+        rx: Option<std::sync::mpsc::Receiver<crate::workspace_indicator::IndicatorClick>>,
+        handle: Option<crate::ffi::WorkspaceIndicator>,
+        icons: std::collections::HashMap<String, objc2::rc::Retained<objc2_app_kit::NSImage>>,
+        driver: crate::workspace_indicator::IndicatorDriver,
+    }
+
+    impl IndicatorGuard {
+        pub(crate) fn new(
+            mtm: objc2::MainThreadMarker,
+            options: crate::workspace_indicator::IndicatorOptions,
+        ) -> Self {
+            let driver = crate::workspace_indicator::IndicatorDriver::new(options.mode);
+            let (tx, rx) = if driver.armed() {
+                let (tx, rx) = std::sync::mpsc::sync_channel(16);
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
+            Self {
+                mtm,
+                options,
+                tx,
+                rx,
+                handle: None,
+                icons: std::collections::HashMap::new(),
+                driver,
+            }
+        }
+
+        fn armed(&self) -> bool {
+            self.driver.armed()
+        }
+
+        /// Whether a fresh revision/observation pair needs a rebuild (edge
+        /// trigger for the occupancy query and frontmost read below: no
+        /// engine round-trip and no extra reads on a steady cadence).
+        fn needs_tick(&self, revision: u64, observations: u64) -> bool {
+            self.driver.needs_tick(revision, observations)
+        }
+
+        fn updates(&self) -> u64 {
+            self.driver.updates()
+        }
+
+        fn clicks(&self) -> u64 {
+            self.driver.clicks()
+        }
+
+        /// Explicit teardown: remove the status item and forget the cached
+        /// render (the next good snapshot refreshes from scratch). The
+        /// driver generation is NOT reset, so clicks queued before the
+        /// teardown refuse as stale instead of dispatching under an unsafe
+        /// context. The icon cache survives (bundle-keyed images stay
+        /// valid).
+        pub(crate) fn teardown(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.destroy(self.mtm);
+            }
+            self.driver.teardown();
+        }
+
+        /// Discard queued click bindings without dispatching (lock, Secure
+        /// Input, and stale-topology paths refuse narrowly instead of
+        /// switching under an unsafe context).
+        fn discard_clicks(&mut self) {
+            if let Some(rx) = self.rx.as_ref() {
+                while rx.try_recv().is_ok() {}
+            }
+        }
+
+        /// Apply one fresh snapshot revision plus one retained occupancy
+        /// report: rebuild the projection only when the driver trigger
+        /// fires (moved revision, published observation, or empty cache —
+        /// never a blind per-cadence poll) and push it to the native item
+        /// only on a changed render (change-only dedup inside the driver).
+        /// Occupancy is retained-engine truth (managed windows only);
+        /// any unproven frame renders every row `Unknown`. Counts,
+        /// ordinals, and the UI generation in the log only; SIDs, PIDs,
+        /// bundles, titles, and paths never appear.
+        pub(crate) fn tick(
+            &mut self,
+            rows: &[crate::ffi::SlsDisplayRow],
+            revision: u64,
+            observations: u64,
+            report: Option<crate::runtime::WorkspaceOccupancyReport>,
+            frontmost_pid: Option<u32>,
+        ) {
+            if !self.driver.needs_tick(revision, observations) {
+                return;
+            }
+            let projection = match crate::workspace_select::user_row_from_rows(rows, 0) {
+                Ok(row) => {
+                    let (domains, complete) = Self::retained_domains(&report, revision);
+                    let summary = crate::workspace_indicator::summarize_retained(
+                        &row.spaces,
+                        &domains,
+                        complete,
+                        frontmost_pid,
+                    );
+                    crate::workspace_indicator::project_indicator(
+                        &row.spaces,
+                        row.current,
+                        rows.len(),
+                        self.options.mode,
+                        &|sid| {
+                            summary
+                                .iter()
+                                .zip(row.spaces.iter())
+                                .find(|(_, s)| **s == sid)
+                                .map(|((o, _), _)| *o)
+                                .unwrap_or(crate::workspace_indicator::SpaceOccupancy::Unknown)
+                        },
+                        &|sid| {
+                            summary
+                                .iter()
+                                .zip(row.spaces.iter())
+                                .find(|(_, s)| **s == sid)
+                                .and_then(|((_, r), _)| *r)
+                                .and_then(|(pid, _)| {
+                                    i32::try_from(pid)
+                                        .ok()
+                                        .and_then(crate::ffi::bundle_id_for_pid)
+                                })
+                        },
+                    )
+                    .unwrap_or_else(|reason| {
+                        crate::workspace_indicator::IndicatorProjection {
+                            visible: false,
+                            hidden_reason: Some(reason),
+                            title: String::new(),
+                            rows: Vec::new(),
+                        }
+                    })
+                }
+                Err(reason) => crate::workspace_indicator::IndicatorProjection {
+                    visible: false,
+                    hidden_reason: Some(reason),
+                    title: String::new(),
+                    rows: Vec::new(),
+                },
+            };
+            match self.driver.apply(projection, revision, observations) {
+                crate::workspace_indicator::DriverApply::Applied(generation) => {
+                    self.push_native(generation, revision);
+                }
+                crate::workspace_indicator::DriverApply::Duplicate
+                | crate::workspace_indicator::DriverApply::Disarmed => {}
+            }
+        }
+
+        /// Map one retained occupancy report onto the live revision: the
+        /// per-Space retained domains plus whether completeness is proven
+        /// (report present AND homed under this exact revision). Anything
+        /// else — no report, timed-out query, revision drift — is
+        /// incomplete, and the summary renders `Unknown` throughout.
+        /// Domains whose workspace key does not parse to a SID are
+        /// dropped here (the summary names the coverage gap `Unknown`,
+        /// never empty).
+        fn retained_domains(
+            report: &Option<crate::runtime::WorkspaceOccupancyReport>,
+            revision: u64,
+        ) -> (Vec<crate::workspace_indicator::RetainedDomainState>, bool) {
+            let Some(report) = report else {
+                return (Vec::new(), false);
+            };
+            if !report.context_present || report.context_revision != revision {
+                return (Vec::new(), false);
+            }
+            let mut domains = Vec::with_capacity(report.domains.len());
+            for domain in &report.domains {
+                let Some(sid) = domain
+                    .workspace
+                    .strip_prefix("space-")
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .filter(|sid| *sid != 0)
+                else {
+                    continue;
+                };
+                domains.push(crate::workspace_indicator::RetainedDomainState {
+                    sid,
+                    members: domain.members.clone(),
+                });
+            }
+            (domains, true)
+        }
+
+        /// Push the driver's current render to the native item (create plus
+        /// one atomic segment/menu rebuild, or removal on hidden). Every
+        /// segment binds its immutable render-time click
+        /// (`ui_generation` + `topology_revision` ride into the engine
+        /// claim and the drain). Icons resolve per bundle through a
+        /// main-thread cache when the flag is on; any unreadable icon
+        /// renders the plain number instead. The button title clears:
+        /// the segments carry every ordinal.
+        fn push_native(&mut self, generation: u64, revision: u64) {
+            let Some(projection) = self.driver.last().cloned() else {
+                return;
+            };
+            if !projection.visible {
+                if let Some(handle) = self.handle.take() {
+                    handle.destroy(self.mtm);
+                }
+                eprintln!(
+                    "tiler-macos dev indicator hidden reason={} complete=true",
+                    projection.hidden_reason.as_deref().unwrap_or("unknown"),
+                );
+                return;
+            }
+            if self.handle.is_none() {
+                let Some(tx) = self.tx.clone() else {
+                    return;
+                };
+                match crate::ffi::WorkspaceIndicator::create(self.mtm, "", tx) {
+                    Ok(handle) => self.handle = Some(handle),
+                    Err(reason) => {
+                        eprintln!(
+                            "tiler-macos dev indicator create refused reason={} complete=false",
+                            reason,
+                        );
+                        // Forget the render so the next cadence retries
+                        // from scratch (the generation still advances, so
+                        // nothing queued can validate against a render that
+                        // never reached the bar).
+                        self.driver.teardown();
+                        return;
+                    }
+                }
+            }
+            let Some(handle) = self.handle.as_ref() else {
+                return;
+            };
+            handle.set_title(self.mtm, "");
+            let rows: Vec<crate::ffi::SegmentRow> = projection
+                .rows
+                .iter()
+                .map(|row| {
+                    let icon = if self.options.icons {
+                        row.representative.as_ref().and_then(|bundle| {
+                            if let Some(cached) = self.icons.get(bundle) {
+                                return Some(cached.clone());
+                            }
+                            let image = crate::ffi::ns_image_for_bundle(bundle)?;
+                            self.icons.insert(bundle.clone(), image.clone());
+                            Some(image)
+                        })
+                    } else {
+                        None
+                    };
+                    crate::ffi::SegmentRow {
+                        position: row.position,
+                        title: crate::workspace_indicator::segment_title(
+                            row.position,
+                            row.occupancy,
+                        ),
+                        current: row.current,
+                        enabled: row.selectable,
+                        occupancy: row.occupancy,
+                        icon,
+                        click: crate::workspace_indicator::IndicatorClick {
+                            position: row.position,
+                            expected_sid: row.sid,
+                            ui_generation: generation,
+                            topology_revision: revision,
+                        },
+                    }
+                })
+                .collect();
+            handle.rebuild(self.mtm, &rows);
+            let occupied = projection
+                .rows
+                .iter()
+                .filter(|r| r.occupancy == crate::workspace_indicator::SpaceOccupancy::Occupied)
+                .count();
+            let unknown = projection
+                .rows
+                .iter()
+                .filter(|r| r.occupancy == crate::workspace_indicator::SpaceOccupancy::Unknown)
+                .count();
+            let current = projection
+                .rows
+                .iter()
+                .find(|r| r.current)
+                .map(|r| r.position)
+                .unwrap_or(0);
+            eprintln!(
+                "tiler-macos dev indicator rows={} current={} occupied={} unknown={} generation={} complete=true",
+                projection.rows.len(),
+                current,
+                occupied,
+                unknown,
+                generation,
+            );
+        }
+
+        /// Drain queued click bindings: each resolves against the CURRENT
+        /// render generation plus the cadence's fresh user row and revision
+        /// (rebuilt UI, moved topology, moved rows, and past-nine positions
+        /// all refuse before any backend touch) and submits through the
+        /// guarded engine lane with its immutable binding — the same gates
+        /// as a tap select, the same main-thread drain, the same verified
+        /// arrival. Positions and outcome tokens in the log only.
+        fn drain_clicks(
+            &mut self,
+            fresh: &crate::workspace_select::SelectionSnapshot,
+            fresh_revision: u64,
+            runtime: &crate::runtime::RuntimeHandle,
+        ) {
+            let Some(rx) = self.rx.as_ref() else {
+                return;
+            };
+            if self.driver.last().is_none() {
+                self.discard_clicks();
+                return;
+            }
+            let current_generation = self.driver.generation();
+            while let Ok(click) = rx.try_recv() {
+                let position = click.position;
+                match crate::workspace_indicator::resolve_click(
+                    click,
+                    current_generation,
+                    &fresh.spaces,
+                    fresh_revision,
+                ) {
+                    Ok(action) => {
+                        let id = crate::workspace_input::workspace_action_id(&action)
+                            .unwrap_or("unknown-select");
+                        match runtime.submit_indicator_select(
+                            action,
+                            click.expected_sid,
+                            click.ui_generation,
+                            click.topology_revision,
+                        ) {
+                            crate::runtime::SubmitOutcome::Accepted => {
+                                self.driver.click_submitted();
+                                eprintln!(
+                                    "tiler-macos dev indicator click action={} position={} submitted=true",
+                                    id, position,
+                                );
+                            }
+                            _ => {
+                                eprintln!(
+                                    "tiler-macos dev indicator click action={} position={} submitted=false",
+                                    id, position,
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "tiler-macos dev indicator click position={} discarded reason=stale-or-unarmed",
+                            position,
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Live segment readbacks off the actual AppKit buttons (title,
+        /// tag, current, enabled, occupancy word, bold, icon presence,
+        /// alpha, screen frame); empty without a rendered item. The
+        /// live-proof harness reads appearance here, never a cached model.
+        pub(crate) fn segment_snapshot(&self) -> Vec<crate::ffi::SegmentReadback> {
+            self.handle
+                .as_ref()
+                .map(|handle| handle.segment_snapshot())
+                .unwrap_or_default()
+        }
+
+        /// Live click-target bindings in render order: `(position,
+        /// expected SID, UI generation, topology revision)` off the actual
+        /// retained target objects. Empty without a rendered item.
+        pub(crate) fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+            self.handle
+                .as_ref()
+                .map(|handle| handle.segment_targets())
+                .unwrap_or_default()
+        }
+
+        /// Menu row titles in live order; empty without a rendered item.
+        pub(crate) fn row_titles(&self) -> Vec<String> {
+            self.handle
+                .as_ref()
+                .map(|handle| handle.row_titles())
+                .unwrap_or_default()
+        }
+
+        /// Native status-item button frame in screen coordinates, or `None`
+        /// without a rendered item.
+        pub(crate) fn status_frame(&self) -> Option<(f64, f64, f64, f64)> {
+            self.handle.as_ref()?.status_frame()
+        }
+
+        /// Nonblocking take of one delivered click binding forwarded by
+        /// the per-segment AppKit targets (`None` when nothing was
+        /// clicked). The live-proof harness resolves the binding through
+        /// the product lane itself; the tile cadence keeps draining
+        /// through its own path.
+        pub(crate) fn try_recv_click(&self) -> Option<crate::workspace_indicator::IndicatorClick> {
+            self.rx.as_ref()?.try_recv().ok()
+        }
+    }
+
+    impl Drop for IndicatorGuard {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.destroy(self.mtm);
+            }
+        }
+    }
+
     /// Minimum interval between publisher-woken border-only joins: AX
     /// notification bursts re-join at most this often (never topology or
     /// tiling at AX frequency). The runloop pump below already quantizes
     /// wakeups to roughly its own period, so this throttle only caps
     /// pathological bursts.
     const BORDER_FAST_MIN: Duration = Duration::from_millis(33);
-
     /// Pure border fast-path gate over explicit inputs (fake-clock
     /// testable): enabled runs re-join only on publisher dirt with the
     /// throttle satisfied. The caller peeks (never takes) here — the take
@@ -903,6 +1351,11 @@ mod native {
         let border_store = Arc::new(crate::border_runtime::BorderFactsStore::new());
         let mut border_controller = crate::border_runtime::BorderController::new();
         let mut border_carrier = BorderCarrierGuard::new(mtm);
+        // Menu-bar workspace indicator (startup mode): one native status
+        // item driven change-only from the cached projection, fed by the
+        // cadence snapshot plus engine observation counts (no polling of
+        // its own). Clicks drain through the guarded engine lane.
+        let mut indicator = IndicatorGuard::new(mtm, request.indicator);
         // Drag-preview Escape watch (tap route with the startup switch
         // on only): the keyboard tap forwards otherwise-unmatched Escape
         // edges unsuppressed on this channel while the arm lives, so the
@@ -1314,6 +1767,10 @@ mod native {
                     // A locked session never dispatches a switch: drop any
                     // pending select without replay.
                     handle.discard_select_pending();
+                    // A locked session never indicates either: remove the
+                    // item and drop queued clicks (unlock refreshes below).
+                    indicator.teardown();
+                    indicator.discard_clicks();
                     // A locked session never decorates either: hide now
                     // (this branch skips the border tick below).
                     let effect = border_controller.reset();
@@ -1345,6 +1802,10 @@ mod native {
                     // Lock-screen foreground: same refusal as a locked
                     // session (no switch under the lock screen, no replay).
                     handle.discard_select_pending();
+                    // Same indicator teardown (this branch skips the tick
+                    // below).
+                    indicator.teardown();
+                    indicator.discard_clicks();
                     // Same border hide (this branch skips the tick below).
                     let effect = border_controller.reset();
                     border_carrier.drive(
@@ -1374,6 +1835,8 @@ mod native {
                 // Secure Input capture never dispatches a switch (the tap
                 // gate already released interception; this is the backstop).
                 handle.discard_select_pending();
+                // Same for indicator clicks queued under capture.
+                indicator.discard_clicks();
             }
 
             // Topology: observer events plus bounded fallback polling both
@@ -1395,6 +1858,35 @@ mod native {
                         });
                         topology_updates += 1;
                     }
+                    // Indicator refresh (event-driven, change-only): the
+                    // snapshot revision, engine observation counts, and an
+                    // empty cache are the only rebuild triggers — never a
+                    // blind per-cadence rebuild. Occupancy rides the
+                    // engine's retained domains over the control lane
+                    // (bounded round-trip; a timeout renders Unknown, never
+                    // a stale report — no independent desktop scan, no
+                    // steady-state polls: the query and the frontmost read
+                    // run only when a rebuild is actually due). Clicks drain
+                    // against this same fresh row below.
+                    if indicator.armed()
+                        && let Some(live) = last_snapshot.as_ref()
+                    {
+                        let observations = handle.diagnostics().observations_published;
+                        if indicator.needs_tick(live.revision, observations) {
+                            let report =
+                                handle.query_workspace_occupancy(Duration::from_millis(100));
+                            let frontmost_pid = crate::ffi::frontmost_app()
+                                .and_then(|(pid, _)| u32::try_from(pid).ok())
+                                .filter(|pid| *pid > 1);
+                            indicator.tick(
+                                &live.rows,
+                                live.revision,
+                                observations,
+                                report,
+                                frontmost_pid,
+                            );
+                        }
+                    }
                 }
                 Err(_) => {
                     handle.invalidate_topology();
@@ -1404,6 +1896,11 @@ mod native {
                     // Stale topology never dispatches: drop any pending
                     // select instead of switching under unreadable rows.
                     handle.discard_select_pending();
+                    // Stale topology never indicates either: remove the
+                    // item and drop queued clicks (a good snapshot
+                    // refreshes from scratch below).
+                    indicator.teardown();
+                    indicator.discard_clicks();
                 }
             }
 
@@ -1422,21 +1919,24 @@ mod native {
                 ax_focus: None,
             });
 
-            // Product select drain: one claimed pending select runs the
-            // proven native switch with fresh topology/readback on this
+            // Product select drain: one claimed pending select (action plus,
+            // for indicator clicks, the immutable render-time SID/revision
+            // binding) runs the proven native switch with fresh
+            // topology/readback on this
             // (main) thread — the tap callback and the serial engine handed
             // off asynchronously and never block. The drain refuses unless
             // exactly one native display row exists (no first-display
-            // guessing), rechecks session/Secure Input/lock-screen
-            // immediately pre-dispatch (the MC legs re-gate session/trust
-            // at every leg boundary; no atomicity past the recheck is
-            // promised), and runs under a 30 s budget plus a bounded reaped
-            // caffeinate companion. Verified arrival advances the
-            // per-display previous history; every refusal (gates, unarmed,
-            // display count, drift, no effect) clears without replay and
-            // advances nothing. A claim still held at shutdown is dropped,
-            // never dispatched.
-            if let Some(action) = handle.claim_select_for_drain() {
+            // guessing), refuses bound claims whose ordinal no longer names
+            // their SID or whose revision drifted, rechecks session/Secure
+            // Input/lock-screen immediately pre-dispatch (the MC legs
+            // re-gate session/trust at every leg boundary; no atomicity past
+            // the recheck is promised), and runs under a 30 s budget plus a
+            // bounded reaped caffeinate companion. Verified arrival advances
+            // the per-display previous history; every refusal (gates,
+            // unarmed, display count, drift, stale binding, no effect)
+            // clears without replay and advances nothing. A claim still held
+            // at shutdown is dropped, never dispatched.
+            if let Some(claim) = handle.claim_select_for_drain() {
                 let gates = crate::workspace_select::SelectGates {
                     session_unlocked: matches!(
                         crate::ffi::session_state().lock,
@@ -1447,10 +1947,10 @@ mod native {
                         .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
                         .unwrap_or(true),
                 };
-                let id = crate::workspace_input::workspace_action_id(&action)
+                let id = crate::workspace_input::workspace_action_id(&claim.action)
                     .unwrap_or("unknown-select");
                 let outcome =
-                    crate::workspace_select::drain_live_claimed(&mut select_state, action, &gates);
+                    crate::workspace_select::drain_live_claimed(&mut select_state, claim, &gates);
                 handle.release_select_after_drain();
                 match outcome {
                     Ok((effect, reaped)) => eprintln!(
@@ -1462,6 +1962,19 @@ mod native {
                         id, reason,
                     ),
                 }
+            }
+
+            // Indicator click drain against the cadence's fresh user row and
+            // revision: rebuilt UI, moved topology, moved rows, and
+            // past-nine positions all refuse before any backend touch, and
+            // the rest submit through the guarded engine lane with their
+            // immutable binding (same gates, same verified arrival — never
+            // a stale index select).
+            if indicator.armed()
+                && let Some(live) = last_snapshot.as_ref()
+                && let Ok(row) = crate::workspace_select::user_row_from_rows(&live.rows, 0)
+            {
+                indicator.drain_clicks(&row, live.revision, &handle);
             }
 
             // Discovery: running scoped apps bind launchDate/exe/bundle and
@@ -1581,6 +2094,11 @@ mod native {
         // join; the rest retain for reap. Windows stay in place — nothing
         // restores geometry on any path. The independent stop-file watcher
         // was installed before runtime startup; normal disarm is one slice.
+        // Indicator teardown first: remove the status item explicitly (the
+        // guard `Drop` below is the backstop); queued clicks were already
+        // refused on every gate above.
+        indicator.teardown();
+        let (indicator_updates, indicator_clicks) = (indicator.updates(), indicator.clicks());
         let report = handle.shutdown(SHUTDOWN_BOUND);
         let diagnostics = handle.diagnostics();
         // The hard lifetime is met on bounded runs: cancel the watchdog
@@ -1645,6 +2163,8 @@ mod native {
             input_refused_no_focus: diagnostics.input_refused_no_focus,
             input_select_enqueued: diagnostics.input_select_enqueued,
             input_select_refused: diagnostics.input_select_refused,
+            indicator_updates,
+            indicator_clicks,
             observations_published: diagnostics.observations_published,
             observation_failures: diagnostics.observation_failures,
             border_shows: border_controller.shows(),
@@ -1786,6 +2306,7 @@ mod tests {
             run_dir: None,
             border: ActiveBorderOptions::default(),
             drag: crate::drag_drop::DragOptions::default(),
+            indicator: crate::workspace_indicator::IndicatorOptions::default(),
         }
     }
 
@@ -1803,6 +2324,7 @@ mod tests {
             run_dir: None,
             border: ActiveBorderOptions::default(),
             drag: crate::drag_drop::DragOptions::default(),
+            indicator: crate::workspace_indicator::IndicatorOptions::default(),
         }
     }
 

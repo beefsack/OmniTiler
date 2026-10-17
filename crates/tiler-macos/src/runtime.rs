@@ -53,8 +53,8 @@ use crate::runtime_worker::app_worker_main;
 
 pub use crate::focus_route::FocusRoute;
 pub use crate::runtime_types::{
-    AX_CALL_TIMEOUT, AxCompletion, AxObservation, DesiredFrame, FocusCommand, FocusEvidence,
-    FocusRequest, FrameCommand, InputDirection, InputSemanticAction, LifecycleEvent,
+    AX_CALL_TIMEOUT, AxCompletion, AxObservation, ClaimedSelect, DesiredFrame, FocusCommand,
+    FocusEvidence, FocusRequest, FrameCommand, InputDirection, InputSemanticAction, LifecycleEvent,
     LifecycleLogEntry, NativeContext, NativeDomain, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP,
     PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE,
     RuntimeConfig, RuntimeDiagnostics, ScopedBackendSnapshot, ScopedWindowMeta, StartupError,
@@ -231,7 +231,11 @@ pub(crate) struct Shared {
     /// tile controller. `select_busy` marks a drain in progress so
     /// concurrent presses serialize/refuse instead of overlapping; both are
     /// short critical sections only (never held across the blocking effect).
-    pub(crate) select_pending: Option<InputSemanticAction>,
+    /// Indicator clicks ride as full [`ClaimedSelect`] bindings (expected
+    /// SID plus UI generation plus topology revision); tap chords ride
+    /// binding-free. The drain refuses a bound claim whose ordinal no
+    /// longer names its SID or whose revision drifted.
+    pub(crate) select_pending: Option<ClaimedSelect>,
     pub(crate) select_busy: bool,
     /// Main-thread-supplied global focus evidence (workspace-frontmost PID
     /// plus bundle, plain IDs — never AX reads: the main thread performs no
@@ -797,6 +801,37 @@ pub struct RuntimeHandle {
     inbox: Arc<Inbox>,
     focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
     ax_factory: Arc<dyn AxBackendFactory>,
+}
+
+// -- Read-only retained workspace occupancy -------------------------------------
+
+/// One engine-retained tile domain's managed membership: the core workspace
+/// key plus the exactly-homed retained `(pid, wid)` members the engine
+/// plans from (current and hidden domains alike). No titles, no bundles,
+/// no paths — the caller maps representative PIDs to bundle IDs itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOccupancyDomain {
+    /// Core workspace key (`space-{sid}` for user Spaces).
+    pub workspace: String,
+    /// True for the display's current user-Space domain (the single
+    /// actuating domain per display); hidden domains reconcile silently.
+    pub current: bool,
+    /// Exactly-homed retained members, sorted `(pid, wid)`.
+    pub members: Vec<(u32, u32)>,
+}
+
+/// Read-only retained occupancy snapshot answered by the engine owner over
+/// the control lane (strict FIFO: the reply reflects every observation
+/// submitted before the query). `context_present == false` (or a
+/// `context_revision` that no longer matches the controller's live
+/// snapshot revision) means completeness is unproven — the caller must
+/// render every row `Unknown`, never `Empty`. Memberless known domains are
+/// honestly empty only when complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOccupancyReport {
+    pub context_present: bool,
+    pub context_revision: u64,
+    pub domains: Vec<WorkspaceOccupancyDomain>,
 }
 
 impl RuntimeHandle {
@@ -1530,10 +1565,61 @@ impl RuntimeHandle {
                 global_focus,
                 meta: obs.meta,
                 excluded: 0,
+                excluded_reasons: Vec::new(),
                 revision: obs.revision,
             },
         };
         if self.inbox.try_send_data(job) {
+            SubmitOutcome::Accepted
+        } else {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+            SubmitOutcome::EngineQueueFull
+        }
+    }
+
+    /// Submit one tap/keyboard select through the engine lane (no
+    /// render-time binding: the drain maps the ordinal fresh). The engine
+    /// applies the unarmed/busy/no-topology gates and the main-thread
+    /// drain applies the fresh fences and verified arrival. Nonblocking
+    /// (data lane); a full queue drops counted, never blocks input.
+    pub fn submit_input_action(&self, action: InputSemanticAction) -> SubmitOutcome {
+        if !engine_alive(&self.shared) {
+            return SubmitOutcome::AdmissionClosed;
+        }
+        if self.inbox.try_send_data(EngineJob::InputAction { action }) {
+            SubmitOutcome::Accepted
+        } else {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+            SubmitOutcome::EngineQueueFull
+        }
+    }
+
+    /// Submit one menu-bar segment click through the engine lane: the
+    /// clicked segment already resolved to an armed select action over its
+    /// render-time row (see [`crate::workspace_indicator::resolve_click`]);
+    /// the immutable render binding (`expected_sid`, `ui_generation`,
+    /// `topology_revision`) rides through engine admission into the
+    /// pending claim, and the main-thread drain refuses it against the
+    /// fresh row instead of interpreting the ordinal against a different
+    /// generation. Same unarmed/busy/no-topology gates as a tap select.
+    /// Nonblocking (data lane); a full queue drops counted, never blocks
+    /// AppKit.
+    pub fn submit_indicator_select(
+        &self,
+        action: InputSemanticAction,
+        expected_sid: u64,
+        ui_generation: u64,
+        topology_revision: u64,
+    ) -> SubmitOutcome {
+        if !engine_alive(&self.shared) {
+            return SubmitOutcome::AdmissionClosed;
+        }
+        if self.inbox.try_send_data(EngineJob::IndicatorSelect {
+            action,
+            expected_sid,
+            ui_generation,
+            topology_revision,
+        }) {
             SubmitOutcome::Accepted
         } else {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
@@ -1630,13 +1716,36 @@ impl RuntimeHandle {
         rx.recv_timeout(timeout).is_ok()
     }
 
+    /// Query the engine's retained workspace occupancy (control lane, never
+    /// silently dropped; waits at most `timeout` for the owner reply).
+    /// `None` means the engine is gone, the inbox is closed, or the bound
+    /// elapsed — the caller renders `Unknown`, never a stale report. Never
+    /// blocks input or observation owners (only the caller waits).
+    pub fn query_workspace_occupancy(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<WorkspaceOccupancyReport> {
+        if !engine_alive(&self.shared) {
+            return None;
+        }
+        let (tx, rx) = mpsc::channel::<WorkspaceOccupancyReport>();
+        if !self
+            .inbox
+            .send_control(EngineJob::WorkspaceOccupancyQuery { reply: tx })
+        {
+            return None;
+        }
+        rx.recv_timeout(timeout).ok()
+    }
+
     /// Claim one pending product select for the main-thread drain: takes the
-    /// pending action and marks the slot busy so concurrent engine enqueues
-    /// serialize/refuse instead of overlapping (`None` when nothing is
-    /// pending or a drain is already in progress). Short critical section
-    /// only — never held across the blocking effect. Pair every `Some`
-    /// with [`RuntimeHandle::release_select_after_drain`].
-    pub fn claim_select_for_drain(&self) -> Option<InputSemanticAction> {
+    /// pending claim (action plus, for indicator clicks, the immutable
+    /// render-time SID/generation/revision binding) and marks the slot busy
+    /// so concurrent engine enqueues serialize/refuse instead of overlapping
+    /// (`None` when nothing is pending or a drain is already in progress).
+    /// Short critical section only — never held across the blocking effect.
+    /// Pair every `Some` with [`RuntimeHandle::release_select_after_drain`].
+    pub fn claim_select_for_drain(&self) -> Option<ClaimedSelect> {
         let mut guard = lock_shared(&self.shared);
         if guard.select_busy || guard.select_pending.is_none() {
             return None;

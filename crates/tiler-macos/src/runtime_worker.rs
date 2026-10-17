@@ -686,6 +686,7 @@ mod tests {
             global_focus: None,
             meta: Vec::new(),
             excluded: 0,
+            excluded_reasons: Vec::new(),
             revision: 9,
         }
     }

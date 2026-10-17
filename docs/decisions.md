@@ -909,6 +909,27 @@ platform API behavior.
     arrangements remain user-owned
     ([tray/first-run](changes/archive/windows-tray-first-run.md)).
 
+- macOS workspace indicator — **Tentative (pending user review)**: the bounded
+  tiling preview defaults to one native menu-bar status item with all existing
+  user-Space numbers in native order. Each number is directly clickable; current
+  is highlighted independently of occupied/empty/unknown styling. Occupancy is
+  the tiler's retained managed-window membership, including off-current domains,
+  not a promise to count every desktop application. Unproven membership remains
+  unknown. No trailing Space is synthesized or lifecycle policy added.
+  `workspace_indicator.mode` accepts `all` (default), `current`, or `off`;
+  `workspace_indicator.icons` defaults false and optionally adds one compact
+  representative application icon per workspace without replacing its number.
+  Native observation/engine changes drive refresh; no indicator polling loop.
+  Selection reuses the existing guarded MC AX route and refuses stale displayed
+  Space identities. Rendering and clicking are currently single-display only;
+  ambiguous multi-display scope hides the item rather than guessing. Numbers
+  beyond the armed 1–9 range remain visible but disabled. Unlike Windows' per-
+  output taskbar miniatures or Plasma's native pager, this is a compact menu-bar
+  readout in a select-only preview, with no full workspace lifecycle, urgency,
+  miniature layout or window-level icon strip. Physical appearance and game/
+  fullscreen acceptance remain TBD; details and alternatives are in the
+  [change record](changes/macos-workspace-indicator.md).
+
 ## Workspaces
 
 - User 2026-10-16, full-state replies D2/D3: KDE Planner is the sole

@@ -535,7 +535,8 @@ pub fn build_scoped_snapshot(
     let app = app_facts.to_app_facts();
     let mut windows = Vec::with_capacity(classified.len());
     let mut meta = Vec::with_capacity(classified.len());
-    let mut excluded = 0usize;
+    let mut excluded_reasons =
+        Vec::<crate::runtime_types::ExcludedOmission>::with_capacity(classified.len());
     for read in &classified {
         let frame = read.facts.frame.ok_or_else(|| {
             format!(
@@ -543,7 +544,7 @@ pub fn build_scoped_snapshot(
                 read.facts.wid
             )
         })?;
-        let observed = classify_window(
+        let classified_window = classify_window(
             WindowFrame {
                 wid: read.facts.wid,
                 x: frame.x as i32,
@@ -554,12 +555,23 @@ pub fn build_scoped_snapshot(
             &read.ax,
             &read.cg,
             &app,
-        )
-        .to_observed();
-        let Some(observed) = observed else {
-            excluded += 1;
+        );
+        // Exclusion reasons ride the snapshot as diagnostic detail (wid
+        // plus status name, never titles/content): the engine still sees
+        // only the omitted count, so omission here stays omission.
+        if let crate::classifier::Disposition::Excluded(reason) = classified_window.disposition {
+            excluded_reasons.push(crate::runtime_types::ExcludedOmission {
+                wid: read.facts.wid,
+                reason,
+            });
             continue;
-        };
+        }
+        let observed = classified_window.to_observed().unwrap_or_else(|| {
+            unreachable!(
+                "pid {pid}: non-excluded disposition must observe (wid {})",
+                read.facts.wid
+            )
+        });
         // Membership is homing evidence: a failed read or an empty
         // (unknown-home) list refuses the WHOLE snapshot — publishing the
         // readable siblings as complete would invent the unreadable
@@ -595,7 +607,8 @@ pub fn build_scoped_snapshot(
         sys_focus: None,
         global_focus: None,
         meta,
-        excluded,
+        excluded: excluded_reasons.len(),
+        excluded_reasons,
         revision,
     })
 }
@@ -1698,5 +1711,111 @@ mod tests {
             Ok(())
         );
         assert_eq!(*order.borrow(), vec!["dispatch", "raise"]);
+    }
+
+    fn reason_fixture(
+        wid: u32,
+        minimized: bool,
+        subrole: Option<&str>,
+    ) -> crate::native_facts::NativeReadOutcome {
+        use crate::native_facts::NativeWindowFacts;
+        crate::native_facts::NativeReadOutcome {
+            pid: 4242,
+            requested: 1,
+            observed: 1,
+            failed: 0,
+            first_cause: String::new(),
+            windows: vec![NativeWindowFacts {
+                wid,
+                role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+                subrole: subrole.map(str::to_owned),
+                fullscreen: Some(false),
+                minimized: Some(minimized),
+                modal: Some(false),
+                size_settable: Some(true),
+                min_size: None,
+                max_size: None,
+                frame: Some(AxFrame {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 800.0,
+                    h: 600.0,
+                }),
+                cg_layer: Some(0),
+                cg_onscreen: Some(true),
+            }],
+        }
+    }
+
+    fn reason_app() -> NativeAppFacts {
+        NativeAppFacts {
+            pid: 4242,
+            hidden: false,
+            activation_policy: crate::classifier::ActivationPolicy::Regular,
+            is_own_bundle: false,
+        }
+    }
+
+    #[test]
+    fn scoped_snapshot_records_omission_reasons_without_changing_counts() {
+        use crate::classifier::ExcludeReason;
+        // A minimized window omits with its reason attached (wid plus
+        // status name; never titles/content): the engine still sees an
+        // omitted count of one and zero observed windows.
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &reason_fixture(7, true, Some(crate::classifier::SUBROLE_STANDARD)),
+            &reason_app(),
+            &|_| Ok(vec![11u64]),
+            None,
+            false,
+            false,
+        )
+        .expect("complete facts snapshot");
+        assert!(snap.windows.is_empty());
+        assert!(snap.meta.is_empty());
+        assert_eq!(snap.excluded, 1);
+        assert_eq!(snap.excluded_reasons.len(), 1);
+        assert_eq!(snap.excluded_reasons[0].wid, 7);
+        assert_eq!(snap.excluded_reasons[0].reason, ExcludeReason::Minimized);
+        assert_eq!(
+            snap.excluded_reasons[0].reason.log_token(),
+            "classifier-omitted-minimized"
+        );
+
+        // An unreadable subrole omits as UnknownRole (the same shape a
+        // transient background-thread AX gap would take), not as a close.
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &reason_fixture(9, false, None),
+            &reason_app(),
+            &|_| Ok(vec![11u64]),
+            None,
+            false,
+            false,
+        )
+        .expect("complete facts snapshot");
+        assert!(snap.windows.is_empty());
+        assert_eq!(snap.excluded, 1);
+        assert_eq!(snap.excluded_reasons[0].wid, 9);
+        assert_eq!(snap.excluded_reasons[0].reason, ExcludeReason::UnknownRole);
+
+        // An ordinary standard window still admits with no reasons.
+        let snap = build_scoped_snapshot(
+            4242,
+            9,
+            &reason_fixture(7, false, Some(crate::classifier::SUBROLE_STANDARD)),
+            &reason_app(),
+            &|_| Ok(vec![11u64]),
+            None,
+            false,
+            false,
+        )
+        .expect("complete facts snapshot");
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.excluded, 0);
+        assert!(snap.excluded_reasons.is_empty());
     }
 }

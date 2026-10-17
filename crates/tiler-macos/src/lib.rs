@@ -108,6 +108,8 @@ pub mod synth;
 pub mod tile;
 pub mod topology;
 pub mod watchdog;
+pub mod workspace_indicator;
+pub mod workspace_indicator_proof;
 pub mod workspace_input;
 #[cfg(test)]
 mod workspace_input_tests;

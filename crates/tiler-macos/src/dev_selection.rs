@@ -144,6 +144,9 @@ pub struct DevSettings {
     pub excluded_bundles: Option<Vec<String>>,
     /// Active-border section (else CLI `--active-border-*`, else defaults).
     pub active_border: Option<ActiveBorderSettings>,
+    /// Workspace-indicator section (else CLI `--workspace-indicator*`, else
+    /// defaults: all rows, no icons).
+    pub workspace_indicator: Option<WorkspaceIndicatorSettings>,
     /// Drag-preview section (else CLI `--drag-preview-*`, else defaults).
     pub drag_preview: Option<crate::drag_drop::DragPreviewSettings>,
 }
@@ -273,6 +276,23 @@ pub fn resolve_border_config(
             use_theme,
         },
     })
+}
+
+/// Workspace-indicator settings file section (`"workspace_indicator"`
+/// object; every field optional; CLI wins per field). `mode` names the
+/// displayed rows (`"all"` default: every existing native Space in native
+/// order; `"current"`: only the current Space; `"off"`: no status item).
+/// `icons` opts into compact representative application icons per row
+/// (default off). Key naming mirrors the `--workspace-indicator*` CLI
+/// prefix. Unknown mode strings refuse loudly at parse (typos never
+/// silently no-op).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkspaceIndicatorSettings {
+    /// Display mode (default all rows).
+    pub mode: Option<crate::workspace_indicator::IndicatorMode>,
+    /// Representative app icons per row (default off).
+    pub icons: Option<bool>,
 }
 
 impl DevSettings {
@@ -540,6 +560,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            workspace_indicator: None,
             drag_preview: None,
         };
         // Nothing explicit: file wins over built-in defaults (unscoped, so
@@ -617,6 +638,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            workspace_indicator: None,
             drag_preview: None,
         };
         let resolved = resolve_dev_config(

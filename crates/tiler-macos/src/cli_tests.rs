@@ -1356,6 +1356,135 @@ fn tile_border_flags_default_unset_and_parse_raw() {
 }
 
 #[test]
+fn tile_indicator_flags_default_unset_and_parse() {
+    // No indicator flags: every selection stays unset (startup merge fills
+    // the defaults: all rows, no icons).
+    let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
+    if let Command::Tile { indicator, .. } = r.command {
+        assert_eq!(
+            indicator,
+            crate::workspace_indicator::IndicatorCli::default()
+        );
+    } else {
+        panic!("want tile");
+    }
+    // Every indicator flag parses.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--workspace-indicator",
+        "current",
+        "--workspace-indicator-icons",
+    ]))
+    .unwrap();
+    if let Command::Tile { indicator, .. } = r.command {
+        assert_eq!(
+            indicator.mode,
+            Some(crate::workspace_indicator::IndicatorMode::Current)
+        );
+        assert_eq!(indicator.icons, Some(true));
+    } else {
+        panic!("want tile");
+    }
+    // The negative icons flag wins when last (plain last-wins).
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--workspace-indicator-icons",
+        "--no-workspace-indicator-icons",
+    ]))
+    .unwrap();
+    if let Command::Tile { indicator, .. } = r.command {
+        assert_eq!(indicator.icons, Some(false));
+    } else {
+        panic!("want tile");
+    }
+    // Off mode parses; unknown modes and missing values refuse.
+    let r = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--scope",
+        "x",
+        "--workspace-indicator",
+        "off",
+    ]))
+    .unwrap();
+    if let Command::Tile { indicator, .. } = r.command {
+        assert_eq!(
+            indicator.mode,
+            Some(crate::workspace_indicator::IndicatorMode::Off)
+        );
+    } else {
+        panic!("want tile");
+    }
+    assert!(parse_args(&argv(&["tile", "--workspace-indicator", "numbers"])).is_err());
+    assert!(parse_args(&argv(&["tile", "--workspace-indicator"])).is_err());
+    assert!(parse_args(&argv(&["tile", "--workspace-indicator-icons-extra"])).is_err());
+}
+
+#[test]
+fn workspace_indicator_status_is_read_only() {
+    // No args: read-only dump, never mutating.
+    let r = parse_args(&argv(&["workspace-indicator-status"])).unwrap();
+    assert!(matches!(r.command, Command::WorkspaceIndicatorStatus));
+    assert!(!r.may_mutate);
+    // Any arg refuses (usage, not silent acceptance).
+    assert!(parse_args(&argv(&["workspace-indicator-status", "--seconds", "5"])).is_err());
+}
+
+#[test]
+fn workspace_indicator_proof_needs_no_identity_but_may_mutate() {
+    // Bounded live proof over the production guard: no probe-spawn
+    // identity involved (the fixture spawns its own owned helper), but
+    // the command may mutate topology and posts one synthetic segment
+    // click pair, so it is gated separately from the read-only status
+    // dump. Defaults select display 0 with the 120 s proof lifetime;
+    // --allow-untested rides the payload (the runner refuses without it).
+    let r = parse_args(&argv(&["workspace-indicator-proof", "--allow-untested"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::WorkspaceIndicatorProof {
+            seconds: 120,
+            display: 0,
+            allow_untested: true,
+        }
+    ));
+    let r = parse_args(&argv(&[
+        "workspace-indicator-proof",
+        "--seconds",
+        "90",
+        "--display",
+        "0",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::WorkspaceIndicatorProof {
+            seconds: 90,
+            display: 0,
+            allow_untested: true,
+        }
+    ));
+    // Without the opt-in the parse still succeeds (the runner refuses with
+    // a named prerequisite); unknown flags never parse.
+    let r = parse_args(&argv(&["workspace-indicator-proof"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::WorkspaceIndicatorProof {
+            allow_untested: false,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["workspace-indicator-proof", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["workspace-indicator-proof", "--seconds"])).is_err());
+}
+
+#[test]
 fn tile_unscoped_flags_and_override_explicitness() {
     // Unscoped product mode with repeatable exclusions and log verbosity.
     let r = parse_args(&argv(&[

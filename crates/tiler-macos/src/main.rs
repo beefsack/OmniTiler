@@ -830,6 +830,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             run_dir,
             border,
             drag,
+            indicator,
         } => {
             // Tile session: explicit start + product selection validated
             // inside; tap product route, Authentic/Compatible preset.
@@ -882,6 +883,14 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                         write_refused(&reason);
                         (2, reason)
                     })?;
+            let indicator = tiler_macos::workspace_indicator::resolve_indicator_config(
+                &indicator,
+                file.workspace_indicator.as_ref(),
+            )
+            .map_err(|reason| {
+                write_refused(&reason);
+                (2, reason)
+            })?;
             let request = tiler_macos::tile::TileRequest {
                 user_start,
                 scopes,
@@ -895,6 +904,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 run_dir: run_dir.clone(),
                 border,
                 drag,
+                indicator,
             };
             tiler_macos::tile::run_tile(request).map_err(|(code, body)| {
                 // Validation refusals carry plain text (not JSON): persist
@@ -920,6 +930,16 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             tiler_macos::group_underlay_session::run_group_underlay_session(seconds)
         }
         Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
+        Command::WorkspaceIndicatorStatus => tiler_macos::workspace_indicator::run_status(),
+        Command::WorkspaceIndicatorProof {
+            seconds,
+            display,
+            allow_untested,
+        } => tiler_macos::workspace_indicator_proof::run_workspace_indicator_proof(
+            seconds,
+            display,
+            allow_untested,
+        ),
         Command::McLifecycle {
             seconds,
             display,

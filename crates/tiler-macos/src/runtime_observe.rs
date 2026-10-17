@@ -250,6 +250,7 @@ mod tests {
                 hidden: false,
             }],
             excluded: 0,
+            excluded_reasons: Vec::new(),
             revision,
         }
     }

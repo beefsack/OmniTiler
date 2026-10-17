@@ -215,6 +215,27 @@ pub enum ExcludeReason {
     UnknownRole,
 }
 
+impl ExcludeReason {
+    /// Stable tiler-log outcome token for one omitted window's reason.
+    /// Diagnostic only: IDs, counts, and status names ride the log, never
+    /// titles, content, or raw input. The aggregate `classifier-omitted`
+    /// token is unchanged; these per-reason tokens name which gate fired
+    /// so a persistent `omitted=1/applied=0` run is attributable without
+    /// a live re-read.
+    #[must_use]
+    pub const fn log_token(&self) -> &'static str {
+        match self {
+            ExcludeReason::OwnBundle => "classifier-omitted-own-bundle",
+            ExcludeReason::AccessoryPolicy => "classifier-omitted-accessory",
+            ExcludeReason::ProhibitedPolicy => "classifier-omitted-prohibited",
+            ExcludeReason::Minimized => "classifier-omitted-minimized",
+            ExcludeReason::HiddenApp => "classifier-omitted-hidden-app",
+            ExcludeReason::NonordinaryLayer => "classifier-omitted-layer",
+            ExcludeReason::UnknownRole => "classifier-omitted-role",
+        }
+    }
+}
+
 /// Normalized disposition for one observed window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Disposition {
@@ -527,6 +548,36 @@ mod tests {
             Disposition::Excluded(ExcludeReason::HiddenApp)
         );
         assert!(classify(&ax, &cg, &app).to_observed().is_none());
+    }
+
+    #[test]
+    fn exclusion_reasons_carry_stable_distinct_log_tokens() {
+        // Every gate that can produce a live `classifier-omitted` line
+        // names itself with a stable token (wid counts per status name;
+        // never titles/content). A token rename breaks log attribution,
+        // so the strings are pinned here.
+        let tokens = [
+            (ExcludeReason::OwnBundle, "classifier-omitted-own-bundle"),
+            (
+                ExcludeReason::AccessoryPolicy,
+                "classifier-omitted-accessory",
+            ),
+            (
+                ExcludeReason::ProhibitedPolicy,
+                "classifier-omitted-prohibited",
+            ),
+            (ExcludeReason::Minimized, "classifier-omitted-minimized"),
+            (ExcludeReason::HiddenApp, "classifier-omitted-hidden-app"),
+            (ExcludeReason::NonordinaryLayer, "classifier-omitted-layer"),
+            (ExcludeReason::UnknownRole, "classifier-omitted-role"),
+        ];
+        for (reason, token) in tokens {
+            assert_eq!(reason.log_token(), token);
+        }
+        let mut seen = tokens.iter().map(|(_, t)| *t).collect::<Vec<_>>();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), tokens.len());
     }
 
     #[test]

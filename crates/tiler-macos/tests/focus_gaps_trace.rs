@@ -257,6 +257,7 @@ fn scripted(windows: Vec<ObservedWindow>, focused: Option<u32>) -> ScopedBackend
         global_focus: None,
         meta,
         excluded: 0,
+        excluded_reasons: Vec::new(),
         revision: 0,
     }
 }

@@ -67,6 +67,30 @@ pub(crate) enum EngineJob {
     InputAction {
         action: InputSemanticAction,
     },
+    /// Menu-bar segment click: the armed action plus its immutable
+    /// render-time binding (expected SID, UI generation, topology
+    /// revision). Admitted under the exact same gates as [`EngineJob::InputAction`];
+    /// the binding rides into the pending [`ClaimedSelect`] so the
+    /// main-thread drain refuses it against the fresh row instead of
+    /// interpreting the ordinal against a different generation. Data lane
+    /// (drops counted when full, never blocks AppKit).
+    IndicatorSelect {
+        action: InputSemanticAction,
+        expected_sid: u64,
+        ui_generation: u64,
+        topology_revision: u64,
+    },
+    /// Read-only retained occupancy query for the menu-bar indicator:
+    /// snapshot the engine's per-domain managed membership (current and
+    /// hidden alike) plus the context revision it was homed under, and
+    /// reply with the pure report. Stages nothing, plans nothing, touches
+    /// no reconciler state. Control lane (never silently dropped — the
+    /// main thread always gets its reply or an engine-dead refusal),
+    /// strict FIFO with observations, so the reply reflects every
+    /// observation submitted before the query.
+    WorkspaceOccupancyQuery {
+        reply: mpsc::Sender<crate::runtime::WorkspaceOccupancyReport>,
+    },
     /// Read-only drag preview query for the tile Meta+left route: resolve
     /// one [`tiler_core::boundary::CoreCommand::DragPreview`] against the
     /// current Engine and reply with the pure outcome. Stages nothing and
@@ -119,6 +143,7 @@ impl EngineJob {
             Self::Observation { .. }
                 | Self::ScopedObservation { .. }
                 | Self::InputAction { .. }
+                | Self::IndicatorSelect { .. }
                 | Self::AxResult { .. }
                 | Self::FocusResult { .. }
         )
@@ -418,6 +443,62 @@ fn wire_event(
     )
 }
 
+/// Pure engine admission verdict for one armed select claim (offline
+/// unit-testable core of the product handoff): unarmed actions refuse
+/// (recognized-but-undispatched trailing/select-0, sends, outputs), then a
+/// missing native context, an in-progress drain, or an already-pending
+/// claim refuses narrowly — concurrent presses serialize/refuse instead of
+/// overlapping, and a sent press is never replayed. Returns the claim to
+/// store on success. Tap chords ride binding-free; indicator clicks ride
+/// their immutable render-time binding through to the drain.
+pub(crate) fn admit_select_claim(
+    native_present: bool,
+    busy: bool,
+    has_pending: bool,
+    claim: crate::runtime_types::ClaimedSelect,
+) -> Result<crate::runtime_types::ClaimedSelect, &'static str> {
+    use crate::workspace_input::{is_armed_select, workspace_unsupported_outcome};
+    if workspace_unsupported_outcome(&claim.action).is_some() {
+        return Err("refused-select-unarmed");
+    }
+    if !is_armed_select(&claim.action) {
+        return Err("refused-select-unarmed");
+    }
+    if !native_present {
+        return Err("refused-select-no-topology");
+    }
+    if busy || has_pending {
+        return Err("refused-select-busy");
+    }
+    Ok(claim)
+}
+
+/// Store one admitted select claim (shared by tap and indicator lanes).
+fn admit_and_store(shared: &Arc<Mutex<Shared>>, claim: crate::runtime_types::ClaimedSelect) {
+    let verdict = {
+        let guard = lock_shared(shared);
+        admit_select_claim(
+            guard.native_context.is_some(),
+            guard.select_busy,
+            guard.select_pending.is_some(),
+            claim,
+        )
+    };
+    match verdict {
+        Ok(claim) => {
+            let mut guard = lock_shared(shared);
+            guard.select_pending = Some(claim);
+            guard.diagnostics.input_select_enqueued += 1;
+            drop(guard);
+            emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
+        }
+        Err(token) => {
+            lock_shared(shared).diagnostics.input_select_refused += 1;
+            emit(shared, 0, 0, 0, "input", token, 0);
+        }
+    }
+}
+
 /// Read-only drag preview against the current Engine (worker thread only):
 /// home the press-proven subject to its current domain and resolve one
 /// `DragPreview` over that domain's full membership. Hidden-domain
@@ -542,6 +623,45 @@ pub(crate) fn engine_main(
         emit(&shared, 0, 0, 0, "engine", "eos-unexpected", 0);
     }
     EngineExit::Done
+}
+
+/// Read-only retained occupancy report for the menu-bar indicator (engine
+/// owner only): per known domain (current and hidden alike) the
+/// exactly-homed retained `(pid, wid)` members, sorted, plus the context
+/// presence/revision the homing was derived under. No planning, no
+/// staging, no reconciler writes — a pure read over retained state plus
+/// the shared context flags. Memberless known domains ride with empty
+/// membership (honestly empty only when the caller proves completeness by
+/// matching `context_revision` against its live snapshot revision).
+fn occupancy_report(
+    retained: &RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+) -> crate::runtime::WorkspaceOccupancyReport {
+    use crate::runtime::{WorkspaceOccupancyDomain, WorkspaceOccupancyReport};
+    let members = crate::runtime_core::retained_occupancy(retained);
+    let guard = lock_shared(shared);
+    let Some(ctx) = guard.native_context.clone() else {
+        return WorkspaceOccupancyReport {
+            context_present: false,
+            context_revision: guard.topology_revision,
+            domains: Vec::new(),
+        };
+    };
+    let revision = ctx.revision;
+    let mut domains: Vec<WorkspaceOccupancyDomain> = members
+        .into_iter()
+        .map(|(key, members)| WorkspaceOccupancyDomain {
+            workspace: key.workspace.0.clone(),
+            current: ctx.is_current(&key),
+            members,
+        })
+        .collect();
+    domains.sort_by(|a, b| a.workspace.cmp(&b.workspace));
+    WorkspaceOccupancyReport {
+        context_present: true,
+        context_revision: revision,
+        domains,
+    }
 }
 
 /// Shared dispatch-truth accounting for [`EngineJob::AxResult`] and
@@ -862,24 +982,9 @@ fn process_job(
             // No published native topology, or an already-claimed/pending
             // select, refuses narrowly (concurrent presses serialize/refuse
             // instead of overlapping); a sent press is never replayed.
+            // Tap chords ride binding-free (see [`admit_select_claim`]).
             if crate::workspace_input::is_armed_select(&action) {
-                let mut guard = lock_shared(shared);
-                if guard.native_context.is_none() {
-                    guard.diagnostics.input_select_refused += 1;
-                    drop(guard);
-                    emit(shared, 0, 0, 0, "input", "refused-select-no-topology", 0);
-                    return;
-                }
-                if guard.select_busy || guard.select_pending.is_some() {
-                    guard.diagnostics.input_select_refused += 1;
-                    drop(guard);
-                    emit(shared, 0, 0, 0, "input", "refused-select-busy", 0);
-                    return;
-                }
-                guard.select_pending = Some(action);
-                guard.diagnostics.input_select_enqueued += 1;
-                drop(guard);
-                emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
+                admit_and_store(shared, crate::runtime_types::ClaimedSelect::tap(action));
                 return;
             }
             // The subject is observed truth, never planned focus — except
@@ -1103,6 +1208,26 @@ fn process_job(
                 0,
             );
         }
+        EngineJob::IndicatorSelect {
+            action,
+            expected_sid,
+            ui_generation,
+            topology_revision,
+        } => {
+            // Indicator segment clicks are select-only by construction:
+            // the immutable render-time binding rides through admission
+            // into the pending claim (see [`admit_select_claim`]);
+            // anything unarmed refuses inside without touching the core.
+            admit_and_store(
+                shared,
+                crate::runtime_types::ClaimedSelect::indicator(
+                    action,
+                    expected_sid,
+                    ui_generation,
+                    topology_revision,
+                ),
+            );
+        }
         EngineJob::DragPreviewQuery {
             window,
             x,
@@ -1137,6 +1262,15 @@ fn process_job(
             completion,
         } => {
             note_completion(shared, "focus-result", pid, generation, cmd_id, &completion);
+        }
+        EngineJob::WorkspaceOccupancyQuery { reply } => {
+            // Read-only retained snapshot: per-domain managed membership
+            // (current and hidden alike) plus the context revision it was
+            // homed under. Stages nothing, plans nothing — the main thread
+            // proves completeness by comparing the revision against its
+            // live snapshot and renders Unknown on any drift.
+            let report = occupancy_report(retained, shared);
+            let _ = reply.send(report);
         }
         EngineJob::Barrier(tx) => {
             let _ = tx.send(());
@@ -1684,5 +1818,67 @@ mod tests {
         slot.stop();
         assert!(slot.set_latest(focus_cmd(9, 1, 6)).is_none());
         assert!(slot.take().is_none());
+    }
+
+    use crate::runtime_types::{ClaimedSelect, InputSemanticAction};
+
+    fn tap_claim() -> ClaimedSelect {
+        ClaimedSelect::tap(InputSemanticAction::WorkspaceSelect { index: 2 })
+    }
+
+    fn bound_claim() -> ClaimedSelect {
+        ClaimedSelect::indicator(InputSemanticAction::WorkspaceSelect { index: 2 }, 3, 7, 9)
+    }
+
+    #[test]
+    fn select_admission_gates_unarmed_topology_and_busy() {
+        // Unarmed actions (trailing select-0, sends, outputs) refuse even
+        // with a bound click payload — a forged binding never widens the
+        // lane. The armed previous-toggle admits binding-free.
+        for action in [
+            InputSemanticAction::WorkspaceSelect { index: 0 },
+            InputSemanticAction::WorkspaceSend {
+                index: 1,
+                follow: true,
+            },
+        ] {
+            let claim = ClaimedSelect::indicator(action, 3, 7, 9);
+            let err = admit_select_claim(true, false, false, claim).expect_err("unarmed refuses");
+            assert_eq!(err, "refused-select-unarmed");
+        }
+        assert_eq!(
+            admit_select_claim(
+                true,
+                false,
+                false,
+                ClaimedSelect::tap(InputSemanticAction::WorkspacePrevious),
+            )
+            .map(|c| c.action),
+            Ok(InputSemanticAction::WorkspacePrevious),
+        );
+        // No published native context refuses before any claim is stored.
+        let err =
+            admit_select_claim(false, false, false, tap_claim()).expect_err("no-topology refuses");
+        assert_eq!(err, "refused-select-no-topology");
+        // A drain in progress or an already-pending claim refuses
+        // (concurrent presses serialize/refuse instead of overlapping).
+        for (busy, pending) in [(true, false), (false, true), (true, true)] {
+            let err =
+                admit_select_claim(true, busy, pending, tap_claim()).expect_err("busy refuses");
+            assert_eq!(err, "refused-select-busy");
+            let err = admit_select_claim(true, busy, pending, bound_claim())
+                .expect_err("bound busy refuses");
+            assert_eq!(err, "refused-select-busy");
+        }
+        // Open lane admits both lanes verbatim — the indicator binding
+        // rides through untouched for the drain to fence.
+        assert_eq!(
+            admit_select_claim(true, false, false, tap_claim()),
+            Ok(tap_claim())
+        );
+        assert_eq!(
+            admit_select_claim(true, false, false, bound_claim()),
+            Ok(bound_claim())
+        );
     }
 }

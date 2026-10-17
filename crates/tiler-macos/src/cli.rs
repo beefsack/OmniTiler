@@ -266,6 +266,15 @@ pub enum Command {
         /// Raw drag-preview selections (all unset = defaults; the settings
         /// file fills the gaps in `main`, then startup config).
         drag: crate::drag_drop::DragCli,
+        /// Raw workspace-indicator selections (all unset = defaults; the
+        /// settings file fills the gaps in `main`, then startup config).
+        indicator: crate::workspace_indicator::IndicatorCli,
+    },
+    WorkspaceIndicatorStatus,
+    WorkspaceIndicatorProof {
+        seconds: u64,
+        display: usize,
+        allow_untested: bool,
     },
     ScopeInspect {
         scopes: Vec<String>,
@@ -364,6 +373,10 @@ pub fn help_text() -> String {
            \x20 \x20 drag preview on by default: [--no-drag-preview]\n\
            \x20 \x20 [--drag-preview-color #aarrggbb]\n\
            \x20 \x20 (fill #402a82da; drag config resolves CLI-over-settings-file);\n\
+           \x20 \x20 workspace indicator on by default (all rows):\n\
+           \x20 \x20 [--workspace-indicator all|current|off]\n\
+           \x20 \x20 [--workspace-indicator-icons|--no-workspace-indicator-icons]\n\
+           \x20 \x20 (indicator config resolves CLI-over-settings-file);\n\
            \x20 \x20 --run-dir DIR opts into exact-run lifecycle (stop file\n\
            \x20 \x20 polled every cadence, terminal outcome published to\n\
            \x20 \x20 DIR/outcome.json);\n\
@@ -514,6 +527,24 @@ pub fn help_text() -> String {
             \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
             \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
             \x20 \x20 traversal past presence, no writes, no synthetic events)\n\
+            \x20 workspace-indicator-status\n\
+            \x20 \x20 (read-only indicator dump: fresh single-display user row plus\n\
+            \x20 \x20 per-row occupancy/current/selectable (ordinals and counts only,\n\
+            \x20 \x20 no titles/bundles/paths); no status item is created, no writes,\n\
+            \x20 \x20 no synthetic events)\n\
+              \x20 workspace-indicator-proof [--seconds N] [--display INDEX] --allow-untested\n\
+              \x20 \x20 (bounded live proof over the PRODUCTION indicator guard\n\
+              \x20 \x20 (same status item, segments, bindings, and guarded drain):\n\
+              \x20 \x20 one-Space baseline only, one LS-launched owned helper\n\
+              \x20 \x20 (signed bundle layout required — never a cargo exe),\n\
+              \x20 \x20 one temp Space, appear/current readbacks over retained\n\
+              \x20 \x20 occupancy, native switch update, off-current Occupied,\n\
+              \x20 \x20 ONE fresh synthetic segment click pair with dual hit\n\
+              \x20 \x20 identity plus release, engine-lane verified arrival,\n\
+              \x20 \x20 observed teardown, exact one-Space/current restoration;\n\
+              \x20 \x20 default 120s, minimum 60s; explicit opt-in per invocation,\n\
+              \x20 \x20 no default mutation; never executed without\n\
+              \x20 \x20 --allow-untested)\n\
               \x20 mc-lifecycle [--seconds N] [--display INDEX] --allow-untested\n\
               \x20 \x20 (bounded temp-Space lifecycle, default 60s, minimum 45s:\n\
               \x20 \x20 create exactly one Space on the display, go to it and back,\n\
@@ -1716,6 +1747,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut run_dir: Option<String> = None;
             let mut border = crate::dev_selection::BorderCli::default();
             let mut drag = crate::drag_drop::DragCli::default();
+            let mut indicator = crate::workspace_indicator::IndicatorCli::default();
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1811,6 +1843,18 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                                 .clone(),
                         );
                     }
+                    "--workspace-indicator" => {
+                        j += 1;
+                        indicator.mode = Some(crate::workspace_indicator::IndicatorMode::parse(
+                            args.get(j).ok_or("--workspace-indicator needs a value")?,
+                        )?);
+                    }
+                    "--workspace-indicator-icons" => {
+                        indicator.icons = Some(true);
+                    }
+                    "--no-workspace-indicator-icons" => {
+                        indicator.icons = Some(false);
+                    }
                     other => return Err(format!("tile: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -1828,6 +1872,56 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 run_dir,
                 border,
                 drag,
+                indicator,
+            }
+        }
+        "workspace-indicator-status" => {
+            // Read-only indicator dump: fresh user row plus per-row
+            // occupancy (counts/ordinals only). No status item is created,
+            // nothing is written.
+            if !args.is_empty() {
+                return Err("usage: tiler-macos workspace-indicator-status".to_owned());
+            }
+            Command::WorkspaceIndicatorStatus
+        }
+        "workspace-indicator-proof" => {
+            // Bounded live proof over the PRODUCTION indicator guard (same
+            // status item, segments, bindings, and guarded drain): the
+            // 120 s default and 60 s floor leave the leg battery plus
+            // cleanup reserve inside the run budget. Display defaults to
+            // 0 (the product single-display rule — nonzero refuses).
+            // Explicit --allow-untested opt-in per invocation (the runner
+            // refuses without it; no default mutation).
+            let mut seconds = crate::config::MAX_PROBE_SECONDS;
+            let mut display = 0usize;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u64(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => {
+                        return Err(format!("workspace-indicator-proof: unknown arg '{other}'"));
+                    }
+                }
+                j += 1;
+            }
+            Command::WorkspaceIndicatorProof {
+                seconds,
+                display,
+                allow_untested,
             }
         }
         "spaces-session" => {
@@ -2194,6 +2288,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::OwnedFrame { .. }
             | Command::ScopeInspect { .. }
             | Command::McInspect
+            | Command::WorkspaceIndicatorStatus
             | Command::McMembers { .. }
     );
     Ok(CliRequest {

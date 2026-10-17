@@ -5,6 +5,7 @@ use crate::workspace_select::*;
 struct Fake {
     row: SelectionSnapshot,
     displays: usize,
+    revision: Option<u64>,
     empty: Result<bool, String>,
     creates: usize,
     selects: Vec<u64>,
@@ -20,6 +21,7 @@ impl Default for Fake {
                 current: 20,
             },
             displays: 1,
+            revision: None,
             empty: Ok(true),
             creates: 0,
             selects: Vec::new(),
@@ -34,6 +36,9 @@ impl SelectionBackend for Fake {
     }
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
         Ok(self.row.clone())
+    }
+    fn revision(&mut self) -> Option<u64> {
+        self.revision
     }
     fn empty(&mut self, _: u64) -> Result<bool, String> {
         self.empty.clone()
@@ -369,6 +374,99 @@ fn drain_refuses_without_exactly_one_display_before_any_effect() {
         &open_gates(),
     )
     .unwrap();
+    assert!(effect.changed);
+    assert_eq!(fake.selects, vec![3]);
+}
+
+use crate::runtime_types::ClaimedSelect;
+
+fn bound_claim(index: u8, sid: u64, revision: u64) -> ClaimedSelect {
+    ClaimedSelect::indicator(
+        Action::WorkspaceSelect { index },
+        sid,
+        7, // UI generation (carried opaquely; the UI side fences it)
+        revision,
+    )
+}
+
+#[test]
+fn bound_drain_dispatches_only_when_ordinal_still_names_its_sid() {
+    // Happy path: the admitted binding (row 2 = SID 3 at revision 9)
+    // still holds at drain time — single dispatch, verified arrival.
+    let mut fake = Fake {
+        revision: Some(9),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
+        .expect("fresh binding dispatches");
+    assert!(effect.changed);
+    assert_eq!(fake.selects, vec![3]);
+    assert_eq!(fake.row.current, 3);
+}
+
+#[test]
+fn bound_drain_refuses_topology_reorder_after_admission_before_drain() {
+    // The engine admitted row 2 = SID 3 at revision 9; the native order
+    // then moved (SID 3 deleted, SID 41 appended) before the main-thread
+    // drain. The drain must refuse instead of selecting the new occupant
+    // of ordinal 2 — with no dispatch and no history advance.
+    let mut fake = Fake {
+        revision: Some(9),
+        ..Fake::default()
+    };
+    let claim = bound_claim(2, 3, 9);
+    fake.row.spaces = vec![20, 41];
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select(&mut state, &mut fake, claim, &open_gates())
+        .expect_err("reordered binding refuses");
+    assert!(err.contains("moved"), "{err}");
+    assert!(fake.selects.is_empty(), "never dispatched");
+    assert!(fake.row.current == 20, "current untouched");
+    assert!(
+        state.execute(&mut fake, Action::WorkspacePrevious).is_err(),
+        "no history advanced"
+    );
+}
+
+#[test]
+fn bound_drain_refuses_revision_drift_after_admission_before_drain() {
+    // Same row contents, but the topology revision moved between
+    // admission (9) and drain (10): the binding is stale and refuses even
+    // though the ordinal still names the same SID.
+    let mut fake = Fake {
+        revision: Some(10),
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
+        .expect_err("drifted revision refuses");
+    assert!(err.contains("revision"), "{err}");
+    assert!(fake.selects.is_empty(), "never dispatched");
+}
+
+#[test]
+fn bound_drain_refuses_vanished_position_and_unbound_revision_skips_leg() {
+    // Vanished ordinal refuses.
+    let mut fake = Fake {
+        row: SelectionSnapshot {
+            display: "display-a".to_owned(),
+            spaces: vec![20],
+            current: 20,
+        },
+        ..Fake::default()
+    };
+    let mut state = SelectionState::default();
+    let err = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
+        .expect_err("vanished row refuses");
+    assert!(err.contains("no longer exists"), "{err}");
+    assert!(fake.selects.is_empty());
+    // A backend that cannot report a revision (None) still fences on the
+    // SID leg: matching SID dispatches, moved SID refuses.
+    let mut fake = Fake::default();
+    let mut state = SelectionState::default();
+    let effect = drain_claimed_select(&mut state, &mut fake, bound_claim(2, 3, 9), &open_gates())
+        .expect("revision-less backend still dispatches fresh bindings");
     assert!(effect.changed);
     assert_eq!(fake.selects, vec![3]);
 }

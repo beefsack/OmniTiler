@@ -5610,6 +5610,535 @@ mod macos {
         }
     }
 
+    // -- Menu-bar workspace indicator (public AppKit only, main thread) --
+    //
+    // One variable-length status item whose BUTTON shows every existing
+    // native Space in native order as directly clickable per-workspace
+    // segments (plain numbers, current distinctly highlighted, occupancy
+    // treatments distinct even with icons off — see the appearance policy
+    // in `crate::workspace_indicator`). The dropdown menu mirrors the same
+    // rows for accessibility. Each segment carries its 1-based position as
+    // the button tag and an immutable render-time click binding
+    // (`IndicatorClick`: position, expected SID, UI generation, topology
+    // revision) in its own target object; the action forwards the binding
+    // verbatim over a bounded channel to the tile controller, which
+    // resolves it against the CURRENT render generation and a FRESH native
+    // row before submitting through the guarded engine lane (see
+    // `crate::workspace_indicator::resolve_click`). The action method
+    // performs no AX, no snapshot, no logging — binding forward only,
+    // dropped when the controller is not draining (bounded backpressure,
+    // never a block inside the callback). The view and the menu are
+    // rebuilt change-only by the controller (one atomic `rebuild` covers
+    // both, so a shrunken row can never leave a stale clickable segment
+    // or item behind); teardown removes the item explicitly. Appearance
+    // evidence comes from live view readbacks (`segment_snapshot`,
+    // `segment_targets`, `status_frame`) — never from a cached model. No
+    // Dock icon (the tile controller already runs accessory), no
+    // activation, no overlay, no polling of its own, no numeric SF Symbols
+    // anywhere (representative icons are real app icons or nothing).
+
+    use crate::workspace_indicator::{IndicatorClick, SpaceOccupancy};
+
+    /// One indicator row (plain data in; the handle owns the native
+    /// segments and menu items). `position` rides as the segment/menu tag
+    /// (1-based native ordinal); `title` is the rendered button/menu text
+    /// (the ordinal with an explicit `'?'` suffix if and only if occupancy
+    /// is Unknown — see [`crate::workspace_indicator::segment_title`]);
+    /// `icon` carries a pre-resolved 16pt app image when the icons flag is
+    /// on (`None` renders the number alone — icons ride LEFT of the
+    /// number, never replacing it); `click` is the immutable render-time
+    /// binding the segment forwards verbatim; `occupancy` drives the
+    /// appearance treatment (occupied = full-alpha bold, empty = dimmed
+    /// regular, unknown = full-alpha regular plus the `'?'` title suffix
+    /// with an explicit "unknown" tooltip — never conflated with empty;
+    /// no label colour is ever set) while `current` adds the bordered
+    /// highlight orthogonally.
+    pub struct SegmentRow {
+        pub position: usize,
+        pub title: String,
+        pub current: bool,
+        pub enabled: bool,
+        pub occupancy: SpaceOccupancy,
+        pub icon: Option<objc2::rc::Retained<objc2_app_kit::NSImage>>,
+        pub click: IndicatorClick,
+    }
+
+    /// Live segment readback for fixtures and the live-proof harness:
+    /// every field is read off the actual buttons (title, tag, bordered,
+    /// enabled, font trait, image presence, tooltip, screen frame) — the
+    /// occupancy word parses back out of the live tooltip, so a drifted
+    /// appearance contract fails loudly instead of passing on a stale
+    /// model. `frame` is screen coordinates (status-item window base).
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct SegmentReadback {
+        pub position: usize,
+        pub title: String,
+        pub current: bool,
+        pub enabled: bool,
+        pub occupancy: String,
+        pub bold: bool,
+        pub has_icon: bool,
+        pub alpha: f64,
+        pub frame: (f64, f64, f64, f64),
+    }
+
+    struct WorkspaceSegmentIvars {
+        click: IndicatorClick,
+        sender: std::sync::mpsc::SyncSender<IndicatorClick>,
+    }
+
+    // SAFETY: plain-data ivars carried to `set_ivars` (same shape as
+    // `DisplayChangeIvars` above: an immutable click binding plus a channel
+    // sender, never dereferenced as an ObjC object).
+    unsafe impl objc2::Encode for WorkspaceSegmentIvars {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Object;
+    }
+
+    objc2::define_class! {
+        // SAFETY: `NSObject` imposes no subclassing requirements and this
+        // class implements no `Drop`; the action forwards the immutable
+        // render-time binding over a bounded channel only (no AX, no
+        // snapshot, no layout, no logging, no panics — a full channel
+        // drops, never blocks). The sender is ignored: the binding was
+        // fixed when the segment rendered, so a rebuild between render
+        // and click cannot reinterpret the tap.
+        #[unsafe(super(objc2_foundation::NSObject))]
+        #[ivars = Box<WorkspaceSegmentIvars>]
+        struct WorkspaceSegmentTarget;
+
+        // SAFETY: the signature matches the
+        // `workspaceIndicatorSegmentClicked:` selector installed below
+        // (one `NSButton` argument, ignored in favour of the ivars).
+        impl WorkspaceSegmentTarget {
+            #[unsafe(method(workspaceIndicatorSegmentClicked:))]
+            fn workspace_indicator_segment_clicked(&self, _sender: &objc2_app_kit::NSButton) {
+                let _ = self
+                    .ivars()
+                    .sender
+                    .try_send(self.ivars().click);
+            }
+        }
+    }
+
+    /// Owned menu-bar indicator handle: one status item plus its segment
+    /// view, its mirror menu, and the per-row click targets. Main-thread
+    /// confinement is structural (same shape as [`BorderCarrier`]):
+    /// creation and every method take or hold a
+    /// [`objc2::MainThreadMarker`], and the held `Retained` handles are
+    /// `MainThreadOnly`. The target/button/menu sets are rebuilt atomically
+    /// by [`WorkspaceIndicator::rebuild`] and held here (menu items and
+    /// buttons do not retain their targets), so no click can outlive its
+    /// render. No `Drop` impl: teardown is the explicit
+    /// [`WorkspaceIndicator::destroy`], which consumes the handle.
+    pub struct WorkspaceIndicator {
+        item: objc2::rc::Retained<objc2_app_kit::NSStatusItem>,
+        menu: objc2::rc::Retained<objc2_app_kit::NSMenu>,
+        sender: std::sync::mpsc::SyncSender<IndicatorClick>,
+        targets: std::cell::RefCell<Vec<objc2::rc::Retained<WorkspaceSegmentTarget>>>,
+        buttons: std::cell::RefCell<Vec<objc2::rc::Retained<objc2_app_kit::NSButton>>>,
+        container: std::cell::RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSView>>>,
+        mtm: objc2::MainThreadMarker,
+    }
+
+    /// Segment button geometry (AppKit points): compact enough for the menu
+    /// bar, wide enough for two-digit ordinals plus a 16pt icon.
+    const SEGMENT_HEIGHT: f64 = 22.0;
+    const SEGMENT_WIDTH: f64 = 26.0;
+    const SEGMENT_WIDTH_ICON: f64 = 44.0;
+    const SEGMENT_WIDTH_WIDE: f64 = 8.0;
+
+    impl WorkspaceIndicator {
+        /// Create the status item and wire the click channel (bounded; the
+        /// controller drains it every cadence). The button starts with
+        /// `title` and an empty menu; the caller fills both with
+        /// [`WorkspaceIndicator::rebuild`].
+        pub fn create(
+            mtm: objc2::MainThreadMarker,
+            title: &str,
+            clicks: std::sync::mpsc::SyncSender<IndicatorClick>,
+        ) -> Result<Self, String> {
+            use objc2_foundation::NSString;
+            let bar = objc2_app_kit::NSStatusBar::systemStatusBar();
+            let item = bar.statusItemWithLength(objc2_app_kit::NSVariableStatusItemLength);
+            // Title and tooltip ride the status bar button (the direct
+            // `NSStatusItem` title/tooltip setters are deprecated).
+            if let Some(button) = item.button(mtm) {
+                button.setTitle(&NSString::from_str(title));
+                button.setToolTip(Some(&NSString::from_str("OmniTiler workspaces")));
+            }
+            let menu: objc2::rc::Retained<objc2_app_kit::NSMenu> =
+                objc2_app_kit::NSMenu::initWithTitle(
+                    mtm.alloc::<objc2_app_kit::NSMenu>(),
+                    &NSString::from_str("OmniTiler Workspaces"),
+                );
+            item.setMenu(Some(menu.as_ref()));
+            Ok(Self {
+                item,
+                menu,
+                sender: clicks,
+                targets: std::cell::RefCell::new(Vec::new()),
+                buttons: std::cell::RefCell::new(Vec::new()),
+                container: std::cell::RefCell::new(None),
+                mtm,
+            })
+        }
+
+        /// Retitle the status item through its button (the direct item
+        /// setter is deprecated). Production segment renders clear this:
+        /// the per-workspace buttons carry every ordinal, and stale button
+        /// text must never overlap them.
+        pub fn set_title(&self, _mtm: objc2::MainThreadMarker, title: &str) {
+            use objc2_foundation::NSString;
+            if let Some(button) = self.item.button(self.mtm) {
+                button.setTitle(&NSString::from_str(title));
+            }
+        }
+
+        /// Rebuild the button segments AND the mirror menu from `rows`
+        /// (native order in, native order out): both are replaced wholesale
+        /// in one call, so a shrunken row can never leave a stale clickable
+        /// segment or item behind, and the menu can never disagree with the
+        /// bar. Current segments read bordered plus bold, occupied
+        /// borderless bold full-alpha, empty borderless regular dimmed,
+        /// unknown borderless regular full-alpha plus the `'?'` title
+        /// suffix with an explicit "unknown" tooltip (never dimmed like
+        /// empty, never bold like occupied unless also current — and no
+        /// label colour is ever set, so the suffix is the marker);
+        /// positions past the armed `1..=9` range stay visible
+        /// but disabled with a tooltip naming the missing route. Icons ride
+        /// left of the number only when pre-resolved (`None` renders the
+        /// plain number alone).
+        pub fn rebuild(&self, _mtm: objc2::MainThreadMarker, rows: &[SegmentRow]) {
+            use objc2::rc::Retained;
+            // Fresh per-row targets first: every segment and menu item
+            // below shares its row's target (target-action allows multiple
+            // senders), and the handle retains the set so no click can
+            // outlive its render. The previous set is replaced only after
+            // the new view and menu install, so a click mid-rebuild still
+            // forwards a complete binding.
+            let mut targets: Vec<Retained<WorkspaceSegmentTarget>> = Vec::with_capacity(rows.len());
+            for row in rows {
+                let allocated: objc2::rc::Allocated<WorkspaceSegmentTarget> =
+                    WorkspaceSegmentTarget::alloc();
+                // SAFETY: ivars set directly, then the superclass `init`
+                // (the `define_class!` doc shape, same as the display
+                // observer); the immutable binding plus the bounded sender
+                // are plain data, never dereferenced as ObjC objects.
+                let target: Retained<WorkspaceSegmentTarget> = unsafe {
+                    objc2::msg_send![
+                        super(allocated.set_ivars(Box::new(WorkspaceSegmentIvars {
+                            click: row.click,
+                            sender: self.sender.clone(),
+                        }))),
+                        init
+                    ]
+                };
+                targets.push(target);
+            }
+            self.rebuild_impl(rows, &targets);
+            *self.targets.borrow_mut() = targets;
+        }
+
+        /// Install one rebuilt menu (in place, so [`WorkspaceIndicator::row_titles`]
+        /// reads the live items) plus one rebuilt segment view from `rows`
+        /// with the prebuilt `targets` (one per row, same order).
+        fn rebuild_impl(
+            &self,
+            rows: &[SegmentRow],
+            targets: &[objc2::rc::Retained<WorkspaceSegmentTarget>],
+        ) {
+            self.rebuild_menu_live(rows, targets);
+            self.rebuild_segments(rows, targets);
+        }
+
+        /// Rebuild the mirror menu in place (native order in, native order
+        /// out): items are removed and re-added on the SAME menu object,
+        /// so [`WorkspaceIndicator::row_titles`] reads the live rows and a
+        /// shrunken row can never leave a stale clickable item behind.
+        /// Current rows read checkmarked, disabled rows stay visible but
+        /// refuse clicks, icons ride only when pre-resolved, and every
+        /// tooltip names the occupancy verdict plus the flags.
+        fn rebuild_menu_live(
+            &self,
+            rows: &[SegmentRow],
+            targets: &[objc2::rc::Retained<WorkspaceSegmentTarget>],
+        ) {
+            use objc2_foundation::NSString;
+            self.menu.removeAllItems();
+            // SAFETY: every created item, its per-row target, and the
+            // installed selector are live; tags carry 1-based positions.
+            unsafe {
+                use objc2::sel;
+                let empty = NSString::from_str("");
+                for (row, target) in rows.iter().zip(targets.iter()) {
+                    let title = NSString::from_str(&row.title);
+                    let allocated = self.mtm.alloc::<objc2_app_kit::NSMenuItem>();
+                    let item: objc2::rc::Retained<objc2_app_kit::NSMenuItem> =
+                        objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                            allocated,
+                            &title,
+                            Some(sel!(workspaceIndicatorSegmentClicked:)),
+                            &empty,
+                        );
+                    item.setTarget(Some(target.as_ref()));
+                    item.setAction(Some(sel!(workspaceIndicatorSegmentClicked:)));
+                    item.setTag(row.position as _);
+                    item.setState(if row.current {
+                        objc2_app_kit::NSControlStateValueOn
+                    } else {
+                        objc2_app_kit::NSControlStateValueOff
+                    });
+                    item.setEnabled(row.enabled);
+                    if let Some(image) = row.icon.as_ref() {
+                        item.setImage(Some(image.as_ref()));
+                    }
+                    let tip = crate::workspace_indicator::segment_tooltip(
+                        row.position,
+                        row.occupancy,
+                        row.current,
+                        row.enabled,
+                    );
+                    item.setToolTip(Some(&NSString::from_str(&tip)));
+                    self.menu.addItem(&item);
+                }
+            }
+        }
+
+        /// Rebuild the menu-bar segment view: one compact button per row in
+        /// native order, each directly clickable through its row's target.
+        /// Replaces the previous container wholesale (removal before
+        /// install) and sizes the item to the content, so a shrunken row
+        /// can never leave a stale clickable segment behind.
+        fn rebuild_segments(
+            &self,
+            rows: &[SegmentRow],
+            targets: &[objc2::rc::Retained<WorkspaceSegmentTarget>],
+        ) {
+            use objc2_foundation::NSString;
+            if let Some(old) = self.container.borrow_mut().take() {
+                old.removeFromSuperview();
+            }
+            *self.buttons.borrow_mut() = Vec::new();
+            let Some(button) = self.item.button(self.mtm) else {
+                return;
+            };
+            // The segments carry every ordinal: clear the button title so
+            // stale text never overlaps them.
+            button.setTitle(&NSString::from_str(""));
+            let mut width = 0.0;
+            let mut widths = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut w = if row.icon.is_some() {
+                    SEGMENT_WIDTH_ICON
+                } else {
+                    SEGMENT_WIDTH
+                };
+                if row.position >= 10 || row.title.ends_with('?') {
+                    w += SEGMENT_WIDTH_WIDE;
+                }
+                widths.push(w);
+                width += w;
+            }
+            self.item.setLength(width.max(1.0));
+            let container: objc2::rc::Retained<objc2_app_kit::NSView> =
+                objc2_app_kit::NSView::initWithFrame(
+                    self.mtm.alloc::<objc2_app_kit::NSView>(),
+                    border_nsrect((0.0, 0.0, width.max(1.0), SEGMENT_HEIGHT)),
+                );
+            let mut buttons = Vec::with_capacity(rows.len());
+            // SAFETY: every created button, its per-row target, and the
+            // installed selector are live; tags carry 1-based positions;
+            // frames stay inside the container computed above.
+            unsafe {
+                use objc2::sel;
+                let mut x = 0.0;
+                for ((row, target), w) in rows.iter().zip(targets.iter()).zip(widths.iter()) {
+                    let title = NSString::from_str(&row.title);
+                    let segment: objc2::rc::Retained<objc2_app_kit::NSButton> =
+                        objc2_app_kit::NSButton::buttonWithTitle_target_action(
+                            &title,
+                            Some(target.as_ref()),
+                            Some(sel!(workspaceIndicatorSegmentClicked:)),
+                            self.mtm,
+                        );
+                    segment.setTag(row.position as _);
+                    segment.setBezelStyle(objc2_app_kit::NSBezelStyle::SmallSquare);
+                    segment.setBordered(row.current);
+                    segment.setEnabled(row.enabled);
+                    let bold = row.current || row.occupancy == SpaceOccupancy::Occupied;
+                    let font = if bold {
+                        objc2_app_kit::NSFont::boldSystemFontOfSize(SEGMENT_HEIGHT - 9.0)
+                    } else {
+                        objc2_app_kit::NSFont::systemFontOfSize(SEGMENT_HEIGHT - 9.0)
+                    };
+                    segment.setFont(Some(&font));
+                    segment.setAlphaValue(match (row.enabled, row.occupancy) {
+                        (false, _) => 0.35,
+                        (true, SpaceOccupancy::Occupied) => 1.0,
+                        (true, SpaceOccupancy::Empty) => 0.45,
+                        (true, SpaceOccupancy::Unknown) => 1.0,
+                    });
+                    if let Some(image) = row.icon.as_ref() {
+                        segment.setImage(Some(image.as_ref()));
+                        segment.setImagePosition(objc2_app_kit::NSCellImagePosition::ImageLeft);
+                    }
+                    let tip = crate::workspace_indicator::segment_tooltip(
+                        row.position,
+                        row.occupancy,
+                        row.current,
+                        row.enabled,
+                    );
+                    segment.setToolTip(Some(&NSString::from_str(&tip)));
+                    segment.setFrame(border_nsrect((x, 0.0, *w, SEGMENT_HEIGHT)));
+                    container.addSubview(&segment);
+                    x += *w;
+                    buttons.push(segment);
+                }
+            }
+            button.addSubview(&container);
+            *self.buttons.borrow_mut() = buttons;
+            *self.container.borrow_mut() = Some(container);
+        }
+
+        /// Status item title readback through its button (appearance
+        /// evidence for the live fixture; production segment renders clear
+        /// this — the per-workspace buttons carry every ordinal).
+        pub fn title_text(&self) -> String {
+            self.item
+                .button(self.mtm)
+                .map(|b| b.title().to_string())
+                .unwrap_or_default()
+        }
+
+        /// Menu row titles in order (appearance evidence; plain ordinals).
+        /// The menu rebuilds in place on the SAME object, so this reads
+        /// the live rows — never a stale creation-time menu.
+        pub fn row_titles(&self) -> Vec<String> {
+            self.menu
+                .itemArray()
+                .iter()
+                .map(|item| item.title().to_string())
+                .collect()
+        }
+
+        /// Live segment readback for fixtures and the live-proof harness:
+        /// one entry per button, every field read off the actual view
+        /// (title, tag, bordered/current, enabled, font bold trait, image
+        /// presence, tooltip occupancy word, alpha, screen frame). The
+        /// occupancy word parses back out of the live tooltip — a drifted
+        /// appearance contract yields `"unparseable"`, never a guessed
+        /// verdict.
+        pub fn segment_snapshot(&self) -> Vec<SegmentReadback> {
+            let buttons = self.buttons.borrow();
+            let container = self.container.borrow();
+            let container_view = container.as_ref();
+            let mut out = Vec::with_capacity(buttons.len());
+            for segment in buttons.iter() {
+                let occupancy = segment
+                    .toolTip()
+                    .and_then(|tip| {
+                        crate::workspace_indicator::parse_segment_tooltip(&tip.to_string())
+                    })
+                    .map(|(_, occupancy, _)| {
+                        match occupancy {
+                            SpaceOccupancy::Occupied => "occupied",
+                            SpaceOccupancy::Empty => "empty",
+                            SpaceOccupancy::Unknown => "unknown",
+                        }
+                        .to_owned()
+                    })
+                    .unwrap_or_else(|| "unparseable".to_owned());
+                let bold = segment.font().is_some_and(|font| {
+                    font.fontDescriptor()
+                        .symbolicTraits()
+                        .contains(objc2_app_kit::NSFontDescriptorSymbolicTraits::TraitBold)
+                });
+                let frame = match (container_view, segment.window()) {
+                    (Some(container), Some(window)) => {
+                        let in_window = container.convertRect_toView(segment.frame(), None);
+                        frame_tuple(window.convertRectToScreen(in_window))
+                    }
+                    _ => (0.0, 0.0, 0.0, 0.0),
+                };
+                out.push(SegmentReadback {
+                    position: segment.tag().max(0) as usize,
+                    title: segment.title().to_string(),
+                    current: segment.isBordered(),
+                    enabled: segment.isEnabled(),
+                    occupancy,
+                    bold,
+                    has_icon: segment.image().is_some(),
+                    alpha: segment.alphaValue(),
+                    frame,
+                });
+            }
+            out
+        }
+
+        /// Live click-target bindings in render order: `(position,
+        /// expected SID, UI generation, topology revision)` read off the
+        /// actual retained target objects. The live-proof harness compares
+        /// these against the fresh native row immediately before any
+        /// synthetic click — a mismatch proves staleness instead of
+        /// dispatching.
+        pub fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+            self.targets
+                .borrow()
+                .iter()
+                .map(|target| {
+                    let click = target.ivars().click;
+                    (
+                        click.position,
+                        click.expected_sid,
+                        click.ui_generation,
+                        click.topology_revision,
+                    )
+                })
+                .collect()
+        }
+
+        /// Native status-item button frame in screen coordinates (the
+        /// actual item geometry for the live-proof harness), or `None`
+        /// when the button is unavailable.
+        pub fn status_frame(&self) -> Option<(f64, f64, f64, f64)> {
+            let button = self.item.button(self.mtm)?;
+            let window = button.window()?;
+            Some(frame_tuple(window.convertRectToScreen(button.frame())))
+        }
+
+        /// `isVisible` readback on the item.
+        pub fn is_visible(&self) -> bool {
+            self.item.isVisible()
+        }
+
+        /// Verified teardown: remove the item from the status bar. Consumes
+        /// the handle so no AppKit call can follow the removal.
+        pub fn destroy(self, _mtm: objc2::MainThreadMarker) {
+            objc2_app_kit::NSStatusBar::systemStatusBar().removeStatusItem(&self.item);
+        }
+    }
+
+    /// Resolve one representative app icon for `bundle` (main thread,
+    /// LaunchServices + AppKit reads only: bundle ID to app URL to file
+    /// icon, scaled to 16pt). `None` for empty/unknown bundles and for any
+    /// unreadable step — the caller renders the plain number instead (never
+    /// a refusal, never a log line: bundle IDs stay out of logs).
+    pub fn ns_image_for_bundle(
+        bundle: &str,
+    ) -> Option<objc2::rc::Retained<objc2_app_kit::NSImage>> {
+        use objc2_foundation::{NSSize, NSString};
+        let _mtm = objc2::MainThreadMarker::new()?;
+        if bundle.is_empty() {
+            return None;
+        }
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let url = workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle))?;
+        let path = url.path()?;
+        let image = workspace.iconForFile(&path);
+        image.setSize(NSSize::new(16.0, 16.0));
+        Some(image)
+    }
+
     // -- Reusable group-underlay carrier (public AppKit only, main thread) --
     //
     // A borderless, nonactivating, click-through `NSPanel` whose content view
@@ -7744,25 +8273,26 @@ pub use macos::{
     BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
     DisplayRect, DragMouseHit, DragMouseKind, DragTapSource, GroupUnderlayCarrier, HotkeySpi,
     KeyCounts, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
-    SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
-    TapHit, TapPump, TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
-    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
-    drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
-    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
-    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow,
+    SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator,
+    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
     sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
@@ -8497,6 +9027,84 @@ mod stub {
 
     pub fn pump_runloop_once(_millis: u64) {}
 
+    /// Stub indicator row (macOS-only render; never constructed here).
+    /// Mirrors the macOS `SegmentRow` field names so portable callers
+    /// compile on every host; the click binding is the portable
+    /// [`crate::workspace_indicator::IndicatorClick`].
+    pub struct SegmentRow {
+        pub position: usize,
+        pub title: String,
+        pub current: bool,
+        pub enabled: bool,
+        pub occupancy: crate::workspace_indicator::SpaceOccupancy,
+        pub click: crate::workspace_indicator::IndicatorClick,
+    }
+
+    /// Stub segment readback (macOS-only): shape parity with the live
+    /// view readback, never populated off-macOS.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct SegmentReadback {
+        pub position: usize,
+        pub title: String,
+        pub current: bool,
+        pub enabled: bool,
+        pub occupancy: String,
+        pub bold: bool,
+        pub has_icon: bool,
+        pub alpha: f64,
+        pub frame: (f64, f64, f64, f64),
+    }
+
+    /// Stub indicator handle (macOS-only): unconstructible off-macOS.
+    pub struct WorkspaceIndicator {
+        _priv: (),
+    }
+
+    impl WorkspaceIndicator {
+        pub fn create(
+            _mtm: (),
+            _title: &str,
+            _clicks: std::sync::mpsc::SyncSender<crate::workspace_indicator::IndicatorClick>,
+        ) -> Result<Self, String> {
+            Err("macOS-only".to_owned())
+        }
+
+        pub fn set_title(&self, _mtm: (), _title: &str) {}
+
+        pub fn rebuild(&self, _mtm: (), _rows: &[SegmentRow]) {}
+
+        pub fn title_text(&self) -> String {
+            String::new()
+        }
+
+        pub fn row_titles(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        pub fn segment_snapshot(&self) -> Vec<SegmentReadback> {
+            Vec::new()
+        }
+
+        pub fn segment_targets(&self) -> Vec<(usize, u64, u64, u64)> {
+            Vec::new()
+        }
+
+        pub fn status_frame(&self) -> Option<(f64, f64, f64, f64)> {
+            None
+        }
+
+        pub fn is_visible(&self) -> bool {
+            false
+        }
+
+        pub fn destroy(self, _mtm: ()) {}
+    }
+
+    /// Stub icon resolution (macOS-only): never resolves off-macOS.
+    pub fn ns_image_for_bundle(_bundle: &str) -> Option<()> {
+        None
+    }
+
     pub fn run_event_tap_bounded(
         _want_flags: u64,
         _flags_mask: u64,
@@ -8681,25 +9289,26 @@ pub use stub::{
     AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
     DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
     GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
-    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
-    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
-    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
-    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
-    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
+    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
+    TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
+    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
     sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,

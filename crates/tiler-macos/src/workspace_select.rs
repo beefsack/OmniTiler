@@ -33,12 +33,93 @@ impl SelectionSnapshot {
     }
 }
 
+/// Fresh single-display user-Space row for `display` (existing user Spaces
+/// in native row order plus the current Space). Read-only: one SLS snapshot
+/// plus one type read per SID. Shared by the explicit batch backend and the
+/// menu-bar indicator so both map ordinals over the identical row.
+///
+/// Display identity for the product single-display rule lives beside it in
+/// [`fresh_display_count`].
+pub(crate) fn fresh_user_row(display: usize) -> Result<SelectionSnapshot, String> {
+    let all = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
+    let Some(row) = all.displays.get(display) else {
+        return Err("display row missing".to_owned());
+    };
+    user_row_parts(row.identifier.clone(), &row.spaces, row.current)
+}
+
+/// Fresh native display-row count for the product single-display rule (one
+/// fresh read-only row query, no mutation).
+pub(crate) fn fresh_display_count() -> Result<usize, String> {
+    crate::mc_lifecycle::live::fresh_snapshot()
+        .map(|s| s.displays.len())
+        .map_err(|e| e.to_string())
+}
+
+/// User-Space row over the tile controller's already-read cadence snapshot
+/// rows (same rule as [`fresh_user_row`]: existing user Spaces in native
+/// order plus the current Space; proven non-user Spaces omitted, never
+/// invented). The indicator and its click mapping share one consistent read
+/// with the topology revision this way.
+pub(crate) fn user_row_from_rows(
+    rows: &[crate::ffi::SlsDisplayRow],
+    display: usize,
+) -> Result<SelectionSnapshot, String> {
+    let Some(row) = rows.get(display) else {
+        return Err("display row missing".to_owned());
+    };
+    user_row_parts(row.identifier.clone(), &row.spaces, row.current)
+}
+
+/// Shared row assembly over one display's identifier, native-order Space
+/// list, and current Space: user-typed Spaces only, identity validated.
+fn user_row_parts(
+    identifier: Option<String>,
+    spaces: &[u64],
+    current: Option<u64>,
+) -> Result<SelectionSnapshot, String> {
+    let mut user = Vec::new();
+    for sid in spaces {
+        match crate::ffi::sls_space_type(*sid).map_err(|e| e.to_string())? {
+            crate::ffi::SlsSpaceType::User => user.push(*sid),
+            _ => continue,
+        }
+    }
+    Ok(SelectionSnapshot {
+        display: identifier.ok_or("display identity unreadable")?,
+        spaces: user,
+        current: current.ok_or("current Space unreadable")?,
+    })
+}
+
+/// Live topology revision for the bound-claim fence: the same snapshot
+/// fingerprint the tile controller ticks from (one NSScreen/CG read plus
+/// one SLS row read, no mutation). Read only on indicator-click drains —
+/// never a steady-state poll — so an extra snapshot here costs nothing
+/// unless a segment was actually clicked. `None` when any leg is
+/// unreadable (the drain then fences on the SID leg alone, and `execute`
+/// still drift-checks order and display identity inside).
+fn live_revision() -> Option<u64> {
+    let ns = crate::ffi::ns_display_snapshot().ok()?;
+    let rows = crate::ffi::sls_display_rows().ok()?;
+    let separate = crate::ffi::ns_separate_spaces();
+    Some(crate::topology::build_snapshot(&ns, &rows, separate).revision)
+}
+
 pub trait SelectionBackend {
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String>;
     /// Native display-row count for the product single-display rule (one
     /// fresh read-only row query, no mutation). The explicit batch CLI
     /// resolves its own display and never consults this.
     fn display_count(&mut self) -> Result<usize, String>;
+    /// Live topology revision backing the current snapshot (`None` when
+    /// the backend cannot report one — offline fakes without a revision
+    /// simply skip the revision leg; bound indicator claims still fence
+    /// on the SID leg). The live backend reports the fresh snapshot
+    /// fingerprint.
+    fn revision(&mut self) -> Option<u64> {
+        None
+    }
     fn empty(&mut self, sid: u64) -> Result<bool, String>;
     /// One create dispatch only; caller independently adopts an exact append.
     fn create(&mut self, before: &SelectionSnapshot) -> Result<(), String>;
@@ -195,23 +276,51 @@ pub struct SelectGates {
     pub lock_screen: bool,
 }
 
-/// Drain one claimed product select through `backend` under `state`
-/// (offline-testable core of the product handoff: tests inject fake
-/// backends here; the tile controller injects the live backend through
-/// [`drain_live_claimed`]). Gates refuse first, then the unarmed and
-/// multi-display rules refuse before any effect leg; otherwise a single
+/// Tap-lane shorthand over [`drain_claimed_select`] (binding-free fresh-
+/// ordinal mapping). Test-only shim: production lanes call
+/// [`drain_claimed_select`] or go through `drain_live_claimed`.
+#[cfg(test)]
+pub(crate) fn drain_claimed(
+    state: &mut SelectionState,
+    backend: &mut impl SelectionBackend,
+    action: InputSemanticAction,
+    gates: &SelectGates,
+) -> Result<SelectionEffect, String> {
+    drain_claimed_select(
+        state,
+        backend,
+        crate::runtime_types::ClaimedSelect::tap(action),
+        gates,
+    )
+}
+
+/// Full-claim drain (offline-testable core of the product handoff: tests
+/// inject fake backends here; the tile controller injects the live backend
+/// through [`drain_live_claimed`]). Gates refuse first, then the unarmed and
+/// multi-display rules refuse before any effect leg; bound indicator claims
+/// additionally refuse when their ordinal no longer names the expected SID
+/// (a topology reorder between engine admission and this drain) or when
+/// their topology revision drifted — an ordinal is never interpreted
+/// against a different generation. Otherwise a single
 /// [`SelectionState::execute`] runs (single dispatch with asynchronous
 /// settle polling, never a replay; history advances only on verified
 /// arrival). The claim/release protocol around this call (not the slot
 /// itself) serializes concurrent presses: the slot stays claimed while
 /// this blocks, so engine enqueues refuse busy instead of overlapping.
+/// Tap chords ride binding-free (fresh-ordinal mapping, exactly as
+/// before); indicator segment clicks ride their immutable render-time
+/// SID/revision binding, fenced fresh here AND at the pre-dispatch leg
+/// inside `execute` (the MC legs re-fence session/trust at every leg
+/// boundary too). Busy, session, Secure Input, no-window, multi-display,
+/// and verified-history semantics are identical for both lanes — the
+/// binding only narrows which ordinal may dispatch, never widens it.
 /// Live-macOS-only outside tests (the non-test caller is gated to macOS);
 /// portable unit tests exercise this on every host.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn drain_claimed(
+pub(crate) fn drain_claimed_select(
     state: &mut SelectionState,
     backend: &mut impl SelectionBackend,
-    action: InputSemanticAction,
+    claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
 ) -> Result<SelectionEffect, String> {
     if !gates.session_unlocked {
@@ -223,7 +332,7 @@ pub(crate) fn drain_claimed(
     if gates.lock_screen {
         return Err("select gated: lock screen".to_owned());
     }
-    if !crate::workspace_input::is_armed_select(&action) {
+    if !crate::workspace_input::is_armed_select(&claim.action) {
         return Err("product select refuses unarmed actions".to_owned());
     }
     // Product targeting rule: exactly ONE native display row. Zero or
@@ -245,7 +354,43 @@ pub(crate) fn drain_claimed(
             ));
         }
     }
-    state.execute(backend, action)
+    // Bound-claim fence: the ordinal must still name the render-time SID
+    // and the topology revision must still match. A reorder (or any
+    // revision move) between engine admission and this drain refuses
+    // instead of selecting the new occupant of the ordinal. Tap claims
+    // carry no binding and skip this leg (fresh-ordinal mapping).
+    if let Some(expected_sid) = claim.expected_sid {
+        let InputSemanticAction::WorkspaceSelect { index } = claim.action else {
+            return Err("bound select claim carries a non-numbered action; refusing".to_owned());
+        };
+        let fresh = backend
+            .snapshot()
+            .map_err(|e| format!("bound select refuses: fresh row unreadable ({e})"))?;
+        fresh
+            .validate()
+            .map_err(|e| format!("bound select refuses: fresh row unprovable ({e})"))?;
+        match fresh.spaces.get(index as usize - 1) {
+            Some(sid) if *sid == expected_sid => {}
+            Some(_) => {
+                return Err(format!(
+                    "stale bound select discarded: native row moved between admission and drain (row {index} changed); no select dispatched"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "stale bound select discarded: native row {index} no longer exists; no select dispatched"
+                ));
+            }
+        }
+        if let (Some(want), Some(live)) = (claim.topology_revision, backend.revision())
+            && want != live
+        {
+            return Err(format!(
+                "stale bound select discarded: topology revision moved between admission and drain ({want} != {live}); no select dispatched"
+            ));
+        }
+    }
+    state.execute(backend, claim.action)
 }
 
 /// Product drain budget (seconds): 30 = the 15 s MC cleanup reserve (which
@@ -282,10 +427,10 @@ const PRODUCT_DRAIN_CAFFEINATE_SECS: u64 = 60;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn drain_live_claimed(
     state: &mut SelectionState,
-    action: InputSemanticAction,
+    claim: crate::runtime_types::ClaimedSelect,
     gates: &SelectGates,
 ) -> Result<(SelectionEffect, bool), String> {
-    if !crate::workspace_input::is_armed_select(&action) {
+    if !crate::workspace_input::is_armed_select(&claim.action) {
         return Err("product select refuses unarmed actions".to_owned());
     }
     let mut awake =
@@ -296,7 +441,7 @@ pub(crate) fn drain_live_claimed(
         budget: crate::mc_probe::ActionBudget::new(PRODUCT_DRAIN_BUDGET_SECS),
         created: Vec::new(),
     };
-    let effect = drain_claimed(state, &mut backend, action, gates);
+    let effect = drain_claimed_select(state, &mut backend, claim, gates);
     let reaped = awake.stop();
     effect.map(|effect| (effect, reaped))
 }
@@ -420,31 +565,13 @@ pub fn remove_empty(space: u64, allow_untested: bool) -> Result<String, (i32, St
 
 impl SelectionBackend for NativeSelection {
     fn display_count(&mut self) -> Result<usize, String> {
-        crate::mc_lifecycle::live::fresh_snapshot()
-            .map(|s| s.displays.len())
-            .map_err(|e| e.to_string())
+        fresh_display_count()
     }
     fn snapshot(&mut self) -> Result<SelectionSnapshot, String> {
-        let all = crate::mc_lifecycle::live::fresh_snapshot().map_err(|e| e.to_string())?;
-        let row = all
-            .displays
-            .get(self.display)
-            .ok_or("display row missing")?;
-        let mut spaces = Vec::new();
-        for sid in &row.spaces {
-            match crate::ffi::sls_space_type(*sid).map_err(|e| e.to_string())? {
-                crate::ffi::SlsSpaceType::User => spaces.push(*sid),
-                _ => continue,
-            }
-        }
-        Ok(SelectionSnapshot {
-            display: row
-                .identifier
-                .clone()
-                .ok_or("display identity unreadable")?,
-            spaces,
-            current: row.current.ok_or("current Space unreadable")?,
-        })
+        fresh_user_row(self.display)
+    }
+    fn revision(&mut self) -> Option<u64> {
+        live_revision()
     }
     fn empty(&mut self, sid: u64) -> Result<bool, String> {
         let user = crate::mc_observe::fresh_user_spaces().map_err(|e| e.to_string())?;

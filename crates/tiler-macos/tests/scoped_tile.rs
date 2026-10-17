@@ -326,6 +326,7 @@ fn scripted(
         global_focus: None,
         meta,
         excluded: 0,
+        excluded_reasons: Vec::new(),
         revision: 0,
     }
 }
@@ -2654,6 +2655,7 @@ fn select_claim_release_discard_protocol() {
     // busy); release frees the claim with nothing left pending; discard
     // drops a fresh pending without dispatch and never touches a drain
     // in progress. No live tap, no Spaces, no desktop effect.
+    use tiler_macos::runtime::ClaimedSelect;
     use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
     let fixture = start(select_config(bindings.clone()));
@@ -2671,7 +2673,7 @@ fn select_claim_release_discard_protocol() {
     assert!(fixture.handle.flush(FLUSH));
     assert_eq!(
         fixture.handle.claim_select_for_drain(),
-        Some(Action::WorkspaceSelect { index: 2 })
+        Some(ClaimedSelect::tap(Action::WorkspaceSelect { index: 2 }))
     );
     assert!(fixture.handle.claim_select_for_drain().is_none());
     assert!(

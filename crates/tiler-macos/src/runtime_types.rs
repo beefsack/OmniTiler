@@ -15,6 +15,7 @@ use tiler_core::geometry::Rect;
 use tiler_core::session::{DomainKey, DragHoverPrior};
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
+use crate::classifier::ExcludeReason;
 use crate::config::ProbeModifier;
 use crate::focus_route::FocusRoute;
 use crate::scope::AppScope;
@@ -372,6 +373,16 @@ pub struct ScopedWindowMeta {
     pub hidden: bool,
 }
 
+/// One classifier-omitted window: identity plus the gate that fired.
+/// Diagnostic only (wid plus a status name); never titles, content, or raw
+/// input. The engine still sees omission only through `excluded` counts and
+/// the retained-minimize path — these reasons never gate, stage, or plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExcludedOmission {
+    pub wid: u32,
+    pub reason: ExcludeReason,
+}
+
 /// One backend-reported scoped observation payload for a single app. Plain
 /// data only; handles never escape the owning thread. `revision` is the
 /// context revision read at snapshot time: the engine re-fences it against
@@ -413,7 +424,14 @@ pub struct ScopedBackendSnapshot {
     pub meta: Vec<ScopedWindowMeta>,
     /// Classifier-omitted window count (excluded shapes never publish as
     /// observed, so the engine cannot mistake omission for closure).
+    /// Always equals `excluded_reasons.len()`; the count (not the reasons)
+    /// is what the staging gate compares, so reason detail never republishes.
     pub excluded: usize,
+    /// Per-omitted-window reason detail, diagnostic only. Excluded from the
+    /// staging gate ([`crate::runtime_observe::scoped_snapshots_equal`]
+    /// compares the count): a reason change with identical windows, meta,
+    /// and count stages nothing new.
+    pub excluded_reasons: Vec<ExcludedOmission>,
     pub revision: u64,
 }
 
@@ -437,6 +455,7 @@ impl ScopedBackendSnapshot {
             global_focus: None,
             meta: Vec::new(),
             excluded: 0,
+            excluded_reasons: Vec::new(),
             revision,
         }
     }
@@ -577,6 +596,52 @@ pub enum InputSemanticAction {
         hover_prior: Option<Box<DragHoverPrior>>,
         press_revision: u64,
     },
+}
+
+/// One pending product select claim awaiting the main-thread drain: the
+/// armed action plus the immutable click binding that produced it. Tap
+/// chords carry no binding (`expected_sid`/`topology_revision` are `None`,
+/// `ui_generation` 0 — the drain maps the ordinal fresh, exactly as
+/// before); menu-bar segment clicks carry the full render-time binding, and
+/// the drain refuses any claim whose ordinal no longer names the expected
+/// SID or whose revision drifted. An ordinal is therefore never interpreted
+/// against a different generation or topology than the click rendered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedSelect {
+    pub action: InputSemanticAction,
+    pub expected_sid: Option<u64>,
+    pub ui_generation: u64,
+    pub topology_revision: Option<u64>,
+}
+
+impl ClaimedSelect {
+    /// Tap/keyboard claim: no render-time binding (fresh-ordinal mapping).
+    #[must_use]
+    pub const fn tap(action: InputSemanticAction) -> Self {
+        Self {
+            action,
+            expected_sid: None,
+            ui_generation: 0,
+            topology_revision: None,
+        }
+    }
+
+    /// Menu-bar segment claim: the full immutable render-time binding rides
+    /// through engine admission and the native drain.
+    #[must_use]
+    pub const fn indicator(
+        action: InputSemanticAction,
+        expected_sid: u64,
+        ui_generation: u64,
+        topology_revision: u64,
+    ) -> Self {
+        Self {
+            action,
+            expected_sid: Some(expected_sid),
+            ui_generation,
+            topology_revision: Some(topology_revision),
+        }
+    }
 }
 
 /// Typed frame command to one app worker. `generation` fences PID reuse:

@@ -409,6 +409,37 @@ pub(crate) fn handle_scoped_observation(
             "classifier-omitted",
             snapshot.excluded as u64,
         );
+        // Per-reason breakdown, diagnostic only (wid counts per status
+        // name; never titles/content): names which classifier gate fired
+        // so a persistent omitted/applied gap is attributable from the
+        // log without a live re-read. Fixed variant order keeps the lines
+        // deterministic; the aggregate token above is unchanged.
+        for reason in [
+            crate::classifier::ExcludeReason::OwnBundle,
+            crate::classifier::ExcludeReason::AccessoryPolicy,
+            crate::classifier::ExcludeReason::ProhibitedPolicy,
+            crate::classifier::ExcludeReason::Minimized,
+            crate::classifier::ExcludeReason::HiddenApp,
+            crate::classifier::ExcludeReason::NonordinaryLayer,
+            crate::classifier::ExcludeReason::UnknownRole,
+        ] {
+            let count = snapshot
+                .excluded_reasons
+                .iter()
+                .filter(|o| o.reason == reason)
+                .count();
+            if count > 0 {
+                emit(
+                    shared,
+                    pid,
+                    generation,
+                    seq,
+                    "observation",
+                    reason.log_token(),
+                    count as u64,
+                );
+            }
+        }
     }
     let entry = retained.apps.entry(pid).or_insert(RetainedApp {
         generation,
