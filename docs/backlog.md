@@ -118,9 +118,13 @@ decisions of 2026-09-24 are under
   - No space for the window: float it / allow overlap. User prefers floating
     over overlap (overlap looks bad and confuses navigation/movement);
     opening on another workspace is rejected.
-  Investigate current Windows behavior (may already float), interaction with
-  B6 origin+minimum overlap and startup clean-fit adoption, defaults, and
-  recovery when space returns; propose for user review before implementing.
+  [Proposal](changes/best-effort-admission.md) delivered; user selected
+  D1-D10 on 2026-10-16/17 (geometric exhaustion only, largest-splittable and
+  float defaults, capacity floats are ordinary floats persisted across
+  restart, newest-first eviction on shrink, all capacity routes, positive
+  overflow for overlap, global catalog settings). Ready for core+KDE
+  implementation; Windows/macOS adoption follow-ups to be added then.
+  Follow-up during dogfooding: review the UX of B6 minimum-size overlap.
 - P1 | Research: stateless core with caller-owned state | Resolved by user
   D1 (2026-10-16): retain the stateful Engine with a full world boundary and
   explicit deterministic replay tests; no caller-owned/serialized core state.

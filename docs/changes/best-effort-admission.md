@@ -83,6 +83,9 @@
     classifications atomically as one roster; persisted floats stay floating.
   - D9: overlap mode uses the positive-overflow projector as proposed, with
     golden geometry/navigation cases agreed before coding.
+  - D10: two global fields in the shared catalog under Tiling & Workspaces >
+    Admission, applied to subsequent decisions only (no reflow on Apply).
+  - All D1-D10 are selected; implementation may proceed.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
