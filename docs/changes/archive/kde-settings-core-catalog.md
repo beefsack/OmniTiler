@@ -1,6 +1,6 @@
 # KDE Settings core-catalog migration
 
-- Status: implementation and offline verification complete; CI pending.
+- Status: delivered offline 2026-10-17; native user re-check pending.
 - Goal: migrate the existing four native KDE Settings tabs onto the shared Rust
   catalog through deterministic checked-in descriptors and a CI freshness gate.
 - Scope: development-only exporter, KDE adapter mappings/presentation overrides,
@@ -11,7 +11,7 @@
 
 ## Compatibility and acceptance
 
-- Follow the [approved boundary](../research/shared-settings-schema.md#recommended-boundary-and-compatibility).
+- Follow the [approved boundary](../../research/shared-settings-schema.md#recommended-boundary-and-compatibility).
 - Preserve both KCM identities, widget names/buddies, KConfig keys, tolerant
   decoding and changed-key-only saves; retain hidden and foreign keys.
 - Keep KDE-native labels/order and native shortcut/conflict/status panels.
@@ -34,9 +34,6 @@
    settings-only build/CTest and drift positive/negative checks.
 
 - All verification is offline. No live KWin/Plasma evidence is claimed.
-- Native user re-check: open either KCM identity, inspect all four tabs and
-  keyboard traversal; edit across tabs, Apply/reopen, Defaults/Cancel; verify
-  saved values and separate shortcut/conflict operation behavior.
 
 ## Accepted evidence
 
@@ -58,9 +55,38 @@
   resolution; hermetic Nix settings tests pass 27/27 and effect tests 34/34.
   Source-archive checks now require the generated header and native helpers.
 - Latest integrated Rust workspace tests: 2,986 passed, zero failed; formatting
-  and strict all-target clippy pass. KWin tests: 1,773 passed, zero failed;
-  typecheck passes. Settings-only CMake build with warnings denied and CTest
+  and strict all-target clippy pass; locked workspace build passes. KWin tests:
+  1,773 passed, zero failed; typecheck passes. Settings-only CMake build with warnings denied and CTest
   pass 27/27. Generated-header syntax and real KCM builds pass.
 - KI18n lazy source markers are supported since 5.89, below the KF6 floor.
   C-locale native text parity is tested; translated message extraction has no
   repository harness and remains unverified, as does physical native UX.
+- Source-archive contract suite passes on the committed native implementation,
+  including exporter sources, generated descriptors and native helper sources.
+- CI run [39021538182](https://github.com/beefsack/OmniTiler/actions/runs/39021538182)
+  tracks the native implementation and exporter freshness gate. Full workflow
+  conclusion is pending. The preceding upstream run also had unrelated KWin
+  API-guard failures for internal world-state property names and a macOS
+  scoped-tile applied-frame timeout; those remain separate from this migration.
+
+## Native user re-check
+
+1. With rebuilt Settings installed, open
+   `kcmshell6 kwin/effects/configs/omnitiler-active-border_config`, then repeat
+   with `kcmshell6 kwin/scripts/configs/omnitiler-kwin_config`.
+2. Visit Tiling & Workspaces, Appearance, Shortcuts and Desktop Integration.
+   Compare labels, field order, values and native actions with the existing
+   interface. Check Tab/Shift+Tab, label buddies and tab keyboard navigation;
+   verify script Status remains below every tab. Repeat at the usual scaling.
+3. Record current inner gap and border width. Change both on their respective
+   tabs, switch away/back, Apply, close and reopen. Verify both values reload;
+   ordinary Apply must not run shortcut or window-edge Fix/Force/Revert.
+4. Change a value without applying, close with Cancel and reopen; verify the
+   saved value is unchanged. Invoke Defaults, inspect across tabs, then Cancel
+   without saving. Restore the two recorded values through Apply.
+5. Inspect Shortcuts and Desktop Integration feedback. If checking explicit
+   Apply Shortcuts/Force/Revert or window-edge Fix/Revert, use the existing
+   user-owned conflict/recovery procedure and restore its exact baseline;
+   these operations remain separate from ordinary Settings Apply.
+6. Workspace mode retains its restart requirement. This migration does not
+   require a session restart merely to inspect the rebuilt KCM.

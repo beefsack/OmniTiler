@@ -12,7 +12,7 @@ decisions of 2026-09-24 are under
 
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
   KDE acceptance of full-state replies; (3) KDE Settings core-catalog
-  migration (before best-effort admission, so its settings land once in the
+  migration (delivered offline; best-effort settings can now land once in the
   catalog); (4) best-effort admission core+KDE; (5) KDE dual-output live
   testing and fixes; (6) KDE shared window-policy adoption; (7) 0.1 triage live
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
@@ -100,12 +100,12 @@ decisions of 2026-09-24 are under
   Revert and Escape no-save passed; original settings bytes restored.
   Full scale/accessibility/traversal and physical feel remain unverified;
   [dated evidence](changes/shared-settings-catalog-windows-tabs.md#agent-live-follow-up-2026-10-17).
-- P1 | KDE Settings core-catalog migration | Migrate the existing native
-  Settings tabs to the shared Rust catalog using an exporter, checked-in
-  generated descriptors and a CI drift check. Preserve KConfig keys, tolerant
-  fallback, both KCM identities, settings-only packaging and native shortcut/
-  conflict operations; no generic setter may invoke Fix/Force/Revert. Follow
-  the [approved boundary](research/shared-settings-schema.md#recommended-boundary-and-compatibility).
+- P1 | KDE Settings native re-check | Core-catalog migration delivered offline
+  2026-10-17: exporter, checked-in descriptors and CI freshness gate; existing
+  labels/placement, KConfig keys/fallback, both identities, settings-only
+  packaging and native operation isolation retained. Rust/KWin suites and
+  hermetic native settings/effect tests pass. Physical tab/keyboard/draft/save
+  re-check remains user-owned; [evidence and exact steps](changes/archive/kde-settings-core-catalog.md).
 - P0 | Core update replies carry workspace state | Core and KDE delivered
   offline 2026-10-17 under selected D1-D5: complete world reports/replies,
   generation/revision/input-watermark fences, Planner-owned workspace policy,
@@ -117,7 +117,7 @@ decisions of 2026-09-24 are under
   Windows/macOS adoption is
   tracked separately below. Geometric exhaustion preserves topology with
   complete recoverable constraint-held rows, not an admission fallback.
-- P1 (after KDE Settings core-catalog migration) | Best-effort admission when space runs
+- P1 | Best-effort admission when space runs
   out | The full-state change returns a recoverable hold when a domain's
   projection cannot give every tile a positive extent after gaps (14 fresh
   windows in an 800x600 gap-8 domain); clear that hold. User 2026-10-16:

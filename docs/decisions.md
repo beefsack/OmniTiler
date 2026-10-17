@@ -721,6 +721,13 @@ platform API behavior.
     without a new runtime dependency for settings-only packages. macOS
     settings participation remains consumer-driven, not probe-flag migration.
   - [Windows implementation and pending physical acceptance](changes/shared-settings-catalog-windows-tabs.md).
+  - KDE catalog migration delivered offline 2026-10-17 under this boundary:
+    development-only exporter, checked-in KConfig/native descriptors and CI
+    freshness checking; the retained Designer layout consumes metadata through
+    a small native adapter. Both KCM identities and settings-only independence
+    remain intact. Native text overrides/exclusions preserve the existing KDE
+    surface without changing Windows metadata or semantics.
+    [Delivery and native re-check](changes/archive/kde-settings-core-catalog.md).
 - User-approved 2026-10-11 (KDE package ownership): distro core package
   `omnitiler` ships both KWin-independent Settings KCMs, providing
   tiling plus Settings/Apply/Revert without the optional effect.
