@@ -277,9 +277,10 @@ unsafe extern "system" fn wnd_proc(
         });
         0
     } else if msg == WM_DESTROY {
-        use windows_sys::Win32::UI::WindowsAndMessaging::KillTimer;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, PostQuitMessage};
         unsafe {
             KillTimer(hwnd, crate::settings_ui::GAMING_TIMER_ID);
+            PostQuitMessage(0);
         }
         0
     } else {
@@ -652,5 +653,44 @@ impl SettingsWindow {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wnd_proc;
+
+    #[test]
+    fn destroy_posts_quit_so_modal_loop_exits() {
+        // Offline: dedicated thread owns its message queue, so the
+        // `PostQuitMessage` from `WM_DESTROY` lands there. No window,
+        // hook, or `GetMessage` pump is created; `KillTimer` on a null
+        // handle with no thread timers is a no-op. Bounded `PeekMessageW`
+        // only, never a blocking `GetMessageW`.
+        let posted = std::thread::spawn(|| {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW, WM_DESTROY, WM_QUIT,
+            };
+            unsafe {
+                let mut warm: MSG = std::mem::zeroed();
+                PeekMessageW(&mut warm, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+            }
+            let turn = unsafe { wnd_proc(std::ptr::null_mut(), WM_DESTROY, 0, 0) };
+            assert_eq!(turn, 0);
+            for _ in 0..100 {
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                let got = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
+                if got != 0 && msg.message == WM_QUIT {
+                    return true;
+                }
+            }
+            false
+        })
+        .join()
+        .expect("destroy probe thread");
+        assert!(
+            posted,
+            "WM_DESTROY must PostQuitMessage so run_loop GetMessage returns 0"
+        );
     }
 }
