@@ -128,3 +128,8 @@
 - No new D23 defect. Settings/SPI restored, ledger clean, no tiler residue.
   Hidden-domain bursts, session expiry and remaining changed-neighborhood
   variants remain pending. Source-slot policy after send is unchanged.
+- Evidence retention limitation: the unequal-share native report was later
+  overwritten. Contemporaneous independent inspection recorded the differing
+  admission regions; the surviving equal-share native run alone is not a
+  non-reuse discriminator. The targeted slot-absence regression was rerun and
+  passed. Do not infer full internal native-state visibility from geometry.

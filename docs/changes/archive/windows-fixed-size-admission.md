@@ -52,3 +52,18 @@
 - Disable/enable tiling after ordinary/fixed hint changes; preserve intentional/sticky/explicit tile intent. Test fixed and non-fixed maxima under both born-maximized choices.
 - Explicitly tile an automatic fixed float, lose hints, maximize, restart, then enable tiling. Verify marker hydration before automatic origin, reserved-slot restore, re-float clear and lifetime replacement.
 - Physical/ordinary-app/game checks remain user-owned under the live Windows guide, with stop/restore verification; no such journey was run for this delivery.
+
+## Second agent-live sweep (2026-10-17)
+
+- Calculator was constrained, not fixed: a retained bounded native query
+  returned minimum tracks with unknown/zero maximum tracks. It tiled under
+  `both-axes-fixed` under both born-maximized settings; no `fixed-equal`
+  classification was observed. This is a negative classification control,
+  not positive fixed-app or either-axis acceptance.
+- A separately owned tiler Settings window supplied a positive equal-track
+  fixed anchor in the [restart regression](windows-restart-hydration-rejection.md#second-agent-live-regression-2026-10-17).
+  It remained frame-stable through restart and workspace hide/reveal.
+- Fresh born-maximized Paint passed the two ordinary-app launch modes in the
+  [born-setting record](windows-born-maximized-setting.md#second-agent-live-sweep-2026-10-17).
+  Fixed/maximized intersection, partial-zero native apps and the wider D1-D8
+  matrix remain pending. Saved settings/SPI restored; disposable windows closed.

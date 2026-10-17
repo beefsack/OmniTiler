@@ -71,3 +71,16 @@
   accepts the specified tile-on-launch and keep-maximized-overlay behavior.
 - Browser session restore, detailed Apply/Revert/admitted-client adoption,
   fixed-size, game/DPI/multi-output remain pending.
+
+## Second agent-live sweep (2026-10-17)
+
+- Fresh Paint under `tile-on-launch` was observed natively maximized before
+  admission, then unmaximized into its tiled slot; the correlated trace recorded
+  the one-time admission clear. Under `keep-maximized-overlay`, native maximize
+  persisted through later settled samples with retained-overlay observation
+  and no admission clear. Row assembly reserves the overlay slot; exclusion
+  from writable tiles is not evidence that no slot exists.
+- App frame/zoom and admission sequence support these Paint-only launch legs;
+  no direct opaque-token-to-HWND mapping was retained. Destination unmaximize,
+  subsequent-only adoption, fixed/maximized intersection and game/DPI/output
+  matrix are not newly accepted. Saved settings and SPI were restored exactly.

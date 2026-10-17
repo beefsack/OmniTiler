@@ -104,3 +104,12 @@
 - Backlog proposal: mark item3 maximise delivered with this archived evidence;
   retain physical checks and provisional discrete-toggle choice; next item4
   belongs to a fresh piece. No further implementation for this change.
+
+## Second agent-live sweep (2026-10-17)
+
+- Win+M keyboard acceptance was not attempted: injected keys are rejected by
+  the product hook and would reach shell minimize-all. The safety condition
+  for protecting unrelated windows was therefore not met. Existing accepted
+  maximize evidence stands; this sweep adds no physical-toggle acceptance.
+- Scoped probe teardown left settings/SPI unchanged, ledger clean and no tiler
+  residue. No input-filter bypass or shortcut policy change was introduced.

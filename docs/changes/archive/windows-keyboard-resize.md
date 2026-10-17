@@ -86,6 +86,18 @@
 - Hosted CI/publication evidence recorded below after push; Linux/KDE gates
   are hosted checks, not native Windows execution.
 
+## Second agent-live sweep (2026-10-17)
+
+- Physical resize acceptance remains blocked for scripted input: the product
+  intentionally rejects injected keys. An active scoped hook and owned
+  foreground were established; harmless unassigned input produced no resize,
+  move or focus dispatch and left settled frames unchanged. This is fence
+  evidence, not physical shortcut acceptance or a reason to bypass the fence.
+- Snapkey, settings, tiling and Windows library supplements passed. No Win+M
+  or resize chord was sent through the shell; physical suppression/hold/rebind
+  and remaining native geometry legs stay open. Settings/SPI restored, ledger
+  clean and owned disposable windows subsequently closed.
+
 ## Agent-observed native evidence
 
 - Windows 11 Pro build 26300, primary DISPLAY1 full [0,0,2560,1440], work

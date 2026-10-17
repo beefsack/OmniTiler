@@ -91,3 +91,12 @@
   ties. Keep Tentative 2026-10-12, pending user review; no behavior change.
   The existing [tie discriminator](../../spec/reference-outcomes.md#windows-floating-candidate-discriminator-2026-10-12)
   remains reference/native TBD; deeper comparable tie-order research is pending.
+
+## Second agent-live sweep (2026-10-17)
+
+- Scripted directional focus/move and float half-snap acceptance is blocked by
+  the deliberate injected-input fence. No directional or snap chord was sent
+  through to native Snap. An active scoped-hook/owned-foreground harmless-key
+  probe produced no dispatch or geometry change; it does not replace physical
+  shortcut evidence. Existing user acceptance stands; remaining tie/sticky/
+  clamp/preset/DPI/output legs remain pending. Settings/SPI and ledger restored.

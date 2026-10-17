@@ -130,3 +130,18 @@
   exit as the captionless metadata release path; remaining app-native/born/
   borderless/fixed/game/DPI/multi-output checks and deeper reference tie-order
   research. No captionless automatic-retirement policy decision remains.
+
+## Second agent-live sweep (2026-10-17)
+
+- Paint's enabled native View-menu Full screen action was invoked through UI
+  automation, then exited with Escape. No fullscreen shortcut was sent.
+  Correlated observations held a born fullscreen overlay without target writes,
+  suppressed visuals, then released the hold on exit. Paint's main-window style
+  and tiled frame returned exactly; sibling frames were unchanged.
+- This is an app-native modal-overlay leg: app action plus main-window changes
+  and lifecycle sequence support attribution, but no direct opaque-token-to-
+  native-surface mapping was retained. It does not prove that Paint's main
+  window itself became fullscreen, nor borderless/exclusive-game behavior.
+- Saved settings/SPI unchanged; independent restore/ledger cleanup passed and
+  all proven owned disposable windows were closed. Other apps, games, automatic
+  retirement edge cases and DPI/multi-output remain pending.

@@ -13,3 +13,11 @@
 - Production-conversion and real retained Engine fixtures cover both partial-zero orientations under both predicates, positive fixed/full-zero/missing/sentinel controls, subsequent-only adoption and first-exit/enable intersections.
 - Native MSVC Rust 1.99.0 locked core/protocol/KWin FFI/Windows build/test, workspace format, all-target strict clippy and diff checks passed; 325 Windows library and 336 integration tests passed for the combined delivery. Prerequisite publication CI passed all six jobs; runtime publication CI checked separately after push.
 - Native app hint representation, DPI/frame timing, Settings and game no-touch acceptance remain user-owned pending; offline completion does not replace those journeys.
+
+## Second agent-live sweep (2026-10-17)
+
+- Bounded Calculator query retained minimum tracks but zero/unknown maximum
+  tracks; ordinary tiling under `both-axes-fixed` was consistent with this
+  min-only representation. No fixed-axis equality was present, so neither a
+  positive partial-zero discriminator nor native `either-axis-fixed`
+  acceptance is claimed. Wider predicate/DPI/game checks remain pending.

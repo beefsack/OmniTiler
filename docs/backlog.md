@@ -174,6 +174,9 @@ decisions of 2026-09-24 are under
   log-derived synthetic regression delivered offline. Four-launcher plus
   Notepad/Paint physical acceptance pending
   ([record](changes/windows-launcher-geometry-fighting.md)).
+  Agent-live 2026-10-17: exact launcher journey skipped (complete approved app
+  set unavailable); ordinary Paint timeout reused declared hints with unchanged
+  targets, supplementary only. Full launcher acceptance remains pending.
 - P3 | Windows visibility diagnostics | Delivered offline: bounded normal-level
   per-window hide/reveal outcomes and reasons, native visibility/cloak samples,
   exception lanes/refusal causes and monotonic timing. Omitted/coalesced history
@@ -2133,6 +2136,9 @@ decisions of 2026-09-24 are under
     adoption entry in this file, [consensus](research/reference-wm-consensus.md);
     KDE match stays B). Catalog text already documents the rows; the trigger
     is the gap.
+    Second agent-live sweep 2026-10-17: physical chords remain blocked by the
+    deliberate injected-input fence; harmless scoped probe changed no frames
+    or dispatches. No shortcut acceptance inferred; Win+M was not sent.
 
     #### Item 6 behavior and reference seams
 
@@ -2326,6 +2332,10 @@ decisions of 2026-09-24 are under
     a separate reply/projection decision. Windows/Rust/KWin and other relevant
     CI streams pass; only the known unrelated API guard fails.
     [Repair evidence and limits](changes/archive/windows-restart-hydration-rejection.md).
+    Second agent-live regression 2026-10-17 passed ordinary/sticky restart and
+    a newly owned equal-track Settings fixed anchor: first-tick rejection held
+    writes, exact frames survived, adoption completed next observation. Shared
+    no-focus core decision stays parked; no full restart/logout claim.
     Full restart acceptance and initial-desktop restoration are not established;
     [historical receipts and cleanup limitations](changes/archive/windows-restart-intent.md#agent-live-follow-up-2026-10-17).
     Restart R-RST-01 plus R-FLT-05 sticky persistence. User
@@ -2544,6 +2554,9 @@ decisions of 2026-09-24 are under
     Ordinary focus/half-snaps user-accepted physically 2026-10-12, scoped normal
     owner, single output, Notepad/Paint, base `e506350` plus combined deliveries.
     Tie/sticky/clamp/preset/fixed/game/DPI/multi-output pending. Historical seams below.
+    Second agent-live sweep 2026-10-17 added no physical chord acceptance:
+    injected input is deliberately filtered, so scripted focus/move/half-snaps
+    were not sent. Existing physical acceptance and pending variants stand.
 
     #### Item 10 behavior and reference seams
 
@@ -2871,6 +2884,11 @@ decisions of 2026-09-24 are under
     Windows predicate, D5/D6 and fixed-origin D7 marker wiring are complete
     offline; native/game acceptance pending. Hydrated fixed-override maximize
     routing under both born-maximized values is tentative; R-SPC-13 native TBD.
+    Second agent-live sweep 2026-10-17: Calculator min-only/unknown-max tiled
+    correctly under the default predicate (not a positive fixed or either-axis
+    leg); fresh born-maximized Paint cleared/retained maximize under the two
+    settings. An owned equal-track tiler Settings anchor passed the protected
+    restart case. Wider fixed/maximized and partial-zero matrix remain pending.
     [Record](changes/archive/fixed-size-admission.md),
     [decisions](decisions.md#fixed-size-admission),
     [matrix](spec/reference-outcomes/special-windows.md#q2-fixed-size-admission-discriminators-2026-10-08).
@@ -4084,6 +4102,18 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
 
 ### Windows session
 
+- Second agent-live sweep 2026-10-17: pager trailing-empty admission/send/close
+  rendering passed; selected D16/D23 legs passed after the Windows-local
+  [floating fullscreen frame fix](changes/archive/windows-floating-fullscreen-frame-restore.md).
+  Calculator supplied a constrained negative control and Paint passed both born
+  settings; positive partial-zero/either-axis admission remains untested.
+  Ordinary/sticky restart and the protected owned fixed-anchor case passed;
+  Paint app-native modal fullscreen passed. Scripted keyboard legs remain
+  blocked by the injected-input fence; the complete launcher journey was
+  unavailable. No physical/game/multi-output acceptance inferred. Settings/SPI
+  restored, ledger clean, all proven owned disposable fixtures closed. Fix
+  gates passed 2,469/0/1; CI 38983566504 passed seven streams, with only the
+  known unrelated shell API guard failure.
 - User physical acceptance 2026-10-12: radius 6/live Apply, ordinary float
   focus/half-snaps, G-06 maximum focus fence/clear then move, R-MAX-03
   retile/restore and both born-setting Paint launches accepted under the
@@ -4096,6 +4126,10 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   recovery and fixed/game/DPI/multi-output remain pending. Each Win+F11 also
   raised the known parked Xbox prompt; eventual fix stays in gaming coexistence.
   [Lifecycle record](changes/archive/windows-fullscreen-exit-acceptance.md).
+  Agent-live 2026-10-17: Paint native View-menu fullscreen/Escape exit passed
+  overlay hold/release with stable tiled main/sibling frames. No F11 sent; this
+  modal-surface leg does not prove exclusive/borderless games or main-window
+  fullscreen. Settings/SPI restored and all proven owned fixtures closed.
 - Placement physical acceptance (fixes live-API verified, ratified 2026-10-08):
   dogfood startup adoption on Windows, Win+M maximize/restore and send returns.
   Clean/tolerance-valid layouts keep their fit; overlap/minimum-infeasible fits

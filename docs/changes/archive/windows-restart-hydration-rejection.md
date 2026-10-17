@@ -64,3 +64,19 @@ Preserve intentional ordinary and sticky floats from the first observation after
 - Unsupported reference outcomes remain TBD.
 - Do not repair shared fresh admission here: changing its reply for this valid fixed-size input would also change KDE behavior. Preserve its characterization and report that separate repair boundary.
 - Apply Windows-only, observation-scoped write protection for the marker-validated candidates whose hydration fails. Preserve their pre-observation frames without committing a rejected Engine candidate. Revalidate normally on the next observation; do not introduce durable float state or new un-stick semantics. This implements narrow degradation for already-established intent, not a new restart-layout policy.
+
+## Second agent-live regression (2026-10-17)
+
+- An ordinary float and a sticky float retained identical frames and process
+  lifetimes across orderly restart; sticky visibility across workspace switches
+  was unchanged. Without a fixed anchor, first observation adopted both without
+  hydration rejection.
+- A separate run used a newly owned tiler Settings window with positively
+  observed equal minimum/maximum tracks. First observation reproduced the
+  four-candidate `duplicate-window` rejection, including `fixed-equal` anchor
+  admission. Protected ordinary/sticky/anchor frames remained exact; both
+  marked floats adopted on the next observation. The fixed anchor also retained
+  its frame through workspace hide/reveal. No shared-core repair was made.
+- Settings/SPI were restored, ledger/request/overlays absent and all proven
+  owned disposable windows closed. The shared no-focus reply/projection
+  decision, full restart matrix and logout/session-expiry remain outside scope.

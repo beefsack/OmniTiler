@@ -215,3 +215,15 @@ four-launcher physical acceptance pending. Reported and corrected 2026-10-16.
   correlated sampled diagnostics plus trace. Keep this record active until
   physical acceptance. Any remaining delayed self-resize/move fighting is a
   separate evidenced follow-up, not a reason to silently broaden suppression.
+
+## Second agent-live sweep (2026-10-17)
+
+- Exact four-launcher journey skipped: the full required app set was not
+  available within the approved disposable fixture. No installation, launcher
+  state mutation or app-specific hint substitution was attempted.
+- Supplement only: an ordinary Paint query naturally timed out and reused its
+  same-lifetime declared minimum; the subsequent fresh query returned without
+  changing planned/effective targets. This supports the reuse path, not full
+  launcher convergence, physical resize or genuine changed-hint acceptance.
+- Settings/SPI unchanged, scoped owner stopped and disposable fixture closed.
+  Keep the four-launcher/control plan pending and this record active.

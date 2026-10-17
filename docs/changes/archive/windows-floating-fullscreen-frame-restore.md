@@ -45,5 +45,9 @@
 - Locked four-package build/test passed: 2,469 passed, zero failed, one ignored.
   Whole-workspace formatting, strict all-target clippy and diff check passed.
 - Graceful stop and independent restore passed; saved settings and SPI state
-  were unchanged. Publication and cross-platform CI are recorded below when
-  available.
+  were unchanged. Final cleanup closed all proven owned disposable windows,
+  preserving unrelated windows and the controlling terminal.
+- Published as `c6b7de53`; post-rebase locked gates again passed with the same
+  2,469/0/1 counts. [CI 38983566504](https://github.com/beefsack/OmniTiler/actions/runs/38983566504)
+  passed Windows, Rust, KWin, macOS, native, licenses and notices. Only shell's
+  known unrelated `kwin-66-api-guard` failed; no other stream failed.
