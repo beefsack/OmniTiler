@@ -76,7 +76,11 @@
   - D7: float the newest tiles (first successful tiled-admission order) until
     the retained tree projects, with the proposed protections. Revisit later
     if needed: alternatives such as float smallest or float biggest may suit
-    better, but this case may prove rare enough.
+    better, but this case may prove rare enough. Evicted windows persist as
+    floats across restart, as in D5.
+  - D8: preserve clean-fit adoption first, then the existing spatial
+    focus-last serial seed with D2/D3 fallback, committing all tile/float
+    classifications atomically as one roster; persisted floats stay floating.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
