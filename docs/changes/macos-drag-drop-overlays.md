@@ -157,7 +157,39 @@ Latest offline verification: 655 macOS library tests plus 134 integration tests
 (789 total), strict locked all-target clippy, workspace formatting, signed
 development app build and signature verification pass. Bundle identity remains
 `io.github.omnitiler.macos.probe`. The development Gatekeeper diagnostic is not a
-shipping/notarization claim. Publication and hosted CI are pending.
+shipping/notarization claim.
+
+Published diagnostic foundation: `5eff7c32`. Hosted CI exposed missing portable
+atomic imports and a non-macOS fail-closed hit-test stub; repaired in `cf796fa8`
+without changing macOS behavior. All local gates were repeated at that revision.
+Independent review confirmed the stub-only fix, unchanged hard park and clean
+tree. Hosted CI [39002083688](https://github.com/beefsack/OmniTiler/actions/runs/39002083688)
+passed Rust, Windows, macOS, KWin, native, licenses and notices. Shell alone failed
+the pre-existing KWin API guard for `fullscreen`/`maximized`/`sticky`; no Shell or
+native source was changed by this work. No failed-job rerun was needed.
+
+Current signed main executable SHA-256:
+`9436916258f308f6c5bd5a28f36dac9fb7d4fa8f159ef2bb10f3a793ccc3f84d`.
+Helper-app executable:
+`6ab433927cd18c325b3bf260880eb9945b3d2de8f622edc5b788029f8efe614a`.
+Both bundles pass deep strict signature verification; designated requirements use
+their stable bundle identifiers and certificate leaf
+`040f96377aaf110a77905d453bb76681e7133319`. These are current parked-build
+identities, not retroactive provenance for the earlier live attempts.
+
+Retained failed-leg outcome SHA-256:
+
+- Initial helper-identity failure:
+  `289c646acd41bdbaf5f3206b341308b73448699f8bb83f785df36fd5a35ed8e1`.
+- Stale-coordinate attempt:
+  `0a95a08d62e2f8219d6bb9d17e523a64335f33e0b152a8144b109929b8ca2164`.
+- Stale-coordinate diagnostic log:
+  `20474625b27949e661b0904e4fcf3bae631285edddcaaaceab6a16bc0ed3dce1`.
+
+These hashes bind content only. The ephemeral logs contain no embedded source or
+binary identity; source/artifact provenance is incomplete. They do not establish
+successful product acceptance, physical appearance or an absence of transient
+input effects.
 
 Unsafe in `ffi.rs`: matching lines **191 → 195**, matching `unsafe {` blocks
 **111 → 111**. Added matching lines are comments/documentation; no new unsafe
