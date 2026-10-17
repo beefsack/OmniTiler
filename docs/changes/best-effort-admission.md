@@ -62,6 +62,11 @@
   - D2: default anchor fallback is largest splittable window.
   - D3: default no-space result is float; overlap remains the alternative
     setting value.
+  - D4: a capacity float keeps the frame it opened with (eviction keeps the
+    last live frame). The `capacity` origin is provenance for diagnostics
+    only; functionally the window is treated exactly like a normal float, with
+    no capacity-specific behavior. The new window is focused whether it tiles
+    or capacity-floats.
 
 | ID | Options and consequences | Recommendation |
 | --- | --- | --- |
