@@ -1,24 +1,35 @@
 # Best-effort admission when space runs out
 
-- Status: source investigation/proposal delivered, 2026-10-17; product choices OPEN.
+- Status: implementation in progress, 2026-10-17; D1-D10 selected below.
 - Goal: replace geometric-capacity holds with deterministic best effort without
   degenerate native rectangles, implicit workspace changes or repeated effects.
 - Direction: user 2026-10-16 requests anchor fallback and float/overlap settings,
   prefers float, and rejects automatically opening on another workspace.
-- Scope: proposal and discriminating specification rows only. No implementation,
-  settings, dependency changes or live testing. Existing selections remain in force
-  until the choices below are accepted.
+- Scope: shared core and KDE implementation, settings and offline evidence;
+  Windows/macOS receive mechanical compatibility fixes only. No live testing.
+- The User selections below override conflicting historical recommendations,
+  including fresh-float focus and cross-restart persistence. Capacity origin is
+  diagnostic only; capacity floats otherwise behave and persist as ordinary floats.
 
 ## Plan and acceptance
 
-1. Audit shared projection/admission and KDE, Windows and macOS consumption.
-2. Specify candidate semantics, defaults, edge cases and selection consequences.
-3. Add OPEN requirements/action sequences, preserving established reference evidence.
-4. Check source locators, links, requirement counts and documentation diff.
+1. Lock numeric overlap geometry/navigation goldens before production projection.
+2. Implement shared policy/catalog, transactional admission, overlap projection,
+   newest-first repair and route-specific behavior with regression tests.
+3. Wire the shared settings and complete mixed roster through protocol and KDE,
+   retaining ordinary-float persistence and next-decision settings timing.
+4. Verify portable API guard, exporter freshness, Rust, KWin, shell and native
+   checks; review contracts independently; promote decisions and archive.
 
-- Acceptance: every requested interaction has an explicit recommendation or TBD;
-  choices are distinguishable by short action sequences; no proposed behavior is
-  mislabeled selected, implemented or native-verified.
+- Acceptance: selected D1-D10 and operation boundaries hold offline, including
+  stable replay, positive geometry, B6 preservation, atomic tile/float rosters,
+  explicit retries, safety protections, persisted floats and no settings reflow.
+  Native behavior remains unverified until the separate live re-check.
+- Accepted pre-implementation fixtures: `d9_overlap_golden` pins flat 1px overflow,
+  nested branch/sibling overlap, square/nonzero-origin geometry, checked offset
+  failure, B6-after ordering and tree-relative directional navigation. Six tests
+  pass with strict projection refusing exhausted inputs; no production overlap
+  implementation existed when these numeric expectations were accepted.
 
 ## Current behavior and evidence
 
