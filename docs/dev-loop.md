@@ -59,6 +59,10 @@ just reload      # rebuild and swap only the recorded worktree Planner
 just dev-off     # unload exact script, stop recorded Planner, re-enable packaged script
 ```
 
+- `just reload` does not reload the KWin script. After any `kwin/src` change,
+  run `just dev-off` then `just dev` (or `just dev-on`); otherwise a live
+  check exercises the old script against the new Planner.
+
 - `dev` is a small foreground composition of the existing recipes. It
   probes the same two strict facts as `dev-on` (verified worktree Planner
   owning the D-Bus name, strictly parsed `isScriptLoaded`) and refuses
