@@ -352,7 +352,7 @@ pub fn run(display: usize, actions: &[InputSemanticAction]) -> Result<String, (i
     let mut failure = None;
     for action in actions {
         let start = std::time::Instant::now();
-        match state.execute(&mut backend, *action) {
+        match state.execute(&mut backend, action.clone()) {
             Ok(effect) => {
                 effects.push(serde_json::json!({"effect":effect,"ms":start.elapsed().as_millis()}))
             }

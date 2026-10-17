@@ -144,6 +144,8 @@ pub struct DevSettings {
     pub excluded_bundles: Option<Vec<String>>,
     /// Active-border section (else CLI `--active-border-*`, else defaults).
     pub active_border: Option<ActiveBorderSettings>,
+    /// Drag-preview section (else CLI `--drag-preview-*`, else defaults).
+    pub drag_preview: Option<crate::drag_drop::DragPreviewSettings>,
 }
 
 /// Active-border settings file section (`"active_border"` object; every
@@ -287,6 +289,9 @@ impl DevSettings {
         }
         if let Some(border) = &self.active_border {
             border.validate()?;
+        }
+        if let Some(drag) = &self.drag_preview {
+            drag.validate()?;
         }
         Ok(())
     }
@@ -535,6 +540,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            drag_preview: None,
         };
         // Nothing explicit: file wins over built-in defaults (unscoped, so
         // the file exclusions apply).
@@ -611,6 +617,7 @@ mod tests {
             preset: Some(InputPreset::Compatible),
             excluded_bundles: Some(vec!["com.example.skip".to_owned()]),
             active_border: None,
+            drag_preview: None,
         };
         let resolved = resolve_dev_config(
             false,

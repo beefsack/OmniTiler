@@ -106,6 +106,23 @@ pub enum Command {
         transient_sheet_ms: u64,
         space_join: bool,
     },
+    /// LaunchServices fixture holder for the signed bundled helper: same
+    /// owned-helper argv as [`Command::ProbeSpawn`] but launched as a fresh
+    /// `Helper.app` instance through `open(1)`, so the helper carries the
+    /// ordinary product identity (helper bundle plus executable plus
+    /// `launchDate`) the scoped backend binds. Regular policy is inherent
+    /// (Helper.app carries no `LSUIElement`); no `Child` is held — currency
+    /// is the spawn record plus live-exe plus CURRENT window-nonce title.
+    ProbeSpawnLs {
+        hung_ms: u64,
+        slow_ms: u64,
+        seconds: u64,
+        fixed_size: bool,
+        close_window_ms: u64,
+        transient_panel_ms: u64,
+        transient_sheet_ms: u64,
+        space_join: bool,
+    },
     OwnedFrame {
         pid: u32,
         nonce: String,
@@ -127,6 +144,18 @@ pub enum Command {
         pid: u32,
         nonce: String,
         chord: String,
+    },
+    OwnedDragPost {
+        pid: u32,
+        nonce: String,
+        edge: String,
+        x: String,
+        y: String,
+        control: bool,
+    },
+    OwnedCursor {
+        x: Option<String>,
+        y: Option<String>,
     },
     OwnedFocus {
         pid: u32,
@@ -234,6 +263,9 @@ pub enum Command {
         /// Raw active-border selections (all unset = defaults; the settings
         /// file fills the gaps in `main`, then startup config).
         border: crate::dev_selection::BorderCli,
+        /// Raw drag-preview selections (all unset = defaults; the settings
+        /// file fills the gaps in `main`, then startup config).
+        drag: crate::drag_drop::DragCli,
     },
     ScopeInspect {
         scopes: Vec<String>,
@@ -329,6 +361,9 @@ pub fn help_text() -> String {
            \x20 \x20 [--active-border-color #rrggbb] [--active-border-theme|--no-active-border-theme]\n\
            \x20 \x20 (width 3, gap 0, radius 6, fallback #2a82da, theme on; border config\n\
            \x20 \x20 resolves CLI-over-settings-file like modifier/preset);\n\
+           \x20 \x20 drag preview on by default: [--no-drag-preview]\n\
+           \x20 \x20 [--drag-preview-color #aarrggbb]\n\
+           \x20 \x20 (fill #402a82da; drag config resolves CLI-over-settings-file);\n\
            \x20 \x20 --run-dir DIR opts into exact-run lifecycle (stop file\n\
            \x20 \x20 polled every cadence, terminal outcome published to\n\
            \x20 \x20 DIR/outcome.json);\n\
@@ -364,6 +399,12 @@ pub fn help_text() -> String {
               \x20 \x20 self-closes at that deadline while the main window stays\n\
               \x20 \x20 alive; --transient-sheet-ms presents a true attached\n\
               \x20 \x20 sheet that dismisses at that deadline, parent stays alive)\n\
+              \x20 probe-spawn-ls [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--close-window-ms MS] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join]\n\
+              \x20 \x20 (bounded owned LS holder: launches one signed Helper.app\n\
+              \x20 \x20 instance through LaunchServices so it carries the ordinary\n\
+              \x20 \x20 product identity (helper bundle plus launch date) the scoped\n\
+              \x20 \x20 backend binds; regular policy inherent, no Child held —\n\
+              \x20 \x20 record plus live-exe plus window-nonce title prove currency)\n\
              \x20 owned-frame --pid PID --nonce HEX --wid WID\n\
              \x20 \x20 (read-only owned window state: AX + CG frames, minimized,\n\
              \x20 \x20 fullscreen, role; IDs/geometry only, never titles/content)\n\
@@ -379,6 +420,15 @@ pub fn help_text() -> String {
              \x20 \x20 float-g, grow-h/j/k/l, grow-left/right, shrink-h/j/k/l,\n\
              \x20 \x20 shrink-left/right, orientation-o; truthfully synthetic,\n\
              \x20 \x20 oracle-gated per edge, helper targets only, never Ghostty)\n\
+             \x20 owned-drag-post --pid PID --nonce HEX --edge down|drag|up|escape --x X --y Y [--plain]\n\
+             \x20 \x20 (PARKED: always refuses before any live touch until a balanced\n\
+             \x20 \x20 per-PID release contract is proven; a lone down or paired Escape\n\
+             \x20 \x20 could otherwise leave unmatched input)\n\
+             \x20 owned-cursor [--x X --y Y]\n\
+             \x20 \x20 (read-only cursor readback, or a bounded warp to the explicit\n\
+             \x20 \x20 point with before/after readback; moves the pointer only,\n\
+             \x20 \x20 never clicks or targets a window; the leg driver owns the\n\
+             \x20 \x20 preimage and verifies the restore with a second read)\n\
               \x20 owned-focus --pid PID --nonce HEX --wid WID\n\
               \x20 \x20 (SLPS focus dispatch to one exact owned window with agreement)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
@@ -511,6 +561,11 @@ fn parse_u32(s: &str, what: &str) -> Result<u32, String> {
 fn parse_u64(s: &str, what: &str) -> Result<u64, String> {
     s.parse::<u64>()
         .map_err(|_| format!("{what} must be a u64, got '{s}'"))
+}
+
+fn parse_f64(s: &str, what: &str) -> Result<f64, String> {
+    s.parse::<f64>()
+        .map_err(|_| format!("{what} must be a number, got '{s}'"))
 }
 
 fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
@@ -1074,6 +1129,86 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 space_join,
             }
         }
+        "probe-spawn-ls" => {
+            // Same owned-helper argv as probe-spawn, launched as a fresh
+            // Helper.app instance through LaunchServices (ordinary product
+            // identity with launch date). Regular policy is inherent to
+            // Helper.app, so --regular-policy refuses here instead of
+            // implying a choice that does not exist on this path.
+            let mut hung_ms = 0u64;
+            let mut slow_ms = 0u64;
+            let mut seconds = DEFAULT_PROBE_SECONDS;
+            let mut fixed_size = false;
+            let mut close_window_ms = 0u64;
+            let mut transient_panel_ms = 0u64;
+            let mut transient_sheet_ms = 0u64;
+            let mut space_join = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--hung-ms" => {
+                        j += 1;
+                        hung_ms =
+                            parse_u64(args.get(j).ok_or("--hung-ms needs a value")?, "--hung-ms")?;
+                    }
+                    "--slow-ms" => {
+                        j += 1;
+                        slow_ms =
+                            parse_u64(args.get(j).ok_or("--slow-ms needs a value")?, "--slow-ms")?;
+                    }
+                    "--seconds" => {
+                        j += 1;
+                        seconds =
+                            parse_u64(args.get(j).ok_or("--seconds needs a value")?, "--seconds")?;
+                    }
+                    "--fixed-size" => {
+                        fixed_size = true;
+                    }
+                    "--regular-policy" => {
+                        return Err(
+                            "probe-spawn-ls: --regular-policy is inherent (Helper.app is a regular bundle)"
+                                .to_owned(),
+                        );
+                    }
+                    "--close-window-ms" => {
+                        j += 1;
+                        close_window_ms = parse_u64(
+                            args.get(j).ok_or("--close-window-ms needs a value")?,
+                            "--close-window-ms",
+                        )?;
+                    }
+                    "--transient-panel-ms" => {
+                        j += 1;
+                        transient_panel_ms = parse_u64(
+                            args.get(j).ok_or("--transient-panel-ms needs a value")?,
+                            "--transient-panel-ms",
+                        )?;
+                    }
+                    "--transient-sheet-ms" => {
+                        j += 1;
+                        transient_sheet_ms = parse_u64(
+                            args.get(j).ok_or("--transient-sheet-ms needs a value")?,
+                            "--transient-sheet-ms",
+                        )?;
+                    }
+                    "--space-join" => {
+                        space_join = true;
+                    }
+                    other => return Err(format!("probe-spawn-ls: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::ProbeSpawnLs {
+                hung_ms,
+                slow_ms,
+                seconds,
+                fixed_size,
+                close_window_ms,
+                transient_panel_ms,
+                transient_sheet_ms,
+                space_join,
+            }
+        }
         "probe-stop" => {
             let mut pid: Option<u32> = None;
             let mut nonce: Option<String> = None;
@@ -1250,6 +1385,95 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 nonce: nonce.ok_or("owned-post needs --nonce")?,
                 chord,
             }
+        }
+        "owned-drag-post" => {
+            let mut pid: Option<u32> = None;
+            let mut nonce: Option<String> = None;
+            let mut edge: Option<String> = None;
+            let mut x: Option<String> = None;
+            let mut y: Option<String> = None;
+            let mut control = true;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--pid" => {
+                        j += 1;
+                        pid = Some(parse_u32(
+                            args.get(j).ok_or("--pid needs a value")?,
+                            "--pid",
+                        )?);
+                    }
+                    "--nonce" => {
+                        j += 1;
+                        nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
+                    }
+                    "--edge" => {
+                        j += 1;
+                        edge = Some(args.get(j).ok_or("--edge needs a value")?.clone());
+                    }
+                    "--x" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--x needs a value")?;
+                        parse_f64(raw, "--x")?;
+                        x = Some(raw.clone());
+                    }
+                    "--y" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--y needs a value")?;
+                        parse_f64(raw, "--y")?;
+                        y = Some(raw.clone());
+                    }
+                    "--plain" => {
+                        control = false;
+                    }
+                    other => return Err(format!("owned-drag-post: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            let edge = edge.ok_or("owned-drag-post needs --edge")?;
+            if edge != "escape" && crate::synth::MouseEdge::parse(&edge).is_err() {
+                return Err(format!(
+                    "owned-drag-post: unknown --edge '{edge}' (expected down|drag|up|escape)"
+                ));
+            }
+            Command::OwnedDragPost {
+                pid: pid.ok_or("owned-drag-post needs --pid")?,
+                nonce: nonce.ok_or("owned-drag-post needs --nonce")?,
+                edge,
+                x: x.ok_or("owned-drag-post needs --x")?,
+                y: y.ok_or("owned-drag-post needs --y")?,
+                control,
+            }
+        }
+        "owned-cursor" => {
+            let mut x: Option<String> = None;
+            let mut y: Option<String> = None;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--x" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--x needs a value")?;
+                        parse_f64(raw, "--x")?;
+                        x = Some(raw.clone());
+                    }
+                    "--y" => {
+                        j += 1;
+                        let raw = args.get(j).ok_or("--y needs a value")?;
+                        parse_f64(raw, "--y")?;
+                        y = Some(raw.clone());
+                    }
+                    other => return Err(format!("owned-cursor: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            match (&x, &y) {
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err("owned-cursor: --x and --y are required together".to_owned());
+                }
+                _ => {}
+            }
+            Command::OwnedCursor { x, y }
         }
         "owned-focus" => {
             let (pid, nonce, wid) = parse_owned_wid(args, "owned-focus")?;
@@ -1491,6 +1715,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
             let mut border = crate::dev_selection::BorderCli::default();
+            let mut drag = crate::drag_drop::DragCli::default();
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1575,6 +1800,17 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--no-active-border-theme" => {
                         border.use_theme = Some(false);
                     }
+                    "--no-drag-preview" => {
+                        drag.enabled = Some(false);
+                    }
+                    "--drag-preview-color" => {
+                        j += 1;
+                        drag.color = Some(
+                            args.get(j)
+                                .ok_or("--drag-preview-color needs a value")?
+                                .clone(),
+                        );
+                    }
                     other => return Err(format!("tile: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -1591,6 +1827,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 log,
                 run_dir,
                 border,
+                drag,
             }
         }
         "spaces-session" => {

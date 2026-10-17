@@ -94,7 +94,7 @@ pub struct WorkspaceChord {
 /// semantic action, the default chord (`None` = bindable but unbound by
 /// default: the send-and-stay rows), and the product execution capability
 /// (`implemented`, always false today — see the module docs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRow {
     pub id: &'static str,
     pub text: &'static str,
@@ -112,17 +112,14 @@ impl WorkspaceRow {
     /// The armed binding for rows with a default chord (`None` for the
     /// bindable-unbound stay rows).
     #[must_use]
-    pub const fn binding(self) -> Option<TileBinding> {
-        match self.default {
-            Some(chord) => Some(TileBinding {
-                key_code: chord.key_code,
-                shift: chord.shift,
-                alt: chord.alt,
-                aux: chord.aux,
-                action: self.action,
-            }),
-            None => None,
-        }
+    pub fn binding(&self) -> Option<TileBinding> {
+        self.default.map(|chord| TileBinding {
+            key_code: chord.key_code,
+            shift: chord.shift,
+            alt: chord.alt,
+            aux: chord.aux,
+            action: self.action.clone(),
+        })
     }
 }
 
@@ -455,7 +452,7 @@ pub fn parse_workspace_action(id: &str) -> Option<InputSemanticAction> {
     workspace_catalogue()
         .iter()
         .find(|row| row.id == id)
-        .map(|row| row.action)
+        .map(|row| row.action.clone())
 }
 
 /// The canonical binding id for one semantic action (`None` for basic
@@ -495,8 +492,8 @@ pub const fn is_armed_select(action: &InputSemanticAction) -> bool {
 /// undispatched; the reason names the exact missing execution seam
 /// rather than faking support.
 #[must_use]
-pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(&action) {
+pub fn workspace_unsupported_reason(action: &InputSemanticAction) -> Option<&'static str> {
+    if is_armed_select(action) {
         return None;
     }
     match action {
@@ -504,7 +501,8 @@ pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'sta
         | InputSemanticAction::MoveStep { .. }
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
-        | InputSemanticAction::ToggleOrientation => None,
+        | InputSemanticAction::ToggleOrientation
+        | InputSemanticAction::DragDrop { .. } => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some(
@@ -533,8 +531,8 @@ pub fn workspace_unsupported_reason(action: InputSemanticAction) -> Option<&'sta
 /// token; the seam detail rides [`workspace_unsupported_reason`]
 /// (docs/tests, never guessed at runtime).
 #[must_use]
-pub fn workspace_unsupported_outcome(action: InputSemanticAction) -> Option<&'static str> {
-    if is_armed_select(&action) {
+pub fn workspace_unsupported_outcome(action: &InputSemanticAction) -> Option<&'static str> {
+    if is_armed_select(action) {
         return None;
     }
     match action {
@@ -542,7 +540,8 @@ pub fn workspace_unsupported_outcome(action: InputSemanticAction) -> Option<&'st
         | InputSemanticAction::MoveStep { .. }
         | InputSemanticAction::ResizeStep { .. }
         | InputSemanticAction::ToggleFloat
-        | InputSemanticAction::ToggleOrientation => None,
+        | InputSemanticAction::ToggleOrientation
+        | InputSemanticAction::DragDrop { .. } => None,
         InputSemanticAction::WorkspaceSelect { .. }
         | InputSemanticAction::WorkspaceRelative { .. }
         | InputSemanticAction::WorkspacePrevious => Some("refused-workspace-switch-unsupported"),

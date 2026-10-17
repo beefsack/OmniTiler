@@ -5795,6 +5795,28 @@ mod macos {
                 .orderWindow_relativeTo(objc2_app_kit::NSWindowOrderingMode::Below, target_wid);
         }
 
+        /// Request placement above `target_wid` (public ordering; never
+        /// activation): the drag-preview route for the filled insertion
+        /// slot above the target window (KWin overlay-item analogue). Like
+        /// `show_below`, this call alone proves nothing about where the
+        /// carrier landed: the only ordering verdict is the global CG join
+        /// ([`cg_carrier_above_target`]), read back by the caller after
+        /// the show. No new unsafe: plain AppKit ordering calls.
+        pub fn show_above(&self, _mtm: objc2::MainThreadMarker, target_wid: isize) {
+            self.panel.orderFront(None);
+            self.panel
+                .orderWindow_relativeTo(objc2_app_kit::NSWindowOrderingMode::Above, target_wid);
+        }
+
+        /// Frontmost within the panel level (public `orderFront:`, never
+        /// activation, never relative to a foreign window): the drag
+        /// fallback when no target window number is joined yet. The caller
+        /// still reads back the global CG order: frontmost is verified,
+        /// never assumed. No new unsafe: plain AppKit ordering call.
+        pub fn show_front(&self, _mtm: objc2::MainThreadMarker) {
+            self.panel.orderFront(None);
+        }
+
         /// Move and/or restyle the carrier: frame set plus fill restyle and
         /// redisplay. Fails closed on degenerate geometry (the previous frame
         /// is kept, never a guessed clamp).
@@ -6323,7 +6345,33 @@ mod macos {
         /// [`TapSource::create_stall_once`], which only the `input-session`
         /// fault-injection leg uses; production tile sources always run 0.
         stall_once_ms: AtomicU64,
+        /// Drag-active Escape watch (tile drag-preview route only): when
+        /// set and the route flag reads true, an otherwise-unmatched Escape
+        /// KeyDown is forwarded as a [`TapHit`] (key code 53) WITHOUT
+        /// suppression, so the client still receives the key and the drag
+        /// session observes the cancel edge on the main thread. The
+        /// coalesced `pending` flag is set on EVERY such edge (it never
+        /// drops: the main thread drains it even when the channel is full),
+        /// and `dropped` counts channel sends lost to a full queue. Set
+        /// once by [`TapSource::set_drag_escape_watch`]; `None` disables
+        /// (every non-tile caller). The callback takes it under `try_lock`
+        /// and fails closed (no forward) when contended — never a block.
+        /// Forwarding stays route-armed (run-wide while the drag route
+        /// lives, so an Escape racing the arming down is never missed);
+        /// the main thread consumes the cancel only while a gesture holds
+        /// (gesture-scoped consumption).
+        escape_watch: std::sync::Mutex<DragEscapeWatch>,
     }
+
+    /// Drag Escape watch wiring: route-armed flag, coalesced pending
+    /// flag (never lost), unsuppressed forward channel, and the full-queue
+    /// drop counter. `None` disables (every non-tile caller).
+    type DragEscapeWatch = Option<(
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+        SyncSender<TapHit>,
+        Arc<AtomicU32>,
+    )>;
 
     // Direct tap-state via the maintained `objc2-core-graphics` binding
     // (`CGEvent::tap_enable` / `CGEvent::tap_is_enabled` under the existing
@@ -6333,6 +6381,45 @@ mod macos {
     // The live `core-graphics` tap Mach port and the `objc2` `CFMachPort`
     // name the same window-server port object, so the call borrows the live
     // port for the call only (never a foreign pointer across the boundary).
+    // Shared runloop legs for the keyboard ([`TapSource`]) and mouse
+    // ([`DragTapSource`]) taps: the three `unsafe` blocks below are the
+    // only ones either tap needs (extern-static mode reads plus symmetric
+    // add/remove of the tap's own runloop source). Sharing them keeps new
+    // tap routes at zero additional `unsafe`.
+    fn tap_runloop_add(source: &core_foundation::runloop::CFRunLoopSource) {
+        use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+        // SAFETY: extern-static mode read; the source is added here and
+        // removed symmetrically in `tap_runloop_remove`; the tap Drop
+        // invalidates the port (RAII disable).
+        unsafe {
+            CFRunLoop::get_current().add_source(source, kCFRunLoopDefaultMode);
+        }
+    }
+
+    fn tap_runloop_remove(source: &core_foundation::runloop::CFRunLoopSource) {
+        use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+        // SAFETY: the source was added in `tap_runloop_add` on this thread;
+        // removal is symmetric and idempotent; the tap port invalidates on
+        // drop (RAII disable).
+        unsafe {
+            CFRunLoop::get_current().remove_source(source, kCFRunLoopDefaultMode);
+        }
+    }
+
+    fn tap_runloop_pump(millis: u64) {
+        use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+        use std::time::Duration;
+        // SAFETY: extern-static mode read (same pattern as the bounded
+        // probe tap); the slice bound caps stop latency.
+        unsafe {
+            CFRunLoop::run_in_mode(
+                kCFRunLoopDefaultMode,
+                Duration::from_millis(millis.min(250)),
+                false,
+            );
+        }
+    }
+
     fn tap_port<'a>(
         tap: &'a core_graphics::event::CGEventTap<'static>,
     ) -> &'a objc2_core_foundation::CFMachPort {
@@ -6414,7 +6501,6 @@ mod macos {
             stall_once_ms: u64,
         ) -> Result<Self, TapSetupError> {
             use crate::input_match::{TapKeyKind, TapTuning, decide_tap_event};
-            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
             use core_graphics::event::{
                 CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
                 CGEventType, CallbackResult, EventField,
@@ -6457,6 +6543,7 @@ mod macos {
                 unnotified: AtomicU32::new(0),
                 gated: AtomicBool::new(false),
                 stall_once_ms: AtomicU64::new(stall_once_ms),
+                escape_watch: std::sync::Mutex::new(None),
             });
             let callback_shared = shared.clone();
             let tap = CGEventTap::new(
@@ -6525,6 +6612,36 @@ mod macos {
                         code,
                     ) {
                         return CallbackResult::Keep;
+                    }
+                    // Drag-active Escape watch (tile drag-preview route only):
+                    // an otherwise-unmatched Escape KeyDown forwards as a
+                    // TapHit WITHOUT suppression while the route flag reads
+                    // true, so the client still receives the key and the
+                    // main-thread drag session observes the cancel edge.
+                    // The coalesced pending flag sets on every such edge
+                    // (never lost: the main thread drains it alongside the
+                    // channel); a full channel still counts its drop.
+                    // Gated by the flag (no tile drag, no forward) and by
+                    // try_lock (contended, no forward) — never a block, no
+                    // AX/core/log contact. Falls through to the normal
+                    // match loop below (Escape matches no tile chord).
+                    if matches!(tap_kind, TapKeyKind::KeyDown)
+                        && code == 53
+                        && let Ok(watch) = callback_shared.escape_watch.try_lock()
+                        && let Some((flag, pending, tx, dropped)) = watch.as_ref()
+                        && flag.load(Ordering::SeqCst)
+                    {
+                        pending.store(true, Ordering::SeqCst);
+                        if tx
+                            .try_send(TapHit {
+                                key_code: 53,
+                                down: true,
+                                flags,
+                            })
+                            .is_err()
+                        {
+                            dropped.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                     // No scoped gate here (consume-first): the match loop
                     // below consumes owned chords regardless of scoped
@@ -6603,12 +6720,7 @@ mod macos {
             let runloop_source = tap.mach_port().create_runloop_source(0).map_err(|()| {
                 TapSetupError::Runloop("runloop source creation failed".to_owned())
             })?;
-            // SAFETY: extern-static mode read; the source is added here and
-            // removed symmetrically in `Drop`; the tap Drop invalidates the
-            // port (RAII disable).
-            unsafe {
-                CFRunLoop::get_current().add_source(&runloop_source, kCFRunLoopDefaultMode);
-            }
+            tap_runloop_add(&runloop_source);
             tap.enable();
             Ok(Self {
                 tap,
@@ -6627,17 +6739,7 @@ mod macos {
         /// returns [`TapPump::UserDisabled`] (counted); the owner releases
         /// interception while gated and resumes or recreates when eligible.
         pub fn pump(&mut self, millis: u64) -> TapPump {
-            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
-            use std::time::Duration;
-            // SAFETY: extern-static mode read (same pattern as the bounded
-            // probe tap); the slice bound caps stop latency.
-            unsafe {
-                CFRunLoop::run_in_mode(
-                    kCFRunLoopDefaultMode,
-                    Duration::from_millis(millis.min(250)),
-                    false,
-                );
-            }
+            tap_runloop_pump(millis);
             match self.shared.disable_kind.swap(0, Ordering::SeqCst) {
                 0 => TapPump::Held,
                 1 => {
@@ -6663,6 +6765,28 @@ mod macos {
         /// maintained tap wrapper exposes no disable leg.
         pub fn set_enabled(&self, enabled: bool) {
             self.shared.gated.store(!enabled, Ordering::SeqCst);
+        }
+
+        /// Arm the drag-active Escape watch: while `active` reads true, an
+        /// otherwise-unmatched Escape KeyDown forwards as an unsuppressed
+        /// [`TapHit`] on `escape_tx` (the tile main loop drains it into
+        /// the drag session; the client still receives the key) and sets
+        /// the coalesced `escape_pending` flag (drained alongside the
+        /// channel, so the cancel survives a full queue; `escape_dropped`
+        /// counts channel sends lost that way). The tile drag route calls
+        /// this once with its live flag; every other caller leaves the
+        /// watch unset (`None` = never forward). Never blocks: the
+        /// callback consults the flag plus a `try_lock` only.
+        pub fn set_drag_escape_watch(
+            &self,
+            active: Arc<AtomicBool>,
+            escape_pending: Arc<AtomicBool>,
+            escape_tx: SyncSender<TapHit>,
+            escape_dropped: Arc<AtomicU32>,
+        ) {
+            if let Ok(mut watch) = self.shared.escape_watch.lock() {
+                *watch = Some((active, escape_pending, escape_tx, escape_dropped));
+            }
         }
 
         /// Fixture-only DIRECT tap disable/enable at the OS level
@@ -6724,13 +6848,260 @@ mod macos {
 
     impl Drop for TapSource {
         fn drop(&mut self) {
-            use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
-            // SAFETY: the source was added in `create` on this thread;
-            // removal is symmetric and idempotent; the tap port invalidates
-            // on drop (RAII disable).
-            unsafe {
-                CFRunLoop::get_current().remove_source(&self.runloop_source, kCFRunLoopDefaultMode);
+            tap_runloop_remove(&self.runloop_source);
+        }
+    }
+
+    /// One mouse-tap drag edge: Meta+left press, held drag, or release.
+    /// Positions ride as integers (CG global points rounded); `flags` is
+    /// the raw `CGEventFlags` word so the owner re-derives the Meta chord
+    /// exactly. Only consumed edges cross the boundary — never raw motion,
+    /// never titles or content.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DragMouseKind {
+        Down,
+        Drag,
+        Up,
+    }
+
+    /// One consumed mouse-tap hit for the tile drag session.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DragMouseHit {
+        pub kind: DragMouseKind,
+        pub x: i32,
+        pub y: i32,
+        pub flags: u64,
+    }
+
+    struct DragTapShared {
+        tx: std::sync::mpsc::Sender<DragMouseHit>,
+        gate: Arc<crate::drag_drop::DragTapGate>,
+        meta_want: u64,
+        meta_mask: u64,
+        matched: AtomicU32,
+        suppressed: AtomicU32,
+        deliveries: AtomicU32,
+        /// Disable cause observed by the callback: 0 none, 1 timeout
+        /// (recovered inside `pump`), 2 user (refused by the caller).
+        disable_kind: AtomicU32,
+        reenables: AtomicU32,
+        user_disables: AtomicU32,
+        unnotified: AtomicU32,
+        /// Gate released (lock screen, Secure Input, unknown session):
+        /// the callback passes everything untouched while set.
+        gated: AtomicBool,
+    }
+
+    /// Owned continuous mouse tap for the tile Meta+left drag route.
+    /// Thread-bound by construction (tap plus runloop source;
+    /// intentionally `!Send`). `Drop` removes the runloop source; the tap
+    /// port invalidates with it.
+    ///
+    /// Pre-proven consume over the lock-free
+    /// [`crate::drag_drop::DragTapGate`]: the callback consults only
+    /// atomic snapshot state plus the Meta chord (never a lock, never AX /
+    /// core / logging contact). A down consumes only when it matches the
+    /// main thread's freshly proven eligibility snapshot; anything else
+    /// passes untouched and remembers the pass-through gesture. Held
+    /// capture is lock-independent, so a consumed down always balances
+    /// through its consumed up even under main-thread contention. Only the
+    /// global `gated` release passes events untouched from inside the
+    /// callback. The channel is unbounded: a consumed edge is never lost
+    /// to a full queue (send fails only when the main thread is gone, and
+    /// the route then parks at teardown).
+    pub struct DragTapSource {
+        tap: core_graphics::event::CGEventTap<'static>,
+        runloop_source: core_foundation::runloop::CFRunLoopSource,
+        shared: Arc<DragTapShared>,
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl DragTapSource {
+        /// Create the mouse tap over left-button edges. `meta_want` plus
+        /// `meta_mask` come from [`crate::input::cg_flag_bits`] for the
+        /// run's configured Meta mapping (Control default, Command
+        /// opt-in). `gate` is the pre-proven eligibility snapshot owned by
+        /// the main thread. Fails closed when creation is denied (no
+        /// consent) — a denial is `Err`, never a silent success.
+        pub fn create(
+            gate: &Arc<crate::drag_drop::DragTapGate>,
+            meta_want: u64,
+            meta_mask: u64,
+            tx: &std::sync::mpsc::Sender<DragMouseHit>,
+        ) -> Result<Self, TapSetupError> {
+            use core_graphics::event::{
+                CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+                CGEventType, CallbackResult,
+            };
+
+            let shared = Arc::new(DragTapShared {
+                tx: tx.clone(),
+                gate: Arc::clone(gate),
+                meta_want,
+                meta_mask,
+                matched: AtomicU32::new(0),
+                suppressed: AtomicU32::new(0),
+                deliveries: AtomicU32::new(0),
+                disable_kind: AtomicU32::new(0),
+                reenables: AtomicU32::new(0),
+                user_disables: AtomicU32::new(0),
+                unnotified: AtomicU32::new(0),
+                gated: AtomicBool::new(false),
+            });
+            let callback_shared = shared.clone();
+            let tap = CGEventTap::new(
+                CGEventTapLocation::Session,
+                CGEventTapPlacement::HeadInsertEventTap,
+                CGEventTapOptions::Default,
+                vec![
+                    CGEventType::LeftMouseDown,
+                    CGEventType::LeftMouseDragged,
+                    CGEventType::LeftMouseUp,
+                ],
+                move |_proxy, etype, event| {
+                    if callback_shared.gated.load(Ordering::SeqCst) {
+                        return CallbackResult::Keep;
+                    }
+                    // `CGEventType` has no `PartialEq`; compare discriminants.
+                    let kind = etype as u32;
+                    if kind == CGEventType::TapDisabledByTimeout as u32 {
+                        callback_shared.disable_kind.store(1, Ordering::SeqCst);
+                        return CallbackResult::Keep;
+                    }
+                    if kind == CGEventType::TapDisabledByUserInput as u32 {
+                        callback_shared.disable_kind.store(2, Ordering::SeqCst);
+                        return CallbackResult::Keep;
+                    }
+                    let mouse = if kind == CGEventType::LeftMouseDown as u32 {
+                        DragMouseKind::Down
+                    } else if kind == CGEventType::LeftMouseDragged as u32 {
+                        DragMouseKind::Drag
+                    } else if kind == CGEventType::LeftMouseUp as u32 {
+                        DragMouseKind::Up
+                    } else {
+                        return CallbackResult::Keep;
+                    };
+                    callback_shared.deliveries.fetch_add(1, Ordering::SeqCst);
+                    let flags = event.get_flags().bits();
+                    let point = event.location();
+                    let x = point.x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+                    let y = point.y.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+                    // Lock-free pre-proven consume over the shared gate
+                    // (never a lock, never AX/core/log contact): a down
+                    // consumes only when it matches the main thread's
+                    // freshly proven snapshot; held edges consume through
+                    // the lock-independent capture; everything else passes
+                    // untouched with pass-through memory. The unbounded
+                    // send fails only when the main thread is gone.
+                    let meta = flags & callback_shared.meta_mask == callback_shared.meta_want;
+                    let consume = match mouse {
+                        DragMouseKind::Down => callback_shared.gate.try_consume_down(x, y, meta),
+                        DragMouseKind::Drag => callback_shared.gate.consume_held_drag(),
+                        DragMouseKind::Up => callback_shared.gate.consume_up(),
+                    };
+                    if !consume {
+                        return CallbackResult::Keep;
+                    }
+                    callback_shared.matched.fetch_add(1, Ordering::SeqCst);
+                    if callback_shared
+                        .tx
+                        .send(DragMouseHit {
+                            kind: mouse,
+                            x,
+                            y,
+                            flags,
+                        })
+                        .is_err()
+                    {
+                        // The main thread is gone (teardown): release the
+                        // capture so a late restart never inherits it, and
+                        // pass the edge (nothing left to arm).
+                        callback_shared.gate.cancel();
+                        return CallbackResult::Keep;
+                    }
+                    callback_shared.suppressed.fetch_add(1, Ordering::SeqCst);
+                    CallbackResult::Drop
+                },
+            )
+            .map_err(|()| {
+                TapSetupError::Denied(
+                    "CGEventTapCreate returned null (needs Accessibility consent for the stable bundle identity; grant in System Settings, then retry)"
+                        .to_owned(),
+                )
+            })?;
+            let runloop_source = tap.mach_port().create_runloop_source(0).map_err(|()| {
+                TapSetupError::Runloop("runloop source creation failed".to_owned())
+            })?;
+            tap_runloop_add(&runloop_source);
+            tap.enable();
+            Ok(Self {
+                tap,
+                runloop_source,
+                shared,
+                _not_send: std::marker::PhantomData,
+            })
+        }
+
+        /// Pump one bounded runloop slice (at most ~250 ms). Same recovery
+        /// contract as [`TapSource::pump`]: verified same-tap re-enable
+        /// counts [`TapPump::TimeoutRecovered`], unverified returns
+        /// [`TapPump::NeedsRecreate`], user disables return
+        /// [`TapPump::UserDisabled`].
+        pub fn pump(&mut self, millis: u64) -> TapPump {
+            tap_runloop_pump(millis);
+            match self.shared.disable_kind.swap(0, Ordering::SeqCst) {
+                0 => TapPump::Held,
+                1 => {
+                    self.tap.enable();
+                    if self.is_tap_direct_enabled() {
+                        self.shared.reenables.fetch_add(1, Ordering::SeqCst);
+                        TapPump::TimeoutRecovered
+                    } else {
+                        TapPump::NeedsRecreate
+                    }
+                }
+                _ => {
+                    self.shared.user_disables.fetch_add(1, Ordering::SeqCst);
+                    TapPump::UserDisabled
+                }
             }
+        }
+
+        /// Hold or release interception without destroying the tap (same
+        /// callback-gate shape as [`TapSource::set_enabled`]).
+        pub fn set_enabled(&self, enabled: bool) {
+            self.shared.gated.store(!enabled, Ordering::SeqCst);
+        }
+
+        /// Actual OS tap-state readback (maintained
+        /// `CGEvent::tap_is_enabled`).
+        #[must_use]
+        pub fn is_tap_direct_enabled(&self) -> bool {
+            // SAFETY: same live-port borrow as `TapSource`; read-only.
+            objc2_core_graphics::CGEvent::tap_is_enabled(tap_port(&self.tap))
+        }
+
+        /// Record one owner-side enabled-readback-only observation.
+        pub fn note_unnotified_disabled(&self) {
+            self.shared.unnotified.fetch_add(1, Ordering::SeqCst);
+        }
+
+        #[must_use]
+        pub fn report(&self) -> TapSourceReport {
+            TapSourceReport {
+                matched: self.shared.matched.load(Ordering::SeqCst),
+                suppressed: self.shared.suppressed.load(Ordering::SeqCst),
+                deliveries: self.shared.deliveries.load(Ordering::SeqCst),
+                reenables_after_timeout: self.shared.reenables.load(Ordering::SeqCst),
+                user_disables: self.shared.user_disables.load(Ordering::SeqCst),
+                unnotified_disables: self.shared.unnotified.load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    impl Drop for DragTapSource {
+        fn drop(&mut self) {
+            tap_runloop_remove(&self.runloop_source);
         }
     }
 
@@ -7372,27 +7743,27 @@ mod macos {
 pub use macos::{
     AX_ATTRIBUTE_UNSUPPORTED, AX_FAILURE, AX_ILLEGAL_ARGUMENT, AX_NO_VALUE, AxElement, AxFrame,
     BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic, DisplayChangeGuard,
-    DisplayRect, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
-    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
-    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
-    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
-    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
-    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
-    process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    DisplayRect, DragMouseHit, DragMouseKind, DragTapSource, GroupUnderlayCarrier, HotkeySpi,
+    KeyCounts, MouseCounts, NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED,
+    SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
+    TapHit, TapPump, TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid,
+    app_hidden_for_pid, ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
+    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
+    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
+    drain_app_events_counted, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
+    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
+    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
     sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
@@ -7534,6 +7905,75 @@ mod stub {
 
         /// Fail-closed stub: no live tap exists off-macOS; the count has
         /// nowhere to land.
+        pub fn note_unnotified_disabled(&self) {}
+
+        #[must_use]
+        pub fn report(&self) -> TapSourceReport {
+            TapSourceReport {
+                matched: 0,
+                suppressed: 0,
+                deliveries: 0,
+                reenables_after_timeout: 0,
+                user_disables: 0,
+                unnotified_disables: 0,
+            }
+        }
+
+        pub fn set_drag_escape_watch(
+            &self,
+            _active: Arc<AtomicBool>,
+            _escape_pending: Arc<AtomicBool>,
+            _escape_tx: SyncSender<TapHit>,
+            _escape_dropped: Arc<AtomicU32>,
+        ) {
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DragMouseKind {
+        Down,
+        Drag,
+        Up,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DragMouseHit {
+        pub kind: DragMouseKind,
+        pub x: i32,
+        pub y: i32,
+        pub flags: u64,
+    }
+
+    pub struct DragTapSource {
+        _priv: (),
+        _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Drop for DragTapSource {
+        fn drop(&mut self) {}
+    }
+
+    impl DragTapSource {
+        pub fn create(
+            _gate: &Arc<crate::drag_drop::DragTapGate>,
+            _meta_want: u64,
+            _meta_mask: u64,
+            _tx: &std::sync::mpsc::Sender<DragMouseHit>,
+        ) -> Result<Self, TapSetupError> {
+            Err(TapSetupError::Denied("event tap is macOS-only".to_owned()))
+        }
+
+        pub fn pump(&mut self, _millis: u64) -> TapPump {
+            TapPump::Held
+        }
+
+        pub fn set_enabled(&self, _enabled: bool) {}
+
+        #[must_use]
+        pub fn is_tap_direct_enabled(&self) -> bool {
+            false
+        }
+
         pub fn note_unnotified_disabled(&self) {}
 
         #[must_use]
@@ -8236,27 +8676,27 @@ mod stub {
 #[cfg(not(target_os = "macos"))]
 pub use stub::{
     AxElement, AxFrame, BorderCarrier, BorderCarrierFlags, CgBounds, CgWindow, CgWindowBasic,
-    DisplayChangeGuard, DisplayRect, GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts,
-    NsAppIdentity, NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn,
-    SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
-    TapSource, TapSourceReport, activate_app, activation_policy_raw_for_pid, app_hidden_for_pid,
-    ax_app_focus_leg, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_element_at_position, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_owner,
-    ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, frontmost_app, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_separate_spaces, own_bundle_id,
-    process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    DisplayChangeGuard, DisplayRect, DragMouseHit, DragMouseKind, DragTapSource,
+    GroupUnderlayCarrier, HotkeySpi, KeyCounts, MouseCounts, NsAppIdentity, NsDisplay,
+    Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SlpsPsn, SlsBridgedAvailability,
+    SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump, TapSource, TapSourceReport,
+    activate_app, activation_policy_raw_for_pid, app_hidden_for_pid, ax_app_focus_leg,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
+    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
+    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, frontmost_app, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_separate_spaces, own_bundle_id, process_executable_path, process_exists, pump_runloop_once,
+    resolve_hotkey_spi, run_event_tap_bounded, run_owned_probe_window, runloop_present,
+    running_apps, secure_input_known, session_state, slps_available, slps_front_available,
+    slps_front_pid, slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
     sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,

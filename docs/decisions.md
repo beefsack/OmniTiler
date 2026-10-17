@@ -339,7 +339,23 @@ platform API behavior.
      snapshots showed display-spanning Dock backing while both hit-tests reached
      the owned helper; genuine terminal hits subsequently refused without posts.
      [Evidence and parked transfer](changes/macos-managed-workspaces.md#current-discriminator-and-continuation-2026-10-17).
-   - **Tentative (pending user review), 2026-10-17 — select-only development seam:**
+    - **Tentative (pending user review), 2026-10-17 — macOS drag/drop foundation:**
+      use the existing Meta mapping (Control by default, Command opt-in) for
+      Meta+left movement, sharing the core insertion-slot resolver and
+      `#402a82da` filled preview with KDE/Windows. Reuse the nonactivating,
+      click-through AppKit carrier above its verified target; no below-target
+      rendering is needed. Require an exact fresh AX/WindowServer point join
+      before capture, balanced owned-button lifecycle, Escape cancellation,
+      clear-before-mutation and press-revision validation. Conservatively hide
+      for any observed fullscreen window until pointer-display attribution is
+      established. Native titlebar classification and cross-output integration
+      remain parked, not replaced by arbitrary AX movement or a swap heuristic.
+      The implementation is diagnostic-only: a hard acceptance gate prevents
+      product mouse-tap installation regardless of preview configuration.
+      Synthetic drag/paired-click diagnostics also refuse before posting until
+      an exact-owned balanced release contract is established.
+      [Incomplete outcome and discriminators](changes/macos-drag-drop-overlays.md).
+    - **Tentative (pending user review), 2026-10-17 — select-only development seam:**
      use the already-proven MC AX route for explicit bounded selection batches
      while transfer is parked. Retain shared ordinal/relative/previous semantics;
      batch history is deliberately not persisted or represented as the product

@@ -31,7 +31,7 @@ fn row_by_id(id: &str) -> WorkspaceRow {
     workspace_catalogue()
         .iter()
         .find(|row| row.id == id)
-        .copied()
+        .cloned()
         .unwrap_or_else(|| panic!("workspace row missing: {id}"))
 }
 
@@ -687,8 +687,8 @@ fn unsupported_refusal_names_the_seam_per_family() {
         InputSemanticAction::ToggleFloat,
         InputSemanticAction::ToggleOrientation,
     ] {
-        assert_eq!(workspace_unsupported_outcome(action), None, "{action:?}");
-        assert_eq!(workspace_unsupported_reason(action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_reason(&action), None, "{action:?}");
         assert!(!is_armed_select(&action), "{action:?}");
     }
     for action in [
@@ -698,49 +698,49 @@ fn unsupported_refusal_names_the_seam_per_family() {
         InputSemanticAction::WorkspaceRelative { prev: false },
         InputSemanticAction::WorkspacePrevious,
     ] {
-        assert_eq!(workspace_unsupported_outcome(action), None, "{action:?}");
-        assert_eq!(workspace_unsupported_reason(action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_outcome(&action), None, "{action:?}");
+        assert_eq!(workspace_unsupported_reason(&action), None, "{action:?}");
         assert!(is_armed_select(&action), "{action:?}");
     }
     // The trailing select-0 stays unarmed: automatic trailing creation is
     // unresolved (occupancy unproven), so it refuses with the switch token.
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSelect { index: 0 })
+    let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceSelect { index: 0 })
         .expect("trailing select refuses");
     assert!(reason.contains("trailing"), "{reason}");
     assert_eq!(
-        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSelect { index: 0 }),
+        workspace_unsupported_outcome(&InputSemanticAction::WorkspaceSelect { index: 0 }),
         Some("refused-workspace-switch-unsupported")
     );
     assert!(!is_armed_select(&InputSemanticAction::WorkspaceSelect {
         index: 0
     }));
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSend {
+    let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceSend {
         index: 0,
         follow: false,
     })
     .expect("stay refuses");
     assert!(reason.contains("direct-SLS"), "{reason}");
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceSendRelative {
+    let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceSendRelative {
         prev: false,
         follow: true,
     })
     .expect("relative send refuses");
     assert!(reason.contains("direct-SLS"), "{reason}");
-    let reason = workspace_unsupported_reason(InputSemanticAction::WorkspaceOutput {
+    let reason = workspace_unsupported_reason(&InputSemanticAction::WorkspaceOutput {
         direction: InputDirection::Right,
         follow: true,
     })
     .expect("output refuses");
     assert!(reason.contains("cross-display"), "{reason}");
     assert_eq!(
-        workspace_unsupported_outcome(InputSemanticAction::WorkspaceSend {
+        workspace_unsupported_outcome(&InputSemanticAction::WorkspaceSend {
             index: 1,
             follow: true
         }),
         Some("refused-workspace-send-unsupported")
     );
     assert_eq!(
-        workspace_unsupported_outcome(InputSemanticAction::WorkspaceOutput {
+        workspace_unsupported_outcome(&InputSemanticAction::WorkspaceOutput {
             direction: InputDirection::Left,
             follow: true,
         }),

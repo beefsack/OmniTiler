@@ -335,6 +335,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         log,
         run_dir,
         border: _,
+        drag: _,
     } = parsed.command
     else {
         panic!("expected tile, got {:?}", parsed.command);
@@ -351,6 +352,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         log,
         run_dir,
         border: tiler_macos::active_border::ActiveBorderOptions::default(),
+        drag: tiler_macos::drag_drop::DragOptions::default(),
     }
 }
 

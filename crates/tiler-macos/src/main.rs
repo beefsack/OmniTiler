@@ -539,6 +539,107 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             })
             .to_string())
         }
+        Command::ProbeSpawnLs {
+            hung_ms,
+            slow_ms,
+            seconds,
+            fixed_size,
+            close_window_ms,
+            transient_panel_ms,
+            transient_sheet_ms,
+            space_join,
+        } => {
+            // LaunchServices fixture holder: no Child is held (LaunchServices
+            // owns the process), so currency is the spawn record plus the
+            // live executable plus the CURRENT window-nonce title — the same
+            // cross-command contract `probe-stop` and every owned path use.
+            let nonce = tiler_macos::probe_target::mint_nonce().map_err(|e| (1, e))?;
+            let spec =
+                tiler_macos::probe_target::ProbeTargetSpec::new(&nonce, hung_ms, slow_ms, seconds)
+                    .map(|s| {
+                        s.with_fixed_size(fixed_size)
+                            .with_close_window_ms(close_window_ms)
+                            .with_transient_panel_ms(transient_panel_ms)
+                            .with_transient_sheet_ms(transient_sheet_ms)
+                            .with_space_join(space_join)
+                    })
+                    .map_err(|e| (2, e))?;
+            let session = tiler_macos::probe_target::spawn_verified_ls(&spec, seconds)
+                .map_err(|e| (1, format!("LS spawn failed: {e}")))?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ready": true,
+                    "ls": true,
+                    "bundle": session.bundle,
+                    "pid": session.pid,
+                    "nonce": session.nonce,
+                })
+            );
+            // Bounded hold: poll liveness to the deadline, then stop exactly
+            // the verified PID (record + live exe + CURRENT window-nonce
+            // title re-proof inside `stop_session`). A helper that exits on
+            // its own reports honestly with best-effort stale-record removal.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+            let mut exited_early = false;
+            while std::time::Instant::now() < deadline {
+                if !tiler_macos::ffi::process_exists(session.pid as i32) {
+                    exited_early = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            if exited_early {
+                let removed = tiler_macos::probe_target::remove_ls_record_if_gone(
+                    session.pid,
+                    &session.nonce,
+                );
+                return Ok(serde_json::json!({
+                    "bundle": session.bundle,
+                    "pid": session.pid,
+                    "nonce": session.nonce,
+                    "ls": true,
+                    "exited_early": true,
+                    "stopped_exact_child": false,
+                    "record_removed": removed,
+                })
+                .to_string());
+            }
+            match tiler_macos::probe_target::stop_session(session.pid, &session.nonce) {
+                Ok(()) => Ok(serde_json::json!({
+                    "bundle": session.bundle,
+                    "pid": session.pid,
+                    "nonce": session.nonce,
+                    "ls": true,
+                    "exited_early": false,
+                    "stopped_exact_child": true,
+                })
+                .to_string()),
+                Err(e) => {
+                    // Raced self-exit between the last liveness poll and the
+                    // stop: clean the stale record when the PID is provably
+                    // gone, and report the early exit honestly.
+                    if !tiler_macos::ffi::process_exists(session.pid as i32)
+                        && tiler_macos::probe_target::remove_ls_record_if_gone(
+                            session.pid,
+                            &session.nonce,
+                        )
+                    {
+                        return Ok(serde_json::json!({
+                            "bundle": session.bundle,
+                            "pid": session.pid,
+                            "nonce": session.nonce,
+                            "ls": true,
+                            "exited_early": true,
+                            "stopped_exact_child": false,
+                            "record_removed": true,
+                        })
+                        .to_string());
+                    }
+                    Err((1, format!("LS probe stop: {e}")))
+                }
+            }
+        }
         Command::ProbeStop { pid, nonce } => {
             tiler_macos::probe_target::stop_session(pid, &nonce).map_err(|e| (1, e.to_string()))?;
             Ok(serde_json::json!({
@@ -597,6 +698,38 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
         Command::OwnedFocus { pid, nonce, wid } => {
             // SLPS focus dispatch to one exact owned window with agreement.
             tiler_macos::owned_control::run_owned_focus(pid, &nonce, wid, request.modifier)
+        }
+        Command::OwnedDragPost {
+            pid,
+            nonce,
+            edge,
+            x,
+            y,
+            control,
+        } => {
+            // PARKED drag-fixture edge: refuses before any live touch until
+            // a balanced release contract is proven (see owned_control).
+            let x = x
+                .parse::<f64>()
+                .map_err(|_| (2, "owned-drag-post: --x must be a number".to_owned()))?;
+            let y = y
+                .parse::<f64>()
+                .map_err(|_| (2, "owned-drag-post: --y must be a number".to_owned()))?;
+            tiler_macos::owned_control::run_owned_drag_post(pid, &nonce, &edge, x, y, control)
+        }
+        Command::OwnedCursor { x, y } => {
+            // Read-only cursor readback, or a bounded warp with
+            // before/after readback (no click, no window target).
+            let point = match (x, y) {
+                (Some(x), Some(y)) => Some((
+                    x.parse::<f64>()
+                        .map_err(|_| (2, "owned-cursor: --x must be a number".to_owned()))?,
+                    y.parse::<f64>()
+                        .map_err(|_| (2, "owned-cursor: --y must be a number".to_owned()))?,
+                )),
+                _ => None,
+            };
+            tiler_macos::owned_control::run_owned_cursor(point)
         }
         Command::OwnedSpaceJoin { pid, nonce } => {
             // Public AppKit self-action: helper joins its OWN window to the
@@ -696,6 +829,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             log,
             run_dir,
             border,
+            drag,
         } => {
             // Tile session: explicit start + product selection validated
             // inside; tap product route, Authentic/Compatible preset.
@@ -742,6 +876,12 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 write_refused(&reason);
                 (2, reason)
             })?;
+            let drag =
+                tiler_macos::drag_drop::resolve_drag_config(&drag, file.drag_preview.as_ref())
+                    .map_err(|reason| {
+                        write_refused(&reason);
+                        (2, reason)
+                    })?;
             let request = tiler_macos::tile::TileRequest {
                 user_start,
                 scopes,
@@ -754,6 +894,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 log,
                 run_dir: run_dir.clone(),
                 border,
+                drag,
             };
             tiler_macos::tile::run_tile(request).map_err(|(code, body)| {
                 // Validation refusals carry plain text (not JSON): persist

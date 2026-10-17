@@ -203,12 +203,78 @@ pub(crate) fn validate_click_point(point: (f64, f64)) -> Result<(), String> {
     Ok(())
 }
 
-/// Single shared guarded click boundary: one synthetic left-button
-/// down/up pair at `point` (CG top-left points) through the HID event tap,
+/// Pure point-specific mouse-post verdict over plain data (no OS touch):
+/// the AX hit-test owner read at the exact post point must name exactly
+/// `(target_pid, target_wid)` and the window-server hit window read at that
+/// point must equal `target_wid`. A stale pre-tile point (the window moved
+/// since the coordinates were captured), a foreign window, or an unreadable
+/// leg refuses WITHOUT posting — focus agreement alone never proves the
+/// point. Unit-tested; the lone-edge boundary below performs the reads and
+/// passes the outcomes here just before its post. (Parked-caller note: the
+/// lone-edge production caller is parked with `owned-drag-post`, so live
+/// builds hold this for the balanced-contract follow-up plus its unit
+/// tests; the verdict itself is unchanged and unweakened.)
+#[allow(dead_code)]
+pub(crate) fn mouse_point_verdict(
+    target_pid: u32,
+    target_wid: u32,
+    ax_owner: Option<(u32, u32)>,
+    cg_hit: Option<u32>,
+) -> Result<(), String> {
+    if ax_owner != Some((target_pid, target_wid)) {
+        return Err(
+            "refusing synthetic mouse post: point hit owner mismatch (stale or foreign point)"
+                .to_owned(),
+        );
+    }
+    if cg_hit != Some(target_wid) {
+        return Err(
+            "refusing synthetic mouse post: window-server hit mismatch (stale or foreign point)"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// Fresh point-specific hit proof at one post point (posting threads only,
+/// never a tap callback): the AX hit-test owner plus the window-server hit
+/// window, re-read just before the post. Unreadable legs are `None` (the
+/// verdict refuses, never guesses). (Parked-caller note: see
+/// [`mouse_point_verdict`].)
+#[allow(dead_code)]
+fn fresh_post_point_proof(point: (f64, f64)) -> (Option<(u32, u32)>, Option<u32>) {
+    let ax_owner = crate::ffi::ax_hit_test_owner(point.0, point.1).ok();
+    let cg_hit = crate::ffi::sls_window_at_point(point.0, point.1).ok();
+    (ax_owner, cg_hit)
+}
+
+/// Paired-click safety park (diagnostic-only, terminal evidence): the
+/// shared click boundary would post a down/up pair through the global HID
+/// tap, whose raw post broadcasts independently of `pid` (no verified
+/// per-PID release route exists), so a refused up edge after a posted down
+/// would leave an unmatched button-down system-wide. Until a balanced
+/// per-PID release contract is proven, the paired click refuses BEFORE any
+/// post — refused-before-down posts nothing — and callers surface this
+/// reason instead of posting. Lone single edges stay on
+/// [`post_mouse_edge_guarded`].
+pub const CLICK_PAIR_PARKED_REASON: &str = "parked: paired mouse click refuses before any post (no balanced per-PID release route; a refused up after a posted down would leave an unmatched button-down)";
+
+/// Pure paired-click park verdict over plain data (no OS touch): always
+/// refuses with [`CLICK_PAIR_PARKED_REASON`], naming the exact proved
+/// target the refusal spared. Unit-tested; [`post_mouse_click_guarded`]
+/// consults this before any gate or post.
+pub(crate) fn paired_click_parked(pid: u32, wid: u32) -> String {
+    format!("{CLICK_PAIR_PARKED_REASON} (pid={pid} wid={wid})")
+}
+
+/// Single shared guarded click boundary: HARD PARKED (see
+/// [`CLICK_PAIR_PARKED_REASON`]) — one synthetic left-button down/up pair
+/// at `point` (CG top-left points) would traverse the HID event tap,
 /// untagged (plain synthetic, like tile-catalogue posts — no tap passes or
-/// consumes clicks). Enforces [`boundary_gate`] immediately BEFORE each OS
-/// post (down and up separately), so a stale target (focus moved between
-/// the edges) still refuses the second edge at the boundary.
+/// consumes clicks). The fresh point-specific [`mouse_point_verdict`]
+/// stays enforced on the lone-edge path ([`post_mouse_edge_guarded`]);
+/// this paired entry refuses before any post so no down can strand without
+/// its up.
 ///
 /// Never a Ghostty (or any foreign) event target. The click carries no
 /// key content; only the owned helper's own downstream `mouse_counts`
@@ -221,23 +287,20 @@ pub(crate) fn post_mouse_click_guarded(
 ) -> Result<PostedClick, String> {
     validate_click_point(point)?;
     let (pid, wid) = (target.pid(), target.wid());
-    boundary_gate(pid, wid)?;
-    let down_latency_us = raw_post_mouse_event(pid, true, point)?;
-    // Re-gate before the up edge: focus may have moved on the down edge.
-    boundary_gate(pid, wid)?;
-    let up_latency_us = raw_post_mouse_event(pid, false, point)?;
-    Ok(PostedClick {
-        pid,
-        point,
-        down_latency_us,
-        up_latency_us,
-    })
+    // HARD PARK (unmatched-down safety): a down posted here followed by a
+    // refused up (moved focus, moved window, lost oracle) would return Err
+    // with the button still down system-wide, and no verified per-PID
+    // release route exists to aim the terminal up at exactly this owned
+    // target (raw posts broadcast through the tap ignoring pid). Refuse
+    // BEFORE any post; diagnostic click legs surface this reason.
+    Err(paired_click_parked(pid, wid))
 }
 
-/// Raw HID mouse post (crate-private): only [`post_mouse_click_guarded`]
-/// calls this, after owned proof plus the fresh oracle plus bundle refusal.
-/// Untagged plain synthetic. Returns the dispatch latency around the post.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Raw HID mouse post (crate-private, PARKED with
+/// [`post_mouse_click_guarded`]): kept for the balanced-contract
+/// follow-up; no live caller while the paired click refuses before any
+/// post.
+#[allow(dead_code)]
 fn raw_post_mouse_event(pid: u32, down: bool, point: (f64, f64)) -> Result<u64, String> {
     #[cfg(target_os = "macos")]
     {
@@ -459,6 +522,135 @@ fn raw_post_key_event_to_hid(
     }
 }
 
+/// One synthetic mouse edge for the drag fixture: left-button down, drag
+/// (move with the button held), or up. Exactly the tap's
+/// [`crate::ffi::DragMouseKind`] vocabulary, so the posted edge and the
+/// consumed edge name the same kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseEdge {
+    Down,
+    Drag,
+    Up,
+}
+
+impl MouseEdge {
+    /// Parse the CLI edge name. Exactly three members; anything else (a
+    /// click pair, a scroll, a right button) refuses before any live touch.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "down" => Ok(Self::Down),
+            "drag" => Ok(Self::Drag),
+            "up" => Ok(Self::Up),
+            _ => Err(format!(
+                "unknown mouse edge '{name}' (expected down|drag|up)"
+            )),
+        }
+    }
+}
+
+/// One posted synthetic mouse edge: target, CG point, flags, edge, and the
+/// dispatch latency around the post call itself (never delivery). Delivery
+/// is proven harness-side (tap consume counters, overlay readback, helper
+/// state), never this dispatch receipt.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostedMouseEdge {
+    pub pid: u32,
+    pub point: (f64, f64),
+    pub flags: u64,
+    pub edge: MouseEdge,
+    /// Microseconds around the post call (dispatch cost, not delivery).
+    pub post_latency_us: u64,
+}
+
+/// Single shared guarded mouse-edge boundary: one synthetic left-button
+/// edge at `point` (CG top-left points) with `flags` through the SESSION
+/// event tap, so session taps observe it exactly like a hardware edge. The
+/// drag-preview mouse tap consumes a proven Meta+left down and its held
+/// edges; anything unproven passes through to the owned window, which
+/// ignores non-key input (no click side effects by construction: a lone
+/// edge is down-only, drag-only, or up-only — never a down/up click pair).
+///
+/// Enforces [`boundary_gate`] plus the fresh point-specific
+/// [`mouse_point_verdict`] immediately BEFORE the OS post, so a stale
+/// target (focus moved, or the window moved since the point was captured —
+/// e.g. stale pre-tile coordinates now landing on an unrelated window)
+/// refuses at the boundary WITHOUT posting.
+/// Never a Ghostty (or any foreign) event target.
+///
+/// Parked-caller note: the only production caller (`owned-drag-post`)
+/// refuses before any live touch until a balanced release contract is
+/// proven, so live builds hold this boundary for that follow-up; the
+/// per-edge gate plus point proof are unchanged and unweakened.
+#[allow(dead_code)]
+pub(crate) fn post_mouse_edge_guarded(
+    target: &OwnedPostTarget,
+    point: (f64, f64),
+    flags: u64,
+    edge: MouseEdge,
+) -> Result<PostedMouseEdge, String> {
+    validate_click_point(point)?;
+    let (pid, wid) = (target.pid(), target.wid());
+    boundary_gate(pid, wid)?;
+    // Fresh point-specific hit proof re-read just before the post: the AX
+    // owner plus the window-server hit at this exact point must name this
+    // exact owned target, or refuse WITHOUT posting.
+    let (ax_owner, cg_hit) = fresh_post_point_proof(point);
+    mouse_point_verdict(pid, wid, ax_owner, cg_hit)?;
+    let post_latency_us = raw_post_mouse_event_to_session(pid, point, flags, edge)?;
+    Ok(PostedMouseEdge {
+        pid,
+        point,
+        flags,
+        edge,
+        post_latency_us,
+    })
+}
+
+/// Raw session-stream mouse post (crate-private): session taps observe it,
+/// and the focused owned app receives what the tap passes. Only
+/// [`post_mouse_edge_guarded`] calls this, after owned proof plus the fresh
+/// oracle plus bundle refusal. (Parked-caller note: see
+/// [`post_mouse_edge_guarded`].)
+#[allow(dead_code)]
+fn raw_post_mouse_event_to_session(
+    pid: u32,
+    point: (f64, f64),
+    flags: u64,
+    edge: MouseEdge,
+) -> Result<u64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_core_graphics::{
+            CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton,
+        };
+        let ty = match edge {
+            MouseEdge::Down => CGEventType::LeftMouseDown,
+            MouseEdge::Drag => CGEventType::LeftMouseDragged,
+            MouseEdge::Up => CGEventType::LeftMouseUp,
+        };
+        let event = CGEvent::new_mouse_event(
+            None,
+            ty,
+            objc2_core_foundation::CGPoint {
+                x: point.0,
+                y: point.1,
+            },
+            CGMouseButton::Left,
+        )
+        .ok_or_else(|| "CGEventCreateMouseEvent returned null".to_owned())?;
+        CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+        let start = Instant::now();
+        CGEvent::post(CGEventTapLocation::SessionEventTap, Some(&event));
+        let _ = pid;
+        Ok(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (pid, point, flags, edge);
+        Err("synthetic mouse posts are macOS-only".to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +763,79 @@ mod tests {
         assert_eq!(posted.post_latency_us, 7);
     }
 
+    #[test]
+    fn mouse_edge_space_has_exactly_three_members() {
+        assert_eq!(MouseEdge::parse("down"), Ok(MouseEdge::Down));
+        assert_eq!(MouseEdge::parse("drag"), Ok(MouseEdge::Drag));
+        assert_eq!(MouseEdge::parse("up"), Ok(MouseEdge::Up));
+        // Click pairs, scrolls, and right buttons refuse before any live
+        // touch (the fixture posts lone edges only, never a click pair).
+        for name in ["click", "scroll", "right", "move", "", "DOWN"] {
+            assert!(MouseEdge::parse(name).is_err(), "{name}");
+        }
+    }
+
+    #[test]
+    fn mouse_point_verdict_accepts_only_the_exact_current_target() {
+        // Valid current target: both hit legs name the exact owned window.
+        assert!(mouse_point_verdict(4242, 7, Some((4242, 7)), Some(7)).is_ok());
+        // Wrong window, same process (e.g. another owned helper under a
+        // crossing drag): refuses — cross-helper drag stays parked.
+        assert!(mouse_point_verdict(4242, 7, Some((4242, 9)), Some(7)).is_err());
+        assert!(mouse_point_verdict(4242, 7, Some((4242, 7)), Some(9)).is_err());
+        // Foreign process at the point (e.g. stale pre-tile coordinates now
+        // over Ghostty or any unrelated window): refuses on both legs.
+        assert!(mouse_point_verdict(4242, 7, Some((9999, 3)), Some(7)).is_err());
+        assert!(mouse_point_verdict(4242, 7, Some((4242, 7)), Some(3)).is_err());
+        assert!(mouse_point_verdict(4242, 7, Some((9999, 3)), Some(3)).is_err());
+        // Unreadable legs refuse (never guessed): missing AX, missing
+        // window-server hit, or both.
+        assert!(mouse_point_verdict(4242, 7, None, Some(7)).is_err());
+        assert!(mouse_point_verdict(4242, 7, Some((4242, 7)), None).is_err());
+        assert!(mouse_point_verdict(4242, 7, None, None).is_err());
+    }
+
+    #[test]
+    fn mouse_point_verdict_refuses_stale_pre_tile_point_over_unrelated_window() {
+        // Incident shape: helper tiled to a new frame, but the posted point
+        // is a stale pre-tile coordinate now landing on an unrelated
+        // (protected) window. The expected-focus oracle still names the
+        // helper, yet the point hit names the stranger: refuse WITHOUT
+        // posting.
+        let target_pid = 4242;
+        let target_wid = 7;
+        let stranger_pid = 7777;
+        let stranger_wid = 42;
+        assert!(
+            mouse_point_verdict(
+                target_pid,
+                target_wid,
+                Some((stranger_pid, stranger_wid)),
+                Some(stranger_wid),
+            )
+            .is_err()
+        );
+        // Half-changed legs refuse too (one leg drifted, the other stale).
+        assert!(
+            mouse_point_verdict(
+                target_pid,
+                target_wid,
+                Some((target_pid, target_wid)),
+                Some(stranger_wid),
+            )
+            .is_err()
+        );
+        assert!(
+            mouse_point_verdict(
+                target_pid,
+                target_wid,
+                Some((stranger_pid, stranger_wid)),
+                Some(target_wid),
+            )
+            .is_err()
+        );
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn post_guarded_has_no_public_bypass_off_macos() {
@@ -580,5 +845,23 @@ mod tests {
         assert!(
             OwnedPostTarget::from_spawn_record(4242, "0123456789abcdef0123456789abcdef").is_err()
         );
+    }
+
+    #[test]
+    fn paired_click_park_refuses_before_any_post_for_every_target() {
+        // The paired click is hard-parked: the pure verdict always refuses,
+        // naming the exact proved target the refusal spared, before any
+        // gate read or post. No down is ever posted, so no up can strand.
+        for (pid, wid) in [(4242, 7), (4243, 9), (u16::MAX as u32, 1)] {
+            let reason = paired_click_parked(pid, wid);
+            assert!(reason.contains("parked"), "unexpected: {reason}");
+            assert!(reason.contains("before any post"), "unexpected: {reason}");
+            assert!(
+                reason.contains(&format!("pid={pid} wid={wid}")),
+                "unexpected: {reason}"
+            );
+        }
+        assert!(CLICK_PAIR_PARKED_REASON.contains("parked"));
+        assert!(CLICK_PAIR_PARKED_REASON.contains("unmatched"));
     }
 }

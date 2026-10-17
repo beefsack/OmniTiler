@@ -181,6 +181,24 @@ impl BorderFactsStore {
             .get(&pid)
             .cloned()
     }
+
+    /// Conservative fullscreen fence: true when ANY published record names
+    /// a fullscreen focused window. The drag turn denies on this (a
+    /// fullscreen window on the pointer display denies even when the mover
+    /// is windowed); per-display precision arrives with the signed fixture.
+    #[must_use]
+    pub fn any_fullscreen(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|record| {
+                record
+                    .window
+                    .as_ref()
+                    .is_some_and(|window| window.ax.fullscreen)
+            })
+    }
 }
 
 /// Primary display height in points from converted snapshot geometry: the
@@ -725,6 +743,23 @@ mod tests {
         // Invalidation wakes (fast re-hide without the cadence).
         store.invalidate_pid(4242);
         assert!(store.take_dirty());
+    }
+
+    #[test]
+    fn any_fullscreen_fence_covers_every_record() {
+        let store = BorderFactsStore::new();
+        assert!(!store.any_fullscreen());
+        store.publish_app(record(4242, 7, 1_000));
+        assert!(!store.any_fullscreen());
+        // A fullscreen window on ANY record denies (pointer-display
+        // safety when the mover is windowed).
+        let mut full = record(9999, 3, 1_000);
+        let window = full.window.as_mut().expect("window");
+        window.ax.fullscreen = true;
+        store.publish_app(full);
+        assert!(store.any_fullscreen());
+        store.invalidate_pid(9999);
+        assert!(!store.any_fullscreen());
     }
 
     #[test]

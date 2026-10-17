@@ -67,6 +67,25 @@ pub(crate) enum EngineJob {
     InputAction {
         action: InputSemanticAction,
     },
+    /// Read-only drag preview query for the tile Meta+left route: resolve
+    /// one [`tiler_core::boundary::CoreCommand::DragPreview`] against the
+    /// current Engine and reply with the pure outcome. Stages nothing and
+    /// touches no reconciler state (the Engine resolves on a working
+    /// clone); the main thread feeds the outcome to its session and maps
+    /// it to one carrier intent. Control lane (never silently dropped —
+    /// the main thread always gets its reply or an engine-dead refusal),
+    /// strict FIFO with observations. A dropped/closed inbox or a dead
+    /// engine surfaces as `None` main-side, which cancels the gesture
+    /// stale. The reply carries no new revision: the main thread fences
+    /// revision before querying, and the sticky prior revalidates
+    /// capture-side inside the Engine.
+    DragPreviewQuery {
+        window: String,
+        x: i32,
+        y: i32,
+        hover_prior: Option<tiler_core::session::DragHoverPrior>,
+        reply: mpsc::Sender<crate::drag_drop::PreviewOutcome>,
+    },
     AxResult {
         pid: u32,
         generation: u64,
@@ -397,6 +416,79 @@ fn wire_event(
         session,
         predicate,
     )
+}
+
+/// Read-only drag preview against the current Engine (worker thread only):
+/// home the press-proven subject to its current domain and resolve one
+/// `DragPreview` over that domain's full membership. Hidden-domain
+/// subjects (off-current Space) and unmapped subjects cancel dead — the
+/// main thread already fenced focus/scope/revision before querying, so
+/// these legs are backstops, never the primary gate. Synthetic mode
+/// (no native context) resolves over the skeleton event. Stages nothing.
+fn resolve_drag_preview(
+    engine: &mut Engine,
+    retained: &mut RetainedCore,
+    shared: &Arc<Mutex<Shared>>,
+    window: &str,
+    x: i32,
+    y: i32,
+    hover_prior: Option<tiler_core::session::DragHoverPrior>,
+) -> crate::drag_drop::PreviewOutcome {
+    use crate::drag_drop::PreviewOutcome;
+    let command = CoreCommand::DragPreview {
+        window: window.to_owned(),
+        x,
+        y,
+        hover_prior,
+        source: None,
+    };
+    let native_ctx: Option<Arc<NativeContext>> = lock_shared(shared).native_context.clone();
+    let Some(ctx) = native_ctx else {
+        let event = wire_event(
+            engine,
+            retained,
+            retained.observed_focus.clone(),
+            Vec::new(),
+            command,
+        );
+        return crate::drag_drop::classify_preview_reply(&engine.handle(&event));
+    };
+    let Some(key) = retained.window_domains.get(window).cloned() else {
+        return PreviewOutcome::CancelDead {
+            reason: "unknown-window",
+        };
+    };
+    if !ctx.is_current(&key) {
+        return PreviewOutcome::CancelDead {
+            reason: "hidden-domain",
+        };
+    }
+    let views = native_domain_views(&ctx);
+    let Some(view) = views.iter().find(|v| v.key == key) else {
+        return PreviewOutcome::CancelDead {
+            reason: "hidden-domain",
+        };
+    };
+    let member_apps = domain_member_apps(retained, &key);
+    let revision = retained
+        .domain_revisions
+        .get(&key)
+        .copied()
+        .unwrap_or(retained.last_revision);
+    let predicate = engine.fixed_size_predicate();
+    let session = engine.session(&key);
+    let event = build_native_event(
+        retained,
+        view,
+        &member_apps,
+        retained.observed_focus.clone(),
+        Vec::new(),
+        command,
+        session,
+        predicate,
+        revision,
+    );
+    crate::drag_drop::classify_preview_reply(&engine.handle(&event))
 }
 
 // -- Thread bodies -------------------------------------------------------------
@@ -757,7 +849,7 @@ fn process_job(
             // create, no transfer, no output-send route runs from the
             // product tile (see `workspace_unsupported_reason` for the exact
             // seam). Counted and logged with a static token, never faked.
-            if let Some(outcome) = crate::workspace_input::workspace_unsupported_outcome(action) {
+            if let Some(outcome) = crate::workspace_input::workspace_unsupported_outcome(&action) {
                 lock_shared(shared).diagnostics.input_refused_unsupported += 1;
                 emit(shared, 0, 0, 0, "input", outcome, 0);
                 return;
@@ -790,8 +882,26 @@ fn process_job(
                 emit(shared, 0, 0, 0, "input", "select-enqueued", 0);
                 return;
             }
-            // The subject is observed truth, never planned focus.
-            let focused = retained.observed_focus.clone();
+            // The subject is observed truth, never planned focus — except
+            // the drag drop, whose subject is the press-proven window from
+            // the tile drag session (focus-at-press was fenced main-side
+            // with selected-oracle agreement; the drop never inherits a
+            // drifted focus).
+            let drag_subject: Option<WindowId> = match &action {
+                InputSemanticAction::DragDrop { window, .. } => Some(WindowId(window.clone())),
+                _ => None,
+            };
+            // Press topology revision for drag drops (stale pid_wid reuse
+            // never mutates; validated against the worker's current
+            // revision plus live membership in the native branch below).
+            let drag_press_revision: Option<u64> = match &action {
+                InputSemanticAction::DragDrop { press_revision, .. } => Some(*press_revision),
+                _ => None,
+            };
+            let focused = match drag_subject {
+                Some(subject) => Some(subject),
+                None => retained.observed_focus.clone(),
+            };
             let Some(window) = focused else {
                 lock_shared(shared).diagnostics.input_refused_no_focus += 1;
                 emit(shared, 0, 0, 0, "input", "refused-no-focus", 0);
@@ -854,6 +964,26 @@ fn process_job(
                     },
                     "toggle-orientation",
                 ),
+                // Meta+left drop: the final pointer snapshot plus the
+                // carried sticky prior over the subject's homed domain
+                // (same-domain only — no source pair: the worker has no
+                // target-domain rows, so cross-output stays explicitly
+                // unsupported and resolves to `cross-domain-mismatch`
+                // snap-back). Commits through the shared acknowledge path
+                // below, so the current Engine plans and the native
+                // backends apply the returned frames.
+                InputSemanticAction::DragDrop {
+                    x, y, hover_prior, ..
+                } => (
+                    CoreCommand::DragDrop {
+                        window: window.0.clone(),
+                        x,
+                        y,
+                        hover_prior: hover_prior.map(|prior| *prior),
+                        source: None,
+                    },
+                    "drag-drop",
+                ),
                 // Unarmed workspace actions refuse in the guard above and
                 // armed selects enqueue there too, so these arms are
                 // unreachable here (adding an action variant fails the
@@ -895,6 +1025,28 @@ fn process_job(
                     emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
                     return;
                 };
+                // Drag-drop staleness: the press revision must still equal
+                // the worker's current topology revision (a mid-gesture
+                // resnapshot drifted the pid_wid), and the subject must
+                // still ride the last observation's live membership (a
+                // missing/closed target refuses instead of mutating).
+                if let Some(press_revision) = drag_press_revision {
+                    if press_revision != retained.native_revision {
+                        lock_shared(shared).diagnostics.input_refused_no_focus += 1;
+                        emit(shared, 0, 0, 0, "input", "refused-stale-press", 0);
+                        return;
+                    }
+                    let member_apps = domain_member_apps(retained, &key);
+                    let live = member_apps
+                        .iter()
+                        .flat_map(|(pid, ws)| ws.iter().map(|w| window_id(*pid, w.wid)))
+                        .any(|id| id == window.0);
+                    if !live {
+                        lock_shared(shared).diagnostics.input_refused_no_focus += 1;
+                        emit(shared, 0, 0, 0, "input", "refused-closed-target", 0);
+                        return;
+                    }
+                }
                 let member_apps = domain_member_apps(retained, &key);
                 let revision = retained
                     .domain_revisions
@@ -950,6 +1102,25 @@ fn process_job(
                 0,
                 0,
             );
+        }
+        EngineJob::DragPreviewQuery {
+            window,
+            x,
+            y,
+            hover_prior,
+            reply,
+        } => {
+            // Read-only preview against the current Engine: home the
+            // press-proven subject to its domain, fence hidden domains
+            // (off-current Space never previews), and resolve on the
+            // Engine's working clone (no staging, no reconciler writes).
+            // Every refusal maps to a pure outcome — never a dropped
+            // reply — so the main thread always unblocks by its timeout.
+            let outcome =
+                resolve_drag_preview(engine, retained, shared, &window, x, y, hover_prior);
+            lock_shared(shared).diagnostics.input_forwarded += 1;
+            emit(shared, 0, 0, 0, "input", "drag-preview", 0);
+            let _ = reply.send(outcome);
         }
         EngineJob::AxResult {
             pid,

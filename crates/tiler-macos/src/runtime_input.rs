@@ -72,7 +72,12 @@ pub(crate) fn input_main_bound(
     };
     let tunings: Vec<(TapTuning, InputSemanticAction)> = bindings
         .iter()
-        .map(|binding| (tuning_for_binding(modifier, binding), binding.action))
+        .map(|binding| {
+            (
+                tuning_for_binding(modifier, binding),
+                binding.action.clone(),
+            )
+        })
         .collect();
     // Orientation toggle hold: one toggle per discrete press (Windows
     // R-LAY-01 parity — held auto-repeat downs consume without dispatch,
@@ -128,7 +133,7 @@ pub(crate) fn input_main_bound(
             )
             .matched
             {
-                action = Some(*candidate);
+                action = Some(candidate.clone());
                 break;
             }
         }

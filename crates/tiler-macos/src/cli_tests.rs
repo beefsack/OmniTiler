@@ -416,6 +416,34 @@ fn owned_controls_parse_with_exact_identity() {
             "--chord",
             "focus-h",
         ],
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--edge",
+            "down",
+            "--x",
+            "300",
+            "--y",
+            "250",
+        ],
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--edge",
+            "escape",
+            "--x",
+            "300",
+            "--y",
+            "250",
+        ],
+        vec!["owned-cursor"],
+        vec!["owned-cursor", "--x", "300", "--y", "250"],
     ] {
         let r = parse_args(&argv(&args)).unwrap();
         assert!(r.may_mutate, "{args:?} is write-intent");
@@ -460,6 +488,97 @@ fn owned_controls_parse_with_exact_identity() {
         ]))
         .is_err()
     );
+    // Only lone drag edges parse; click pairs and unknown edges refuse,
+    // and the point plus identity are mandatory (escape still names the
+    // point for the oracle join).
+    for args in [
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--edge",
+            "click",
+            "--x",
+            "300",
+            "--y",
+            "250",
+        ],
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--edge",
+            "down",
+            "--y",
+            "250",
+        ],
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+            "--edge",
+            "down",
+            "--x",
+            "nan-point",
+            "--y",
+            "250",
+        ],
+        vec![
+            "owned-drag-post",
+            "--pid",
+            "9",
+            "--nonce",
+            "0123456789abcdef",
+        ],
+        vec!["owned-cursor", "--x", "300"],
+        vec!["owned-cursor", "--x", "300", "--y", "bogus"],
+    ] {
+        assert!(parse_args(&argv(&args)).is_err(), "{args:?}");
+    }
+    // The --plain arm drops the Meta chord (default holds Control).
+    let r = parse_args(&argv(&[
+        "owned-drag-post",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--edge",
+        "up",
+        "--x",
+        "300",
+        "--y",
+        "250",
+        "--plain",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::OwnedDragPost { control: false, .. }
+    ));
+    let r = parse_args(&argv(&[
+        "owned-drag-post",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--edge",
+        "up",
+        "--x",
+        "300",
+        "--y",
+        "250",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::OwnedDragPost { control: true, .. }
+    ));
     assert!(
         parse_args(&argv(&[
             "owned-post",
@@ -486,6 +605,35 @@ fn probe_spawn_close_window_is_opt_in_ms() {
         }
     ));
     assert!(parse_args(&argv(&["probe-spawn", "--close-window-ms"])).is_err());
+}
+
+#[test]
+fn probe_spawn_ls_carries_helper_argv_without_regular_policy_choice() {
+    // Same owned-helper argv as probe-spawn, minus --regular-policy (which
+    // is inherent to Helper.app and refuses explicitly here).
+    let r = parse_args(&argv(&[
+        "probe-spawn-ls",
+        "--seconds",
+        "90",
+        "--fixed-size",
+        "--close-window-ms",
+        "9000",
+        "--space-join",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::ProbeSpawnLs {
+            seconds: 90,
+            fixed_size: true,
+            close_window_ms: 9000,
+            space_join: true,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["probe-spawn-ls", "--regular-policy"])).is_err());
+    assert!(parse_args(&argv(&["probe-spawn-ls", "--bogus"])).is_err());
 }
 
 #[test]

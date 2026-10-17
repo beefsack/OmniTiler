@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tiler_core::directional::{OutputId, WorkspaceId};
 use tiler_core::geometry::Rect;
-use tiler_core::session::DomainKey;
+use tiler_core::session::{DomainKey, DragHoverPrior};
 use tiler_core::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use crate::config::ProbeModifier;
@@ -475,7 +475,7 @@ pub struct FocusCommand {
 
 /// Typed semantic input action. Produced by the input thread from exact
 /// chord matches on key down only; the input thread never touches the core.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputSemanticAction {
     FocusStep {
         direction: InputDirection,
@@ -555,6 +555,27 @@ pub enum InputSemanticAction {
     WorkspaceOutput {
         direction: InputDirection,
         follow: bool,
+    },
+    /// Meta+left drag drop: commit the press-proven `window` at the final
+    /// pointer snapshot (`x`, `y`, CG top-left points) with the carried
+    /// sticky hover prior. `press_revision` is the topology revision proven
+    /// at press time; the worker refuses when its current revision drifted
+    /// (stale pid_wid reuse never mutates) and when the window left live
+    /// membership. The worker homes the subject to its current domain and
+    /// dispatches [`tiler_core::boundary::CoreCommand::DragDrop`]
+    /// over that domain's full membership — the same converge path as the
+    /// keyboard arms, so the current Engine commits (never an independent
+    /// one) and the returned plan geometry flows to the native backends
+    /// through the existing desired-frame application. Same-domain only:
+    /// no source pair rides along (the worker has no target-domain rows),
+    /// so an outside-domain pointer resolves to `cross-domain-mismatch`
+    /// and snaps back. No additive core API.
+    DragDrop {
+        window: String,
+        x: i32,
+        y: i32,
+        hover_prior: Option<Box<DragHoverPrior>>,
+        press_revision: u64,
     },
 }
 
@@ -669,7 +690,7 @@ pub fn parse_window_id(value: &str) -> Option<(u32, u32)> {
 /// Numbered workspace chords carry no auxiliary arm (plain Meta digits and
 /// Meta+Shift digits); they are disjoint from the basic set because the
 /// basic key set holds no digits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileBinding {
     pub key_code: u32,
     pub shift: bool,
@@ -686,9 +707,9 @@ impl TileBinding {
                 self.key_code
             ));
         }
-        let index = match self.action {
+        let index = match &self.action {
             InputSemanticAction::WorkspaceSelect { index }
-            | InputSemanticAction::WorkspaceSend { index, .. } => Some(index),
+            | InputSemanticAction::WorkspaceSend { index, .. } => Some(*index),
             _ => None,
         };
         if index.is_some_and(|index| index > 9) {

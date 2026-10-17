@@ -170,6 +170,9 @@ pub struct TileRequest {
     /// Startup border configuration (master switch plus ring style).
     /// Startup-only: a running session never re-reads it.
     pub border: ActiveBorderOptions,
+    /// Startup drag-preview configuration (master switch plus fill).
+    /// Startup-only: a running session never re-reads it.
+    pub drag: crate::drag_drop::DragOptions,
 }
 
 impl TileRequest {
@@ -307,6 +310,18 @@ pub struct TileOutcome {
     /// recoveries are first-class terminal evidence (cumulative across
     /// fresh-guard recreations).
     pub tap_report: Option<crate::ffi::TapSourceReport>,
+    /// Drag-preview arm terminal state (`None` = the arm ran; `Some` =
+    /// parked with its reason: disabled switch, off route, spawn denial,
+    /// or tap-thread refusal).
+    pub drag_parked: Option<String>,
+    /// Latest mouse-tap counters for the drag arm (`None` when parked).
+    pub drag_report: Option<crate::ffi::TapSourceReport>,
+    /// Engine preview queries resolved on the drag arm.
+    pub drag_previews: u64,
+    /// Engine drop submits accepted on the drag arm.
+    pub drag_drops: u64,
+    /// Drag gestures cancelled dead (Escape, stale fence, failed submit).
+    pub drag_cancels: u64,
     pub shutdown_outcome: String,
     pub shutdown_joined: usize,
     pub shutdown_retained: usize,
@@ -366,6 +381,11 @@ impl TileOutcome {
             gated_ms: 0,
             input_refusal: Some(reason),
             tap_report: None,
+            drag_parked: Some("not-started".to_owned()),
+            drag_report: None,
+            drag_previews: 0,
+            drag_drops: 0,
+            drag_cancels: 0,
             shutdown_outcome: "not-started".to_owned(),
             shutdown_joined: 0,
             shutdown_retained: 0,
@@ -883,6 +903,32 @@ mod native {
         let border_store = Arc::new(crate::border_runtime::BorderFactsStore::new());
         let mut border_controller = crate::border_runtime::BorderController::new();
         let mut border_carrier = BorderCarrierGuard::new(mtm);
+        // Drag-preview Escape watch (tap route with the startup switch
+        // on only): the keyboard tap forwards otherwise-unmatched Escape
+        // edges unsuppressed on this channel while the arm lives, so the
+        // client still receives the key and the drag session observes the
+        // cancel edge. The coalesced pending flag survives a full channel
+        // (the drag turn drains it alongside the channel); the dropped
+        // counter evidences any channel loss. Owned here (created before
+        // the factory so the builder can wire it); drained by the drag
+        // turn below.
+        let drag_escape_armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drag_escape_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let drag_escape_dropped = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        // Drag-preview Escape wiring exists only while the live acceptance
+        // gate is open. While parked (`live-acceptance-pending`) no drag
+        // Escape wiring is created at all, and the arm below parks without
+        // installing any mouse tap — regardless of drag_preview
+        // enabled/color settings.
+        let (drag_escape_tx, drag_escape_rx) = if matches!(request.input, TileInput::Tap)
+            && request.drag.enabled
+            && crate::drag_session::DRAG_LIVE_ACCEPTED
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<crate::ffi::TapHit>(16);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         // Exactly one input route arms per run; no auto fallback. Scoped
         // sources start ineligible until attested scope/foreground/Space/
         // showstate facts (no global interception while out-of-scope).
@@ -894,8 +940,18 @@ mod native {
             TileInput::Tap => InputGuard::Tap(Arc::new(
                 TapTileFactory::new(request.modifier, catalogue.clone())
                     .map(|f| {
-                        f.with_scope(selection.clone())
-                            .with_facts_store(Arc::clone(&facts_store))
+                        let wired = f
+                            .with_scope(selection.clone())
+                            .with_facts_store(Arc::clone(&facts_store));
+                        match &drag_escape_tx {
+                            Some(tx) => wired.with_drag_escape_watch(
+                                Arc::clone(&drag_escape_armed),
+                                Arc::clone(&drag_escape_pending),
+                                tx.clone(),
+                                Arc::clone(&drag_escape_dropped),
+                            ),
+                            None => wired,
+                        }
                     })
                     .map_err(|reason| (2, reason))?,
             )),
@@ -1037,6 +1093,35 @@ mod native {
         // bounded fallback polling below covers a missed event).
         let (_guard, display_flag) = crate::ffi::install_display_change_guard()
             .map_err(|reason| (1, format!("display guard refused: {reason}")))?;
+        // Meta+left drag-preview arm (tap route with the startup switch
+        // on only): session plus filled carrier plus the mouse-tap owner
+        // thread. A spawn denial parks the arm with its reason (keyboard
+        // tiling continues); the tap thread's own creation denial lands
+        // in its refusal slot and parks at shutdown with the same shape.
+        let mut drag_parked = crate::drag_session::DragRunState::parked_reason(
+            request.drag.enabled,
+            matches!(request.input, TileInput::Tap),
+        );
+        let mut drag_state: Option<crate::drag_session::DragRunState> =
+            match (drag_parked.is_none(), drag_escape_rx) {
+                (true, Some(escape_rx)) => {
+                    match crate::drag_session::DragRunState::arm(
+                        request.drag,
+                        request.modifier,
+                        mtm,
+                        &drag_escape_armed,
+                        &drag_escape_pending,
+                        escape_rx,
+                    ) {
+                        Ok(state) => Some(state),
+                        Err(reason) => {
+                            drag_parked = Some(reason);
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            };
         let mut poll = TopologyPoll::new();
         let mut tracked: BTreeMap<u32, TrackedApp> = BTreeMap::new();
         // Durable per-runtime product select history: one two-view memory
@@ -1238,6 +1323,11 @@ mod native {
                         crate::ffi::border_system_accent(),
                         false,
                     );
+                    // A locked session never drags either: cancel stale
+                    // and hide the preview carrier (skips the turn below).
+                    if let Some(drag) = drag_state.as_mut() {
+                        crate::drag_session::park_drag_for_lock(drag);
+                    }
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
@@ -1263,6 +1353,10 @@ mod native {
                         crate::ffi::border_system_accent(),
                         false,
                     );
+                    // Same drag park (this branch skips the turn below).
+                    if let Some(drag) = drag_state.as_mut() {
+                        crate::drag_session::park_drag_for_lock(drag);
+                    }
                     for pid in tracked.keys().copied().collect::<Vec<_>>() {
                         handle.terminate_app(pid);
                         facts_store.invalidate_pid(pid);
@@ -1353,11 +1447,11 @@ mod native {
                         .map(|(_, bundle)| crate::focus::is_loginwindow_bundle(&bundle))
                         .unwrap_or(true),
                 };
+                let id = crate::workspace_input::workspace_action_id(&action)
+                    .unwrap_or("unknown-select");
                 let outcome =
                     crate::workspace_select::drain_live_claimed(&mut select_state, action, &gates);
                 handle.release_select_after_drain();
-                let id = crate::workspace_input::workspace_action_id(&action)
-                    .unwrap_or("unknown-select");
                 match outcome {
                     Ok((effect, reaped)) => eprintln!(
                         "tiler-macos dev select action={} changed={} caffeinate_reaped={} complete=true",
@@ -1435,6 +1529,18 @@ mod native {
                 last_snapshot.as_ref(),
                 &handle,
             );
+            // Meta+left drag preview (armed routes only): drain tap
+            // batches, fence, one Engine contact, filled carrier.
+            if let Some(drag) = drag_state.as_mut() {
+                crate::drag_session::drag_turn_once(
+                    &selection,
+                    &border_store,
+                    &facts_store,
+                    drag,
+                    last_snapshot.as_ref(),
+                    &handle,
+                );
+            }
         }
 
         // Worker readiness at teardown (main thread never waited on it).
@@ -1454,6 +1560,22 @@ mod native {
                 Some(factory.latest_report()),
             ),
             InputGuard::Off(_) => (0, early_refusal.clone(), None),
+        };
+        // Drag-preview teardown: disarm the Escape watch, stop exactly
+        // the owned tap thread (own flag plus join), and publish its
+        // final report. A tap-thread refusal parks the arm with its
+        // reason (terminal evidence, never a silent loss). The carrier
+        // destroys through its guard `Drop` at scope end.
+        drag_escape_armed.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (drag_report, drag_previews, drag_drops, drag_cancels) = match drag_state.as_mut() {
+            Some(drag) => {
+                let (report, refusal) = drag.stop_owner();
+                if let Some(reason) = refusal {
+                    drag_parked = Some(reason);
+                }
+                (Some(report), drag.previews, drag.drops, drag.cancels)
+            }
+            None => (None, 0, 0, 0),
         };
         // Bounded shutdown independent of blocked AX: only proven exits
         // join; the rest retain for reap. Windows stay in place — nothing
@@ -1509,6 +1631,11 @@ mod native {
             gated_ms,
             input_refusal,
             tap_report,
+            drag_parked,
+            drag_report,
+            drag_previews,
+            drag_drops,
+            drag_cancels,
             shutdown_outcome: format!("{:?}", report.outcome),
             shutdown_joined: report.joined,
             shutdown_retained: report.retained,
@@ -1658,6 +1785,7 @@ mod tests {
             log: TileLogLevel::Normal,
             run_dir: None,
             border: ActiveBorderOptions::default(),
+            drag: crate::drag_drop::DragOptions::default(),
         }
     }
 
@@ -1674,6 +1802,7 @@ mod tests {
             log: TileLogLevel::Normal,
             run_dir: None,
             border: ActiveBorderOptions::default(),
+            drag: crate::drag_drop::DragOptions::default(),
         }
     }
 

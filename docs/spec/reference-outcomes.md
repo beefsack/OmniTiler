@@ -5428,6 +5428,22 @@ minimum-size stays a supplemental file (not nested in resize).
 | Column mechanics | [column-mechanics.md](reference-outcomes/column-mechanics.md) | R-COL-01..10 (10) | none (landed) |
 | Minimum-size (supplemental) | [minimum-size.md](reference-outcomes/minimum-size.md) | R-MIN-01..04 (4) | R-MIN-04 pure geometry exhaustion (OPEN, B6 unchanged, nothing selected); R-MIN-01..03 piece B4; R-MNZ icon-minimize is separate |
 
+## macOS drag/drop discriminators
+
+These qualify the existing R-DRAG rows, not a new reference behavior selection.
+Native/physical outcomes remain TBD; offline controller tests are not host proof.
+
+| Given | Minimal action sequence | Discriminator | macOS outcome |
+|---|---|---|---|
+| Two owned tiled windows A/B; frames re-read after tiling | Meta+left press on a freshly joined A point; move toward two different B edges; release | Existing Meta mapping, changing insertion-slot preview, committed Engine topology and applied frames agree | TBD; product arm is hard parked, no successful live drag/drop leg |
+| The same A/B baseline, reset independently | Native titlebar press on A; move to the same B edge; release | Native move source has the same core result without confusing resize/programmatic movement | TBD; affirmative native-move classifier not selected |
+| The same baseline and an active proven drag | Escape; release mouse; click the owned receipt window | No layout mutation, overlay gone, balanced release and subsequent input receipt | TBD; synthetic drag/paired-click routes refuse before posting pending a balanced exact-owned release contract |
+| Two owned windows on different outputs/workspaces | Drag A toward B, then independently repeat over native fullscreen | Cross-domain targeting versus refusal; no fullscreen overlay/input interference | TBD; cross-output integration and product fullscreen proof absent |
+| An owned helper moved by tiling; old pointer coordinates no longer hit it | Attempt a guarded synthetic edge at the old point | Refuse without posting to the unrelated point owner | Pure guard regression passes; live correction not repeated; earlier stale-coordinate attempt may have reached the protected terminal |
+
+See [the incomplete change](../changes/macos-drag-drop-overlays.md) for the live
+failures, restoration limits and disabled diagnostic surfaces.
+
 ## Scrolling column notation
 
 Additive; the existing H/V/S notation is unchanged.

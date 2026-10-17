@@ -16,6 +16,14 @@
 //! - `owned-fullscreen` is the fixture-only native-fullscreen shell over
 //!   [`crate::ax::set_fullscreen_owned`] (bounded helper enter/exit
 //!   preflight; never a shipped product feature).
+//! - [`run_owned_drag_post`]: HARD PARKED synthetic drag-fixture edge
+//!   (left-button down/drag/up with the Meta chord, or Escape): refuses
+//!   before any live touch until a balanced per-PID release contract is
+//!   proven (a lone down or paired Escape could otherwise leave unmatched
+//!   input). Cursor readback/warp stays available (no button state).
+//! - [`run_owned_cursor`]: read-only cursor readback, or a bounded warp to
+//!   an explicit point with before/after readback (pointer preimage for the
+//!   drag leg; restoration is verified by the leg driver re-reading).
 //!
 //! Every command authenticates the spawn record first (pid/nonce, expected
 //! helper, live bundle-or-exe plus the CURRENT live window nonce) and
@@ -353,6 +361,128 @@ pub fn run_owned_post(
     serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
 }
 
+/// Escape keycode for the drag-cancel fixture edge (the keyboard tap
+/// forwards it unsuppressed while the drag route holds; the main thread
+/// cancels through it, never a mutation).
+pub const DRAG_CANCEL_ESCAPE_KEYCODE: u16 = 53;
+
+/// Hard park for the synthetic drag-fixture post (diagnostic-only,
+/// terminal evidence): a lone `down` edge posts a real button-down through
+/// the session tap and the Escape edge posts down/up in one call, but no
+/// verified per-PID release route exists (raw posts broadcast through the
+/// tap independently of `pid`), so a refused or missing up would leave
+/// unmatched input system-wide. Until a balanced release contract is
+/// proven, every edge — mouse `down`/`drag`/`up` and `escape` alike —
+/// refuses BEFORE any live touch (refused-before-down posts nothing).
+/// Cursor readback/warp stays available (it moves no button state).
+pub const OWNED_DRAG_POST_PARKED_REASON: &str = "parked: owned-drag-post refuses before any live touch (no balanced per-PID release route; a lone down or paired Escape could leave unmatched input)";
+
+/// One synthetic drag-fixture edge through the native session stream
+/// (truthfully synthetic, oracle-gated per edge): HARD PARKED (see
+/// [`OWNED_DRAG_POST_PARKED_REASON`]) — a Meta+left mouse edge at an
+/// explicit point, or the Escape cancel chord, would authenticate the spawn
+/// record plus the fresh oracle plus the Ghostty/protected refusal
+/// immediately before the post. The park refuses first so no edge can post
+/// a down its up cannot balance. Diagnostic-only fixture path; the product
+/// drag arm stays parked (`live-acceptance-pending`).
+pub fn run_owned_drag_post(
+    pid: u32,
+    nonce: &str,
+    edge_name: &str,
+    x: f64,
+    y: f64,
+    control_held: bool,
+) -> Result<String, (i32, String)> {
+    let err_json = |stage: &str, error: String| -> (i32, String) {
+        (
+            1,
+            serde_json::json!({"stage": stage, "error": error}).to_string(),
+        )
+    };
+    // Pure usage validation first (no live touch): unknown edges refuse
+    // with code 2, bad points refuse before any post.
+    let escape = edge_name == "escape";
+    if !escape {
+        crate::synth::MouseEdge::parse(edge_name).map_err(|e| (2, e))?;
+    }
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+        return Err(err_json(
+            "point",
+            "refusing synthetic drag post at a non-finite/negative point".to_owned(),
+        ));
+    }
+    // HARD PARK (unmatched-input safety): every edge below would post a
+    // real button/key down through the session tap with no verified
+    // per-PID release route (raw posts broadcast independently of pid), so
+    // a refused or missing up would leave unmatched input system-wide.
+    // Refuse BEFORE any live touch (no SLPS/AX/session read, no post);
+    // refused-before-down posts nothing. The interned parameters stay
+    // named in the reason as metadata only (never authorization inputs).
+    let _ = (pid, nonce, control_held);
+    Err(err_json(
+        "parked",
+        format!(
+            "{} (edge={edge_name} point=[{x},{y}])",
+            OWNED_DRAG_POST_PARKED_REASON
+        ),
+    ))
+}
+
+/// Read-only cursor readback, or a bounded warp to an explicit point with
+/// before/after readback. The warp moves only the pointer (no click, no
+/// window change, no tap chord); the leg driver records the preimage and
+/// restores it afterwards, verifying the restore with a second read. Refuses
+/// on lock/Secure Input; never touches Ghostty or any window.
+pub fn run_owned_cursor(point: Option<(f64, f64)>) -> Result<String, (i32, String)> {
+    let err_json = |stage: &str, error: String| -> (i32, String) {
+        (
+            1,
+            serde_json::json!({"stage": stage, "error": error}).to_string(),
+        )
+    };
+    if let Some((x, y)) = point {
+        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+            return Err(err_json(
+                "point",
+                "refusing cursor warp to a non-finite/negative point".to_owned(),
+            ));
+        }
+        if crate::ffi::secure_input_known() == Some(true) {
+            return Err(err_json(
+                "secure-input",
+                "Secure Input active; refusing warp".to_owned(),
+            ));
+        }
+        match crate::ffi::session_state().lock {
+            crate::ffi::SessionLock::Unlocked => {}
+            crate::ffi::SessionLock::Locked => {
+                return Err(err_json(
+                    "session",
+                    "session locked; refusing warp".to_owned(),
+                ));
+            }
+            crate::ffi::SessionLock::Unknown => {
+                return Err(err_json(
+                    "session",
+                    "session unknown; refusing warp".to_owned(),
+                ));
+            }
+        }
+    }
+    let before = crate::synth::cursor_position();
+    if let Some((x, y)) = point {
+        crate::ffi::warp_cursor_position(x, y).map_err(|e| err_json("warp", e))?;
+    }
+    let after = crate::synth::cursor_position();
+    let report = serde_json::json!({
+        "outcome": if point.is_some() { "warped" } else { "read" },
+        "before": before.map(|(x, y)| [x, y]),
+        "after": after.map(|(x, y)| [x, y]),
+        "synthetic": true,
+    });
+    serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +572,62 @@ mod tests {
             assert_eq!(err.0, 2, "want={want}");
             assert!(err.1.contains("nonzero"), "unexpected: {}", err.1);
         }
+    }
+
+    #[test]
+    fn owned_drag_post_parks_before_any_post_for_every_edge() {
+        // Hard park: every callable edge — mouse down/drag/up and Escape —
+        // refuses at the parked stage BEFORE any live touch (no SLPS/AX/
+        // session read, no ownership proof, no post), so no down can ever
+        // strand without its up. The parked stage (not slps/ax/session)
+        // proves the refusal precedes all live legs deterministically.
+        for edge in ["down", "drag", "up", "escape"] {
+            for control in [true, false] {
+                let err = super::run_owned_drag_post(
+                    4242,
+                    "0123456789abcdef0123456789abcdef",
+                    edge,
+                    300.0,
+                    250.0,
+                    control,
+                )
+                .unwrap_err();
+                assert_eq!(err.0, 1, "edge={edge}");
+                assert!(
+                    err.1.contains("\"stage\":\"parked\""),
+                    "edge={edge}: {}",
+                    err.1
+                );
+                assert!(err.1.contains("parked"), "edge={edge}: {}", err.1);
+                assert!(err.1.contains("unmatched"), "edge={edge}: {}", err.1);
+            }
+        }
+        assert!(super::OWNED_DRAG_POST_PARKED_REASON.contains("parked"));
+    }
+
+    #[test]
+    fn owned_drag_post_pure_usage_still_refuses_before_park() {
+        // Unknown edges keep usage code 2 and bad points keep the point
+        // refusal — both pure (no live touch) and both before any post.
+        let err = super::run_owned_drag_post(
+            4242,
+            "0123456789abcdef0123456789abcdef",
+            "click",
+            300.0,
+            250.0,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 2);
+        let err = super::run_owned_drag_post(
+            4242,
+            "0123456789abcdef0123456789abcdef",
+            "down",
+            -1.0,
+            250.0,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.1.contains("point"), "unexpected: {}", err.1);
     }
 }

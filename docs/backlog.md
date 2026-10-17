@@ -3707,7 +3707,16 @@ decisions of 2026-09-24 are under
         **Border follow-up:** below-target ordering and Windows band parity remain
         unproven; keep current above-target rendering.
         [Evidence and explicit differences](changes/macos-group-underlay.md).
-       Drag/drop overlays remain subsequent work.
+       **Drag/drop overlays parked 2026-10-17:** shared-Engine controller,
+       insertion preview/drop plumbing, filled above-target carrier and regression
+       foundation delivered offline only. Product mouse tap is hard-disabled;
+       preview configuration cannot enable it. Live attempts did not establish
+       drag start, target change, drop, cancel or fullscreen suppression. Repair
+       the owned balanced-release fixture contract and post-tiling point proof
+       before another bounded acceptance attempt. Native titlebar classification
+       and cross-output integration remain parked. Existing border product is
+       unchanged; synthetic border/underlay click diagnostics now refuse before
+       posting. [Evidence and explicit differences](changes/macos-drag-drop-overlays.md).
   4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by
      AeroSpace's all-workspaces-visible numbered mode; explore showing app icons
      per workspace within the limited space.

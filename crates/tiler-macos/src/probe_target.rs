@@ -797,6 +797,170 @@ mod tests {
         drop(rx);
         assert!(tx.try_send("late".to_owned()).is_err());
     }
+
+    #[test]
+    fn ls_helper_app_resolves_beside_the_probe_app_only() {
+        use std::path::Path;
+        // Inside the probe bundle layout: sibling helper `.app` dir.
+        let exe = Path::new("/tmp/target/macos/OmniTilerProbe.app/Contents/MacOS/tiler-macos");
+        assert_eq!(
+            helper_app_for_exe(exe),
+            Some(Path::new("/tmp/target/macos/OmniTilerProbeHelper.app").to_owned())
+        );
+        // Outside a bundle layout (plain cargo runs): no helper app.
+        assert_eq!(
+            helper_app_for_exe(Path::new("/tmp/target/debug/tiler-macos")),
+            None
+        );
+        assert_eq!(
+            helper_app_for_exe(Path::new("/tmp/target/macos/tiler-macos")),
+            None
+        );
+        // Wrong leaf names never resolve (fail closed, never guessed).
+        assert_eq!(
+            helper_app_for_exe(Path::new("/tmp/X.app/Contents/Resources/tiler-macos")),
+            None
+        );
+    }
+
+    #[test]
+    fn ls_open_argv_mirrors_the_proven_launch_route() {
+        use std::path::Path;
+        let argv = ls_open_argv(
+            Path::new("/tmp/OmniTilerProbeHelper.app"),
+            Path::new("/tmp/ls-nonce.out"),
+            Path::new("/tmp/ls-nonce.err"),
+            &[
+                "--nonce".to_owned(),
+                "abc".to_owned(),
+                "--seconds".to_owned(),
+                "40".to_owned(),
+            ],
+        );
+        // Fresh LS instance, redirected outputs, bundle path, `--args`, then
+        // the exact helper argv (same shape as scripts/macos-launch.sh).
+        assert_eq!(
+            argv,
+            vec![
+                "-n",
+                "-o",
+                "/tmp/ls-nonce.out",
+                "--stderr",
+                "/tmp/ls-nonce.err",
+                "/tmp/OmniTilerProbeHelper.app",
+                "--args",
+                "--nonce",
+                "abc",
+                "--seconds",
+                "40",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    fn ls_output(nonce: &str, pid: u64, bundle: &str, ready: bool) -> String {
+        let mut out = format!(
+            "{}\n",
+            serde_json::json!({"bundle": bundle, "pid": pid, "nonce": nonce})
+        );
+        // Periodic snapshot lines carry none of the handshake keys.
+        out.push_str("{\"key_counts\":{},\"mouse_counts\":{\"left_down\":0,\"left_up\":0}}\n");
+        if ready {
+            out.push_str("{\"ready\":true}\n");
+        }
+        out
+    }
+
+    #[test]
+    fn ls_handshake_parses_identity_plus_ready_around_snapshots() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let handshake = parse_ls_handshake(
+            &ls_output(nonce, 4242, crate::HELPER_BUNDLE_ID, true),
+            nonce,
+        )
+        .expect("handshake parses");
+        assert_eq!(handshake.bundle, crate::HELPER_BUNDLE_ID);
+        assert_eq!(handshake.pid, 4242);
+        assert_eq!(handshake.nonce, nonce);
+    }
+
+    #[test]
+    fn ls_handshake_refuses_foreign_bundle_wrong_nonce_and_missing_ready() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        // Probe-bundle identity never passes the LS path (must be Helper.app).
+        assert!(
+            parse_ls_handshake(&ls_output(nonce, 4242, crate::BUNDLE_ID, true), nonce).is_err()
+        );
+        // Wrong nonce, reserved/own PID, and missing ready each refuse.
+        assert!(
+            parse_ls_handshake(
+                &ls_output(
+                    "ffffffffffffffffffffffffffffffff",
+                    4242,
+                    crate::HELPER_BUNDLE_ID,
+                    true
+                ),
+                nonce
+            )
+            .is_err()
+        );
+        assert!(
+            parse_ls_handshake(&ls_output(nonce, 1, crate::HELPER_BUNDLE_ID, true), nonce).is_err()
+        );
+        assert!(
+            parse_ls_handshake(
+                &ls_output(nonce, 4242, crate::HELPER_BUNDLE_ID, false),
+                nonce
+            )
+            .is_err()
+        );
+        // No identity at all (snapshots only) refuses.
+        assert!(parse_ls_handshake("{\"ready\":true}\n", nonce).is_err());
+        assert!(parse_ls_handshake("", nonce).is_err());
+    }
+
+    #[test]
+    fn ls_handshake_identity_binds_under_helper_scope_with_launch_date() {
+        use crate::dev_selection::TileScope;
+        use crate::native_tile_backend::validate_identity_triple;
+        use crate::scope::AppScope;
+        // The offline shape of the repaired live route: the LS handshake
+        // bundle plus the helper executable plus an ordinary launch date
+        // binds under the explicit helper scope with the UNCHANGED
+        // production gate — and still refuses without the date.
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let handshake = parse_ls_handshake(
+            &ls_output(nonce, 4242, crate::HELPER_BUNDLE_ID, true),
+            nonce,
+        )
+        .expect("handshake parses");
+        let helper_scope = TileScope::Scoped(AppScope {
+            allowed: vec![crate::HELPER_BUNDLE_ID.to_owned()],
+        });
+        let exe =
+            "/tmp/target/macos/OmniTilerProbeHelper.app/Contents/MacOS/tiler-macos-probe-target";
+        let identity = validate_identity_triple(
+            &helper_scope,
+            handshake.pid,
+            Some(&handshake.bundle),
+            Some(exe),
+            Some("launch-1"),
+        )
+        .expect("LS helper triple binds with a launch date");
+        assert_eq!(identity.pid, handshake.pid);
+        assert!(
+            validate_identity_triple(
+                &helper_scope,
+                handshake.pid,
+                Some(&handshake.bundle),
+                Some(exe),
+                None
+            )
+            .is_err()
+        );
+    }
 }
 
 /// Durable spawn record: what `probe-stop` and every owned read/write path
@@ -1538,4 +1702,388 @@ pub fn stop_session(pid: u32, nonce: &str) -> Result<(), String> {
     }
     let _ = std::fs::remove_file(session_record_path(pid));
     Ok(())
+}
+
+// -- LaunchServices fixture launch -------------------------------------------
+// The direct-spawn (`fork`/`exec` + pipe) helper has no LaunchServices entry,
+// so `NSRunningApplication.launchDate` is nil for it and the scoped backend
+// (`validate_identity_triple`) refuses it outright — the initial drag-fixture
+// live leg showed `workers_failed:2` with zero observations for exactly this
+// reason. The repair does NOT weaken that production gate: the fixture
+// launches the SAME signed `OmniTilerProbeHelper.app` through LaunchServices
+// (`open -n ... --args`), which registers the ordinary product identity
+// (stable helper bundle plus executable plus `launchDate`) the scoped backend
+// binds and revalidates at every effect boundary. Currency without a `Child`
+// handle comes from the already-accepted cross-command contract: the durable
+// spawn record (same shape as the Child path, so `probe-stop` and every
+// owned path keep their exact-identity auth unchanged) plus the live
+// executable revalidation plus the CURRENT live window-nonce title re-proof
+// before every mutation and stop. Fixture-only holder (`probe-spawn-ls`);
+// never a product launch route.
+
+/// Absolute `open(1)` used for fixture LS launches (fixed path, never
+/// `$PATH`, so no search-path substitution).
+pub const LS_HELPER_OPEN_BIN: &str = "/usr/bin/open";
+
+/// Extra helper lifetime beyond the holder deadline, so the holder always
+/// stops a live helper through the exact-identity stop instead of racing its
+/// self-exit. The holder maximum is therefore `MAX_PROBE_SECONDS - SLACK`.
+pub const LS_HELPER_SLACK_SECS: u64 = 10;
+
+/// Bound waiting for the LS helper identity+ready handshake in the
+/// `open`-redirected stdout (mirrors the direct-spawn 10s+10s budget).
+pub const LS_HANDSHAKE_SECS: u64 = 20;
+
+/// Pure Helper.app bundle-dir resolution for a probe binary running inside
+/// `OmniTilerProbe.app`: the sibling `OmniTilerProbeHelper.app` assembled by
+/// `scripts/macos-app.sh` next to it. Pure path math (no FS reads); `None`
+/// outside a bundle layout (plain `cargo` runs).
+pub fn helper_app_for_exe(current_exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let helper_exe = bundled_helper_for_exe(current_exe)?;
+    let app_dir = helper_exe.parent()?.parent()?.parent()?;
+    if app_dir.file_name()?.to_str()? != "OmniTilerProbeHelper.app" {
+        return None;
+    }
+    Some(app_dir.to_owned())
+}
+
+/// Pure `open` argv for one LS helper launch (mirrors the proven
+/// `scripts/macos-launch.sh` route): a fresh LS instance (`-n`) with the
+/// helper's stdout/stderr redirected to per-run files, then `--args` plus
+/// the exact helper argv.
+pub fn ls_open_argv(
+    helper_app: &std::path::Path,
+    out_path: &std::path::Path,
+    err_path: &std::path::Path,
+    helper_argv: &[String],
+) -> Vec<String> {
+    let mut argv = vec![
+        "-n".to_owned(),
+        "-o".to_owned(),
+        out_path.to_string_lossy().into_owned(),
+        "--stderr".to_owned(),
+        err_path.to_string_lossy().into_owned(),
+        helper_app.to_string_lossy().into_owned(),
+        "--args".to_owned(),
+    ];
+    argv.extend(helper_argv.iter().cloned());
+    argv
+}
+
+/// Parsed LS helper handshake: the helper-bundle identity plus its real PID,
+/// with the `ready` (window serviced) marker observed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LsHandshake {
+    pub bundle: String,
+    pub pid: u32,
+    pub nonce: String,
+}
+
+/// Pure scan of LaunchServices-redirected helper output for the identity line
+/// plus the `ready` marker. The identity MUST name the stable helper bundle
+/// (an LS launch of anything else refuses here, never falls through to live
+/// checks), the claimed nonce must equal the issued per-run nonce, and the
+/// `ready` marker must be present (window serviced by the runloop). Periodic
+/// helper snapshot lines carry none of these keys and are skipped.
+pub fn parse_ls_handshake(output: &str, expected_nonce: &str) -> Result<LsHandshake, String> {
+    let mut identity: Option<(String, u64, String)> = None;
+    let mut ready = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+        if value.get("ready").and_then(|v| v.as_bool()) == Some(true) {
+            ready = true;
+            continue;
+        }
+        if identity.is_some() {
+            continue;
+        }
+        let bundle = value
+            .get("bundle")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let claimed_pid = value.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+        let claimed_nonce = value
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if bundle.is_empty() && claimed_pid == 0 && claimed_nonce.is_empty() {
+            continue;
+        }
+        identity = Some((bundle.to_owned(), claimed_pid, claimed_nonce.to_owned()));
+    }
+    let (bundle, claimed_pid, claimed_nonce) =
+        identity.ok_or_else(|| "LS helper identity line missing".to_owned())?;
+    if bundle != crate::HELPER_BUNDLE_ID {
+        return Err("LS helper identity is not the helper bundle; refusing".to_owned());
+    }
+    let pid: u32 = claimed_pid
+        .try_into()
+        .map_err(|_| "LS helper pid out of range; refusing".to_owned())?;
+    if pid <= 1 || pid == std::process::id() {
+        return Err(format!(
+            "LS helper pid {pid} is reserved or our own; refusing"
+        ));
+    }
+    if claimed_nonce != expected_nonce {
+        return Err("LS helper identity nonce mismatch; refusing".to_owned());
+    }
+    if !ready {
+        return Err("LS helper ready marker missing (window never serviced); refusing".to_owned());
+    }
+    Ok(LsHandshake {
+        bundle,
+        pid,
+        nonce: claimed_nonce,
+    })
+}
+
+/// Verified LaunchServices spawn session: PID plus nonce plus helper path
+/// plus bundle. There is deliberately NO `Child` handle: currency is the
+/// ordinary product identity (LS bundle plus executable plus `launchDate`,
+/// revalidated at every scoped effect boundary) plus the CURRENT live
+/// window-nonce title re-proven by the spawn record before every mutation
+/// and stop (same cross-command contract as `probe-stop`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LsSpawnSession {
+    pub pid: u32,
+    pub nonce: String,
+    pub helper_path: String,
+    pub bundle: String,
+}
+
+/// Poll an `open`-redirected stdout file for the identity+ready handshake
+/// under a bound. Returns the last parse cause on timeout.
+fn await_ls_handshake(
+    out_path: &std::path::Path,
+    nonce: &str,
+    timeout_secs: u64,
+) -> Result<LsHandshake, String> {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let output = std::fs::read_to_string(out_path).unwrap_or_default();
+        match parse_ls_handshake(&output, nonce) {
+            Ok(handshake) => return Ok(handshake),
+            Err(last) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("LS helper handshake timed out: {last}"));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Signal exactly one live LS helper candidate (best-effort orphan cleanup):
+/// the PID must currently resolve to the helper bundle plus the exact
+/// trusted helper executable (a present record for the PID must additionally
+/// match our nonce, so a foreign record never authorizes a signal here),
+/// then one SIGTERM plus a bounded exit poll. Never signals a PID that fails
+/// any of these checks.
+fn terminate_ls_candidate(pid: u32, nonce: &str, helper_exe: &str) -> Result<(), String> {
+    if pid <= 1 || pid == std::process::id() {
+        return Err(format!("refusing blind signal of pid {pid}"));
+    }
+    match crate::ownership::verify_live_process(pid, Some(helper_exe)) {
+        Ok(bundle) if bundle == crate::HELPER_BUNDLE_ID => {}
+        _ => {
+            return Err(format!(
+                "LS candidate pid {pid} is not our live helper; refusing blind signal"
+            ));
+        }
+    }
+    if let Ok(raw) = read_record_file(&session_record_path(pid))
+        && let Ok(existing) = serde_json::from_str::<SpawnRecord>(&raw)
+        && (existing.pid != pid || existing.nonce != nonce)
+    {
+        return Err(format!(
+            "LS candidate pid {pid} carries a foreign spawn record; refusing signal"
+        ));
+    }
+    if !crate::ffi::terminate_process(pid as i32) {
+        return Err(format!("SIGTERM delivery failed for pid {pid}"));
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while crate::ffi::process_exists(pid as i32) {
+        if Instant::now() > deadline {
+            return Err(format!(
+                "pid {pid} still exists after SIGTERM; record retained for inspection"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// Best-effort orphan cleanup from LS-redirected output: when the partial
+/// output names OUR nonce with a claimed PID, signal exactly that candidate
+/// (exe+bundle proof inside [`terminate_ls_candidate`]). Ignores every
+/// failure; only ever touches a live verified helper.
+fn terminate_ls_candidate_output(output: &str, nonce: &str, helper_exe: &str) {
+    for line in output.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        let nonce_matches = value
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .is_some_and(|n| n == nonce);
+        let pid = value
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u32::try_from(p).ok());
+        if nonce_matches && let Some(pid) = pid {
+            let _ = terminate_ls_candidate(pid, nonce, helper_exe);
+            return;
+        }
+    }
+}
+
+/// Stop a verified LS helper whose window-nonce title proof never landed
+/// (post-record failure): re-check the record plus the live executable, then
+/// signal exactly that PID once with a bounded exit poll, removing the record
+/// only on a verified exit. A foreign or drifted record refuses (retained).
+fn stop_ls_unready(pid: u32, nonce: &str, helper_exe: &str) -> Result<(), String> {
+    let _record = read_record_matched(pid, nonce)?;
+    terminate_ls_candidate(pid, nonce, helper_exe)?;
+    let _ = std::fs::remove_file(session_record_path(pid));
+    Ok(())
+}
+
+/// Best-effort removal of OUR spawn record when the helper is provably gone:
+/// the record must match pid/nonce plus the trusted helper exe, and no live
+/// process may hold that PID. Never touches a live PID. Returns true only
+/// when the record file was removed.
+pub fn remove_ls_record_if_gone(pid: u32, nonce: &str) -> bool {
+    let Ok(_) = read_record_matched(pid, nonce) else {
+        return false;
+    };
+    let Ok(pid_i32) = i32::try_from(pid) else {
+        return false;
+    };
+    if crate::ffi::process_exists(pid_i32) {
+        return false;
+    }
+    std::fs::remove_file(session_record_path(pid)).is_ok()
+}
+
+/// Launch the signed bundled helper through LaunchServices and return only
+/// after it proves itself: the helper-bundle identity line (exact PID plus
+/// the issued per-run nonce) and the `ready` marker (window serviced) in the
+/// `open`-redirected stdout, then the ordinary product identity (exact
+/// trusted executable plus a present `launchDate` — a missing date refuses,
+/// never falls back), then the durable spawn record (same shape as the Child
+/// path), then the CURRENT live window-nonce title proof (retried bounded:
+/// the window-server list can lag `ready`).
+///
+/// `holder_seconds` bounds the caller's hold; the helper itself runs
+/// `holder_seconds + LS_HELPER_SLACK_SECS` so the holder always stops a live
+/// helper through the exact-identity stop instead of racing its self-exit.
+/// On any failure after a proven launch, signals only the verified exact PID
+/// (never a guess) and never leaves an orphan when the failure names one.
+/// macOS-only (fails closed elsewhere); fails closed outside a probe-bundle
+/// layout or when `Helper.app` is absent.
+pub fn spawn_verified_ls(
+    spec: &ProbeTargetSpec,
+    holder_seconds: u64,
+) -> Result<LsSpawnSession, String> {
+    if std::env::consts::OS != "macos" {
+        return Err("LS helper launch is macOS-only".to_owned());
+    }
+    let holder_max = crate::config::MAX_PROBE_SECONDS - LS_HELPER_SLACK_SECS;
+    if holder_seconds == 0 || holder_seconds > holder_max {
+        return Err(format!(
+            "LS holder seconds out of bound 1..={holder_max} (helper needs {LS_HELPER_SLACK_SECS}s slack)"
+        ));
+    }
+    crate::ownership::validate_nonce(&spec.nonce)?;
+    let helper_seconds = holder_seconds + LS_HELPER_SLACK_SECS;
+    crate::config::ProbeConfig::validate_probe_seconds(helper_seconds)?;
+    let mut helper_spec = spec.clone();
+    helper_spec.seconds = helper_seconds;
+    // Regular policy is inherent: Helper.app carries no LSUIElement, so the
+    // helper self-elevates to the regular policy when bundled (see
+    // `run_target`); forcing the flag keeps the holder argv honest.
+    helper_spec = helper_spec.with_regular_policy(true);
+    let current = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+    let helper_app = helper_app_for_exe(&current).ok_or_else(|| {
+        "current exe is not inside a probe .app bundle (no sibling Helper.app)".to_owned()
+    })?;
+    match std::fs::symlink_metadata(&helper_app) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+        _ => {
+            return Err(
+                "Helper.app missing or not a real directory beside the probe bundle; refusing"
+                    .to_owned(),
+            );
+        }
+    }
+    let helper_exe = bundled_helper_canonical()?;
+    ensure_private_session_dir()?;
+    let out_path = session_dir().join(format!("ls-helper-{}.out", spec.nonce));
+    let err_path = session_dir().join(format!("ls-helper-{}.err", spec.nonce));
+    let _ = std::fs::remove_file(&out_path);
+    let _ = std::fs::remove_file(&err_path);
+    let open_status = std::process::Command::new(LS_HELPER_OPEN_BIN)
+        .args(ls_open_argv(
+            &helper_app,
+            &out_path,
+            &err_path,
+            &helper_spec.argv(),
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("LS open failed: {e}"))?;
+    if !open_status.success() {
+        return Err("LS open reported failure; refusing".to_owned());
+    }
+    let handshake =
+        await_ls_handshake(&out_path, &spec.nonce, LS_HANDSHAKE_SECS).inspect_err(|_| {
+            let output = std::fs::read_to_string(&out_path).unwrap_or_default();
+            terminate_ls_candidate_output(&output, &spec.nonce, &helper_exe);
+        })?;
+    // Ordinary product identity BEFORE any record: exact trusted executable
+    // plus a present launch date (the PID-reuse token the scoped backend
+    // binds; a missing date refuses, never falls back).
+    crate::ownership::verify_live_process(handshake.pid, Some(&helper_exe))?;
+    let launch_date = crate::ffi::ns_app_identity_for_pid(handshake.pid as i32)
+        .launch_date
+        .filter(|s| !s.is_empty());
+    if launch_date.is_none() {
+        let _ = terminate_ls_candidate(handshake.pid, &spec.nonce, &helper_exe);
+        return Err("LS helper has no launch date (no PID-reuse protection); refusing".to_owned());
+    }
+    if let Err(e) = record_spawn(handshake.pid, spec, &helper_exe) {
+        let _ = terminate_ls_candidate(handshake.pid, &spec.nonce, &helper_exe);
+        return Err(e);
+    }
+    // CURRENT live window-nonce title proof (CG, AX fallback inside):
+    // `ready` means serviced, but the window-server list can lag it, so
+    // retry bounded before failing (and stopping) the exact verified PID.
+    let title_deadline = Instant::now() + Duration::from_secs(LS_HANDSHAKE_SECS);
+    loop {
+        match load_verified_record(handshake.pid, &spec.nonce) {
+            Ok(_) => break,
+            Err(last) => {
+                if Instant::now() >= title_deadline {
+                    let _ = stop_ls_unready(handshake.pid, &spec.nonce, &helper_exe);
+                    return Err(format!("LS helper window-nonce proof never landed: {last}"));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(LsSpawnSession {
+        pid: handshake.pid,
+        nonce: spec.nonce.clone(),
+        helper_path: helper_exe,
+        bundle: handshake.bundle,
+    })
 }

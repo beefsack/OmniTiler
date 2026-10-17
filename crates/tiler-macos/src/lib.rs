@@ -40,6 +40,10 @@ pub mod desktop_shortcuts;
 #[cfg(test)]
 mod desktop_shortcuts_tests;
 pub mod dev_selection;
+pub mod drag_drop;
+pub mod drag_fixture;
+pub mod drag_native;
+pub mod drag_session;
 pub mod engine;
 pub mod ffi;
 pub mod focus;

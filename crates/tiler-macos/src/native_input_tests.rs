@@ -120,20 +120,21 @@ fn catalogue_is_exactly_focus_move_resize_float_orientation() {
         catalogue
             .iter()
             .find(|b| b.key_code == key && b.shift == shift && b.alt == alt)
-            .map(|b| match b.action {
+            .map(|b| match b.action.clone() {
                 InputSemanticAction::FocusStep { direction }
                 | InputSemanticAction::MoveStep { direction }
                 | InputSemanticAction::ResizeStep { direction, .. } => direction,
                 InputSemanticAction::ToggleFloat | InputSemanticAction::ToggleOrientation => {
                     InputDirection::Left
                 }
-                // The basic catalogue holds no workspace actions.
+                // The basic catalogue holds no workspace or drag actions.
                 InputSemanticAction::WorkspaceSelect { .. }
                 | InputSemanticAction::WorkspaceSend { .. }
                 | InputSemanticAction::WorkspaceRelative { .. }
                 | InputSemanticAction::WorkspaceSendRelative { .. }
                 | InputSemanticAction::WorkspacePrevious
-                | InputSemanticAction::WorkspaceOutput { .. } => InputDirection::Left,
+                | InputSemanticAction::WorkspaceOutput { .. }
+                | InputSemanticAction::DragDrop { .. } => InputDirection::Left,
             })
     };
     assert_eq!(dir_of(KEY_H, false, false), Some(InputDirection::Left));

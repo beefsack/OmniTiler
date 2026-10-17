@@ -59,7 +59,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::Instant;
@@ -397,6 +397,16 @@ fn attest_live(
 /// cache reads ineligible — basic and select alike); the owner recreates
 /// its guard on return from a global release to avoid a user-disabled
 /// sticky cycle.
+/// Tile drag-preview Escape watch wiring: route-armed flag, coalesced
+/// pending flag (never lost), unsuppressed forward channel, and the
+/// full-queue drop counter. `None` disables (every non-tile caller).
+type DragEscapeWiring = Option<(
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+    mpsc::SyncSender<TapHit>,
+    Arc<AtomicU32>,
+)>;
+
 pub struct TapTileFactory {
     modifier: ProbeModifier,
     bindings: Vec<TileBinding>,
@@ -467,6 +477,15 @@ pub struct TapTileFactory {
     /// this handle: plain cloned records plus a brief `Mutex`, consulted
     /// outside the callback only.
     facts: Option<Arc<EligibilityFactsStore>>,
+    /// Tile drag-preview Escape watch (`None` = unset: every non-drag
+    /// caller): while the flag reads true, an otherwise-unmatched Escape
+    /// KeyDown forwards unsuppressed on the escape channel so the client
+    /// still receives the key and the main-thread drag session observes
+    /// the cancel edge. Applied to every tap guard this factory installs
+    /// (initial plus fresh-guard recreations). Set once via
+    /// [`TapTileFactory::with_drag_escape_watch`]; the tile drag route is
+    /// the only production caller.
+    drag_escape: DragEscapeWiring,
 }
 
 impl TapTileFactory {
@@ -500,7 +519,38 @@ impl TapTileFactory {
             eligibility: Arc::new(EligibilityCache::new_scoped()),
             eligibility_select: Arc::new(EligibilityCache::new_scoped()),
             facts: None,
+            drag_escape: None,
         })
+    }
+
+    /// Arm the tile drag-preview Escape watch: while `active` reads true,
+    /// an otherwise-unmatched Escape KeyDown forwards unsuppressed on
+    /// `escape_tx`. The tile drag route is the only production caller (set
+    /// before `Runtime::start`; applied to every guard this factory
+    /// installs, including fresh-guard recreations).
+    #[must_use]
+    pub fn with_drag_escape_watch(
+        mut self,
+        active: Arc<AtomicBool>,
+        escape_pending: Arc<AtomicBool>,
+        escape_tx: mpsc::SyncSender<TapHit>,
+        escape_dropped: Arc<AtomicU32>,
+    ) -> Self {
+        self.drag_escape = Some((active, escape_pending, escape_tx, escape_dropped));
+        self
+    }
+
+    /// Apply the drag Escape watch to a freshly installed tap guard
+    /// (initial plus every fresh-guard recreation); `None` is a no-op.
+    fn arm_drag_escape(&self, tap: &TapSource) {
+        if let Some((active, pending, tx, dropped)) = &self.drag_escape {
+            tap.set_drag_escape_watch(
+                Arc::clone(active),
+                Arc::clone(pending),
+                tx.clone(),
+                Arc::clone(dropped),
+            );
+        }
     }
 
     /// Set the product selection for eligibility (normal tile path;
@@ -649,6 +699,7 @@ impl InputSourceFactory for TapTileFactory {
         } else {
             TapSource::create_scoped(&specs, true, &tx).map_err(|e| e.to_string())?
         };
+        self.arm_drag_escape(&tap);
         Ok(Box::new(TapTileSource {
             tap,
             rx,
@@ -678,6 +729,7 @@ impl InputSourceFactory for TapTileFactory {
             was_ineligible: false,
             consumed_refused_basic: 0,
             consumed_refused_select: 0,
+            drag_escape: self.drag_escape.clone(),
         }))
     }
 
@@ -727,6 +779,10 @@ struct TapTileSource {
     /// (static tokens and counts only — never keys, flags, or content).
     consumed_refused_basic: u64,
     consumed_refused_select: u64,
+    /// Tile drag-preview Escape watch (cloned from the factory at
+    /// creation; applied to every guard this owner installs, including
+    /// fresh-guard recreations). `None` = unset.
+    drag_escape: DragEscapeWiring,
 }
 
 /// Match one consumed hit back to its armed spec category (pure, no OS
@@ -842,6 +898,19 @@ pub(crate) const fn fixture_hold_active(direct_hold: bool, holding_direct: bool)
 }
 
 impl TapTileSource {
+    /// Apply the drag Escape watch to a freshly installed tap guard
+    /// (initial plus every fresh-guard recreation); `None` is a no-op.
+    fn arm_drag_escape(&self, tap: &TapSource) {
+        if let Some((active, pending, tx, dropped)) = &self.drag_escape {
+            tap.set_drag_escape_watch(
+                Arc::clone(active),
+                Arc::clone(pending),
+                tx.clone(),
+                Arc::clone(dropped),
+            );
+        }
+    }
+
     fn publish_report(&self) {
         let snapshot = accumulate_tap_report(self.carried, self.tap.report());
         *self
@@ -940,6 +1009,7 @@ impl TapTileSource {
                 return Err(cause);
             }
         };
+        self.arm_drag_escape(&new_tap);
         self.swap_fresh_guard(new_tap, rx);
         self.direct_hold.store(false, Ordering::SeqCst);
         self.rearm_epoch.fetch_add(1, Ordering::SeqCst);
@@ -955,6 +1025,7 @@ impl TapTileSource {
     fn install_fresh_scoped(&mut self) -> Result<(), crate::ffi::TapSetupError> {
         let (tx, rx) = mpsc::sync_channel::<TapHit>(64);
         let new_tap = TapSource::create_scoped(&self.specs, true, &tx)?;
+        self.arm_drag_escape(&new_tap);
         self.swap_fresh_guard(new_tap, rx);
         Ok(())
     }

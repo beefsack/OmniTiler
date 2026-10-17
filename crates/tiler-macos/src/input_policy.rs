@@ -212,7 +212,7 @@ pub fn effective_bindings(
                 )
                 .is_none()
             })
-            .copied()
+            .cloned()
             .collect(),
     }
 }
