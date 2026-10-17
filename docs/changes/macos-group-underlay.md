@@ -80,7 +80,15 @@ At the repaired milestone, locked macOS tests (721), strict all-target clippy,
 workspace formatting, signed development app build and signature verification
 pass. Bundle identity remains `io.github.omnitiler.macos.probe`. Independent
 review accepts retention only as an explicitly unaccepted ordering diagnostic,
-not production acceptance. Publication and hosted CI evidence follow below.
+not production acceptance.
+
+Published diagnostic milestone: `a175451e`. All local gates were repeated after
+integration with concurrent changes. Hosted CI
+[38984864225](https://github.com/beefsack/OmniTiler/actions/runs/38984864225)
+passed macOS, Rust, Windows, KWin, native, licenses and notices. Native passed on
+a single failed-job rerun after an unrelated shortcut-selection allocator abort.
+Shell retains the pre-existing KWin API guard failure for unaudited
+`fullscreen`/`maximized`/`sticky` symbols; no Shell/native source changed here.
 
 Unsafe accounting in `ffi.rs`: lines matching `unsafe` 171 → 176; matching
 `unsafe {` 103 → 104. All new unsafe remains confined to that module.
