@@ -38,7 +38,6 @@
 //! rather than materialized unbounded. No custom `unsafe impl Send/Sync` anywhere.
 
 use std::sync::atomic::AtomicU64;
-#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, atomic::Ordering, mpsc::SyncSender};
 
@@ -8070,6 +8069,10 @@ mod stub {
         Err("macOS-only".to_owned())
     }
 
+    pub fn sls_window_at_point(_x: f64, _y: f64) -> Result<u32, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn ax_element_at_position(_x: f64, _y: f64) -> Result<AxElement, String> {
         Err("macOS-only".to_owned())
     }
@@ -8700,7 +8703,7 @@ pub use stub::{
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
     sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
     sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
-    sls_spaces_for_windows, terminate_process, warp_cursor_position,
+    sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(test)]
