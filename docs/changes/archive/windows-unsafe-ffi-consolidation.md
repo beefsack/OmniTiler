@@ -18,7 +18,8 @@
   boundary roots allow unsafe. CI validates both source and manifest policy,
   with positive and negative regression fixtures.
 - Windows build, tests, formatting, strict all-target clippy, policy check,
-  and diff whitespace checks pass. No live desktop testing is included.
+  and diff whitespace checks pass. Live regression checks use only identified
+  disposable helpers and restore the tested resources.
 - Review buffer ownership, callback lifetime and no-unwind discipline,
   thread affinity, cleanup, and non-Windows cfg paths.
 
@@ -37,7 +38,7 @@
   `unsafe\s*\{` in 71 files. Including integration tests: 890 matching lines,
   19 unsafe extern callbacks, two test-only unsafe functions, no unsafe
   implementations or traits. These are line-based counts, not AST counts.
-- Final tree: 447 matching block lines, all inside `src/ffi/`; zero unsafe
+- Initial consolidation: 447 matching block lines, all inside `src/ffi/`; zero unsafe
   blocks/functions/implementations outside it. All 249 non-boundary Windows
   source/test files forbid unsafe; `src/lib.rs` denies it so the boundary can
   opt in. Earlier incomplete inventory counts were superseded by this
@@ -96,20 +97,65 @@
   resolved without policy changes.
 - `cargo test --locked -p tiler-core --test unsafe_guardrail`: 32/32 pass.
 - `git diff --check`: pass.
-- No live desktop tests were performed. Default tests use existing offline
-  fixtures, event handles and headless GDI; no hooks/windows were installed.
+- Initial verification was offline. Default tests use existing offline
+  fixtures, event handles and headless GDI; they install no hooks/windows.
+
+## CI and live follow-through (2026-10-17)
+
+- Implementation: `1fe27640`; shared-lint reconciliation: `bf99f3dc` makes
+  the newly added KDE settings exporter inherit the workspace guardrail.
+  CI confirms the allowlist gate on Linux, Windows, and macOS. An initial
+  missing-posture failure was resolved without exempting the new crate.
+- Live Settings testing found a consolidation regression: closing the window
+  destroyed its HWND but left the process and singleton alive. `f42691af`
+  restores the original `PostQuitMessage(0)` in `WM_DESTROY`; state cleanup
+  remains in the opaque owner's Drop. A dedicated thread-queue regression
+  test fails without the quit signal and passes with it, without creating
+  a desktop window. Subsequent live clean Close, dirty discard, and posted
+  Escape all exited without forced termination; reopening proved singleton
+  release. No other product regression was established.
+- `dc450af7` records the input hazard: a menu over the operator's terminal
+  allowed injected input to interrupt the test. Foreground identity must be
+  verified before each injected key; menus are dismissed without global
+  keystrokes. Interrupted owners were identity-verified, stopped and restored.
+- The final tray journey injected no keys: its popup was entirely over an
+  owned helper, the enabled Stop row was verified by ID/text/position, and
+  mouse hit-testing proved the owned popup before selection. The owner exited
+  before cleanup requested any stop. An earlier rectangle-probe failure was
+  a harness error (command ID passed instead of zero-based menu position),
+  not spontaneous product exit.
+
+| Live check | Observed outcome |
+| --- | --- |
+| Recovery prerequisites | 17-step owned-window proof passed: graceful and exact-identity forced exit, watcher reveal, independent/idempotent restore. |
+| Scoped normal owner | Start/stop, helper admission, geometry/style/visibility readbacks and workspace hide/reveal passed; no foreign managed HWNDs. |
+| Tray and pager | Owned tray popup opened/cancelled; actual Stop-row mouse selection exited the owner. Pager mouse selection changed workspace and hid the fixtures. |
+| Settings transactions | Preview acceptance persisted the expected edit; Cancel/Revert and dirty-close discard did not persist the second edit. Modal owner disable/enable and ownership readbacks passed. Original settings bytes restored. |
+| Border and preview | Visible owned carriers, geometry, checksums and renderer acknowledgements observed; preview hid after the drag settled. |
+| Group underlay | Synthetic chord showed a two-member underlay with exact union geometry, below-member z-order and transparent/no-activate styles; release hid it; no failed render acknowledgements. |
+| Mouse gesture | Synthetic drag start/end and preview/settlement observed. This does not establish physical keyboard/drag cancellation acceptance. |
+| Final cleanup | No test actors, popups or owned overlays; ledger clean; settings bytes, session SPI values and taskbar state matched preimages. Final cursor/foreground restored. |
+
+- Exact process/window identities, artifact hashes, launch arguments,
+  preimages, incremental steps and machine readbacks remain in the ignored
+  local journey evidence, not in repository records. Journeys used medium
+  integrity, identified disposable helpers and explicit owner scope.
+- Follow-up local gates at `dc450af7`: build, format, strict all-target clippy,
+  and whitespace checks pass for the package set above; tests are 2,596 passed,
+  0 failed, 1 ignored across 65 summaries (including concurrent shared tests).
+  The allowlist suite remains 32/32.
 
 ## Limits and follow-up
 
-- Linux/macOS target builds were unavailable; Windows-only FFI remains
-  cfg-gated, portable stubs were inspected, and other-platform compile
-  verification belongs to CI. Intra-doc references to Windows-only modules
-  remain plain code text in portable modules.
+- Linux/macOS builds were verified in CI rather than locally. Windows-only
+  FFI remains cfg-gated; portable modules retain plain-code intra-doc
+  references to Windows-only modules.
 - No runtime/performance measurements are claimed. Pager paint snapshots and
   tray menu snapshots add owned clones; cached icon artwork is Arc-shared,
   not re-buffered. Low-level hooks introduce no allocation.
-- No live check is needed to prove the static unsafe guardrail. Before runtime
-  regression acceptance, separately authorize normal owner start/stop;
-  keyboard modifier pairs and mouse drag/release/Esc; tray and pager picks;
-  settings apply/cancel and modal close; and border/underlay/preview rendering
-  across display/DPI and Explorer changes. Follow the live Windows protocol.
+- Physical keyboard modifier pairing, normal-owner Esc cancellation and OS
+  shortcuts remain user-physical pending: the normal owner intentionally
+  ignores injected keys. Synthetic chord rendering and posted Settings
+  Escape are not substitutes. Physical DPI/display changes and Explorer
+  restart acceptance also remain pending; unrelated desktop resources were
+  not changed to manufacture those outcomes.

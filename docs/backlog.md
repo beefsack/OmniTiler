@@ -718,8 +718,11 @@ decisions of 2026-09-24 are under
   `windows-sys`, implemented as responsibility-split `ffi/` with one unsafe
   opt-in root. Zero unsafe blocks/functions/impls outside it; workspace lint
   inheritance and the CI allowlist gate delivered (32/32 policy tests).
-  Windows build/test/fmt/strict-clippy pass: 2,572 passed, 0 failed, 1 ignored.
-  Other-platform CI and runtime smoke remain unverified here.
+  Follow-up Windows gates pass: 2,596 passed, 0 failed, 1 ignored. Linux,
+  Windows and macOS CI allowlist gates pass. Owned-window live lifecycle,
+  settings transactions, tray/pager picks and renderer smoke passed; the
+  Settings process-exit regression was fixed and retested. Physical keyboard
+  and DPI/display/Explorer acceptance remain pending.
   [Research](research/windows-port/safe-win32-wrappers.md),
   [evidence](changes/archive/windows-unsafe-ffi-consolidation.md).
 - P1 | Module size refactoring | User 2026-10-14: split oversized source
