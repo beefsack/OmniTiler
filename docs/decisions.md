@@ -374,8 +374,14 @@ platform API behavior.
      prerequisite, not physical acceptance or complete manager parity.
      [Outcome and physical check](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
 
+- User decision 2026-10-17 (supersedes the KDE-only scope below): release
+  0.1 covers KDE Plasma, Windows and macOS. The goal is feature parity with
+  KDE on Windows and macOS, as far as is sensible for each host. Per-platform
+  gates and the exact parity scope are still to be defined with the user;
+  the KDE gate below stands.
 - User decisions 2026-10-10 (0.1 release scope and gate):
-  - Release 0.1 is the existing MVP on KDE Plasma only. Windows continues
+  - Release 0.1 is the existing MVP on KDE Plasma only (superseded
+    2026-10-17, above). Windows continues
     as a development preview and ships in its own later release, requiring
     managed per-monitor workspaces (2026-09-30).
   - Must-pass gate: the VISION reliability list (sleep/wake, plugging/

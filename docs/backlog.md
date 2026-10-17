@@ -11,9 +11,10 @@ decisions of 2026-09-24 are under
 ## Open work
 
 - Core/KDE order (user 2026-10-17): (1) KDE unfloat defect below; (2) live
-  KDE acceptance of full-state replies; (3) best-effort admission core+KDE;
-  (4) KDE dual-output live testing and fixes; (5) KDE Settings core-catalog
-  migration; (6) KDE shared window-policy adoption; (7) 0.1 triage live
+  KDE acceptance of full-state replies; (3) KDE Settings core-catalog
+  migration (before best-effort admission, so its settings land once in the
+  catalog); (4) best-effort admission core+KDE; (5) KDE dual-output live
+  testing and fixes; (6) KDE shared window-policy adoption; (7) 0.1 triage live
   checks; (8) 0.1 packaging/NixOS/Ubuntu/licensing gates; (9) shared core and
   KDE module-size refactoring. Live passes recorded before the full-state
   route (2026-10-17) need repeating where that route changed the path.
@@ -117,7 +118,7 @@ decisions of 2026-09-24 are under
   Windows/macOS adoption is
   tracked separately below. Geometric exhaustion preserves topology with
   complete recoverable constraint-held rows, not an admission fallback.
-- P1 (next after full-state replies) | Best-effort admission when space runs
+- P1 (after KDE Settings core-catalog migration) | Best-effort admission when space runs
   out | The full-state change returns a recoverable hold when a domain's
   projection cannot give every tile a positive extent after gaps (14 fresh
   windows in an 800x600 gap-8 domain); clear that hold. User 2026-10-16:
@@ -229,8 +230,13 @@ decisions of 2026-09-24 are under
   dependency. Check 2 additionally needs a third output (user to arrange).
   General live-test reference environments remain parked.
 
-- P0 | 0.1 release (KDE Plasma) | Existing MVP, KDE only (user 2026-10-10;
-  [scope](decisions.md#scope-and-platform-goals)). Must-pass gate: VISION
+- P0 | 0.1 release (KDE Plasma, Windows, macOS) | User 2026-10-17: 0.1
+  covers all three platforms, aiming for feature parity with KDE as far as
+  is sensible per host ([scope](decisions.md#scope-and-platform-goals)).
+  Pending: define with the user the Windows and macOS 0.1 gates and parity
+  scope (fold in the Windows release gate item and the macOS port item);
+  the KDE gate below is unchanged. Originally the KDE-only MVP (user
+  2026-10-10). Must-pass gate: VISION
   reliability (sleep/wake, output plug/unplug, resolution/scaling changes,
   fullscreen applications, underlying configuration changes), gaming/fullscreen
   non-interference, core journeys (tiling, focus/move, workspaces, multi-output,
@@ -266,8 +272,7 @@ decisions of 2026-09-24 are under
     item 21) delivered offline 2026-10-13
     ([record](changes/archive/windows-workspace-tiling-shortcut.md)).
     Native/physical and preset acceptance remains in Pending live checks.
-  Windows continues as a development preview with its own later release;
-  macOS starts after KDE 0.1 ships. KDE current approach retained; no new
+  KDE current approach retained; no new
   non-native-research items. Lessons persist linked
   ([candidate lessons](research/non-native-tiler-host-interaction.md#candidate-lessons-for-this-project),
   [cross-cutting findings](research/non-native-tiler-host-interaction.md#cross-cutting-findings),
@@ -996,7 +1001,9 @@ decisions of 2026-09-24 are under
     [evidence](changes/archive/non-native-tiler-host-interaction.md).
   [record](changes/windows-gaming-coexistence.md)
   [decision](decisions.md#gaming-safety)
-- P0 | Windows release gate | Own later release (user 2026-10-10): managed
+- P0 | Windows release gate | Now part of 0.1 (user 2026-10-17; was its own
+  later release, user 2026-10-10); exact Windows 0.1 gate pending definition
+  under the 0.1 release item. Current contents: managed
   per-monitor workspaces (multi-output), gaming coexistence (Win+G/F11
   containment review, Xbox mode detection, M16 event-driven owner measurement),
   combined workspace-presentation research (hidden-workspace Alt+Tab/taskbar
