@@ -1,5 +1,163 @@
 # macOS managed native workspaces
 
+## Drag/chord discriminator preparation (2026-10-17)
+
+**Offline preparation only; native transfer remains parked.** The one-shot
+`drag-diag-chord`, `drag-diag-hold` and `drag-diag-full` commands isolate the
+two synthetic input halves without creating/removing Spaces, changing settings,
+raising windows or enabling product transfers. Physical results remain TBD.
+The existing NoEffect observations below are not superseded by fake-backed tests.
+
+### Scope, implementation and acceptance
+
+- Default countdown: 5 seconds (`--countdown 0..30`). Chord-only posts exactly
+  one Ctrl+Right down/up through the transfer executor's shared safe construction
+  path: null/default event source, HID tap, Control flags on both key events and
+  the own-switch provenance tag. `--untagged` omits that tag.
+- Hold/full capture the real cursor once after the countdown. Positional AX
+  `(PID, window ID)`, WindowServer hit-test and a complete CG owner join must
+  identify one standard window. Ghostty, the probe's process/bundles, protected,
+  ambiguous and known-fullscreen targets refuse before the drag. These are
+  user-run ordinary-window diagnostics, not a replacement for the owned-helper
+  restrictions on automated experiments.
+- The executor's mouse sequence is move/down/one dragged event at the same point,
+  not a sweep across the title bar. Hold-only waits 6 seconds by default
+  (`--hold-secs 1..15`); full waits 50 ms, posts the chord, holds another 400 ms,
+  then releases. No drag events continue during or after the chord.
+- Release bypasses target/session gates. Explicit cleanup and unwind guards
+  cover pending key and mouse edges; SIGINT/SIGTERM request release-first
+  cancellation. Failed release takes precedence over the triggering error.
+  Reports retain partial posts, identity, points, elapsed timestamps and posting
+  latency; dispatch is not delivery or transfer evidence. SIGKILL, power loss
+  and abort cannot be covered by in-process cleanup.
+- Work units: source comparison; shared-posting/CLI and fake regressions;
+  independent cleanup review and correction; signed build/verification and
+  publication. Offline acceptance covers parsing, target refusals, event order,
+  hold cap, injected errors/interruption/unwind and honest residue reports.
+  Live acceptance is the walkthrough below, not an automated gate.
+
+### Amethyst comparison
+
+Source pins: Amethyst
+[`5cfe2fe12b1a933139010da5760aaa7e44033e9b`](https://github.com/ianyh/Amethyst/tree/5cfe2fe12b1a933139010da5760aaa7e44033e9b),
+whose `Window.move(toSpaceAtIndex:)` delegates to Silica; its project references
+Silica's drifting `master` branch. The inspected implementation is pinned to
+Silica [`ebead82a28486e7719b7ed69633ecfed8a4fe2d2`](https://github.com/ianyh/Silica/tree/ebead82a28486e7719b7ed69633ecfed8a4fe2d2),
+[`SIWindow.m`](https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SIWindow.m)
+and
+[`SISystemWideElement.m`](https://github.com/ianyh/Silica/blob/ebead82a28486e7719b7ed69633ecfed8a4fe2d2/Silica/Sources/SISystemWideElement.m).
+Behavior is reimplemented, not copied.
+
+| Detail | Silica / Amethyst | Our transfer and diagnostic sequence |
+| --- | --- | --- |
+| Down point | Minimize-button horizontal midpoint, halfway through top chrome; fallback x = window-left + 5 | Transfer chooses guarded frame-derived titlebar points; diagnostics use only the captured cursor. The variant deliberately retains this cursor-anchor substitution. |
+| Event order | MouseMoved → LeftMouseDown → LeftMouseDragged → 50 ms → key-down → key-up → 400 ms → LeftMouseUp | Same order, event count and delays; one mouse point throughout; no continuing drag moves |
+| Source/state and tap | NULL source (default state, no explicit source-state ID); HID for all posts | Identical shared construction path; no explicit source-state ID |
+| Mouse flags | Move/down/up explicitly zero; dragged event retains creation defaults | All mouse flags explicitly zero, including dragged; variant retains this explicit zeroing |
+| Chord | Configured Desktop-N symbolic hotkey, ID `118 + N - 1`, N = 1..16 | Normal mode uses Ctrl+Right; `--amethyst --desktop 2` reads the configured Desktop-2 chord |
+| Modifier delivery | Key-down has configured flags; key-up flags zero; no separate Control-key events | Normal mode has Control flags on both edges, no separate modifier events; variant matches configured-down/zero-up |
+| Provenance | Untagged | Normal posts carry own-switch tag; variant is untagged |
+| Disabled shortcut | Enables it before posting | Variant refuses disabled/unbound/unreadable shortcuts; never writes settings |
+| Surrounding behavior | Manager switches back after about 1 second unless follow is enabled | One drag sequence only; no inverse or automatic switch-back. Countdown, cursor/identity/session guards, bounded holds, cancellation and release/residue reporting are additional diagnostics. |
+
+Related notes: [yabai's Space machinery](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c)
+uses native gesture selection and scripting-addition window moves, not this
+drag/chord path. Its
+[input hit-test](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c#L961-L975)
+is relevant to target proof, not evidence that synthetic carry works.
+[AeroSpace](https://github.com/nikitabobko/AeroSpace) manages virtual workspaces
+rather than implementing this native-Space transfer; its
+[AX point lookup](https://github.com/nikitabobko/AeroSpace/blob/74a1bf17e82d70e0a21945ba04bb4f590bf19f83/Sources/AppBundle/mouse/focusFollowsMouse.swift#L55-L64)
+is a related identity precedent only. Neither supplies missing transfer proof.
+
+### Walkthrough: 2x2 drag/chord test, plus Amethyst variant
+
+Use one display, an unlocked session, no Secure Input, games or fullscreen apps.
+Stop the tiler normally and wait for its teardown; no tap should be running.
+Do not stop unrelated processes or use name-based kills. If a diagnostic needs
+an exact-PID stop, stop only the verified process started for that trial.
+In Mission Control manually create one extra ordinary Space: Desktop 1 and
+Desktop 2. Put one disposable, windowed TextEdit document on Desktop 1, outside
+Ghostty's rectangle, with a clear title bar. The cursor must be on TextEdit,
+never Ghostty or the probe itself. Keep other windows out of that point.
+
+Build/verify and inspect preflight through the signed app. Run these
+shell-neutral lines individually (also valid in fish):
+
+```text
+mise exec -- just app 'OmniTiler Mac Dev'
+mise exec -- just verify
+mise exec -- just preflight-app
+mise exec -- just launch -- spaces-diagnose
+```
+
+Require Accessibility trust through this LaunchServices route; do not substitute
+direct execution of the bundle binary. If Ctrl+Right does not already work,
+stop and correct the manual setup. None of these diagnostics configures shortcuts.
+For every cell record (a) whether the current desktop changes and (b) whether
+TextEdit follows onto Desktop 2. A desktop switch without the window isolates
+carry failure from chord failure. Retain the complete JSON and streamed posts;
+`*-complete` means the event sequence completed, **not** that transfer succeeded.
+After each trial release physical input, wait for the diagnostic to finish, then
+manually return TextEdit and the current view to Desktop 1 before continuing.
+
+| Cell | Launch and physical action | Observe |
+| --- | --- | --- |
+| Real drag / real chord (baseline) | No diagnostic: hold TextEdit's title bar, make a small real drag, press real Ctrl+Right while holding, then release | Desktop 2 and TextEdit should follow together; stop if this baseline fails |
+| Real drag / synthetic chord | Run the chord command below; during the 5-second countdown physically grab and slightly drag TextEdit's title bar; keep holding until the pair posts, then release | Two posted key events; distinguish no desktop switch from switch without TextEdit |
+| Synthetic drag / real chord | Run hold below; during countdown move the real pointer onto TextEdit's title bar **without pressing the mouse**. After synthetic down/drag is announced, press real Ctrl+Right during the 6-second hold; do not move/click | Correct captured identity and point, four mouse posts including final up; whether the real chord carries the synthetic drag |
+| Synthetic drag / synthetic chord | Run full below; position the real pointer during countdown, then leave mouse and keyboard untouched | Six posts, final mouse-up, desktop switch and TextEdit carry independently |
+
+```text
+mise exec -- just launch --timeout 25 --stream -- drag-diag-chord --allow-untested
+mise exec -- just launch --timeout 40 --stream -- drag-diag-hold --hold-secs 6 --allow-untested
+mise exec -- just launch --timeout 25 --stream -- drag-diag-full --allow-untested
+```
+
+Optional provenance discriminator: repeat the real-drag/synthetic-chord cell with
+`mise exec -- just launch --timeout 25 --stream -- drag-diag-chord --untagged --allow-untested`.
+
+For the Amethyst comparison, first verify manually that the already-configured
+Switch to Desktop 2 shortcut works. If disabled/unbound, the command refuses;
+any manual configuration change is separate from this test and must be restored
+afterward. Reset to Desktop 1, position the cursor as in the full cell, then run:
+
+```text
+mise exec -- just launch --timeout 25 --stream -- drag-diag-full --amethyst --desktop 2 --allow-untested
+```
+
+Observe the same six posts and native effects, accounting for the documented
+cursor-anchor/explicit-drag-flags substitutions. This is a sequence comparison,
+not an exact reproduction of Amethyst's anchor or automatic return policy.
+
+Ctrl+C in the terminal stops the **launch wrapper**, not its LaunchServices
+child. Wait for the child's bounded release/exit before another trial; the hold
+defaults to 6 seconds and cannot exceed the requested 15-second cap except host
+scheduling delay. Direct SIGINT/SIGTERM to the verified diagnostic PID requests
+release-first cancellation. Do not force-kill during a held input. On refusal or
+residue, preserve JSON and stop rather than retrying blindly. In-process cleanup
+cannot guarantee release after SIGKILL, abort or power loss.
+
+Cleanup: return TextEdit to Desktop 1, wait for all started diagnostics to exit,
+then manually remove only the disposable **empty** Desktop 2 in Mission Control.
+Do not remove an occupied Space. Run
+`mise exec -- just launch -- spaces-diagnose` and compare the original topology.
+Restore any separately changed shortcut setting. No probe performs cleanup Space
+operations or changes settings on the user's behalf.
+
+### Offline verification
+
+Final local gates pass: **862 tests** (728 library plus eight integration suites),
+locked all-target macOS clippy with `-D warnings`, workspace format and diff checks,
+`just app 'OmniTiler Mac Dev'` and separate `just verify` for both signed bundles.
+Independent review found no serious remaining issue after cleanup corrections.
+Unsafe blocks **114 → 114**, all confined to the unchanged `ffi.rs`; the maintained
+`signal-hook` dependency avoids new unsafe signal handling. Static launcher-flow
+verification caught and corrected a two-layer `--stream` mismatch: prompts now
+always go to probe stderr, and the wrapper alone controls live streaming.
+No live discriminator cell has been run; managed workspace completion and product
+transfer capability remain outside this diagnostic delivery.
+
 ## Select-only fallback handover (2026-10-17)
 
 **Transfer remains parked; only existing-Space selection is armed in the bounded

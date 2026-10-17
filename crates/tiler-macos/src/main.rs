@@ -817,6 +817,37 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 allow_untested,
             )
         }
+        Command::DragDiagChord {
+            countdown,
+            untagged,
+            allow_untested,
+        } => tiler_macos::space_drag_diag_live::run_drag_diag_chord(
+            countdown,
+            untagged,
+            allow_untested,
+        ),
+        Command::DragDiagHold {
+            countdown,
+            hold_secs,
+            allow_untested,
+        } => tiler_macos::space_drag_diag_live::run_drag_diag_hold(
+            countdown,
+            hold_secs,
+            allow_untested,
+        ),
+        Command::DragDiagFull {
+            countdown,
+            amethyst,
+            desktop,
+            untagged,
+            allow_untested,
+        } => tiler_macos::space_drag_diag_live::run_drag_diag_full(
+            countdown,
+            amethyst,
+            desktop,
+            untagged,
+            allow_untested,
+        ),
         Command::Tile {
             user_start,
             scopes,

@@ -27,46 +27,19 @@ mod live_impl {
     use crate::space_switch_edges::edge_synth_gates;
 
     /// Guarded HID mouse post (Silica parity: HID tap, zero flags,
-    /// own-switch tag). Safe maintained `objc2` wrappers only -- no new
-    /// `unsafe`.
+    /// own-switch tag). Shared construction with the user-run diagnostics
+    /// ([`crate::synth::hid_mouse_post`]): same source, tap, flags, and
+    /// tag — no drifting duplicate. Safe maintained `objc2` wrappers
+    /// only -- no new `unsafe`.
     fn post_mouse_event(step: DragStep, point: (f64, f64)) -> Result<(), String> {
-        use objc2_core_graphics::{
-            CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventType,
-        };
-        let (ty, button) = match step {
-            DragStep::MouseMove => (CGEventType::MouseMoved, None),
-            DragStep::MouseDown => (
-                CGEventType::LeftMouseDown,
-                Some(objc2_core_graphics::CGMouseButton::Left),
-            ),
-            DragStep::MouseDragged => (
-                CGEventType::LeftMouseDragged,
-                Some(objc2_core_graphics::CGMouseButton::Left),
-            ),
-            DragStep::MouseUp => (
-                CGEventType::LeftMouseUp,
-                Some(objc2_core_graphics::CGMouseButton::Left),
-            ),
-            _ => return Err("refusing non-mouse step on the mouse post".to_owned()),
-        };
-        let button = button.unwrap_or(objc2_core_graphics::CGMouseButton::Left);
-        let event = CGEvent::new_mouse_event(
-            None,
-            ty,
-            objc2_core_foundation::CGPoint {
-                x: point.0,
-                y: point.1,
-            },
-            button,
-        )
-        .ok_or_else(|| "CGEventCreateMouseEvent returned null".to_owned())?;
-        CGEvent::set_flags(Some(&event), CGEventFlags(0));
-        CGEvent::set_integer_value_field(
-            Some(&event),
-            CGEventField::EventSourceUserData,
-            crate::input_match::OWN_SWITCH_USER_DATA,
-        );
-        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        let kind = crate::synth::HidMouseKind::from_drag_step(step)
+            .ok_or_else(|| "refusing non-mouse step on the mouse post".to_owned())?;
+        crate::synth::hid_mouse_post(
+            kind,
+            point,
+            0,
+            Some(crate::input_match::OWN_SWITCH_USER_DATA),
+        )?;
         Ok(())
     }
 

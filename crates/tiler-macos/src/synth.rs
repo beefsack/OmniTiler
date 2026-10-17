@@ -338,6 +338,123 @@ fn raw_post_mouse_event(pid: u32, down: bool, point: (f64, f64)) -> Result<u64, 
     }
 }
 
+/// Shared HID mouse-event kind for drag-family posts: exactly the
+/// transfer executor's [`crate::space_drag_transfer::DragStep`] mouse
+/// vocabulary. Both the owned-helper transfer backend and the user-run
+/// drag diagnostics post through [`hid_mouse_post`], so the order, source,
+/// tap, flags, and tag cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HidMouseKind {
+    Move,
+    Down,
+    Dragged,
+    Up,
+}
+
+impl HidMouseKind {
+    /// Executor step mapping (transfer order vocabulary, shared).
+    #[must_use]
+    pub(crate) fn from_drag_step(step: crate::space_drag_transfer::DragStep) -> Option<Self> {
+        match step {
+            crate::space_drag_transfer::DragStep::MouseMove => Some(Self::Move),
+            crate::space_drag_transfer::DragStep::MouseDown => Some(Self::Down),
+            crate::space_drag_transfer::DragStep::MouseDragged => Some(Self::Dragged),
+            crate::space_drag_transfer::DragStep::MouseUp => Some(Self::Up),
+            _ => None,
+        }
+    }
+}
+
+/// Single shared HID mouse post: source `None`, tap `HID`, caller flags
+/// and tag. The ONLY construction site for drag-family mouse events (the
+/// transfer executor and every diagnostic mode). Only finiteness is
+/// checked here: cursor points may legitimately be negative (displays left
+/// of main), so negativity never refuses. Returns the dispatch latency
+/// (never a delivery claim).
+#[cfg(target_os = "macos")]
+pub(crate) fn hid_mouse_post(
+    kind: HidMouseKind,
+    point: (f64, f64),
+    flags: u64,
+    tag: Option<i64>,
+) -> Result<u64, String> {
+    use objc2_core_graphics::{
+        CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton,
+    };
+    crate::synth::validate_provenance_tag(tag)?;
+    if !point.0.is_finite() || !point.1.is_finite() {
+        return Err("refusing HID mouse post at a non-finite point".to_owned());
+    }
+    let ty = match kind {
+        HidMouseKind::Move => CGEventType::MouseMoved,
+        HidMouseKind::Down => CGEventType::LeftMouseDown,
+        HidMouseKind::Dragged => CGEventType::LeftMouseDragged,
+        HidMouseKind::Up => CGEventType::LeftMouseUp,
+    };
+    let event = CGEvent::new_mouse_event(
+        None,
+        ty,
+        objc2_core_foundation::CGPoint {
+            x: point.0,
+            y: point.1,
+        },
+        CGMouseButton::Left,
+    )
+    .ok_or_else(|| "CGEventCreateMouseEvent returned null".to_owned())?;
+    CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+    if let Some(t) = tag {
+        CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, t);
+    }
+    let start = Instant::now();
+    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+    Ok(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn hid_mouse_post(
+    _kind: HidMouseKind,
+    _point: (f64, f64),
+    _flags: u64,
+    _tag: Option<i64>,
+) -> Result<u64, String> {
+    Err("HID mouse posts are macOS-only".to_owned())
+}
+
+/// Single shared HID key post: source `None`, tap `HID`, caller flags and
+/// tag (tag space gated to absent/own-switch). The ONLY construction site
+/// for drag-family chord events (transfer executor via
+/// [`post_guarded_with_tag`], diagnostics directly after their own narrow
+/// gates). Returns the dispatch latency (never a delivery claim).
+#[cfg(target_os = "macos")]
+pub(crate) fn hid_key_post(
+    key_code: u16,
+    flags: u64,
+    down: bool,
+    tag: Option<i64>,
+) -> Result<u64, String> {
+    use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventTapLocation};
+    validate_provenance_tag(tag)?;
+    let event = CGEvent::new_keyboard_event(None, key_code, down)
+        .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
+    CGEvent::set_flags(Some(&event), CGEventFlags(flags));
+    if let Some(t) = tag {
+        CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, t);
+    }
+    let start = Instant::now();
+    CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+    Ok(start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn hid_key_post(
+    _key_code: u16,
+    _flags: u64,
+    _down: bool,
+    _tag: Option<i64>,
+) -> Result<u64, String> {
+    Err("HID key posts are macOS-only".to_owned())
+}
+
 /// Current cursor position via a null-source event (read-only; its
 /// location stamps the live cursor). `None` when non-finite or off-macOS.
 /// Pointer-restore baseline only: restoring uses the eventless
@@ -488,7 +605,8 @@ fn raw_post_key_event_to_session(
 
 /// Raw HID-tap post (crate-private, fixture-only discriminator): upstream of
 /// the session tap. Only [`post_guarded`] calls this, after owned proof
-/// plus the fresh oracle plus bundle refusal.
+/// plus the fresh oracle plus bundle refusal. Construction is shared with
+/// [`hid_key_post`] (same source/tap/flags/tag path).
 fn raw_post_key_event_to_hid(
     pid: u32,
     key_code: u16,
@@ -498,21 +616,14 @@ fn raw_post_key_event_to_hid(
 ) -> Result<PostedEvent, String> {
     #[cfg(target_os = "macos")]
     {
-        use objc2_core_graphics::{CGEvent, CGEventField, CGEventFlags, CGEventTapLocation};
-        let event = CGEvent::new_keyboard_event(None, key_code, down)
-            .ok_or_else(|| "CGEventCreateKeyboardEvent returned null".to_owned())?;
-        CGEvent::set_flags(Some(&event), CGEventFlags(flags));
-        if let Some(t) = tag {
-            CGEvent::set_integer_value_field(Some(&event), CGEventField::EventSourceUserData, t);
-        }
-        let start = Instant::now();
-        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
+        let _ = pid;
+        let post_latency_us = hid_key_post(key_code, flags, down, tag)?;
         Ok(PostedEvent {
             pid,
             key_code,
             flags,
             down,
-            post_latency_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+            post_latency_us,
         })
     }
     #[cfg(not(target_os = "macos"))]

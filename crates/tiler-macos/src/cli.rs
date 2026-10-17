@@ -194,6 +194,23 @@ pub enum Command {
         seconds: u64,
         allow_untested: bool,
     },
+    DragDiagChord {
+        countdown: u64,
+        untagged: bool,
+        allow_untested: bool,
+    },
+    DragDiagHold {
+        countdown: u64,
+        hold_secs: u64,
+        allow_untested: bool,
+    },
+    DragDiagFull {
+        countdown: u64,
+        amethyst: bool,
+        desktop: u32,
+        untagged: bool,
+        allow_untested: bool,
+    },
     SpacesSession {
         seconds: u64,
         allow_untested: bool,
@@ -504,6 +521,28 @@ pub fn help_text() -> String {
             \x20 \x20 removes only it afterwards; performs no SLS move,\n\
             \x20 \x20 writes no preferences; explicit\n\
             \x20 \x20 opt-in per invocation)\n\
+           \x20 drag-diag-chord [--countdown N] [--untagged] --allow-untested\n\
+           \x20 \x20 (user-run chord-only: countdown default 5, then exactly one\n\
+           \x20 \x20 synthetic Ctrl+Right down/up through the transfer-identical\n\
+           \x20 \x20 HID path; no helper/ownership -- you physically hold the\n\
+           \x20 \x20 TextEdit titlebar; --untagged drops the own-switch tag)\n\
+           \x20 drag-diag-hold [--countdown N] [--hold-secs N] --allow-untested\n\
+           \x20 \x20 (user-run hold-only: countdown default 5 while you position\n\
+           \x20 \x20 the real cursor, capture once with AX+WindowServer guards,\n\
+           \x20 \x20 mouse down plus the small executor drag, bounded hold\n\
+           \x20 \x20 (default 6, max 15) for YOUR physical Ctrl+Right, then a\n\
+           \x20 \x20 guaranteed same-point mouse-up)\n\
+           \x20 drag-diag-full [--countdown N] [--amethyst [--desktop N]] [--untagged] --allow-untested\n\
+           \x20 \x20 (user-run full synthetic drag/chord/release at the captured\n\
+           \x20 \x20 cursor point: tagged Ctrl+Right, or the Amethyst Desktop-N\n\
+           \x20 \x20 sequence (default Desktop 2; configured chord read live,\n\
+           \x20 \x20 refused when disabled -- never a settings write); one shot,\n\
+           \x20 \x20 no inverse, no focus/restore writes)\n\
+           \x20 \x20 (interrupts release first: Ctrl+C during countdown cancels\n\
+           \x20 \x20 with nothing posted; countdown/capture prompts always print\n\
+           \x20 \x20 to stderr (live under the launch wrapper's --stream) while\n\
+           \x20 \x20 stdout stays JSON-only; Ctrl+C stops the launch wrapper, not\n\
+           \x20 \x20 the signed child, which always self-releases on its bounded deadline)\n\
            \x20 spaces-session [--seconds N] [--allow-untested]\n\
            \x20 \x20 (single bounded Child-holder session: lifecycle proofs, CG identity,\n\
            \x20 \x20 membership/topology/permission readbacks; dispatches no Space writes;\n\
@@ -1722,6 +1761,148 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 original: original.ok_or("spaces-drag-transfer needs --original")?,
                 temp,
                 seconds,
+                allow_untested,
+            }
+        }
+        "drag-diag-chord" => {
+            // User-run chord-only diagnostic: countdown, then exactly one
+            // Ctrl+Right down/up through the transfer-identical HID path.
+            // No helper, no ownership: the user physically holds the
+            // TextEdit titlebar. --untagged posts without the own-switch
+            // tag (tap-consumption discriminator, cheap).
+            let mut countdown = crate::space_drag_diag::DEFAULT_COUNTDOWN_SECS;
+            let mut untagged = false;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--countdown" => {
+                        j += 1;
+                        let raw = parse_u64(
+                            args.get(j).ok_or("--countdown needs a value")?,
+                            "--countdown",
+                        )?;
+                        countdown = crate::space_drag_diag::validate_countdown(raw)
+                            .map_err(|e| format!("drag-diag-chord: {e}"))?;
+                    }
+                    "--untagged" => {
+                        untagged = true;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("drag-diag-chord: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::DragDiagChord {
+                countdown,
+                untagged,
+                allow_untested,
+            }
+        }
+        "drag-diag-hold" => {
+            // User-run hold-only diagnostic: countdown while the user
+            // positions the real cursor, capture once, guard, mouse down
+            // plus the small executor drag, bounded hold (default 6 s, cap
+            // 15 s) for the user's REAL Ctrl+Right, guaranteed same-point
+            // mouse-up.
+            let mut countdown = crate::space_drag_diag::DEFAULT_COUNTDOWN_SECS;
+            let mut hold_secs = crate::space_drag_diag::DEFAULT_HOLD_SECS;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--countdown" => {
+                        j += 1;
+                        let raw = parse_u64(
+                            args.get(j).ok_or("--countdown needs a value")?,
+                            "--countdown",
+                        )?;
+                        countdown = crate::space_drag_diag::validate_countdown(raw)
+                            .map_err(|e| format!("drag-diag-hold: {e}"))?;
+                    }
+                    "--hold-secs" => {
+                        j += 1;
+                        let raw = parse_u64(
+                            args.get(j).ok_or("--hold-secs needs a value")?,
+                            "--hold-secs",
+                        )?;
+                        hold_secs = crate::space_drag_diag::validate_hold(raw)
+                            .map_err(|e| format!("drag-diag-hold: {e}"))?;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("drag-diag-hold: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            Command::DragDiagHold {
+                countdown,
+                hold_secs,
+                allow_untested,
+            }
+        }
+        "drag-diag-full" => {
+            // User-run full synthetic drag/chord/release at the captured
+            // cursor point: normal tagged Ctrl+Right, or the Amethyst
+            // Desktop-N sequence with --amethyst (configured chord read
+            // live, refused when disabled/unknown — never a settings
+            // write; --desktop selects it, default 2). --untagged is only
+            // meaningful without --amethyst (Amethyst is untagged by
+            // construction).
+            let mut countdown = crate::space_drag_diag::DEFAULT_COUNTDOWN_SECS;
+            let mut amethyst = false;
+            let mut desktop = crate::space_drag_diag::DEFAULT_AMETHYST_DESKTOP;
+            let mut untagged = false;
+            let mut allow_untested = false;
+            let mut j = 0;
+            while j < args.len() {
+                match args[j].as_str() {
+                    "--countdown" => {
+                        j += 1;
+                        let raw = parse_u64(
+                            args.get(j).ok_or("--countdown needs a value")?,
+                            "--countdown",
+                        )?;
+                        countdown = crate::space_drag_diag::validate_countdown(raw)
+                            .map_err(|e| format!("drag-diag-full: {e}"))?;
+                    }
+                    "--amethyst" => {
+                        amethyst = true;
+                    }
+                    "--desktop" => {
+                        j += 1;
+                        let raw =
+                            parse_u32(args.get(j).ok_or("--desktop needs a value")?, "--desktop")?;
+                        desktop = crate::space_drag_diag::validate_desktop(raw)
+                            .map_err(|e| format!("drag-diag-full: {e}"))?;
+                    }
+                    "--untagged" => {
+                        untagged = true;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
+                    other => return Err(format!("drag-diag-full: unknown arg '{other}'")),
+                }
+                j += 1;
+            }
+            if !amethyst && desktop != crate::space_drag_diag::DEFAULT_AMETHYST_DESKTOP {
+                return Err("drag-diag-full: --desktop needs --amethyst".to_owned());
+            }
+            if amethyst && untagged {
+                return Err(
+                    "drag-diag-full: --untagged is redundant with --amethyst (untagged by construction)"
+                        .to_owned(),
+                );
+            }
+            Command::DragDiagFull {
+                countdown,
+                amethyst,
+                desktop,
+                untagged,
                 allow_untested,
             }
         }

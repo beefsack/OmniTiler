@@ -1954,3 +1954,138 @@ fn empty_removal_needs_explicit_nonzero_sid_and_opt_in() {
         }
     ));
 }
+
+#[test]
+fn drag_diag_chord_parses_with_countdown_default_and_opts() {
+    use crate::space_drag_diag::DEFAULT_COUNTDOWN_SECS;
+    let r = parse_args(&argv(&["drag-diag-chord", "--allow-untested"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::DragDiagChord {
+            countdown: DEFAULT_COUNTDOWN_SECS,
+            untagged: false,
+            allow_untested: true,
+        }
+    ));
+    assert_eq!(DEFAULT_COUNTDOWN_SECS, 5);
+    let r = parse_args(&argv(&[
+        "drag-diag-chord",
+        "--countdown",
+        "0",
+        "--untagged",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::DragDiagChord {
+            countdown: 0,
+            untagged: true,
+            ..
+        }
+    ));
+    assert!(parse_args(&argv(&["drag-diag-chord", "--countdown", "31"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-chord", "--countdown"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-chord", "--stream"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-chord", "--bogus"])).is_err());
+}
+
+#[test]
+fn drag_diag_hold_parses_with_bounded_hold_cap() {
+    use crate::space_drag_diag::{DEFAULT_COUNTDOWN_SECS, DEFAULT_HOLD_SECS, MAX_HOLD_SECS};
+    let r = parse_args(&argv(&["drag-diag-hold", "--allow-untested"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::DragDiagHold {
+            countdown: DEFAULT_COUNTDOWN_SECS,
+            hold_secs: DEFAULT_HOLD_SECS,
+            allow_untested: true,
+        }
+    ));
+    assert_eq!((DEFAULT_HOLD_SECS, MAX_HOLD_SECS), (6, 15));
+    let r = parse_args(&argv(&[
+        "drag-diag-hold",
+        "--countdown",
+        "3",
+        "--hold-secs",
+        "15",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::DragDiagHold {
+            countdown: 3,
+            hold_secs: 15,
+            ..
+        }
+    ));
+    // The hold cap is a parse refusal (before any live touch): 0 and 16+.
+    assert!(parse_args(&argv(&["drag-diag-hold", "--hold-secs", "0"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-hold", "--hold-secs", "16"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-hold", "--hold-secs"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-hold", "--untagged"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-hold", "--stream"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-hold", "--bogus"])).is_err());
+}
+
+#[test]
+fn drag_diag_full_parses_with_amethyst_variant() {
+    use crate::space_drag_diag::{DEFAULT_AMETHYST_DESKTOP, DEFAULT_COUNTDOWN_SECS};
+    let r = parse_args(&argv(&["drag-diag-full", "--allow-untested"])).unwrap();
+    assert!(r.may_mutate);
+    assert!(matches!(
+        r.command,
+        Command::DragDiagFull {
+            countdown: DEFAULT_COUNTDOWN_SECS,
+            amethyst: false,
+            desktop: DEFAULT_AMETHYST_DESKTOP,
+            untagged: false,
+            allow_untested: true,
+        }
+    ));
+    assert_eq!(DEFAULT_AMETHYST_DESKTOP, 2);
+    let r = parse_args(&argv(&[
+        "drag-diag-full",
+        "--amethyst",
+        "--desktop",
+        "3",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::DragDiagFull {
+            amethyst: true,
+            desktop: 3,
+            ..
+        }
+    ));
+    // --desktop needs --amethyst; --untagged is redundant with it; the
+    // Silica range 1..=16 is enforced at parse.
+    assert!(
+        parse_args(&argv(&[
+            "drag-diag-full",
+            "--desktop",
+            "3",
+            "--allow-untested"
+        ]))
+        .is_err()
+    );
+    assert!(
+        parse_args(&argv(&[
+            "drag-diag-full",
+            "--amethyst",
+            "--untagged",
+            "--allow-untested"
+        ]))
+        .is_err()
+    );
+    assert!(parse_args(&argv(&["drag-diag-full", "--desktop", "0"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-full", "--desktop", "17"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-full", "--amethyst", "--desktop"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-full", "--stream"])).is_err());
+    assert!(parse_args(&argv(&["drag-diag-full", "--bogus"])).is_err());
+}

@@ -91,6 +91,10 @@ pub mod scope;
 pub mod scope_inspect;
 pub mod session;
 pub mod space_direct_probe;
+pub mod space_drag_diag;
+pub mod space_drag_diag_live;
+#[cfg(test)]
+mod space_drag_diag_tests;
 pub mod space_drag_live;
 pub mod space_drag_transfer;
 #[cfg(test)]
