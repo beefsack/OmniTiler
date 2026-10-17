@@ -26,6 +26,12 @@ remains in [Windows decisions](decisions.md#scope-and-platform-goals).
   No broad cleanup, process-name kills, autostart, boot changes, logoff/restart
   or security exclusions. The user performs physical input, observations and
   session boundaries; agents do not synthesize those acceptance results.
+- Never press Win+T during tests: it can open Windows Terminal, which may
+  join an existing process the operator depends on. Avoid Win+G (Game Bar)
+  and Win+F11 (Xbox full screen experience). Scope runs so Terminal is never
+  managed; close only windows whose origin the run proved. Capture window
+  preimages before moving test windows; restart Explorer only by exact shell
+  PID.
 - Games/anti-cheat, elevated or protected windows and the secure desktop are
   outside these experiments. Run at ordinary medium integrity, not elevated.
   Stop the experiment if those classes enter its scope; do not probe takeover.
@@ -103,11 +109,20 @@ do not broaden cleanup or repeatedly restart the experiment.
   Recovery and final cleanup: `mise exec -- just stop`, then confirm no owner,
   restored Mouse Snap/session settings, revealed hidden windows and a clean
   ledger.
+- Desktop control runs through scripted PowerShell helpers (`Add-Type`
+  P/Invoke SendInput/SetCursorPos, taskbar auto-hide changes via documented
+  `SHAppBarMessage(ABM_SETSTATE)`, `System.Windows.Automation` dialogs,
+  GetGuiResources handle checks); no special desktop-control tooling is
+  required. Helper-only state changes stay inside the approved scope with a
+  captured preimage and restore; the product pager itself only reads the
+  switch (ABM_GETSTATE). This grants no new mutation authorization.
+  ABM_SETSTATE: [Microsoft SHAppBarMessage](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shappbarmessage).
 - The normal owner ignores injected keyboard input. Agent journeys use the
   exact-owner test CLI controls (`workspace --float`/`--sticky`/
   `--fullscreen`, select/send), tray callbacks or injected mouse input;
-  keyboard shortcut journeys remain physical and user-owned. Never bypass the
-  injected-keyboard filter in product code.
+  keyboard shortcut journeys remain physical and user-owned. Keyboard-resize
+  and OS-owned chords such as Win+M stay physical for the same reason;
+  synthetic input cannot drive them. Never weaken the filter for tests.
 - The agent-owned, identity-tagged `tiler-test-window.exe` is the standard
   disposable helper (accepted 2026-10-14). The non-hooking lifecycle
   `run --hide` proof accepts only this helper, not ordinary applications.
@@ -159,6 +174,16 @@ do not broaden cleanup or repeatedly restart the experiment.
 - Stop and report on authority, identity, baseline, diagnostic, unexpected
   effect or restoration ambiguity. Revise the protocol from accepted Phase 1
   findings before relying on newly discovered behavior.
+- Use a unique evidence directory per journey; reused screenshot filenames
+  overwrite prior journey evidence.
+- Independently verify screenshot/appearance conclusions; one pager miniature
+  'missing' reading was an analysis error.
+- Sequential per-window visibility confirmation serializes each app response
+  latency (workspace switches observed around 0.5-1.3 s); posting all effects
+  then confirming together under one event-driven deadline reduced this
+  (around 0.1 s). Treat the figures as observed, not guaranteed.
+- Process CPU-time sampling quantizes coarsely (around 7.8 ms/sample); treat
+  near-zero idle-cost readings as granularity-limited, not proven zero.
 
 Hook facts: [Microsoft LowLevelKeyboardProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelkeyboardproc),
 checked 2026-09-30; other setup/API evidence is linked from the runbook.

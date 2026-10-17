@@ -498,6 +498,14 @@ git status --short
   Windows spike exists; static CRT/OS imports are supporting, not proof.
   Sandbox use stays deferred to Phase 4 clean-runtime and guest-only work.
   Host input/game gates remain pending until user-tested.
+- [ ] scripts/windows-hide-proof.ps1 source-hash manifest coverage
+  reviewed/updated after module splits/moves (especially moves outside the
+  recursive roots); per-file Get-FileHash rows are UPPERCASE and the
+  combined Sha256-String digest lowercase. Preserve exact casing in
+  reproduction/comparison: row text casing affects the combined digest.
+- [ ] Records and backlog can lag code; verify delivery in code before
+  implementing an item (example: press-focus R-DRAG-08 was already
+  delivered).
 
 ## Proposed Windows global AGENTS.md section
 
