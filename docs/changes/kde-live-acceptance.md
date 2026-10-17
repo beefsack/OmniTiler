@@ -17,11 +17,14 @@
 - Exercise the three acceptance groups in order; regress and fix product defects
   only after reproduction. Stop on baseline or restoration surprises.
 - Status: unfloat functional callback pass; physical shortcut delivery pending.
-  Both Settings identities opened in the native shell; interactive Settings
-  acceptance is incomplete. The initial fixture drift has a fresh recorded
+  Both Settings identities pass targeted native accessibility actions; physical
+  traversal/visual and stronger operation-isolation acceptance remain pending.
+  The initial fixture drift has a fresh recorded
   baseline. The full-state breadth pass found a maximized-unfloat regression,
-  now corrected and reverified natively. A suspected restart-float defect was a
-  floating-workspace fixture mismatch. The remaining matrix is pending.
+  now corrected and reverified natively. Fixed-client D5 first-exit, sampled D6
+  enable and D7 Planner-only restart pass natively. Controller-replacement D7
+  remains unaccepted after a churned fixture. Suspected restart-float defects
+  were floating-workspace fixture mismatches. The remaining matrix is pending.
 
 ## Native observations, 2026-10-17/18
 
@@ -92,8 +95,9 @@
   other three tabs.
 - Live keyboard traversal, label buddies, tab switching, cross-tab drafts,
   Apply/reopen, Cancel, Defaults-without-save and ordinary-Apply operation
-  isolation were not tested: no safe desktop input route was available. These
-  remain pending, not inferred from offline coverage.
+  isolation were not tested in this first-page leg: no safe desktop input route
+  was then available. The later targeted-accessibility leg below advances only
+  its explicitly observed nonphysical checks.
 - Settings-only build and CTest passed **27/27** on the same source. These are
   offline/application-local results, not native-shell interaction acceptance.
 - Settings values were not changed. The capture tool briefly added its own
@@ -193,28 +197,122 @@
   and helper were removed, the Planner name became unowned, and configuration,
   shortcut and float-intent bytes were unchanged. No new baseline was required.
 
+## Fixed-client native observations, 2026-10-18
+
+- Installed disposable-client candidates reported resizable native hints. An
+  owned minimal Qt Widgets client supplied genuine equal positive bounds on both
+  axes; KWin reported normal, non-dialog, non-resizable, equal minimum/maximum
+  dimensions. Using this helper is a tentative fixture decision, pending user
+  review; it is not game, borderless-client or general application acceptance.
+- D6 sampled pass: enabling the disposable workspace left the automatic fixed
+  float at its original frame with zero geometry writes. An ordinary editor
+  control tiled while the fixed client stayed untouched. Changed hints,
+  predicates, maximized/sticky controls and other enable permutations remain
+  pending.
+- D5 sampled passes: an already-fixed float returned from fullscreen to its
+  original frame with no geometry writes. Separately, an observer armed before
+  launch captured a new client's first `windowAdded` as fullscreen with genuine
+  fixed hints. Its first subsequent report wrote no geometry. First exit also
+  wrote no geometry; the client remained a native float, the editor stayed tiled,
+  and later native read-back remained stable. Raw birth/exit journals and exact
+  client hint read-back close the earlier first-observation evidence gap.
+  Non-fixed born-fullscreen, predicate changes, real games and physical input
+  remain pending.
+- D7 Planner-only sampled pass: explicit fixed tiling stored a disjoint tile
+  override. Planner replacement rediscovered a fresh generation. After explicitly
+  re-enabling workspace tiling, the fixed tile and stored override remained;
+  re-floating cleared the override and reflowed the ordinary control. The first
+  attempt omitted that re-enable and interpreted a floating workspace as lost
+  intent. That defect claim is withdrawn, not an admission/persistence finding.
+- A separate controller-plus-Planner replacement exercised seed return and
+  workspace re-enable, but its preceding churn produced three
+  `partial-observation` refusals and a float command followed by an observe-only
+  dispatch. Retrying through those refusals violated the clean-fixture stop rule.
+  This run is not accepted D7 controller-restart evidence. Displacement of the
+  ordinary control, transient stored membership and an explicit fixed re-float
+  frame differing from its original frame remain unclassified observations, not
+  diagnosed admission/capacity defects.
+- A subsequent clean fixture established both clients while stopped, verified
+  genuine fixed hints and ordinary-control tiling, then issued one explicit
+  fixed-tile request. It also returned `partial-observation`. The leg stopped
+  immediately without retry or controller replacement; frames and tile-marker
+  absence were unchanged. D7 controller replacement is blocked before its
+  precondition, not proven to fail hydration. Further retries need source-level
+  diagnosis of the refusal first.
+- Reproduced diagnostic defect: fullscreen exit logged `fullscreen-refused` and
+  `shortcut-failed`, then the native fullscreen-change event confirmed success
+  before the next zero-write report. The immediate setter read-back in
+  `kwin/src/world-native.ts` races asynchronous native settlement. No geometry or
+  admission failure was established; correction options are parked in the backlog.
+- Both fixed helper processes were found absent during teardown after the last
+  native query had shown them alive. Exit status had not been retained, so their
+  cause is unknown. A separate controller-free lifetime probe retained parent
+  wait status, PID/start identity and native inventory across observer teardown
+  and an idle interval; the client remained alive and exact owned termination
+  returned the expected status. Observer teardown did not reproduce the exits.
+  Further fixtures need retained child exit status; the historic cause remains
+  unresolved rather than attributed to product behavior.
+- Independent evidence review accepted only the D5/D6 samples and D7
+  Planner-only leg above. Builds succeeded; no production source or tests changed.
+  Configuration, shortcuts and float-intent bytes matched the accepted baseline;
+  desktop identities/count, protected frames/membership, active/current state,
+  pointer and effects were restored. All disposable clients were gone, helper
+  scripts were unloaded and development is DOWN. No additional baseline change
+  was required.
+
+## Settings targeted native interaction, 2026-10-18
+
+- At `821b05d0`, a fresh native build produced both KCM identities. Each owned
+  native shell was bound to its executable, mapped source-built plugin and
+  accessibility-bus process identity. Direct AT-SPI widget actions/read-backs
+  targeted only those shells; no synthetic keyboard or pointer input was used.
+- Both identities passed four-tab title/order and page-content observations,
+  Status presence across pages, gap draft editing, Apply followed by reopen and
+  saved-value read-back, Cancel discarding a later draft, and Defaults followed
+  by Cancel without changing the saved values. Effect-identity cross-tab draft
+  retention had explicit post-switch value read-back; the script identity still
+  lacks that exact post-switch discriminator. Accessible label/buddy information
+  was observed, not physical traversal or mnemonic activation.
+- Ordinary Apply left the window-edge configuration, shortcut bytes, effect
+  configuration and effect-loaded state unchanged at the before/after endpoints.
+  No transient-call oracle was present, so stronger non-invocation of operational
+  actions remains pending. Fix/Revert and Apply Shortcuts were not activated.
+  With the controller stopped, saved feedback honestly reported reconfiguration
+  requested but application unconfirmed.
+- The first interaction attempt did not retain its gating accessibility and
+  process-mapping outputs and is not accepted evidence. A single capture repair
+  retained raw owner/PID checks, widget trees, actions/read-backs, mapped-plugin
+  identity and configuration deltas. Independent review accepted the bounded
+  results above. One reopen route had malformed D-Bus arguments; the subsequent
+  correctly addressed reopen supplies the evidence, not that route failure.
+- Only the two owned temporary gap keys were removed during restoration.
+  Configuration, shortcuts and float-intent bytes matched the accepted preimages;
+  desktop identities/count, protected frames/membership, current/active state,
+  pointer and effects matched. All owned shells exited and development is DOWN.
+  No Settings product defect or new baseline was found. Physical keyboard,
+  visual UX and stronger operational-isolation checks remain pending.
+
 ## Remaining coverage and next step
 
 | Acceptance group | Current result | Remaining |
 | --- | --- | --- |
 | Ordinary unfloat | Native callback functional pass, two pairs | Physical Meta+G delivery |
-| Both Settings identities | Native shell launch and first-page observations | Tabs 2-4, traversal/buddies, Apply/reopen, Cancel, Defaults, operation isolation |
-| Restart / unavailable Planner | Sampled native pass, no old-command replay | Broader race/error permutations and script-restart intent coverage |
+| Both Settings identities | Source-built native shell plus targeted AT-SPI tabs/Status, draft/save/reopen, Cancel, Defaults and unchanged Apply endpoints | Physical traversal/buddies/visual UX, script post-switch draft read-back and transient-operation isolation |
+| Restart / unavailable Planner | Sampled native pass, no old-command replay; fixed override survives Planner-only replacement after workspace re-enable | Clean controller-restart intent coverage and broader race/error permutations |
 | Transport | Exact request limit, oversize/count refusal and large reply delivered | Exact reply-limit delivery and broader latency acceptance |
 | Ordinary actions / lifecycle | Sampled native pass | Remaining matrix permutations |
-| Safety states / workspace enable | Ordinary float/sticky/fullscreen/minimized samples; maximized-slot restore and corrected B9 pass | Genuine fixed-client D5/D6/D7, game/born-state and refused/raced variants |
+| Safety states / workspace enable | Prior samples plus genuine fixed D5 born/prior-float exit, D6 enable/control and D7 Planner-only restart | Clean D7 controller restart, non-fixed born exit, remaining predicates/controls, games and refused/raced variants |
 | Workspace paths | Tiling toggle sample only | Selection/history, follow/stay/append, floating-boundary sends, lifecycle races and migration partial refusal |
 | Drag / client clamp | Not exercised | Continuous preview/drop/resize, late-reply cancel and bounded native clamp |
 | Multiple outputs | Not testable in this single-output fixture | Selection/history/swaps/hotplug-return and cross-output matrix |
 
 - No complete full-state or single-output inventory gate is claimed. Physical
-  keyboard/drag and interactive Settings need a safe input route or direct native
-  interaction; callbacks and offline widget tests are not substitutes.
-- Next bounded native step: verify the current accepted baseline, establish a
-  genuine fixed-size disposable client on the existing empty workspace, then
-  exercise fixed admission/workspace-enable/explicit-override restart legs
-  separately. Re-enable that test workspace after Planner replacement before
-  interpreting tiled behavior. Do not create extra workspaces for those legs.
+  keyboard/drag and Settings traversal/visual checks are not established by
+  callbacks, direct accessibility actions or offline widget tests.
+- Next bounded step: diagnose the explicit fixed-tile `partial-observation`
+  refusal from the stable fixture before another D7 live attempt. Controller
+  restart remains pending. A later clean attempt needs owned clients with
+  retained exit status and explicit workspace re-enable after replacement.
 - Workspace send/history/lifecycle testing needs a separately bounded fixture
   with owned peers, explicit target/view read-back and a baseline-preserving
   teardown. Native-maximize notification quietness and the isolated tile-order

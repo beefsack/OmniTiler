@@ -104,8 +104,13 @@ decisions of 2026-09-24 are under
   2026-10-17: exporter, checked-in descriptors and CI freshness gate; existing
   labels/placement, KConfig keys/fallback, both identities, settings-only
   packaging and native operation isolation retained. Rust/KWin suites and
-  hermetic native settings/effect tests pass. Physical tab/keyboard/draft/save
-  re-check remains user-owned; [evidence and exact steps](changes/archive/kde-settings-core-catalog.md).
+  hermetic native settings/effect tests pass. Native targeted-accessibility
+  checks passed both identities 2026-10-18: all tabs/Status, gap draft/save/reopen,
+  Cancel, Defaults without save and unchanged ordinary-Apply endpoints
+  ([partial evidence](changes/kde-live-acceptance.md#settings-targeted-native-interaction-2026-10-18)).
+  Physical traversal/buddies/visual UX, script-identity post-switch draft
+  read-back and transient-operation non-invocation remain pending;
+  [original steps](changes/archive/kde-settings-core-catalog.md).
 - P0 | Core update replies carry workspace state | Core and KDE delivered
   offline 2026-10-17 under selected D1-D5: complete world reports/replies,
   generation/revision/input-watermark fences, Planner-owned workspace policy,
@@ -4262,25 +4267,63 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   recovery. Fullscreen/sticky gates remain unchanged. User-owned, native TBD.
   [Record](changes/archive/maximized-intentional-unfloat.md).
 - D7 fixed-window tile override across script reload/planner restart (KDE
-  offline delivered): successfully tile a fixed client, reload the script and
+  offline delivered): Planner-only replacement with the same genuine fixed
+  client passed natively 2026-10-18 after explicit workspace re-enable; override
+  persistence and reversible clear were verified by store and native read-back
+  ([partial record](changes/kde-live-acceptance.md)). A separate churned
+  controller-replacement run is not accepted; clean script/controller restart
+  remains pending. A subsequent stable stopped-fixture setup also refused its
+  first explicit fixed-tile request as `partial-observation` and stopped without
+  retry or controller replacement. Diagnose that precondition refusal before
+  another restart attempt. Successfully tile a fixed client, reload the script and
   restart the planner with the same live client; it remains tiled. Check hint
   loss/predicate changes then workspace enable, re-float/close/complete-inventory
   prune, hidden clients, degraded/old-format/unmatched fallback to untouched
   fixed float, and separate hydrate/persist/clear ACK counts. Ordinary non-fixed
   commands gain no tile persistence; float controls receive zero extra writes.
-  [Record](changes/archive/fixed-window-tile-override-restart.md). User-owned, native TBD.
+  [Record](changes/archive/fixed-window-tile-override-restart.md). Remaining native legs pending.
 - D5 born-fullscreen first exit incl. games (KDE offline delivered): both
   predicates, current hints/predicate after fullscreen churn, non-fixed exit
   tiles, prior fixed float restores, later toggles retain identity. Verify no
   fullscreen writes and no geometry/focus/stacking/keep-above/maximize-clear
   writes to fixed first exits; correlated classification logs.
-  [Record](changes/archive/fixed-size-exit-and-enable.md). User-owned, native TBD.
+  Genuine fixed-client born-first-exit and prior-fixed-float restore sampled
+  native callback/state passes 2026-10-18, with zero geometry writes and ordinary
+  tiled control unchanged ([partial record](changes/kde-live-acceptance.md)).
+  Non-fixed born exit, predicate/current-hint permutations, games and physical
+  delivery remain pending. [Record](changes/archive/fixed-size-exit-and-enable.md).
 - D6 tiling enable with fixed windows (KDE offline delivered): fixed/non-fixed
   arrivals while floating, formerly ordinary tiles gaining fixed hints,
   predicate changes, explicit user tile overrides, intentional/sticky floats
   and fixed/maximized controls. Fixed automatic floats stay untouched; others
   tile, overrides retain Q3 slots. Verify classification logs and no writes.
-  [Record](changes/archive/fixed-size-exit-and-enable.md). User-owned, native TBD.
+  Sampled native callback/state pass 2026-10-18: genuine fixed automatic float
+  unchanged with zero writes; ordinary editor control tiled
+  ([partial record](changes/kde-live-acceptance.md)). Other permutations above
+  remain pending. [Record](changes/archive/fixed-size-exit-and-enable.md).
+- KDE asynchronous fullscreen outcome diagnostics: reproduced 2026-10-18 with
+  a genuine fixed born-fullscreen client. One exit callback logged
+  `fullscreen-refused` and `shortcut-failed`, then native exit settled and the
+  next accepted report wrote zero geometry. `setFullscreenNative` reads back
+  synchronously; both shortcut and pointer callers interpret that result as
+  final failure. Options: confirm at one fresh observation boundary with
+  lifetime/scope/generation/supersession fences (recommended), or report issuance
+  without final outcome until native observation. Preserve fullscreen safety,
+  no setter retry/command replay and truthful real-refusal diagnostics; add
+  asynchronous producer-shaped regression coverage. No correction delivered.
+  [Evidence summary](changes/kde-live-acceptance.md#fixed-client-native-observations-2026-10-18).
+- KDE full-state churn follow-ups (unclassified, 2026-10-18): three
+  `partial-observation` refusals and one float-command log followed by an
+  observe-only dispatch occurred during live membership/restart churn. A fixed
+  explicit-tile leg displaced an ordinary control; re-float geometry differed
+  from the pre-tile frame. A later stopped, stable fixture reproduced the
+  `partial-observation` refusal on its first fixed-tile request and stopped.
+  No admission/capacity diagnosis is established; inspect that refusal before
+  further native retries, then discriminate the other observations separately.
+  Two disposable helpers also exited after their last proven live observation;
+  cause unknown. A controller-free supervised lifetime probe did not reproduce
+  the exits; retain owned process identity and wait status on subsequent legs.
+  No clean controller-restart pass is inferred from this churned run.
 - KDE Q3 R-RST-01/03/04 (offline delivered, user decisions 2026-10-08): intentional
   ordinary float plus automatic fixed float and a tile; script stop/start
   preserves ordinary intent/current frame, automatic fixed identity recomputes.
