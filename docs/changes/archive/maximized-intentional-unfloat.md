@@ -84,3 +84,9 @@
 - Producer-shaped red/green regressions and independent safety review accepted
   the corrected bounded continuation. KWin 1794 tests and Rust workspace 3017
   tests pass. [Current acceptance and remaining checks](../kde-live-acceptance.md).
+- Corrected at `fe3cc3a9`; after upstream integration Rust workspace 3022 tests
+  pass. Native callback re-check passed on the first activation: clear, fresh
+  observation, one unfloat command and immediate tile occupation, stable through
+  a quiet interval and later focus change. Configuration and protected/native
+  desktop state matched the accepted baseline after teardown. Physical chord
+  delivery and the remaining fixed/refusal/race permutations remain pending.

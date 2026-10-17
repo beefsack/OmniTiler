@@ -217,3 +217,22 @@ Release codec/core samples use fresh Engines (11 repetitions); sizes are exact c
 - Beyond the bounded ordinary-action checks above, follow the live-testing guide before further native runs. Remaining acceptance includes authenticated restart/unavailable-Planner behavior; exact 4 MiB Qt/KWin delivery and latency; two-output selection/history/global swaps/hotplug return; follow/stay/append and floating-boundary sends; migration partial refusal; continuous preview/drop/resize and late-reply cancellation; float/sticky/maximize/fullscreen/minimized/game safety; workspace creation/removal races and bounded client-clamp behavior.
 - Windows/macOS remain on their compiling legacy domain API. Their full-world behavioral migrations and supported-platform offline/native gates are separate backlog items. Admission fallback remains the separate best-effort-admission item. A missed final host notification still requires a later trigger under D5.
 - Exact next action: user-owned live KDE acceptance, then the separately scoped native migrations and admission fallback. Durable decisions are promoted to `docs/decisions.md`; backlog records distinguish offline delivery from those remaining checks.
+
+### Bounded native acceptance continuation, 2026-10-18
+
+- Callback/state samples passed ordinary admission/focus/move/resize,
+  tiling-mode toggles, float/sticky/fullscreen/minimize safety, maximized-slot
+  enable/restore, Planner-only restart and unavailability, generation rediscovery
+  without replay, and close/reflow. The accepted desktop/configuration baseline
+  was restored; these samples do not complete the full matrix or physical input.
+- Maximized intentional unfloat exposed an asynchronous-readback regression,
+  corrected and natively reverified at `fe3cc3a9`. A suspected post-restart float
+  no-op was instead the fixture's saved floating default reseeding workspace
+  mode after Planner replacement; no admission/capacity defect was established.
+- [Current evidence, correction and untested legs](../kde-live-acceptance.md).
+- Actual Qt/KWin transport accepted an exactly 4194304-byte synthetic request
+  and delivered its 1608803-byte reply in a 904 ms spot sample; duplicate reply
+  bytes/revision were stable. One extra request byte was refused before decode;
+  the independent count cap also refused its below-byte-cap sample correctly.
+  Padding, timings, isolation and exact-reply-boundary limitations are retained
+  in the continuation record. Exact-4-MiB reply delivery remains pending.

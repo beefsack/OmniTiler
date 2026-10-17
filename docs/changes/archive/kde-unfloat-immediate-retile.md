@@ -77,4 +77,4 @@ behavior or live acceptance is included.
   not complete clean physical acceptance. The changed inventory was subsequently
   captured as the new fixture baseline (tentative, pending user review).
   See the [acceptance continuation](../kde-live-acceptance.md) for evidence,
-  offline gates, retained configuration differences and the stopped live checks.
+  offline gates, retained configuration differences and subsequent live checks.

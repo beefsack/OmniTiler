@@ -19,9 +19,9 @@
 - Status: unfloat functional callback pass; physical shortcut delivery pending.
   Both Settings identities opened in the native shell; interactive Settings
   acceptance is incomplete. The initial fixture drift has a fresh recorded
-  baseline. No production change or product defect has been established. The
-  full-state breadth pass found two float regressions to investigate and repair;
-  the remaining matrix is pending.
+  baseline. The full-state breadth pass found a maximized-unfloat regression,
+  now corrected and reverified natively. A suspected restart-float defect was a
+  floating-workspace fixture mismatch. The remaining matrix is pending.
 
 ## Native observations, 2026-10-17/18
 
@@ -114,12 +114,18 @@
   and was not replayed. Fresh-generation traffic and subsequent actions resumed.
 - Defect: maximized intentional unfloat issued its native clear, but synchronous
   read-back still observed maximize and refused the command. The native clear
-  settled later; a second activation re-tiled. Investigate event-driven settlement
-  under the existing B9 contract, with one native clear per activation and no
-  unsafe command replay. Add asynchronous producer-shaped regression coverage.
-- Defect: an ordinary float adopted after Planner restart accepted two explicit
-  toggles without geometry change. Exact divergent core/adapter behavior is not
-  yet isolated; reproduce through the real producer/reply boundary before fixing.
+  settled later; a second activation re-tiled. The correction below preserves
+  the existing B9 contract with one native clear per activation and no unsafe
+  command replay; asynchronous producer-shaped regressions cover the failure.
+- Initial suspicion: an ordinary float adopted after Planner restart accepted
+  two explicit toggles without geometry change. Offline isolation showed the
+  test workspace had reseeded from the deliberately floating saved default;
+  session-only workspace tiling overrides do not survive Planner replacement.
+  Floating scope publication correctly withholds geometry. This is a fixture
+  mismatch, not an admission/capacity or float regression. Temporary core probes
+  passed both floating no-write and re-enable-then-retile cases; no production or
+  committed test change was needed. Re-enable test-workspace tiling after restart
+  before checking tiled behavior.
 - Native maximize/restore alone produced no world traffic in this sample. A
   single unexplained tile-order change also needs attribution; neither is yet an
   independently reproduced product diagnosis.
@@ -150,7 +156,66 @@
   12 new cases failed and the ordinary-unfloat control passed; all 13 pass after
   correction. Silent/refused clear, races, newer input, generation rebind and
   transport failure are covered.
-- Final offline gates: KWin **1794 passed, zero failures across 268 suites**,
+- Final integrated offline gates at `fe3cc3a9`: KWin **1794 passed, zero failures
+  across 268 suites**,
   source/test typechecks and bundle build; Rust workspace **3017 passed, zero
-  failures** with `--offline --locked`; whitespace check clean. Native re-check
-  of the corrected maximized-unfloat path is next.
+  failures** before rebase and **3022 passed, zero failures across 83 groups**
+  after integrating upstream platform-policy tests, with `--offline --locked`;
+  whitespace check clean.
+- Native re-check at `fe3cc3a9` passed: one float callback issued the native clear;
+  the first observation report wrote no geometry, then one unfloat operation
+  occupied both tiles with two geometry writes. No second activation or focus
+  change was needed; no refusal or shortcut failure occurred. An eight-second
+  quiet interval and later focus change left the geometry stable. The accepted
+  configuration/native baseline was restored exactly and development is DOWN.
+
+## Actual Qt/KWin transport boundary, 2026-10-18
+
+- A pure-transport KWin helper called an owned Planner while the controller was
+  unloaded. Inputs were synthetic worlds; no reply was applied to native windows
+  or desktops. Authenticated discovery and a small accepted report took 1 ms and
+  2 ms respectively in this spot sample.
+- A 5000-window, 64-domain report padded with JSON trailing whitespace to exactly
+  **4194304 bytes** was accepted; its unpadded content was 1925198 bytes. KWin
+  received and parsed a **1608803-byte** full reply in **904 ms**. Construction
+  took a separate 273 ms. Identical resend returned identical bytes at the same
+  revision in 380 ms. This proves actual delivery, not layout usability or a
+  responsiveness target.
+- **4194305 bytes** were refused before decode: the service reported
+  `request-oversize` and KWin received the D-Bus size-bound error rather than a
+  normal callback. A separate 11188-window report below the byte cap was refused
+  in-band as `snapshot-invalid` / `inventory-over-cap`, confirming the distinct
+  count gate. The probe initially labeled that correct count refusal as failure
+  by checking the wrong field; wire/service evidence confirms the expected
+  result. No product correction was needed.
+- Exact-4-MiB reply delivery remains untested; the actual delivered reply size is
+  reported above rather than substituted for that boundary. The owned service
+  and helper were removed, the Planner name became unowned, and configuration,
+  shortcut and float-intent bytes were unchanged. No new baseline was required.
+
+## Remaining coverage and next step
+
+| Acceptance group | Current result | Remaining |
+| --- | --- | --- |
+| Ordinary unfloat | Native callback functional pass, two pairs | Physical Meta+G delivery |
+| Both Settings identities | Native shell launch and first-page observations | Tabs 2-4, traversal/buddies, Apply/reopen, Cancel, Defaults, operation isolation |
+| Restart / unavailable Planner | Sampled native pass, no old-command replay | Broader race/error permutations and script-restart intent coverage |
+| Transport | Exact request limit, oversize/count refusal and large reply delivered | Exact reply-limit delivery and broader latency acceptance |
+| Ordinary actions / lifecycle | Sampled native pass | Remaining matrix permutations |
+| Safety states / workspace enable | Ordinary float/sticky/fullscreen/minimized samples; maximized-slot restore and corrected B9 pass | Genuine fixed-client D5/D6/D7, game/born-state and refused/raced variants |
+| Workspace paths | Tiling toggle sample only | Selection/history, follow/stay/append, floating-boundary sends, lifecycle races and migration partial refusal |
+| Drag / client clamp | Not exercised | Continuous preview/drop/resize, late-reply cancel and bounded native clamp |
+| Multiple outputs | Not testable in this single-output fixture | Selection/history/swaps/hotplug-return and cross-output matrix |
+
+- No complete full-state or single-output inventory gate is claimed. Physical
+  keyboard/drag and interactive Settings need a safe input route or direct native
+  interaction; callbacks and offline widget tests are not substitutes.
+- Next bounded native step: verify the current accepted baseline, establish a
+  genuine fixed-size disposable client on the existing empty workspace, then
+  exercise fixed admission/workspace-enable/explicit-override restart legs
+  separately. Re-enable that test workspace after Planner replacement before
+  interpreting tiled behavior. Do not create extra workspaces for those legs.
+- Workspace send/history/lifecycle testing needs a separately bounded fixture
+  with owned peers, explicit target/view read-back and a baseline-preserving
+  teardown. Native-maximize notification quietness and the isolated tile-order
+  observation remain unclassified follow-ups, not established defects.
