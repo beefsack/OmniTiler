@@ -3688,63 +3688,64 @@ decisions of 2026-09-24 are under
   re-enable recovered (accepted tentatively). Carbon physical delivery failed
   (diagnostic-only). All three manual native Space-transfer routes moved an
   ordinary window ([results](research/macos-port/native-spaces-routes.md#user-manual-transfer-check-2026-10-16)).
-  **Next, in order:**
-  1. Managed native workspaces (user-approved route 2026-10-16,
-     [decision](decisions.md#scope-and-platform-goals)): MC AX/gesture select,
-     synthetic title-bar drag plus switch chord transfer, Authentic-enabled
-     Desktop-N with Revert; per-display mapping, independent layouts, KDE/Windows
-     workspace actions and bindings.
+  **Next, in order (user-reviewed 2026-10-17):**
+  1. User-assisted synthetic-drag discriminator: add two one-shot probe
+     commands (synthetic Ctrl+Right only, posted exactly as the transfer
+     executor posts it; synthetic title-bar drag hold only, on a user-chosen
+     non-Ghostty point, with guaranteed release) and compare the event sequence
+     with Amethyst offline. The user holds a real title bar or presses the real
+     chord to isolate which half fails. Tiler not running; two Spaces.
+  2. Adopt full world-state core replies (P1 item above) before more workspace
+     or overlay work lands in the same runtime files.
+  3. Finish managed native workspaces: fix the transfer, then send-follow and
+     send-stay; trailing empty Space (Meta+0, also the indicator's trailing
+     slot); per-display Space-number attribution; multi-display.
      **2026-10-17 fallback:** clear-helper placement now proves AX and
      WindowServer titlebar identity after self-join, but two posted Ctrl+Right
-     outward attempts reported NoEffect. Transfer parked on chord effectiveness
-     versus held-drag interaction; no inverse/numbered/TextEdit synthetic proof
-     or retained timing. Only 18 existing-Space product selects are armed, with
-     per-action empty-Space eligibility, serialized main-thread MC AX effects,
-     run-local previous history and single-display refusal. **Select-only physical
-     acceptance pending**; full managed workspaces are not awaiting final
-     acceptance. Sends/stay/output/migration and trailing lifecycle remain
-     disabled; active-empty classification and multi-display attribution stay
-     open. [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
-   2. Input consume-first parity with Windows (user 2026-10-16, may change):
-      **implemented 2026-10-17** for basic and select-only workspace chords;
-      fullscreen/out-of-scope/stale eligibility now refuses after consumption.
-      Synthetic suppression/release and actual user-disable/re-enable regressions
-      pass; **physical acceptance pending** for TextEdit native non-delivery,
-      fullscreen refusal and empty-Space select/basic distinction.
-      [Evidence](changes/archive/macos-consume-first-input.md) and
-      [bounded procedure](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17).
-   3. Effects (KDE/Windows parity): active border implemented and published;
-      owned-fixture ordering/focus, empty-Space hiding/return, native fullscreen
-      entry/exit, synthetic border-region input delivery and teardown pass.
-      **Appearance pending**; float/zoom, stacking variants, multi-display and
-      games remain broader follow-ups.
-      [Evidence and bounded procedure](changes/macos-active-border.md).
-        **Group underlay parked 2026-10-17:** public AppKit routes and scoped
-        SkyLight ordering of the AppKit carrier failed global below-member checks
-        (direct success/no movement; transaction error). Diagnostic-only; no
-        product underlay/trigger/configuration or Engine integration. A separate
-        SkyLight-created carrier evaluation would need a new hypothesis and
-        below-members/above-lower-nonmember stability proof. Complete protected-
-        window restoration was not proven (38/39 baseline windows rechecked).
-        **Border follow-up:** below-target ordering and Windows band parity remain
-        unproven; keep current above-target rendering.
-        [Evidence and explicit differences](changes/macos-group-underlay.md).
-       **Drag/drop overlays parked 2026-10-17:** shared-Engine controller,
-       insertion preview/drop plumbing, filled above-target carrier and regression
-       foundation delivered offline only. Product mouse tap is hard-disabled;
-       preview configuration cannot enable it. Live attempts did not establish
-       drag start, target change, drop, cancel or fullscreen suppression. Repair
-       the owned balanced-release fixture contract and post-tiling point proof
-       before another bounded acceptance attempt. Native titlebar classification
-       and cross-output integration remain parked. Existing border product is
-       unchanged; synthetic border/underlay click diagnostics now refuse before
-       posting. [Evidence and explicit differences](changes/macos-drag-drop-overlays.md).
-  4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by
-     AeroSpace's all-workspaces-visible numbered mode; explore showing app icons
-     per workspace within the limited space.
-  Small follow-ups: `just launch` exits nonzero on successful probes;
-  Up/Down Mission Control chords, multi-display and the macOS 15 floor remain
-  unexercised; review the `ffi.rs` unsafe surface.
+     outward attempts reported NoEffect. Only 18 existing-Space selects are
+     armed (user-approved fallback), with per-action empty-Space eligibility,
+     serialized main-thread MC AX effects, run-local previous history and
+     single-display refusal.
+     [Handover and select-only procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17).
+  4. Drag/drop overlays, re-scoped (user 2026-10-17): no modifier+drag; the
+     producer is a passively observed native title-bar drag of a managed
+     window, matching Windows' title-bar route, with physical user acceptance.
+     Offline Engine preview/drop plumbing and the above-target carrier exist;
+     the Meta+left diagnostic stays hard-gated until replaced.
+     [Earlier evidence](changes/macos-drag-drop-overlays.md).
+  5. SkyLight-created window experiment for the group underlay and a
+     below-target active border
+     ([research](research/macos-port/underlay-rendering-routes.md),
+     [decision](decisions.md)): Experiments 1 and 3,
+     then remove the failed AppKit-relative and SkyLight-on-AppKit ordering
+     code. If it passes, ship the product underlay and move the border below
+     the target. [Underlay evidence](changes/macos-group-underlay.md).
+  6. `ffi.rs` unsafe surface review straight after item 5 (unsafe blocks went
+     93 -> 114 on 2026-10-17): minimise and isolate every unsafe use, prefer
+     maintained bindings, and remove diagnostics that no longer serve a live
+     route.
+  7. macOS 0.1 gate: keep the current definition (P0 0.1 item); decide after
+     dogfooding.
+  8. Reliability and game-safety work required by the gate (sleep/wake, display
+     plug/unplug, resolution changes, games): none exercised on macOS yet.
+  9. Smaller items: verify that Authentic can override each conflicting macOS
+     system shortcut for the default bindings (test-only slice of the shortcut
+     conflict model, user 2026-10-17); indicator icons (deferred) and the
+     indicator on multiple displays; `just launch` exits nonzero on successful
+     probes; Mission Control Ctrl+Up/Down chords; macOS 15 floor; P2
+     classification discriminators.
+  10. Distribution: DMG and Homebrew, signing and notarisation (paid Apple
+      account), update channel, App Store.
+  **Pending physical acceptance (dogfooding):** select-only workspaces
+  ([procedure](changes/macos-managed-workspaces.md#select-only-fallback-handover-2026-10-17));
+  consume-first ([§5](changes/archive/macos-dogfood-hardening.md#5-consume-first-parity-2026-10-17));
+  active border appearance ([§6](changes/archive/macos-dogfood-hardening.md#6-active-border-appearance-check-pending-2026-10-17));
+  workspace indicator click and Space-switch updates
+  ([record](changes/macos-workspace-indicator.md)). Delivered 2026-10-17:
+  consume-first input parity with Windows
+  ([evidence](changes/archive/macos-consume-first-input.md)); active border
+  ([evidence](changes/macos-active-border.md)); menu-bar workspace indicator
+  (user quick check passed).
   Native-Space capability comparison ([verdict](research/macos-port/native-spaces-routes.md#live-verdict-2026-10-16),
   [record](changes/archive/macos-native-workspaces.md)): MC AX create/select/remove
   and gesture select work on owned fixtures; direct SLS window move dispatched

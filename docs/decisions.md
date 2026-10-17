@@ -288,7 +288,7 @@ platform API behavior.
     release armed chords to native delivery; they are consumed and unsafe
     actions refused, as on Windows. Unarmed chords still pass through.
     [Implementation, evidence and physical acceptance](changes/archive/macos-consume-first-input.md).
-  - **Tentative (pending user review), 2026-10-17 — consume-first boundary:**
+  - **User-approved 2026-10-17 — consume-first boundary:**
     keep foreground eligibility out of the CGEventTap callback. After suppression,
     the input owner reads the basic/select eligibility caches and drops ineligible
     downs before Engine dispatch; ups still release holds. AX owners retain
@@ -331,7 +331,7 @@ platform API behavior.
      bindable. The catalogue avoids the known Ctrl+Cmd+F/Q/Space/D system
      chords; common-app and customized global shortcuts still need physical
       acceptance. Catalogue delivery does not establish native execution.
-   - **Tentative (pending user review), 2026-10-17 — native drag input identity:**
+   - **User-approved 2026-10-17 — native drag input identity:**
      require both the positional AX `(PID, window ID)` and WindowServer input
      hit-test to join the exact target, retaining current ownership, normal-layer,
      onscreen, geometry and per-post focus gates. Do not infer input interception
@@ -339,30 +339,33 @@ platform API behavior.
      snapshots showed display-spanning Dock backing while both hit-tests reached
      the owned helper; genuine terminal hits subsequently refused without posts.
      [Evidence and parked transfer](changes/macos-managed-workspaces.md#current-discriminator-and-continuation-2026-10-17).
-    - **Tentative (pending user review), 2026-10-17 — macOS drag/drop foundation:**
-      use the existing Meta mapping (Control by default, Command opt-in) for
-      Meta+left movement, sharing the core insertion-slot resolver and
-      `#402a82da` filled preview with KDE/Windows. Reuse the nonactivating,
-      click-through AppKit carrier above its verified target; no below-target
-      rendering is needed. Require an exact fresh AX/WindowServer point join
-      before capture, balanced owned-button lifecycle, Escape cancellation,
-      clear-before-mutation and press-revision validation. Conservatively hide
-      for any observed fullscreen window until pointer-display attribution is
-      established. Native titlebar classification and cross-output integration
-      remain parked, not replaced by arbitrary AX movement or a swap heuristic.
-      The implementation is diagnostic-only: a hard acceptance gate prevents
-      product mouse-tap installation regardless of preview configuration.
-      Synthetic drag/paired-click diagnostics also refuse before posting until
-      an exact-owned balanced release contract is established.
-      [Incomplete outcome and discriminators](changes/macos-drag-drop-overlays.md).
-    - **Tentative (pending user review), 2026-10-17 — select-only development seam:**
+    - **User decision 2026-10-17 — macOS drag/drop foundation (revised):** macOS
+      has no modifier+drag producer. Modifier+drag is mainly a Linux idiom;
+      native title-bar drag is the norm on macOS and Windows (Amethyst and
+      AeroSpace; komorebi and GlazeWM), with yabai's optional mouse modifier the
+      exception. The macOS producer is a passively observed native title-bar
+      drag of a managed window, matching Windows' title-bar route, so the product
+      posts no synthetic mouse-down capture. Share the core insertion-slot
+      resolver, `#402a82da` filled preview, Escape cancellation and drop result
+      with KDE/Windows. Reuse the nonactivating, click-through AppKit carrier
+      above its verified target; no below-target rendering is needed. Keep
+      clear-before-mutation and press-revision validation, and conservatively
+      hide for any observed fullscreen window until pointer-display attribution
+      is established. Native title-bar drag classification is now the core of
+      this work; cross-output integration remains parked. The current
+      Meta+left implementation stays diagnostic-only behind its hard gate until
+      replaced. Windows' delivered Win+drag is unchanged pending a separate
+      keep-or-drop review. Physical title-bar dragging is the acceptance route.
+      [Earlier outcome and discriminators](changes/macos-drag-drop-overlays.md).
+    - **User-approved 2026-10-17 — select-only development seam:**
      use the already-proven MC AX route for explicit bounded selection batches
      while transfer is parked. Retain shared ordinal/relative/previous semantics;
      batch history is deliberately not persisted or represented as the product
      manager. Do not arm workspace shortcuts until empty-Space eligibility and
       main-thread effect routing are coherent; no lower-jank gesture choice or
       complete trailing lifecycle is inferred from the measured readbacks.
-   - **Tentative (pending user review), 2026-10-17 — select-only preview fallback:**
+   - **User-approved 2026-10-17 — select-only preview fallback** (the visible
+     MC transition is to be judged in dogfooding):
      while synthetic transfer remains unproven, arm only existing-Space selects
      1–9, relative selection and previous toggle in the bounded preview. Reuse MC
      AX rather than introduce another unmeasured route; refuse native product
@@ -916,7 +919,8 @@ platform API behavior.
     arrangements remain user-owned
     ([tray/first-run](changes/archive/windows-tray-first-run.md)).
 
-- macOS workspace indicator — **Tentative (pending user review)**: the bounded
+- macOS workspace indicator — **User-approved 2026-10-17; icons deferred** (they
+  stay off by default so dogfooding tests the plain numbers first): the bounded
   tiling preview defaults to one native menu-bar status item with all existing
   user-Space numbers in native order. Each number is directly clickable; current
   is highlighted independently of occupied/empty/unknown styling. Occupancy is
@@ -2338,7 +2342,9 @@ platform API behavior.
   arrangements and topmost/style variants remain bounded follow-up checks.
   Evidence and limitations:
    `changes/archive/windows-active-border.md`.
-- **macOS active border, 2026-10-17 — Tentative (pending user review):** use a
+- **macOS active border, 2026-10-17 — User-approved as the interim route:** a
+  SkyLight-created window below the target is to follow with the group-underlay
+  experiment, for KDE/Windows parity. Use a
   public AppKit borderless, nonactivating, click-through panel on the main thread,
   with Managed collection behavior and relative ordering above the target. Local
   JankyBorders uses private SkyLight windows/transactions, current yabai delegates
@@ -2368,8 +2374,19 @@ platform API behavior.
   physical appearance, successful float/zoom suppression, multiple displays and
   actual games remain follow-ups. See
   [implementation and evidence](changes/macos-active-border.md).
-- **macOS group-underlay ordering, 2026-10-17 — Tentative (pending user review):**
-  keep the filled carrier diagnostic-only and do not integrate public AppKit
+- **macOS group-underlay ordering, 2026-10-17 — User-approved (revised):**
+  keep the underlay out of the product until a SkyLight-created window (not an
+  AppKit window) passes the minimal discriminator in the
+  [underlay rendering research](research/macos-port/underlay-rendering-routes.md)
+  (Experiment 1). The discriminator gives the window the group's level and
+  sub-level, orders it just below the lowest-stacked member, and reads global
+  stacking back before and after raising each member. If it passes, build the
+  product underlay on it, move the active border to the same mechanism below the
+  target, and confirm native snapping and Mission Control ignore it (Experiment
+  3). If it fails, the underlay stays deferred. Remove the failed AppKit-relative
+  and SkyLight-on-AppKit ordering code; keep only the fail-closed global-stacking
+  check as the measurement tool. Unsafe use stays minimised and isolated. Earlier
+  record: keep the filled carrier diagnostic-only and do not integrate public AppKit
   relative-Below ordering into the product. Two owned foreign-process fixtures
   left it above at least one member, including a frontmost result after
   front-plus-relative ordering. Below-member placement is a required safety and
