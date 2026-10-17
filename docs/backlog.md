@@ -434,8 +434,9 @@ decisions of 2026-09-24 are under
     ([record](changes/archive/windows-d23-restore-close.md)); native journeys
     remain in item 22. Source-slot lifetime after send elsewhere is decided
     User 2026-10-17, option B (forget on confirmed rehome; shared-core
-    implementation approved, not implemented); shared behavior unchanged
-    until then.
+    implementation approved, not implemented); [proposal ready for cross-stream
+    review](changes/shared-core-d23-rehome-and-13f-maximize-base.md). Shared
+    behavior unchanged until implementation.
     Agent-live Windows 2026-10-17: minimize/reflow/restore recovered measured
     frames; minimized Paint exited and survivors reflowed. Internal slot
     retirement remains unproven; attempted sole leg invalid; minimized restart
@@ -543,7 +544,8 @@ decisions of 2026-09-24 are under
       minimized-window move; Hyprland/i3/sway have no native counterpart and
       do not vote. User decision 2026-10-17, option B: forget the source slot
       on confirmed rehome; a later return is admitted fresh. Shared-core
-      implementation (affects KDE) approved, not implemented.
+      implementation (affects KDE) approved, not implemented;
+      [proposal ready for cross-stream review](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
     - (8) Linux KDE `just dev` streaming/teardown check remains pending;
       [entry-point record](changes/dev-entry-point.md) stays active until it passes.
     - (13f) [Tier 1 research delivered 2026-10-17](research/fixed-override-born-maximized.md).
@@ -552,7 +554,8 @@ decisions of 2026-09-24 are under
       native maximize under either born-maximized setting, including hint
       loss; automatic fixed D4 unchanged. Approved shared policy, not
       implemented. All targets including KDE affected by the future change;
-      [Windows interim unchanged](decisions.md#fixed-size-admission).
+      [Windows interim unchanged](decisions.md#fixed-size-admission);
+      [proposal ready for cross-stream review](changes/shared-core-d23-rehome-and-13f-maximize-base.md).
     - (13g) Research delivered 2026-10-16:
       [safe Win32 wrappers](research/windows-port/safe-win32-wrappers.md).
       User decision 2026-10-17, option A: one minimal safe FFI module on
