@@ -411,67 +411,13 @@ pub(super) fn workspace_hide_one(
     expected: &ProcessIdentity,
     iconic: bool,
 ) -> (&'static str, Option<&'static str>) {
-    use crate::product_hide::sys::ManagedAdmitError;
-    if state.allowlist.is_some() && !state.workspace_proof {
-        return ("workspace-disabled", None);
-    }
-    if !scope_allows(&state.scope, &expected.exe_path) {
-        return ("scope-excluded", None);
-    }
-    // Listed hosts hide only with a live matching hosted child, re-verified
-    // fresh here (not from the tick's observation): a newly appearing hosted
-    // app is never hidden under another app's membership.
-    if !hosted_gate_allows(
-        &expected.exe_path,
-        key.hwnd,
-        expected.pid,
-        &state.scope_hosts,
-    ) {
-        return ("scope-excluded", None);
-    }
-    // Visible lifetime gate: the live member tag must equal the stored tag.
-    // A same-process HWND reuse (same HWND/PID/creation, fresh window)
-    // drops its stale membership here with no writes; the next tick
-    // re-admits the live window as brand new.
-    let live_tag = live_member_tag(key.hwnd);
-    let stored_tag = state.member_tags.get(key).cloned().unwrap_or_default();
-    if !crate::workspace_owner::visible_lifetime_ok(&stored_tag, live_tag.as_deref()) {
-        drop_member_state(state, key);
-        return ("identity-changed", None);
-    }
-    if let Some(entries) = state.allowlist.as_ref() {
-        let Some(entry) = entries.iter().find(|e| e.hwnd == key.hwnd) else {
-            return ("allowlist-changed", None);
-        };
-        if verify_proof_owned(key.hwnd, entry, me).is_err() {
-            return ("identity-changed", None);
-        }
-    }
-    // Project-raised topmost exception: the ordinary intentional float
-    // raises the keep-above band from a non-topmost prior, recorded in
-    // `float_topmost_prev` as exact-key `Some(false)`. Only that fresh
-    // runtime evidence plus the exact member key matching the stored full
-    // identity authorizes the narrow hide-admission bypass below; the float
-    // marker alone never authorizes, preexisting topmost stays refused, and
-    // a replaced member (key/identity drift) refuses in admission as
-    // `identity-changed`. The band is never cleared merely to hide.
-    let allow_project_topmost = crate::product_hide::project_topmost_hide_allowed(
-        state.float_topmost_prev.get(key).copied(),
-        read_topmost_now(key.hwnd),
-    ) && key.pid == expected.pid
-        && key.creation == expected.process_creation;
-    let claim = match crate::product_hide::sys::admit_managed_claim_for_hide(
-        key.hwnd,
-        me,
-        expected,
-        &stored_tag,
-        allow_project_topmost,
-    ) {
+    // Shared admission with the joint batch phases (identical fences), so
+    // the remaining single-window path (migration) cannot diverge in safety.
+    // Only the wait below stays per-window; select/send/rollback phases use
+    // the joint batch instead.
+    let claim = match super::visibility_batch::admit_hide_item(state, me, key, expected) {
         Ok(claim) => claim,
-        Err(ManagedAdmitError::Absent) => return ("origin-vanished", None),
-        Err(ManagedAdmitError::Uncertain) => return ("uncertain", None),
-        Err(ManagedAdmitError::WrongIdentity) => return ("identity-changed", None),
-        Err(ManagedAdmitError::Refused(code)) => return ("refused", Some(code)),
+        Err((outcome, detail)) => return (outcome, detail),
     };
     match crate::product_hide::sys::hide_managed_claim(store, me, &claim, dir) {
         Ok(committed) => {

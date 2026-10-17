@@ -133,3 +133,8 @@ pub fn project_topmost_hide_allowed(prior_topmost: Option<bool>, live_topmost: b
 #[cfg(windows)]
 #[path = "product_hide/sys/mod.rs"]
 pub mod sys;
+
+// Joint visibility batch: post all effects, confirm together under one
+// shared deadline (used by the tiling workspace select/send/rollback
+// phases).
+pub(crate) mod batch;

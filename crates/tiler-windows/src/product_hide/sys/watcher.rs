@@ -49,6 +49,14 @@ pub fn spawn_watcher(owner: &ProcessIdentity, dir: &Path) -> Result<std::process
 /// watcher pid is alive with the recorded creation, same exe/SID/session,
 /// and medium integrity. Stale text alone never passes.
 pub fn verify_watcher_ready(dir: &Path, owner: &ProcessIdentity) -> Result<()> {
+    // Offline batch tests script their own native windows: the crash-watcher
+    // readiness gate is not under test there, so an active fake backend
+    // passes it without touching the filesystem or processes. Production
+    // (and every existing test, which never activates the fake) is unchanged.
+    #[cfg(test)]
+    if super::fake::any_registered() {
+        return Ok(());
+    }
     let not_ready = || err("refuse: recovery watcher not ready");
     let text = match std::fs::read_to_string(watcher_ready_path(dir, &owner.process_creation)) {
         Ok(t) => t,

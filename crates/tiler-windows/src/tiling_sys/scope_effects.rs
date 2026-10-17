@@ -69,42 +69,29 @@ use tiler_core::workspace_scope::SwapPlan;
 use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::{
-    ActionCtx, ApplySummary, HintCx, MonitorArea, ObservedWindow, RetainedRow, SelectEffect,
-    TileLoop, drop_diag_sample, drop_visibility_sample, note_hide_diag, note_reveal_diag,
-    omission_summary, reveal_err_outcome, reveal_outcome, rollback_newly_hidden,
+    ActionCtx, ApplySummary, HideAttempt, HintCx, MonitorArea, ObservedWindow, RetainedRow,
+    SelectEffect, TileLoop, omission_summary, rollback_newly_hidden,
 };
 use crate::model::ProcessIdentity;
 use crate::storage::LedgerStore;
 use crate::workspace::WindowKey;
 
-/// Settled hide phase for one output side: whether the phase failed plus
-/// the windows newly committed to hidden in this transition (exact keys
-/// for narrow recovery).
-struct HideSide {
-    failed: bool,
-    newly_hidden: Vec<WindowKey>,
-}
-
-/// Hide one output's leaving set with the exact `workspace_do_select`
-/// fences: out-of-scope members stay visible with membership intact, sticky
-/// members stay visible, recycled-HWND membership drops with no writes, and
-/// every committed claim registers before any failure can strand it.
-#[allow(clippy::too_many_arguments)]
-fn hide_side_members(
+/// Collect one output's leaving set with the exact `workspace_do_select`
+/// fences (no effects): out-of-scope members stay visible with membership
+/// intact, sticky members stay visible, recycled-HWND membership drops with
+/// no writes. Returns the joint-batch attempts plus whether the
+/// pre-collection already failed (unreadable recovery). The caller runs one
+/// [`hide_phase`] across all sides so every side shares a single deadline.
+fn collect_hide_attempts(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    store: &LedgerStore,
-    dir: &Path,
     by_hwnd: &HashMap<u64, &ObservedWindow>,
     output: &str,
     current: &str,
-    ctx: &ActionCtx,
-    hide_diag_logged: &mut usize,
-    hide_attempted: &mut usize,
-) -> HideSide {
+) -> (Vec<HideAttempt>, bool) {
     let leaving = state.workspaces.workspace_members(output, current);
+    let mut attempts: Vec<HideAttempt> = Vec::new();
     let mut failed = false;
-    let mut newly_hidden: Vec<WindowKey> = Vec::new();
     for key in &leaving {
         if state.workspaces.is_hidden(key) {
             continue;
@@ -152,128 +139,21 @@ fn hide_side_members(
         if state.sticky.contains_key(key) {
             continue;
         }
-        let had_claim = state.hidden_claims.contains_key(key);
-        let project_topmost = crate::product_hide::project_topmost_hide_allowed(
-            state.float_topmost_prev.get(key).copied(),
-            super::read_topmost_now(key.hwnd),
-        );
-        let (outcome, detail) =
-            super::workspace_hide_one(state, me, store, dir, key, &expected, iconic);
-        *hide_attempted += 1;
-        note_hide_diag(
-            state,
-            ctx,
-            key,
-            outcome,
-            detail,
-            project_topmost,
-            hide_diag_logged,
-        );
-        if state.hidden_claims.contains_key(key) || outcome == "hidden" {
-            state.workspaces.set_hidden(key, true);
-            if !had_claim {
-                newly_hidden.push(key.clone());
-            }
-        } else if outcome == "origin-vanished" || outcome == "identity-changed" {
-            super::drop_member_state(state, key);
-        } else if outcome == "scope-excluded" {
-            // Explicit scope fence: out-of-scope members stay visible with
-            // membership intact, never hidden, never a failure.
-        } else {
-            failed = true;
-        }
+        attempts.push(HideAttempt {
+            key: key.clone(),
+            expected,
+            iconic,
+        });
     }
-    HideSide {
-        failed,
-        newly_hidden,
-    }
+    (attempts, failed)
 }
 
-/// Reveal one entering set with the exact `workspace_do_select`
-/// semantics: claim-free members simply unflag, claimed members reveal
-/// through the proof gate plus the verified claim path, and retired claims
-/// drop their full session state. Per-window outcomes log through the shared
-/// per-select cap under the action correlation; the caller reports the
-/// remainder through [`omission_summary`]. True when the phase failed. The
-/// entering set is caller-provided because swap sides reveal entries still
-/// homed on the other output until the assignment transfer rekeys them.
-fn reveal_side_members(
-    state: &mut TileLoop,
-    me: &ProcessIdentity,
-    store: &LedgerStore,
-    entering: &BTreeSet<WindowKey>,
-    ctx: &ActionCtx,
-    reveal_diag_logged: &mut usize,
-) -> bool {
-    let mut failed = false;
-    for key in entering {
-        let Some(record) = state.hidden_claims.get(key).cloned() else {
-            state.workspaces.set_hidden(key, false);
-            continue;
-        };
-        if let Err(cause) = super::workspace_proof_reveal_gate(state, me, key.hwnd) {
-            note_reveal_diag(
-                state,
-                ctx,
-                key,
-                "refused",
-                Some(cause),
-                None,
-                reveal_diag_logged,
-            );
-            failed = true;
-            continue;
-        }
-        match crate::product_hide::sys::reveal_product_claim_to(
-            store,
-            me,
-            &record.claim,
-            record.iconic,
-        ) {
-            Ok(teardown) => {
-                let outcome = reveal_outcome(&teardown);
-                note_reveal_diag(state, ctx, key, outcome, None, None, reveal_diag_logged);
-                if matches!(teardown, crate::product_hide::ProductTeardown::Retired) {
-                    state.hidden_claims.remove(key);
-                    if let Some(token) = state.member_tokens.remove(key) {
-                        state.member_rects.remove(&token);
-                        state.float_rects.remove(&token);
-                        state.hint_logged.remove(&token);
-                        state.hint_fallback_uses.remove(&token);
-                        drop_diag_sample(state, &token);
-                        drop_visibility_sample(state, &token);
-                    }
-                    if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
-                        state.restore_wake = None;
-                    }
-                    state.float_topmost_prev.remove(key);
-                    state.floated.remove(key);
-                    state.member_identity.remove(key);
-                    state.member_tags.remove(key);
-                    state.hint_last_good.remove(key);
-                    state.workspaces.remove_window(key);
-                } else {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                }
-            }
-            Err(e) => {
-                let (outcome, detail) = reveal_err_outcome(&e.to_string());
-                note_reveal_diag(
-                    state,
-                    ctx,
-                    key,
-                    outcome,
-                    Some(detail),
-                    None,
-                    reveal_diag_logged,
-                );
-                failed = true;
-            }
-        }
-    }
-    failed
-}
+// Joint-reveal convention for the swap/shared call sites below: one
+// `reveal_phase` call per switch (claim-free members unflag, claimed
+// members reveal through the proof gate plus the verified claim path,
+// retired claims drop session state). Entering sets are caller-provided
+// because swap sides reveal entries still homed on the other output until
+// the assignment transfer rekeys them.
 
 /// Relocate one retained Engine session to its post-transfer output domain
 /// (the displacement reference): layout tree, contents, and remembered
@@ -686,48 +566,46 @@ pub(super) fn global_swap_select(
     let source_token = state.workspaces.workspace_token(output, &active_current);
     let target_token = state.workspaces.workspace_token(output, &target);
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let mut hide_diag_logged: usize = 0;
-    let mut hide_attempted: usize = 0;
+    let mut clock = super::action_clock();
     let hide_start = Instant::now();
-    let first = hide_side_members(
-        state,
-        me,
-        store,
-        dir,
-        &by_hwnd,
-        output,
-        &active_current,
-        ctx,
-        &mut hide_diag_logged,
-        &mut hide_attempted,
-    );
-    let second = hide_side_members(
-        state,
-        me,
-        store,
-        dir,
-        &by_hwnd,
-        &other,
-        &target,
-        ctx,
-        &mut hide_diag_logged,
-        &mut hide_attempted,
-    );
+    // Joint hide across both sides: one shared deadline for the whole swap.
+    let (mut attempts, first_pre_failed) =
+        collect_hide_attempts(state, me, &by_hwnd, output, &active_current);
+    let (more, second_pre_failed) = collect_hide_attempts(state, me, &by_hwnd, &other, &target);
+    attempts.extend(more);
+    let hide_done = super::hide_phase(state, me, store, dir, ctx, attempts, &mut clock);
+    for result in &hide_done.results {
+        if result.outcome == "origin-vanished" || result.outcome == "identity-changed" {
+            super::drop_member_state(state, &result.key);
+        }
+    }
+    let hide_failed = first_pre_failed || second_pre_failed || hide_done.failed;
+    let mut hide_breakdown = hide_done.breakdown;
     let hide_ms = hide_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(line) = omission_summary(
         "workspace-hide-summary",
         state.tick,
         &ctx.correlation,
         None,
-        hide_attempted,
-        hide_diag_logged,
+        hide_done.attempted,
+        hide_done.logged,
     ) {
+        let t0 = Instant::now();
         super::log_json_at(&state.log_path.clone(), line);
+        hide_breakdown.log_ms = hide_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
-    let mut newly_hidden = first.newly_hidden;
-    newly_hidden.extend(second.newly_hidden);
-    if first.failed || second.failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+    let newly_hidden = hide_done.newly_hidden;
+    if hide_failed {
+        super::log_visibility_timing(
+            state,
+            ctx,
+            "swap",
+            &hide_breakdown,
+            &super::PhaseBreakdown::default(),
+        );
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -740,44 +618,43 @@ pub(super) fn global_swap_select(
     // Pre-transfer homing: `target` still lives on `other`, `active_current`
     // still on `output` (`swap_entries` rekeys below), so each side reveals
     // the entry still homed on the opposite output. Hide/reveal never
-    // activate, so these sets address the right members directly.
-    let entering_output = state.workspaces.workspace_members(&other, &target);
-    let entering_other = state.workspaces.workspace_members(output, &active_current);
-    let reveal_attempted = entering_output
-        .iter()
-        .chain(entering_other.iter())
-        .filter(|key| state.hidden_claims.contains_key(key))
-        .count();
-    let mut reveal_diag_logged: usize = 0;
-    let first_reveal_failed = reveal_side_members(
+    // activate, so these sets address the right members directly. One joint
+    // reveal across both sides under a single deadline.
+    let mut entering_all: Vec<WindowKey> = state
+        .workspaces
+        .workspace_members(&other, &target)
+        .into_iter()
+        .collect();
+    entering_all.extend(state.workspaces.workspace_members(output, &active_current));
+    let reveal_done = super::reveal_phase(
         state,
         me,
         store,
-        &entering_output,
         ctx,
-        &mut reveal_diag_logged,
+        &entering_all,
+        None,
+        false,
+        &mut clock,
     );
-    let second_reveal_failed = reveal_side_members(
-        state,
-        me,
-        store,
-        &entering_other,
-        ctx,
-        &mut reveal_diag_logged,
-    );
+    let mut reveal_breakdown = reveal_done.breakdown;
     let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(line) = omission_summary(
         "workspace-reveal-summary",
         state.tick,
         &ctx.correlation,
         None,
-        reveal_attempted,
-        reveal_diag_logged,
+        reveal_done.attempted,
+        reveal_done.logged,
     ) {
+        let t0 = Instant::now();
         super::log_json_at(&state.log_path.clone(), line);
+        reveal_breakdown.log_ms = reveal_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
-    if first_reveal_failed || second_reveal_failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+    if reveal_done.failed {
+        super::log_visibility_timing(state, ctx, "swap", &hide_breakdown, &reveal_breakdown);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -787,6 +664,7 @@ pub(super) fn global_swap_select(
             ..none("partial", source_token.clone(), target_token.clone())
         };
     }
+    super::log_visibility_timing(state, ctx, "swap", &hide_breakdown, &reveal_breakdown);
     // Engine layout/domains relocate per workspace id to the post-transfer
     // destination homes `swap_entries` appends below (`(output, target)` and
     // `(other, active_current)`): best-effort with honest counts.
@@ -810,7 +688,7 @@ pub(super) fn global_swap_select(
         .workspaces
         .swap_entries(output, &active_current, &other, &target, &sticky)
     {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -966,40 +844,50 @@ pub(super) fn shared_select(
         return none("already-active", token.clone(), token);
     }
     let by_hwnd: HashMap<u64, &ObservedWindow> = observed.iter().map(|w| (w.hwnd, w)).collect();
-    let mut hide_diag_logged: usize = 0;
-    let mut hide_attempted: usize = 0;
+    let mut clock = super::action_clock();
     let hide_start = Instant::now();
+    // Joint hide across every converging side under one shared deadline.
+    let mut attempts: Vec<super::HideAttempt> = Vec::new();
     let mut hide_failed = false;
-    let mut newly_hidden: Vec<WindowKey> = Vec::new();
     for (side_output, side_current) in &sides {
-        let side = hide_side_members(
-            state,
-            me,
-            store,
-            dir,
-            &by_hwnd,
-            side_output,
-            side_current,
-            ctx,
-            &mut hide_diag_logged,
-            &mut hide_attempted,
-        );
-        hide_failed = hide_failed || side.failed;
-        newly_hidden.extend(side.newly_hidden);
+        let (more, pre_failed) =
+            collect_hide_attempts(state, me, &by_hwnd, side_output, side_current);
+        hide_failed = hide_failed || pre_failed;
+        attempts.extend(more);
     }
+    let hide_done = super::hide_phase(state, me, store, dir, ctx, attempts, &mut clock);
+    for result in &hide_done.results {
+        if result.outcome == "origin-vanished" || result.outcome == "identity-changed" {
+            super::drop_member_state(state, &result.key);
+        }
+    }
+    hide_failed = hide_failed || hide_done.failed;
+    let newly_hidden: Vec<WindowKey> = hide_done.newly_hidden;
+    let mut hide_breakdown = hide_done.breakdown;
     let hide_ms = hide_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(line) = omission_summary(
         "workspace-hide-summary",
         state.tick,
         &ctx.correlation,
         None,
-        hide_attempted,
-        hide_diag_logged,
+        hide_done.attempted,
+        hide_done.logged,
     ) {
+        let t0 = Instant::now();
         super::log_json_at(&state.log_path.clone(), line);
+        hide_breakdown.log_ms = hide_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
     if hide_failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+        super::log_visibility_timing(
+            state,
+            ctx,
+            "shared",
+            &hide_breakdown,
+            &super::PhaseBreakdown::default(),
+        );
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -1016,32 +904,40 @@ pub(super) fn shared_select(
         state.workspaces.ensure_workspace_id(side_output, &target);
     }
     let reveal_start = Instant::now();
-    let mut reveal_failed = false;
-    let mut reveal_attempted: usize = 0;
-    let mut reveal_diag_logged: usize = 0;
+    // One joint reveal across every converging side under a single deadline.
+    let mut entering_all: Vec<WindowKey> = Vec::new();
     for (side_output, _) in &sides {
-        let entering = state.workspaces.workspace_members(side_output, &target);
-        reveal_attempted += entering
-            .iter()
-            .filter(|key| state.hidden_claims.contains_key(key))
-            .count();
-        reveal_failed =
-            reveal_side_members(state, me, store, &entering, ctx, &mut reveal_diag_logged)
-                || reveal_failed;
+        entering_all.extend(state.workspaces.workspace_members(side_output, &target));
     }
+    let reveal_done = super::reveal_phase(
+        state,
+        me,
+        store,
+        ctx,
+        &entering_all,
+        None,
+        false,
+        &mut clock,
+    );
+    let mut reveal_breakdown = reveal_done.breakdown;
     let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(line) = omission_summary(
         "workspace-reveal-summary",
         state.tick,
         &ctx.correlation,
         None,
-        reveal_attempted,
-        reveal_diag_logged,
+        reveal_done.attempted,
+        reveal_done.logged,
     ) {
+        let t0 = Instant::now();
         super::log_json_at(&state.log_path.clone(), line);
+        reveal_breakdown.log_ms = reveal_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
-    if reveal_failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+    if reveal_done.failed {
+        super::log_visibility_timing(state, ctx, "shared", &hide_breakdown, &reveal_breakdown);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -1051,6 +947,7 @@ pub(super) fn shared_select(
             ..none("partial", source_token.clone(), target_token.clone())
         };
     }
+    super::log_visibility_timing(state, ctx, "shared", &hide_breakdown, &reveal_breakdown);
     for (side_output, _) in &sides {
         state.workspaces.activate(side_output, &target);
     }

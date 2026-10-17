@@ -165,9 +165,12 @@ pub(super) fn workspace_do_select(
     // before activation these are safely revealed back (exact identity) so a
     // partial never leaves a doubled visible set or a lost claim behind.
     let mut newly_hidden: Vec<crate::workspace::WindowKey> = Vec::new();
-    let hide_start = Instant::now();
-    let mut hide_diag_logged: usize = 0;
-    let mut hide_attempted: usize = 0;
+    // One owner clock for the whole switch: hide, reveal, and any rollback
+    // share it, so their genuine waits accumulate cumulatively.
+    let mut clock = action_clock();
+    // Gather the leaving set with the exact legacy fences; the joint phase
+    // below admits, commits, posts, and confirms them together.
+    let mut attempts: Vec<HideAttempt> = Vec::new();
     for key in &leaving {
         if state.workspaces.is_hidden(key) {
             continue;
@@ -227,39 +230,27 @@ pub(super) fn workspace_do_select(
         if state.sticky.contains_key(key) {
             continue;
         }
-        let had_claim = state.hidden_claims.contains_key(key);
-        let project_topmost = crate::product_hide::project_topmost_hide_allowed(
-            state.float_topmost_prev.get(key).copied(),
-            read_topmost_now(key.hwnd),
-        );
-        let (outcome, detail) = workspace_hide_one(state, me, store, dir, key, &expected, iconic);
-        hide_attempted += 1;
-        note_hide_diag(
-            state,
-            ctx,
-            key,
-            outcome,
-            detail,
-            project_topmost,
-            &mut hide_diag_logged,
-        );
-        // A committed claim (exact full identity plus tag) is owned even when
-        // the post-hide readback reports uncertain: the ledger and the owner
-        // table keep it, never a lost window.
-        if state.hidden_claims.contains_key(key) || outcome == "hidden" {
-            state.workspaces.set_hidden(key, true);
-            if !had_claim {
-                newly_hidden.push(key.clone());
-            }
-        } else if outcome == "origin-vanished" || outcome == "identity-changed" {
-            drop_member_state(state, key);
-        } else if outcome == "scope-excluded" {
-            // Explicit scope fence: out-of-scope members stay visible with
-            // membership intact, never hidden, never a failure.
-        } else {
-            hide_failed = true;
+        attempts.push(HideAttempt {
+            key: key.clone(),
+            expected,
+            iconic,
+        });
+    }
+    // Joint hide phase: admit all, commit all durably, post all hides, then
+    // confirm observed invisibility together under one shared deadline.
+    // A committed claim (exact full identity plus tag) is owned even when
+    // the post-hide readback reports uncertain: the ledger and the owner
+    // table keep it, never a lost window.
+    let hide_start = Instant::now();
+    let hide_done = hide_phase(state, me, store, dir, ctx, attempts, &mut clock);
+    for result in &hide_done.results {
+        if result.outcome == "origin-vanished" || result.outcome == "identity-changed" {
+            drop_member_state(state, &result.key);
         }
     }
+    hide_failed = hide_failed || hide_done.failed;
+    newly_hidden.extend(hide_done.newly_hidden.iter().cloned());
+    let mut hide_breakdown = hide_done.breakdown;
     // A failed hide phase never activates: revealing the target beside a
     // still-visible current set would double the visible set and lose claims.
     // Narrow recovery reveals exactly the claims committed above (exact
@@ -270,13 +261,24 @@ pub(super) fn workspace_do_select(
         state.tick,
         &ctx.correlation,
         None,
-        hide_attempted,
-        hide_diag_logged,
+        hide_done.attempted,
+        hide_done.logged,
     ) {
+        let t0 = Instant::now();
         log_json_at(&state.log_path.clone(), line);
+        hide_breakdown.log_ms = hide_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
     if hide_failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+        log_visibility_timing(
+            state,
+            ctx,
+            "select",
+            &hide_breakdown,
+            &PhaseBreakdown::default(),
+        );
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -285,104 +287,37 @@ pub(super) fn workspace_do_select(
             ..none("partial", source_token.clone(), target_token.clone())
         };
     }
-    let entering = state.workspaces.workspace_members(output, target);
+    let entering: Vec<crate::workspace::WindowKey> = state
+        .workspaces
+        .workspace_members(output, target)
+        .into_iter()
+        .collect();
     let reveal_start = Instant::now();
-    let reveal_attempted = entering
-        .iter()
-        .filter(|key| state.hidden_claims.contains_key(key))
-        .count();
-    let mut reveal_diag_logged: usize = 0;
-    for key in &entering {
-        let Some(record) = state.hidden_claims.get(key).cloned() else {
-            state.workspaces.set_hidden(key, false);
-            continue;
-        };
-        if let Err(cause) = workspace_proof_reveal_gate(state, me, key.hwnd) {
-            note_reveal_diag(
-                state,
-                ctx,
-                key,
-                "refused",
-                Some(cause),
-                None,
-                &mut reveal_diag_logged,
-            );
-            hide_failed = true;
-            continue;
-        }
-        match crate::product_hide::sys::reveal_product_claim_to(
-            store,
-            me,
-            &record.claim,
-            record.iconic,
-        ) {
-            Ok(teardown) => {
-                let outcome = reveal_outcome(&teardown);
-                note_reveal_diag(
-                    state,
-                    ctx,
-                    key,
-                    outcome,
-                    None,
-                    None,
-                    &mut reveal_diag_logged,
-                );
-                if matches!(teardown, crate::product_hide::ProductTeardown::Retired) {
-                    state.hidden_claims.remove(key);
-                    if let Some(token) = state.member_tokens.remove(key) {
-                        state.member_rects.remove(&token);
-                        state.float_rects.remove(&token);
-                        state.hint_logged.remove(&token);
-                        state.hint_fallback_uses.remove(&token);
-                        drop_diag_sample(state, &token);
-                        drop_visibility_sample(state, &token);
-                    }
-                    if state.restore_wake.as_ref().is_some_and(|w| w.key == *key) {
-                        state.restore_wake = None;
-                    }
-                    state.float_topmost_prev.remove(key);
-                    state.floated.remove(key);
-                    state.member_identity.remove(key);
-                    state.member_tags.remove(key);
-                    state.hint_last_good.remove(key);
-                    state.workspaces.remove_window(key);
-                } else {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                }
-            }
-            Err(e) => {
-                let (outcome, detail) = reveal_err_outcome(&e.to_string());
-                note_reveal_diag(
-                    state,
-                    ctx,
-                    key,
-                    outcome,
-                    Some(detail),
-                    None,
-                    &mut reveal_diag_logged,
-                );
-                hide_failed = true;
-            }
-        }
-    }
+    let reveal_done = reveal_phase(state, me, store, ctx, &entering, None, false, &mut clock);
+    hide_failed = hide_failed || reveal_done.failed;
+    let mut reveal_breakdown = reveal_done.breakdown;
+    let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(line) = omission_summary(
         "workspace-reveal-summary",
         state.tick,
         &ctx.correlation,
         None,
-        reveal_attempted,
-        reveal_diag_logged,
+        reveal_done.attempted,
+        reveal_done.logged,
     ) {
+        let t0 = Instant::now();
         log_json_at(&state.log_path.clone(), line);
+        reveal_breakdown.log_ms = reveal_breakdown
+            .log_ms
+            .saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }
     // A failed reveal phase keeps current as well: the leaving set was
     // hidden successfully, so the safest known view is restored by revealing
     // exactly those affected claims (exact identity only). The switch is not
     // pretended: the outcome stays partial with current kept.
-    let reveal_ms = reveal_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if hide_failed {
-        rollback_newly_hidden(state, me, store, &newly_hidden, ctx);
+        log_visibility_timing(state, ctx, "select", &hide_breakdown, &reveal_breakdown);
+        rollback_newly_hidden(state, me, store, &newly_hidden, ctx, &mut clock);
         return SelectEffect {
             outcome: "partial",
             hide_ms,
@@ -392,6 +327,7 @@ pub(super) fn workspace_do_select(
             ..none("partial", source_token.clone(), target_token.clone())
         };
     }
+    log_visibility_timing(state, ctx, "select", &hide_breakdown, &reveal_breakdown);
     // Move active to the target id without disturbing order, including
     // appended trailing ids past the Win1..9 ordinal range. This is the only
     // activation point: callers resolve targets without preactivating so the

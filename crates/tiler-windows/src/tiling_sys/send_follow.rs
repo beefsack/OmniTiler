@@ -51,24 +51,31 @@ pub(super) fn workspace_send_follow(
             target_workspace: target_token.to_owned(),
         };
     }
-    let project_topmost = crate::product_hide::project_topmost_hide_allowed(
-        state.float_topmost_prev.get(mover_key).copied(),
-        read_topmost_now(mover_key.hwnd),
+    let mut clock = action_clock();
+    let hide_done = hide_phase(
+        state,
+        me,
+        store,
+        dir,
+        ctx,
+        vec![HideAttempt {
+            key: mover_key.clone(),
+            expected: stored.clone(),
+            iconic: mover_minimized,
+        }],
+        &mut clock,
     );
-    let (hide_outcome, hide_detail) =
-        workspace_hide_one(state, me, store, dir, mover_key, stored, mover_minimized);
-    // Single-member hide diagnostics: the shared per-select cap can never
-    // bind on one attempt, so no omission summary is needed.
-    let mut hide_logged: usize = 0;
-    note_hide_diag(
+    log_visibility_timing(
         state,
         ctx,
-        mover_key,
-        hide_outcome,
-        hide_detail,
-        project_topmost,
-        &mut hide_logged,
+        "send-hide",
+        &hide_done.breakdown,
+        &PhaseBreakdown::default(),
     );
+    let (hide_outcome, _hide_detail) = match hide_done.results.first() {
+        Some(result) => (result.outcome, result.detail),
+        None => ("uncertain", None),
+    };
     if state.hidden_claims.contains_key(mover_key) {
         state.workspaces.set_hidden(mover_key, true);
     }

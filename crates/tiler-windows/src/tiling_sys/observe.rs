@@ -7,6 +7,14 @@ const OBJID_WINDOW: i32 = 0;
 // while it pumps messages, so the callback and the loop share one queue lock
 // with a strict invariant - the loop never holds it across a message pump -
 // and the callback takes it blocking (never try_lock-and-drop, lossless).
+//
+// Visibility generation: every window-scoped SHOW/HIDE notification bumps a
+// bounded process-global counter alongside the unchanged `Wake` queue push
+// below (no extra queue, no payload). The joint visibility batch compares
+// this counter across its owner wait to decide `Notified` (re-snapshot)
+// versus `Unrelated` (wait again on the same fixed deadline): state alone
+// confirms, never the event. Unrelated hook edges never bump it, so they can
+// neither confirm nor reset the deadline nor spin the wait.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum HookEvent {
     Wake(isize),
@@ -29,6 +37,23 @@ pub(super) enum HookEvent {
 pub(super) fn hook_queue() -> &'static Mutex<Vec<HookEvent>> {
     static QUEUE: OnceLock<Mutex<Vec<HookEvent>>> = OnceLock::new();
     QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Bounded window-visibility generation bumped once per window-scoped
+/// SHOW/HIDE callback. The counter wraps silently on overflow: only
+/// inequality across one owner wait is ever read, never an absolute value. The `Wake`
+/// queue push below is unchanged: this carries no payload and is never
+/// drained, so unrelated edges stay queued for the outer loop and intake /
+/// reconcile never run reentrantly inside a batch wait.
+static VISIBILITY_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Current visibility generation (monotonic modulo 2^64).
+pub(super) fn visibility_generation() -> u64 {
+    VISIBILITY_GEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn bump_visibility_generation() {
+    VISIBILITY_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn push_hook(event: HookEvent) {
@@ -76,6 +101,13 @@ pub(super) unsafe extern "system" fn winevent_proc(
                 | EVENT_OBJECT_LOCATIONCHANGE
         )
     {
+        // Window-scoped SHOW/HIDE additionally bumps the bounded visibility
+        // generation (the `Wake` push below is unchanged). All other edges -
+        // including foreground/create/destroy/location - leave it alone, so
+        // only genuine visibility notifications can wake a joint batch wait.
+        if matches!(event, EVENT_OBJECT_SHOW | EVENT_OBJECT_HIDE) {
+            bump_visibility_generation();
+        }
         push_hook(HookEvent::Wake(hwnd as isize));
     }
 }

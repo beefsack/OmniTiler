@@ -52,6 +52,13 @@ fn prop_name() -> Vec<u16> {
 fn get_nonce(
     hwnd: windows_sys::Win32::Foundation::HWND,
 ) -> std::result::Result<Option<String>, String> {
+    #[cfg(test)]
+    {
+        let key = hwnd as usize as u64;
+        if fake::active(key) {
+            return Ok(fake::with(key, |w| w.nonce.clone()).flatten());
+        }
+    }
     use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
     let name = prop_name();
     let v = unsafe { GetPropW(hwnd, name.as_ptr()) };
@@ -204,6 +211,13 @@ pub fn query_recovery(
     hwnd_u64: u64,
     owner: &ProcessIdentity,
 ) -> std::result::Result<ProductSnapshot, DynError> {
+    #[cfg(test)]
+    {
+        let _ = owner;
+        if fake::active(hwnd_u64) {
+            return fake::snapshot(hwnd_u64).ok_or_else(|| err("absent: hwnd destroyed"));
+        }
+    }
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         IsIconic, IsWindow, IsWindowVisible, IsZoomed,
@@ -263,6 +277,20 @@ pub fn query_recovery(
 pub fn install_nonce(hwnd_u64: u64, owner_pid: u32) -> Result<String> {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::SetPropW;
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            if fake::with(hwnd_u64, |w| w.alive).unwrap_or(false) {
+                let tag = generate_claim_tag(owner_pid);
+                if valid_claim_tag(&tag) {
+                    fake::with_mut(hwnd_u64, |w| w.nonce = Some(tag.clone()));
+                    return Ok(tag);
+                }
+                return Err(err("error: nonce install failed"));
+            }
+            return Err(err("error: SetProp failed"));
+        }
+    }
     let hwnd = hwnd_u64 as isize as HWND;
     for _ in 0..4 {
         let tag = generate_claim_tag(owner_pid);
@@ -303,6 +331,12 @@ fn member_prop_name() -> Vec<u16> {
 /// window-lifetime property, and a destroyed HWND reads back nothing.
 /// Read-only; never mutates the window.
 pub fn read_member_tag(hwnd_u64: u64) -> Option<String> {
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            return fake::with(hwnd_u64, |w| w.member_tag.clone()).flatten();
+        }
+    }
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
     let hwnd = hwnd_u64 as isize as HWND;
@@ -617,6 +651,28 @@ pub fn remove_nonce_checked(
     expected_process: &ProcessIdentity,
     owner: &ProcessIdentity,
 ) -> Result<bool> {
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            // Test-only mirror of the production fencing below against the
+            // fake: destroyed reads absent (nothing to remove), process/tag
+            // mismatch retires without touching, exact match removes.
+            let snap = match fake::snapshot(hwnd_u64) {
+                Some(s) => s,
+                None => return Ok(true),
+            };
+            if snap.process != *expected_process {
+                return Ok(false);
+            }
+            match snap.nonce.as_deref() {
+                None => return Ok(true),
+                Some(tag) if nonce_tag_matches(Some(tag), expected_tag) => {}
+                Some(_) => return Ok(false),
+            }
+            fake::with_mut(hwnd_u64, |w| w.nonce = None);
+            return Ok(true);
+        }
+    }
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
     let hwnd = hwnd_u64 as isize as HWND;
@@ -676,21 +732,19 @@ fn pump_once() {
 /// the caller, and no orphan setter thread outlives the call. Success
 /// requires the observed effect, never the post alone.
 fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u64) -> Result<()> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible, ShowWindowAsync};
-    let hwnd = hwnd_u64 as isize as HWND;
-    if unsafe { ShowWindowAsync(hwnd, cmd) } == 0 {
+    if !post_async(hwnd_u64, cmd) {
         return Err(err("error: visibility post failed"));
     }
     let start = Instant::now();
     let budget = Duration::from_millis(timeout_ms);
     loop {
         pump_once();
-        if unsafe { IsWindow(hwnd) } == 0 {
-            return Err(err("absent: hwnd destroyed"));
-        }
-        if (unsafe { IsWindowVisible(hwnd) } != 0) == expect_visible {
-            return Ok(());
+        // Fake-aware readback (identical native calls in production), so the
+        // shared post semantics hold on both paths.
+        match batch_is_visible(hwnd_u64) {
+            None => return Err(err("absent: hwnd destroyed")),
+            Some(visible) if visible == expect_visible => return Ok(()),
+            Some(_) => {}
         }
         if start.elapsed() >= budget {
             return Err(err("uncertain: visibility not observed"));
@@ -699,7 +753,336 @@ fn post_visibility(hwnd_u64: u64, cmd: i32, expect_visible: bool, timeout_ms: u6
     }
 }
 
+/// ---- Joint batch primitives (select/send/rollback hide+reveal) ---- ///
+/// Shared prepare/post/finish behind both the single-window
+/// [`hide_managed_claim`] / [`reveal_product_claim_to`] below and the owner
+/// joint batch driver (`tiling_sys::visibility_batch`), so batch and
+/// remaining single-window paths cannot diverge in safety: identical
+/// commit-before-hide, identical identity/nonce/ledger ownership, identical
+/// failure recovery. Only the wait differs: single paths keep the legacy
+/// per-window pumped bound; batch phases post every eligible effect first
+/// and confirm them together under one shared deadline (see
+/// [`super::batch`]).
+///
+/// A prepared hide owns its target across the batch through the returned
+/// [`HeldProcess`] guard: the caller keeps every guard alive until its
+/// finish ran, exactly like the single path keeps `held` across its post.
+///
+/// Shape refusal for one product claim: kind plus tag format. Shape
+/// refusals never trigger orphan cleanup and never touch the ledger.
+pub(crate) fn check_claim_shape(claim: &WindowIdentity) -> Result<()> {
+    use crate::model::WindowClaimKind;
+    if claim.kind != WindowClaimKind::Product {
+        return Err(err("refuse: not a product claim"));
+    }
+    if !valid_claim_tag(&claim.tag) {
+        return Err(err("refuse: bad product tag"));
+    }
+    Ok(())
+}
+
+/// Watcher, identity-only pre-read, target hold, and durable preimage for
+/// one managed hide, without any ledger or visibility effect. The caller
+/// validates shape first ([`check_claim_shape`]: shape refusals take no
+/// cleanup) and commits ([`commit_hide_claim`]) before posting.
+pub(crate) fn pre_hide_checks(
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    dir: &Path,
+) -> Result<(ProductSnapshot, HeldProcess)> {
+    check_claim_shape(claim)?;
+    verify_watcher_ready(dir, owner)?;
+    let pre = query_recovery(claim.hwnd, owner)?;
+    if pre.pid != claim.process.pid
+        || pre.process != claim.process
+        || pre.nonce.as_deref() != Some(claim.tag.as_str())
+        || !pre.visible
+    {
+        return Err(err("refuse: hide pre-readback mismatch"));
+    }
+    let held = hold_target_verified(pre.pid, &pre.process)?;
+    Ok((pre, held))
+}
+
+/// Durable ledger preimage for one managed hide: the fresh iconic/maximized
+/// show state captured from the pre-hide read, so independent restore
+/// returns the pre-hide state even on paths that never saw the hide.
+#[must_use]
+pub(crate) fn durable_hide_claim(claim: &WindowIdentity, pre: &ProductSnapshot) -> WindowIdentity {
+    WindowIdentity {
+        show: WindowShowState {
+            minimized: pre.iconic,
+            maximized: pre.maximized,
+        },
+        ..claim.clone()
+    }
+}
+
+/// Commit-before-hide: append the durable claim to the recovery ledger.
+/// No visibility effect. The claim is owned from here even when the later
+/// post/readback reports uncertain. Times only the store commit into
+/// `ledger_ms`.
+pub(crate) fn commit_hide_claim(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    durable: &WindowIdentity,
+    ledger_ms: &mut u64,
+) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    let result = append_product_claim(store, owner, durable);
+    *ledger_ms =
+        ledger_ms.saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+    result
+}
+
+/// Best-effort orphan cleanup for an admitted-but-uncommitted nonce (shared
+/// with [`hide_managed_claim`]): removes the window-lifetime nonce ONLY when
+/// the fresh committed ledger proves no same-HWND product claim exists AND
+/// the live window still carries the full expected process plus the exact
+/// nonce. Never fails: the caller's error stands.
+pub(crate) fn cleanup_orphan_nonce(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+) {
+    maybe_cleanup_orphan(store, owner, claim);
+}
+
+/// Post one async visibility effect without blocking or waiting:
+/// `ShowWindowAsync` queues behind earlier posts so per-window ordering is
+/// preserved and a hung target cannot wedge the caller. Shared by the
+/// legacy per-window poll and the joint batch posts, so both report the
+/// identical post verdict. Returns `false` when the post itself refused.
+fn post_async(hwnd_u64: u64, cmd: i32) -> bool {
+    #[cfg(test)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+        if fake::active(hwnd_u64) {
+            let hide = cmd == SW_HIDE;
+            fake::record_post(hwnd_u64, hide);
+            return fake::with_mut(hwnd_u64, |w| {
+                if !w.alive || !w.post_ok {
+                    return false;
+                }
+                if !w.defer {
+                    w.visible = !hide;
+                }
+                true
+            })
+            .unwrap_or(false);
+        }
+    }
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync;
+    unsafe { ShowWindowAsync(hwnd_u64 as isize as HWND, cmd) != 0 }
+}
+
+/// Fake-aware HWND liveness for the batch prepare path: the scripted `alive`
+/// flag offline, `IsWindow` in production. Production never inspects
+/// fabricated HWNDs.
+fn live_hwnd(hwnd_u64: u64) -> bool {
+    #[cfg(test)]
+    if fake::active(hwnd_u64) {
+        return fake::with(hwnd_u64, |w| w.alive).unwrap_or(false);
+    }
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+    unsafe { IsWindow(hwnd_u64 as isize as HWND) != 0 }
+}
+/// Post one hide effect without blocking or waiting (same async contract
+/// as the legacy poll's post, via the shared [`post_async`]); confirmation
+/// still requires an observed snapshot, never the post alone.
+pub(crate) fn batch_post_hide(hwnd_u64: u64) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    post_async(hwnd_u64, SW_HIDE)
+}
+
+/// Nonactivating show command for one reveal, from the durable ledger
+/// preimage: originally minimized restores minimized (`SW_SHOWMINNOACTIVE`),
+/// otherwise `SW_SHOWNA`, which preserves native maximized placement. The
+/// `minimized` parameter carries the in-memory hide-time state for
+/// preimage-less (v3) claims; a durable minimized preimage always wins.
+#[must_use]
+pub(crate) fn reveal_show_cmd(claim: &WindowIdentity, minimized: bool) -> i32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, SW_SHOWNA};
+    match product_show_restore(WindowShowState {
+        minimized: claim.show.minimized || minimized,
+        maximized: claim.show.maximized,
+    }) {
+        ProductShowRestore::ShowMinimized => SW_SHOWMINNOACTIVE,
+        ProductShowRestore::ShowNormal | ProductShowRestore::ShowMaximized => SW_SHOWNA,
+    }
+}
+
+/// Post one reveal effect without blocking or waiting (same async contract
+/// as [`batch_post_hide`]). The caller computed `show_cmd` via
+/// [`reveal_show_cmd`].
+pub(crate) fn batch_post_reveal(hwnd_u64: u64, show_cmd: i32) -> bool {
+    post_async(hwnd_u64, show_cmd)
+}
+
+/// Fresh visibility readback for one batch member: `Some(visible)` on a
+/// live window, `None` when verifiably destroyed (`IsWindow` false).
+/// Production never inspects fabricated HWNDs.
+pub(crate) fn batch_is_visible(hwnd_u64: u64) -> Option<bool> {
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            fake::record_snapshot(hwnd_u64);
+            return fake::with(hwnd_u64, |w| w.alive.then_some(w.visible)).flatten();
+        }
+    }
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, IsWindowVisible};
+    let hwnd = hwnd_u64 as isize as HWND;
+    if unsafe { IsWindow(hwnd) } == 0 {
+        return None;
+    }
+    Some(unsafe { IsWindowVisible(hwnd) } != 0)
+}
+
+/// Post-hide finish for one batch member: the post-pid fence plus the
+/// identity/nonce/hidden readback. The ledger entry (committed before the
+/// post) is kept on mismatch, exactly like the single path.
+pub(crate) fn finish_hide_confirm(
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    held: &HeldProcess,
+    pre_pid: u32,
+) -> Result<()> {
+    if !held.is_alive() || !pid_current(claim.hwnd, pre_pid) {
+        return Err(err("uncertain: hide post-pid changed"));
+    }
+    let back = query_recovery(claim.hwnd, owner)?;
+    if back.pid != claim.process.pid
+        || back.process != claim.process
+        || back.nonce.as_deref() != Some(claim.tag.as_str())
+        || back.visible
+    {
+        return Err(err("uncertain: hide readback mismatch (kept ledger)"));
+    }
+    Ok(())
+}
+
+/// One prepared reveal awaiting its post: the live pid plus hold plus show
+/// command. Already-visible and retired claims never reach this: they
+/// resolve during preparation with no post.
+pub(crate) struct PreparedReveal {
+    pub(crate) held: HeldProcess,
+    pub(crate) pid: u32,
+    pub(crate) show_cmd: i32,
+}
+
+/// Reveal readiness: either a verified post to issue or a settled teardown
+/// that needed no post.
+pub(crate) enum RevealReady {
+    Post(PreparedReveal),
+    Done(super::ProductTeardown),
+}
+
+/// Reveal preparation through the posted phase: liveness, identity-only
+/// pre-read with recycle fencing, already-visible short-circuit (nonce plus
+/// note removal, exactly like the single path), target hold, and the
+/// nonactivating show command from the durable preimage (maximized/
+/// minimized restoration preserved). `Err` carries the single-path
+/// vocabulary: `absent:*` (caller retires) versus `uncertain:*` (caller
+/// keeps the ledger). No visibility effect.
+pub(crate) fn prepare_reveal(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    minimized: bool,
+    ledger_ms: &mut u64,
+) -> Result<RevealReady> {
+    use super::ProductTeardown;
+    use crate::model::WindowClaimKind;
+    if claim.kind != WindowClaimKind::Product {
+        return Err(err("refuse: not a product claim"));
+    }
+    let hwnd = claim.hwnd;
+    if !live_hwnd(hwnd) {
+        remove_product_note(store, owner, hwnd, ledger_ms)?;
+        return Ok(RevealReady::Done(ProductTeardown::Retired));
+    }
+    let snap = match query_recovery(hwnd, owner) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.starts_with("absent:") {
+                remove_product_note(store, owner, hwnd, ledger_ms)?;
+                return Ok(RevealReady::Done(ProductTeardown::Retired));
+            }
+            if msg.contains("sid/session mismatch") {
+                remove_product_note(store, owner, hwnd, ledger_ms)?;
+                return Ok(RevealReady::Done(ProductTeardown::Retired));
+            }
+            return Err(err(format!("uncertain: reveal pre-read {msg}")));
+        }
+    };
+    if snap.process != claim.process || snap.nonce.as_deref() != Some(claim.tag.as_str()) {
+        remove_product_note(store, owner, hwnd, ledger_ms)?;
+        return Ok(RevealReady::Done(ProductTeardown::Retired));
+    }
+    if snap.visible {
+        remove_nonce_checked(hwnd, &claim.tag, &claim.process, owner)?;
+        remove_product_note(store, owner, hwnd, ledger_ms)?;
+        return Ok(RevealReady::Done(ProductTeardown::AlreadyVisible));
+    }
+    let held = match hold_target_verified(snap.pid, &snap.process) {
+        Ok(h) => h,
+        Err(e) if e.to_string().starts_with("absent:") => {
+            remove_product_note(store, owner, hwnd, ledger_ms)?;
+            return Ok(RevealReady::Done(ProductTeardown::Retired));
+        }
+        Err(e) => return Err(err(format!("uncertain: reveal held {e}"))),
+    };
+    let show_cmd = reveal_show_cmd(claim, minimized);
+    Ok(RevealReady::Post(PreparedReveal {
+        held,
+        pid: snap.pid,
+        show_cmd,
+    }))
+}
+
+/// Post-reveal finish with the pre-post hold: when `guard` carries the
+/// prepared hold plus pid, the post-pid fence runs exactly like the single
+/// path; `None` skips only the fence (used where the hold could not be
+/// carried, never in batch phases).
+pub(crate) fn finish_reveal_guarded(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    claim: &WindowIdentity,
+    guard: Option<(&HeldProcess, u32)>,
+    ledger_ms: &mut u64,
+) -> Result<super::ProductTeardown> {
+    use super::ProductTeardown;
+    let hwnd = claim.hwnd;
+    if let Some((held, pid)) = guard {
+        let _ = held;
+        if !held.is_alive() || !pid_current(hwnd, pid) {
+            return Err(err("uncertain: reveal post-pid changed"));
+        }
+    }
+    let back =
+        query_recovery(hwnd, owner).map_err(|e| err(format!("uncertain: reveal readback {e}")))?;
+    if back.process != claim.process
+        || back.nonce.as_deref() != Some(claim.tag.as_str())
+        || !back.visible
+    {
+        return Err(err("uncertain: reveal readback mismatch (kept ledger)"));
+    }
+    remove_nonce_checked(hwnd, &claim.tag, &claim.process, owner)?;
+    remove_product_note(store, owner, hwnd, ledger_ms)?;
+    Ok(ProductTeardown::Revealed)
+}
+
 pub fn hold_target_verified(pid: u32, expected: &ProcessIdentity) -> Result<HeldProcess> {
+    #[cfg(test)]
+    {
+        if let Some(verdict) = fake::hold_verified(pid, expected) {
+            return verdict;
+        }
+    }
     let held = match HeldProcess::open(pid) {
         Ok(h) => h,
         Err(IdentityError::Absent) => return Err(err("absent: target pid absent")),
@@ -717,6 +1100,12 @@ pub fn hold_target_verified(pid: u32, expected: &ProcessIdentity) -> Result<Held
 }
 
 fn pid_current(hwnd_u64: u64, pid: u32) -> bool {
+    #[cfg(test)]
+    {
+        if fake::active(hwnd_u64) {
+            return fake::with(hwnd_u64, |w| w.alive && w.pid == pid).unwrap_or(false);
+        }
+    }
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
     let mut current: u32 = 0;
@@ -775,6 +1164,46 @@ pub fn classify_candidate_for_hide(
     owner: &ProcessIdentity,
     allow_project_topmost: bool,
 ) -> CandidateStatus {
+    #[cfg(test)]
+    {
+        let _ = allow_project_topmost;
+        if fake::active(hwnd_u64) {
+            // Test-only mirror of the production gates above against the
+            // fake: liveness, self-ownership, claim state, and visibility
+            // select Admissible/Retained; geometry gates collapse to
+            // maximized/iconic (the fake models no styles or owners).
+            return fake::with(hwnd_u64, |w| {
+                if !w.alive {
+                    return CandidateStatus::Absent;
+                }
+                if w.pid == owner.pid {
+                    return CandidateStatus::Refused("self-owned");
+                }
+                if w.nonce.is_some() {
+                    return CandidateStatus::Refused("already-claimed");
+                }
+                if !w.visible {
+                    return CandidateStatus::Refused("not-visible");
+                }
+                let snap = ProductSnapshot {
+                    hwnd: hwnd_u64,
+                    pid: w.pid,
+                    process: w.process.clone(),
+                    nonce: w.nonce.clone(),
+                    visible: w.visible,
+                    iconic: w.iconic,
+                    maximized: w.maximized,
+                    class: String::new(),
+                };
+                if w.maximized || w.iconic {
+                    CandidateStatus::Retained(snap)
+                } else {
+                    CandidateStatus::Admissible(snap)
+                }
+            })
+            .unwrap_or(CandidateStatus::Absent);
+        }
+    }
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetParent, GetWindow, GetWindowLongW, IsIconic, IsWindow,
@@ -1136,7 +1565,8 @@ pub fn hide_committed_product(
     match post_visibility(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS) {
         Ok(()) => {}
         Err(e) if e.to_string().starts_with("absent:") => {
-            let _ = remove_product_note(store, owner, claim.hwnd);
+            let mut ledger_ms = 0;
+            let _ = remove_product_note(store, owner, claim.hwnd, &mut ledger_ms);
             return Err(e);
         }
         Err(e) => return Err(e),
@@ -1174,46 +1604,18 @@ pub fn hide_managed_claim(
     dir: &Path,
 ) -> Result<WindowIdentity> {
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-    if claim.kind != WindowClaimKind::Product {
-        return Err(err("refuse: not a product claim"));
-    }
-    if !valid_claim_tag(&claim.tag) {
-        return Err(err("refuse: bad product tag"));
-    }
-    if let Err(e) = verify_watcher_ready(dir, owner) {
-        maybe_cleanup_orphan(store, owner, claim);
-        return Err(e);
-    }
-    let pre = match query_recovery(claim.hwnd, owner) {
-        Ok(s) => s,
+    // Shape refusal takes no cleanup, as before.
+    check_claim_shape(claim)?;
+    let (pre, held) = match pre_hide_checks(owner, claim, dir) {
+        Ok(v) => v,
         Err(e) => {
             maybe_cleanup_orphan(store, owner, claim);
             return Err(e);
         }
     };
-    if pre.pid != claim.process.pid
-        || pre.process != claim.process
-        || pre.nonce.as_deref() != Some(claim.tag.as_str())
-        || !pre.visible
-    {
-        maybe_cleanup_orphan(store, owner, claim);
-        return Err(err("refuse: hide pre-readback mismatch"));
-    }
-    let held = match hold_target_verified(pre.pid, &pre.process) {
-        Ok(h) => h,
-        Err(e) => {
-            maybe_cleanup_orphan(store, owner, claim);
-            return Err(e);
-        }
-    };
-    let durable = WindowIdentity {
-        show: WindowShowState {
-            minimized: pre.iconic,
-            maximized: pre.maximized,
-        },
-        ..claim.clone()
-    };
-    if let Err(e) = append_product_claim(store, owner, &durable) {
+    let durable = durable_hide_claim(claim, &pre);
+    let mut ledger_ms = 0;
+    if let Err(e) = commit_hide_claim(store, owner, &durable, &mut ledger_ms) {
         maybe_cleanup_orphan(store, owner, claim);
         return Err(e);
     }
@@ -1221,22 +1623,12 @@ pub fn hide_managed_claim(
     match post_visibility(claim.hwnd, SW_HIDE, false, HIDE_TIMEOUT_MS) {
         Ok(()) => {}
         Err(e) if e.to_string().starts_with("absent:") => {
-            let _ = remove_product_note(store, owner, claim.hwnd);
+            let _ = remove_product_note(store, owner, claim.hwnd, &mut ledger_ms);
             return Err(e);
         }
         Err(e) => return Err(e),
     }
-    if !held.is_alive() || !pid_current(claim.hwnd, pre.pid) {
-        return Err(err("uncertain: hide post-pid changed"));
-    }
-    let back = query_recovery(claim.hwnd, owner)?;
-    if back.pid != claim.process.pid
-        || back.process != claim.process
-        || back.nonce.as_deref() != Some(claim.tag.as_str())
-        || back.visible
-    {
-        return Err(err("uncertain: hide readback mismatch (kept ledger)"));
-    }
+    finish_hide_confirm(owner, claim, &held, pre.pid)?;
     Ok(durable)
 }
 
@@ -1307,80 +1699,38 @@ pub fn reveal_product_claim_to(
     minimized: bool,
 ) -> std::result::Result<super::ProductTeardown, DynError> {
     use super::ProductTeardown;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IsWindow, SW_SHOWMINNOACTIVE, SW_SHOWNA};
-    if claim.kind != WindowClaimKind::Product {
-        return Err(err("refuse: not a product claim"));
-    }
-    let hwnd = claim.hwnd;
-    if unsafe { IsWindow(hwnd as isize as _) } == 0 {
-        remove_product_note(store, owner, hwnd)?;
-        return Ok(ProductTeardown::Retired);
-    }
-    let snap = match query_recovery(hwnd, owner) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.starts_with("absent:") {
-                remove_product_note(store, owner, hwnd)?;
-                return Ok(ProductTeardown::Retired);
-            }
-            if msg.contains("sid/session mismatch") {
-                remove_product_note(store, owner, hwnd)?;
-                return Ok(ProductTeardown::Retired);
-            }
-            return Err(err(format!("uncertain: reveal pre-read {msg}")));
-        }
+    let mut ledger_ms = 0;
+    let ready = prepare_reveal(store, owner, claim, minimized, &mut ledger_ms)?;
+    let prep = match ready {
+        RevealReady::Done(teardown) => return Ok(teardown),
+        RevealReady::Post(prep) => prep,
     };
-    if snap.process != claim.process || snap.nonce.as_deref() != Some(claim.tag.as_str()) {
-        remove_product_note(store, owner, hwnd)?;
-        return Ok(ProductTeardown::Retired);
-    }
-    if snap.visible {
-        remove_nonce_checked(hwnd, &claim.tag, &claim.process, owner)?;
-        remove_product_note(store, owner, hwnd)?;
-        return Ok(ProductTeardown::AlreadyVisible);
-    }
-    let held = match hold_target_verified(snap.pid, &snap.process) {
-        Ok(h) => h,
-        Err(e) if e.to_string().starts_with("absent:") => {
-            remove_product_note(store, owner, hwnd)?;
-            return Ok(ProductTeardown::Retired);
-        }
-        Err(e) => return Err(err(format!("uncertain: reveal held {e}"))),
-    };
-    let show_cmd = match product_show_restore(WindowShowState {
-        minimized: claim.show.minimized || minimized,
-        maximized: claim.show.maximized,
-    }) {
-        ProductShowRestore::ShowMinimized => SW_SHOWMINNOACTIVE,
-        ProductShowRestore::ShowNormal | ProductShowRestore::ShowMaximized => SW_SHOWNA,
-    };
-    match post_visibility(hwnd, show_cmd, true, REVEAL_TIMEOUT_MS) {
+    match post_visibility(claim.hwnd, prep.show_cmd, true, REVEAL_TIMEOUT_MS) {
         Ok(()) => {}
         Err(e) if e.to_string().starts_with("absent:") => {
-            remove_product_note(store, owner, hwnd)?;
+            remove_product_note(store, owner, claim.hwnd, &mut ledger_ms)?;
             return Ok(ProductTeardown::Retired);
         }
         Err(e) => return Err(e),
     }
-    let _ = &held;
-    if !held.is_alive() || !pid_current(hwnd, snap.pid) {
-        return Err(err("uncertain: reveal post-pid changed"));
-    }
-    let back =
-        query_recovery(hwnd, owner).map_err(|e| err(format!("uncertain: reveal readback {e}")))?;
-    if back.process != claim.process
-        || back.nonce.as_deref() != Some(claim.tag.as_str())
-        || !back.visible
-    {
-        return Err(err("uncertain: reveal readback mismatch (kept ledger)"));
-    }
-    remove_nonce_checked(hwnd, &claim.tag, &claim.process, owner)?;
-    remove_product_note(store, owner, hwnd)?;
-    Ok(ProductTeardown::Revealed)
+    finish_reveal_guarded(
+        store,
+        owner,
+        claim,
+        Some((&prep.held, prep.pid)),
+        &mut ledger_ms,
+    )
 }
 
-fn remove_product_note(store: &LedgerStore, owner: &ProcessIdentity, hwnd: u64) -> Result<()> {
+/// Remove one HWND note from the recovery ledger under the owner lease.
+/// Shared by reveal preparation/finish and batch absent recovery. Times
+/// only the store commit into `ledger_ms`.
+pub(crate) fn remove_product_note(
+    store: &LedgerStore,
+    owner: &ProcessIdentity,
+    hwnd: u64,
+    ledger_ms: &mut u64,
+) -> Result<()> {
     let committed = store.committed().map_err(store_err)?;
     let Some(existing) = committed else {
         return Ok(());
@@ -1388,7 +1738,8 @@ fn remove_product_note(store: &LedgerStore, owner: &ProcessIdentity, hwnd: u64) 
     if existing.owner != *owner {
         return Err(err("refuse: ledger owner changed under lease"));
     }
-    commit_windows(
+    let t0 = std::time::Instant::now();
+    let result = commit_windows(
         store,
         owner,
         existing
@@ -1396,7 +1747,10 @@ fn remove_product_note(store: &LedgerStore, owner: &ProcessIdentity, hwnd: u64) 
             .into_iter()
             .filter(|w| w.hwnd != hwnd)
             .collect(),
-    )
+    );
+    *ledger_ms =
+        ledger_ms.saturating_add(t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+    result
 }
 
 pub fn reveal_all_product(
@@ -1426,4 +1780,148 @@ pub fn reveal_all_product(
         }
     }
     (outcomes, uncertain)
+}
+
+/// Offline native-window fake for joint-batch tests (test-only, never
+/// compiled into production). Scripts the leaf OS reads/writes behind the
+/// shared prepare/post/finish above - HWND liveness, PID/process binding,
+/// product nonce and member-tag properties, `ShowWindowAsync` posts plus
+/// visibility, and the target hold - while the phase state machine, the
+/// ledger, and the outcome vocabulary stay real. Production logic never
+/// branches on this: gates live in the leaf fns and fall through to the OS
+/// for every unregistered HWND, so all existing tests (which never register)
+/// keep their honest native-failure outcomes.
+#[cfg(test)]
+pub(crate) mod fake {
+    use super::ProductSnapshot;
+    use crate::model::ProcessIdentity;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    /// One scripted native window. `process` is trusted test input (no
+    /// SID/session/integrity re-proof: the fake stands in for the OS reads,
+    /// not for the gates that consume them).
+    pub(crate) struct FakeWindow {
+        pub pid: u32,
+        pub process: ProcessIdentity,
+        pub nonce: Option<String>,
+        pub member_tag: Option<String>,
+        pub visible: bool,
+        pub iconic: bool,
+        pub maximized: bool,
+        pub alive: bool,
+        /// Scripted `ShowWindowAsync` verdict: `false` simulates a refused
+        /// native post with no visibility change.
+        pub post_ok: bool,
+        /// When true, posts report success but the host never applies the
+        /// effect (visibility flips only through explicit test flips):
+        /// proves the joint wait, not the post, confirms.
+        pub defer: bool,
+    }
+
+    thread_local! {
+        static WINDOWS: RefCell<HashMap<u64, FakeWindow>> = RefCell::new(HashMap::new());
+        /// Posted effects in call order: `(hwnd, hide)`.
+        static POST_LOG: RefCell<Vec<(u64, bool)>> = const { RefCell::new(Vec::new()) };
+        /// Visibility snapshot reads in call order (confirmations only).
+        static SNAPSHOT_LOG: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+        /// Combined post/snapshot order: `('p' | 's', hwnd)`.
+        static OP_LOG: RefCell<Vec<(char, u64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn register(hwnd: u64, window: FakeWindow) {
+        WINDOWS.with(|map| map.borrow_mut().insert(hwnd, window));
+    }
+
+    pub(crate) fn clear() {
+        WINDOWS.with(|map| map.borrow_mut().clear());
+        POST_LOG.with(|log| log.borrow_mut().clear());
+        SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
+        OP_LOG.with(|log| log.borrow_mut().clear());
+    }
+
+    pub(crate) fn any_registered() -> bool {
+        WINDOWS.with(|map| !map.borrow().is_empty())
+    }
+
+    pub(crate) fn active(hwnd: u64) -> bool {
+        WINDOWS.with(|map| map.borrow().contains_key(&hwnd))
+    }
+
+    pub(crate) fn with<R>(hwnd: u64, f: impl FnOnce(&FakeWindow) -> R) -> Option<R> {
+        WINDOWS.with(|map| map.borrow().get(&hwnd).map(f))
+    }
+
+    pub(crate) fn with_mut<R>(hwnd: u64, f: impl FnOnce(&mut FakeWindow) -> R) -> Option<R> {
+        WINDOWS.with(|map| map.borrow_mut().get_mut(&hwnd).map(f))
+    }
+
+    pub(crate) fn post_log() -> Vec<(u64, bool)> {
+        POST_LOG.with(|log| log.borrow().clone())
+    }
+
+    pub(crate) fn snapshot_log() -> Vec<u64> {
+        SNAPSHOT_LOG.with(|log| log.borrow().clone())
+    }
+
+    pub(crate) fn record_post(hwnd: u64, hide: bool) {
+        POST_LOG.with(|log| log.borrow_mut().push((hwnd, hide)));
+        OP_LOG.with(|log| log.borrow_mut().push(('p', hwnd)));
+    }
+
+    pub(crate) fn record_snapshot(hwnd: u64) {
+        SNAPSHOT_LOG.with(|log| log.borrow_mut().push(hwnd));
+        OP_LOG.with(|log| log.borrow_mut().push(('s', hwnd)));
+    }
+
+    pub(crate) fn op_log() -> Vec<(char, u64)> {
+        OP_LOG.with(|log| log.borrow().clone())
+    }
+
+    pub(crate) fn snapshot(hwnd: u64) -> Option<ProductSnapshot> {
+        with(hwnd, |w| ProductSnapshot {
+            hwnd,
+            pid: w.pid,
+            process: w.process.clone(),
+            nonce: w.nonce.clone(),
+            visible: w.visible,
+            iconic: w.iconic,
+            maximized: w.maximized,
+            class: String::new(),
+        })
+        .filter(|_| with(hwnd, |w| w.alive).unwrap_or(false))
+    }
+
+    /// Test-only target hold: validates pid/process binding against the fake
+    /// and returns a self-process handle as the liveness guard stand-in
+    /// (its `is_alive` reads true; death is simulated through the fake
+    /// `alive` flag plus `pid_current`, which the shared finish checks
+    /// first). Production never takes this path.
+    pub(crate) fn hold_verified(
+        pid: u32,
+        expected: &ProcessIdentity,
+    ) -> Option<super::Result<super::HeldProcess>> {
+        if !any_registered() {
+            return None;
+        }
+        let owned: Vec<(u64, u32, ProcessIdentity, bool)> = WINDOWS.with(|map| {
+            map.borrow()
+                .iter()
+                .map(|(h, w)| (*h, w.pid, w.process.clone(), w.alive))
+                .collect()
+        });
+        let Some((_, _, live, alive)) = owned.iter().find(|(_, p, _, _)| *p == pid) else {
+            return Some(Err(super::err("absent: target pid absent")));
+        };
+        if !alive || live != expected {
+            return Some(Err(super::err(
+                "absent: target identity changed (recycled)",
+            )));
+        }
+        let current = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
+        match super::HeldProcess::open(current) {
+            Ok(held) => Some(Ok(held)),
+            Err(e) => Some(Err(super::err(format!("error: target held {e}")))),
+        }
+    }
 }

@@ -177,8 +177,8 @@ use self::observe::WaitWake;
 use self::observe::{
     HookEvent, InputWaitSplit, ObservedWindow, OwnerWaitCounts, RenderWaitSplit, class_of,
     drain_owner_messages, foreground_lifetime, hook_edges_pending, hook_queue, observe_window,
-    pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned, window_identity,
-    winevent_proc,
+    pump_wait, pump_wait_with_intent, pump_waits_line, verify_proof_owned, visibility_generation,
+    window_identity, winevent_proc,
 };
 pub use self::observe::{KnownIdentity, ObserveFailure};
 use self::output_send::{resolve_output_send_target, run_output_send};
@@ -271,6 +271,9 @@ use self::shell::{
     is_shell_class, rect_from_win,
 };
 use self::trace::{log_engine_placement_trace, log_json_at, log_mono_ms, refresh_border_timed};
+use self::visibility_batch::{
+    HideAttempt, PhaseBreakdown, action_clock, hide_phase, log_visibility_timing, reveal_phase,
+};
 #[cfg(test)]
 use self::visibility_diag::{
     REHIDE_DIAG_MAX_ENTRIES, REVEAL_DIAG_PER_SELECT, clear_visibility, inject_visibility,
@@ -1061,6 +1064,8 @@ mod workspace_mode;
 
 mod selection;
 
+mod visibility_batch;
+
 mod send_preflight;
 
 mod send_native;
@@ -1196,6 +1201,10 @@ mod timeout_fallback_tests;
 #[cfg(test)]
 #[path = "tests_window_diag.rs"]
 mod window_diag_tests;
+
+#[cfg(test)]
+#[path = "tests_visibility_batch.rs"]
+mod visibility_batch_tests;
 
 #[cfg(test)]
 #[path = "tests_visibility_diag.rs"]

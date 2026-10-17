@@ -904,72 +904,47 @@ pub(super) fn flush_exceptions(state: &mut TileLoop) -> Option<serde_json::Value
 
 /// Narrow rollback shared by every scoped transition: reveal exactly the
 /// claims committed above (exact identity, no blind replay, no fabricated
-/// rollback) with per-window `workspace-reveal` lines in the `rollback`
-/// phase plus a bounded omission summary. Retired claims drop member state;
-/// revealed claims unflag; failures keep the ledger for the next attempt.
+/// rollback) through one joint reveal phase with per-window
+/// `workspace-reveal` lines in the `rollback` phase plus a bounded omission
+/// summary. Retired claims drop member state; revealed claims unflag;
+/// failures keep the ledger for the next attempt.
 pub(super) fn rollback_newly_hidden(
     state: &mut TileLoop,
     me: &ProcessIdentity,
     store: &LedgerStore,
     newly_hidden: &[crate::workspace::WindowKey],
     ctx: &ActionCtx,
+    clock: &mut impl crate::product_hide::batch::BatchWaitClock,
 ) {
-    let mut attempted = 0;
-    let mut logged = 0;
-    for key in newly_hidden {
-        let Some(record) = state.hidden_claims.get(key).cloned() else {
-            continue;
-        };
-        attempted += 1;
-        match crate::product_hide::sys::reveal_product_claim_to(
-            store,
-            me,
-            &record.claim,
-            record.iconic,
-        ) {
-            Ok(teardown) => {
-                let outcome = reveal_outcome(&teardown);
-                note_reveal_diag(
-                    state,
-                    ctx,
-                    key,
-                    outcome,
-                    None,
-                    Some("rollback"),
-                    &mut logged,
-                );
-                if matches!(teardown, crate::product_hide::ProductTeardown::Retired) {
-                    state.hidden_claims.remove(key);
-                    drop_member_state(state, key);
-                } else {
-                    state.hidden_claims.remove(key);
-                    state.workspaces.set_hidden(key, false);
-                }
-            }
-            Err(e) => {
-                let (outcome, detail) = reveal_err_outcome(&e.to_string());
-                note_reveal_diag(
-                    state,
-                    ctx,
-                    key,
-                    outcome,
-                    Some(detail),
-                    Some("rollback"),
-                    &mut logged,
-                );
-            }
-        }
-    }
+    let reveal = reveal_phase(
+        state,
+        me,
+        store,
+        ctx,
+        newly_hidden,
+        Some("rollback"),
+        true,
+        clock,
+    );
     if let Some(line) = omission_summary(
         "workspace-reveal-summary",
         state.tick,
         &ctx.correlation,
         Some("rollback"),
-        attempted,
-        logged,
+        reveal.attempted,
+        reveal.logged,
     ) {
+        let t0 = Instant::now();
         log_json_at(&state.log_path.clone(), line);
+        let _ = t0;
     }
+    log_visibility_timing(
+        state,
+        ctx,
+        "rollback",
+        &PhaseBreakdown::default(),
+        &reveal.breakdown,
+    );
 }
 
 /// Drop every visibility/exception sample for one dead member.
