@@ -12,6 +12,7 @@
 
 import type { WorldObservation } from "./world-observe";
 import type { WorldCommand } from "./world-report";
+import { isLiveWindowListed, liveWindowId } from "./world-native";
 
 export type FloatDirection = "left" | "right" | "up" | "down";
 
@@ -140,17 +141,9 @@ export function floatHalfSnapRect(
 export function createFloatNav(env: FloatNavEnv): FloatNav {
     const { surface, readProp, log } = env;
     const isStillListedRef = (ref: object): boolean => {
-        try {
-            const fn = readProp(surface, "windowList");
-            if (typeof fn !== "function") {
-                return false;
-            }
-            const list = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as ReadonlyArray<unknown>;
-            return Array.isArray(list) && (list as ReadonlyArray<unknown>).includes(ref);
-        } catch (error) {
-            void error;
-            return false;
-        }
+        // Stable-id liveness: the scripting engine renews wrappers per
+        // enumeration, so ref identity never survives a call.
+        return isLiveWindowListed(surface, readProp, ref);
     };
     const handleFloatFocus = (direction: string): "not-float" | "handled" | "failed" => {
         if (!isFloatDirection(direction)) {
@@ -185,7 +178,9 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
                 return "failed";
             }
             try {
-                if (readProp(surface, "activeWindow") !== subject.ref) {
+                const active = readProp(surface, "activeWindow");
+                const want = liveWindowId(readProp, subject.ref);
+                if (typeof active !== "object" || active === null || want === null || liveWindowId(readProp, active) !== want) {
                     log(`omnitiler:world:focus-float-refused-stale direction=${direction}`);
                     return "failed";
                 }
@@ -289,7 +284,9 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
             return "failed";
         }
         try {
-            if (readProp(surface, "activeWindow") !== subject.ref) {
+            const moveActive = readProp(surface, "activeWindow");
+            const moveWant = liveWindowId(readProp, subject.ref);
+            if (typeof moveActive !== "object" || moveActive === null || moveWant === null || liveWindowId(readProp, moveActive) !== moveWant) {
                 log(`omnitiler:world:move-float-refused-stale direction=${direction}`);
                 return "failed";
             }
@@ -313,7 +310,9 @@ export function createFloatNav(env: FloatNavEnv): FloatNav {
             return "failed";
         }
         try {
-            if (readProp(surface, "activeWindow") !== subject.ref) {
+            const focusActive = readProp(surface, "activeWindow");
+            const focusWant = liveWindowId(readProp, subject.ref);
+            if (typeof focusActive !== "object" || focusActive === null || focusWant === null || liveWindowId(readProp, focusActive) !== focusWant) {
                 if (!(Reflect.set(surface, "activeWindow", subject.ref) || false)) {
                     log(`omnitiler:world:move-float-focus-failed direction=${direction}`);
                     return "failed";

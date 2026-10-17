@@ -15,6 +15,8 @@ import type { WorldCommand } from "./world-report";
 import type { ApplyEnv } from "./world-apply";
 import { readDesktopForOutput, writeDesktopForOutput } from "./workspace-native";
 import { isOpaqueId } from "./world-seq";
+import { decodeList } from "./qml-list";
+import { normalizeNativeId } from "./native-id";
 
 export interface WorldNativeEnv {
     surface: object;
@@ -109,6 +111,58 @@ function invokeMaximize(readProp: WorldNativeEnv["readProp"], ref: object, maxim
     }
 }
 
+// KWin script lists (`windowList`, `screens`, `desktops`, per-window
+// `desktops`) are QML array-likes, not JS arrays: raw Array.isArray is
+// false on the live host while the observer decodes them with decodeList,
+// so every raw-Array.isArray liveness read failed closed there and every
+// accepted world reply applied as an all-zero silent no-op. Bounds mirror
+// the observer caps. Wrapper identity across calls is unstable (fresh
+// wrappers per enumeration), so liveness compares the stable opaque
+// internalId, never ref identity.
+const MAX_NATIVE_SCREENS = 16;
+const MAX_NATIVE_DESKTOPS = 4096;
+const MAX_NATIVE_WINDOWS = 10000;
+const MAX_NATIVE_WINDOW_DESKTOPS = 4096;
+
+type NativeReadProp = WorldNativeEnv["readProp"];
+
+export function liveWindowId(readProp: NativeReadProp, ref: object): string | null {
+    // Canonical native-id form (braced UUIDs unwrap to bare opaque ids),
+    // shared with the observer: raw live ids are never compared directly.
+    try {
+        return normalizeNativeId(readProp(ref, "internalId"));
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
+export function isLiveWindowListed(surface: object, readProp: NativeReadProp, ref: object): boolean {
+    const id = liveWindowId(readProp, ref);
+    if (id === null) {
+        return false;
+    }
+    try {
+        const fn = readProp(surface, "windowList");
+        if (typeof fn !== "function") {
+            return false;
+        }
+        const list = decodeList(Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []), MAX_NATIVE_WINDOWS);
+        if (list === null) {
+            return false;
+        }
+        for (const item of list) {
+            if (typeof item === "object" && item !== null && liveWindowId(readProp, item) === id) {
+                return true;
+            }
+        }
+        return false;
+    } catch (error) {
+        void error;
+        return false;
+    }
+}
+
 export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggles {
     const { surface, log, token, readProp } = env;
     // Sticky origins: floating membership before a sticky-on, plus
@@ -128,17 +182,9 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
     };
 
     const isListed = (ref: object): boolean => {
-        try {
-            const fn = readProp(surface, "windowList");
-            if (typeof fn !== "function") {
-                return false;
-            }
-            const list = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as ReadonlyArray<unknown>;
-            return Array.isArray(list) && (list as ReadonlyArray<unknown>).includes(ref);
-        } catch (error) {
-            void error;
-            return false;
-        }
+        // Stable-id liveness: the scripting engine renews wrappers per
+        // enumeration, so ref identity never survives a call.
+        return isLiveWindowListed(surface, readProp, ref);
     };
 
     // Float toggle with B9 maximized-unfloat parity (native only). Fence
@@ -383,21 +429,18 @@ export function createWorldApplyHost(
 ): WorldApplyHost {
     return {
         isStillListed: (ref) => {
-            try {
-                const fn = readProp(surface, "windowList");
-                if (typeof fn !== "function") {
-                    return false;
-                }
-                const list = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as ReadonlyArray<unknown>;
-                return Array.isArray(list) && (list as ReadonlyArray<unknown>).includes(ref);
-            } catch (error) {
-                void error;
-                return false;
-            }
+            // Stable-id liveness (see isLiveWindowListed): ref identity
+            // never survives a scripting-engine enumeration.
+            return isLiveWindowListed(surface, readProp, ref);
         },
         isActiveWindow: (ref) => {
             try {
-                return readProp(surface, "activeWindow") === ref;
+                const active = readProp(surface, "activeWindow");
+                if (typeof active !== "object" || active === null) {
+                    return false;
+                }
+                const want = liveWindowId(readProp, ref);
+                return want !== null && liveWindowId(readProp, active) === want;
             } catch (error) {
                 void error;
                 return false;
@@ -428,10 +471,10 @@ export function createWorldApplyHost(
                 const out = typeof outputRaw === "object" && outputRaw !== null
                     ? readProp(outputRaw as object, "name")
                     : null;
-                const members = readProp(ref, "desktops");
+                const members = decodeList(readProp(ref, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
                 let ws: string | null = null;
-                if (Array.isArray(members)) {
-                    for (const m of members as ReadonlyArray<unknown>) {
+                if (members !== null) {
+                    for (const m of members) {
                         if (typeof m === "object" && m !== null) {
                             const id = readProp(m as object, "id");
                             if (isOpaqueId(id)) {
@@ -510,11 +553,11 @@ export function createWorldApplyHost(
         },
         resolveOutput: (out) => {
             try {
-                const screens = readProp(surface, "screens");
-                if (!Array.isArray(screens)) {
+                const screens = decodeList(readProp(surface, "screens"), MAX_NATIVE_SCREENS);
+                if (screens === null) {
                     return null;
                 }
-                for (const s of screens as ReadonlyArray<unknown>) {
+                for (const s of screens) {
                     if (typeof s === "object" && s !== null && readProp(s as object, "name") === out) {
                         return s as object;
                     }
@@ -527,11 +570,11 @@ export function createWorldApplyHost(
         },
         resolveDesktop: (wsId) => {
             try {
-                const all = readProp(surface, "desktops");
-                if (!Array.isArray(all)) {
+                const all = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                if (all === null) {
                     return null;
                 }
-                for (const d of all as ReadonlyArray<unknown>) {
+                for (const d of all) {
                     if (typeof d === "object" && d !== null && readProp(d as object, "id") === wsId) {
                         return d as object;
                     }
@@ -567,11 +610,11 @@ export function createWorldApplyHost(
         removeDesktop: (nativeId) => {
             try {
                 const fn = readProp(surface, "removeDesktop");
-                const all = readProp(surface, "desktops");
-                if (typeof fn !== "function" || !Array.isArray(all)) {
+                const all = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                if (typeof fn !== "function" || all === null) {
                     return false;
                 }
-                for (const d of all as ReadonlyArray<unknown>) {
+                for (const d of all) {
                     if (typeof d === "object" && d !== null && readProp(d as object, "id") === nativeId) {
                         Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, [d]);
                         return true;
@@ -592,20 +635,20 @@ export function createWorldApplyHost(
                 if (typeof fn !== "function") {
                     return { total: 0, readable: false };
                 }
-                const list = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as ReadonlyArray<unknown>;
-                if (!Array.isArray(list)) {
+                const list = decodeList(Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []), MAX_NATIVE_WINDOWS);
+                if (list === null) {
                     return { total: 0, readable: false };
                 }
                 let total = 0;
-                for (const item of list as ReadonlyArray<unknown>) {
+                for (const item of list) {
                     if (typeof item !== "object" || item === null) {
                         return { total: 0, readable: false };
                     }
-                    const members = readProp(item as object, "desktops");
-                    if (!Array.isArray(members)) {
+                    const members = decodeList(readProp(item as object, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
+                    if (members === null) {
                         return { total: 0, readable: false };
                     }
-                    for (const m of members as ReadonlyArray<unknown>) {
+                    for (const m of members) {
                         if (typeof m === "object" && m !== null && readProp(m as object, "id") === nativeId) {
                             total += 1;
                             break;
@@ -625,12 +668,12 @@ export function createWorldApplyHost(
             // the shared currentDesktop through the same
             // helper. Null when unreadable (keeps).
             try {
-                const screens = readProp(surface, "screens");
-                if (!Array.isArray(screens) || screens.length === 0) {
+                const screens = decodeList(readProp(surface, "screens"), MAX_NATIVE_SCREENS);
+                if (screens === null || screens.length === 0) {
                     return null;
                 }
                 let readable = false;
-                for (const s of screens as ReadonlyArray<unknown>) {
+                for (const s of screens) {
                     if (typeof s !== "object" || s === null) {
                         continue;
                     }
@@ -657,11 +700,11 @@ export function createWorldApplyHost(
         },
         desktopById: (nativeId) => {
             try {
-                const all = readProp(surface, "desktops");
-                if (!Array.isArray(all)) {
+                const all = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                if (all === null) {
                     return null;
                 }
-                for (const d of all as ReadonlyArray<unknown>) {
+                for (const d of all) {
                     if (typeof d === "object" && d !== null && readProp(d as object, "id") === nativeId) {
                         return d as object;
                     }
@@ -678,11 +721,11 @@ export function createWorldApplyHost(
             // Follow/view/migration proof uses this, never
             // any-output visibility.
             try {
-                const screens = readProp(surface, "screens");
-                if (!Array.isArray(screens)) {
+                const screens = decodeList(readProp(surface, "screens"), MAX_NATIVE_SCREENS);
+                if (screens === null) {
                     return null;
                 }
-                for (const s of screens as ReadonlyArray<unknown>) {
+                for (const s of screens) {
                     if (typeof s !== "object" || s === null) {
                         continue;
                     }

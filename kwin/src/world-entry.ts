@@ -51,6 +51,9 @@ import {
 import { captureWorldObservation, type WorldObservation } from "./world-observe";
 import { WorldAdapterState } from "./world-state";
 import { applyWorldReply } from "./world-apply";
+import { decodeList } from "./qml-list";
+import { normalizeNativeId } from "./native-id";
+import { createWorldCloseTracker } from "./world-close-tracker";
 import { readDomainGaps } from "./domain-gap";
 
 export const WORLD_DBUS_SERVICE = "com.omnitiler.Planner";
@@ -242,7 +245,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // derived per report in pinRetained below (never stored constants).
     const logicalOfNative = new Map<string, { logical: string; out: string }>();
     const detaches: Array<() => void> = [];
-    const closedIds: string[] = [];
+    // Explicit close tracking (D5): canonical live-id cache plus
+    // event-gated difference (see world-close-tracker). The removal payload
+    // is never read; core treats bare absence as minimize, never close.
+    const closeTracker = createWorldCloseTracker();
     // Adapter-owned intentional-float membership (observation input only):
     // converged from accepted Planner exception rows, pruned to live ids.
     // Seeded once from the Rust-owned runtime store (ReadFloatIntent) when
@@ -361,13 +367,19 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return false;
     };
 
-    const capture = (): WorldObservation | null => captureWorldObservation({
+    const capture = (): WorldObservation | null => {
+        try {
+            closeTracker.syncLive(surface);
+        } catch (error) {
+            void error;
+        }
+        return captureWorldObservation({
         workspace: surface,
         readMode,
         readGap: () => gaps.innerGap,
         readOuterGap: () => gaps.outerGap,
         gestureActive,
-        knownClosed: () => [...closedIds],
+        knownClosed: () => closeTracker.snapshotClosed(),
         logicalBindingOf: (nativeId) => {
             const base = logicalOfNative.get(nativeId);
             if (base === undefined) {
@@ -383,6 +395,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         ...(overrides.readFixedPredicateFn !== undefined ? { readFixedPredicate: overrides.readFixedPredicateFn } : {}),
         ...(overrides.fixedOriginOf !== undefined ? { fixedOriginOf: overrides.fixedOriginOf } : {}),
     });
+    };
 
     const token = (value: unknown): string => {
         if (typeof value === "string" && value.length > 0 && value.length <= 64 && /^[a-z0-9-]+$/.test(value)) {
@@ -438,19 +451,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         try {
             const active = readProp(surface, "activeWindow");
             if (typeof active === "object" && active !== null) {
-                const id = readProp(active as object, "internalId");
-                if (typeof id === "string" && isOpaqueId(id)) {
-                    return id;
-                }
-                const text = (() => {
-                    try {
-                        return String(id);
-                    } catch (error) {
-                        void error;
-                        return "";
-                    }
-                })();
-                return isOpaqueId(text) ? text : null;
+                // Canonical native-id form (braced UUIDs unwrap): the raw
+                // live internalId is never compared unnormalized.
+                return normalizeNativeId(readProp(active as object, "internalId"));
             }
         } catch (error) {
             void error;
@@ -459,6 +462,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     const observeForCommand = (): WorldObservation | null => capture();
+
+    // Cross-output scope for one press direction: true only when the
+    // focused window's live domain reports an adjacent output there.
+    // The core refuses cross-output requests without adjacency, so an
+    // unconditional cross flag would refuse every directional action on
+    // a single-output host (and at any edgeless side); without adjacency
+    // the command stays local single-domain. Unreadable state fails
+    // closed to local scope.
+    const crossForDirection = (direction: string): boolean => {
+        if (!isDirection(direction)) {
+            return false;
+        }
+        const w = activeWindowId();
+        const obs = observeForCommand();
+        if (w === null || obs === null) {
+            return false;
+        }
+        for (const domain of obs.domains) {
+            for (const win of domain.windows) {
+                if (win.win === w) {
+                    return domain.adjacent[direction] !== undefined;
+                }
+            }
+        }
+        return false;
+    };
 
     const adjacentTarget = (obs: WorldObservation, out: string, direction: string): { out: string; ws: string } | null => {
         const domain = obs.domains.find((d) => d.id === out);
@@ -474,33 +503,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     };
 
     const liveRefById = (id: string): object | null => {
+        // Window-list cap mirrors the observer bound.
+        const MAX_LIVE_WINDOWS = 10000;
         try {
             const fn = readProp(surface, "windowList");
             if (typeof fn !== "function") {
                 return null;
             }
-            const list = Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []) as ReadonlyArray<unknown>;
-            if (!Array.isArray(list)) {
+            // QML array-like on the live host, never a JS array: decode
+            // before iterating. Identity is matched by stable internalId
+            // (fresh wrappers per enumeration), as before.
+            const list = decodeList(Reflect.apply(fn as (...a: ReadonlyArray<never>) => unknown, surface, []), MAX_LIVE_WINDOWS);
+            if (list === null) {
                 return null;
             }
-            for (const item of list as ReadonlyArray<unknown>) {
+            for (const item of list) {
                 if (typeof item === "object" && item !== null) {
-                    let raw: unknown = undefined;
+                    let native: string | null = null;
                     try {
-                        raw = readProp(item as object, "internalId");
+                        // Canonical form (braced UUIDs unwrap) so live
+                        // wrappers join the normalized observation ids.
+                        native = normalizeNativeId(readProp(item as object, "internalId"));
                     } catch (error) {
                         void error;
                         continue;
                     }
-                    const text = typeof raw === "string" ? raw : (() => {
-                        try {
-                            return String(raw);
-                        } catch (error) {
-                            void error;
-                            return "";
-                        }
-                    })();
-                    if (text === id) {
+                    if (native === id) {
                         return item as object;
                     }
                 }
@@ -941,6 +969,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             });
                         }
                     }
+                    // Ack the closes that rode the accepted dispatch BEFORE the
+                    // post-accept fresh capture: that capture may promote new
+                    // event-gated closes that have never been reported and
+                    // must survive until their own accepted reply.
+                    try {
+                        closeTracker.ack();
+                    } catch (error) {
+                        void error;
+                    }
                     const fresh = capture();
                     if (fresh === null) {
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
@@ -1056,11 +1093,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         log,
                         ...createWorldApplyHost(surface, readProp),
                     });
-                    // Ack retained closes now that the accepted reply applied.
-                    for (const id of [...closedIds]) {
-                        void id;
-                    }
-                    closedIds.length = 0;
                     // Persist settled intentional-float membership (native
                     // only): the accepted exception rows already converged
                     // floatingIds above; a change writes through.
@@ -1102,30 +1134,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     for (const name of ["windowAdded", "windowActivated", "desktopsChanged", "screensChanged", "currentDesktopChanged", "activeScreenChanged"] as const) {
         attach(name, onNativeInvalidation);
     }
-    // Explicit close retention (D5): windowRemoved carries the Window object;
-    // its stable id rides the next full reports' explicit closed list until
-    // an accepted reply acks it (core treats bare absence as minimize, never
-    // close). Unreadable payloads still invalidate; they never fabricate ids.
+    // Explicit close retention (D5): windowRemoved only arms the close
+    // tracker; the payload is never read (its QObject may be dead). The
+    // next provably complete full inventory promotes cached ids absent
+    // there to the explicit closed list until an accepted reply acks them
+    // (core treats bare absence as minimize, never close). Unreadable
+    // inventories still invalidate; they never fabricate ids.
     try {
-        const detach = connectSignal(readSignal(surface, "windowRemoved"), (removed) => {
+        const detach = connectSignal(readSignal(surface, "windowRemoved"), () => {
             try {
-                if (typeof removed === "object" && removed !== null) {
-                    const raw = readProp(removed as object, "internalId");
-                    const text = typeof raw === "string" ? raw : (() => {
-                        try {
-                            return String(raw);
-                        } catch (error) {
-                            void error;
-                            return "";
-                        }
-                    })();
-                    // Bounded at the core explicit-close bound (MAX_WORLD_CLOSED):
-                    // overflow drops the oldest pending close, never the
-                    // inventory-complete report itself.
-                    if (isOpaqueId(text) && !closedIds.includes(text as string) && closedIds.length < 10000) {
-                        closedIds.push(text as string);
-                    }
-                }
+                closeTracker.noteRemovedEvent();
             } catch (error) {
                 void error;
             }
@@ -1282,6 +1300,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         activeWindowRef,
         currentScopeId,
         getWorkspaceTilingSnapshot,
+        crossForDirection,
         registerShortcutFn: overrides.registerShortcutFn,
     });
 
@@ -1327,7 +1346,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 shortcutFailed("focus");
                 return;
             }
-            const cross = direction === "left" || direction === "right";
+            const cross = (direction === "left" || direction === "right") && crossForDirection(direction);
             if (!submitCommand({ op: "operation", command: { op: "focus", win: w, direction, crossOutput: cross, floatSubject: false } }, "focus")) {
                 shortcutFailed("focus");
             }
@@ -1348,7 +1367,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const w = activeWindowId();
             if (w === null || !submitCommand({
                 op: "operation",
-                command: { op: "move", win: w, direction, crossOutput: true, sameAxis: "group-with-neighbor" },
+                command: { op: "move", win: w, direction, crossOutput: crossForDirection(direction), sameAxis: "group-with-neighbor" },
             }, "move")) {
                 shortcutFailed("move");
             }

@@ -101,6 +101,16 @@ function makeFixtureSurface() {
             minimized: true, fullscreen: false, maximized: false, sticky: false,
             minSize: null, maxSize: null,
         },
+        {
+            // Live-then-closed window: cached while live, removed from the
+            // inventory before the removal event so the event-gated
+            // difference (never the payload) reports the explicit close.
+            internalId: "win-gone", normalWindow: true,
+            frameGeometry: { x: 420, y: 0, width: 200, height: 200 },
+            output: { name: "out-1" }, desktops: [ws1],
+            minimized: false, fullscreen: false, maximized: false, sticky: false,
+            minSize: null, maxSize: null,
+        },
     ];
     const world = {
         wins,
@@ -335,8 +345,11 @@ describe("world shared byte fixtures", () => {
         replyCall(flow, "DiscoverWorld")(seedBinds("disc-1", "0", "0"));
         const autoSeed = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
         replyCall(flow, "DescribeWorld")(seedBinds(autoSeed["req"], autoSeed["obs"], "0"));
-        // A native close rides the next full report explicitly.
-        windowRemoved.emit({ internalId: "win-gone" });
+        // A native close rides the next full report explicitly: the window
+        // leaves the live inventory first, then the payload-free removal
+        // event gates the cached-id difference (the payload is never read).
+        world.wins = world.wins.filter((w) => w["internalId"] !== "win-gone");
+        windowRemoved.emit();
         runTimers(flow);
         const observePayload = lastPayload(flow, "DescribeWorld");
         checkOrWrite("report-observe.json", observePayload);

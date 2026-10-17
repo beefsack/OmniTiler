@@ -30,6 +30,12 @@ export interface WorldShortcutsEnv {
     submitCatalogMove: (action: string, index: number, follow: boolean) => void;
     submitOutputSend: (direction: string, follow: boolean) => boolean;
     submitMigration: (direction: string) => boolean;
+    // Cross-output scope for one press direction: true only when the
+    // focused window's live domain reports an adjacent output there.
+    // The core refuses cross-output requests without adjacency, so an
+    // unconditional cross flag would refuse every directional action on
+    // a single-output host (and at any edgeless side).
+    crossForDirection: (direction: string) => boolean;
     submitFloat: (label: string) => boolean;
     setStickyNative: (ref: object, id: string, sticky: boolean) => boolean;
     setMaximizedNative: (ref: object, maximized: boolean) => boolean;
@@ -49,7 +55,7 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
         submitCatalogMove, submitOutputSend, submitMigration, submitFloat,
         setStickyNative, setMaximizedNative, setFullscreenNative,
         activeOutputName, activeWindowId, activeWindowRef,
-        currentScopeId, getWorkspaceTilingSnapshot,
+        currentScopeId, getWorkspaceTilingSnapshot, crossForDirection,
     } = env;
     const register = env.registerShortcutFn ?? ((() => {
         try {
@@ -95,9 +101,11 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
             }
             const w = focusedWin();
             // Legacy axis rule: left/right may cross outputs, up/down
-            // stay local single-domain. Core resolves the pair from the
-            // carried adjacency; without adjacency it refuses.
-            const cross = d === "left" || d === "right";
+            // stay local single-domain. The crossing half applies only
+            // when the focused window's live domain reports an adjacent
+            // output there; otherwise the command stays local, since the
+            // core refuses cross-output requests without adjacency.
+            const cross = (d === "left" || d === "right") && crossForDirection(d);
             if (!isDirection(d) || w === null || !submitCommand({ op: "operation", command: { op: "focus", win: w, direction: d, crossOutput: cross, floatSubject: false } }, `focus-${d}`)) {
                 shortcutFailed(`focus-${d}`);
             }
@@ -118,7 +126,9 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
                 shortcutFailed(`move-${d}`);
                 return;
             }
-            if (!isDirection(d) || !submitCommand({ op: "operation", command: { op: "move", win: w, direction: d, crossOutput: true, sameAxis: "group-with-neighbor" } }, `move-${d}`)) {
+            // Same cross-output scope as focus: crossing applies only with
+            // a live adjacent output there, else the move stays local.
+            if (!isDirection(d) || !submitCommand({ op: "operation", command: { op: "move", win: w, direction: d, crossOutput: crossForDirection(d), sameAxis: "group-with-neighbor" } }, `move-${d}`)) {
                 shortcutFailed(`move-${d}`);
             }
         };
