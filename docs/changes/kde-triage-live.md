@@ -30,7 +30,89 @@
 - Prior native evidence and fixture lessons are retained in
   [KDE live acceptance](kde-live-acceptance.md); new evidence uses a fresh baseline.
 
-## Outcome, 2026-10-18
+## Admission continuation, 2026-10-18
+
+- **Stopped with incomplete restoration. No new live acceptance or backlog
+  advancement.** The admission attempt did not preserve the protected application
+  layout. Continuing after the runtime-store and geometry surprises invalidated
+  its subsequent journey-pass claims. Earlier evidence below is unchanged.
+- Source: `52936a0c`; no product source or tests changed.
+- The actual runtime float-intent file was backed up before startup this time,
+  together with configuration, effects, desktop identities and shortcut records.
+  The retained full native inventory and wire capture start after development
+  startup, so they do not establish a complete pre-start native/seed transaction.
+- Startup replaced the saved two-member float store with empty membership. Its
+  preimage was preserved; calling those memberships stale is unsupported. A later
+  gap change also resized protected applications. Tests continued rather than
+  stopping at the first mismatch; post-restart activity later changed their order.
+
+| Leg | Accepted disposition |
+| --- | --- |
+| Admission defaults and choices | Source inspection only; not native Settings acceptance. |
+| Settings Save/reopen, Cancel, Defaults | Not-testable: staged plugin discovery failed; no successful UI transaction. |
+| Policy-only Apply | Direct configuration/reconfigure observations preserved frames in the early inventories; not UI Apply acceptance and not a clean-baseline journey pass. |
+| Exhaustion, Largest/Closest and explicit float-toggle retry | Functional observations only, after the baseline failure; no accepted live pass. |
+| Workspace switch, no automatic retry and still-full retry | No accepted live pass; saved per-leg native inventories are incomplete. |
+| Restart persistence | Captured intent-loss transaction, below; not a pass. |
+| Newest-first shrink eviction | Not reached: positive allocations did not exercise eviction. |
+| Allow overlap | Functional observation only; no accepted live pass. |
+| Two-domain send-back and numbered-selection discriminator | Not attempted in this continuation; existing classifications remain unchanged. |
+| Exact cross-output R4, exhausted drag, remaining D units | Not exercised; single-output and pointer limitations remain. |
+
+### Parked restart intent-loss investigation
+
+- The complete restart wire chain reads one persisted float and one tile override.
+  Its first accepted observation holds the disposable scope as `unreadable`; the
+  next persistence write drops the float while retaining the tile override. The
+  next controlled observation writes five floats and no tile overrides, without
+  an intervening explicit toggle. This is a persistence-loss signal, not proof
+  that cross-restart topology or admission order must be preserved.
+- `kwin/src/world-entry.ts` removes float membership when the reply lacks an
+  untouched/no-hold row, including held rows. Later capacity-float classification
+  can overlap a retained tile override, which persistence filters from the tile
+  side. These are concrete producer paths to investigate, not a selected policy
+  change or a completed regression/fix.
+- Options: reproduce held-first-observation intent loss independently of startup
+  packing; or separately specify startup admission/override precedence if the
+  replay exposes a genuine policy ambiguity. Recommendation: first add a
+  producer-shaped offline replay that seeds float plus tile membership, accepts
+  an unreadable scope, then accepts a complete observation with the same live
+  identities. Assert no uncommanded loss of settled float intent; distinguish
+  legitimate capacity outcomes from fixed-window override loss. Do not require
+  persistence of the previous tree.
+- No product source changed and no defect fix was committed. Rust workspace,
+  KWin and settings suites were not rerun for this evidence-only update. Fresh
+  executable and KWin bundle builds succeeded during the attempt.
+
+### Continuation restoration and next gate
+
+- Final read-only comparison: `kwinrc`, project shortcut-clearing configuration
+  and the actual runtime float-intent store match their saved bytes. The store
+  was restored by exact atomic replacement while the Planner was unowned and
+  controller unloaded, then independently compared; its two original memberships
+  and private file mode are retained. No development restart was used to restore it.
+- Desktop identities/current desktop, single-output configuration, loaded effects,
+  project shortcut tuples and KGlobalAccel component/action inventories match the
+  captured baseline semantically. KWin remained alive; disposable clients and
+  owned probes are gone. Planner unowned, controller unloaded, development **DOWN**.
+- **Protected application restoration is incomplete:** Firefox and Ghostty have
+  exchanged their original left/right frames; their sizes and desktop/output
+  membership match the early retained inventory. Ghostty is active instead of
+  Firefox. No corrective movement or focus operation was performed on them.
+  This run therefore violated protected-window preservation, not merely an
+  observational acceptance condition.
+- Independent evidence review rejected blanket restoration and journey-pass
+  claims. Raw wire/native responses and byte comparisons remain outside the
+  repository; no local identities are recorded here. No new tentative product
+  decision or replacement-baseline acceptance was made.
+- Next exact step: obtain disposition of the protected layout/focus mismatch,
+  then prove a stopped-start fixture that leaves existing applications unchanged,
+  captures native state and full wire traffic before startup, and isolates gap
+  changes from their workspace. Investigate the parked intent-loss replay offline
+  before restarting. Only afterward resume admission, two-domain send-back and
+  the single captured selection discriminator, in that order.
+
+## Initial outcome, 2026-10-18
 
 - **Blocked before any D-unit journey ran. No backlog acceptance advanced.**
 - Source: `94e7844e`; fresh Rust executable and KWin bundle builds passed.
@@ -142,6 +224,6 @@ Previously recorded native/offline evidence is unchanged.
   restored float-intent bytes and diagnosed workspace defects. Only the bounded
   observations above are accepted. Raw inventories retain native identifiers and
   remain outside the repository; the durable record intentionally omits them.
-- Next exact step: disposition the changed backing desktop and uncertain runtime
+- Initial next step: disposition the changed backing desktop and uncertain runtime
   store, repair preimage/wire capture, then run one discriminating trailing-selection
   fixture before resuming any D-unit journey.
