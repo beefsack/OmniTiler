@@ -268,6 +268,7 @@ function staleReply(gen: string, dispatched: Record<string, unknown>, rev: strin
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
             frame_op: "",
+            floating: false, float_origin: "",
         }],
         transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "ws1", follow: false, held: false }],
         effects: [{ id: "fx-9", kind: "focus", target: "win-a", rev }],

@@ -470,6 +470,25 @@ pub enum LifecycleOperation {
         target_output: OutputId,
         target_workspace: WorkspaceId,
     },
+    /// Capacity-float send (D3 best-effort): a tiled mover that exhausts
+    /// its named destination becomes a slotless floating exception homed
+    /// at that destination (diagnostic capacity origin) instead of
+    /// refusing. The source leaf is removed (named here for audit, never
+    /// re-tiled implicitly) while the destination tree is untouched; the
+    /// mover frame travels verbatim in the exception record with no
+    /// geometry write. Distinct from [`LifecycleOperation::MoveDeferred`]
+    /// (whose mover is already floating pre-image): adapters must not
+    /// mistake one for the other. The explicit send intent
+    /// (`MoveToWorkspace`/`MoveToOutput` with follow/stay) carries the
+    /// follow selection exactly like [`LifecycleOperation::MoveTiled`].
+    MoveToFloat {
+        window: WindowId,
+        leaf: NodeId,
+        source_output: OutputId,
+        source_workspace: WorkspaceId,
+        target_output: OutputId,
+        target_workspace: WorkspaceId,
+    },
     ToggleOrientation {
         window: WindowId,
         leaf: NodeId,
@@ -486,7 +505,9 @@ impl LifecycleOperation {
         match self {
             Self::Admit { .. } | Self::AdmitDeferred { .. } => LifecycleCapability::AdmitTiled,
             Self::Remove { .. } | Self::RemoveDeferred { .. } => LifecycleCapability::RemoveTiled,
-            Self::MoveTiled { .. } | Self::MoveDeferred { .. } => LifecycleCapability::MoveTiled,
+            Self::MoveTiled { .. } | Self::MoveDeferred { .. } | Self::MoveToFloat { .. } => {
+                LifecycleCapability::MoveTiled
+            }
             Self::ToggleOrientation { .. } => LifecycleCapability::ToggleOrientation,
         }
     }

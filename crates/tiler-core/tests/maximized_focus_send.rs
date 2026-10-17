@@ -361,15 +361,17 @@ fn fence_on_leaves_maximized_move_untouched_for_the_adapter_clear() {
         maximized_flag(&tiled(&focused.0, "out-1", "ws-1")),
     );
     let o0 = obs(&s, &flags);
-    s.propose_move(
-        &domain,
-        &focused,
-        Direction::Left,
-        &o0,
-        &corr("corr-g06-move"),
-        &Capabilities::full(),
-    )
-    .expect("move still plans under the focus-only fence");
+    let _ = s
+        .propose_move(
+            &domain,
+            &focused,
+            Direction::Left,
+            &o0,
+            &corr("corr-g06-move"),
+            &Capabilities::full(),
+        )
+        .expect("move still plans under the focus-only fence")
+        .expect_moved("tiled move");
 }
 
 /// Occupied-target session focused on win-2 (win-t waits on ws-b).

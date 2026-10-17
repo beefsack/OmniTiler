@@ -930,6 +930,16 @@ interface WorkspacePlanned {
     // target bookkeeping MRU or null (native follow addresses the mover
     // ref); stay resolves the source MRU exactly like tiled stays.
     readonly deferred: boolean;
+    // True for the capacity-float send (`move-to-float`, D3): the operation
+    // names the dropped source leaf plus source/target identities, the
+    // destination tree is untouched (no tile slot), and the mover frame
+    // travels verbatim in the exception record with no geometry write.
+    // Geometry, focus, follow/stay, and arrival proof mirror the deferred
+    // transfer exactly; only the snapshot shape differs (tiled mover,
+    // never a held slotless shape). The distinct op token keeps the
+    // forgery protection: a tiled mover can never sneak a leafless
+    // transfer, and a held mover can never claim a dropped leaf.
+    readonly moveToFloat: boolean;
     // Planned desired focus: the mover leaf in the target domain for
     // tiled follow (target bookkeeping MRU or null for deferred follow);
     // the source-MRU survivor (or null when the source is left empty or
@@ -1065,6 +1075,53 @@ function validateMoveDeferredOperation(value: unknown): { record: Record<string,
     return { record: value, follow };
 }
 
+// Capacity-float send operation (D3 best-effort): window plus the dropped
+// source leaf and source/target identities under the distinct
+// `move-to-float` token. Exact keys plus the same optional explicit follow
+// echo as the tiled operation; a move-to-float operation missing its leaf
+// is malformed and never actuates (the leaf names the removed source slot
+// for audit, never a re-tile).
+function validateMoveToFloatOperation(value: unknown): { record: Record<string, unknown>; follow: boolean } | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const fields: readonly string[] = [
+        "op",
+        "window",
+        "leaf",
+        "source_output",
+        "source_workspace",
+        "target_output",
+        "target_workspace",
+    ];
+    let follow = true;
+    if (
+        Object.keys(value).length === fields.length + 1 &&
+        Object.prototype.hasOwnProperty.call(value, "follow")
+    ) {
+        if (typeof value["follow"] !== "boolean") {
+            return null;
+        }
+        follow = value["follow"] as boolean;
+        for (const field of fields) {
+            if (!Object.prototype.hasOwnProperty.call(value, field)) {
+                return null;
+            }
+        }
+    } else if (!hasExactKeys(value, fields)) {
+        return null;
+    }
+    if (value["op"] !== "move-to-float") {
+        return null;
+    }
+    for (const field of ["window", "leaf", "source_output", "source_workspace", "target_output", "target_workspace"]) {
+        if (!isOpaqueId(value[field])) {
+            return null;
+        }
+    }
+    return { record: value, follow };
+}
+
 function validatePlanned(
     reply: unknown,
     correlationId: string,
@@ -1099,7 +1156,11 @@ function validatePlanned(
     const tiledValidated = validateMoveTiledOperation(reply["operation"]);
     const deferredValidated =
         tiledValidated === null ? validateMoveDeferredOperation(reply["operation"]) : null;
-    const operationValidated = tiledValidated ?? deferredValidated;
+    const floatValidated =
+        tiledValidated === null && deferredValidated === null
+            ? validateMoveToFloatOperation(reply["operation"])
+            : null;
+    const operationValidated = tiledValidated ?? deferredValidated ?? floatValidated;
     if (operationValidated === null) {
         return null;
     }
@@ -1108,6 +1169,10 @@ function validatePlanned(
     // Slotless deferred transfers name no leaf; follow carries tiled
     // bookkeeping focus or null (native follow addresses the mover ref).
     const deferred = deferredValidated !== null;
+    // Capacity-float sends name the dropped source leaf; geometry, focus,
+    // and actuation mirror the deferred transfer (mover excluded, frame
+    // untouched), while the snapshot shape is the inverse (tiled mover).
+    const moveToFloat = floatValidated !== null;
     // Follow is target-bound: the planned desired focus must name the moved
     // leaf in the operation target domain. Stay is source-bound: the
     // planned desired focus is null (or absent on the wire, which Rust
@@ -1119,8 +1184,9 @@ function validatePlanned(
     const focusRaw = reply["desired_focus"];
     let followFocus: WorkspaceFollowFocus | null = null;
     if (opFollow) {
-        if (deferred) {
-            // Slotless follow: null focus (member-less target), or a
+        if (deferred || moveToFloat) {
+            // Slotless follow (deferred) and capacity-float follow
+            // (move-to-float): null focus (member-less target), or a
             // target-domain tiled focus (bookkeeping MRU; native follow
             // still addresses the mover ref, never a tile). Any carried
             // focus outside the target domain is a mismatched reply and
@@ -1205,10 +1271,11 @@ function validatePlanned(
     }
     const geometryRaw = reply["desired_geometry"];
     // A sole slotless source sent to an empty target legitimately carries
-    // no geometry (no tiled members on either side, mover slotless). Empty
-    // geometry is accepted for the deferred transfer only; tiled replies
-    // keep the exact non-empty refusal.
-    if (!Array.isArray(geometryRaw) || (geometryRaw.length === 0 && !deferred)) {
+    // no geometry (no tiled members on either side, mover slotless or
+    // floated). Empty geometry is accepted for the deferred and
+    // capacity-float transfers only; tiled replies keep the exact
+    // non-empty refusal.
+    if (!Array.isArray(geometryRaw) || (geometryRaw.length === 0 && !deferred && !moveToFloat)) {
         return null;
     }
     const geometry: WorkspaceGeometryEntry[] = [];
@@ -1232,10 +1299,11 @@ function validatePlanned(
             return null;
         }
     }
-    if (deferred && opFollow && followFocus !== null) {
-        // Deferred-follow bookkeeping MRU must resolve through the reply
-        // geometry to a non-mover window or the reply is mismatched and
-        // never actuates. Native follow still addresses the mover ref.
+    if ((deferred || moveToFloat) && opFollow && followFocus !== null) {
+        // Deferred/capacity-float-follow bookkeeping MRU must resolve
+        // through the reply geometry to a non-mover window or the reply
+        // is mismatched and never actuates. Native follow still addresses
+        // the mover ref.
         if (resolveStayFocusWindow(operation, followFocus, geometry) === null) {
             return null;
         }
@@ -1248,6 +1316,7 @@ function validatePlanned(
         operation,
         follow: opFollow,
         deferred,
+        moveToFloat,
         followFocus,
         stayFocusWindow,
     };
@@ -2588,10 +2657,14 @@ export class WorkspaceSendAdapter {
     // !== true). Floating exceptions stay observed but carry no planned
     // geometry. Fullscreen/maximized overlays stay tiled: fit_excluded
     // alone is NOT floating. Unknown, missing, duplicate, or floated
-    // windows never reach native writes. Slotless deferred transfers
-    // additionally exclude the mover (no tile slot, no allocation).
+    // windows never reach native writes. Slotless deferred transfers and
+    // capacity-float sends additionally exclude the mover (no tile slot,
+    // no allocation, no frame write: the mover keeps its native frame
+    // verbatim on same-output sends, while cross-output floats ride the
+    // established native output-transfer remap, never an offscreen
+    // verbatim success).
     private geometryCovers(planned: WorkspacePlanned, flightState: WorkspacePendingFlight): boolean {
-        const moverId = planned.deferred ? (planned.operation["window"] as string) : null;
+        const moverId = planned.deferred || planned.moveToFloat ? (planned.operation["window"] as string) : null;
         const wanted = new Set<string>();
         for (const entry of flightState.snapshot.sourceWindows) {
             if (entry.floating !== true && entry.id !== moverId) {
@@ -2624,7 +2697,12 @@ export class WorkspaceSendAdapter {
     // mover to carry a slotless-transfer shape (D28 held fullscreen, D16
     // ordinary float, or D16 approved floating+fullscreen /
     // floating+maximized combo, never sticky): an ordinary tiled mover can
-    // never sneak a leafless transfer and drop its own allocation. Focus
+    // never sneak a leafless transfer and drop its own allocation. A
+    // capacity-float operation requires the inverse: the snapshot mover
+    // must NOT carry a held slotless shape (the mover is tiled at dispatch
+    // and drops its leaf here); a held mover claiming a dropped leaf is a
+    // mismatched reply. The distinct op tokens keep the forgery
+    // protection. Focus
     // binding is selection-aware: tiled follow
     // names the mover in the target; deferred follow is null
     // (member-less target) or a target-domain bookkeeping MRU; stay is
@@ -2645,14 +2723,17 @@ export class WorkspaceSendAdapter {
         if (planned.deferred && !snapshotMoverHeld(snapshot, flightState.moverId)) {
             return false;
         }
+        if (planned.moveToFloat && snapshotMoverHeld(snapshot, flightState.moverId)) {
+            return false;
+        }
         if (planned.follow !== flightState.follow) {
             return false;
         }
         const focus = planned.followFocus;
         if (planned.follow) {
-            if (planned.deferred) {
-                // Slotless follow carries null focus (member-less target)
-                // or a target-domain bookkeeping MRU; native follow
+            if (planned.deferred || planned.moveToFloat) {
+                // Slotless/capacity-float follow carries null focus
+                // (member-less target) or a target-domain bookkeeping MRU; native follow
                 // addresses the mover ref either way.
                 if (focus === null) {
                     return true;
@@ -2684,6 +2765,8 @@ export class WorkspaceSendAdapter {
         }
         // The tiled operation names its mover leaf; a stay focus naming it
         // is the mover, never a survivor. Deferred operations name no leaf.
+        // The capacity-float operation names the dropped source leaf; a
+        // stay focus naming it is the removed slot, never a survivor.
         if (!planned.deferred && focus.leaf === (operation["leaf"] as string)) {
             return false;
         }

@@ -18,8 +18,8 @@ use crate::workspace_scope::{
 };
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
-    CommandResult, HoldReason, OneShotEffect, OutputDesire, ScopeAuthority, ScopeStatus,
-    TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire,
+    CommandResult, FloatOrigin, HoldReason, OneShotEffect, OutputDesire, ScopeAuthority,
+    ScopeStatus, TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire,
     WorkspaceDesire, WorldReply, WorldReport, workspace_scope_key,
 };
 
@@ -31,15 +31,18 @@ impl WorldEngine {
     /// always `Reconcile`, so the two seed/projection refusal shapes mean
     /// the layout ran out of representable pixels
     /// (`extent - gap*(children-1) < children` with no positive child
-    /// segment, R-MIN-04/R-INS-09): `malformed-topology` from admission or
-    /// retained-tree projection, and `seed-failed` from the seed build
+    /// segment, R-MIN-04/R-INS-09): `malformed-topology` from retained-tree
+    /// projection or `seed-failed` from the seed build
     /// (`Session::new` inputs are pre-validated, so only the geometric
-    /// admit steps can still fail there). Every other sweep failure
+    /// admit steps can still fail there). Best-effort admission (D2/D3/D7,
+    /// selected 2026-10-17) floats or overlap-admits ordinary geometric
+    /// exhaustion before this classifier runs, so a surviving hold here
+    /// means a protected remainder (overlays, explicit fixed-tile wins,
+    /// unsafe or excluded members), nonpositive usable area, or invalid
+    /// topology: never a floatable newcomer. Every other sweep failure
     /// (divergence, pending, partial observation, commit rejection, ...)
     /// holds as [`HoldReason::Unreadable`]: the adapter must not write
-    /// there, and recovery retries the full report. No admission fallback
-    /// lives here; best-effort admission is separate work that replaces or
-    /// extends this function, never a hidden second policy.
+    /// there, and recovery retries the full report.
     pub(crate) fn classify_sweep_hold(reply: &CoreReply) -> HoldReason {
         match reply {
             CoreReply::Rejected { kind, .. }
@@ -191,6 +194,8 @@ impl WorldEngine {
                         frame_authority: ScopeAuthority::Untouched,
                         membership_authority: ScopeAuthority::Untouched,
                         frame_operation: None,
+                        floating: false,
+                        float_origin: None,
                     });
                 }
                 continue;
@@ -255,6 +260,8 @@ impl WorldEngine {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
+                            floating: false,
+                            float_origin: None,
                         });
                     }
                 }
@@ -301,6 +308,8 @@ impl WorldEngine {
                                 None => ScopeAuthority::Controlled,
                             },
                             frame_operation: None,
+                            floating: false,
+                            float_origin: None,
                         });
                     }
                     continue;
@@ -416,6 +425,8 @@ impl WorldEngine {
                     },
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
+                    floating: false,
+                    float_origin: None,
                 });
             }
             // Exception rows (floats, fullscreen, maximized, sticky, game
@@ -445,6 +456,13 @@ impl WorldEngine {
                     .iter()
                     .find(|held| held.window == observed.window)
                     .map(|held| held.operation_id.clone());
+                // Explicit ordinary-float classification (D4/D5): every
+                // retained exception row in a controlled scope converges
+                // adapter float intent. The diagnostic capacity origin
+                // rides along for truthful echo; it grants no behavior.
+                let float_origin = session
+                    .is_capacity_float(&observed.window)
+                    .then_some(FloatOrigin::Capacity);
                 windows.push(WindowDesire {
                     lifetime: observed.window.clone(),
                     output: observed.output.clone(),
@@ -458,6 +476,8 @@ impl WorldEngine {
                         None => ScopeAuthority::Untouched,
                     },
                     frame_operation,
+                    floating: true,
+                    float_origin,
                 });
             }
             // Minimized lifetimes (D23 slots): explicit rows with no managed
@@ -484,6 +504,8 @@ impl WorldEngine {
                         None => ScopeAuthority::Controlled,
                     },
                     frame_operation: None,
+                    floating: false,
+                    float_origin: None,
                 });
             }
         }
@@ -509,6 +531,8 @@ impl WorldEngine {
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         // Explicit minimized lifetimes without a retained slot row: the
@@ -550,6 +574,8 @@ impl WorldEngine {
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         // Retained sessions missing from the report: explicit held scope
@@ -641,6 +667,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         for observed in session.exception_observed() {
@@ -659,6 +687,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         for (window, output, workspace) in session.minimized_entries() {
@@ -677,6 +707,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
     }
@@ -713,6 +745,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                 membership_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         for observed in session.exception_observed() {
@@ -731,6 +765,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                 membership_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
         for (window, output, workspace) in session.minimized_entries() {
@@ -749,6 +785,8 @@ impl WorldEngine {
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                 membership_authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                 frame_operation: None,
+                floating: false,
+                float_origin: None,
             });
         }
     }

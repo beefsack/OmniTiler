@@ -361,9 +361,11 @@ pub struct SendWorkspacePlan {
 impl SendWorkspacePlan {
     /// Typed construction from an authoritative workspace [`SessionPlan`]:
     /// requires an explicit send intent (which carries the
-    /// follow/stay selection) alongside the `MoveTiled` operation or the
+    /// follow/stay selection) alongside the `MoveTiled` operation, the
     /// slotless `MoveDeferred` operation (D28 born-fullscreen carry: window
-    /// plus source/target identities, no leaf). A move operation under any
+    /// plus source/target identities, no leaf), or the capacity-float
+    /// `MoveToFloat` operation (D3: window plus dropped source leaf and
+    /// source/target identities, no target slot). A move operation under any
     /// other intent is not a send and refuses.
     #[must_use]
     pub fn from_session(plan: &SessionPlan) -> Option<Self> {
@@ -373,18 +375,18 @@ impl SendWorkspacePlan {
             _ => return None,
         };
         match &plan.dispatch.operation {
-            LifecycleOperation::MoveTiled { .. } | LifecycleOperation::MoveDeferred { .. } => {
-                Some(Self {
-                    base_revision: plan.dispatch.base_revision,
-                    policy_version: plan.dispatch.policy_version,
-                    geometry: plan.desired_geometry.clone(),
-                    focus_domain: plan.desired_focus_domain.clone(),
-                    focus_leaf: plan.desired_focus_leaf.clone(),
-                    follow,
-                    operation: plan.dispatch.operation.clone(),
-                    preconditions: plan.dispatch.preconditions.clone(),
-                })
-            }
+            LifecycleOperation::MoveTiled { .. }
+            | LifecycleOperation::MoveDeferred { .. }
+            | LifecycleOperation::MoveToFloat { .. } => Some(Self {
+                base_revision: plan.dispatch.base_revision,
+                policy_version: plan.dispatch.policy_version,
+                geometry: plan.desired_geometry.clone(),
+                focus_domain: plan.desired_focus_domain.clone(),
+                focus_leaf: plan.desired_focus_leaf.clone(),
+                follow,
+                operation: plan.dispatch.operation.clone(),
+                preconditions: plan.dispatch.preconditions.clone(),
+            }),
             _ => None,
         }
     }
@@ -852,12 +854,49 @@ pub fn project_retained_tiled_geometry(
             .copied()
             .unwrap_or_else(crate::size_hints::WindowSizeHints::none)
     };
-    let hinted = crate::size_hints::project_with_hints(&tree, bounds, gap, &resolve).ok()?;
-    let over: BTreeSet<String> = hinted
-        .overconstrained
-        .iter()
-        .map(|id| id.0.clone())
-        .collect(); // Observed layout-driven rectangles by window id for clamp assessment.
+    // Strict first; overlap only through the D9 gate: the no-space
+    // setting selects it, or the domain was overlap-accepted (retained
+    // allocations stay publishable after switching to float until a
+    // real capacity decision). Anything else keeps the truthful hold.
+    enum Projected {
+        Strict(Vec<crate::geometry::ProjectedLeaf>, BTreeSet<String>),
+        Overlap(Vec<crate::geometry::ProjectedLeaf>, BTreeSet<String>),
+    }
+    let projected: Projected =
+        match crate::size_hints::project_with_hints(&tree, bounds, gap, &resolve) {
+            Ok(hinted) => Projected::Strict(
+                hinted.leaves,
+                hinted
+                    .overconstrained
+                    .iter()
+                    .map(|id| id.0.clone())
+                    .collect(),
+            ),
+            Err(_) => {
+                let allowed = session.no_space_result()
+                    == crate::admission::NoSpaceResult::AllowOverlap
+                    || session.overlap_accepted(domain_key);
+                if !allowed {
+                    return None;
+                }
+                let hinted =
+                    crate::size_hints::project_overlap_with_hints(&tree, bounds, gap, &resolve)
+                        .ok()?;
+                Projected::Overlap(
+                    hinted.leaves,
+                    hinted
+                        .overconstrained
+                        .iter()
+                        .map(|id| id.0.clone())
+                        .collect(),
+                )
+            }
+        };
+    let (leaves, over) = match projected {
+        Projected::Strict(leaves, over) => (leaves, over),
+        Projected::Overlap(leaves, over) => (leaves, over),
+    };
+    // Observed layout-driven rectangles by window id for clamp assessment.
     let mut observed_rects: BTreeMap<&str, &Rect> = BTreeMap::new();
     for entry in observed {
         if entry.floating || entry.fit_excluded {
@@ -865,8 +904,8 @@ pub fn project_retained_tiled_geometry(
         }
         observed_rects.insert(entry.window.0.as_str(), &entry.rect);
     }
-    let mut geometry: Vec<DesiredGeometry> = Vec::with_capacity(hinted.leaves.len());
-    for leaf in hinted.leaves {
+    let mut geometry: Vec<DesiredGeometry> = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
         let window = leaf_to_window.get(&leaf.leaf.0)?;
         if leaf.rect.w <= 0 || leaf.rect.h <= 0 {
             return None;

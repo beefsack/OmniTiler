@@ -133,15 +133,21 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::UnsupportedCapability));
         }
         // Complete geometry for the unmodified domain must project before any
-        // pending is staged; failure refuses without pending.
-        let desired_geometry = project_affected_geometry(
+        // pending is staged; failure refuses without pending. Gated so
+        // accepted overlap domains keep working; unrepresentable holds.
+        let hints = hints_from_observed(&session_observation.windows);
+        let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &self.trees,
             &self.windows,
             std::slice::from_ref(domain),
-            &hints_from_observed(&session_observation.windows),
+            &hints,
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &desired_geometry,
             &self.windows,
@@ -201,6 +207,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionFocusPlan {
             dispatch,
@@ -496,16 +506,22 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::UnsupportedCapability));
         }
         // Complete geometry for source plus target must project before any
-        // pending is staged; failure refuses without pending.
+        // pending is staged; failure refuses without pending. Gated so
+        // accepted overlap domains keep working; unrepresentable holds.
         let affected = vec![domain.clone(), target_key.clone()];
-        let desired_geometry = project_affected_geometry(
+        let hints = hints_from_observed(&session_observation.windows);
+        let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &self.trees,
             &self.windows,
             &affected,
-            &hints_from_observed(&session_observation.windows),
+            &hints,
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(&desired_geometry, &self.windows, &affected) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
@@ -561,6 +577,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionFocusPlan {
             dispatch,

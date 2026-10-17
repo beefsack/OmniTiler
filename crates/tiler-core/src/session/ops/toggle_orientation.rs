@@ -144,14 +144,19 @@ impl super::super::Session {
         // hints-aware projector, so client minima behave exactly like every
         // other workflow (satisfiable minimums take slack, unsatisfiable
         // windows keep the proportional fallback flagged overconstrained).
-        let desired_geometry = project_output_geometry(
-            self.domain_for(&domain.output, &domain.workspace),
-            Some(&desired_tree),
+        // Gated so accepted overlap domains keep working.
+        let desired_geometry = crate::session::capacity::project_affected_gated(
+            &self.domains,
+            &desired_trees,
             &desired_windows,
-            &domain,
+            std::slice::from_ref(&domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         let intent = LifecycleIntent::ToggleOrientation {
             window: window.clone(),
             output: domain.output.clone(),
@@ -197,6 +202,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionPlan {
             dispatch,

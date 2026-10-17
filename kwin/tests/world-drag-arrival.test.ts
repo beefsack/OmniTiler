@@ -29,6 +29,7 @@ function arrivalReply(): WorldReply {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             },
             {
                 win: "win-b", out: "out-b", ws: "wb1",
@@ -36,6 +37,7 @@ function arrivalReply(): WorldReply {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             },
         ],
         transfers: [

@@ -102,6 +102,13 @@ export interface WorldEntryOverrides {
     // Options reload applies to subsequent migrations with no restart.
     // Changing it never moves an already-migrated workspace.
     readonly readMigrationSourceRefillFn?: () => unknown;
+    // Validated D2/D3 best-effort capacity seams (main.xml
+    // `anchorFallback`, `noSpaceResult`): resolved live per report so a
+    // deliberate Options reload applies to subsequent capacity decisions
+    // with no restart and no retained-state reflow. Tolerant readers
+    // backfill the defaults.
+    readonly readAnchorFallbackFn?: () => unknown;
+    readonly readNoSpaceResultFn?: () => unknown;
     // Native-only seams (never workspace policy): the drag-oracle D-Bus
     // caller (LastVerdict pull shape differs from the world payload shape),
     // the fixed-size predicate reader, and the fixed-origin decorator.
@@ -787,6 +794,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             pendingFeedback: state.pendingFeedback,
             defaultTiled: settings.readDefaultTiled(),
             refill: settings.readRefillLive(),
+            anchorFallback: settings.readAnchorFallbackLive(),
+            noSpaceResult: settings.readNoSpaceResultLive(),
         });
         if (json === null) {
             state.noteRejectedOrTransportError();
@@ -939,6 +948,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Float arrivals stay after capture because explicit
                     // placement needs the pre-command tile classification.
                     // Native overlay reads and safety gates stay unchanged.
+                    // Explicit classification only: a floating row with
+                    // untouched frame authority keeps intent; unclassified
+                    // held/overlay/minimized rows never read as floats
+                    // merely for missing allocation.
                     {
                         const untouched = new Set<string>();
                         for (const row of parsed.windows) {
@@ -954,9 +967,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         try {
                             if (
                                 parsed.result !== null && parsed.result.op === "toggle-float" &&
-                                parsed.result.rect === null
+                                parsed.result.rect === null && parsed.result.noSpace !== true
                             ) {
                                 tileIds.add(parsed.result.win);
+                            } else if (
+                                parsed.result !== null && parsed.result.op === "toggle-float" &&
+                                parsed.result.rect === null && parsed.result.noSpace === true
+                            ) {
+                                // Explicit-tile no-space retry (D5): the
+                                // window stays floated, so no tile override
+                                // is recorded and nothing re-tiles.
+                                log(`omnitiler:world:toggle-float-no-space win=${token(parsed.result.win)}`);
                             }
                         } catch (error) {
                             void error;
@@ -1017,9 +1038,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                     }
                     // Add float arrivals after capture so explicit placement
-                    // keeps its pre-command classification. Untouched rows
-                    // identify intentional floats; minimized lifetimes count
-                    // as observed so their membership survives.
+                    // keeps its pre-command classification. Only rows the
+                    // core explicitly classifies as ordinary floats
+                    // (floating with untouched frame authority, user or
+                    // capacity alike) converge intent; minimized lifetimes
+                    // count as observed so their membership survives.
+                    // Unclassified protected/held/overlay/minimized rows
+                    // never relabel merely for missing allocation.
                     {
                         const obsWins = new Set<string>();
                         for (const domain of fresh.domains) {
@@ -1031,7 +1056,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             obsWins.add(m.win);
                         }
                         for (const row of parsed.windows) {
-                            if (row.frame_auth === "untouched" && row.frame_hold === "" && obsWins.has(row.win)) {
+                            if (row.floating === true && row.frame_auth === "untouched" && row.frame_hold === "" && obsWins.has(row.win)) {
                                 floatingIds.add(row.win);
                             }
                         }

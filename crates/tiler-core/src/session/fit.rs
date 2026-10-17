@@ -153,6 +153,21 @@ impl super::Session {
             }
         };
         let desired_snapshot = self.snapshot_for(&trees, &windows);
+        // A clean-fit roster shares one admission sequence number, so
+        // identity breaks those D7 victim ties (D8). Lifetimes already
+        // tracked keep their first number.
+        let mut fitted_order = self.admission_order.clone();
+        let mut fitted_counter = self.admission_counter;
+        let mut fitted_fresh = false;
+        for link in windows.values() {
+            if !fitted_order.contains_key(&link.window) {
+                fitted_order.insert(link.window.clone(), fitted_counter);
+                fitted_fresh = true;
+            }
+        }
+        if fitted_fresh {
+            fitted_counter = fitted_counter.saturating_add(1);
+        }
         self.pending_desired = Some(PendingDesired {
             trees: trees.clone(),
             windows: windows.clone(),
@@ -168,6 +183,10 @@ impl super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: fitted_order,
+            admission_counter: fitted_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionPlan {
             dispatch,

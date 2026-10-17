@@ -151,10 +151,11 @@ fn constructions_mint_fresh_generations() {
 
 #[test]
 fn geometric_exhaustion_holds_truthfully_over_json() {
-    // Fourteen fresh windows in one 800x600/gap-8 domain cannot project:
-    // the service returns the core constraint-clamp hold with one complete
-    // held row per lifetime (usable 0), never silent success and never an
-    // empty inventory. Recovery through fewer windows succeeds.
+    // Best-effort admission over JSON (selected D2/D3): fourteen fresh
+    // overlapping 200x200 windows in one 800x600/gap-8 domain no longer
+    // hold — largest-fallback packing tiles all fourteen in one atomic
+    // roster, so every row carries an allocation under a controlled
+    // scope. Recovery through fewer windows succeeds identically.
     let service = WorldService::new();
     let generation = service.generation();
     let windows: Vec<String> = (0..14)
@@ -168,7 +169,7 @@ fn geometric_exhaustion_holds_truthfully_over_json() {
             )
         })
         .collect();
-    let held_request = format!(
+    let packed_request = format!(
         "{{\"v\":1,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
          \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\"command\":null,\
          \"mode\":\"per-output-local\",\
@@ -181,35 +182,25 @@ fn geometric_exhaustion_holds_truthfully_over_json() {
          \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
         windows.join(",")
     );
-    let reply = service.evaluate_world_request(&held_request).expect("held");
+    let reply = service
+        .evaluate_world_request(&packed_request)
+        .expect("packed");
     let parsed: serde_json::Value = serde_json::from_str(&reply).expect("valid JSON");
     assert_eq!(parsed["ready"], true);
     assert_eq!(parsed["scopes"].as_array().map(Vec::len), Some(1));
-    assert_eq!(parsed["scopes"][0]["auth"], "hold");
-    assert_eq!(parsed["scopes"][0]["reason"], "constraint-clamp");
+    assert_eq!(parsed["scopes"][0]["auth"], "controlled");
     assert_eq!(parsed["windows"].as_array().map(Vec::len), Some(14));
     assert!(
         parsed["windows"]
             .as_array()
             .expect("windows")
             .iter()
-            .all(|w| w["alloc"].is_null()
-                && w["frame_auth"] == "hold"
-                && w["frame_hold"] == "constraint-clamp"),
-        "held rows authorize no writes"
+            .all(|w| !w["alloc"].is_null()),
+        "best-effort packs every row with an allocation"
     );
-    // Recovery: thirteen windows tile fully on the same backend.
-    let fitting_windows: Vec<String> = (0..13)
-        .map(|i| {
-            format!(
-                "{{\"win\":\"win-{i:06}\",\"out\":\"out\",\"ws\":\"ws\",\"rect\":[0,0,200,200],\
-                 \"floating\":false,\"fitExcluded\":false,\"fullscreen\":false,\
-                 \"maximized\":false,\"sticky\":false,\"fixedAuto\":false,\
-                 \"fixedSuppress\":false,\
-                 \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}}}}"
-            )
-        })
-        .collect();
+    // Stable replay: the same fourteen converge exactly on the same
+    // backend, staying controlled with every allocation intact.
+    let fitting_windows: Vec<String> = windows.clone();
     let fitting = format!(
         "{{\"v\":1,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
          \"obs\":\"2\",\"reqSeq\":\"2\",\"req\":\"req-2\",\"cmdSeq\":null,\"command\":null,\
@@ -233,5 +224,65 @@ fn geometric_exhaustion_holds_truthfully_over_json() {
             .iter()
             .all(|w| !w["alloc"].is_null()),
         "recovered rows all carry allocations"
+    );
+}
+
+#[test]
+fn tiny_domain_commits_complete_mixed_roster_over_json() {
+    // Genuinely tiny domain (10x10/gap-8, six arrivals): best-effort tiles
+    // four and capacity-floats two in one atomic commit. The inventory
+    // stays complete over JSON (six rows, none dropped, no holds): tiled
+    // rows carry allocations while float rows carry none with untouched
+    // frame authority, never a constraint-clamp hold.
+    let service = WorldService::new();
+    let generation = service.generation();
+    let windows: Vec<String> = (0..6)
+        .map(|i| {
+            format!(
+                "{{\"win\":\"win-{i:06}\",\"out\":\"tiny\",\"ws\":\"ws\",\"rect\":[0,0,50,50],\
+                 \"floating\":false,\"fitExcluded\":false,\"fullscreen\":false,\
+                 \"maximized\":false,\"sticky\":false,\"fixedAuto\":false,\
+                 \"fixedSuppress\":false,\
+                 \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}}}}"
+            )
+        })
+        .collect();
+    let request = format!(
+        "{{\"v\":1,\"owner\":\"owner-a\",\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+         \"obs\":\"1\",\"reqSeq\":\"1\",\"req\":\"req-1\",\"cmdSeq\":null,\"command\":null,\
+         \"mode\":\"per-output-local\",\
+         \"topology\":[{{\"out\":\"tiny\",\"order\":[\"ws\"],\"current\":\"ws\",\"complete\":true,\"rect\":null,\"primary\":false}}],\
+         \"bindings\":[],\
+         \"domains\":[{{\"id\":\"tiny\",\"ws\":\"ws\",\"bounds\":[0,0,10,10],\"gap\":8,\
+         \"outer\":0,\"focused\":\"\",\"readable\":true,\"hold\":\"\",\"adjacent\":{{}},\
+         \"windows\":[{}],\"closed\":[]}}],\
+         \"minimized\":[],\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"defaultTiled\":true,\"focused\":\"\",\
+         \"complete\":true,\"gesture\":false,\"feedback\":[]}}",
+        windows.join(",")
+    );
+    let reply = service.evaluate_world_request(&request).expect("mixed");
+    let parsed: serde_json::Value = serde_json::from_str(&reply).expect("valid JSON");
+    assert_eq!(parsed["ready"], true);
+    assert_eq!(parsed["scopes"].as_array().map(Vec::len), Some(1));
+    assert_eq!(parsed["scopes"][0]["auth"], "controlled");
+    let rows = parsed["windows"].as_array().expect("windows");
+    assert_eq!(rows.len(), 6, "complete inventory, never silent absence");
+    assert_eq!(
+        rows.iter().filter(|w| !w["alloc"].is_null()).count(),
+        4,
+        "four tiles carry allocations"
+    );
+    let floats: Vec<&serde_json::Value> = rows.iter().filter(|w| w["alloc"].is_null()).collect();
+    assert_eq!(floats.len(), 2, "two capacity floats ride slotless");
+    assert!(
+        floats.iter().all(|w| w["frame_auth"] == "untouched"
+            && w["frame_hold"] != "constraint-clamp"
+            && w["member_auth"] != "hold"),
+        "float rows authorize no writes and never hold: {floats:?}"
+    );
+    assert!(
+        rows.iter()
+            .all(|w| w["frame_auth"] != "hold" && w["frame_hold"] != "constraint-clamp"),
+        "no holds anywhere in the mixed roster"
     );
 }

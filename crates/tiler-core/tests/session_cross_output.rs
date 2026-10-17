@@ -246,7 +246,8 @@ fn move_commit(
             &correlation(corr),
             &Capabilities::full(),
         )
-        .expect("move plans");
+        .expect("move plans")
+        .expect_moved("tiled move");
     assert_eq!(plan.dispatch.base_revision, before_rev);
     session
         .acknowledge(&AdapterAck::new(
@@ -1114,7 +1115,8 @@ fn cross_output_pending_and_uncertain_guards() {
             &correlation("g-stage"),
             &Capabilities::full(),
         )
-        .expect("stage pending");
+        .expect("stage pending")
+        .expect_moved("tiled move");
     assert!(s.has_pending());
     let _ = staged;
     // Uncertain window: further proposals refuse PendingExists, state kept.

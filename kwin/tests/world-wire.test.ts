@@ -89,7 +89,7 @@ function makeSurface() {
 const RUST_REQUIRED_KEYS = [
     "v", "owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq",
     "command", "mode", "topology", "bindings", "domains", "minimized",
-    "predicate", "refill", "defaultTiled", "focused", "complete", "gesture", "feedback",
+    "predicate", "refill", "anchorFallback", "noSpaceResult", "defaultTiled", "focused", "complete", "gesture", "feedback",
 ];
 
 function isCanonicalU64(text: unknown): boolean {
@@ -145,6 +145,8 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(isCanonicalU64(body["reqSeq"]));
         assert.equal(body["predicate"], "both-axes-fixed");
         assert.equal(body["refill"], "last-remaining-workspace", "validated refill rides every report (default)");
+        assert.equal(body["anchorFallback"], "largest-splittable-window", "validated D2 fallback rides every report (default)");
+        assert.equal(body["noSpaceResult"], "float", "validated D3 no-space rides every report (default)");
         assert.equal(body["defaultTiled"], true, "saved default rides every report (backfill true)");
         const topo = body["topology"] as Array<Record<string, unknown>>;
         assert.equal(topo.length, 1);
@@ -175,7 +177,8 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
             "\"windows\":[{\"win\":\"win-a\",\"out\":\"out\",\"ws\":\"ws\"," +
             "\"alloc\":[0,0,800,600],\"frame\":[0,0,800,600]," +
             "\"frame_auth\":\"controlled\",\"frame_hold\":\"\"," +
-            "\"member_auth\":\"controlled\",\"member_hold\":\"\",\"frame_op\":\"\"}]," +
+            "\"member_auth\":\"controlled\",\"member_hold\":\"\",\"frame_op\":\"\"," +
+            "\"floating\":false,\"float_origin\":\"\"}]," +
             "\"transfers\":[],\"effects\":[]}";
         const parsed = parseWorldReply(golden);
         assert.ok(parsed !== null && !isWorldRejection(parsed));
@@ -235,6 +238,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
             transfers: [], effects: [],
         }));

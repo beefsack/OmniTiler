@@ -188,7 +188,8 @@ fn move_commit_focused(session: &mut Session, direction: Direction, corr: &str) 
             &correlation(corr),
             &tiler_core::directional::Capabilities::full(),
         )
-        .unwrap_or_else(|e| panic!("move {direction:?}: {e:?}"));
+        .unwrap_or_else(|e| panic!("move {direction:?}: {e:?}"))
+        .expect_moved("tiled move");
     session
         .acknowledge(&AdapterAck::new(
             correlation(corr),

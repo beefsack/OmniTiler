@@ -109,6 +109,8 @@ fn base_report(request_seq: u64, observation_seq: u64) -> WorldReport {
         minimized: Vec::new(),
         fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: crate::admission::AnchorFallback::default(),
+        no_space_result: crate::admission::NoSpaceResult::default(),
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -1284,6 +1286,8 @@ fn migration_retained_then_confirmed_by_topology() {
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,
@@ -1426,6 +1430,8 @@ fn migration_refill_supersedes_older_pending_view_for_source() {
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             migration_source_refill: MigrationSourceRefill::LastRemaining,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,
@@ -1614,6 +1620,8 @@ fn migration_source_refill_report_value_selects_source_refill() {
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             migration_source_refill: refill,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,
@@ -1767,11 +1775,17 @@ fn command_result_toggle_float_names_window_and_rect() {
         }),
     );
     let reply = accepted_reply(&mut engine, &float);
-    let Some(CommandResult::Float { window, rect }) = reply.command_result.clone() else {
+    let Some(CommandResult::Float {
+        window,
+        rect,
+        no_space,
+    }) = reply.command_result.clone()
+    else {
         panic!("expected float result, got {:?}", reply.command_result);
     };
     assert_eq!(window.0, "win-a");
     assert!(rect.is_some(), "explicit float placement carried");
+    assert!(!no_space, "intentional float is never a no-space retry");
     // The exception row retains the desired effective frame with no
     // write authority: the adapter owns floating geometry and places
     // exactly once from the result, while unrelated later replies keep
@@ -2046,6 +2060,8 @@ fn command_result_migration_rekeys_engine_with_members() {
             minimized: Vec::new(),
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space_result: crate::admission::NoSpaceResult::default(),
             default_tiled: true,
             focused_global: String::new(),
             inventory_complete: true,

@@ -875,6 +875,177 @@ describe("plan adapter R4 immediate transfer (lean, no wire protocol)", () => {
         return pending.length;
     }
 
+    function floatFallbackReply(correlation: string): string {
+        return JSON.stringify({
+            v: 1,
+            correlation_id: correlation,
+            outcome: "planned",
+            kind: "send-to-output",
+            base_revision: 2,
+            detail: { kind: "send-to-output", policy_version: 1, capability: "move-tiled" },
+            desired_geometry: [
+                { window: "win-x", leaf: "leaf-x", output: "out-2", workspace: "ws-b", rect: { x: 810, y: 10, w: 380, h: 580 } },
+            ],
+            desired_focus: { domain_output: "out-2", domain_workspace: "ws-b", leaf: "leaf-x" },
+            operation: {
+                op: "move-to-float",
+                window: "win-a",
+                leaf: "leaf-a",
+                source_output: "out-1",
+                source_workspace: "ws-a",
+                target_output: "out-2",
+                target_workspace: "ws-b",
+                follow: true,
+            },
+            preconditions: [
+                "window-observed",
+                "desired-topology-valid",
+                "adapter-must-verify-postconditions",
+            ],
+        });
+    }
+
+    it("floats the mover slotless on R4 exhaustion with one transfer, one remap, survivor geometry only, and one follow", () => {
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+            status: "ready",
+            observed: dynamicOccupiedObserved(r, native),
+        });
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        assert.equal(mocks.dbusCalls.length, 1);
+        const body = payload(mocks, 0);
+        assert.equal((body["command"] as Record<string, unknown>)["cross_output_transfer"], true);
+        const correlation = body["correlation_id"] as string;
+        mocks.callbacks[0]?.(floatFallbackReply(correlation));
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentTransfers[0]?.output, native.out2);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.deepEqual(native.sentMemberships[0]?.refs, [native.wsB]);
+        // Survivor geometry only: the slotless mover takes no frame write.
+        assert.equal(mocks.geometries.length, 1);
+        assert.equal(mocks.geometries[0]?.target, r.x);
+        const order = mocks.events.filter((entry) => entry === "transfer" || entry === "membership" || entry === "geometry");
+        assert.deepEqual(order, ["transfer", "membership", "geometry"]);
+        // Native follow still addresses the mover ref exactly once.
+        assert.equal(mocks.actives.length, 1);
+        assert.equal(mocks.actives[0], r.a);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assert.equal(mocks.dbusCalls.length, 1);
+        assertNoWireProtocol(mocks);
+        assertCorrelated(mocks, correlation, "r4-float-transfer-started");
+        assertCorrelated(mocks, correlation, "r4-native-written");
+        assertCorrelated(mocks, correlation, "r4-followed");
+        assertCorrelated(mocks, correlation, "arrived");
+    });
+
+    it("ignores a late duplicate float reply after arrival with no second transfer", () => {
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+            status: "ready",
+            observed: dynamicOccupiedObserved(r, native),
+        });
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        const reply = floatFallbackReply(correlation);
+        mocks.callbacks[0]?.(reply);
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(mocks.actives.length, 1);
+        assert.equal(adapter.isR4InFlight, false);
+        // A late duplicate of the same planned reply never re-actuates: no
+        // second transfer, membership, geometry, or follow.
+        mocks.callbacks[0]?.(reply);
+        assert.equal(native.sentTransfers.length, 1);
+        assert.equal(native.sentMemberships.length, 1);
+        assert.equal(mocks.geometries.length, 1);
+        assert.equal(mocks.actives.length, 1);
+        assert.equal(adapter.isInFlight, false);
+    });
+
+    it("refuses a forged float reply naming the dropped leaf as follow focus", () => {
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+            status: "ready",
+            observed: dynamicOccupiedObserved(r, native),
+        });
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        const forged = JSON.parse(floatFallbackReply(correlation)) as Record<string, unknown>;
+        (forged["desired_focus"] as Record<string, unknown>)["leaf"] = "leaf-a";
+        mocks.callbacks[0]?.(JSON.stringify(forged));
+        assert.equal(native.sentTransfers.length, 0);
+        assert.equal(native.sentMemberships.length, 0);
+        assert.equal(mocks.geometries.length, 0);
+        assert.equal(mocks.actives.length, 0);
+        assert.equal(adapter.isR4InFlight, false);
+        assert.equal(adapter.isInFlight, false);
+        assertCorrelated(mocks, correlation, "precondition-mismatch");
+    });
+
+    it("refuses a float reply with stay follow selection and one naming mover geometry", () => {
+        for (const mutate of ["stay", "mover-geometry"] as const) {
+            const r = refs();
+            const { mocks, native } = r4Mocks(r);
+            mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+                status: "ready",
+                observed: dynamicOccupiedObserved(r, native),
+            });
+            const adapter = enable(mocks);
+            adapter.requestMove("right");
+            const correlation = payload(mocks, 0)["correlation_id"] as string;
+            const forged = JSON.parse(floatFallbackReply(correlation)) as Record<string, unknown>;
+            if (mutate === "stay") {
+                (forged["operation"] as Record<string, unknown>)["follow"] = false;
+            } else {
+                ((forged["desired_geometry"] as Array<Record<string, unknown>>)).push({
+                    window: "win-a",
+                    leaf: "leaf-a",
+                    output: "out-2",
+                    workspace: "ws-b",
+                    rect: { x: 810, y: 10, w: 380, h: 580 },
+                });
+            }
+            mocks.callbacks[0]?.(JSON.stringify(forged));
+            assert.equal(native.sentTransfers.length, 0, mutate);
+            assert.equal(native.sentMemberships.length, 0, mutate);
+            assert.equal(mocks.geometries.length, 0, mutate);
+            assert.equal(mocks.actives.length, 0, mutate);
+            assert.equal(adapter.isInFlight, false, mutate);
+            assertCorrelated(mocks, correlation, "precondition-mismatch");
+        }
+    });
+
+    it("refuses a float reply when the snapshot mover is already floating", () => {
+        const r = refs();
+        const { mocks, native } = r4Mocks(r);
+        const held = dynamicOccupiedObserved(r, native);
+        const floatingWindows = held.windows.map((entry) =>
+            entry.id === "win-a" ? { ...entry, floating: true } : entry,
+        );
+        mocks.directionalImpl = (): DirectionalObservation | PlanObserved | null => ({
+            status: "ready",
+            observed: { ...held, windows: Object.freeze(floatingWindows) },
+        });
+        const adapter = enable(mocks);
+        adapter.requestMove("right");
+        const correlation = payload(mocks, 0)["correlation_id"] as string;
+        mocks.callbacks[0]?.(floatFallbackReply(correlation));
+        // A held mover claiming a dropped leaf is a mismatched reply: the
+        // tiled R4 float drops its leaf, never carries a held one.
+        assert.equal(native.sentTransfers.length, 0);
+        assert.equal(native.sentMemberships.length, 0);
+        assert.equal(mocks.geometries.length, 0);
+        assert.equal(mocks.actives.length, 0);
+        assert.equal(adapter.isInFlight, false);
+        assertCorrelated(mocks, correlation, "precondition-mismatch");
+    });
+
     it("moves to an occupied target with output, desktop, geometry order and one follow", () => {
         const r = refs();
         const { mocks, native } = r4Mocks(r);

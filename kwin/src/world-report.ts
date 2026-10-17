@@ -60,6 +60,15 @@ export interface WorldReplyWindow {
     // The adapter writes float geometry ONLY under a non-empty token,
     // exactly once; ordinary floats carry "" and never take frame writes.
     frame_op: string;
+    // Explicit ordinary-float classification (D4/D5): true for every
+    // retained float exception row in a controlled scope (user and
+    // capacity floats alike). The adapter never infers float from a
+    // missing allocation alone: only a floating row with untouched
+    // frame authority converges float intent.
+    floating: boolean;
+    // Diagnostic float origin: "" for ordinary floats and non-floats,
+    // "capacity" for capacity floats. Provenance only, never behavior.
+    float_origin: string;
 }
 export interface WorldReplyTransfer {
     op: string;
@@ -85,7 +94,7 @@ export type WorldReplyResult =
             priorOut: string; priorWs: string;
         } | null;
     }
-    | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null }
+    | { op: "toggle-float"; win: string; rect: [number, number, number, number] | null; noSpace: boolean }
     | {
         op: "active-group"; rev: string; group: string; leaf: string; win: string;
         bounds: [number, number, number, number];
@@ -299,7 +308,8 @@ export function parseWorldReply(text: string): WorldReply | WorldRejection | nul
                 typeof o["win"] !== "string" || typeof o["out"] !== "string" ||
                 typeof o["ws"] !== "string" || typeof o["frame_auth"] !== "string" ||
                 typeof o["frame_hold"] !== "string" || typeof o["member_auth"] !== "string" ||
-                typeof o["member_hold"] !== "string" || typeof o["frame_op"] !== "string"
+                typeof o["member_hold"] !== "string" || typeof o["frame_op"] !== "string" ||
+                typeof o["floating"] !== "boolean" || typeof o["float_origin"] !== "string"
             ) {
                 throw new Error("win");
             }
@@ -308,6 +318,14 @@ export function parseWorldReply(text: string): WorldReply | WorldRejection | nul
             if (!(alloc === null || isRect(alloc)) || !(frame === null || isRect(frame))) {
                 throw new Error("rect");
             }
+            const floatOrigin = o["float_origin"] as string;
+            if (floatOrigin !== "" && floatOrigin !== "capacity") {
+                throw new Error("float-origin");
+            }
+            // Unclassified rows never read as floats downstream: only a
+            // floating row with untouched frame authority converges
+            // float intent (see the entry reconcile gate). Held and
+            // minimized rows always carry false from core.
             return {
                 win: o["win"] as string, out: o["out"] as string, ws: o["ws"] as string,
                 alloc: (alloc as [number, number, number, number] | null) ?? null,
@@ -315,6 +333,7 @@ export function parseWorldReply(text: string): WorldReply | WorldRejection | nul
                 frame_auth: o["frame_auth"] as string, frame_hold: o["frame_hold"] as string,
                 member_auth: o["member_auth"] as string, member_hold: o["member_hold"] as string,
                 frame_op: o["frame_op"] as string,
+                floating: o["floating"] as boolean, float_origin: floatOrigin,
             };
         });
         const transfers: WorldReplyTransfer[] = trRaw.map((e) => {
@@ -441,9 +460,16 @@ function parseResult(value: unknown): WorldReplyResult | null {
     }
     if (op === "toggle-float") {
         const rectRaw = o["rect"];
+        // Explicit-tile no-space retry marker (D5): present only when
+        // true; absent (older core) reads as a plain placement.
+        const noSpaceRaw = o["noSpace"];
+        if (noSpaceRaw !== undefined && typeof noSpaceRaw !== "boolean") {
+            throw new Error("result-nospace");
+        }
         return {
             op: "toggle-float", win: id(o["win"]),
             rect: rectRaw === null || rectRaw === undefined ? null : rect(rectRaw),
+            noSpace: noSpaceRaw === true,
         };
     }
     if (op === "active-group") {
@@ -524,6 +550,11 @@ export interface WorldReportJsonInput {
     // migrations only. Resolved live per report by the entry, never
     // defaulted here.
     readonly refill: MigrationSourceRefill;
+    // Validated D2/D3 capacity tokens (main.xml `anchorFallback`,
+    // `noSpaceResult`): the core applies them to subsequent capacity
+    // decisions only, never reflowing retained state on Apply.
+    readonly anchorFallback: string;
+    readonly noSpaceResult: string;
 }
 
 export function buildWorldReportJson(input: WorldReportJsonInput): string | null {
@@ -559,5 +590,5 @@ export function buildWorldReportJson(input: WorldReportJsonInput): string | null
     ).join(",");
     const commandJson = command === null ? "null" : JSON.stringify(command);
     const defaultTiled = input.defaultTiled;
-    return `{"v":${WORLD_CONTRACT_VERSION},"owner":${esc(input.owner)},"adapter":${esc(input.adapter)},"gen":${esc(input.boundGen as string)},"obs":"${input.currentObs}","reqSeq":"${reqSeq}","req":${esc(reqId)},"cmdSeq":${cmdSeq === null ? "null" : `"${cmdSeq}"`},"command":${commandJson},"mode":${esc(observation.mode)},"topology":[${topology}],"bindings":[${bindings}],"domains":[${domains}],"minimized":[${minimized}],"predicate":${esc(observation.predicate)},"refill":${esc(input.refill)},"defaultTiled":${defaultTiled ? "true" : "false"},"focused":${esc(observation.focusedGlobal)},"complete":${observation.complete ? "true" : "false"},"gesture":${observation.gesture ? "true" : "false"},"feedback":[${feedback}]}`;
+    return `{"v":${WORLD_CONTRACT_VERSION},"owner":${esc(input.owner)},"adapter":${esc(input.adapter)},"gen":${esc(input.boundGen as string)},"obs":"${input.currentObs}","reqSeq":"${reqSeq}","req":${esc(reqId)},"cmdSeq":${cmdSeq === null ? "null" : `"${cmdSeq}"`},"command":${commandJson},"mode":${esc(observation.mode)},"topology":[${topology}],"bindings":[${bindings}],"domains":[${domains}],"minimized":[${minimized}],"predicate":${esc(observation.predicate)},"refill":${esc(input.refill)},"anchorFallback":${esc(input.anchorFallback)},"noSpaceResult":${esc(input.noSpaceResult)},"defaultTiled":${defaultTiled ? "true" : "false"},"focused":${esc(observation.focusedGlobal)},"complete":${observation.complete ? "true" : "false"},"gesture":${observation.gesture ? "true" : "false"},"feedback":[${feedback}]}`;
 }

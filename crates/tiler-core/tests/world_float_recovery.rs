@@ -80,6 +80,8 @@ fn base_report(request_seq: u64, observation_seq: u64) -> WorldReport {
         minimized: Vec::new(),
         fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+        no_space_result: tiler_core::admission::NoSpaceResult::default(),
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -135,9 +137,14 @@ fn toggle_float_retains_explicit_token_with_exact_target() {
     // One-shot provenance plus the explicit retained row token under the
     // stable command identity.
     match &reply.command_result {
-        Some(tiler_core::world_report::CommandResult::Float { window, rect }) => {
+        Some(tiler_core::world_report::CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) => {
             assert_eq!(window.0, "win-a");
             assert_eq!(*rect, Some(TARGET));
+            assert!(!no_space, "intentional float is never a no-space retry");
         }
         other => panic!("expected float result, got {other:?}"),
     }
@@ -340,9 +347,14 @@ fn unfloat_withdraws_token_and_newer_intent_replaces() {
     }));
     let reply = accepted(&mut engine, &unfloat);
     match &reply.command_result {
-        Some(tiler_core::world_report::CommandResult::Float { window, rect }) => {
+        Some(tiler_core::world_report::CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) => {
             assert_eq!(window.0, "win-a");
             assert_eq!(*rect, None);
+            assert!(!no_space, "successful unfloat reports room, not no-space");
         }
         other => panic!("expected unfloat result, got {other:?}"),
     }

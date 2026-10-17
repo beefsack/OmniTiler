@@ -215,12 +215,15 @@ function makeHarness(mode: ClearMode) {
         bare: string,
         frame: [number, number, number, number] | null,
         auth: "controlled" | "untouched",
+        extra: Record<string, unknown> = {},
     ): Record<string, unknown> => ({
         win: bare, out: OUT, ws: WS_A,
         alloc: auth === "untouched" ? null : frame, frame,
         frame_auth: auth, frame_hold: "",
         member_auth: auth, member_hold: "",
         frame_op: "",
+        floating: auth === "untouched", float_origin: "",
+        ...extra,
     });
     const settleAsync = (): void => {
         const st = live.get(WIN_A);

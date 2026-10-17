@@ -47,10 +47,12 @@ const REPLY_TEXT = JSON.stringify({
         {
             win: WIN_A, out: OUT, ws: WS_A, alloc: [0, 0, 400, 600], frame: [0, 0, 400, 600],
             frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "",
+            floating: false, float_origin: "",
         },
         {
             win: WIN_B, out: OUT, ws: WS_B, alloc: [400, 0, 400, 600], frame: [400, 0, 400, 600],
             frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "",
+            floating: false, float_origin: "",
         },
     ],
     transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false }],

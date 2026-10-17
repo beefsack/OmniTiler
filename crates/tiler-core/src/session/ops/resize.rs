@@ -141,15 +141,21 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::FocusMismatch));
         };
         // Accepted projected geometry is the normalized current geometry for
-        // the COSMIC pixel policy.
-        let accepted_geometry = project_output_geometry(
-            Some(&own_domain),
-            Some(&tree),
+        // the COSMIC pixel policy. Gated so accepted overlap domains keep
+        // working; unrepresentable holds.
+        let hints = hints_from_observed(&session_observation.windows);
+        let accepted_geometry = crate::session::capacity::project_affected_gated(
+            &self.domains,
+            &self.trees,
             &self.windows,
-            domain,
-            &hints_from_observed(&session_observation.windows),
+            std::slice::from_ref(domain),
+            &hints,
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &accepted_geometry,
             &self.windows,
@@ -199,14 +205,18 @@ impl super::super::Session {
         ) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
-        let desired_geometry = project_affected_geometry(
+        let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &desired_trees,
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &desired_geometry,
             &self.windows,
@@ -282,6 +292,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,
@@ -531,15 +545,20 @@ impl super::super::Session {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
         // Project the accepted topology once: source of truth for group
-        // extents and adjacent pixel sizes.
-        let accepted_geometry = project_output_geometry(
-            Some(&own_domain),
-            Some(&tree),
+        // extents and adjacent pixel sizes. Gated so accepted overlap
+        // domains keep working; unrepresentable holds.
+        let accepted_geometry = crate::session::capacity::project_affected_gated(
+            &self.domains,
+            &self.trees,
             &self.windows,
-            domain,
+            std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &accepted_geometry,
             &self.windows,
@@ -589,14 +608,18 @@ impl super::super::Session {
         ) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
-        let desired_geometry = project_affected_geometry(
+        let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &desired_trees,
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &desired_geometry,
             &self.windows,
@@ -694,6 +717,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,
@@ -904,14 +931,18 @@ impl super::super::Session {
         // see the post-horizontal pixel extents, never the accepted ones.
         let mut intermediate_trees = self.trees.clone();
         intermediate_trees.insert(domain.clone(), Some(intermediate_tree.clone()));
-        let intermediate_geometry = project_affected_geometry(
+        let intermediate_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &intermediate_trees,
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &intermediate_geometry,
             &self.windows,
@@ -963,14 +994,18 @@ impl super::super::Session {
         ) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
         }
-        let desired_geometry = project_affected_geometry(
+        let desired_geometry = crate::session::capacity::project_affected_gated(
             &self.domains,
             &desired_trees,
             &self.windows,
             std::slice::from_ref(domain),
             &hints_from_observed(&session_observation.windows),
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
         )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+        .ok_or(ProposeError::Refused(RefusalKind::MalformedTopology))?;
         if !geometry_covers_affected(
             &desired_geometry,
             &self.windows,
@@ -1096,6 +1131,10 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: self.overlap_accepted.clone(),
         });
         Ok(SessionResizePlan {
             dispatch,

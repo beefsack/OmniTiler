@@ -81,6 +81,8 @@ fn test_report() -> WorldReport {
         minimized: Vec::new(),
         fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: crate::admission::AnchorFallback::default(),
+        no_space_result: crate::admission::NoSpaceResult::default(),
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -392,6 +394,10 @@ fn estimate_upper_bounds_canonical_encoding() {
             frame_authority: ScopeAuthority::Hold(HoldReason::GestureBarrier),
             membership_authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
             frame_operation: None,
+            // Exercised set (not empty): the estimator counts the exact
+            // floating key plus the origin token width.
+            floating: true,
+            float_origin: Some(FloatOrigin::Capacity),
         }],
         transfers: vec![TransferTarget {
             operation_id: long.clone(),
@@ -415,6 +421,21 @@ fn estimate_upper_bounds_canonical_encoding() {
     // Numeric extrema encode at their exact widths inside the bound.
     assert!(exact > 2048);
     assert!(reply_estimate(&reply) < WORLD_MAX_REPLY_BYTES);
+}
+
+#[test]
+fn sizing_key_constants_match_wire_exactly() {
+    // Exact JSON key punctuation (comma + quotes + colon) backing the
+    // structural estimators: `anchorFallback` 18, `noSpaceResult` 17,
+    // and the newer floating pair 12 + 16 = 28 on top of the 109 base
+    // (137 per reply window row). The estimators stay conservative
+    // (actual <= estimate, locked above and in the protocol codec
+    // tests); these pins keep the constants exact, never padded.
+    assert_eq!(",\"anchorFallback\":".len(), 18);
+    assert_eq!(",\"noSpaceResult\":".len(), 17);
+    assert_eq!(",\"floating\":".len(), 12);
+    assert_eq!(",\"float_origin\":".len(), 16);
+    assert_eq!(12 + 16, 28);
 }
 
 #[test]
@@ -478,6 +499,8 @@ fn explicit_close_allowed_with_incomplete_inventory() {
         minimized: Vec::new(),
         fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: crate::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: crate::admission::AnchorFallback::default(),
+        no_space_result: crate::admission::NoSpaceResult::default(),
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: false,
@@ -525,6 +548,8 @@ fn estimator_rejects_huge_world() {
         frame_authority: ScopeAuthority::Controlled,
         membership_authority: ScopeAuthority::Controlled,
         frame_operation: None,
+        floating: false,
+        float_origin: None,
     };
     let reply = WorldReply {
         contract_version: WORLD_CONTRACT_VERSION,
@@ -589,6 +614,8 @@ fn estimator_covers_every_section_with_long_ids() {
             frame_authority: ScopeAuthority::Controlled,
             membership_authority: ScopeAuthority::Controlled,
             frame_operation: None,
+            floating: false,
+            float_origin: None,
         }],
         transfers: vec![TransferTarget {
             operation_id: long.clone(),

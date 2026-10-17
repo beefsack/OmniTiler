@@ -1143,6 +1143,10 @@ impl WorldEngine {
                 revision: plan.preview.revision,
             }),
             CoreReply::Tiled(plan) if plan.kind == TiledKind::ToggleFloat => {
+                // A capacity re-float (D5 explicit-tile no-space retry)
+                // carries the float window with no rect: the window stays
+                // floated and the adapter must record no tile override.
+                let no_space = plan.float_window.is_some() && plan.float_rect.is_none();
                 if plan.float_window.is_some() || plan.float_rect.is_some() {
                     let window = plan.float_window.clone().unwrap_or_else(|| match command {
                         CoreCommand::ToggleFloat { window, .. } => WindowId(window.clone()),
@@ -1151,6 +1155,7 @@ impl WorldEngine {
                     Some(CommandResult::Float {
                         window,
                         rect: plan.float_rect,
+                        no_space,
                     })
                 } else {
                     // Unfloat-to-tile names the command window with no rect:
@@ -1159,6 +1164,7 @@ impl WorldEngine {
                         CoreCommand::ToggleFloat { window, .. } => Some(CommandResult::Float {
                             window: WindowId(window.clone()),
                             rect: None,
+                            no_space: false,
                         }),
                         _ => None,
                     }
@@ -1210,8 +1216,15 @@ impl WorldEngine {
         // still carry the row token until observation confirms it, proven
         // feedback settles it, or a newer intent replaces it. Unfloat
         // (no rect) withdraws any outstanding target for the window.
-        // Refusals retain nothing.
-        if let Some(CommandResult::Float { window, rect }) = &self.command_result {
+        // Refusals retain nothing. A no-space retry (still floated)
+        // neither retains a new target nor withdraws: the window never
+        // left float, so there is nothing to place or clear.
+        if let Some(CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        }) = &self.command_result
+        {
             let window = window.clone();
             match rect {
                 Some(target) => {
@@ -1243,7 +1256,9 @@ impl WorldEngine {
                         });
                 }
                 None => {
-                    self.retained_floats.retain(|held| held.window != window);
+                    if !no_space {
+                        self.retained_floats.retain(|held| held.window != window);
+                    }
                 }
             }
         }

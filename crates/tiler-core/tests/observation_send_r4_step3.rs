@@ -497,6 +497,125 @@ fn r4_cross_output_commits_immediately_with_empty_target() {
 }
 
 #[test]
+fn r4_exhausted_target_floats_mover_as_send_output() {
+    // Source out-1/ws-a holds H[win-a, win-m] with win-m focused at the
+    // right edge; target out-2/ws-b is an exhausted 1x1 holding win-t. The
+    // exact R4 wrap proves geometric exhaustion under the default float
+    // result, so the Engine commits the shared capacity-float fallback
+    // synchronously and returns the established send result (never a
+    // refusal, never a redirect): the mover floats slotless at the chosen
+    // target, the source releases, and the destination tree is untouched.
+    let mut source =
+        Session::new(owner(), generation(), 0, 7, vec![domain("out-1", "ws-a")]).expect("source");
+    admit_to(&mut source, "win-a", "out-1", "ws-a", "r-a");
+    admit_to(&mut source, "win-m", "out-1", "ws-a", "r-m");
+    let tiny_target = OutputDomain {
+        id: OutputId("out-2".to_owned()),
+        workspace: WorkspaceId("ws-b".to_owned()),
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        },
+        gap: 0,
+        adjacent: [(Direction::Left, OutputId("out-1".to_owned()))]
+            .into_iter()
+            .collect(),
+    };
+    // Stored components carry no adjacency (canonical form); the event pair
+    // domains above carry the reciprocal fence.
+    let tiny_component = OutputDomain {
+        id: OutputId("out-2".to_owned()),
+        workspace: WorkspaceId("ws-b".to_owned()),
+        bounds: Rect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        },
+        gap: 0,
+        adjacent: BTreeMap::new(),
+    };
+    let mut target =
+        Session::new(owner(), generation(), 0, 7, vec![tiny_component]).expect("target");
+    admit_to(&mut target, "win-t", "out-2", "ws-b", "r-t");
+    let mut source_pair = domain("out-1", "ws-a");
+    source_pair
+        .adjacent
+        .insert(Direction::Right, OutputId("out-2".to_owned()));
+    let target_pair = tiny_target.clone();
+    let (source_key, target_key) = (source_pair.key(), target_pair.key());
+    let mut engine = Engine::new();
+    engine.sync_binding(&owner(), &generation());
+    engine.store_committed(key("out-1", "ws-a"), source, 0);
+    engine.store_committed(target_key.clone(), target, 0);
+    let event = CoreEvent {
+        owner: owner(),
+        generation: generation(),
+        correlation: corr("r4-float-1"),
+        revision: 0,
+        fingerprint: 999,
+        domain: source_pair.clone(),
+        domain_key: source_key.clone(),
+        outer_gap: 0,
+        focused_window: WindowId("win-m".to_owned()),
+        windows: vec![
+            carried("win-a", "out-1", "ws-a", 0),
+            carried("win-m", "out-1", "ws-a", 10),
+            carried("win-t", "out-2", "ws-b", 0),
+        ],
+        directional: Some(vec![
+            (source_pair.clone(), source_key.clone()),
+            (target_pair.clone(), target_key.clone()),
+        ]),
+        directional_target_outer_gap: Some(0),
+        target_domain: None,
+        target_windows: vec![],
+        closed_windows: vec![],
+        command: CoreCommand::Move {
+            window: "win-m".to_owned(),
+            direction: "right".to_owned(),
+            cross_output_transfer: true,
+            same_axis_move: tiler_core::directional::SameAxisMove::GroupWithNeighbor,
+        },
+    };
+    let geometry = match engine.handle(&event) {
+        CoreReply::SendOutput(plan) => {
+            match &plan.operation {
+                tiler_core::contract::LifecycleOperation::MoveToFloat {
+                    window,
+                    target_output,
+                    target_workspace,
+                    ..
+                } => {
+                    assert_eq!(window.0, "win-m");
+                    assert_eq!(target_output.0, "out-2");
+                    assert_eq!(target_workspace.0, "ws-b");
+                }
+                other => panic!("exhausted R4 floats, got {other:?}"),
+            }
+            assert!(plan.follow, "R4 always follows the mover");
+            plan.geometry
+        }
+        other => panic!("exhausted R4 returns the send fallback, got {other:?}"),
+    };
+    let mut ids: Vec<String> = geometry.iter().map(|g| g.window.0.clone()).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec!["win-a", "win-t"],
+        "survivors project, mover slotless"
+    );
+    let src = engine.session(&source_key).expect("source retained");
+    let tgt = engine.session(&target_key).expect("target retained");
+    assert_eq!(leaves_of(src, "out-1", "ws-a"), vec!["leaf-win-a"]);
+    assert_eq!(leaves_of(tgt, "out-2", "ws-b"), vec!["leaf-win-t"]);
+    assert!(tgt.is_capacity_float(&WindowId("win-m".to_owned())));
+    assert_eq!(homed(src, "win-m"), None, "source released");
+}
+
+#[test]
 fn rapid_second_send_with_arrival_commits_without_reconcile() {
     // Step-3 Watch risk probe, arrival-showing case: first send A->B commits;
     // then, with NO intervening per-domain reconcile but native observations

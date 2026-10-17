@@ -1441,6 +1441,25 @@ export interface PlanMoveOperation {
     readonly target: string;
 }
 
+// Exact R4 capacity float operation (D6): the established
+// send-result shape (`move-to-float` under `send-to-output`) returned for a
+// directional move whose exact R4 wrap proved geometric exhaustion. The
+// mover, the captured source, and the R4-chosen adjacent target match the
+// tiled R4 operation; the leaf names the dropped source slot for audit
+// (never a re-tile), and follow is always true (R4 follows the mover).
+// The adapter fences every field before any transfer/membership/geometry
+// write; no looser alternate plan is accepted.
+export interface PlanMoveToFloatOperation {
+    readonly op: "move-to-float";
+    readonly window: string;
+    readonly leaf: string;
+    readonly sourceOutput: string;
+    readonly sourceWorkspace: string;
+    readonly targetOutput: string;
+    readonly targetWorkspace: string;
+    readonly follow: boolean;
+}
+
 interface PlannedReply {
     readonly correlationId: string;
     readonly baseRevision: number | null;
@@ -1448,9 +1467,10 @@ interface PlannedReply {
     readonly focus: PlanFocusBody | null;
     readonly floatGeometry: { readonly window: string; readonly rect: PlanRect } | null;
     // Exact cross-output operation/preconditions when the planner crossed
-    // outputs (focus or R4 move). Absent for local plans. The adapter fences
-    // them against the captured source before any actuation.
-    readonly operation: PlanFocusOperation | PlanMoveOperation | null;
+    // outputs (focus, R4 move, or the R4 capacity float). Absent for
+    // local plans. The adapter fences them against the captured source
+    // before any actuation.
+    readonly operation: PlanFocusOperation | PlanMoveOperation | PlanMoveToFloatOperation | null;
     readonly preconditions: ReadonlyArray<string> | null;
     // Raw wire operation/preconditions retained verbatim for the R4 verify
     // echo (Rust parses snake_case and compares typed equality).
@@ -1634,6 +1654,33 @@ function validatePlanned(reply: unknown, correlationId: string): PlannedReply | 
                     return null;
                 }
             }
+        } else if (operation !== null && operation.op === "move-to-float") {
+            // R4 capacity float: the established send-result route
+            // only (`send-to-output` kind plus the lifecycle precondition
+            // triple). Any other kind or token set is a mismatched reply.
+            if (preconditions === null) {
+                return null;
+            }
+            const allowed = new Set([
+                "window-observed",
+                "desired-topology-valid",
+                "adapter-must-verify-postconditions",
+            ]);
+            if (preconditions.length !== 3) {
+                return null;
+            }
+            for (const token of preconditions) {
+                if (!allowed.has(token)) {
+                    return null;
+                }
+            }
+            if (!isRecord(reply) || reply["kind"] !== "send-to-output") {
+                return null;
+            }
+            const detail = reply["detail"];
+            if (!isRecord(detail) || detail["kind"] !== "send-to-output") {
+                return null;
+            }
         } else if (preconditions !== null) {
             return null;
         }
@@ -1654,10 +1701,10 @@ function validatePlanned(reply: unknown, correlationId: string): PlannedReply | 
     return { correlationId, baseRevision: parseBaseRevision(reply), geometry: Object.freeze(geometry), focus: null, floatGeometry, operation, preconditions, rawOperation: null, rawPreconditions: null };
 }
 
-// Operation envelope shared by focus and move replies: parsed by the `op`
-// tag into the exact variant. Unknown tags and malformed variants are
-// `undefined` (malformed reply); absent is `null`.
-function validateOperation(value: unknown): PlanFocusOperation | PlanMoveOperation | null | undefined {
+// Operation envelope shared by focus, move, and R4 capacity-float replies:
+// parsed by the `op` tag into the exact variant. Unknown tags and malformed
+// variants are `undefined` (malformed reply); absent is `null`.
+function validateOperation(value: unknown): PlanFocusOperation | PlanMoveOperation | PlanMoveToFloatOperation | null | undefined {
     if (value === undefined || value === null) {
         return null;
     }
@@ -1670,7 +1717,49 @@ function validateOperation(value: unknown): PlanFocusOperation | PlanMoveOperati
     if (value["op"] === "move") {
         return validateMoveOperation(value);
     }
+    if (value["op"] === "move-to-float") {
+        return validateMoveToFloatOperation(value);
+    }
     return undefined;
+}
+
+function validateMoveToFloatOperation(value: unknown): PlanMoveToFloatOperation | null | undefined {
+    if (!isRecord(value)) {
+        return undefined;
+    }
+    // The established Rust echo always carries the explicit follow
+    // selection; unlike the tiled operation there is no legacy omission, so
+    // the exact eight-key shape is required and follow must be boolean.
+    const want = ["op", "window", "leaf", "source_output", "source_workspace", "target_output", "target_workspace", "follow"];
+    if (!hasExactKeys(value, want)) {
+        return undefined;
+    }
+    if (value["op"] !== "move-to-float") {
+        return undefined;
+    }
+    if (
+        !isOpaqueId(value["window"]) ||
+        !isOpaqueId(value["leaf"]) ||
+        !isOpaqueId(value["source_output"]) ||
+        !isOpaqueId(value["source_workspace"]) ||
+        !isOpaqueId(value["target_output"]) ||
+        !isOpaqueId(value["target_workspace"])
+    ) {
+        return undefined;
+    }
+    if (typeof value["follow"] !== "boolean") {
+        return undefined;
+    }
+    return {
+        op: "move-to-float",
+        window: value["window"] as string,
+        leaf: value["leaf"] as string,
+        sourceOutput: value["source_output"] as string,
+        sourceWorkspace: value["source_workspace"] as string,
+        targetOutput: value["target_output"] as string,
+        targetWorkspace: value["target_workspace"] as string,
+        follow: value["follow"] as boolean,
+    };
 }
 
 function validateMoveOperation(value: unknown): PlanMoveOperation | null | undefined {
@@ -1816,6 +1905,10 @@ function validatePreconditions(value: unknown): ReadonlyArray<string> | null | u
         "focus-targets-adjacent-output",
         "source-root-membership-and-adjacent-same-workspace-output",
         "adapter-must-verify-postconditions",
+        // Lifecycle triple for the R4 capacity float only (gated to
+        // the exact `move-to-float` pairing below; no other op admits them).
+        "window-observed",
+        "desired-topology-valid",
     ]);
     const out: string[] = [];
     for (const entry of value) {
@@ -9918,6 +10011,32 @@ export class PlanAdapter {
         if (planned.geometry.length === wanted.size) {
             return true;
         }
+        // R4 capacity float on a two-domain move flight: the reply
+        // geometry covers exactly the wanted set minus the slotless mover
+        // (no tile slot, no frame write). The strict cross gate below owns
+        // the remaining operation/focus binding; here only the mover
+        // exclusion and the exact survivor count bind.
+        if (
+            flightState.op === "move" &&
+            planned.operation !== null &&
+            planned.operation.op === "move-to-float" &&
+            directionalHoming !== undefined &&
+            (flightState.snapshot.domains?.length ?? 0) === 2
+        ) {
+            const mover = (planned.operation as PlanMoveToFloatOperation).window;
+            if (!wanted.has(mover)) {
+                return false;
+            }
+            if (planned.geometry.length !== wanted.size - 1) {
+                return false;
+            }
+            for (const entry of planned.geometry) {
+                if (entry.window === mover) {
+                    return false;
+                }
+            }
+            return true;
+        }
         // Directional local plan on a two-domain snapshot: exactly the
         // source-domain wanted subset, all homed to the source domain.
         const domains = flightState.snapshot.domains;
@@ -10566,6 +10685,125 @@ export class PlanAdapter {
         return true;
     }
 
+    // Exact R4 capacity float gate (D6): the established
+    // send-result shape on a two-domain move flight whose exact R4 wrap
+    // proved geometric exhaustion. Mirrors `isCrossMove` field-for-field
+    // except the slotless differences: the `move-to-float` op under the
+    // lifecycle triple, follow-only (R4 always follows), the mover absent
+    // from desired geometry (no tile slot), and the desired focus naming
+    // the target bookkeeping MRU (or null for a member-less target, which
+    // resolves to no focus write: native follow addresses the mover ref).
+    // The snapshot mover must be tiled at dispatch (the inverse of the
+    // deferred-held shape): a held mover claiming a dropped leaf, or a
+    // tiled mover sneaking a leafless transfer, never passes. Returns true
+    // only when every fence passes; anything else fails closed before any
+    // write.
+    private isCrossMoveFloat(planned: PlannedReply, flightState: PendingFlight): boolean {
+        if (flightState.op !== "move" || flightState.background === true) {
+            return false;
+        }
+        const domains = flightState.snapshot.domains;
+        if (domains === undefined || domains.length !== 2) {
+            return false;
+        }
+        const operation = planned.operation;
+        if (operation === null || operation.op !== "move-to-float") {
+            return false;
+        }
+        const float = operation as PlanMoveToFloatOperation;
+        // R4 is follow-only: a stay echo on this shape never actuates.
+        if (float.follow !== true) {
+            return false;
+        }
+        if (!isDirection(flightState.direction)) {
+            return false;
+        }
+        const source = domains[0] as PlanDomain;
+        const target = domains[1] as PlanDomain;
+        if (
+            float.sourceOutput !== source.output ||
+            float.sourceWorkspace !== source.workspace ||
+            float.targetOutput !== target.output ||
+            float.targetWorkspace !== target.workspace
+        ) {
+            return false;
+        }
+        if (float.window !== flightState.snapshot.focusedId) {
+            return false;
+        }
+        // The dispatch snapshot mover must be tiled (never held/floating):
+        // the float drops its leaf here, so a slotless-shape snapshot mover
+        // claiming a dropped leaf is a mismatched reply.
+        let snapshotMoverTiled = false;
+        for (const entry of flightState.snapshot.windows) {
+            if (entry.id !== float.window) {
+                continue;
+            }
+            snapshotMoverTiled =
+                entry.floating !== true &&
+                entry.fullscreen !== true &&
+                entry.maximized !== true &&
+                entry.sticky !== true;
+            break;
+        }
+        if (!snapshotMoverTiled) {
+            return false;
+        }
+        if (planned.preconditions === null || planned.preconditions.length !== 3) {
+            return false;
+        }
+        const expected = [
+            "window-observed",
+            "desired-topology-valid",
+            "adapter-must-verify-postconditions",
+        ];
+        for (let index = 0; index < expected.length; index += 1) {
+            if (planned.preconditions[index] !== expected[index]) {
+                return false;
+            }
+        }
+        if (planned.baseRevision === null) {
+            return false;
+        }
+        // Every desired entry must home to the source/target pair and the
+        // slotless mover must be desired nowhere.
+        for (const entry of planned.geometry) {
+            const onSource = entry.output === source.output && entry.workspace === source.workspace;
+            const onTarget = entry.output === target.output && entry.workspace === target.workspace;
+            if (!onSource && !onTarget) {
+                return false;
+            }
+            if (entry.window === float.window) {
+                return false;
+            }
+        }
+        // Follow focus is target-bound bookkeeping (never the mover, never
+        // the dropped slot): null for a member-less target, else a
+        // target-domain leaf resolving through the reply geometry to a
+        // non-mover window. Native follow still addresses the mover ref.
+        const focus = planned.focus;
+        if (focus === null) {
+            return true;
+        }
+        if (focus.domainOutput !== target.output || focus.domainWorkspace !== target.workspace) {
+            return false;
+        }
+        if (focus.leaf === float.leaf) {
+            return false;
+        }
+        for (const entry of planned.geometry) {
+            if (
+                entry.leaf === focus.leaf &&
+                entry.output === target.output &&
+                entry.workspace === target.workspace &&
+                entry.window !== float.window
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // R4 immediate commit, no wire ack/verify/cancel/status. Called once per
     // R4 `planned` reply with the shared single-flight held: the dispatch
     // timer is already cleared. Order is fixed: sendClientToScreen with the
@@ -10587,8 +10825,13 @@ export class PlanAdapter {
         planned: PlannedReply,
         flightState: PendingFlight,
         current: PlanObserved,
+        capacityFloat = false,
     ): void {
-        const operation = planned.operation as PlanMoveOperation;
+        // The R4 capacity float shares this exact transfer:
+        // operation fields below are the common mover/source identities,
+        // the planned geometry already excludes the slotless mover (no
+        // frame write), and arrival/follow prove the mover placement once.
+        const operation = planned.operation as PlanMoveOperation | PlanMoveToFloatOperation;
         const domains = flightState.snapshot.domains as ReadonlyArray<PlanDomain>;
         const target = domains[1] as PlanDomain;
         const source = domains[0] as PlanDomain;
@@ -10683,7 +10926,7 @@ export class PlanAdapter {
             settled: false,
         };
         this.r4Flight = r4;
-        this.diag(flightState.op, correlation, windowCount, "r4-transfer-started");
+        this.diag(flightState.op, correlation, windowCount, capacityFloat ? "r4-float-transfer-started" : "r4-transfer-started");
         if (!this.armR4ArrivalSignals(r4, flight, session)) {
             this.r4SettleTerminal(r4, "write-failed");
             return;
@@ -10852,6 +11095,15 @@ export class PlanAdapter {
         // transfer diagnostics.
         if (flightState.op === "move" && this.isCrossMove(planned, flightState)) {
             this.beginR4Transfer(planned, flightState, current);
+            return;
+        }
+        // R4 capacity float: one transfer plus the native
+        // cross-output remap with no mover geometry write, proved once
+        // with a single follow. Late, refused, or ambiguous replies never
+        // reach here: correlation/epoch/pending fences drop them first, and
+        // the terminal settlers below run exactly once per flight.
+        if (flightState.op === "move" && this.isCrossMoveFloat(planned, flightState)) {
+            this.beginR4Transfer(planned, flightState, current, true);
             return;
         }
         this.lifecycleDiag(flightState, "apply", "apply", "started", "-", this.ordinaryRevision(planned, flightState));

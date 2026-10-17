@@ -2149,9 +2149,11 @@ fn serialize_resize_reply(
 /// echo (plus the explicit `follow` selection), and precondition tokens match
 /// the legacy shape plus the follow extension. The slotless `move-deferred`
 /// transfer (D28 born-fullscreen carry) echoes window plus source/target
-/// identities with NO leaf under its own op token; capability stays
-/// `move-tiled` (the operation reuses that capability). The plan
-/// constructor guarantees one of the two send operations, so the legacy
+/// identities with NO leaf under its own op token; the D3 capacity-float
+/// `move-to-float` echoes window plus the dropped source leaf and
+/// source/target identities; capability stays
+/// `move-tiled` (the operations reuse that capability). The plan
+/// constructor guarantees one of the three send operations, so the legacy
 /// `move-op-invalid` fallback stays with the caller at its exact position.
 fn serialize_send_workspace_reply(
     correlation_id: &str,
@@ -2184,6 +2186,23 @@ fn serialize_send_workspace_reply(
         } => serde_json::json!({
             "op": "move-deferred",
             "window": window.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        LifecycleOperation::MoveToFloat {
+            window,
+            leaf,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-to-float",
+            "window": window.0,
+            "leaf": leaf.0,
             "source_output": source_output.0,
             "source_workspace": source_workspace.0,
             "target_output": target_output.0,
@@ -2263,6 +2282,23 @@ fn serialize_send_output_reply(
         } => serde_json::json!({
             "op": "move-deferred",
             "window": window.0,
+            "source_output": source_output.0,
+            "source_workspace": source_workspace.0,
+            "target_output": target_output.0,
+            "target_workspace": target_workspace.0,
+            "follow": plan.follow,
+        }),
+        LifecycleOperation::MoveToFloat {
+            window,
+            leaf,
+            source_output,
+            source_workspace,
+            target_output,
+            target_workspace,
+        } => serde_json::json!({
+            "op": "move-to-float",
+            "window": window.0,
+            "leaf": leaf.0,
             "source_output": source_output.0,
             "source_workspace": source_workspace.0,
             "target_output": target_output.0,

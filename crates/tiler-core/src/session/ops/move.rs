@@ -88,7 +88,9 @@ impl super::super::Session {
     ///
     /// Transactional like lifecycle: refusals and planner noops leave state
     /// unchanged with no pending; only an accepted plan stages pending desired
-    /// state through the shared single reconciler slot.
+    /// state through the shared single reconciler slot. The accepted plan is
+    /// either the exact tiled move or, for R4 only, the capacity-float
+    /// fallback (see [`Session::propose_move_with_same_axis`]).
     pub fn propose_move(
         &mut self,
         domain: &DomainKey,
@@ -97,7 +99,7 @@ impl super::super::Session {
         session_observation: &SessionObservation,
         correlation_id: &CorrelationId,
         capabilities: &Capabilities,
-    ) -> Result<SessionMovePlan, ProposeError> {
+    ) -> Result<SessionMoveOutcome, ProposeError> {
         self.propose_move_with_same_axis(
             domain,
             window,
@@ -115,6 +117,17 @@ impl super::super::Session {
     /// [`SameAxisMove`](crate::directional::SameAxisMove) selects the R2c
     /// leaf-neighbor behavior for this subsequent move only; retained trees
     /// are never rebuilt. `GroupWithNeighbor` is exactly [`Session::propose_move`].
+    ///
+    /// R4 capacity fallback (D6, float result only): the exact whole-target
+    /// wrap above still plans first with no D2 redirect. Only when that wrap
+    /// plans successfully yet proves geometric exhaustion (the affected
+    /// projection fails over valid domains) does the mover fall back to the
+    /// shared capacity-float send (`MoveToFloat` under the explicit
+    /// output-send intent, follow-only) homed at the R4-chosen
+    /// output/workspace with its exact current frame. Overlap mode keeps the
+    /// existing overlap gate with no float; an unplannable wrap, invalid
+    /// bounds, or an unprojectable mover frame still refuses
+    /// [`RefusalKind::MalformedTopology`] with the source exactly preserved.
     #[allow(clippy::too_many_arguments)]
     pub fn propose_move_with_same_axis(
         &mut self,
@@ -125,7 +138,7 @@ impl super::super::Session {
         correlation_id: &CorrelationId,
         capabilities: &Capabilities,
         same_axis_move: crate::directional::SameAxisMove,
-    ) -> Result<SessionMovePlan, ProposeError> {
+    ) -> Result<SessionMoveOutcome, ProposeError> {
         if let Some(reason) = self.reconciler.divergence() {
             return Err(ProposeError::Diverged(reason));
         }
@@ -264,18 +277,73 @@ impl super::super::Session {
             }
             _ => vec![domain.clone()],
         };
-        let desired_geometry = project_affected_geometry(
+        // R4 preserves the exact whole-target directional wrap (no D2
+        // redirect). D3 at the chosen output only: strict first, overlap
+        // through the D9 gate (setting or retained mark). Under the default
+        // float result a successfully planned wrap that still fails
+        // projection falls back to the shared capacity-float send below
+        // (proven geometric exhaustion only, never a redirect); otherwise
+        // an honest refuse with no guessed float or offscreen success.
+        // Refusal stages nothing, so native focus/MRU stay as the follow
+        // proof. Other moves use the same gate so accepted overlap domains
+        // keep working; unrepresentable geometry holds truthfully.
+        let hints = hints_from_observed(&session_observation.windows);
+        let desired_geometry = match crate::session::capacity::project_affected_gated(
             &self.domains,
             &desired_trees,
             &desired_windows,
             &affected,
-            &hints_from_observed(&session_observation.windows),
-        )
-        .map_err(|_| ProposeError::Refused(RefusalKind::MalformedTopology))?;
+            &hints,
+            &|key| {
+                self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                    || self.overlap_accepted.contains(key)
+            },
+        ) {
+            Some(geometry) => geometry,
+            None => {
+                return self.stage_r4_capacity_float(
+                    &plan,
+                    domain,
+                    &focused_leaf,
+                    desired_trees,
+                    session_observation,
+                    correlation_id,
+                );
+            }
+        };
         // Completeness: every tiled window in affected domains must have a
         // positive rectangle.
         if !geometry_covers_affected(&desired_geometry, &desired_windows, &affected) {
             return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        // Overlap bookkeeping: domains that only overlap-project gain (or
+        // keep) the mark; domains that project strictly clear it. The
+        // mover lifetime keeps its admission number.
+        let mut desired_overlap = self.overlap_accepted.clone();
+        for key in &affected {
+            match desired_trees.get(key).cloned().flatten() {
+                None => {
+                    desired_overlap.remove(key);
+                }
+                Some(tree) => {
+                    let Some(domain) = self.domains.iter().find(|d| &d.key() == key) else {
+                        return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+                    };
+                    if project_output_geometry(
+                        Some(domain),
+                        Some(&tree),
+                        &desired_windows,
+                        key,
+                        &hints,
+                    )
+                    .is_ok()
+                    {
+                        desired_overlap.remove(key);
+                    } else {
+                        desired_overlap.insert(key.clone());
+                    }
+                }
+            }
         }
         let dispatch = match self.reconciler.propose(
             &plan,
@@ -308,14 +376,103 @@ impl super::super::Session {
             retained_float_geometry: self.retained_float_geometry.clone(),
             automatic_fixed: self.automatic_fixed.clone(),
             fixed_tile_override: self.fixed_tile_override.clone(),
+            capacity_floats: self.capacity_floats.clone(),
+            admission_order: self.admission_order.clone(),
+            admission_counter: self.admission_counter,
+            overlap_accepted: desired_overlap,
         });
-        Ok(SessionMovePlan {
+        Ok(SessionMoveOutcome::Moved(SessionMovePlan {
             dispatch,
             desired_snapshot: self.snapshot_for(&desired_trees, &desired_windows),
             desired_focus_domain,
             desired_focus_leaf,
             desired_geometry,
-        })
+        }))
+    }
+
+    /// R4-only capacity-float fallback for an exactly planned wrap whose
+    /// affected projection failed (see [`Session::propose_move_with_same_axis`]).
+    ///
+    /// Proven exhaustion only: the caller already planned the exact
+    /// whole-target wrap (`apply_move_operation` returned `Some`, so
+    /// adjacency, source root edge, and target occupancy all bound) and only
+    /// the geometric projection failed. R1-R3 operations, the overlap
+    /// no-space result (whose gate already admitted overlap yet still
+    /// failed: unrepresentable), and invalid source/target bounds all refuse
+    /// as [`RefusalKind::MalformedTopology`] with nothing staged. Otherwise
+    /// the shared send helper stages the slotless float at the R4-chosen
+    /// output/workspace (follow-only, untouched frame, no D2 search);
+    /// only its own unprojectable-mover refusal still refuses, with the
+    /// source exactly preserved.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_r4_capacity_float(
+        &mut self,
+        plan: &MovePlan,
+        source: &DomainKey,
+        focused_leaf: &NodeId,
+        desired_trees: BTreeMap<DomainKey, Option<Node>>,
+        session_observation: &SessionObservation,
+        correlation_id: &CorrelationId,
+    ) -> Result<SessionMoveOutcome, ProposeError> {
+        let MoveOperation::CrossOutput {
+            target_output,
+            target_workspace,
+            ..
+        } = &plan.operation
+        else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        };
+        if self.no_space != crate::admission::NoSpaceResult::Float {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        }
+        let target_key = DomainKey {
+            output: target_output.clone(),
+            workspace: target_workspace.clone(),
+        };
+        let Some(source_domain) = self.domains.iter().find(|d| &d.key() == source).cloned() else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        };
+        let Some(target_domain) = self.domains.iter().find(|d| d.key() == target_key).cloned()
+        else {
+            return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+        };
+        for domain in [&source_domain, &target_domain] {
+            if domain.bounds.w <= 0 || domain.bounds.h <= 0 || domain.gap < 0 {
+                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+            }
+        }
+        let target_leaves = self
+            .trees
+            .get(&target_key)
+            .cloned()
+            .flatten()
+            .map(|tree| collect_leaves(&tree).len())
+            .unwrap_or(0);
+        let new_source = desired_trees.get(source).cloned().flatten();
+        // The R4 crossing already proved the cross-output transfer
+        // capability through the directional planner gate; the staged send
+        // carries the standard full lifecycle binding exactly like the
+        // explicit output-send route.
+        let lifecycle_capabilities = LifecycleCapabilities::full();
+        self.stage_send_to_float(
+            &plan.intent.focused_window,
+            focused_leaf,
+            source,
+            new_source,
+            &target_key,
+            &target_domain,
+            target_leaves,
+            true,
+            true,
+            // Cross-output R4 float: never stage source coordinates as a
+            // target claim; the proven native remap plus arrival proof
+            // owns placement (frame stays untouched until arrival).
+            None,
+            session_observation,
+            correlation_id,
+            &lifecycle_capabilities,
+        )
+        .map(SessionMoveOutcome::CapacityFloat)
     }
 
     /// Commit a pending movement plan after acknowledgement. On commit the
@@ -341,7 +498,12 @@ impl super::super::Session {
                     self.retained_float_geometry = desired.retained_float_geometry;
                     self.automatic_fixed = desired.automatic_fixed;
                     self.fixed_tile_override = desired.fixed_tile_override;
+                    self.capacity_floats = desired.capacity_floats;
+                    self.admission_order = desired.admission_order;
+                    self.admission_counter = desired.admission_counter;
+                    self.overlap_accepted = desired.overlap_accepted;
                     self.prune_fixed_size_state();
+                    self.prune_capacity_state();
                     self.accepted_fingerprint = commit.fingerprint;
                 }
                 Ok(commit)

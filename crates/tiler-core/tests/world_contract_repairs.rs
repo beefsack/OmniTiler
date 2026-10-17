@@ -127,6 +127,8 @@ fn two_output_report(request_seq: u64, observation_seq: u64) -> WorldReport {
         minimized: Vec::new(),
         fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+        no_space_result: tiler_core::admission::NoSpaceResult::default(),
         default_tiled: true,
         focused_global: String::new(),
         inventory_complete: true,
@@ -897,7 +899,7 @@ fn minimized_list_is_explicit_and_keeps_occupancy() {
 }
 
 #[test]
-fn fresh_seed_honest_capacity_threshold_is_explicit() {
+fn fresh_seed_commits_complete_roster_without_hold() {
     use tiler_core::world_report::ScopeAuthority;
     fn bulk_report(count: usize, seq: u64) -> WorldReport {
         let mut report = two_output_report(seq, seq);
@@ -946,57 +948,52 @@ fn fresh_seed_honest_capacity_threshold_is_explicit() {
             .all(|s| s.authority == ScopeAuthority::Controlled)
     );
     assert!(reply.windows.iter().all(|w| w.allocation.is_some()));
-    // Fourteen binary-vine leaves no longer project in 800x600/gap-8:
-    // capacity B keeps the topology and holds the scope with an explicit
-    // recoverable constraint-clamp reason plus one complete held row per
-    // observed lifetime (no allocations, no write authority), instead of a
-    // silent partial success or a masked empty inventory. Recorded here as
-    // the honest single-report limit for this geometry; deeper topologies
-    // need a product decision (flatter groups), never sharded partial
-    // reports.
+    // Fourteen overlapping observations no longer hold the whole scope
+    // (best effort, selected 2026-10-17): the serial seed commits a
+    // complete roster in one report with every lifetime keeping exactly
+    // one row. Largest-fallback packing tiles all fourteen here; the
+    // scope stays controlled with full write authority on tiles.
     let mut engine = WorldEngine::new("gen-1").expect("valid");
-    let held = accepted(&mut engine, &bulk_report(14, 1));
-    assert_eq!(held.scopes.len(), 1);
+    let seeded = accepted(&mut engine, &bulk_report(14, 1));
+    assert_eq!(seeded.scopes.len(), 1);
     assert_eq!(
-        held.scopes[0].authority,
-        ScopeAuthority::Hold(HoldReason::ConstraintClamp),
-        "geometric exhaustion holds as constraint-clamp, not unreadable"
+        seeded.scopes[0].authority,
+        ScopeAuthority::Controlled,
+        "a committable roster never holds"
     );
     assert_eq!(
-        held.windows.len(),
+        seeded.windows.len(),
         14,
-        "every observed lifetime keeps exactly one held row"
+        "every observed lifetime keeps exactly one row"
     );
-    let mut held_ids: Vec<&str> = held.windows.iter().map(|w| w.lifetime.0.as_str()).collect();
-    held_ids.sort();
-    let expected: Vec<String> = (0..14).map(|i| format!("win-{i:06}")).collect();
-    assert_eq!(
-        held_ids,
-        expected.iter().map(String::as_str).collect::<Vec<_>>()
-    );
-    let usable = held
+    let mut seeded_ids: Vec<&str> = seeded
         .windows
         .iter()
-        .filter(|w| w.allocation.is_some())
-        .count();
-    assert_eq!(usable, 0, "held rows authorize no geometry writes");
-    assert!(
-        held.windows.iter().all(|w| {
-            w.frame_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
-                && w.membership_authority == ScopeAuthority::Hold(HoldReason::ConstraintClamp)
-        }),
-        "held rows carry explicit authorities"
+        .map(|w| w.lifetime.0.as_str())
+        .collect();
+    seeded_ids.sort();
+    let expected: Vec<String> = (0..14).map(|i| format!("win-{i:06}")).collect();
+    assert_eq!(
+        seeded_ids,
+        expected.iter().map(String::as_str).collect::<Vec<_>>()
     );
-    assert!(held.transfers.is_empty() && held.effects.is_empty());
-    // No topology churn: the same observation under a fresh sequence
-    // republishes identical desired rows (only the revision advances).
+    assert!(
+        seeded.windows.iter().all(|w| w.allocation.is_some()),
+        "all fourteen tile in 800x600/gap-8 under largest fallback"
+    );
+    assert!(seeded.transfers.is_empty() && seeded.effects.is_empty());
+    // No churn: the same observation under a fresh sequence republishes
+    // identical desired rows (only the revision advances).
     let again = accepted(&mut engine, &bulk_report(14, 2));
-    assert_eq!(again.state_revision, held.state_revision + 1);
-    assert_eq!(again.scopes, held.scopes);
-    assert_eq!(again.windows, held.windows);
-    // Recovery is not divergence: fewer windows re-adopt fully through the
-    // next full report.
-    let recovered = accepted(&mut engine, &bulk_report(13, 3));
+    assert_eq!(again.state_revision, seeded.state_revision + 1);
+    assert_eq!(again.scopes, seeded.scopes);
+    assert_eq!(again.windows, seeded.windows);
+    // Fewer windows still re-adopt fully through the next full report.
+    // The dropped lifetime closes explicitly (a bare omission on a
+    // retained session is a minimize, never an inferred close).
+    let mut fewer = bulk_report(13, 3);
+    fewer.domains[0].closed = vec![WindowId("win-000013".to_owned())];
+    let recovered = accepted(&mut engine, &fewer);
     assert!(
         recovered
             .scopes
@@ -1028,11 +1025,12 @@ fn fresh_seed_honest_capacity_threshold_is_explicit() {
 }
 
 #[test]
-fn capacity_hold_keeps_minimized_rows_with_scope_membership_hold() {
+fn capacity_mixed_roster_keeps_minimized_rows() {
     use tiler_core::directional::WorkspaceId;
     use tiler_core::world_report::{MinimizedEntry, ScopeAuthority};
-    // Fourteen live windows exhaust the scope; one minimized lifetime homed
-    // there keeps its explicit row, with the scope hold on membership.
+    // Fourteen live windows seed a complete controlled roster; one
+    // minimized lifetime homed there keeps its explicit minimized row
+    // (best effort, selected 2026-10-17: no capacity hold).
     let mut report = {
         let mut base = two_output_report(1, 1);
         base.topology = vec![topology("out-1", vec!["ws1"], "ws1")];
@@ -1071,23 +1069,20 @@ fn capacity_hold_keeps_minimized_rows_with_scope_membership_hold() {
         reply.scopes,
         vec![tiler_core::world_report::ScopeStatus {
             scope: "out-1/ws1".to_owned(),
-            authority: ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+            authority: ScopeAuthority::Controlled,
         }]
     );
-    // Fourteen observed held rows plus the minimized row: complete.
+    // Fourteen live rows plus the minimized row: complete, with no
+    // capacity hold anywhere.
     assert_eq!(reply.windows.len(), 15);
     let minimized = reply
         .windows
         .iter()
         .find(|w| w.lifetime.0 == "win-min")
-        .expect("minimized row under capacity hold");
+        .expect("minimized row in mixed roster");
     assert_eq!(
         minimized.frame_authority.hold_reason(),
         Some(HoldReason::Minimized)
-    );
-    assert_eq!(
-        minimized.membership_authority,
-        ScopeAuthority::Hold(HoldReason::ConstraintClamp),
     );
     assert!(minimized.allocation.is_none());
     // Recovery keeps the minimized row while the live inventory tiles.

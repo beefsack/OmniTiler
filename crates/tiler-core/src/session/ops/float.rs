@@ -34,7 +34,9 @@ impl super::super::Session {
             // Membership binds flags plus homing exactly (original
             // semantics, always used when the fixed-size opt-in is off).
             // With the opt-in on, overlays ride advisory-style and only
-            // the portable floating flag binds an unfloat.
+            // the portable floating flag binds an unfloat. Diagnostic
+            // capacity origin grants no leniency (D4): capacity floats
+            // bind exactly like ordinary floats, and homing always binds.
             let bindings_match = if self.fixed_admission {
                 target.floating == record.flags.floating
             } else {

@@ -258,6 +258,7 @@ const winRow = (
     frame_auth: auth, frame_hold: "",
     member_auth: auth, member_hold: "",
     frame_op: "",
+    floating: false, float_origin: "",
     ...extra,
 });
 
@@ -282,7 +283,7 @@ describe("world unfloat immediate retile", () => {
         );
         call.callback(h.accepted("gen-1", body["req"] as string, body["obs"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1" }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },
@@ -354,7 +355,7 @@ describe("world unfloat immediate retile", () => {
         let seedBody = JSON.parse(seed.payload) as Record<string, unknown>;
         assert.equal(seedBody["command"], null);
         seed.callback(h.accepted("gen-1", seedBody["req"] as string, seedBody["obs"] as string, "1", {
-            windows: [winRow(WIN_F, FLOAT_F, "untouched")],
+            windows: [winRow(WIN_F, FLOAT_F, "untouched", { floating: true })],
             result: null,
         }));
         assert.deepEqual(h.frameOf(WIN_F), FLOAT_F);

@@ -103,6 +103,8 @@ mod fit;
 mod ops;
 mod world;
 
+pub mod capacity;
+
 pub use world::{
     DomainKey, ExceptionBehavior, ExceptionFlags, ExceptionRecord, MinimizedSlot,
     ObservationConvergence, ObservedWindow, OutputDomain, SessionDomainView, SessionObservation,
@@ -394,6 +396,51 @@ pub struct SessionMovePlan {
     pub desired_geometry: Vec<DesiredGeometry>,
 }
 
+/// Directional move outcome: either the exact planned tiled move
+/// ([`SessionMovePlan`], R1-R4 exact wrap) or the R4 capacity-float
+/// fallback ([`SessionPlan`] carrying a `MoveToFloat` operation under the
+/// explicit output-send intent, follow-only). The fallback stages only
+/// when the exact R4 wrap first plans successfully and then proves
+/// geometric exhaustion under the float no-space result: the mover
+/// becomes a slotless floating exception homed at the R4-chosen
+/// output/workspace with its exact current frame (no D2 redirect, no
+/// guessed geometry) instead of refusing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionMoveOutcome {
+    Moved(SessionMovePlan),
+    CapacityFloat(SessionPlan),
+}
+
+impl SessionMoveOutcome {
+    /// The exact tiled move plan, if the outcome moved without floating.
+    #[must_use]
+    pub fn moved(self) -> Option<SessionMovePlan> {
+        match self {
+            Self::Moved(plan) => Some(plan),
+            Self::CapacityFloat(_) => None,
+        }
+    }
+
+    /// The capacity-float fallback plan, if the R4 wrap exhausted.
+    #[must_use]
+    pub fn capacity_float(self) -> Option<SessionPlan> {
+        match self {
+            Self::CapacityFloat(plan) => Some(plan),
+            Self::Moved(_) => None,
+        }
+    }
+
+    /// Test-only accessor: the exact tiled move plan, panicking when the
+    /// outcome is the capacity-float fallback.
+    #[must_use]
+    pub fn expect_moved(self, message: &str) -> SessionMovePlan {
+        match self {
+            Self::Moved(plan) => plan,
+            Self::CapacityFloat(_) => panic!("expected tiled move: {message}"),
+        }
+    }
+}
+
 /// Authoritative focus plan: reconciler identity-bound portable
 /// [`FocusDispatch`] (semantic focus operation/preconditions/capability/intent
 /// plus owner/generation/correlation/base revision) plus the deterministic
@@ -580,6 +627,15 @@ struct PendingDesired {
     /// failed proposals never leak markers into future classifications.
     automatic_fixed: BTreeSet<WindowId>,
     fixed_tile_override: BTreeSet<WindowId>,
+    /// Desired capacity-float origin markers (diagnostic only, distinct
+    /// from `automatic_fixed`): same transactional staging as above.
+    capacity_floats: BTreeSet<WindowId>,
+    /// Desired first-successful-tiled-admission order (D7 victim order):
+    /// same transactional staging as above.
+    admission_order: BTreeMap<WindowId, u64>,
+    admission_counter: u64,
+    /// Desired overlap-accepted domains: same transactional staging.
+    overlap_accepted: BTreeSet<DomainKey>,
 }
 
 /// Transient drag capture: source identity plus the accepted
@@ -678,6 +734,28 @@ pub struct Session {
     /// live client (D3). Cleared when the window leaves membership, so a
     /// removed/replaced native reference with a reused id classifies again.
     fixed_tile_override: BTreeSet<WindowId>,
+    /// Best-effort admission policy (D2/D3, selected 2026-10-17): anchor
+    /// fallback and no-space result for subsequent capacity decisions only.
+    /// Changing either never reflows, retries, or reclassifies retained
+    /// state (D10).
+    anchor_fallback: crate::admission::AnchorFallback,
+    no_space: crate::admission::NoSpaceResult,
+    /// Diagnostic capacity-float origin (D4): windows floating because no
+    /// split was available. Functionally ordinary floats with no
+    /// capacity-specific behavior; distinct from `automatic_fixed`.
+    /// Cleared when the window leaves membership.
+    capacity_floats: BTreeSet<WindowId>,
+    /// First-successful-tiled-admission sequence (D7 victim order):
+    /// window lifetime to its admission sequence number. A clean-fit
+    /// roster shares one number (identity breaks those ties). Preserved
+    /// across moves and re-tiles for the same lifetime; cleared on close.
+    admission_order: BTreeMap<WindowId, u64>,
+    admission_counter: u64,
+    /// Domains whose retained tree was accepted via overlap projection
+    /// (D9). Such allocations stay projectable until a real capacity
+    /// decision replaces them, even after switching the no-space setting
+    /// back to float.
+    overlap_accepted: BTreeSet<DomainKey>,
     /// D23 minimize restore slots (REQ-MNZ-01/02/03, option (b)): one stored
     /// old slot per minimized tiled window, keyed by window id. Session-runtime
     /// only: seeded empty, never persisted, dropped on owner restart with the
@@ -789,6 +867,12 @@ impl Session {
             fixed_send_admission: false,
             automatic_fixed: BTreeSet::new(),
             fixed_tile_override: BTreeSet::new(),
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space: crate::admission::NoSpaceResult::default(),
+            capacity_floats: BTreeSet::new(),
+            admission_order: BTreeMap::new(),
+            admission_counter: 0,
+            overlap_accepted: BTreeSet::new(),
             minimized_slots: BTreeMap::new(),
             canonical_pair_target_restore: BTreeMap::new(),
             reconciler,
@@ -1141,11 +1225,28 @@ impl Session {
         pair.fixed_send_admission = source.fixed_send_admission;
         pair.automatic_fixed = source.automatic_fixed.clone();
         pair.fixed_tile_override = source.fixed_tile_override.clone();
+        pair.anchor_fallback = source.anchor_fallback;
+        pair.no_space = source.no_space;
+        pair.capacity_floats = source.capacity_floats.clone();
+        pair.admission_order = source.admission_order.clone();
+        pair.admission_counter = source
+            .admission_counter
+            .max(target.map(|t| t.admission_counter).unwrap_or(0));
+        pair.overlap_accepted = source.overlap_accepted.clone();
         if let Some(target) = target {
             pair.automatic_fixed
                 .extend(target.automatic_fixed.iter().cloned());
             pair.fixed_tile_override
                 .extend(target.fixed_tile_override.iter().cloned());
+            pair.capacity_floats
+                .extend(target.capacity_floats.iter().cloned());
+            for (id, seq) in &target.admission_order {
+                if !pair.admission_order.contains_key(id) {
+                    pair.admission_order.insert(id.clone(), *seq);
+                }
+            }
+            pair.overlap_accepted
+                .extend(target.overlap_accepted.iter().cloned());
         }
         // D23 minimize slots ride the pair verbatim (source slots keep
         // their node ids, target slots were remapped above). Stale slots
@@ -1364,6 +1465,47 @@ impl Session {
                 source.fixed_tile_override.insert(id.clone());
             }
         }
+        // Capacity policy rides both outputs; per-window capacity origin
+        // and admission order partition with membership like the fixed
+        // marks (orphans stay with the source so the union round-trips).
+        // Overlap acceptance partitions by domain homing.
+        source.anchor_fallback = self.anchor_fallback;
+        target.anchor_fallback = self.anchor_fallback;
+        source.no_space = self.no_space;
+        target.no_space = self.no_space;
+        source.admission_counter = self.admission_counter;
+        target.admission_counter = self.admission_counter;
+        for id in &self.capacity_floats {
+            if source.windows.contains_key(id) || source.exceptions.contains_key(id) {
+                source.capacity_floats.insert(id.clone());
+            } else if target.windows.contains_key(id) || target.exceptions.contains_key(id) {
+                target.capacity_floats.insert(id.clone());
+            } else {
+                source.capacity_floats.insert(id.clone());
+            }
+        }
+        for (id, seq) in &self.admission_order {
+            if source.windows.contains_key(id)
+                || source.exceptions.contains_key(id)
+                || source.minimized_slots.contains_key(id)
+            {
+                source.admission_order.insert(id.clone(), *seq);
+            } else if target.windows.contains_key(id)
+                || target.exceptions.contains_key(id)
+                || target.minimized_slots.contains_key(id)
+            {
+                target.admission_order.insert(id.clone(), *seq);
+            } else {
+                source.admission_order.insert(id.clone(), *seq);
+            }
+        }
+        for key in &self.overlap_accepted {
+            if key == &source_key {
+                source.overlap_accepted.insert(key.clone());
+            } else if key == &target_key {
+                target.overlap_accepted.insert(key.clone());
+            }
+        }
         remap_optional_tree(
             target.trees.get_mut(&target_key).expect("target tree"),
             &moved_target_remap,
@@ -1546,6 +1688,10 @@ impl Session {
             if entry.output != record.output || entry.workspace != record.workspace {
                 return false;
             }
+            // Diagnostic capacity origin grants no binding leniency (D4):
+            // capacity floats bind exactly like ordinary floats. A stale
+            // floating:false echo fails the binding here (PartialObservation);
+            // the converged observation path owns the re-admission attempt.
             if self.fixed_admission {
                 if entry.floating != record.flags.floating {
                     return false;
@@ -1635,9 +1781,14 @@ impl Session {
                     self.retained_float_geometry = desired.retained_float_geometry;
                     self.automatic_fixed = desired.automatic_fixed;
                     self.fixed_tile_override = desired.fixed_tile_override;
+                    self.capacity_floats = desired.capacity_floats;
+                    self.admission_order = desired.admission_order;
+                    self.admission_counter = desired.admission_counter;
+                    self.overlap_accepted = desired.overlap_accepted;
                     // A removed window drops its fixed-size bookkeeping so
                     // a reused id classifies again (D3).
                     self.prune_fixed_size_state();
+                    self.prune_capacity_state();
                     self.accepted_fingerprint = commit.fingerprint;
                 }
                 Ok(commit)
@@ -2510,6 +2661,7 @@ fn drag_edge_for(rect: &Rect, x: i32, y: i32) -> Option<DragSide> {
     CosmicV1Policy.classify_window_point(rect, x, y)
 }
 
+#[allow(dead_code)]
 fn project_affected_geometry(
     domains: &[OutputDomain],
     trees: &BTreeMap<DomainKey, Option<Node>>,

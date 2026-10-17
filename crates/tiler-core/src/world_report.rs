@@ -136,6 +136,26 @@ impl ScopeAuthority {
     }
 }
 
+/// Diagnostic float origin (D4, selected 2026-10-17): provenance only,
+/// never a functional branch. `Capacity` means the window floats because
+/// no split was available; ordinary user floats carry `None`. Every
+/// capacity float is functionally an ordinary float.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FloatOrigin {
+    Capacity,
+}
+
+impl FloatOrigin {
+    /// Wire token for this value, matching the protocol codec vocabulary.
+    /// `None` on the row encodes as the empty token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+        }
+    }
+}
+
 /// One-shot effect kinds. Closed: focus/raise/stacking only. Transfer/view
 /// targets are persistent ([`TransferTarget`]), never effects (D3=A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,6 +230,18 @@ pub struct WindowDesire {
     pub effective_frame: Option<crate::geometry::Rect>,
     pub frame_authority: ScopeAuthority,
     pub membership_authority: ScopeAuthority,
+    /// Explicit ordinary-float classification (D4/D5): true for every
+    /// retained float exception row in a controlled scope (user and
+    /// capacity floats alike), false for tiled rows and for every
+    /// unclassified protected/held/overlay/minimized row. The adapter
+    /// must never infer float from a missing allocation alone: only a
+    /// row with `floating` true AND untouched frame authority converges
+    /// float intent.
+    pub floating: bool,
+    /// Diagnostic float origin (see [`FloatOrigin`]): `Some(Capacity)`
+    /// only on capacity floats, `None` on ordinary floats and on every
+    /// non-float row. No functional branches may read this field.
+    pub float_origin: Option<FloatOrigin>,
     /// Explicit retained float-placement operation (`op-<cmdSeq>`) authorizing
     /// exactly one geometry write for this window. `None` (empty on the wire)
     /// authorizes nothing: ordinary floats keep their frames and a bare
@@ -507,6 +539,17 @@ pub struct WorldReport {
     /// applies it to subsequent migrations only, never moving an
     /// already-migrated workspace. Never reset committed state on change.
     pub migration_source_refill: crate::output_selection::MigrationSourceRefill,
+    /// Ingress D2 anchor fallback (main.xml `anchorFallback`): selects the
+    /// fallback anchor for subsequent capacity admissions only. Missing or
+    /// invalid tokens backfill the largest-splittable default; changing it
+    /// never reflows, retries, or reclassifies retained state (D10).
+    pub anchor_fallback: crate::admission::AnchorFallback,
+    /// Ingress D3 no-space result (main.xml `noSpaceResult`): selects the
+    /// no-space outcome for subsequent admission or actual capacity-repair
+    /// decisions only. Missing or invalid tokens backfill float; changing
+    /// it never reflows retained overlap allocations until a real capacity
+    /// decision (D10).
+    pub no_space_result: crate::admission::NoSpaceResult,
     /// Global active window id ("" when none): the adapter-observed
     /// foreground lifetime across all outputs. Drives focus-conditioned
     /// policy (hotplug survivor/return views); never focus proof.
@@ -585,10 +628,14 @@ pub enum CommandResult {
     /// Intentional-float placement: `rect` is the effective float rectangle
     /// (`None` for unfloat-to-tile). The adapter owns floating geometry and
     /// must not rewrite floats from snapshot rows; this result is the
-    /// one-shot explicit placement provenance.
+    /// one-shot explicit placement provenance. `no_space` is true only
+    /// when an explicit unfloat retry re-floated for lack of space (D5):
+    /// the window stays floated, the adapter must not record a tile
+    /// override, and the snapshot (still floated) IS the placement.
     Float {
         window: WindowId,
         rect: Option<Rect>,
+        no_space: bool,
     },
     /// Read-only active-group highlight resolution with everything the
     /// renderer needs. Coexists with the snapshot; never a border policy.
@@ -666,7 +713,8 @@ pub fn classify_request(
 /// homing, frame, every safety flag, size-hint bounds), closes, topology
 /// (output, native order, current view, completeness), bindings (logical,
 /// native, output, pin/displacement/managed flags), inventory completeness,
-/// the default-tiling seed, the migration source-refill mode, the global focus, the gesture barrier, and
+/// the default-tiling seed, the migration source-refill mode, the D2/D3
+/// capacity settings, the global focus, the gesture barrier, and
 /// feedback (identity, kind, outcome, hold).
 /// Duplicate detection still compares full typed input equality (see
 /// [`WorldEngine`](crate::world_engine::WorldEngine)); the digest is only
@@ -714,6 +762,10 @@ pub fn report_digest(report: &WorldReport) -> u64 {
     feed(&mut hash, report.fixed_size_predicate.as_wire_str());
     sep(&mut hash);
     feed(&mut hash, report.migration_source_refill.as_wire_str());
+    sep(&mut hash);
+    feed(&mut hash, report.anchor_fallback.as_wire_str());
+    sep(&mut hash);
+    feed(&mut hash, report.no_space_result.as_wire_str());
     sep(&mut hash);
     for entry in &report.minimized {
         for part in [

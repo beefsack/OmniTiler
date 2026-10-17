@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use tiler_core::contract::{
     AckOutcome, AdapterAck, DivergenceKind, FocusCapabilities, FocusPostObservation,
-    LifecycleCapabilities, Observation, PostObservation,
+    LifecycleCapabilities, LifecyclePostObservation, Observation, PostObservation,
 };
 use tiler_core::directional::{
     Capabilities, Direction, Node, NodeId, OutputId, SameAxisMove, WindowId, WorkspaceId,
@@ -20,7 +20,7 @@ use tiler_core::geometry::Rect;
 use tiler_core::ids::{CorrelationId, GenerationId, OwnerId};
 use tiler_core::session::{
     DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, ProposeError, RefusalKind, Session,
-    SessionCommand, SessionFocusPlan, SessionMovePlan, SessionObservation,
+    SessionCommand, SessionFocusPlan, SessionMovePlan, SessionObservation, SessionPlan,
 };
 
 fn owner() -> OwnerId {
@@ -163,7 +163,7 @@ fn admit_commit(
     workspace: &str,
     horiz: bool,
     corr: &str,
-) {
+) -> SessionPlan {
     let cmd = SessionCommand::Admit {
         window: WindowId(window.to_owned()),
         output: OutputId(output.to_owned()),
@@ -201,6 +201,7 @@ fn admit_commit(
             plan.dispatch.operation.clone(),
         ))
         .expect("commit");
+    plan
 }
 fn focused_window(session: &Session, domain: &DomainKey) -> WindowId {
     let (d, l) = session.focus();
@@ -228,7 +229,8 @@ fn move_commit(
     let base = session.accepted_revision();
     let plan = session
         .propose_move(domain, window, direction, &obs, &correlation(corr), caps)
-        .unwrap_or_else(|e| panic!("move {direction:?}: {e:?}"));
+        .unwrap_or_else(|e| panic!("move {direction:?}: {e:?}"))
+        .expect_moved("tiled move");
     assert_eq!(plan.dispatch.base_revision, base);
     // Pre-ack immutability is asserted by callers where needed; commit here.
     session
@@ -282,7 +284,8 @@ fn move_commit_with_mode(
             caps,
             mode,
         )
-        .unwrap_or_else(|e| panic!("move {direction:?} {mode:?}: {e:?}"));
+        .unwrap_or_else(|e| panic!("move {direction:?} {mode:?}: {e:?}"))
+        .expect_moved("tiled move");
     assert_eq!(plan.dispatch.base_revision, base);
     session
         .acknowledge(&AdapterAck::new(
@@ -1205,7 +1208,8 @@ fn accepted_plan_pre_ack_immutability() {
             &correlation("p-1"),
             &Capabilities::full(),
         )
-        .expect("plan");
+        .expect("plan")
+        .expect_moved("tiled move");
     assert!(s.has_pending());
     assert!(s.has_pending_desired());
     // Accepted plan stages pending but accepted state is immutable until verify.
@@ -1596,10 +1600,13 @@ fn per_capability_representative_routes() {
 }
 
 #[test]
-fn move_geometry_projection_refusal() {
-    // R4 into a 1px occupied target cannot project 2 leaves: move refuses
-    // MalformedTopology with no pending (geometry, not just lifecycle).
-    // Rebuild correctly with both adjacencies.
+fn move_geometry_projection_fallback() {
+    // R4 into a 1px occupied target cannot project 2 leaves: under the
+    // default float result the exact wrap proves exhaustion and stages the
+    // shared capacity-float fallback (MoveToFloat at the chosen target,
+    // follow-only, untouched frame) instead of refusing. The staged
+    // plan commits through the lifecycle verifier with the source released
+    // and the destination tree untouched.
     let mut s = Session::new(
         owner(),
         generation(),
@@ -1626,22 +1633,86 @@ fn move_geometry_projection_refusal() {
     .expect("r4 tiny");
     admit_commit(&mut s, "a", "out-1", "ws-1", true, "c-1");
     admit_commit(&mut s, "b", "out-2", "ws-1", true, "c-2");
-    admit_commit(&mut s, "c", "out-1", "ws-1", true, "c-3");
+    let c_plan = admit_commit(&mut s, "c", "out-1", "ws-1", true, "c-3");
+    let _frame_c = c_plan
+        .desired_geometry
+        .iter()
+        .find(|g| g.window.0 == "c")
+        .expect("c projected at admission")
+        .rect;
     let k = key("out-1", "ws-1");
+    let target = key("out-2", "ws-1");
+    let dest_tree_before = s.tree_for(&target).expect("target tree").clone();
     let w = focused_window(&s, &k);
+    assert_eq!(w.0, "c");
+    let mover_leaf = s
+        .snapshot()
+        .windows
+        .iter()
+        .find(|l| l.window == w)
+        .expect("mover link")
+        .leaf
+        .clone();
     let obs = complete_obs(&s, vec![]);
-    assert_eq!(
-        s.propose_move(
-            &k,
-            &w,
-            Direction::Right,
-            &obs,
-            &correlation("g-1"),
-            &Capabilities::full()
-        ),
-        Err(ProposeError::Refused(RefusalKind::MalformedTopology))
+    let outcome = s.propose_move(
+        &k,
+        &w,
+        Direction::Right,
+        &obs,
+        &correlation("g-1"),
+        &Capabilities::full(),
     );
-    assert!(!s.has_pending());
+    let plan = outcome
+        .expect("float R4 stages the capacity fallback")
+        .capacity_float()
+        .expect("fallback is the slotless float");
+    match &plan.dispatch.operation {
+        tiler_core::contract::LifecycleOperation::MoveToFloat {
+            window,
+            leaf,
+            target_output,
+            target_workspace,
+            ..
+        } => {
+            assert_eq!(window, &w);
+            assert_eq!(leaf, &mover_leaf);
+            assert_eq!(target_output.0, "out-2");
+            assert_eq!(target_workspace.0, "ws-1");
+        }
+        other => panic!("float R4 carries MoveToFloat, got {other:?}"),
+    }
+    assert!(
+        plan.desired_geometry.iter().all(|g| g.window != w),
+        "slotless mover takes no tiled geometry"
+    );
+    assert!(s.has_pending() && s.has_pending_desired());
+    let base = s.accepted_revision();
+    s.acknowledge(&AdapterAck::new(
+        correlation("g-1"),
+        owner(),
+        generation(),
+        base,
+        AckOutcome::Accepted,
+    ))
+    .expect("ack");
+    s.verify_lifecycle(&LifecyclePostObservation::new(
+        Observation::new(owner(), generation(), base, 971 + base),
+        correlation("g-1"),
+        true,
+        plan.dispatch.preconditions.clone(),
+        plan.dispatch.operation.clone(),
+    ))
+    .expect("verify float fallback");
+    assert!(s.is_capacity_float(&w));
+    // Cross-output honesty: no source-coordinate claim is staged at the
+    // target (the established native remap plus its arrival proof owns
+    // placement there); the frame stays untouched until arrival.
+    assert_eq!(s.floating_geometry(&w), None);
+    assert_eq!(
+        s.tree_for(&target),
+        Some(&dest_tree_before),
+        "destination tree untouched"
+    );
     let _ = std::mem::replace(&mut s, single_session());
 }
 
@@ -2013,6 +2084,10 @@ fn refusals_unknown_focus_incomplete_stale_capability_pending_geometry() {
 
 #[test]
 fn invalid_geometry_refuses() {
+    // A 1x1 domain hosts exactly one positive tile: the second window
+    // exhausts every anchor (ordinary plus all fallbacks), so the
+    // default float no-space result admits it as a slotless capacity
+    // float instead of refusing (best effort, selected 2026-10-17).
     let mut tiny = Session::new(
         owner(),
         generation(),
@@ -2032,15 +2107,47 @@ fn invalid_geometry_refuses() {
         placement_bounds: placement(true),
         suppress_fixed_float: false,
     };
-    assert_eq!(
-        tiny.propose(
+    let plan = tiny
+        .propose(
             &cmd,
             &obs,
             &correlation("g-1"),
-            &LifecycleCapabilities::full()
-        ),
-        Err(ProposeError::Refused(RefusalKind::MalformedTopology))
+            &LifecycleCapabilities::full(),
+        )
+        .expect("exhaustion floats instead of refusing");
+    assert!(
+        plan.desired_geometry.is_empty(),
+        "capacity float takes no tile slot"
     );
+    let base = tiny.accepted_revision();
+    tiny.acknowledge(&AdapterAck::new(
+        correlation("g-1"),
+        owner(),
+        generation(),
+        base,
+        AckOutcome::Accepted,
+    ))
+    .expect("ack");
+    tiny.verify_lifecycle(&tiler_core::contract::LifecyclePostObservation::new(
+        Observation::new(owner(), generation(), base, 209),
+        correlation("g-1"),
+        true,
+        plan.dispatch.preconditions.clone(),
+        plan.dispatch.operation.clone(),
+    ))
+    .expect("commit");
+    assert!(tiny.is_exception(&WindowId("b".into())), "b floats");
+    assert!(
+        tiny.is_capacity_float(&WindowId("b".into())),
+        "capacity origin is diagnostic-only and distinct from fixed auto"
+    );
+    assert!(
+        !tiny.is_automatic_fixed_float(&WindowId("b".into())),
+        "capacity never reuses the fixed-size marker"
+    );
+    assert_eq!(tiny.snapshot().windows.len(), 1, "a keeps its tile");
+    assert_eq!(tiny.divergence(), None);
+    assert!(!tiny.has_pending());
 }
 
 #[test]
@@ -2061,7 +2168,8 @@ fn ack_verify_commit_and_mismatch_clears() {
             &correlation("m-1"),
             &Capabilities::full(),
         )
-        .expect("plan");
+        .expect("plan")
+        .expect_moved("tiled move");
     assert!(s.has_pending());
     let early = PostObservation::new(
         Observation::new(owner(), generation(), before_rev, 1),
@@ -2240,7 +2348,8 @@ fn bounded_property_loop_over_accepted_moves() {
             &correlation(&corr_id),
             &Capabilities::full(),
         ) {
-            Ok(plan) => {
+            Ok(outcome) => {
+                let plan = outcome.expect_moved("tiled move");
                 assert_eq!(plan.dispatch.base_revision, before_rev);
                 // Frozen binding invariants on every accepted plan.
                 assert_eq!(plan.dispatch.rule, plan.dispatch.operation.rule());

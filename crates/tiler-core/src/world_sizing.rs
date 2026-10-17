@@ -10,7 +10,7 @@ use crate::boundary::CoreCommand;
 use crate::directional::Direction;
 use crate::workspace_scope::mode_token;
 use crate::world_report::{
-    CommandResult, HoldReason, TransferKind, WorldCommand, WorldReply, WorldReport,
+    CommandResult, FloatOrigin, HoldReason, TransferKind, WorldCommand, WorldReply, WorldReport,
 };
 
 /// JSON string byte length for the canonical codec: two quotes plus the
@@ -125,17 +125,18 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
     bytes += reply.outputs.len().saturating_sub(1);
     for window in &reply.windows {
         // {"win":,"out":,"ws":,"alloc":,"frame":,"frame_auth":,
-        // "frame_hold":,"member_auth":,"member_hold":,"frame_op":} = 109
-        // punctuation.
+        // "frame_hold":,"member_auth":,"member_hold":,"frame_op":,
+        // "floating":,"float_origin":} = 137 punctuation (109 plus the
+        // new 28: ,"floating": = 12 and ,"float_origin": = 16).
         // Each rect is [x,y,w,h] (numbers + 5) or null (4). The explicit
         // float-placement operation id is empty when no target is
-        // outstanding.
+        // outstanding; the float origin token is empty unless capacity.
         let rect_len = |rect: Option<crate::geometry::Rect>| {
             rect.map_or(4, |r| {
                 int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5
             })
         };
-        bytes += 109
+        bytes += 137
             + json_string_len(&window.lifetime.0)
             + json_string_len(&window.output.0)
             + json_string_len(&window.workspace)
@@ -155,7 +156,9 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
                     .hold_reason()
                     .map_or("", HoldReason::as_str),
             )
-            + json_string_len(window.frame_operation.as_deref().unwrap_or_default());
+            + json_string_len(window.frame_operation.as_deref().unwrap_or_default())
+            + bool_len(window.floating)
+            + json_string_len(window.float_origin.map_or("", FloatOrigin::as_str));
     }
     bytes += reply.windows.len().saturating_sub(1);
     for transfer in &reply.transfers {
@@ -190,7 +193,8 @@ pub fn reply_estimate(reply: &WorldReply) -> usize {
 
 /// Structural size estimate for the correlated `command_result` section,
 /// field-by-field from [`encode_command_result`] below. `None` encodes as
-/// `,"result":null` (13); every variant counts its exact keys plus value
+/// `,"result":null` (14); every variant counts the `,"result":` key (10)
+/// plus its exact keys plus value
 /// widths (member/window id lists scale with the result's own rows).
 #[must_use]
 pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
@@ -200,7 +204,8 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
     };
     let rect_len =
         |r: crate::geometry::Rect| int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5;
-    match result {
+    // Every variant body below plus the shared `,"result":` key (10).
+    10 + match result {
         CommandResult::DragPreview {
             rect,
             hover,
@@ -240,10 +245,18 @@ pub fn command_result_estimate(result: &Option<CommandResult>) -> usize {
             };
             bytes
         }
-        CommandResult::Float { window, rect } => {
+        CommandResult::Float {
+            window,
+            rect,
+            no_space,
+        } => {
             // {"op":"toggle-float","win":"","rect":} = 36 punctuation
-            // plus the rect body (`null` or [x,y,w,h]).
-            36 + json_string_len(&window.0) + rect.map_or(4, rect_len)
+            // plus the rect body (`null` or [x,y,w,h]) plus
+            // `,"noSpace":true` (15) only on an explicit-tile no-space
+            // retry (absent otherwise, so older replies stay byte-identical).
+            36 + json_string_len(&window.0)
+                + rect.map_or(4, rect_len)
+                + if *no_space { 15 } else { 0 }
         }
         CommandResult::ActiveGroup {
             base_revision,
@@ -338,6 +351,8 @@ pub fn report_estimate(report: &WorldReport) -> usize {
         + json_string_len(mode_token(report.workspace_mode))
         + json_string_len(report.fixed_size_predicate.as_wire_str())
         + json_string_len(report.migration_source_refill.as_wire_str())
+        + json_string_len(report.anchor_fallback.as_wire_str())
+        + json_string_len(report.no_space_result.as_wire_str())
         + u64_len(report.request_seq)
         + u64_len(report.observation_seq)
         + report.command_seq.map_or(4, |seq| 2 + u64_len(seq))
@@ -355,10 +370,12 @@ pub fn report_estimate(report: &WorldReport) -> usize {
     }
     // "minimized" key plus array brackets (,"minimized":[] = 15), the
     // "predicate" key (,"predicate": = 13), the "refill" key
-    // (,"refill": = 10), and the "defaultTiled" key
-    // (,"defaultTiled": = 16); values counted above. The "focused" key
-    // (11) counts in the envelope above; its string value counts below.
-    bytes += 54;
+    // (,"refill": = 10), the "anchorFallback" key (,"anchorFallback": = 18),
+    // the "noSpaceResult" key (,"noSpaceResult": = 17), and the
+    // "defaultTiled" key (,"defaultTiled": = 16); values counted above.
+    // The "focused" key (11) counts in the envelope above; its string
+    // value counts below.
+    bytes += 54 + 18 + 17;
     for topology in &report.topology {
         // {"out":S,"order":[S...],"current":S,"complete":B,"rect":R|null,"primary":B}
         // = 61 fixed plus the bool widths, the rect ints (or `null`),
@@ -902,6 +919,13 @@ pub fn encode_reply_canonical(reply: &WorldReply) -> String {
             &mut out,
             window.frame_operation.as_deref().unwrap_or_default(),
         );
+        out.push_str(",\"floating\":");
+        out.push_str(if window.floating { "true" } else { "false" });
+        out.push_str(",\"float_origin\":");
+        push_json_string(
+            &mut out,
+            window.float_origin.map_or("", FloatOrigin::as_str),
+        );
         out.push('}');
     }
     out.push_str("],\"transfers\":[");
@@ -1024,13 +1048,22 @@ pub fn encode_command_result(out: &mut String, result: &Option<CommandResult>) {
             }
             out.push('}');
         }
-        Result::Float { window, rect } => {
+        Result::Float {
+            window,
+            rect,
+            no_space,
+        } => {
             out.push_str("{\"op\":\"toggle-float\",\"win\":");
             push_json_string(out, &window.0);
             out.push_str(",\"rect\":");
             match rect {
                 Some(r) => push_rect(out, *r),
                 None => out.push_str("null"),
+            }
+            // Explicit-tile no-space retry marker: present only when true
+            // so older successful placements stay byte-identical.
+            if *no_space {
+                out.push_str(",\"noSpace\":true");
             }
             out.push('}');
         }

@@ -400,6 +400,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
         });
         h.lastCall("DescribeWorld").callback(reply);
@@ -452,6 +453,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
         }));
         assert.equal(h.world.geometryWrites.length, 0);
@@ -557,6 +559,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "hold", frame_hold: "unreadable",
                 member_auth: "hold", member_hold: "unreadable",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
         }));
         assert.equal(h.world.geometryWrites.length, 0);
@@ -597,6 +600,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "hold", member_hold: "refused-target",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
         }));
         // Refused membership performs no native move.
@@ -654,6 +658,7 @@ describe("world entry discovery and observation", () => {
                     frame_auth: "controlled", frame_hold: "",
                     member_auth: "controlled", member_hold: "",
                     frame_op: "",
+                    floating: false, float_origin: "",
                 },
                 {
                     win: "win-b", out: "out", ws: "ws2",
@@ -661,6 +666,7 @@ describe("world entry discovery and observation", () => {
                     frame_auth: "hold", frame_hold: "gesture-barrier",
                     member_auth: "controlled", member_hold: "",
                     frame_op: "",
+                    floating: false, float_origin: "",
                 },
             ],
         }));
@@ -836,6 +842,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: true, float_origin: "",
             }],
         }));
         const target = h.world.wins.find((w) => w.internalId === "win-a");
@@ -854,6 +861,7 @@ describe("world entry discovery and observation", () => {
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: true, float_origin: "",
             }],
         }));
         h.runTimers();

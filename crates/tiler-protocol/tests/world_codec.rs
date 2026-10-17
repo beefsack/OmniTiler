@@ -350,6 +350,90 @@ fn request_estimate_covers_new_field_deltas() {
 }
 
 #[test]
+fn capacity_settings_decode_tolerant_and_apply_without_reflow() {
+    use tiler_core::admission::{AnchorFallback, NoSpaceResult};
+    // Missing keys backfill defaults so older adapters keep decoding.
+    let report = decode_request(&one_window_request()).expect("decodes");
+    assert_eq!(report.anchor_fallback, AnchorFallback::LargestSplittable);
+    assert_eq!(report.no_space_result, NoSpaceResult::Float);
+    // Explicit tokens decode typed.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["anchorFallback"] = serde_json::Value::String("closest-splittable-relative".to_owned());
+    value["noSpaceResult"] = serde_json::Value::String("allow-overlap".to_owned());
+    let report = decode_request(&value.to_string()).expect("decodes");
+    assert_eq!(report.anchor_fallback, AnchorFallback::ClosestRelative);
+    assert_eq!(report.no_space_result, NoSpaceResult::AllowOverlap);
+    // Invalid or mistyped tokens backfill the default instead of refusing.
+    for (key, bad, fallback, no_space) in [
+        (
+            "anchorFallback",
+            serde_json::Value::String("biggest".to_owned()),
+            AnchorFallback::LargestSplittable,
+            NoSpaceResult::Float,
+        ),
+        (
+            "anchorFallback",
+            serde_json::Value::String(String::new()),
+            AnchorFallback::LargestSplittable,
+            NoSpaceResult::Float,
+        ),
+        (
+            "anchorFallback",
+            serde_json::Value::Bool(true),
+            AnchorFallback::LargestSplittable,
+            NoSpaceResult::Float,
+        ),
+        (
+            "noSpaceResult",
+            serde_json::Value::String("stack".to_owned()),
+            AnchorFallback::LargestSplittable,
+            NoSpaceResult::Float,
+        ),
+        (
+            "noSpaceResult",
+            serde_json::Value::Null,
+            AnchorFallback::LargestSplittable,
+            NoSpaceResult::Float,
+        ),
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&one_window_request()).expect("valid");
+        value[key] = bad;
+        let report = decode_request(&value.to_string()).expect("tolerant decode");
+        assert_eq!(report.anchor_fallback, fallback, "key {key}");
+        assert_eq!(report.no_space_result, no_space, "key {key}");
+    }
+    // Genuinely unknown fields still refuse.
+    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
+    value["anchor"] = serde_json::Value::String("largest-splittable-window".to_owned());
+    let error = decode_request(&value.to_string()).expect_err("unknown field refuses");
+    assert_eq!(error.kind, "unknown-field");
+    // D10: a settings-only Apply never reflows retained state. Two
+    // accepted reports differing only in the D2/D3 tokens publish
+    // identical window rows and scopes.
+    let mut engine = WorldEngine::new("gen-1").expect("valid generation");
+    let first = decode_request(&one_window_request()).expect("decodes");
+    let before = match engine.handle_report(&first) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    let mut changed: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    changed["anchorFallback"] = serde_json::Value::String("closest-splittable-relative".to_owned());
+    changed["noSpaceResult"] = serde_json::Value::String("allow-overlap".to_owned());
+    changed["obs"] = serde_json::Value::String("2".to_owned());
+    changed["reqSeq"] = serde_json::Value::String("2".to_owned());
+    changed["req"] = serde_json::Value::String("req-2".to_owned());
+    let second = decode_request(&changed.to_string()).expect("decodes");
+    let after = match engine.handle_report(&second) {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+    assert_eq!(after.windows, before.windows, "no reflow on settings Apply");
+    assert_eq!(after.scopes, before.scopes, "no rehold on settings Apply");
+}
+
+#[test]
 fn floating_rows_encode_identically_and_drive_end_to_end() {
     // Encoder equivalence over floating workspace rows and untouched
     // scopes: the transport gate and the core commit gate cannot differ.
@@ -453,7 +537,8 @@ fn golden_reply_bytes_lock_wire_shape() {
         \"windows\":[{\"win\":\"win-a\",\"out\":\"out\",\"ws\":\"ws\",\
         \"alloc\":[4,4,792,592],\"frame\":[4,4,792,592],\
         \"frame_auth\":\"controlled\",\"frame_hold\":\"\",\
-        \"member_auth\":\"controlled\",\"member_hold\":\"\",\"frame_op\":\"\"}],\
+        \"member_auth\":\"controlled\",\"member_hold\":\"\",\"frame_op\":\"\",\
+        \"floating\":false,\"float_origin\":\"\"}],\
         \"transfers\":[],\"effects\":[],\"result\":null}";
     let expected: String = expected.split_whitespace().collect::<Vec<_>>().join("");
     assert_eq!(encoded, expected);
@@ -515,6 +600,8 @@ fn protocol_encoder_matches_core_canonical_writer() {
             ),
             membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
             frame_operation: None,
+            floating: false,
+            float_origin: None,
         }],
         transfers: Vec::new(),
         effects: vec![tiler_core::world_report::OneShotEffect {
@@ -695,11 +782,11 @@ fn eight_hundred_window_json_succeeds_within_budget() {
 }
 
 #[test]
-fn two_thousand_large_id_windows_hold_truthfully_within_budget() {
-    // Fresh full inventory, never sharded: ~31 windows per domain cannot
-    // project, so every domain holds as constraint-clamp with one complete
-    // held row per lifetime (usable 0, held 2000). This is NOT a successful
-    // layout: no allocations publish and the adapter must write nothing.
+fn two_thousand_large_id_windows_seed_completely_within_budget() {
+    // Fresh full inventory, never sharded: ~31 windows per 800x600/gap-8
+    // domain all tile under largest-fallback packing, so every domain
+    // commits a complete controlled roster with one allocated row per
+    // lifetime (best effort, selected 2026-10-17: no whole-seed hold).
     // Both reports stay far inside the 4 MiB budget.
     let json = many_window_request_capped(2000, 128, 64, None, "1", "1");
     assert!(
@@ -721,37 +808,32 @@ fn two_thousand_large_id_windows_hold_truthfully_within_budget() {
     let core_ms = start.elapsed();
     assert_eq!(reply.scopes.len(), 64);
     assert!(
-        reply.scopes.iter().all(|s| s.authority
-            == tiler_core::world_report::ScopeAuthority::Hold(
-                tiler_core::world_report::HoldReason::ConstraintClamp
-            )),
-        "all 64 over-capacity scopes hold as constraint-clamp"
+        reply
+            .scopes
+            .iter()
+            .all(|s| s.authority == tiler_core::world_report::ScopeAuthority::Controlled),
+        "every domain commits its complete roster"
     );
-    assert_eq!(reply.windows.len(), 2000, "complete held lifetime rows");
+    assert_eq!(reply.windows.len(), 2000, "complete lifetime rows");
     let usable = reply
         .windows
         .iter()
         .filter(|w| w.allocation.is_some())
         .count();
-    assert_eq!(usable, 0, "held workload publishes no allocations");
-    assert!(
-        reply.windows.iter().all(|w| w.frame_authority.hold_reason()
-            == Some(tiler_core::world_report::HoldReason::ConstraintClamp)),
-        "every held row carries the capacity reason"
-    );
+    assert_eq!(usable, 2000, "largest-fallback packing tiles every member");
     let estimate = tiler_core::world_report::reply_estimate(&reply);
     let encoded = encode_reply(&reply);
     assert_eq!(
         encoded,
         tiler_core::world_report::encode_reply_canonical(&reply),
-        "transport and commit gates cannot differ on held replies"
+        "transport and commit gates cannot differ on bulk replies"
     );
     assert!(
         estimate >= encoded.len(),
-        "reply estimator bounds the held wire bytes"
+        "reply estimator bounds the wire bytes"
     );
     eprintln!(
-        "2000-window large-id HELD: request={}B reply={}B usable=0 held=2000 core={}ms",
+        "2000-window large-id SEEDED: request={}B reply={}B usable=2000 core={}ms",
         json.len(),
         encoded.len(),
         core_ms.as_millis(),
@@ -767,7 +849,9 @@ fn two_thousand_large_id_windows_hold_truthfully_within_budget() {
     };
     assert_eq!(again.scopes, reply.scopes);
     assert_eq!(again.windows, reply.windows);
-    // Recovery: a fitting inventory on the same backend tiles fully.
+    // Fewer windows: a bare omission on a retained session minimizes
+    // (never an inferred close), so the roster keeps 13 tiles plus 18
+    // minimized rows per domain with the scopes still controlled.
     let fitting = many_window_request_capped(2000, 128, 64, Some(13), "3", "3");
     let report = decode_request(&fitting).expect("fitting decodes");
     let recovered = match engine.handle_report(&report) {
@@ -779,11 +863,23 @@ fn two_thousand_large_id_windows_hold_truthfully_within_budget() {
             .scopes
             .iter()
             .all(|s| s.authority == tiler_core::world_report::ScopeAuthority::Controlled),
-        "fitting inventory recovers to controlled"
+        "shrunk inventory stays controlled"
     );
+    assert_eq!(recovered.windows.len(), 2000, "no lifetime vanishes");
+    let tiled = recovered
+        .windows
+        .iter()
+        .filter(|w| w.allocation.is_some())
+        .count();
+    assert_eq!(tiled, 13 * 64, "thirteen tiles per domain");
     assert!(
-        recovered.windows.iter().all(|w| w.allocation.is_some()),
-        "recovered rows all carry allocations"
+        recovered
+            .windows
+            .iter()
+            .filter(|w| w.allocation.is_none())
+            .all(|w| w.frame_authority.hold_reason()
+                == Some(tiler_core::world_report::HoldReason::Minimized)),
+        "every unallocated row is an explicit minimized row"
     );
 }
 
@@ -820,6 +916,8 @@ fn exact_overbound_request_refuses_before_core_mutation() {
         frame_authority: tiler_core::world_report::ScopeAuthority::Controlled,
         membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
         frame_operation: None,
+        floating: false,
+        float_origin: None,
     };
     let big = WorldReply {
         contract_version: WORLD_CONTRACT_VERSION,

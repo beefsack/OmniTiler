@@ -626,7 +626,8 @@ fn move_committed(session: &mut Session, window: &str, direction: Direction, cor
             &correlation(corr),
             &Capabilities::full(),
         )
-        .unwrap_or_else(|e| panic!("move {window:?}: {e:?}"));
+        .unwrap_or_else(|e| panic!("move {window:?}: {e:?}"))
+        .expect_moved("tiled move");
     session
         .acknowledge(&AdapterAck::new(
             correlation(corr),

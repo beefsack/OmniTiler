@@ -30,6 +30,8 @@
 //!  command:{op,...}|null, mode, topology, bindings, domains,
 //!  minimized, predicate, refill, defaultTiled:bool, focused:""|id, complete:bool,
 //!  gesture:bool, feedback}
+//! (plus optional tolerant D2/D3 settings: anchorFallback, noSpaceResult;
+//!  missing or invalid values backfill the defaults)
 //! topology[]: {out, order:[native...], current, complete:bool,
 //!              rect:[x,y,w,h]|null, primary:bool}
 //! bindings[]: {logical, native, out, pin:bool, disp:bool, managed:bool}
@@ -41,6 +43,10 @@
 //! minimized[]: {win, out, ws}
 //! predicate: "both-axes-fixed"|"either-axis-fixed"
 //! refill: "last-remaining-workspace"|"most-recently-used-workspace"
+//! anchorFallback: "largest-splittable-window"|"closest-splittable-relative"|"no-search"
+//!   (optional, tolerant: missing or invalid backfills the default)
+//! noSpaceResult: "float"|"allow-overlap"
+//!   (optional, tolerant: missing or invalid backfills the default)
 //! feedback[]: {op, kind:transfer|view|creation|effect|property,
 //!              outcome:unattempted|possibly-executed|refused-proven|
 //!                      superseded-external|applied, hold:""|token}
@@ -148,12 +154,25 @@ fn as_object(value: &serde_json::Value) -> Result<&serde_json::Map<String, serde
 }
 
 fn check_keys(map: &serde_json::Map<String, serde_json::Value>, known: &[&str]) -> Result<()> {
-    if map.len() != known.len() || !known.iter().all(|k| map.contains_key(*k)) {
-        // Distinguish unknown fields from missing ones: any key outside the
-        // vocabulary is unknown-field, otherwise the shape is malformed.
-        if map.keys().any(|k| !known.contains(&k.as_str())) {
-            return Err(unknown_field());
-        }
+    check_keys_with_optional(map, known, &[])
+}
+
+/// Exact-shape check with optional keys: every present key must be in the
+/// required or optional vocabulary, and every required key must be present.
+/// Unknown keys refuse as `unknown-field`; missing required keys are
+/// `malformed`. Absent optional keys are fine (callers backfill defaults).
+fn check_keys_with_optional(
+    map: &serde_json::Map<String, serde_json::Value>,
+    required: &[&str],
+    optional: &[&str],
+) -> Result<()> {
+    if map
+        .keys()
+        .any(|k| !required.contains(&k.as_str()) && !optional.contains(&k.as_str()))
+    {
+        return Err(unknown_field());
+    }
+    if !required.iter().all(|k| map.contains_key(*k)) {
         return Err(malformed());
     }
     Ok(())
@@ -989,7 +1008,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     }
     let value: serde_json::Value = serde_json::from_str(json).map_err(|_| malformed())?;
     let map = as_object(&value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
         &[
             "v",
@@ -1014,6 +1033,7 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
             "gesture",
             "feedback",
         ],
+        &["anchorFallback", "noSpaceResult"],
     )?;
     let version = map
         .get("v")
@@ -1068,6 +1088,16 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
     let refill =
         tiler_core::output_selection::MigrationSourceRefill::parse_wire(req_str(map, "refill")?)
             .ok_or_else(unknown_value)?;
+    // Tolerant D2/D3 capacity settings: missing, non-string, or invalid
+    // tokens backfill the defaults (never refuse old adapters or typos).
+    // Non-string present values are not a shape error here.
+    let anchor_fallback = tiler_core::admission::AnchorFallback::normalize_wire(
+        map.get("anchorFallback")
+            .and_then(serde_json::Value::as_str),
+    );
+    let no_space_result = tiler_core::admission::NoSpaceResult::normalize_wire(
+        map.get("noSpaceResult").and_then(serde_json::Value::as_str),
+    );
     let report = WorldReport {
         contract_version: WORLD_CONTRACT_VERSION,
         owner: req_bounded(map, "owner", MAX_OWNER_LEN, is_owner_text)?,
@@ -1085,6 +1115,8 @@ pub fn decode_request(json: &str) -> std::result::Result<WorldReport, WorldProto
         minimized,
         fixed_size_predicate: predicate,
         migration_source_refill: refill,
+        anchor_fallback,
+        no_space_result,
         default_tiled: req_bool(map, "defaultTiled")?,
         focused_global: {
             let text = req_str(map, "focused")?;
@@ -1277,6 +1309,15 @@ pub fn encode_reply(reply: &WorldReply) -> String {
         push_json_string(
             &mut out,
             window.frame_operation.as_deref().unwrap_or_default(),
+        );
+        out.push_str(",\"floating\":");
+        out.push_str(if window.floating { "true" } else { "false" });
+        out.push_str(",\"float_origin\":");
+        push_json_string(
+            &mut out,
+            window
+                .float_origin
+                .map_or("", tiler_core::world_report::FloatOrigin::as_str),
         );
         out.push('}');
     }

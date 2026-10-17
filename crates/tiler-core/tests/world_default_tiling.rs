@@ -92,6 +92,8 @@ fn report(
         minimized: Vec::new(),
         fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
         migration_source_refill: tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
+        anchor_fallback: tiler_core::admission::AnchorFallback::default(),
+        no_space_result: tiler_core::admission::NoSpaceResult::default(),
         default_tiled,
         focused_global: String::new(),
         inventory_complete: true,

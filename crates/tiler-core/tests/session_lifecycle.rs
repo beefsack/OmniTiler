@@ -1416,8 +1416,10 @@ fn deterministic_replay() {
 
 #[test]
 fn tiny_bounds_projection_fails_closed() {
-    // Narrow domain with portable Horizontal splits (wide placements): width 2
-    // cannot host three positive horizontal segments.
+    // Narrow domain with portable Horizontal splits (wide placements):
+    // the ordinary anchor cannot host a third horizontal segment in
+    // width 2, so the D2 largest fallback splits the other 1x10 column
+    // vertically instead of holding (best effort, selected 2026-10-17).
     let mut session = Session::new(
         owner(),
         generation(),
@@ -1442,21 +1444,30 @@ fn tiny_bounds_projection_fails_closed() {
         placement(10, 2),
         "corr-2",
     );
-    // Three portable Horizontal leaves cannot fit positive segments in width 2.
+    // The ordinary anchor wraps horizontally and fails, but the largest
+    // fallback (win-1, first in DFS order on the equal-area tie) splits
+    // vertically into two positive 1x5 tiles.
     let obs = complete_observation(&session, vec![tiled_observed("win-3", "out-1", "ws-1")]);
-    assert_eq!(
-        session
-            .propose(
-                &admit_command("win-3", "out-1", "ws-1", placement(10, 2)),
-                &obs,
-                &correlation("corr-3"),
-                &LifecycleCapabilities::full(),
-            )
-            .expect_err("projection must fail closed"),
-        ProposeError::Refused(RefusalKind::MalformedTopology)
+    let plan = session
+        .propose(
+            &admit_command("win-3", "out-1", "ws-1", placement(10, 2)),
+            &obs,
+            &correlation("corr-3"),
+            &LifecycleCapabilities::full(),
+        )
+        .expect("fallback tiles instead of holding");
+    assert_eq!(plan.desired_geometry.len(), 3);
+    assert!(
+        plan.desired_geometry
+            .iter()
+            .all(|g| g.rect.w > 0 && g.rect.h > 0),
+        "every tile stays positive"
     );
-    assert_eq!(session.divergence(), None);
-    assert!(!session.has_pending());
+    assert_eq!(
+        session.divergence(),
+        None,
+        "fallback admission never diverges"
+    );
 }
 
 #[test]

@@ -872,7 +872,17 @@ impl super::Session {
         trees: &BTreeMap<DomainKey, Option<Node>>,
         windows: &BTreeMap<WindowId, WindowLink>,
     ) -> Option<NodeId> {
-        self.focus_stack.get(domain)?.iter().rev().find_map(|leaf| {
+        self.focus_stack_fallback_on(&self.focus_stack, domain, trees, windows)
+    }
+
+    pub(super) fn focus_stack_fallback_on(
+        &self,
+        base: &BTreeMap<DomainKey, Vec<NodeId>>,
+        domain: &DomainKey,
+        trees: &BTreeMap<DomainKey, Option<Node>>,
+        windows: &BTreeMap<WindowId, WindowLink>,
+    ) -> Option<NodeId> {
+        base.get(domain)?.iter().rev().find_map(|leaf| {
             self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
                 .then(|| leaf.clone())
         })
@@ -885,7 +895,18 @@ impl super::Session {
         trees: &BTreeMap<DomainKey, Option<Node>>,
         windows: &BTreeMap<WindowId, WindowLink>,
     ) -> BTreeMap<DomainKey, Vec<NodeId>> {
-        let mut next = self.focus_stack.clone();
+        self.updated_focus_stack_on(&self.focus_stack, focus_domain, focus_leaf, trees, windows)
+    }
+
+    pub(super) fn updated_focus_stack_on(
+        &self,
+        base: &BTreeMap<DomainKey, Vec<NodeId>>,
+        focus_domain: &Option<DomainKey>,
+        focus_leaf: &Option<NodeId>,
+        trees: &BTreeMap<DomainKey, Option<Node>>,
+        windows: &BTreeMap<WindowId, WindowLink>,
+    ) -> BTreeMap<DomainKey, Vec<NodeId>> {
+        let mut next = base.clone();
         next.retain(|domain, leaves| {
             leaves.retain(|leaf| {
                 self.focus_resolves(&Some(domain.clone()), &Some(leaf.clone()), trees, windows)
@@ -1023,7 +1044,7 @@ impl super::Session {
         let mut new_trees = self.trees.clone();
         let mut new_windows = self.windows.clone();
         let mut new_exceptions = self.exceptions.clone();
-        let new_retained = self.retained_float_geometry.clone();
+        let mut new_retained = self.retained_float_geometry.clone();
         let mut new_automatic = self.automatic_fixed.clone();
         let mut new_override = self.fixed_tile_override.clone();
         let mut new_minimized = self.minimized_slots.clone();
@@ -1116,7 +1137,13 @@ impl super::Session {
         // rechecks float fixed windows without explicit wins; only an
         // observed suppress signal records a tile win (D3). The
         // still-fullscreen hold below is opt-in only: legacy retile
-        // keeps its exact behavior with the opt-in off.
+        // keeps its exact behavior with the opt-in off. Diagnostic
+        // capacity origin grants no leniency (D4): a capacity float
+        // observed floating:false re-admits exactly like an ordinary
+        // float (tile when room, capacity-float again when still
+        // exhausted). A normalized floating:true echo persists with no
+        // auto-retile; only an explicit ToggleFloat command guarantees a
+        // tile retry.
         let mut to_tile: Vec<WindowId> = Vec::new();
         for id in self.exceptions.keys() {
             if observed.get(id).is_some_and(|entry| {
@@ -1276,6 +1303,9 @@ impl super::Session {
         // over the fixed-size classifier: a tiled minimize always comes
         // back tiled.
         let mut restored: BTreeSet<WindowId> = BTreeSet::new();
+        // Serial admission order per domain for fresh-seed MRU history
+        // (see the focus seeding below).
+        let mut seeded_order: BTreeMap<DomainKey, Vec<NodeId>> = BTreeMap::new();
         for (id, entry) in &observed {
             if entry.floating
                 || entry.fullscreen
@@ -1336,11 +1366,30 @@ impl super::Session {
             );
             existing_ids.insert(slot.leaf.clone());
             restored.insert((*id).clone());
+            seeded_order
+                .entry(key.clone())
+                .or_default()
+                .push(slot.leaf.clone());
             admitted += 1;
         }
         let (mut adomain, mut aleaf) = (self.focused_domain.clone(), self.focused_leaf.clone());
-        for (id, entry) in &observed {
-            if entry.floating || new_windows.contains_key(*id) || new_exceptions.contains_key(*id) {
+        // Carried order drives serial admission (D8: the Engine pre-orders
+        // spatial focus-last); already-known windows skip, so duplicates
+        // converge to first-wins instead of map-overwrite.
+        // Best-effort legs (D2/D3): ordinary anchor first, fallback search,
+        // then capacity float or overlap-admit. Minimum flags alone never
+        // disqualify a leg (D1, B6 kept).
+        let mut hints_all: BTreeMap<WindowId, crate::size_hints::WindowSizeHints> = BTreeMap::new();
+        for entry in &observation.windows {
+            hints_all.insert(entry.window.clone(), entry.hints);
+        }
+        let mut new_capacity = self.capacity_floats.clone();
+        let mut new_order = self.admission_order.clone();
+        let mut new_counter = self.admission_counter;
+        let mut new_overlap = self.overlap_accepted.clone();
+        for entry in &observation.windows {
+            let id = &entry.window;
+            if entry.floating || new_windows.contains_key(id) || new_exceptions.contains_key(id) {
                 continue;
             }
             let key = DomainKey {
@@ -1362,43 +1411,215 @@ impl super::Session {
             let placement =
                 super::admission_placement_for(domain, current.as_ref(), eligible.as_ref());
             let orientation = self.policy().admission_axis_for_rect(&placement);
-            let leaf_id = super::ops::lifecycle::generate_leaf_id(id, &mut existing_ids);
-            existing_ids.insert(leaf_id.clone());
-            let Some(next) = super::insert_tiled(
+            let leaf_links: BTreeMap<crate::directional::NodeId, WindowId> = new_windows
+                .values()
+                .filter(|l| l.output == key.output && l.workspace == key.workspace)
+                .map(|l| (l.leaf.clone(), l.window.clone()))
+                .collect();
+            let leg = super::capacity::plan_admission_leg(
                 self.policy(),
+                self.anchor_fallback,
                 current,
-                eligible.as_ref(),
-                leaf_id.clone(),
+                domain.bounds,
+                domain.gap,
+                eligible,
                 orientation,
-                &mut existing_ids,
                 id,
                 base_revision,
-            ) else {
-                return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
-            };
-            new_trees.insert(key.clone(), Some(next));
-            new_windows.insert(
-                (*id).clone(),
-                WindowLink {
-                    window: (*id).clone(),
-                    leaf: leaf_id.clone(),
-                    output: entry.output.clone(),
-                    workspace: entry.workspace.clone(),
-                },
+                &mut existing_ids,
+                &hints_all,
+                &leaf_links,
             );
-            adomain = Some(key);
-            aleaf = Some(leaf_id);
-            // An observed suppress signal mirrors into the retained
-            // override set so the win survives cross-domain transfer
-            // (the paired transplant carries it); removals still prune.
-            if self.fixed_admission && entry.fixed_suppress {
-                new_automatic.remove(*id);
-                new_override.insert((*id).clone());
+            let leaf_id = leg.leaf_id;
+            let ordinary = leg.ordinary_tree;
+            let admitted_tree: Option<Node> = match leg.selected {
+                Ok(target) => Some(target.tree),
+                Err(()) => None,
+            };
+            if let Some(next) = admitted_tree {
+                new_trees.insert(key.clone(), Some(next));
+                new_windows.insert(
+                    id.clone(),
+                    WindowLink {
+                        window: id.clone(),
+                        leaf: leaf_id.clone(),
+                        output: entry.output.clone(),
+                        workspace: entry.workspace.clone(),
+                    },
+                );
+                // D7 first-successful-tiled-admission order: record the
+                // sequence exactly on this successful leg insert, in
+                // carried admission order (never in window-id order).
+                // Lifetimes already tracked keep their first number;
+                // floating legs take no order.
+                if !new_order.contains_key(id) {
+                    new_order.insert(id.clone(), new_counter);
+                    new_counter = new_counter.saturating_add(1);
+                }
+                adomain = Some(key.clone());
+                aleaf = Some(leaf_id.clone());
+                seeded_order
+                    .entry(key.clone())
+                    .or_default()
+                    .push(leaf_id.clone());
+                // An observed suppress signal mirrors into the retained
+                // override set so the win survives cross-domain transfer
+                // (the paired transplant carries it); removals still prune.
+                if self.fixed_admission && entry.fixed_suppress {
+                    new_automatic.remove(id);
+                    new_override.insert(id.clone());
+                }
+                new_capacity.remove(id);
+            } else if self.no_space == crate::admission::NoSpaceResult::AllowOverlap
+                && let Some(candidate) = ordinary
+                && let Some(domain) = self.domains.iter().find(|d| d.key() == key)
+            {
+                // Overlap-admit at the ordinary anchor (D9): tiled
+                // membership with positive overflowing geometry.
+                let mut overlap_windows = new_windows.clone();
+                overlap_windows.insert(
+                    id.clone(),
+                    WindowLink {
+                        window: id.clone(),
+                        leaf: leaf_id.clone(),
+                        output: entry.output.clone(),
+                        workspace: entry.workspace.clone(),
+                    },
+                );
+                let Some(_) = super::capacity::project_domain_overlap(
+                    domain,
+                    &candidate,
+                    &overlap_windows,
+                    &key,
+                    &hints_all,
+                ) else {
+                    return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+                };
+                new_trees.insert(key.clone(), Some(candidate));
+                new_windows = overlap_windows;
+                new_overlap.insert(key.clone());
+                // Same first-successful-tiled-admission sequence as the
+                // strict leg above (overlap-admit is a tiled success).
+                if !new_order.contains_key(id) {
+                    new_order.insert(id.clone(), new_counter);
+                    new_counter = new_counter.saturating_add(1);
+                }
+                adomain = Some(key.clone());
+                aleaf = Some(leaf_id.clone());
+                seeded_order
+                    .entry(key.clone())
+                    .or_default()
+                    .push(leaf_id.clone());
+                if self.fixed_admission && entry.fixed_suppress {
+                    new_automatic.remove(id);
+                    new_override.insert(id.clone());
+                }
+                new_capacity.remove(id);
+            } else {
+                // Capacity float (D4): slotless membership with
+                // diagnostic-only origin at the untouched native frame.
+                // No false fixed-tile override: only genuinely
+                // fixed-size windows keep or earn one.
+                new_exceptions.insert(
+                    id.clone(),
+                    floating_record(
+                        id,
+                        &entry.output,
+                        &entry.workspace,
+                        new_retained.get(id).copied(),
+                    ),
+                );
+                new_capacity.insert(id.clone());
+                let fixed_now =
+                    crate::size_hints::is_fixed_size_with(entry.hints, self.fixed_predicate);
+                if !new_override.contains(id) {
+                    if entry.fixed_suppress && fixed_now {
+                        new_automatic.remove(id);
+                        new_override.insert(id.clone());
+                    } else {
+                        new_override.remove(id);
+                    }
+                }
             }
             // Unfloat re-admits were already counted as flag adoptions.
-            if !to_tile.contains(*id) {
+            if !to_tile.contains(id) {
                 admitted += 1;
             }
+        }
+        // Floating legs take no admission order; same-lifetime
+        // retile/move retention and close clearing happen through the
+        // existing clone/prune paths below.
+        new_capacity.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
+        // D7 repair gate: every retained tree must project strictly, be an
+        // accepted overlap allocation, or repair by floating victims.
+        // Protected holds stay narrow and truthful (MalformedTopology).
+        {
+            let mut protected: BTreeSet<WindowId> = BTreeSet::new();
+            for (id, entry) in &observed {
+                if (entry.fullscreen || entry.maximized || entry.sticky)
+                    && new_windows.contains_key(*id)
+                {
+                    protected.insert((*id).clone());
+                }
+            }
+            let empty_frames: BTreeMap<WindowId, crate::geometry::Rect> = BTreeMap::new();
+            let mut repair = super::capacity::DomainRepair {
+                policy: self.policy.clone(),
+                no_space: self.no_space,
+                domains: self.domains.clone(),
+                trees: new_trees.clone(),
+                windows: new_windows.clone(),
+                exceptions: new_exceptions.clone(),
+                retained: new_retained.clone(),
+                capacity: new_capacity.clone(),
+                overlap: new_overlap.clone(),
+                fixed_override: new_override.clone(),
+                admission_order: new_order.clone(),
+            };
+            for domain in &self.domains {
+                let key = domain.key();
+                if repair.trees.get(&key).cloned().flatten().is_none() {
+                    repair.overlap.remove(&key);
+                    continue;
+                }
+                let focus_stack = self.focus_stack.get(&key).cloned().unwrap_or_default();
+                let focused = (self.focused_domain.clone(), self.focused_leaf.clone());
+                if repair
+                    .repair(
+                        &key,
+                        &hints_all,
+                        &protected,
+                        &empty_frames,
+                        // Convergence never changes bounds or gaps: an
+                        // accepted overlap mark shelters here, and real
+                        // capacity decisions happen per leg above.
+                        false,
+                        &focus_stack,
+                        &focused,
+                    )
+                    .is_none()
+                {
+                    return Err(ProposeError::Refused(RefusalKind::MalformedTopology));
+                }
+            }
+            new_trees = repair.trees;
+            new_windows = repair.windows;
+            new_exceptions = repair.exceptions;
+            new_retained = repair.retained;
+            new_capacity = repair.capacity;
+            new_overlap = repair.overlap;
+        }
+        // Fresh-seed MRU history (D8): per-leg commits used to push
+        // each admitted leaf, so focused-removal fallback (sends,
+        // unfocused closes) keeps its MRU instead of dropping to none.
+        // Only empty domain stacks seed from the serial order; retained
+        // history is never rewritten. The merged base stays local until
+        // commit: refusals below leave state exactly untouched.
+        let mut stack_base = self.focus_stack.clone();
+        for (key, leaves) in &seeded_order {
+            stack_base
+                .entry(key.clone())
+                .or_insert_with(|| leaves.clone());
         }
         // Focus: observed tiled focus when valid, else retained focus when it
         // still resolves, else the existing MRU stack fallback, else None.
@@ -1426,7 +1647,8 @@ impl super::Session {
             next_focus_domain = self.focused_domain.clone();
             next_focus_leaf = self.focused_leaf.clone();
         } else if let Some(domain) = self.focused_domain.clone()
-            && let Some(leaf) = self.focus_stack_fallback(&domain, &new_trees, &new_windows)
+            && let Some(leaf) =
+                self.focus_stack_fallback_on(&stack_base, &domain, &new_trees, &new_windows)
         {
             next_focus_domain = Some(domain);
             next_focus_leaf = Some(leaf);
@@ -1447,6 +1669,13 @@ impl super::Session {
         // for present windows were already pruned above.
         new_automatic.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
         new_override.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
+        new_capacity.retain(|id| new_windows.contains_key(id) || new_exceptions.contains_key(id));
+        new_order.retain(|id, _| {
+            new_windows.contains_key(id)
+                || new_exceptions.contains_key(id)
+                || new_minimized.contains_key(id)
+        });
+        new_overlap.retain(|key| new_trees.contains_key(key));
         new_minimized.retain(|_, slot| {
             self.domains
                 .iter()
@@ -1458,7 +1687,11 @@ impl super::Session {
             || new_retained != self.retained_float_geometry
             || new_automatic != self.automatic_fixed
             || new_override != self.fixed_tile_override
-            || new_minimized != self.minimized_slots;
+            || new_minimized != self.minimized_slots
+            || new_capacity != self.capacity_floats
+            || new_order != self.admission_order
+            || new_counter != self.admission_counter
+            || new_overlap != self.overlap_accepted;
         let fingerprint = observation.observation.fingerprint;
         if changed {
             // Exhaustion guard before the advance: refuse without recording a
@@ -1484,11 +1717,16 @@ impl super::Session {
             self.automatic_fixed = new_automatic;
             self.fixed_tile_override = new_override;
             self.minimized_slots = new_minimized;
+            self.capacity_floats = new_capacity;
+            self.admission_order = new_order;
+            self.admission_counter = new_counter;
+            self.overlap_accepted = new_overlap;
             self.accepted_fingerprint = fingerprint;
         }
         self.focused_domain = next_focus_domain;
         self.focused_leaf = next_focus_leaf;
-        self.focus_stack = self.updated_focus_stack(
+        self.focus_stack = self.updated_focus_stack_on(
+            &stack_base,
             &self.focused_domain,
             &self.focused_leaf,
             &self.trees,

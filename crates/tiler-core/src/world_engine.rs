@@ -46,10 +46,10 @@ use crate::workspace_scope::ScopeHistory;
 use crate::world_commands::CommandApplied;
 use crate::world_publish::{current_view, migration_confirmed, observed_closed, observed_homing};
 use crate::world_report::{
-    AttemptOutcome, CommandResult, HoldReason, TilingMode, TransferKind, TransferTarget,
-    WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldReply,
-    WorldReport, encode_reply_canonical, reply_estimate, reply_upper_bound, report_digest,
-    report_estimate, validate_report_reason,
+    AttemptOutcome, CommandResult, EffectKind, HoldReason, OneShotEffect, ScopeAuthority,
+    TilingMode, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES,
+    WORLD_MAX_REQUEST_BYTES, WorldReply, WorldReport, encode_reply_canonical, reply_estimate,
+    reply_upper_bound, report_digest, report_estimate, validate_report_reason,
 };
 
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
@@ -276,6 +276,12 @@ pub struct WorldEngine {
     /// Cleared at the start of every staged run so a previous command's
     /// result never leaks into an unrelated reply.
     pub(crate) command_result: Option<CommandResult>,
+    /// Fresh-admission focus intents already emitted, by window id (D4):
+    /// at-most-once per lifetime, pruned on close so a reused id focuses
+    /// again as a fresh newcomer. Survives incarnation resets within the
+    /// generation (retained sessions persist there too); a new generation
+    /// constructs a new [`WorldEngine`].
+    admission_focus_spent: BTreeSet<String>,
 }
 
 /// Platform opt-ins for [`WorldEngine`] construction: the only Engine
@@ -354,6 +360,7 @@ impl WorldEngine {
             hold_reasons: BTreeMap::new(),
             pending_forget: Vec::new(),
             command_result: None,
+            admission_focus_spent: BTreeSet::new(),
         })
     }
 
@@ -664,8 +671,12 @@ impl WorldEngine {
         self.engine.sync_binding(owner, &self.core_generation);
         // Ingress settings: the reported fixed-size predicate selects
         // subsequent admissions only, never reclassifying retained windows.
+        // The D2/D3 capacity settings likewise select subsequent capacity
+        // decisions only: no reflow, retry, or reclassification on Apply.
         self.engine
             .set_fixed_size_predicate(report.fixed_size_predicate);
+        self.engine.set_anchor_fallback(report.anchor_fallback);
+        self.engine.set_no_space_result(report.no_space_result);
         // Seed planner-owned per-workspace tiling for newly observed
         // natives from the reported saved default: startup seeds all live
         // workspaces; live default changes seed only subsequently observed
@@ -689,6 +700,41 @@ impl WorldEngine {
         // Planner-owned workspace mapping/history converge before the sweep
         // so lifecycle rows and selection rings see this report's topology.
         self.converge_workspace_policy(report);
+        // Retained membership before the sweep, per swept domain: the
+        // admission-focus pass diffs this against converged state to find
+        // genuinely new lifetimes. Only domains with a retained session
+        // count; fresh seeds (startup, restart, disable/enable
+        // re-adoption) never mint admission intents.
+        let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
+        for domain in &report.domains {
+            if !domain.readable {
+                continue;
+            }
+            let key = domain.domain.key();
+            if self.floating_scopes.contains(&key) {
+                continue;
+            }
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            let mut known = BTreeSet::new();
+            for link in session.snapshot().windows {
+                if link.output == key.output && link.workspace == key.workspace {
+                    known.insert(link.window.0.clone());
+                }
+            }
+            for observed in session.exception_observed() {
+                if observed.output == key.output && observed.workspace == key.workspace {
+                    known.insert(observed.window.0.clone());
+                }
+            }
+            for (window, output, workspace) in session.minimized_entries() {
+                if output == key.output && workspace == key.workspace {
+                    known.insert(window.0.clone());
+                }
+            }
+            known_before.insert(key, known);
+        }
         // Reconcile every readable tiled domain; hold the rest explicitly.
         // Floating domains skip convergence (untouched, never held).
         // Hold reasons are per-report staging only: cleared here so a
@@ -708,6 +754,10 @@ impl WorldEngine {
         for (key, window) in std::mem::take(&mut self.pending_forget) {
             self.engine.forget_minimized_slot(&key, &window);
         }
+        // Fresh-admission focus intent for this report's sweep, if any.
+        // Computed before pending sends and command execution (neither
+        // mints newcomers) so every publish below shares it.
+        let admission_effects = self.take_admission_focus(report, &known_before, &held_scopes);
         // Pending numbered sends against newly bound workspaces start now:
         // the binding resolved the logical token to a native id, so the
         // engine send runs against the observed target domain. Unbound
@@ -718,7 +768,7 @@ impl WorldEngine {
         // re-emits either: consumed replies carry no result.
         self.command_result = None;
         if consumed {
-            let reply = self.publish(report, true, Vec::new(), None, &held_scopes);
+            let reply = self.publish(report, true, admission_effects, None, &held_scopes);
             return self.finish(report, digest, reply);
         }
         if let Some(command) = report.command.as_ref() {
@@ -735,7 +785,11 @@ impl WorldEngine {
                         &was_floating,
                     );
                     let result = self.command_result.take();
-                    let reply = self.publish(report, false, vec![effect], result, &held_scopes);
+                    // Admission intent first: an explicit command focuses
+                    // after it, so user intent wins when both coincide.
+                    let mut effects = admission_effects;
+                    effects.push(effect);
+                    let reply = self.publish(report, false, effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::NoEffect => {
@@ -748,7 +802,8 @@ impl WorldEngine {
                         &was_floating,
                     );
                     let result = self.command_result.take();
-                    let reply = self.publish(report, false, Vec::new(), result, &held_scopes);
+                    let reply =
+                        self.publish(report, false, admission_effects, result, &held_scopes);
                     return self.finish(report, digest, reply);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -756,7 +811,7 @@ impl WorldEngine {
                 }
             }
         }
-        let reply = self.publish(report, false, Vec::new(), None, &held_scopes);
+        let reply = self.publish(report, false, admission_effects, None, &held_scopes);
         self.finish(report, digest, reply)
     }
 
@@ -967,6 +1022,193 @@ impl WorldEngine {
             }
         }
         self.retained_floats = keep;
+    }
+
+    /// At-most-once fresh-admission focus intent (D4): the genuinely new
+    /// lifetime admitted by this report's sweep, tiled or floated alike,
+    /// carries one Focus effect even when the incoming native report still
+    /// focuses the previous tile. The adapter owns native activation
+    /// through the existing one-shot machinery (`issued_revision`
+    /// watermark, spent-before-dispatch, lost/stale drops); no persistent
+    /// focus desired exists.
+    ///
+    /// At most one candidate per report: the last newcomer in report order
+    /// (new birth order; the D2 fallback anchor is retained state, never a
+    /// candidate). Fresh seeds emit nothing (no retained session means
+    /// startup, restart, or disable/enable re-adoption, where the observed
+    /// native focus stays authoritative), except the first fresh map into
+    /// a previously reported empty readable controlled tiled domain: the
+    /// prior accepted report proves the empty roster there, so the newly
+    /// arrived lifetime focuses once. A workspace with no prior roster, a
+    /// recovered unreadable scope, or a prior held/untouched scope never
+    /// infers birth by absence. Re-observation, shrink evictions
+    /// (D7 victims are retained), closes, gap/bounds edits, settings Apply,
+    /// explicit tile retries, held scopes, and floating scopes emit
+    /// nothing: only a retained domain gaining an unknown lifetime.
+    /// A mid-gesture newcomer spends without emitting (never replayed),
+    /// and an unexplained fit-excluded newcomer (game/overlay with no
+    /// floating, fullscreen, or maximized origin) never takes automatic
+    /// activation; normalized ordinary floats stay eligible.
+    /// D01 native activation ownership: a newcomer admitted behind a
+    /// fullscreen/maximized sibling never takes automatic activation
+    /// either (the host owns activation away from a protected overlay);
+    /// the suppressed intent spends without emitting, never retried.
+    /// Windows under an outstanding transfer never count (cross-domain
+    /// arrivals settle through the transfer, never a focus steal). Spent
+    /// intents prune on close, so a reused id focuses again as a fresh
+    /// newcomer. The `af-<window>` id marks admission intent so the adapter
+    /// applies its float-tolerant guard only there; diagnostic float
+    /// origin is never consulted.
+    fn take_admission_focus(
+        &mut self,
+        report: &WorldReport,
+        known_before: &BTreeMap<DomainKey, BTreeSet<String>>,
+        held_scopes: &BTreeSet<DomainKey>,
+    ) -> Vec<OneShotEffect> {
+        let mut known_now: BTreeSet<String> = BTreeSet::new();
+        let mut current: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
+        for key in self.engine.domain_keys() {
+            let Some(session) = self.engine.session(&key) else {
+                continue;
+            };
+            let mut known = BTreeSet::new();
+            for link in session.snapshot().windows {
+                known.insert(link.window.0.clone());
+                known_now.insert(link.window.0.clone());
+            }
+            for observed in session.exception_observed() {
+                known.insert(observed.window.0.clone());
+                known_now.insert(observed.window.0.clone());
+            }
+            for (window, _, _) in session.minimized_entries() {
+                known_now.insert(window.0.clone());
+            }
+            current.insert(key, known);
+        }
+        self.admission_focus_spent
+            .retain(|id| known_now.contains(id));
+        let transferred: BTreeSet<&str> = self
+            .retained
+            .iter()
+            .filter_map(|retained| match &retained.target.kind {
+                TransferKind::Window(window) => Some(window.0.as_str()),
+                TransferKind::View | TransferKind::Migration => None,
+            })
+            .collect();
+        let mut newcomer: Option<(WindowId, DomainKey)> = None;
+        for domain in &report.domains {
+            let key = domain.domain.key();
+            if !domain.readable || self.floating_scopes.contains(&key) || held_scopes.contains(&key)
+            {
+                continue;
+            }
+            // A domain with no retained session is a fresh seed (startup,
+            // restart, disable/enable re-adoption) with one exception: a
+            // previously reported empty readable controlled tiled domain
+            // proves its empty roster through the prior accepted report,
+            // so the first fresh map there still counts as admission.
+            let known = known_before.get(&key);
+            if known.is_none() && !self.prior_empty_controlled(&key) {
+                continue;
+            }
+            let empty = BTreeSet::new();
+            let before: &BTreeSet<String> = known.unwrap_or(&empty);
+            let converged = current.get(&key);
+            for window in &domain.windows {
+                let id = window.window.0.as_str();
+                if before.contains(id) || transferred.contains(id) {
+                    continue;
+                }
+                // Safety priority: an unexplained fit-excluded newcomer
+                // (game/overlay with no floating, fullscreen, or
+                // maximized origin) never takes automatic activation,
+                // mirroring the send path's no-automatic-permission
+                // refusal. A normalized ordinary float (floating with an
+                // origin) stays eligible, capacity floats alike; only
+                // the unsafe shape is skipped, never the latest
+                // eligible newcomer.
+                if window.fit_excluded
+                    && !window.floating
+                    && !window.fullscreen
+                    && !window.maximized
+                {
+                    continue;
+                }
+                if converged.is_some_and(|known| known.contains(id)) {
+                    newcomer = Some((window.window.clone(), key.clone()));
+                }
+            }
+        }
+        let Some((target, target_key)) = newcomer else {
+            return Vec::new();
+        };
+        // D01 native activation ownership: never force activation away
+        // from a protected overlay. A fullscreen/maximized sibling in the
+        // newcomer's own domain owns host activation, denial, and
+        // explicit switching; the automatic intent spends without
+        // emitting and is never retried. Explicit user focus/send
+        // shortcuts ride commands, never this path.
+        if report.domains.iter().any(|domain| {
+            domain.domain.key() == target_key
+                && domain.windows.iter().any(|window| {
+                    window.window != target && (window.fullscreen || window.maximized)
+                })
+        }) {
+            self.admission_focus_spent.insert(target.0.clone());
+            return Vec::new();
+        }
+        // The gesture barrier spends honestly: a newcomer arriving
+        // mid-gesture drops its activation here and never replays it on
+        // a later report (safety over liveness; the at-most-once
+        // watermark still records it as spent).
+        if report.gesture_barrier {
+            self.admission_focus_spent.insert(target.0.clone());
+            return Vec::new();
+        }
+        if !self.admission_focus_spent.insert(target.0.clone()) {
+            return Vec::new();
+        }
+        vec![OneShotEffect {
+            id: format!("af-{}", target.0),
+            kind: EffectKind::Focus,
+            target,
+            issued_revision: self.state_revision + 1,
+        }]
+    }
+
+    /// Prior-report proof that `key` was a readable, controlled, tiled,
+    /// empty domain: the last accepted report carried the domain readable
+    /// with no windows, and the last accepted reply published it
+    /// controlled. Covers the first fresh map into a previously reported
+    /// empty domain, which carries no retained session to diff against.
+    /// Anything else (no prior report, prior domain absent/unreadable,
+    /// prior roster non-empty, prior held/untouched scope) is not birth
+    /// evidence: truly unknown rosters never infer admission by absence.
+    /// Restart/incarnation resets clear the retained reports, so fresh
+    /// adoption stays quiet; disable/enable adoption replays a prior
+    /// untouched scope, never a controlled empty one.
+    fn prior_empty_controlled(&self, key: &DomainKey) -> bool {
+        let Some(last) = self.last_report.as_ref() else {
+            return false;
+        };
+        let Some(prior) = last
+            .domains
+            .iter()
+            .find(|domain| domain.domain.key() == *key)
+        else {
+            return false;
+        };
+        if !prior.readable || !prior.windows.is_empty() {
+            return false;
+        }
+        let Some(reply) = self.last_reply.as_ref() else {
+            return false;
+        };
+        let scope = format!("{}/{}", key.output.0, key.workspace.0);
+        reply
+            .scopes
+            .iter()
+            .any(|status| status.scope == scope && status.authority == ScopeAuthority::Controlled)
     }
 
     /// Reconcile one readable domain through the retained engine sweep.

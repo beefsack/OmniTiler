@@ -153,6 +153,7 @@ describe("world overlay safety", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
             transfers: [], effects: [],
         }));
@@ -176,6 +177,7 @@ describe("world overlay safety", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             }],
             transfers: [], effects: [],
         }));

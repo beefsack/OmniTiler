@@ -219,8 +219,10 @@ describe("world command result entry", () => {
         assert.deepEqual([...(payload["members"] as Array<string>)].sort(), ["win-a", "win-b"]);
         // Fallback seed under the inset (synthetic edge windows decline
         // fit, which checks containment in the inset work area): same
-        // members, inset bounds, stable fallback group identity.
-        assert.equal(payload["group"], "grp-win-a-r1");
+        // members, inset bounds, stable fallback group identity. The
+        // atomic serial seed admits both members at base revision 0, so
+        // the group carries r0 (per-leg seeding used r1).
+        assert.equal(payload["group"], "grp-win-a-r0");
         h.handle?.stop();
         delete (globalThis as Record<string, unknown>)["__pendingReply"];
     });
@@ -310,6 +312,7 @@ describe("world command result entry", () => {
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
                 frame_op: "",
+                floating: false, float_origin: "",
             },
             ...((unfloat["windows"] as Array<Record<string, unknown>>).filter((w) => w["win"] !== "win-a")),
         ];

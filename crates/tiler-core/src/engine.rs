@@ -9,7 +9,7 @@
 //! envelope validation, ordered ingress fences,
 //! and wire serialization.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::{
     ActiveGroupResolution, CoreCommand, CoreEvent, CoreReply, NoGroupReason, ProjectionKind,
@@ -110,6 +110,12 @@ pub struct Engine {
     /// workspace sends). Off by default so KDE/macOS carriers keep exact
     /// current behavior; the Windows route enables it.
     fixed_send_admission: bool,
+    /// Best-effort admission policy (D2/D3, selected 2026-10-17): anchor
+    /// fallback and no-space result for subsequent capacity decisions
+    /// only. Largest-splittable-window and float defaults. Changing
+    /// either never reflows, retries, or reclassifies retained state.
+    anchor_fallback: crate::admission::AnchorFallback,
+    no_space: crate::admission::NoSpaceResult,
     /// R-SPC-04 D1 fixed-size admission predicate. Both-axes default
     /// (current delivered behavior). Changing it never reclassifies
     /// retained windows, only subsequent admissions.
@@ -412,6 +418,8 @@ impl Default for Engine {
             fixed_size_predicate: crate::size_hints::FixedSizePredicate::BothAxes,
             maximized_focus_fence: false,
             fixed_send_admission: false,
+            anchor_fallback: crate::admission::AnchorFallback::default(),
+            no_space: crate::admission::NoSpaceResult::default(),
             last_fixed_admission: None,
             last_migration: None,
             last_drag_preview_stage: None,
@@ -639,6 +647,41 @@ impl Engine {
         }
     }
 
+    /// Current D2 anchor fallback. Largest-splittable default.
+    #[must_use]
+    pub fn anchor_fallback(&self) -> crate::admission::AnchorFallback {
+        self.anchor_fallback
+    }
+
+    /// Select the D2 anchor fallback for subsequent capacity decisions
+    /// only. Propagates to every retained session; fresh sessions adopt
+    /// it at creation. Never touches topology, revision, or existing
+    /// classifications: no reflow or retry on Apply (D10).
+    pub fn set_anchor_fallback(&mut self, fallback: crate::admission::AnchorFallback) {
+        self.anchor_fallback = fallback;
+        for session in self.sessions.values_mut() {
+            session.set_anchor_fallback(fallback);
+        }
+    }
+
+    /// Current D3 no-space result. Float default.
+    #[must_use]
+    pub fn no_space_result(&self) -> crate::admission::NoSpaceResult {
+        self.no_space
+    }
+
+    /// Select the D3 no-space result for subsequent admission or actual
+    /// capacity-repair decisions only. Propagates to every retained
+    /// session; fresh sessions adopt it at creation. Never touches
+    /// topology, revision, or existing classifications: retained overlap
+    /// allocations stay valid until a real capacity decision (D10).
+    pub fn set_no_space_result(&mut self, result: crate::admission::NoSpaceResult) {
+        self.no_space = result;
+        for session in self.sessions.values_mut() {
+            session.set_no_space_result(result);
+        }
+    }
+
     /// Last fixed-size admission report for protocol logging, if the
     /// current [`Engine::handle`] admitted automatic fixed floats.
     /// Bounded counts plus correlation/op/reason only.
@@ -678,13 +721,17 @@ impl Engine {
         });
     }
 
-    /// Carry the Engine opt-in into a session without touching owner,
-    /// generation, revision, divergence, pending, or drag state.
-    fn adopt_fixed_admission(&self, session: &mut Session) {
+    /// Carry the Engine admission settings into a session without
+    /// touching owner, generation, revision, divergence, pending, or drag
+    /// state. Fixed-size opt-ins plus the D2/D3 capacity policy ride
+    /// together; topology and classifications are never reflowed.
+    fn adopt_session_policy(&self, session: &mut Session) {
         session.set_fixed_size_admission(self.fixed_size_admission);
         session.set_fixed_size_predicate(self.fixed_size_predicate);
         session.set_maximized_focus_fence(self.maximized_focus_fence);
         session.set_fixed_send_admission(self.fixed_send_admission);
+        session.set_anchor_fallback(self.anchor_fallback);
+        session.set_no_space_result(self.no_space);
     }
 
     /// Predicate-selected candidate check for the retained Engine setting.
@@ -980,7 +1027,7 @@ impl Engine {
         // Retaining carries the selected policy and the fixed-size opt-in;
         // no revision, divergence, pending, gap, or topology state is touched.
         session.set_policy(self.policy.clone());
-        self.adopt_fixed_admission(&mut session);
+        self.adopt_session_policy(&mut session);
         self.outer_gaps.insert(key.clone(), outer_gap);
         self.sessions.insert(key, session);
     }
@@ -989,7 +1036,7 @@ impl Engine {
     /// when the source had no gap recorded).
     pub fn insert_session_only(&mut self, key: DomainKey, mut session: Session) {
         session.set_policy(self.policy.clone());
-        self.adopt_fixed_admission(&mut session);
+        self.adopt_session_policy(&mut session);
         self.sessions.insert(key, session);
     }
 
@@ -1036,7 +1083,7 @@ impl Engine {
             return;
         }
         session.set_policy(self.policy.clone());
-        self.adopt_fixed_admission(&mut session);
+        self.adopt_session_policy(&mut session);
         self.outer_gaps.insert(domain_key.clone(), outer_gap);
         self.sessions.insert(domain_key, session);
     }
@@ -1301,6 +1348,21 @@ impl Engine {
             .map(|entry| entry.window.clone())
     }
 
+    /// Ordinary-float observed focus (D4): the observed active window is a
+    /// known floating exception homed in this domain. Tiled MRU stays
+    /// authoritative internally and the native active never wedges
+    /// projection: callers project with the retained tiled focus (or none)
+    /// instead of refusing `focus-mismatch`. Diagnostic origin is never
+    /// consulted: capacity and user floats converge alike.
+    fn observed_float_focus(session: &Session, key: &DomainKey, focused: &WindowId) -> bool {
+        session.exception_observed().iter().any(|observed| {
+            &observed.window == focused
+                && observed.floating
+                && observed.output == key.output
+                && observed.workspace == key.workspace
+        })
+    }
+
     /// Read-only adoption gate: true when the hinted projection of the clean
     /// fitted topology flags any leaf overconstrained. Projection failure is
     /// not infeasibility (plain validation already passed), so false.
@@ -1355,7 +1417,7 @@ impl Engine {
             return Err(None);
         };
         fresh.set_policy(self.policy.clone());
-        self.adopt_fixed_admission(&mut fresh);
+        self.adopt_session_policy(&mut fresh);
         let observation = crate::seed::session_observation_for(
             &event.owner,
             &event.generation,
@@ -1548,7 +1610,7 @@ impl Engine {
                             ),
                         ) {
                             fitted.set_policy(self.policy.clone());
-                            self.adopt_fixed_admission(&mut fitted);
+                            self.adopt_session_policy(&mut fitted);
                             let base = fitted.accepted_revision();
                             let observation = crate::seed::session_observation_for(
                                 &event.owner,
@@ -1653,6 +1715,14 @@ impl Engine {
                 }
             }
         }
+        // D8 serial seed: the clean fit declined. The legacy
+        // floating-aware build runs first where it applies; the legacy
+        // seed owns relocation candidates and excluded members; the
+        // atomic serial seed below owns genuinely fresh domains. Every
+        // serial leg runs the ordinary anchor, the D2 fallback, then the
+        // D3 no-space result; capacity floats plus fixed-size and
+        // born-fullscreen exceptions join the same commit. No automatic
+        // re-tile: floats persist until an explicit tile retry (D5).
         // Fresh floating-aware build: no retained slot, no relocation source,
         // and floating/fullscreen members present, so the tiled-only seed cannot run. One
         // empty session plus the same single convergence primitive admits
@@ -1790,48 +1860,282 @@ impl Engine {
                 }
             }
         }
-        let seed_order = crate::seed::order_spatial_with_focus_last(
-            event
+        // Relocation candidate or excluded members: the full legacy
+        // fresh route owns this domain (floating-aware convergence
+        // build, then the deterministic seed). It preserves the
+        // ambiguous-source fresh-seed rule and the gap-mismatch
+        // atomicity contract exactly, and it never reclassifies
+        // adapter-excluded (`fit_excluded`) members through
+        // best-effort: exclusion stays a refusal/hold, not a float or
+        // a tile. The atomic serial seed below only runs for genuinely
+        // fresh domains with no relocation candidate and no excluded
+        // members.
+        if self
+            .find_unique_source_for_target(&event.domain_key)
+            .is_some()
+            || event.windows.iter().any(|w| w.fit_excluded)
+        {
+            let seed_order = crate::seed::order_spatial_with_focus_last(
+                event
+                    .windows
+                    .iter()
+                    .filter(|w| w.window != *window)
+                    .cloned()
+                    .collect(),
+                &event.focused_window,
+                true,
+            );
+            let window = window.clone();
+            let output = output.clone();
+            let workspace = workspace.clone();
+            let domain = event.domain.clone();
+            let placement_explicit = placement_bounds;
+            let reply = self.run_retained(
+                event,
+                seed_order,
+                false,
+                |session, observation| {
+                    let placement = placement_explicit
+                        .unwrap_or_else(|| crate::seed::seed_target_bounds(session, &domain));
+                    session.propose(
+                        &SessionCommand::Admit {
+                            window: window.clone(),
+                            output: output.clone(),
+                            workspace: workspace.clone(),
+                            exceptions: ExceptionFlags::none(),
+                            exception_behavior: None,
+                            placement_bounds: placement,
+                            suppress_fixed_float: false,
+                        },
+                        observation,
+                        &event.correlation,
+                        &LifecycleCapabilities::full(),
+                    )
+                },
+                |plan| CoreReply::Tiled(TiledPlan::from_lifecycle(TiledKind::Admit, plan)),
+                Self::commit_lifecycle,
+            );
+            refresh_startup_seed_tree(self, event);
+            return reply;
+        }
+        // Atomic serial seed for genuinely fresh domains: spatial
+        // `(y, x, h, w)` with the anchor last (legacy seed parity:
+        // survivors admit in spatial order, then the anchor wraps the
+        // root); stable adapter order on ties.
+        let ordered =
+            crate::seed::order_spatial_with_focus_last(event.windows.clone(), window, true)
+                .unwrap_or_else(|| event.windows.clone());
+        let mut seeded = match Session::new(
+            event.owner.clone(),
+            event.generation.clone(),
+            0,
+            event.fingerprint,
+            vec![event.domain.clone()],
+        ) {
+            Ok(session) => session,
+            Err(_) => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: "seed-failed",
+                };
+            }
+        };
+        seeded.set_policy(self.policy.clone());
+        self.adopt_session_policy(&mut seeded);
+        let seed_observation = crate::seed::session_observation_for(
+            &event.owner,
+            &event.generation,
+            seeded.accepted_revision(),
+            event.fingerprint,
+            &ordered,
+        );
+        let seed_focus = if event.focused_window.0.is_empty() {
+            None
+        } else {
+            Some(&event.focused_window)
+        };
+        let predicate = self.fixed_size_predicate;
+        let evaluated = event
+            .windows
+            .iter()
+            .filter(|entry| Self::is_fixed_candidate_with(entry, predicate))
+            .count();
+        match seeded.converge_observation(&seed_observation, seed_focus) {
+            Ok(counts) => {
+                self.converged_this_op = true;
+                if counts.removed + counts.admitted + counts.flags_adopted > 0 {
+                    self.last_convergence = Some(EngineConvergenceReport {
+                        correlation: event.correlation.clone(),
+                        op: report_op,
+                        removed: counts.removed,
+                        admitted: counts.admitted,
+                        flags_adopted: counts.flags_adopted,
+                    });
+                }
+                self.note_fixed_admission(&event.correlation, report_op, evaluated, 0, &seeded);
+                self.store_committed(event.domain_key.clone(), seeded, event.outer_gap);
+            }
+            Err(ProposeError::PendingExists) => {
+                return CoreReply::Rejected {
+                    kind: PENDING_EXISTS_KIND,
+                    message: PENDING_EXISTS_MESSAGE,
+                };
+            }
+            Err(ProposeError::Diverged(reason)) => {
+                return CoreReply::Diverged(reason);
+            }
+            Err(_) => {
+                return CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: "seed-failed",
+                };
+            }
+        }
+        // Serial-seed reply: a tiled anchor projects with anchor focus;
+        // a capacity-floated anchor projects the remainder with the
+        // newcomer as the native float target (core tiled focus stays on
+        // the surviving MRU; the adapter owns native activation in the
+        // route integration). Fixed-size and born-fullscreen anchors
+        // keep their existing float-free remainder shapes.
+        let Some(session) = self.session(&event.domain_key).cloned() else {
+            return CoreReply::SnapshotInvalid {
+                message: OBSERVATION_MESSAGE,
+                detail: "seed-failed",
+            };
+        };
+        let is_capacity = session.is_capacity_float(window);
+        if session
+            .snapshot()
+            .windows
+            .iter()
+            .any(|l| &l.window == window)
+        {
+            let mut focused = session;
+            let _ = focused.sync_focus_from_window(&event.domain_key, window);
+            if committed_session_is_empty(&focused) {
+                return CoreReply::Tiled(TiledPlan {
+                    base_revision: focused.accepted_revision(),
+                    policy_version: LIFECYCLE_POLICY_VERSION,
+                    kind: TiledKind::Admit,
+                    geometry: Vec::new(),
+                    focus_domain: None,
+                    focus_leaf: None,
+                    float_window: None,
+                    float_rect: None,
+                });
+            }
+            let (focus_domain, focus_leaf) = focused.focus();
+            if let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) {
+                let hints = event
+                    .windows
+                    .iter()
+                    .map(|entry| (entry.window.clone(), entry.hints))
+                    .collect::<BTreeMap<_, _>>();
+                if let Some(plan) = project_retained_tiled_geometry(
+                    &focused,
+                    &event.domain_key,
+                    event.domain.bounds,
+                    event.domain.gap,
+                    Some((focus_domain, focus_leaf)),
+                    ProjectionKind::Reconcile,
+                    &hints,
+                    &event.windows,
+                ) {
+                    if let Some(stored) = self.session_mut(&event.domain_key) {
+                        *stored = focused;
+                    }
+                    refresh_startup_seed_tree(self, event);
+                    return CoreReply::Tiled(TiledPlan {
+                        base_revision: plan.base_revision,
+                        policy_version: LIFECYCLE_POLICY_VERSION,
+                        kind: TiledKind::Admit,
+                        geometry: plan.geometry,
+                        focus_domain: plan.focus_domain,
+                        focus_leaf: plan.focus_leaf,
+                        float_window: None,
+                        float_rect: None,
+                    });
+                }
+            }
+            return CoreReply::SnapshotInvalid {
+                message: OBSERVATION_MESSAGE,
+                detail: "seed-failed",
+            };
+        }
+        if session.is_exception(window) {
+            let focused = session;
+            if committed_session_is_empty(&focused) {
+                return CoreReply::Tiled(TiledPlan {
+                    base_revision: focused.accepted_revision(),
+                    policy_version: LIFECYCLE_POLICY_VERSION,
+                    kind: TiledKind::Admit,
+                    geometry: Vec::new(),
+                    focus_domain: None,
+                    focus_leaf: None,
+                    float_window: None,
+                    float_rect: None,
+                });
+            }
+            let (focus_domain, focus_leaf) = focused.focus();
+            let focus = match (focus_domain, focus_leaf) {
+                (Some(domain), Some(leaf)) => Some((domain, leaf)),
+                _ => None,
+            };
+            let hints = event
                 .windows
                 .iter()
-                .filter(|w| w.window != *window)
-                .cloned()
-                .collect(),
-            &event.focused_window,
-            true,
-        );
-        let window = window.clone();
-        let output = output.clone();
-        let workspace = workspace.clone();
-        let domain = event.domain.clone();
-        let placement_explicit = placement_bounds;
-        let reply = self.run_retained(
-            event,
-            seed_order,
-            false,
-            |session, observation| {
-                let placement = placement_explicit
-                    .unwrap_or_else(|| crate::seed::seed_target_bounds(session, &domain));
-                session.propose(
-                    &SessionCommand::Admit {
-                        window: window.clone(),
-                        output: output.clone(),
-                        workspace: workspace.clone(),
-                        exceptions: ExceptionFlags::none(),
-                        exception_behavior: None,
-                        placement_bounds: placement,
-                        suppress_fixed_float: false,
-                    },
-                    observation,
-                    &event.correlation,
-                    &LifecycleCapabilities::full(),
-                )
-            },
-            |plan| CoreReply::Tiled(TiledPlan::from_lifecycle(TiledKind::Admit, plan)),
-            Self::commit_lifecycle,
-        );
-        refresh_startup_seed_tree(self, event);
-        reply
+                .map(|entry| (entry.window.clone(), entry.hints))
+                .collect::<BTreeMap<_, _>>();
+            if let Some(plan) = project_retained_tiled_geometry(
+                &focused,
+                &event.domain_key,
+                event.domain.bounds,
+                event.domain.gap,
+                focus,
+                ProjectionKind::Reconcile,
+                &hints,
+                &event.windows,
+            ) {
+                if let Some(stored) = self.session_mut(&event.domain_key) {
+                    *stored = focused;
+                }
+                refresh_startup_seed_tree(self, event);
+                // A capacity-floated newcomer keeps its native opening
+                // frame (no float rect authority) and is the native
+                // float target; fixed-size and born-fullscreen
+                // anchors keep the float-free shape. The tiled
+                // remainder projects even with focus none (a floated
+                // anchor never takes tiled focus).
+                let float_window = is_capacity.then(|| window.clone());
+                return CoreReply::Tiled(TiledPlan {
+                    base_revision: plan.base_revision,
+                    policy_version: LIFECYCLE_POLICY_VERSION,
+                    kind: TiledKind::Admit,
+                    geometry: plan.geometry,
+                    focus_domain: plan.focus_domain,
+                    focus_leaf: plan.focus_leaf,
+                    float_window,
+                    float_rect: None,
+                });
+            }
+            // An all-floated roster projects no tiled geometry; the
+            // committed exceptions still publish as float rows.
+            refresh_startup_seed_tree(self, event);
+            return CoreReply::Tiled(TiledPlan {
+                base_revision: focused.accepted_revision(),
+                policy_version: LIFECYCLE_POLICY_VERSION,
+                kind: TiledKind::Admit,
+                geometry: Vec::new(),
+                focus_domain: None,
+                focus_leaf: None,
+                float_window: is_capacity.then(|| window.clone()),
+                float_rect: None,
+            });
+        }
+        CoreReply::SnapshotInvalid {
+            message: OBSERVATION_MESSAGE,
+            detail: "seed-failed",
+        }
     }
 
     /// Fresh-domain reconcile on an absent domain: seed through the SAME
@@ -2097,6 +2401,21 @@ impl Engine {
                 // state still refuses below, as does a cross-domain focus.
                 None
             }
+            (None, None)
+                if !event.focused_window.0.is_empty()
+                    && Self::observed_float_focus(
+                        &session,
+                        &event.domain_key,
+                        &event.focused_window,
+                    ) =>
+            {
+                // Ordinary-float observed focus (D4): the native active
+                // window is a known float homed here (user or capacity
+                // alike), so the tiled remainder projects with focus none
+                // instead of wedging the domain on `focus-mismatch`. The
+                // retained tiled MRU is untouched.
+                None
+            }
             _ => {
                 restore(self, &backup, relocated_here);
                 return CoreReply::Rejected {
@@ -2120,11 +2439,62 @@ impl Engine {
             &hints,
             &event.windows,
         ) else {
-            restore(self, &backup, relocated_here);
-            return CoreReply::Rejected {
-                kind: RefusalKind::MalformedTopology.as_str(),
-                message: RefusalKind::MalformedTopology.message(),
+            // D7 geometric repair on a real capacity decision (bounds
+            // changed under a retained tree, or convergence left an
+            // infeasible survivor set). Protected or impossible
+            // remainders keep the narrow truthful hold.
+            if !bounds_changed {
+                restore(self, &backup, relocated_here);
+                return CoreReply::Rejected {
+                    kind: RefusalKind::MalformedTopology.as_str(),
+                    message: RefusalKind::MalformedTopology.message(),
+                };
+            }
+            let Some(repaired) = Self::try_repair_domain(
+                &session,
+                &event.domain_key,
+                event.domain.bounds,
+                retained_domain.gap,
+                event,
+            ) else {
+                restore(self, &backup, relocated_here);
+                return CoreReply::Rejected {
+                    kind: RefusalKind::MalformedTopology.as_str(),
+                    message: RefusalKind::MalformedTopology.message(),
+                };
             };
+            let (focus_domain, focus_leaf) = repaired.focus();
+            let focus = match (focus_domain, focus_leaf) {
+                (Some(focus_domain), Some(focus_leaf)) if focus_domain == event.domain_key => {
+                    Some((focus_domain, focus_leaf))
+                }
+                (None, None) => None,
+                _ => {
+                    restore(self, &backup, relocated_here);
+                    return CoreReply::Rejected {
+                        kind: RefusalKind::FocusMismatch.as_str(),
+                        message: RefusalKind::FocusMismatch.message(),
+                    };
+                }
+            };
+            let Some(plan) = project_retained_tiled_geometry(
+                &repaired,
+                &event.domain_key,
+                event.domain.bounds,
+                retained_domain.gap,
+                focus,
+                ProjectionKind::Reconcile,
+                &hints,
+                &event.windows,
+            ) else {
+                restore(self, &backup, relocated_here);
+                return CoreReply::Rejected {
+                    kind: RefusalKind::MalformedTopology.as_str(),
+                    message: RefusalKind::MalformedTopology.message(),
+                };
+            };
+            self.store_committed(event.domain_key.clone(), repaired, event.outer_gap);
+            return CoreReply::Projection(plan);
         };
         if bounds_changed {
             self.reproject_retained(&event.domain_key, event.domain.bounds);
@@ -2236,18 +2606,31 @@ impl Engine {
             };
         }
         let (focus_domain, focus_leaf) = session.focus();
-        let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) else {
-            return CoreReply::Rejected {
-                kind: RefusalKind::FocusMismatch.as_str(),
-                message: RefusalKind::FocusMismatch.message(),
-            };
+        let focus = match (focus_domain, focus_leaf) {
+            (Some(focus_domain), Some(focus_leaf)) if focus_domain == event.domain_key => {
+                Some((focus_domain, focus_leaf))
+            }
+            (None, None)
+                if !event.focused_window.0.is_empty()
+                    && Self::observed_float_focus(
+                        &session,
+                        &event.domain_key,
+                        &event.focused_window,
+                    ) =>
+            {
+                // Ordinary-float observed focus (D4): the native active
+                // window is a known float homed here (user or capacity
+                // alike), so the update projects with focus none instead
+                // of wedging on `focus-mismatch`. Tiled MRU untouched.
+                None
+            }
+            _ => {
+                return CoreReply::Rejected {
+                    kind: RefusalKind::FocusMismatch.as_str(),
+                    message: RefusalKind::FocusMismatch.message(),
+                };
+            }
         };
-        if focus_domain != event.domain_key {
-            return CoreReply::Rejected {
-                kind: RefusalKind::FocusMismatch.as_str(),
-                message: RefusalKind::FocusMismatch.message(),
-            };
-        }
         let hints = event
             .windows
             .iter()
@@ -2258,15 +2641,62 @@ impl Engine {
             &event.domain_key,
             event.domain.bounds,
             event.domain.gap,
-            Some((focus_domain.clone(), focus_leaf.clone())),
+            focus,
             ProjectionKind::UpdateGaps,
             &hints,
             &event.windows,
         ) else {
-            return CoreReply::Rejected {
-                kind: RefusalKind::MalformedTopology.as_str(),
-                message: RefusalKind::MalformedTopology.message(),
+            // D7 geometric repair (float newest-first victims, or D9
+            // overlap retention): a real capacity decision on new
+            // bounds/gap, never on settings alone.
+            let Some(repaired) = Self::try_repair_domain(
+                &session,
+                &event.domain_key,
+                event.domain.bounds,
+                event.domain.gap,
+                event,
+            ) else {
+                return CoreReply::Rejected {
+                    kind: RefusalKind::MalformedTopology.as_str(),
+                    message: RefusalKind::MalformedTopology.message(),
+                };
             };
+            let (focus_domain, focus_leaf) = repaired.focus();
+            let (Some(focus_domain), Some(focus_leaf)) = (focus_domain, focus_leaf) else {
+                // Repair emptied the tiled set without emptying
+                // membership (floats remain): project empty, keep slot.
+                self.store_committed(event.domain_key.clone(), repaired.clone(), event.outer_gap);
+                return CoreReply::Projection(ProjectionPlan {
+                    base_revision: repaired.accepted_revision(),
+                    kind: ProjectionKind::UpdateGaps,
+                    geometry: Vec::new(),
+                    focus_domain: None,
+                    focus_leaf: None,
+                });
+            };
+            if focus_domain != event.domain_key {
+                return CoreReply::Rejected {
+                    kind: RefusalKind::FocusMismatch.as_str(),
+                    message: RefusalKind::FocusMismatch.message(),
+                };
+            }
+            let Some(plan) = project_retained_tiled_geometry(
+                &repaired,
+                &event.domain_key,
+                event.domain.bounds,
+                event.domain.gap,
+                Some((focus_domain, focus_leaf)),
+                ProjectionKind::UpdateGaps,
+                &hints,
+                &event.windows,
+            ) else {
+                return CoreReply::Rejected {
+                    kind: RefusalKind::MalformedTopology.as_str(),
+                    message: RefusalKind::MalformedTopology.message(),
+                };
+            };
+            self.store_committed(event.domain_key.clone(), repaired, event.outer_gap);
+            return CoreReply::Projection(plan);
         };
         let mut session = session;
         if !session.update_domain_gaps(&event.domain_key, event.domain.bounds, event.domain.gap) {
@@ -2619,11 +3049,27 @@ impl Engine {
                 follow: *follow,
             }
         };
-        match session.propose(
+        // Trustworthy native live frame for same-output sends only:
+        // the carried mover rectangle is the exact current native frame
+        // (allocation can differ under B6/clamped hints). Cross-output
+        // sends carry none: source coordinates are never staged as a
+        // target claim; the established native send remap plus its
+        // arrival proof owns placement there.
+        let mover_live_frame = if output_send {
+            None
+        } else {
+            event
+                .windows
+                .iter()
+                .find(|entry| entry.window.0 == *window)
+                .map(|entry| entry.rect)
+        };
+        match session.propose_send_with_live_frame(
             &session_command,
             &observation,
             &event.correlation,
             &LifecycleCapabilities::full(),
+            mover_live_frame,
         ) {
             Ok(plan) => {
                 if let Some(trace) = session.last_send_placement().cloned() {
@@ -3345,10 +3791,24 @@ impl Engine {
                     )
                     .map(|plan| {
                         let effective = session.pending_float_geometry(&window);
-                        (plan, effective)
+                        // Explicit unfloat retries once: a capacity
+                        // re-float keeps the window floated with no false
+                        // tile override. The newcomer names the native
+                        // float target (no frame authority); the adapter
+                        // owns native focus in the route integration.
+                        let no_space = session.pending_stages_capacity_float(&window);
+                        (plan, effective, no_space)
                     })
             },
-            |result| CoreReply::Tiled(TiledPlan::for_toggle_float(&result.0, result.1)),
+            |result| {
+                let mut tiled = CoreReply::Tiled(TiledPlan::for_toggle_float(&result.0, result.1));
+                if result.2
+                    && let CoreReply::Tiled(plan) = &mut tiled
+                {
+                    plan.float_window = Some(window.clone());
+                }
+                tiled
+            },
             |session, result, e, base| Self::commit_lifecycle(session, &result.0, e, base),
         )
     }
@@ -3505,7 +3965,7 @@ impl Engine {
             &capabilities,
             *same_axis_move,
         ) {
-            Ok(plan) => {
+            Ok(crate::session::SessionMoveOutcome::Moved(plan)) => {
                 if matches!(plan.dispatch.operation, MoveOperation::CrossOutput { .. }) {
                     let target_outer_gap = event
                         .directional_target_outer_gap
@@ -3558,6 +4018,44 @@ impl Engine {
                         message: OBSERVATION_MESSAGE,
                         detail: "commit-rejected",
                     }
+                }
+            }
+            Ok(crate::session::SessionMoveOutcome::CapacityFloat(plan)) => {
+                // R4 capacity fallback: the exact wrap proved geometric
+                // exhaustion, so the established send result carries the
+                // slotless float (same commit/split/store as the R4 move,
+                // through the lifecycle verifier). The adapter actuates one
+                // transfer plus the native cross-output remap with no mover
+                // geometry write.
+                let target_outer_gap = event
+                    .directional_target_outer_gap
+                    .filter(|gap| is_gap(*gap))
+                    .unwrap_or(0);
+                let Some(typed) = crate::boundary::SendWorkspacePlan::from_session(&plan) else {
+                    return CoreReply::SnapshotInvalid {
+                        message: OBSERVATION_MESSAGE,
+                        detail: "move-op-invalid",
+                    };
+                };
+                if Self::commit_lifecycle(&mut session, &plan, event, base) {
+                    let Ok((source, target)) = session.split_canonical_pair() else {
+                        return CoreReply::SnapshotInvalid {
+                            message: OBSERVATION_MESSAGE,
+                            detail: "commit-rejected",
+                        };
+                    };
+                    self.store_committed(source_key.clone(), source, event.outer_gap);
+                    if let Some(target) = target {
+                        self.store_committed(target_key.clone(), target, target_outer_gap);
+                    } else {
+                        self.sessions.remove(target_key);
+                        self.outer_gaps.remove(target_key);
+                    }
+                    return CoreReply::SendOutput(typed);
+                }
+                CoreReply::SnapshotInvalid {
+                    message: OBSERVATION_MESSAGE,
+                    detail: "commit-rejected",
                 }
             }
             Err(error) => CoreReply::Rejected {
@@ -3867,15 +4365,26 @@ impl Engine {
             true,
             |session, observation| {
                 let _ = session.sync_focus_from_window(&event.domain_key, &event.focused_window);
-                session.propose_move_with_same_axis(
-                    &event.domain_key,
-                    &window,
-                    direction,
-                    observation,
-                    &event.correlation,
-                    &Capabilities::full(),
-                    same_axis_move,
-                )
+                session
+                    .propose_move_with_same_axis(
+                        &event.domain_key,
+                        &window,
+                        direction,
+                        observation,
+                        &event.correlation,
+                        &Capabilities::full(),
+                        same_axis_move,
+                    )
+                    .and_then(|outcome| match outcome {
+                        // Single-domain retained sessions cannot plan a
+                        // cross-output wrap, so the R4 capacity fallback is
+                        // unreachable here; the refusal below only preserves
+                        // the no-mutation invariant if ever reached.
+                        crate::session::SessionMoveOutcome::Moved(plan) => Ok(plan),
+                        crate::session::SessionMoveOutcome::CapacityFloat(_) => {
+                            Err(ProposeError::Refused(RefusalKind::MalformedTopology))
+                        }
+                    })
             },
             |plan| CoreReply::MoveDirectional(MovePlanReply::from_local(direction, plan)),
             |session, plan, event, base| Self::commit_directional_move(session, event, plan, base),
@@ -4830,6 +5339,66 @@ impl Engine {
         };
         session.reproject_domain(key, bounds);
         true
+    }
+
+    /// D7 repair attempt for a retained domain whose tree no longer
+    /// projects at `bounds`/`gap`: adopt the geometry structurally, then
+    /// float newest-first victims (or retain overlap) with the
+    /// observation's hints, overlay protections, and live frames.
+    /// Revision-neutral like gap adoption; the caller projects and
+    /// stores on success. `None` is a narrow truthful hold. An
+    /// actually-changed geometry re-evaluates under the current setting;
+    /// identical geometry keeps an accepted overlap mark sheltered.
+    fn try_repair_domain(
+        session: &Session,
+        key: &DomainKey,
+        bounds: Rect,
+        gap: i32,
+        event: &CoreEvent,
+    ) -> Option<Session> {
+        let geometry_changed = session
+            .domains()
+            .iter()
+            .find(|d| d.key() == *key)
+            .is_none_or(|d| d.bounds != bounds || d.gap != gap);
+        let mut repaired = session.clone();
+        if !repaired.update_domain_gaps(key, bounds, gap) {
+            return None;
+        }
+        let observed: BTreeMap<&WindowId, &crate::seed::EngineWindow> = event
+            .windows
+            .iter()
+            .map(|entry| (&entry.window, entry))
+            .collect();
+        let hints: BTreeMap<WindowId, crate::size_hints::WindowSizeHints> = event
+            .windows
+            .iter()
+            .map(|entry| (entry.window.clone(), entry.hints))
+            .collect();
+        let mut protected: BTreeSet<WindowId> = BTreeSet::new();
+        let mut live_frames: BTreeMap<WindowId, Rect> = BTreeMap::new();
+        for link in repaired.snapshot().windows.iter() {
+            let Some(entry) = observed.get(&link.window) else {
+                continue;
+            };
+            if !entry.floating {
+                live_frames.insert(link.window.clone(), entry.rect);
+            }
+            if entry.fullscreen || entry.maximized || entry.sticky || entry.fit_excluded {
+                protected.insert(link.window.clone());
+            }
+        }
+        if repaired.repair_infeasible_domain(
+            key,
+            &hints,
+            &protected,
+            &live_frames,
+            geometry_changed,
+        ) {
+            Some(repaired)
+        } else {
+            None
+        }
     }
 }
 
@@ -5819,17 +6388,30 @@ mod tests {
             restart_hydration_windows(control, other),
         );
         match engine.handle(&event) {
-            CoreReply::Rejected { kind, .. } => assert_eq!(kind, "duplicate-window"),
-            other => panic!("fixed-anchor hydration shape must reject duplicate, got {other:?}"),
+            CoreReply::Tiled(plan) => {
+                // The focused fixed anchor converges as an automatic
+                // float; the tiled remainder (c2) still projects even
+                // though the converged session holds no tiled focus (a
+                // floated anchor never takes it). Fixed anchors keep
+                // the float-free remainder shape (no capacity float
+                // target).
+                assert_eq!(plan.geometry.len(), 1);
+                assert_eq!(plan.geometry[0].window.0, "c2");
+                assert_eq!(plan.focus_domain, None);
+                assert_eq!(plan.focus_leaf, None);
+                assert_eq!(plan.float_window, None);
+                assert_eq!(plan.float_rect, None);
+            }
+            other => panic!("fixed-anchor hydration shape must admit mixed roster, got {other:?}"),
         }
-        // Fall-through evidence, pinned to the exact branch: the fit
-        // declines for the fixed anchor (`fit-excluded`), the
-        // floating-aware build stores one tiled control plus four
-        // exceptions (the focused anchor becomes an automatic float, so
-        // the converged session holds no tiled focus), both projection
-        // blocks miss, and the legacy seed re-admits the already-converged
-        // anchor as `duplicate-window`. The converged session stays
-        // stored, so the next observation re-adopts from it (tick 2).
+        // Atomic serial-seed evidence, pinned to the exact branch: the
+        // fit declines for the fixed anchor (`fit_excluded`), then one
+        // convergence commits a tiled control plus four exceptions (the
+        // focused anchor becomes an automatic float, so the converged
+        // session holds no tiled focus). No legacy seed fall-through
+        // re-admits the converged anchor as `duplicate-window`. The
+        // converged session stays stored, so the next observation
+        // re-adopts from it (tick 2).
         let convergence = engine.last_convergence().expect("converged before seed");
         assert_eq!(convergence.op, "reconcile");
         assert_eq!(

@@ -1326,11 +1326,65 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         // fullscreen, sticky, floating, including first-seen fullscreen
         // holds) never take automatic focus/raise/stack writes. The effect
         // stays spent (at-most-once) with explicit feedback, so focus is
-        // never stolen on a later unrelated report.
-        if (observed.fitExcluded || observed.fullscreen || observed.sticky || observed.floating) {
+        // never stolen on a later unrelated report. Admission focus
+        // (`af-<win>`, D4 newcomer intent) is the one exception: a
+        // still-plain ordinary float takes the one-shot activation, where
+        // ordinary is the core's reply classification (a floating reply
+        // row, user or capacity alike), never observed floating alone: a
+        // game/excluded float the core never classified stays refused.
+        // Fullscreen (game), maximized, and sticky overlays refuse even
+        // there.
+        const replyRow = reply.windows.find((w) => w.win === fx.target);
+        const admissionFloatTarget =
+            fx.id.startsWith("af-") &&
+            observed.floating === true &&
+            replyRow?.floating === true;
+        if (admissionFloatTarget) {
+            if (observed.fullscreen || observed.maximized || observed.sticky) {
+                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
+                result.held += 1;
+                continue;
+            }
+        } else if (observed.fitExcluded || observed.fullscreen || observed.sticky || observed.floating) {
             state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
             result.held += 1;
             continue;
+        }
+        // D01 sibling fence for admission intent: a fullscreen/maximized
+        // sibling in the target's own domain owns host activation, so an
+        // automatic newcomer focus never fires behind it. The effect stays
+        // spent with explicit feedback, never retried; explicit
+        // command-issued focus rides a non-`af-` id and stays exempt.
+        // Observed flags plus a live fullscreen/maximized recheck fence a
+        // sibling that flipped mid-apply; unreadable live safety alone
+        // never refuses.
+        if (fx.id.startsWith("af-")) {
+            const home = observation.domains.find((d) =>
+                d.windows.some((w) => w.win === fx.target),
+            );
+            const siblingBlocked = home?.windows.some((w) => {
+                if (w.win === fx.target) {
+                    return false;
+                }
+                if (w.fullscreen || w.maximized) {
+                    return true;
+                }
+                try {
+                    const safety = env.readLiveSafety(w.ref);
+                    return (
+                        safety !== null &&
+                        (safety.fullscreen === true || safety.maximized === true)
+                    );
+                } catch (error) {
+                    void error;
+                    return false;
+                }
+            });
+            if (siblingBlocked === true) {
+                state.noteFeedback({ op: fx.id, kind: "effect", outcome: "unattempted", hold: "refused-target" });
+                result.held += 1;
+                continue;
+            }
         }
         if (observation.gesture || !replyFresh(env, reply, entryObs)) {
             if (midApplyStopped(env, entryObs) || observation.gesture) {

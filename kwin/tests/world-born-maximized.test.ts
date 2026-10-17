@@ -144,6 +144,7 @@ function readyReply(win: string, out: string, ws: string, proof?: ScopeProof): W
             win, out, ws, alloc: [0, 0, 100, 100], frame: [0, 0, 100, 100],
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "", frame_op: "",
+            floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
     };
@@ -857,6 +858,7 @@ function acceptReady(
             alloc: [12, 12, 376, 576], frame: [12, 12, 376, 576],
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "", frame_op: "",
+            floating: false, float_origin: "",
         }],
         transfers: [], effects: [], result: null,
     }));
@@ -1055,6 +1057,7 @@ describe("world born-maximized entry flow", () => {
                 alloc: [12, 12, 376, 576], frame: [12, 12, 376, 576],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "", frame_op: "",
+                floating: false, float_origin: "",
             }],
             transfers: [], effects: [], result: null,
         }));
