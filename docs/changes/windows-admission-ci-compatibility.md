@@ -43,4 +43,4 @@
   this does not test native macOS behavior. Hosted CI verification remains needed.
 - No runtime code changed, so no live smoke was required. No admission-policy
   decision or additional adoption backlog line is introduced by this test fix.
-- CI verification after publication pending.
+- Hosted CI after publication passed all jobs (`c75fe675`).

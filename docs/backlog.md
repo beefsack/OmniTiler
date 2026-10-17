@@ -147,9 +147,15 @@ decisions of 2026-09-24 are under
   D1-D10 on 2026-10-16/17 (geometric exhaustion only, largest-splittable and
   float defaults, capacity floats are ordinary floats persisted across
   restart, newest-first eviction on shrink, all capacity routes, positive
-  overflow for overlap, global catalog settings). Ready for core+KDE
-  implementation; Windows/macOS adoption follow-ups to be added then.
+  overflow for overlap, global catalog settings). Core+KDE implemented
+  (`cf422d2f`, `26c88a8d`); Windows test fixtures aligned (`c75fe675`,
+  [record](changes/windows-admission-ci-compatibility.md)).
   Follow-up during dogfooding: review the UX of B6 minimum-size overlap.
+- P1 | Windows best-effort admission adoption | Adopt the approved D1-D10
+  capacity behavior (float/overlap recovery, eviction on shrink, catalog
+  settings) in the Windows runtime, matching KDE where sensible per host.
+  Not started; determine first whether it depends on the parked full
+  world-state reply adoption below.
 - P1 | KDE maximize/fullscreen asynchronous-settlement false refusals | Native
   callbacks logged refusal/shortcut failure before the requested state settled
   successfully. Replace same-stack final-outcome inference: confirm once at a
