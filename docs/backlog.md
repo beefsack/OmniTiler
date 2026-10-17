@@ -106,10 +106,11 @@ decisions of 2026-09-24 are under
   packaging and native operation isolation retained. Rust/KWin suites and
   hermetic native settings/effect tests pass. Native targeted-accessibility
   checks passed both identities 2026-10-18: all tabs/Status, gap draft/save/reopen,
-  Cancel, Defaults without save and unchanged ordinary-Apply endpoints
+  Cancel, Defaults without save, both post-switch draft read-backs and unchanged
+  ordinary-Apply endpoints
   ([partial evidence](changes/kde-live-acceptance.md#settings-targeted-native-interaction-2026-10-18)).
-  Physical traversal/buddies/visual UX, script-identity post-switch draft
-  read-back and transient-operation non-invocation remain pending;
+  Physical traversal/buddies/visual UX and transient-operation non-invocation
+  remain pending;
   [original steps](changes/archive/kde-settings-core-catalog.md).
 - P0 | Core update replies carry workspace state | Core and KDE delivered
   offline 2026-10-17 under selected D1-D5: complete world reports/replies,
@@ -118,7 +119,13 @@ decisions of 2026-09-24 are under
   transport. [Contract, measurements and live checks](changes/archive/core-full-state-replies.md).
   User-owned live KDE acceptance remains pending (raised to P0 2026-10-17:
   two live regressions, rejected actions and lost outer gap, were fixed in
-  `3c94a819`, `9eaea71a`, `9fe0e79b`; the outer gap fix was confirmed live);
+  `3c94a819`, `9eaea71a`, `9fe0e79b`; the outer gap fix was confirmed live).
+  Bounded native callback/state passes 2026-10-18 cover sampled ordinary/safety/
+  restart paths, request-size transport limits, selection/history, floating-boundary
+  numbered/relative follow/stay and one tiled numbered send-follow. No complete
+  live inventory gate: D7 precondition and tiled return remain blocked; physical
+  input, drag/visual UX and remaining permutations are pending
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
   Windows/macOS adoption is
   tracked separately below. Geometric exhaustion preserves topology with
   complete recoverable constraint-held rows, not an admission fallback.
@@ -143,6 +150,31 @@ decisions of 2026-09-24 are under
   overflow for overlap, global catalog settings). Ready for core+KDE
   implementation; Windows/macOS adoption follow-ups to be added then.
   Follow-up during dogfooding: review the UX of B6 minimum-size overlap.
+- P1 | KDE maximize/fullscreen asynchronous-settlement false refusals | Native
+  callbacks logged refusal/shortcut failure before the requested state settled
+  successfully. Replace same-stack final-outcome inference: confirm once at a
+  fresh accepted observation boundary (recommended), or distinguish issuance
+  from final outcome. Preserve lifetime/scope/focus/generation/supersession
+  fences, one setter attempt, no retry/replay and truthful genuine refusal.
+  Add producer-shaped delayed-settlement, silent-refusal and intervening-command/
+  restart regressions with renewed wrappers, QML array-likes and native properties.
+  No correction delivered; [coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+- P1 | KDE D7 controller-restart precondition: exact-site reproduction |
+  A stable fixed-client explicit-tile request refused `partial-observation`
+  before controller replacement. Fail-closed behavior is expected; product vs
+  fixture trigger is unresolved because operation payload/refusal site is absent.
+  Reproduce offline immediately after workspace enable, with/without intervening
+  observes; retain complete reports/replies, known-set bindings and exact refusal
+  site. No delay-only workaround or controller-restart pass inferred.
+  [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
+- P1 | KDE two-domain tiled send-back `scope-held` diagnosis | One tiled
+  send-follow passed; the subsequent observe published a hold and send-stay back
+  refused without movement. This may be the capacity hold that best-effort
+  admission clears: re-check after admission lands before investigating. If it
+  persists, retain full reports/replies and endpoint hold reasons, then replay
+  send-follow/observe/send-back offline. Cause remains unclassified; later retries
+  after the first refusal are not clean acceptance.
+  [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
 - P1 | Windows: adopt full world-state core replies | Replace
   adapter-triggered trailing policy and per-op application with complete
   observed world reports and host diffs; move scope/history/mapping policy
@@ -4256,6 +4288,12 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   repeat sticky-on/native-unstick/repress and sticky-off/native-restick/repress,
   both tiled and floating origins. Hold/release Meta+M and Meta+Shift+G, record
   KGlobalAccel callback count/visible cycling and release/repress behavior.
+  Native callback/state signal 2026-10-18: sticky-on/native-unstick/sticky-on
+  succeeded after explicit maximize restore/read-back; rapid focus callbacks
+  showed busy suppression. The run continued after a maximize false refusal,
+  so neither is clean whole-journey acceptance. B1 diagnostic correction is
+  parked in Open work; remaining origins/orderings are unverified
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
   Physical repeat behavior remains TBD; these live checks stay user-owned.
   [Original steps](changes/archive/kde-post-windows-followups.md#user-owned-test-system-checks),
   [offline record](changes/archive/kde-repeat-offline-fixtures.md),
@@ -4264,7 +4302,11 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   B, natively maximize it, then toggle float off once. Verify maximize clears
   before fresh tiled placement, focus/settlement logs, ordinary nonmax unfloat,
   fixed-client explicit tile override, refused/raced clear and later-press
-  recovery. Fullscreen/sticky gates remain unchanged. User-owned, native TBD.
+  recovery. Sampled native callback/state pass 2026-10-18: one maximized-unfloat
+  activation cleared maximize and tiled at the first accepted report boundary;
+  ordinary nonmax unfloat also passed. Physical delivery, fixed-client/raced-clear
+  and later-press permutations remain pending. Fullscreen/sticky gates unchanged.
+  [Coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step).
   [Record](changes/archive/maximized-intentional-unfloat.md).
 - D7 fixed-window tile override across script reload/planner restart (KDE
   offline delivered): Planner-only replacement with the same genuine fixed
@@ -4274,9 +4316,9 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   controller-replacement run is not accepted; clean script/controller restart
   remains pending. A subsequent stable stopped-fixture setup also refused its
   first explicit fixed-tile request as `partial-observation` and stopped without
-  retry or controller replacement. Diagnose that precondition refusal before
-  another restart attempt. Successfully tile a fixed client, reload the script and
-  restart the planner with the same live client; it remains tiled. Check hint
+  retry or controller replacement. Exact-site reproduction is parked in Open work;
+  the trigger remains unresolved. Successfully tile a fixed client, reload the
+  script and restart the planner with the same live client; it remains tiled. Check hint
   loss/predicate changes then workspace enable, re-float/close/complete-inventory
   prune, hidden clients, degraded/old-format/unmatched fallback to untouched
   fixed float, and separate hydrate/persist/clear ACK counts. Ordinary non-fixed
@@ -4301,25 +4343,13 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   unchanged with zero writes; ordinary editor control tiled
   ([partial record](changes/kde-live-acceptance.md)). Other permutations above
   remain pending. [Record](changes/archive/fixed-size-exit-and-enable.md).
-- KDE asynchronous fullscreen outcome diagnostics: reproduced 2026-10-18 with
-  a genuine fixed born-fullscreen client. One exit callback logged
-  `fullscreen-refused` and `shortcut-failed`, then native exit settled and the
-  next accepted report wrote zero geometry. `setFullscreenNative` reads back
-  synchronously; both shortcut and pointer callers interpret that result as
-  final failure. Options: confirm at one fresh observation boundary with
-  lifetime/scope/generation/supersession fences (recommended), or report issuance
-  without final outcome until native observation. Preserve fullscreen safety,
-  no setter retry/command replay and truthful real-refusal diagnostics; add
-  asynchronous producer-shaped regression coverage. No correction delivered.
-  [Evidence summary](changes/kde-live-acceptance.md#fixed-client-native-observations-2026-10-18).
 - KDE full-state churn follow-ups (unclassified, 2026-10-18): three
   `partial-observation` refusals and one float-command log followed by an
   observe-only dispatch occurred during live membership/restart churn. A fixed
   explicit-tile leg displaced an ordinary control; re-float geometry differed
-  from the pre-tile frame. A later stopped, stable fixture reproduced the
-  `partial-observation` refusal on its first fixed-tile request and stopped.
-  No admission/capacity diagnosis is established; inspect that refusal before
-  further native retries, then discriminate the other observations separately.
+  from the pre-tile frame. D7's stable precondition refusal is tracked in Open
+  work; no admission/capacity diagnosis is established. Discriminate the other
+  observations separately; the tiled send-back hold has its own parked item.
   Two disposable helpers also exited after their last proven live observation;
   cause unknown. A controller-free supervised lifetime probe did not reproduce
   the exits; retain owned process identity and wait status on subsequent legs.
@@ -4337,7 +4367,10 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   User logout/login/new KWin must not adopt older intent; no settings/layout
   persistence claim. Physical startup-time sends and separate storage ACK
   tokens also need verification. [Record](changes/archive/kde-intentional-float-restart.md),
-  [live guide](live-kwin-testing.md). No Q3 live result claimed.
+  [live guide](live-kwin-testing.md). Sampled native Planner-only restart preserved
+  an ordinary float's current frame; script restart, stopped move/resize and the
+  remaining storage/lifetime permutations are pending
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
 - KDE D1 settings UI (offline delivered): verify predicate labels/tooltips,
   Save/Defaults/Revert and live pickup; one-axis-fixed new clients tile under
   `both-axes-fixed`, float without writes under `either-axis-fixed`. Switch
@@ -4369,10 +4402,16 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   intentional/sticky keep existing rules).
   Foreground/hidden startup and correlated classification/admission/terminal
   logs need native verification. [Record](changes/archive/fixed-size-admission.md),
-  [live guide](live-kwin-testing.md). No Q2 live result claimed.
+  [live guide](live-kwin-testing.md). Only the D5/D6 and Planner-only D7 samples
+  above have native callback/state passes; no complete Q2 or game/physical result
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
 - KDE R-WS-08/11 item 1: user reported "worked perfectly" on a SINGLE output
   (2026-10-07); single-output native journey confirmed. The report did not
   specify individual edge/>9 cases or which presets were exercised.
+  Full-state callback/state repeat 2026-10-18 passed numbered selection and
+  previous-workspace return with remembered owned focus and correlated
+  command/dispatch/apply evidence; no physical/ring-wrap/>9 claim
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
   Remaining: multi-output per-output/shared scope, hotplug/return (R-WS-15..17),
   and preset-specific checks. Verify Authentic's confirmed Apply/Force clears stock KWin "Switch One
   Desktop to the Left", "Switch One Desktop to the Right", "Switch One
@@ -4393,7 +4432,14 @@ recorded separately from unexercised legs. Reference-WM checks test other compos
   holders; Compatible disables our four arrows, keeps letters/stay rebindings;
   Revert restores cleared defaults. Multi-output relative-ring scope remains
   user-owned. [Record](changes/archive/kde-workspace-send-follow-stay.md),
-  [live guide](live-kwin-testing.md). No item-2 live result claimed.
+  [live guide](live-kwin-testing.md). Bounded callback/state passes 2026-10-18:
+  ordinary-float numbered/relative follow/stay across a floating boundary retained
+  the float frame and correct view/focus; one two-tiled-domain numbered follow
+  moved/focused the subject and reflowed both sides. Stay actions were invoked by
+  registered name without rebinding, not physically pressed. Tiled return/stay/
+  relative is blocked by the parked hold; append/sole-mover/spare, both-end wrap,
+  >9, preset/rebinding and physical delivery remain pending
+  ([coverage matrix](changes/kde-live-acceptance.md#remaining-coverage-and-next-step)).
 - KDE R-MOV-03 item 3 (offline delivered): toggle Same-axis move in KCM
   between Group with neighbor and Swap with neighbor. In an N-ary group, move an interior
   leaf toward a direct leaf sibling: grouping creates the nested pair, swapping
