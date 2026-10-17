@@ -64,6 +64,75 @@ pub(super) struct OwnerDeadlines {
     pub degraded_poll: bool,
 }
 
+/// Deterministic owner-wait timeout cause for trace-only attribution: which
+/// armed deadline selected the requested timeout. `Staged` is never produced
+/// by [`owner_deadline_source`]: the caller forces it for same-thread
+/// staged-work zero-timeout collects, which skip deadline selection. Order of
+/// declaration matches [`OWNER_WAIT_SOURCE_ORDER`]; discriminants index
+/// [`OwnerWaitCounts::src_timeouts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OwnerWaitSource {
+    Staged = 0,
+    Restore = 1,
+    Pending = 2,
+    Pager = 3,
+    SnapRetry = 4,
+    PagerRetry = 5,
+    IconRetry = 6,
+    Gaming = 7,
+    Monitor = 8,
+    RunEnd = 9,
+    Gesture = 10,
+    DegradedPoll = 11,
+    NoneIdle = 12,
+}
+
+/// JSON column order for the `owner_src_timeouts` array in `pump-waits`
+/// lines, parallel to [`OwnerWaitSource`] discriminants.
+pub(super) const OWNER_WAIT_SOURCE_ORDER: [&str; 13] = [
+    "staged",
+    "restore",
+    "pending",
+    "pager",
+    "snap-retry",
+    "pager-retry",
+    "icon-retry",
+    "gaming",
+    "monitor",
+    "run-end",
+    "gesture",
+    "degraded-poll",
+    "none",
+];
+
+/// Trace-only per-wait diagnostic accompanying one [`WaitWake`]: whether the
+/// wait was a staged zero-timeout collect, the selected deadline source, the
+/// exact requested timeout passed to the native wait, and the measured
+/// elapsed time around the wait call, and whether the winning deadline was
+/// already due at selection (past-due zero requests versus future
+/// sub-millisecond remainders). Pure bookkeeping: never arms, wakes,
+/// or actuates anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OwnerWaitDiag {
+    pub staged: bool,
+    pub source: OwnerWaitSource,
+    pub requested_ms: u32,
+    pub elapsed_ms: u64,
+    pub already_due: bool,
+}
+
+/// Selected owner wait timeout from one [`OwnerDeadlines`] scan: the winning
+/// cause, the whole-millisecond request, and whether the winning deadline
+/// was already due at the selection timestamp (`at <= now`). Future
+/// durations round up, so a non-staged zero request implies `already_due`;
+/// the flag still separates overdue deadlines from conversion effects in
+/// the trace attribution.
+pub(super) struct OwnerTimeout {
+    pub source: OwnerWaitSource,
+    pub requested_ms: u32,
+    pub already_due: bool,
+}
+
 /// Read-only wait-counter snapshots for one `pump-waits` line: the input
 /// six-tuple `(turns, waits, work, msg, timeout, failed)` under one
 /// diag-slot lock plus the renderer six-tuple `(waits, work, msg,
@@ -95,39 +164,65 @@ pub(super) fn pump_waits_snapshots(state: &TileLoop) -> (InputWaitSplit, RenderW
     (input, render)
 }
 
-/// Next owner wait timeout in milliseconds (`u32::MAX` is the Win32
-/// `INFINITE`): the minimum over the armed deadlines, or infinite at
-/// healthy idle. Pure (no handles, no syscalls): unit-testable.
-pub(super) fn owner_timeout_ms(now: Instant, deadlines: &OwnerDeadlines) -> u32 {
+/// Selected owner wait timeout plus its deterministic cause: the minimum
+/// over the armed deadlines (ties resolve to the earliest-listed deadline,
+/// matching the previous `min` fold), or infinite at healthy idle with
+/// [`OwnerWaitSource::NoneIdle`]. The degraded-poll fallback caps (never
+/// extends) the wait and takes the cause only when it strictly reduces the
+/// timeout. Pure (no handles, no syscalls): unit-testable. Future durations
+/// round UP to whole milliseconds (a sub-millisecond remainder requests
+/// 1 ms, never 0); already-due deadlines request 0 and unarmed stays
+/// `u32::MAX`. At most 1 ms of conversion quantization: no cadence,
+/// backoff, or contract changes.
+pub(super) fn owner_deadline_source(now: Instant, deadlines: &OwnerDeadlines) -> OwnerTimeout {
     let mut earliest: Option<Instant> = None;
-    let mut push = |at: Option<Instant>| {
+    let mut source = OwnerWaitSource::NoneIdle;
+    let mut push = |at: Option<Instant>, candidate: OwnerWaitSource| {
         if let Some(at) = at {
-            earliest = Some(earliest.map_or(at, |prev| prev.min(at)));
+            let replace = match earliest {
+                None => true,
+                // Strict: ties keep the earliest-listed deadline.
+                Some(prev) => at < prev,
+            };
+            if replace {
+                earliest = Some(at);
+                source = candidate;
+            }
         }
     };
-    push(deadlines.restore_until);
-    push(deadlines.pending_until);
-    push(deadlines.pager_maintenance_at);
-    push(deadlines.snap_retry_at);
-    push(deadlines.pager_retry_at);
-    push(deadlines.pager_icon_retry_at);
-    push(deadlines.gaming_due_at);
-    push(deadlines.monitor_due_at);
-    push(deadlines.run_end);
+    push(deadlines.restore_until, OwnerWaitSource::Restore);
+    push(deadlines.pending_until, OwnerWaitSource::Pending);
+    push(deadlines.pager_maintenance_at, OwnerWaitSource::Pager);
+    push(deadlines.snap_retry_at, OwnerWaitSource::SnapRetry);
+    push(deadlines.pager_retry_at, OwnerWaitSource::PagerRetry);
+    push(deadlines.pager_icon_retry_at, OwnerWaitSource::IconRetry);
+    push(deadlines.gaming_due_at, OwnerWaitSource::Gaming);
+    push(deadlines.monitor_due_at, OwnerWaitSource::Monitor);
+    push(deadlines.run_end, OwnerWaitSource::RunEnd);
     if deadlines.gesture_open {
-        push(now.checked_add(Duration::from_millis(GESTURE_SAMPLE_MS)));
+        push(
+            now.checked_add(Duration::from_millis(GESTURE_SAMPLE_MS)),
+            OwnerWaitSource::Gesture,
+        );
     }
+    let already_due = earliest.is_some_and(|at| at <= now);
     let mut timeout = match earliest {
         None => u32::MAX,
         Some(at) => at
             .saturating_duration_since(now)
-            .as_millis()
+            .as_nanos()
+            .div_ceil(1_000_000)
             .min(u128::from(u32::MAX)) as u32,
     };
-    if deadlines.degraded_poll {
-        timeout = timeout.min(DEGRADED_POLL_MS as u32);
+    if deadlines.degraded_poll && (DEGRADED_POLL_MS as u32) < timeout {
+        timeout = DEGRADED_POLL_MS as u32;
+        source = OwnerWaitSource::DegradedPoll;
     }
-    timeout
+    OwnerTimeout {
+        source,
+        requested_ms: timeout,
+        already_due,
+    }
 }
 
 /// Open-gesture sampling demand: a managed gesture with START capture holds

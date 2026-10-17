@@ -262,7 +262,15 @@ pub(super) type RenderWaitSplit = (u64, u64, u64, u64, u64, u64);
 /// count set `WaitWake` flags per return, so combinations (ack plus messages
 /// is common) can exceed `waits`; `timeout` counts genuine 258 expiries only
 /// while `failed` counts `WAIT_FAILED`/abandoned separately; `ack_only`
-/// counts the early-return subset.
+/// counts the early-return subset. Timeout-cause attribution rides the same
+/// counters: `wait_staged` counts staged zero-timeout collects,
+/// `src_timeouts` counts genuine timeouts per [`OwnerWaitSource`]
+/// discriminant (staged collects land in the `Staged` bucket),
+/// `zero_future_subms` counts unstaged zero-requested timeouts whose winning
+/// deadline was still in the future at selection (sub-millisecond remainder
+/// meeting the millisecond conversion), `zero_already_due` counts unstaged
+/// zero-requested timeouts already due at selection, and `early_timeouts`
+/// counts timeouts returning before the requested duration elapsed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct OwnerWaitCounts {
     pub(super) waits: u64,
@@ -273,11 +281,19 @@ pub(super) struct OwnerWaitCounts {
     pub(super) notify: u64,
     pub(super) timeout: u64,
     pub(super) failed: u64,
+    pub(super) wait_staged: u64,
+    pub(super) src_timeouts: [u64; OWNER_WAIT_SOURCE_ORDER.len()],
+    pub(super) zero_future_subms: u64,
+    pub(super) zero_already_due: u64,
+    pub(super) early_timeouts: u64,
 }
 
 impl OwnerWaitCounts {
     /// One outer wait return: one `waits` plus one hit per set reason flag.
-    pub(super) fn note_wait(&mut self, wait: WaitWake) {
+    /// The accompanying [`OwnerWaitDiag`] is pure bookkeeping (no wake, no
+    /// actuation): staged collects count separately, genuine timeouts land
+    /// in their cause bucket, and early/zero-requested expiries split out.
+    pub(super) fn note_wait(&mut self, wait: WaitWake, diag: OwnerWaitDiag) {
         self.waits = self.waits.saturating_add(1);
         if wait.input {
             self.input = self.input.saturating_add(1);
@@ -296,6 +312,25 @@ impl OwnerWaitCounts {
         }
         if wait.failed {
             self.failed = self.failed.saturating_add(1);
+        }
+        if diag.staged {
+            self.wait_staged = self.wait_staged.saturating_add(1);
+        }
+        if wait.timeout {
+            let bucket = diag.source as usize;
+            if bucket < self.src_timeouts.len() {
+                self.src_timeouts[bucket] = self.src_timeouts[bucket].saturating_add(1);
+            }
+            if !diag.staged && diag.requested_ms == 0 {
+                if diag.already_due {
+                    self.zero_already_due = self.zero_already_due.saturating_add(1);
+                } else {
+                    self.zero_future_subms = self.zero_future_subms.saturating_add(1);
+                }
+            }
+            if diag.elapsed_ms < u64::from(diag.requested_ms) {
+                self.early_timeouts = self.early_timeouts.saturating_add(1);
+            }
         }
     }
 
@@ -331,6 +366,12 @@ pub(super) fn pump_waits_line(
         "owner_notify": ow.notify,
         "owner_timeout": ow.timeout,
         "owner_failed": ow.failed,
+        "owner_wait_staged": ow.wait_staged,
+        "owner_src_timeouts": ow.src_timeouts,
+        "owner_src_order": OWNER_WAIT_SOURCE_ORDER,
+        "owner_zero_future_subms": ow.zero_future_subms,
+        "owner_zero_already_due": ow.zero_already_due,
+        "owner_early_timeouts": ow.early_timeouts,
         "input_turns": input.0,
         "input_waits": input.1,
         "input_work": input.2,

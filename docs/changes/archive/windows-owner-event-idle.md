@@ -14,7 +14,7 @@
 - Regression coverage for event delivery, deadlines, request/settings changes and missing wakes.
 - Scripted workspace switching and clean-stop comparison; supported preview/input checks without substituting synthetic input for physical evidence.
 - Locked Windows package build/tests, formatting, strict all-target clippy and whitespace checks; CI results recorded separately from local Windows evidence.
-- Implementation, offline verification and the post-correction eight-case idle CPU matrix delivered. Visible timeout attribution, chevron response and physical-input/game acceptance remain open, as detailed below.
+- Implementation, offline verification, the post-correction eight-case idle CPU matrix and visible timeout attribution/correction delivered. Chevron response and physical-input/game acceptance remain open, as detailed below.
 
 ## Approach
 
@@ -117,7 +117,8 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
   Timeout counts (~0.56/s) exceed nominal 2 s pager maintenance (~0.50/s).
   Aggregate counters also include staged-work zero-timeout collects and
   cannot identify the cause of every excess return. No new periodic timer
-  or log-write feedback loop was established; attribution remains open.
+  or log-write feedback loop was established by these samples; the follow-up
+  below attributes the timeouts and corrects fractional-deadline conversion.
 - Managed visible trace contained 60 icon-result batches, all misses,
   approximately paired every 6 s, correlated with completion notifications
   (+64 across the run). This is the already-approved 5 s negative icon-cache
@@ -152,15 +153,64 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
   Independent evidence/source review accepted the measurements with the
   attribution, granularity, restoration and chevron limits above.
 
-### Open finding and next action
+## Timeout attribution and correction, 2026-10-18
 
-- Visible timeout excess is not causally resolved. Options: (a) add trace-only
-  per-timeout attribution (staged flag, selected deadline and wait outcome),
-  then repeat one bounded visible leg; (b) retain the aggregate uncertainty
-  without a stronger wake-frequency claim. Recommendation: (a), before changing
-  any timeout calculation or declaring every residual wake accounted for.
-  No runtime fix was made: changing retry cadence would override the existing
-  icon-freshness decision, and the counters do not establish a small causal fix.
+- Added trace-only timeout-source, staged-collect, early-return and zero-request
+  counters to existing `pump-waits` summaries/final flush. Source selection uses
+  one deadline scan; staged work still skips it. Clock reads and diagnostic
+  accumulation are trace-gated. No diagnostic deadline, wake or reconcile added.
+- Release empty-visible-pager trace legs used the same scoped launch as above,
+  15 s settling, no helpers, keys or CLI operations during idle sampling. Source
+  was `62284df5` plus the recorded Windows diagnostic/conversion diff. The
+  initial attribution-only leg observed 123 timeouts over 226.840 s, all pager,
+  including 10 zero-ms requests; no staged, notification or other deadline cause
+  explained the excess. Refined attribution and the final correction followed:
+
+| Conversion | Idle counter span | Pager timeouts | Timeouts/s | Zero requests, already due / future | CPU ms/min |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Floor, refined attribution | 190.8 s | 100 | 0.524 | 5 / 0 | 63.0 |
+| Ceil, final artifact | 188.856 s | 94 | 0.498 | 0 / 0 | 64.1 |
+
+- All steady-idle timeout causes were pager maintenance; staged and other
+  deadline timeout buckets were zero. Before correction, five summary intervals
+  contained multiple timeouts, matching approximately five excess returns over
+  the nominal 2 s cadence. The final sample had none. One early requested-duration
+  return was counted in each refined leg; it did not create an extra final-leg
+  timeout. These counters do not prove a particular OS timer-quantum mechanism.
+- Cause and fix: flooring a fractional remaining duration can request a wait
+  shorter than the actual deadline. Pager sync rearms only once that deadline
+  is due; an early service turn can leave the same deadline for another return.
+  The before-leg zero requests were already due at the next selection, not
+  directly observed future-submillisecond zeros. Round future remaining
+  nanoseconds up to whole milliseconds with `div_ceil(1_000_000)`, preserving
+  past-due zero, unarmed `INFINITE`, clamping, minimum/tie order and degraded
+  caps. This removes the deterministic under-request, not the approved 2 s
+  contract. Conversion adds less than 1 ms versus the exact future duration;
+  hide-before-drop still refuses without acknowledgement.
+- CPU windows were approximately 193.5/190.0 s, distinct from the counter-line
+  spans. The 15.625 ms accounting quantum is about 4.9 ms/min here. Single
+  samples support the observed timeout-count reduction, not a demonstrated CPU
+  improvement or a precise floor. No physical-input, preview or game claim.
+- Owner SHA-256 before: `c6ada4fc3f99e0892705ccd1c2710a75103a831c2d4fba9aeb2e823a8bec0f74`;
+  final: `b1dfb125fb49b4de90c0adf18a0b0e51d79cb66c5e229e5652e6ea9cc70c98b8`.
+  An intermediate microsecond-based ceiling missed sub-microsecond boundaries;
+  repaired to nanoseconds, regression-tested and remeasured on the final artifact.
+  No performance claim uses the intermediate sample.
+- Independent SPI pre/post reads matched; taskbar state matched its preimage.
+  Final graceful stop was 93 ms, standalone restore succeeded, and owner/helper
+  processes, pager overlays and ledger/request residue were absent. Raw identity,
+  display, baseline and restoration responses stay in external evidence sets
+  `idle-matrix-20261018-zero-split-before` and
+  `idle-matrix-20261018-ceil-nanos` (`leg.*`, `waits-lines.jsonl`,
+  `spi-compare.json`, `restore-verify.json`); initial attribution is in
+  `idle-matrix-20261017-timeout-attr`.
+- Independent final source/evidence review accepted the bounded attribution and
+  correction. Locked four-package build/test/strict all-target clippy passed
+  through `mise exec --` for `tiler-core`, `tiler-protocol`,
+  `tiler-kwin-effect-ffi`, `tiler-windows`: 2,601 passed, 0 failed, 1 ignored.
+  Workspace formatting and whitespace checks passed. Regression coverage
+  includes 1 ns, 999 ns, whole-ms-plus-1 ns, exact ms, past-due, clamping,
+  degraded caps, cause ties and staged/deadline attribution. CI is separate.
 - Chevron response needs a verified safe target or user-run observation.
   Physical workspace/Win+arrow focus/move, drag-preview and game comparison
   remain pending and user-owned. No game-cost or physical-responsiveness claim
@@ -189,6 +239,50 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
   worker completions add event wakes. Hidden/non-drawable artwork is not queued.
 - Healthy hidden-pager idle has no periodic pager-maintenance deadline, with trace enabled or disabled. The separate 300 s gaming refresh remains. Visible pager maintenance was armed in the visible live cases.
 
+## Native z-order wake research, 2026-10-18
+
+No implementation or recovery-contract change selected. Current pager reasserts
+with `SetWindowPos(HWND_TOPMOST, ...NOACTIVATE...)`; being topmost does not
+prevent another topmost window from covering it. Existing hooks cover
+foreground, create/destroy/show/hide and location changes, not reorder.
+
+| Candidate | Coverage and remaining gap |
+| --- | --- |
+| [WinEvents](https://learn.microsoft.com/en-us/windows/win32/winauto/event-constants): `EVENT_OBJECT_REORDER`, foreground/show/hide/location | Reorder documents container children and parent-reported child-window z-order changes; promising to test, not a documented guarantee of every top-level/topmost burial. Foreground and lifecycle/geometry events cover their own changes, not a guaranteed pure nonactivating reorder. Do not assume a desktop-parent event survives existing HWND/object filters. |
+| Own [`WM_WINDOWPOSCHANGED`](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-windowposchanged) | Reports the recipient's own position/size/z-order changes. Not documented as a notification to the pager whenever some other window covers it; reassert-generated messages also need feedback suppression. |
+| [`RegisterShellHookWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registershellhookwindow) | Activation, creation/destruction and other shell events, but no documented complete arbitrary-topmost-reorder notification. Microsoft warns this API is not intended for general use and may change/disappear. |
+| AppBar notifications | [`ABM_NEW`](https://learn.microsoft.com/en-us/windows/win32/shell/abm-new) registers an AppBar/callback; `ABN_POSCHANGED` covers taskbar/appbar geometry/visibility, `ABN_STATECHANGE` taskbar state, `ABN_FULLSCREENAPP` fullscreen transitions, `ABN_WINDOWARRANGE` arrangement. None documents all foreign topmost reorders. Registration alone is not a reservation (`ABM_SETPOS` negotiates space), but it changes the deliberately non-AppBar hosting contract; not a free notification subscription. Current `ABM_GETSTATE` is a read, not an event. |
+| `TaskbarCreated`, settings/display/DPI broadcasts | Existing shell rediscovery/calibration wakes, not complete foreign z-order coverage. |
+
+- [`SetWinEventHook`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook)
+  out-of-context delivery avoids injection, queues asynchronously on the
+  installing message-loop thread, and can reenter. Any candidate must route
+  bounded filtered/coalesced work through the owner, handle desktop/container
+  events correctly, and suppress self-feedback; broad subscriptions can add
+  event cost rather than remove it. No callback-heavy recovery or new global poll.
+- Observed residual visibility-associated cost: trace-off visible empty/managed
+  36.4/54.7 ms/min versus hidden 0.0/0.0; trace-on 61.4/54.8 versus 6.1/6.1.
+  Hidden readings are granularity-limited. These deltas include all visible
+  pager work, icon refresh and sample variation, not isolated timer cost.
+  Corrected empty-visible trace still measured 64.1 ms/min at 0.498 timeouts/s;
+  no game-cost acceptance or CPU saving is established.
+- Recommendation, parked for a later decision: investigate event-first recovery
+  with an owned topmost-cover discriminator (nonactivating z-order-only changes,
+  show/hide/close and own-window changes), retaining the timer until coverage,
+  filtering, no feedback and recovery latency are evidenced. A silent burial
+  disproves completeness; successful repeats alone do not prove universal
+  coverage. Then choose either sufficiently evidenced native events under the
+  existing recovery contract or an explicitly weaker best-effort/staleness
+  contract. No such choice is made here. Removing the 2 s service turns also
+  needs an explicit decision on the approved 5/10 s artwork freshness that
+  currently rides them; do not silently strand refresh or add replacement polls.
+
+Primary documentation above checked 2026-10-18; AppBar notification details:
+[position](https://learn.microsoft.com/en-us/windows/win32/shell/abn-poschanged),
+[state](https://learn.microsoft.com/en-us/windows/win32/shell/abn-statechange),
+[fullscreen](https://learn.microsoft.com/en-us/windows/win32/shell/abn-fullscreenapp),
+[arrangement](https://learn.microsoft.com/en-us/windows/win32/shell/abn-windowarrange).
+
 ## Decisions and pending evidence
 
 - No arbitrary replacement chord polling interval: modifier edges already reach the native hook and can signal the owner.
@@ -198,7 +292,8 @@ CPU milliseconds per minute, release scoped runs, non-game idle only:
 - Missing hide acknowledgement must still trigger the existing 500 ms refusal deadline, never authorize a drop without proof. Completion callbacks retain owned event lifetime through shutdown.
 - Post-log-watch-correction eight-case CPU matrix, bounded hidden-pager wait
   evidence and later auto-hide response are measured above. Visible timeout
-  attribution and chevron response remain open, alongside physical
+  attribution and fractional-deadline correction are delivered; chevron
+  response remains open, alongside physical
   workspace/Win+arrow focus/move, drag-preview and game comparison. External
   settings live-edit behavior was not exercised; notification/last-good
   contracts have offline coverage.

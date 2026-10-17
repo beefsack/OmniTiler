@@ -231,8 +231,9 @@ use self::run_loop::run_tile_loop;
 use self::run_loop_intake::{Intake, pump_intake};
 use self::run_loop_tick::{TickFlow, run_active_tick};
 use self::run_loop_wait::{
-    DEGRADED_POLL_MS, MONITOR_FALLBACK_SECS, OwnerDeadlines, TRACE_REPORT_SECS, drain_hook_edges,
-    gesture_sampling_open, owner_timeout_ms, pump_waits_snapshots, tray_staged_pending,
+    DEGRADED_POLL_MS, MONITOR_FALLBACK_SECS, OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines,
+    OwnerWaitDiag, OwnerWaitSource, TRACE_REPORT_SECS, drain_hook_edges, gesture_sampling_open,
+    owner_deadline_source, pump_waits_snapshots, tray_staged_pending,
 };
 use self::selection::remember_select_departure;
 use self::selection::workspace_do_select;

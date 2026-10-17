@@ -147,33 +147,55 @@ fn outer_wait_counts_split_reasons_with_ack_only_subset() {
     // count (hits can exceed waits), genuine timeout stays separate from
     // failed, while the ack-only early return is a counted subset that
     // never claims a full turn.
-    use super::{OwnerWaitCounts, WaitWake};
+    use super::{OwnerWaitCounts, OwnerWaitDiag, OwnerWaitSource, WaitWake};
     let mut counts = OwnerWaitCounts::default();
-    counts.note_wait(WaitWake {
-        input: false,
-        ack: true,
-        message: true,
-        notify: true,
-        timeout: false,
-        failed: false,
-    });
+    let idle_diag = OwnerWaitDiag {
+        staged: false,
+        source: OwnerWaitSource::NoneIdle,
+        requested_ms: u32::MAX,
+        elapsed_ms: 0,
+        already_due: false,
+    };
+    counts.note_wait(
+        WaitWake {
+            input: false,
+            ack: true,
+            message: true,
+            notify: true,
+            timeout: false,
+            failed: false,
+        },
+        idle_diag,
+    );
     counts.note_ack_only();
-    counts.note_wait(WaitWake {
-        input: false,
-        ack: false,
-        message: false,
-        notify: false,
-        timeout: true,
-        failed: false,
-    });
-    counts.note_wait(WaitWake {
-        input: false,
-        ack: false,
-        message: false,
-        notify: false,
-        timeout: false,
-        failed: true,
-    });
+    counts.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        OwnerWaitDiag {
+            staged: false,
+            source: OwnerWaitSource::Pager,
+            requested_ms: 2000,
+            elapsed_ms: 2000,
+            already_due: false,
+        },
+    );
+    counts.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: false,
+            failed: true,
+        },
+        idle_diag,
+    );
     assert_eq!(counts.waits, 3);
     assert_eq!(counts.ack_only, 1);
     assert_eq!((counts.ack, counts.msg, counts.timeout), (1, 1, 1));

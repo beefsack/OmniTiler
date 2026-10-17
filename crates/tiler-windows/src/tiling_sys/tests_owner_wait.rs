@@ -10,8 +10,26 @@
 
 use super::dir_watch::DirWatch;
 use super::observe::pump_wait_with_intent;
-use super::run_loop_wait::{OwnerDeadlines, owner_timeout_ms};
+use super::run_loop_wait::{
+    OWNER_WAIT_SOURCE_ORDER, OwnerDeadlines, OwnerTimeout, OwnerWaitDiag, OwnerWaitSource,
+    owner_deadline_source,
+};
 use super::{OwnerWaitCounts, WaitWake, pump_waits_line};
+
+fn diag(
+    source: OwnerWaitSource,
+    requested_ms: u32,
+    elapsed_ms: u64,
+    already_due: bool,
+) -> OwnerWaitDiag {
+    OwnerWaitDiag {
+        staged: source == OwnerWaitSource::Staged,
+        source,
+        requested_ms,
+        elapsed_ms,
+        already_due,
+    }
+}
 use std::time::{Duration, Instant};
 
 fn idle_deadlines() -> OwnerDeadlines {
@@ -35,7 +53,10 @@ fn healthy_idle_selects_infinite() {
     // No armed retry, no restore, unbounded run, no gesture:
     // the wait blocks (Win32 INFINITE), replacing the old 100ms poll.
     let now = Instant::now();
-    assert_eq!(owner_timeout_ms(now, &idle_deadlines()), u32::MAX);
+    assert_eq!(
+        owner_deadline_source(now, &idle_deadlines()).requested_ms,
+        u32::MAX
+    );
 }
 
 #[test]
@@ -45,40 +66,40 @@ fn each_armed_deadline_bounds_the_wait() {
     let now = Instant::now();
     let mut deadlines = idle_deadlines();
     deadlines.restore_until = Some(now + Duration::from_millis(2000));
-    let timeout = owner_timeout_ms(now, &deadlines);
+    let timeout = owner_deadline_source(now, &deadlines).requested_ms;
     assert!((1900..=2000).contains(&timeout), "{timeout}");
     // Absent hide-ack bound: the pending gesture finish wakes its service
     // turn at the deadline instead of stranding (the timeout path still
     // refuses with no drop; see the pending-drop timeout test).
     let mut deadlines = idle_deadlines();
     deadlines.pending_until = Some(now + Duration::from_millis(500));
-    let timeout = owner_timeout_ms(now, &deadlines);
+    let timeout = owner_deadline_source(now, &deadlines).requested_ms;
     assert!((400..=500).contains(&timeout), "{timeout}");
     // Visible-pager maintenance bound: creation retry and topmost
     // recovery share one deadline while strips show, without polling
     // while hidden.
     let mut deadlines = idle_deadlines();
     deadlines.pager_maintenance_at = Some(now + Duration::from_secs(2));
-    assert!((1900..=2000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((1900..=2000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
     let mut deadlines = idle_deadlines();
     deadlines.snap_retry_at = Some(now + Duration::from_secs(5));
-    assert!((4900..=5000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((4900..=5000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
     let mut deadlines = idle_deadlines();
     deadlines.pager_retry_at = Some(now + Duration::from_secs(5));
-    assert!((4900..=5000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((4900..=5000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
     let mut deadlines = idle_deadlines();
     deadlines.pager_icon_retry_at = Some(now + Duration::from_secs(5));
-    assert!((4900..=5000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((4900..=5000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
     let mut deadlines = idle_deadlines();
     deadlines.gaming_due_at = Some(now + Duration::from_secs(300));
-    let timeout = owner_timeout_ms(now, &deadlines);
+    let timeout = owner_deadline_source(now, &deadlines).requested_ms;
     assert!(timeout > 299_000 && timeout <= 300_000, "{timeout}");
     let mut deadlines = idle_deadlines();
     deadlines.monitor_due_at = Some(now + Duration::from_secs(2));
-    assert!((1900..=2000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((1900..=2000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
     let mut deadlines = idle_deadlines();
     deadlines.run_end = Some(now + Duration::from_secs(7));
-    assert!((6900..=7000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((6900..=7000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
 }
 
 #[test]
@@ -90,24 +111,24 @@ fn deadline_selects_the_minimum_and_caps_degraded_poll() {
     deadlines.restore_until = Some(now + Duration::from_millis(2000));
     deadlines.run_end = Some(now + Duration::from_millis(500));
     deadlines.gesture_open = true;
-    let timeout = owner_timeout_ms(now, &deadlines);
+    let timeout = owner_deadline_source(now, &deadlines).requested_ms;
     assert!((90..=100).contains(&timeout), "{timeout}");
     // The pending-finish bound wins over later armed inputs.
     let mut deadlines = idle_deadlines();
     deadlines.pending_until = Some(now + Duration::from_millis(250));
     deadlines.run_end = Some(now + Duration::from_secs(5));
     deadlines.pager_maintenance_at = Some(now + Duration::from_secs(2));
-    let timeout = owner_timeout_ms(now, &deadlines);
+    let timeout = owner_deadline_source(now, &deadlines).requested_ms;
     assert!((150..=250).contains(&timeout), "{timeout}");
     // Past-due deadlines expire immediately (zero), never negative wrap.
     let mut deadlines = idle_deadlines();
     deadlines.restore_until = Some(now - Duration::from_secs(1));
-    assert_eq!(owner_timeout_ms(now, &deadlines), 0);
+    assert_eq!(owner_deadline_source(now, &deadlines).requested_ms, 0);
     // Degraded poll bounds an otherwise infinite wait...
     let mut deadlines = idle_deadlines();
     deadlines.degraded_poll = true;
     assert_eq!(
-        owner_timeout_ms(now, &deadlines),
+        owner_deadline_source(now, &deadlines).requested_ms,
         super::run_loop_wait::DEGRADED_POLL_MS as u32
     );
     // ...and caps (never extends) an earlier armed deadline.
@@ -115,7 +136,7 @@ fn deadline_selects_the_minimum_and_caps_degraded_poll() {
     deadlines.restore_until = Some(now + Duration::from_millis(2000));
     deadlines.degraded_poll = true;
     assert_eq!(
-        owner_timeout_ms(now, &deadlines),
+        owner_deadline_source(now, &deadlines).requested_ms,
         super::run_loop_wait::DEGRADED_POLL_MS as u32
     );
 }
@@ -411,12 +432,15 @@ fn trace_throttle_never_arms_the_wait() {
     // The throttle lives only as elapsed time on naturally occurring
     // turns plus one final read-only flush at loop exit.
     let now = Instant::now();
-    assert_eq!(owner_timeout_ms(now, &idle_deadlines()), u32::MAX);
+    assert_eq!(
+        owner_deadline_source(now, &idle_deadlines()).requested_ms,
+        u32::MAX
+    );
     // Every other retained deadline still bounds the wait on its own, so
     // removing the trace member took nothing else with it.
     let mut deadlines = idle_deadlines();
     deadlines.run_end = Some(now + Duration::from_secs(7));
-    assert!((6900..=7000).contains(&owner_timeout_ms(now, &deadlines)));
+    assert!((6900..=7000).contains(&owner_deadline_source(now, &deadlines).requested_ms));
 }
 
 #[test]
@@ -429,31 +453,40 @@ fn pump_waits_line_carries_the_full_split_without_a_monitor_check() {
     // accounting is preserved: genuine timeout stays separate from
     // failed, and ack-only stays a subset of waits.
     let mut ow = OwnerWaitCounts::default();
-    ow.note_wait(WaitWake {
-        input: true,
-        ack: true,
-        message: true,
-        notify: true,
-        timeout: false,
-        failed: false,
-    });
+    ow.note_wait(
+        WaitWake {
+            input: true,
+            ack: true,
+            message: true,
+            notify: true,
+            timeout: false,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Pager, 2000, 2001, false),
+    );
     ow.note_ack_only();
-    ow.note_wait(WaitWake {
-        input: false,
-        ack: false,
-        message: false,
-        notify: false,
-        timeout: true,
-        failed: false,
-    });
-    ow.note_wait(WaitWake {
-        input: false,
-        ack: false,
-        message: false,
-        notify: false,
-        timeout: false,
-        failed: true,
-    });
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Pager, 2000, 2000, false),
+    );
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: false,
+            failed: true,
+        },
+        diag(OwnerWaitSource::NoneIdle, u32::MAX, 0, false),
+    );
     let line = pump_waits_line(&ow, (11, 9, 2, 3, 4, 5), (8, 1, 2, 3, 2, 6), None);
     assert_eq!(line["event"], "pump-waits");
     assert_eq!(line["owner_waits"], 3);
@@ -481,6 +514,35 @@ fn pump_waits_line_carries_the_full_split_without_a_monitor_check() {
         line["excludes"],
         "focus-proof-nested-waits,stop-short-circuit"
     );
+    assert_eq!(line["owner_wait_staged"], 0);
+    assert_eq!(line["owner_zero_future_subms"], 0);
+    assert_eq!(line["owner_zero_already_due"], 0);
+    assert_eq!(line["owner_early_timeouts"], 0);
+    let src_order: Vec<String> = line["owner_src_order"]
+        .as_array()
+        .expect("src order array")
+        .iter()
+        .map(|v| v.as_str().expect("src name").to_owned())
+        .collect();
+    assert_eq!(
+        src_order,
+        OWNER_WAIT_SOURCE_ORDER
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+    );
+    let src_timeouts = line["owner_src_timeouts"]
+        .as_array()
+        .expect("src timeouts array");
+    assert_eq!(src_timeouts.len(), OWNER_WAIT_SOURCE_ORDER.len());
+    for (index, value) in src_timeouts.iter().enumerate() {
+        let want = if index == OwnerWaitSource::Pager as usize {
+            1
+        } else {
+            0
+        };
+        assert_eq!(*value, want, "src bucket {index}");
+    }
     assert!(
         line.get("flushed").is_none(),
         "periodic lines carry no marker"
@@ -588,6 +650,265 @@ fn ledger_name_watch_catches_atomic_publish_and_consume_delete() {
     assert!(settle_watch(&watch), "settles quiet: no self-wake loop");
     assert!(!watch.pending());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn deadline_source_selects_winner_ties_and_idle() {
+    // Deterministic cause for every requested timeout: the earliest armed
+    // deadline wins, ties resolve to the earliest-listed deadline, and a
+    // fully idle set reports `NoneIdle` with an infinite request.
+    let now = Instant::now();
+    let sel = owner_deadline_source(now, &idle_deadlines());
+    assert_eq!(sel.source, OwnerWaitSource::NoneIdle);
+    assert_eq!(sel.requested_ms, u32::MAX);
+    assert!(!sel.already_due);
+    // Winner takes the cause, not just the duration.
+    let mut deadlines = idle_deadlines();
+    deadlines.pager_maintenance_at = Some(now + Duration::from_secs(2));
+    deadlines.run_end = Some(now + Duration::from_secs(7));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::Pager);
+    assert!((1900..=2000).contains(&sel.requested_ms));
+    assert!(!sel.already_due);
+    // Tie: same instant on two deadlines keeps the earliest-listed one
+    // (`restore` precedes `run_end` in selection order).
+    let mut deadlines = idle_deadlines();
+    let at = now + Duration::from_secs(3);
+    deadlines.restore_until = Some(at);
+    deadlines.run_end = Some(at);
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::Restore);
+    // Degraded poll caps the duration and takes the cause only when it
+    // strictly reduces the wait.
+    let mut deadlines = idle_deadlines();
+    deadlines.run_end = Some(now + Duration::from_secs(7));
+    deadlines.degraded_poll = true;
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::DegradedPoll);
+    assert_eq!(
+        sel.requested_ms,
+        super::run_loop_wait::DEGRADED_POLL_MS as u32
+    );
+    // Past-due deadline: zero request attributed to its own cause and marked
+    // already due, never to `Staged` (staged collects are forced by the
+    // caller, never by this function).
+    let mut deadlines = idle_deadlines();
+    deadlines.restore_until = Some(now - Duration::from_secs(1));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::Restore);
+    assert_eq!(sel.requested_ms, 0);
+    assert!(sel.already_due);
+    // Sub-millisecond remainder rounds up to a 1 ms request on its own
+    // cause, marked as a future deadline rather than already due.
+    let mut deadlines = idle_deadlines();
+    deadlines.gaming_due_at = Some(now + Duration::from_micros(500));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::Gaming);
+    assert_eq!(sel.requested_ms, 1);
+    assert!(!sel.already_due);
+}
+
+#[test]
+fn deadline_durations_round_up_without_changing_contracts() {
+    // Conversion-only change: future durations round UP to whole
+    // milliseconds (at most 1 ms of quantization), already-due stays 0,
+    // unarmed stays INFINITE, and the degraded cap is unchanged.
+    let now = Instant::now();
+    // Exact milliseconds are unchanged (no added millisecond).
+    let mut deadlines = idle_deadlines();
+    deadlines.pager_maintenance_at = Some(now + Duration::from_millis(2000));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.requested_ms, 2000);
+    assert!(!sel.already_due);
+    // Fractional near-2 s remainder rounds up to the full 2 s, never past.
+    let mut deadlines = idle_deadlines();
+    deadlines.pager_maintenance_at =
+        Some(now + Duration::from_millis(1999) + Duration::from_micros(500));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.requested_ms, 2000);
+    assert!(!sel.already_due);
+    // Past-due stays an immediate zero, flagged already due.
+    let mut deadlines = idle_deadlines();
+    deadlines.restore_until = Some(now - Duration::from_millis(250));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.requested_ms, 0);
+    assert!(sel.already_due);
+    // Far-future deadlines clamp to `u32::MAX` without wrapping.
+    let mut deadlines = idle_deadlines();
+    deadlines.run_end = Some(now + Duration::from_millis(u64::from(u32::MAX) + 10_000));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.requested_ms, u32::MAX);
+    assert!(!sel.already_due);
+    // Degraded cap still bounds (never extends) with its own cause.
+    let mut deadlines = idle_deadlines();
+    deadlines.degraded_poll = true;
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.source, OwnerWaitSource::DegradedPoll);
+    assert_eq!(
+        sel.requested_ms,
+        super::run_loop_wait::DEGRADED_POLL_MS as u32
+    );
+}
+
+#[test]
+fn deadline_durations_round_up_at_nanosecond_resolution() {
+    // Every future deadline rounds up: even 1 ns requests 1 ms, and 1 ms
+    // plus 1 ns requests 2 ms. Exact milliseconds stay exact.
+    let now = Instant::now();
+    for nanos in [1u64, 999, 1_000_001] {
+        let mut deadlines = idle_deadlines();
+        deadlines.gaming_due_at = Some(now + Duration::from_nanos(nanos));
+        let sel = owner_deadline_source(now, &deadlines);
+        assert_eq!(sel.source, OwnerWaitSource::Gaming);
+        assert!(!sel.already_due, "{nanos}ns must read as future");
+        let want = nanos.div_ceil(1_000_000) as u32;
+        assert_eq!(sel.requested_ms, want, "{nanos}ns");
+    }
+    let mut deadlines = idle_deadlines();
+    deadlines.gaming_due_at = Some(now + Duration::from_millis(1));
+    let sel = owner_deadline_source(now, &deadlines);
+    assert_eq!(sel.requested_ms, 1);
+    assert!(!sel.already_due);
+}
+
+#[test]
+fn deadline_selection_is_deterministic_across_armed_sets() {
+    // The diagnostic cause rides the single selection scan: every armed
+    // combination reports a non-staged cause with a matching duration.
+    let now = Instant::now();
+    let mixed = |build: &dyn Fn(&mut OwnerDeadlines)| -> OwnerTimeout {
+        let mut deadlines = idle_deadlines();
+        build(&mut deadlines);
+        let sel = owner_deadline_source(now, &deadlines);
+        assert_ne!(sel.source, OwnerWaitSource::Staged);
+        sel
+    };
+    let sel = mixed(&|_d| {});
+    assert_eq!(sel.source, OwnerWaitSource::NoneIdle);
+    assert_eq!(sel.requested_ms, u32::MAX);
+    let sel = mixed(&|d| {
+        d.pending_until = Some(now + Duration::from_millis(500));
+        d.pager_maintenance_at = Some(now + Duration::from_secs(2));
+    });
+    assert_eq!(sel.source, OwnerWaitSource::Pending);
+    let sel = mixed(&|d| {
+        d.snap_retry_at = Some(now + Duration::from_secs(5));
+        d.pager_retry_at = Some(now + Duration::from_secs(5));
+    });
+    // Equal instants: `snap_retry` precedes `pager_retry` in order.
+    assert_eq!(sel.source, OwnerWaitSource::SnapRetry);
+    let sel = mixed(&|d| {
+        d.gesture_open = true;
+        d.monitor_due_at = Some(now + Duration::from_secs(2));
+    });
+    assert_eq!(sel.source, OwnerWaitSource::Gesture);
+    let sel = mixed(&|d| {
+        d.monitor_due_at = Some(now + Duration::from_secs(2));
+        d.degraded_poll = true;
+    });
+    assert_eq!(sel.source, OwnerWaitSource::DegradedPoll);
+    assert_eq!(
+        sel.requested_ms,
+        super::run_loop_wait::DEGRADED_POLL_MS as u32
+    );
+}
+
+#[test]
+fn timeout_attribution_separates_staged_source_zero_and_early() {
+    // One bucket per cause: staged zero-collects never inflate a deadline
+    // bucket, zero requests split into future sub-millisecond remainders
+    // versus already-due deadlines, and returns arriving before the
+    // requested duration flag as early.
+    let mut ow = OwnerWaitCounts::default();
+    // Genuine pager-maintenance expiry: full duration elapsed.
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Pager, 2000, 2000, false),
+    );
+    // Staged zero-timeout collect expiring immediately: `Staged` bucket,
+    // never `early` (zero was requested) and never in either zero split
+    // (staged is its own cause, not a floored deadline).
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Staged, 0, 0, false),
+    );
+    // Future sub-millisecond remainder expiry: zero requested with the
+    // deadline still ahead at selection.
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Restore, 0, 0, false),
+    );
+    // Already-due deadline expiry: zero requested with the deadline past.
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Restore, 0, 0, true),
+    );
+    // Early return: timeout flagged before the requested duration elapsed.
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: false,
+            notify: false,
+            timeout: true,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Pager, 2000, 1500, false),
+    );
+    // Non-timeout staged wait: staged denominator only, no timeout bucket.
+    ow.note_wait(
+        WaitWake {
+            input: false,
+            ack: false,
+            message: true,
+            notify: false,
+            timeout: false,
+            failed: false,
+        },
+        diag(OwnerWaitSource::Staged, 0, 0, false),
+    );
+    assert_eq!(ow.waits, 6);
+    assert_eq!(ow.timeout, 5);
+    assert_eq!(ow.wait_staged, 2);
+    assert_eq!(ow.src_timeouts[OwnerWaitSource::Pager as usize], 2);
+    assert_eq!(ow.src_timeouts[OwnerWaitSource::Staged as usize], 1);
+    assert_eq!(ow.src_timeouts[OwnerWaitSource::Restore as usize], 2);
+    assert_eq!(
+        ow.src_timeouts.iter().sum::<u64>(),
+        5,
+        "every timeout lands in exactly one cause bucket"
+    );
+    assert_eq!(ow.zero_future_subms, 1);
+    assert_eq!(ow.zero_already_due, 1);
+    assert_eq!(ow.early_timeouts, 1);
 }
 
 #[test]

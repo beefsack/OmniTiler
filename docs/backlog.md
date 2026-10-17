@@ -1005,8 +1005,10 @@ decisions of 2026-09-24 are under
     the final log-notification correction. Post-correction eight-case idle
     matrix, bounded hidden-pager wait evidence and later auto-hide response
     measured 2026-10-17: hidden CPU was granularity-limited near-zero, not
-    proven zero. Visible timeout excess still needs per-turn attribution;
-    chevron response and physical input/preview remain pending. Existing
+    proven zero. Visible timeout attribution and fractional-deadline correction
+    delivered 2026-10-18 (0.524/s -> 0.498/s; no demonstrated CPU reduction);
+    native event alternatives researched, choice parked. Chevron response and
+    physical input/preview remain pending. Existing
     approved icon-cache refresh explains visible managed completion wakes;
     retain visible-pager 2 s recovery pending a complete native wake source or
     an explicit recovery-contract choice. [Idle record](changes/archive/windows-owner-event-idle.md).

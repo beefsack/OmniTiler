@@ -837,47 +837,71 @@ pub(super) fn run_tile_loop(
             // Event-driven wait: infinite at healthy idle; otherwise the
             // minimum over the armed deadlines (retries, restore, gaming,
             // monitor fallback, bounded run, open-gesture sampling,
-            // degraded watch poll). Trace reporting never arms the wait:
-            // its throttle rides naturally occurring turns only. Extra
-            // handles carry the directory watches plus the async
-            // completion wakes.
+            // degraded watch poll). Staged same-thread work skips deadline
+            // selection entirely with a zero request, as before. Trace
+            // reporting never arms the wait: its throttle rides naturally
+            // occurring turns only. Extra handles carry the directory
+            // watches plus the async completion wakes.
+            //
+            // Single deadline scan: the non-staged branch selects once and
+            // reuses the cause/duration for trace bookkeeping. Diagnostic
+            // construction is trace-gated; non-trace runs pay no selection
+            // beyond the wait itself.
+            let mut wait_diag: Option<OwnerWaitDiag> = None;
             let timeout = if staged {
+                if state.trace {
+                    wait_diag = Some(OwnerWaitDiag {
+                        staged: true,
+                        source: OwnerWaitSource::Staged,
+                        requested_ms: 0,
+                        elapsed_ms: 0,
+                        already_due: false,
+                    });
+                }
                 0
             } else {
-                owner_timeout_ms(
-                    Instant::now(),
-                    &OwnerDeadlines {
-                        restore_until: state.restore_wake.as_ref().map(|wake| wake.until),
-                        pending_until: state
-                            .render_bridge
+                let deadlines = OwnerDeadlines {
+                    restore_until: state.restore_wake.as_ref().map(|wake| wake.until),
+                    pending_until: state
+                        .render_bridge
+                        .as_ref()
+                        .and_then(|bridge| bridge.pending.as_ref())
+                        .map(|pending| pending.deadline),
+                    pager_maintenance_at: if state.pager_suppress_last.is_none() {
+                        state
+                            .pager_overlays
                             .as_ref()
-                            .and_then(|bridge| bridge.pending.as_ref())
-                            .map(|pending| pending.deadline),
-                        pager_maintenance_at: if state.pager_suppress_last.is_none() {
-                            state
-                                .pager_overlays
-                                .as_ref()
-                                .and_then(|overlays| overlays.maintenance_due_at())
-                        } else {
-                            None
-                        },
-                        snap_retry_at,
-                        pager_retry_at: state.pager_retry_at,
-                        pager_icon_retry_at: state.pager_icon_retry_at,
-                        gaming_due_at: gaming.as_ref().and_then(|m| m.interval_due_at()),
-                        monitor_due_at: if tray.is_none() {
-                            monitor_last.checked_add(Duration::from_secs(MONITOR_FALLBACK_SECS))
-                        } else {
-                            None
-                        },
-                        run_end: deadline,
-                        gesture_open: gesture_sampling_open(&state),
-                        degraded_poll: ledger_watch.is_none()
-                            || (state.settings_dir.is_some()
-                                && !settings_same_dir
-                                && settings_watch.is_none()),
+                            .and_then(|overlays| overlays.maintenance_due_at())
+                    } else {
+                        None
                     },
-                )
+                    snap_retry_at,
+                    pager_retry_at: state.pager_retry_at,
+                    pager_icon_retry_at: state.pager_icon_retry_at,
+                    gaming_due_at: gaming.as_ref().and_then(|m| m.interval_due_at()),
+                    monitor_due_at: if tray.is_none() {
+                        monitor_last.checked_add(Duration::from_secs(MONITOR_FALLBACK_SECS))
+                    } else {
+                        None
+                    },
+                    run_end: deadline,
+                    gesture_open: gesture_sampling_open(&state),
+                    degraded_poll: ledger_watch.is_none()
+                        || (state.settings_dir.is_some()
+                            && !settings_same_dir
+                            && settings_watch.is_none()),
+                };
+                let sel = owner_deadline_source(Instant::now(), &deadlines);
+                if state.trace {
+                    wait_diag = Some(OwnerWaitDiag {
+                        staged: false,
+                        source: sel.source,
+                        requested_ms: sel.requested_ms,
+                        elapsed_ms: 0,
+                        already_due: sel.already_due,
+                    });
+                }
+                sel.requested_ms
             };
             let mut extras = [std::ptr::null_mut(); 4];
             let mut extra_count: usize = 0;
@@ -903,6 +927,14 @@ pub(super) fn run_tile_loop(
                 extras[extra_count] = wake.as_handle().as_raw_handle();
                 extra_count += 1;
             }
+            // Trace-only wait-duration sample for early-vs-genuine timeout
+            // attribution: two clock reads around the blocking wait, skipped
+            // entirely when tracing is off.
+            let wait_t0 = if state.trace {
+                Some(Instant::now())
+            } else {
+                None
+            };
             let mut wait = pump_wait_with_intent(
                 timeout,
                 state
@@ -919,6 +951,9 @@ pub(super) fn run_tile_loop(
             // Pre-drain traffic counts as a message wake: it was dispatched,
             // so this turn does full owner work like the post-drain below.
             wait.message |= pre_messages;
+            let wait_elapsed_ms: u64 = wait_t0
+                .map(|t0| t0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0);
             // Race-safe rearm BEFORE any file inspection: changes concurrent
             // with the inspection below re-signal and return the next wait
             // immediately instead of being lost. A broken watch degrades to
@@ -982,7 +1017,10 @@ pub(super) fn run_tile_loop(
             );
             if state.trace {
                 owner_seq = owner_seq.saturating_add(1);
-                ow_counts.note_wait(wait);
+                if let Some(mut diag) = wait_diag {
+                    diag.elapsed_ms = wait_elapsed_ms;
+                    ow_counts.note_wait(wait, diag);
+                }
             }
             let drain = drain_hook_edges(&mut state, me, &log_path);
             let mut woke = drain.woke;

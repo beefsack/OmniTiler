@@ -517,8 +517,12 @@ platform API behavior.
   taskbar-auto-hide response measured 2026-10-17; hidden samples were
   granularity-limited near-zero with no timeout increments in the observed
   trace intervals. Existing approved icon-cache refresh accounts for recurring
-  visible managed completion wakes. Visible timeout excess remains unattributed;
-  recommend trace-only per-turn attribution before changing behavior. Chevron
+  visible managed completion wakes. Follow-up 2026-10-18 attributes idle timeouts
+  to pager maintenance; rounding future deadlines up to native milliseconds
+  prevents fractional under-requests, with observed rate 0.524/s -> 0.498/s and
+  no demonstrated CPU reduction. Bounded trace-only attribution rides existing
+  summaries. Native event alternatives are researched, not selected; retain the
+  2 s contract pending coverage evidence or an explicit contract choice. Chevron
   response and physical-input/preview/game acceptance remain pending. See the
   [idle record](changes/archive/windows-owner-event-idle.md).
 - Input clean stop requires successful hook release and successful finished
