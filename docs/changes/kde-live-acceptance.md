@@ -22,9 +22,13 @@
   The initial fixture drift has a fresh recorded
   baseline. The full-state breadth pass found a maximized-unfloat regression,
   now corrected and reverified natively. Fixed-client D5 first-exit, sampled D6
-  enable and D7 Planner-only restart pass natively. Controller-replacement D7
-  remains unaccepted after a churned fixture. Suspected restart-float defects
-  were floating-workspace fixture mismatches. The remaining matrix is pending.
+   enable and D7 Planner-only restart pass natively. Controller-replacement D7
+   remains blocked by an unclassified precondition refusal. Script-KCM draft
+   retention, floating-boundary sends, workspace history and one tiled send-follow
+   now have bounded native evidence. A later tiled return refused with a held
+   scope; maximize also reproduced an asynchronous false-refusal diagnostic.
+   Suspected restart-float defects were floating-workspace fixture mismatches.
+   The remaining matrix is pending.
 
 ## Native observations, 2026-10-17/18
 
@@ -292,28 +296,142 @@
   No Settings product defect or new baseline was found. Physical keyboard,
   visual UX and stronger operational-isolation checks remain pending.
 
+## Refusal diagnosis and additional native evidence, 2026-10-18
+
+### D7 offline diagnosis: expected safety refusal, trigger unresolved
+
+- The stable fixed-tile request dispatched as an operation and the Planner
+  returned `partial-observation`; native membership, frames and tile-marker
+  absence stayed unchanged. The refusal is an expected fail-closed mechanism,
+  not evidence that controller hydration failed. Its triggering condition is
+  unresolved: neither product defect nor fixture artefact is established.
+- `session/ops/float.rs` can refuse absent target, mismatched floating/homing or
+  remaining maximize state. Its nested `session/ops/lifecycle.rs` admission can
+  also refuse unequal known/observed sets or mismatched member bindings. The
+  retained logs contain no operation payload or exact refusal site, so they
+  cannot distinguish these conditions.
+- An accepted sibling run had two observes between workspace enable and explicit
+  tile; the refused run had none. This is a settling hypothesis only, not a
+  diagnosis or a new requirement to delay commands. No retry was performed.
+- Parked diagnostic/regression work: reconstruct the producer-shaped fixed-client
+  report immediately after workspace enable, compare identical commands with and
+  without intervening observes, and assert the exact refusal site and known-set
+  bindings. Use genuine fixed hints, renewed wrappers and QML array-likes. Retain
+  complete request/reply and retained exception state before selecting a fix;
+  a delay-only harness workaround would not establish correctness. No core or
+  adapter change was made, and controller restart remains blocked.
+
+### Settings discriminator and callback-route sends/history
+
+- At `71e1de9e`, the source-built script KCM retained the edited outer-gap draft
+  after visiting the other three tabs and returning: explicit post-switch values
+  were inner 8, outer 9. Cancel closed the owned shell without saving; config and
+  shortcut bytes matched. Native process/plugin/accessibility identities were
+  retained. This closes the script-specific read-back gap, not physical traversal,
+  visual UX or transient-operation non-invocation. Protected-process liveness was
+  captured in this leg; complete native-frame restoration is supplied by the later
+  final inventory, not its Settings-only teardown capture.
+- Numbered and relative follow/stay sends of an ordinary float across a
+  tiled/floating boundary passed: command/dispatch/apply journals correlated with
+  native membership, current view, focus and unchanged float frame. Follow changed
+  the view; stay did not. Unbound stay actions were invoked by registered name,
+  not rebound or physically pressed. Initial history captures lacked command
+  linkage and were not accepted; the later capture below supplies that evidence.
+- A separate stopped-creation fixture added one owned desktop, kept peers on both
+  test domains and left the protected domain floating. Numbered selection and
+  previous-workspace return had command/dispatch/apply linkage plus native view
+  and remembered-owned-focus read-back. Both test domains were explicitly enabled.
+- One tiled numbered send-follow passed: its reply made one membership write,
+  one view write and two geometry writes; the next observe made one more geometry
+  write. Native read-back showed the subject focused at the target and both tiled
+  sides reflowed. This is a single transition, not sustained send recovery or the
+  complete send matrix.
+- The following observe published one held scope; the first numbered send-stay
+  back refused `scope-held` with no native movement. Holds also appeared earlier
+  in that fixture, so their origin is not attributed to the successful send.
+  Additional follow/relative attempts continued without fixture teardown after
+  the first refusal. That violated the stop rule; none supplies clean acceptance.
+  Return/stay/relative two-tiled-domain coverage remains pending.
+- `world_sends.rs` deliberately refuses when either endpoint is held. The logs
+  omit the held domain and reason; `world_report.rs` permits several hold reasons
+  and `world_publish.rs` maps multiple sweep failures to unreadable. This is an
+  expected safety refusal with an unresolved trigger, not a capacity diagnosis.
+  Parked next discriminator: retain full reports/replies around the first hold,
+  identify endpoint authority/reason and replay a two-domain send-follow/observe/
+  send-back sequence offline. Select a minimal correction only after identifying
+  the cause; admission/capacity behavior remains report-only.
+
+### Native diagnostics, repeat signals and drag limits
+
+- B1 failed its diagnostic acceptance: one maximize callback logged
+  `maximize-refused` and `shortcut-failed`, but native read-back showed maximized.
+  An exact native restore likewise read the old maximize state synchronously and
+  cleared later. `world-native.ts` calls the maximize setter then decides success
+  from same-stack `maximizeMode`; this reproduces the asynchronous false-refusal
+  class already observed for fullscreen. No geometry-fighting defect is inferred.
+- Parked correction options: confirm once at a fresh accepted observation boundary
+  (recommended), or distinguish issuance from final outcome in diagnostics.
+  Preserve one native attempt per activation, no replay/retry, truthful genuine
+  refusal, and lifetime/scope/focus/generation/supersession fences. Add
+  producer-shaped tests with delayed maximizeMode settlement, renewed wrappers,
+  QML array-likes, silent refusal and intervening command/restart races. Adapter
+  source was not changed. Remaining B1 orderings and physical held keys are pending.
+- After explicit native restore/read-back, sticky-on/native-unstick/sticky-on
+  passed as a bounded callback/state signal. Two back-to-back directional focus
+  callbacks showed busy suppression of the second input. These are not physical
+  autorepeat evidence or clean whole-journey acceptance: the run continued after
+  the maximize refusal without complete teardown. Other origins/orderings remain
+  pending.
+- Supported exact-window APIs did not establish a safely confined genuine
+  interactive drag starter. Controller-free frame setters emitted no interactive
+  start/step/finish signals; synchronous frame read-back lagged later settlement.
+  These are observations only, not drag, resize, clamp or full-state race passes.
+  No synthetic keyboard/pointer input or manufactured signals were used. Physical
+  drag, visual preview, finish/cancel and late-reply behavior remain pending.
+
+### Evidence quality and final restoration
+
+- Independent review accepted only the bounded claims above. Fresh Planner and
+  KWin bundle builds passed; no production source or tests changed. No new product
+  decision was made; the earlier tentative fixture decisions remain unchanged.
+- The final owned third desktop was removed only after controller/Planner stop.
+  Its exact added native tiling group was surgically removed; the retained tiling
+  inventory matched the preimage. Final configuration and shortcut hashes matched
+  the accepted baseline; a separate final check also matched float-intent bytes.
+- Final native inventory matched desktop identities/count, protected frames and
+  membership, current/active window and pointer. Effect remained unloaded, all
+  disposable clients were absent, helper scripts were unloaded and development
+  was DOWN. Desktop restored: yes, to the previously accepted baseline.
+- Supervised earlier fixtures retained child exit statuses. The last send fixture
+  did not: its wait commands returned 127, so only native/process absence proves
+  teardown there. Its claimed retained child exit status is rejected; it does not
+  resolve the historic unexpected-helper-exit question. Subsequent fixtures must
+  use the already-proven supervisor rather than an unrelated-shell wait.
+
 ## Remaining coverage and next step
 
 | Acceptance group | Current result | Remaining |
 | --- | --- | --- |
 | Ordinary unfloat | Native callback functional pass, two pairs | Physical Meta+G delivery |
-| Both Settings identities | Source-built native shell plus targeted AT-SPI tabs/Status, draft/save/reopen, Cancel, Defaults and unchanged Apply endpoints | Physical traversal/buddies/visual UX, script post-switch draft read-back and transient-operation isolation |
+| Both Settings identities | Source-built native shell plus targeted AT-SPI tabs/Status, draft/save/reopen, Cancel, Defaults, both post-switch draft read-backs and unchanged Apply endpoints | Physical traversal/buddies/visual UX and transient-operation isolation |
 | Restart / unavailable Planner | Sampled native pass, no old-command replay; fixed override survives Planner-only replacement after workspace re-enable | Clean controller-restart intent coverage and broader race/error permutations |
 | Transport | Exact request limit, oversize/count refusal and large reply delivered | Exact reply-limit delivery and broader latency acceptance |
-| Ordinary actions / lifecycle | Sampled native pass | Remaining matrix permutations |
+| Ordinary actions / lifecycle | Sampled native pass; sticky/native-change and busy-suppression functional signals | Clean remaining permutations; maximize false-refusal correction and B1 repeats |
 | Safety states / workspace enable | Prior samples plus genuine fixed D5 born/prior-float exit, D6 enable/control and D7 Planner-only restart | Clean D7 controller restart, non-fixed born exit, remaining predicates/controls, games and refused/raced variants |
-| Workspace paths | Tiling toggle sample only | Selection/history, follow/stay/append, floating-boundary sends, lifecycle races and migration partial refusal |
-| Drag / client clamp | Not exercised | Continuous preview/drop/resize, late-reply cancel and bounded native clamp |
+| Workspace paths | Callback/state selection/history, floating-boundary numbered/relative follow/stay, one tiled numbered follow | Held-scope diagnosis; clean tiled return/stay/relative, append, lifecycle races and migration partial refusal |
+| Drag / client clamp | Controller-free setter observations only; no acceptance | Safe genuine drag route; continuous preview/drop/resize, late-reply cancel and bounded native clamp |
 | Multiple outputs | Not testable in this single-output fixture | Selection/history/swaps/hotplug-return and cross-output matrix |
 
 - No complete full-state or single-output inventory gate is claimed. Physical
   keyboard/drag and Settings traversal/visual checks are not established by
   callbacks, direct accessibility actions or offline widget tests.
-- Next bounded step: diagnose the explicit fixed-tile `partial-observation`
-  refusal from the stable fixture before another D7 live attempt. Controller
-  restart remains pending. A later clean attempt needs owned clients with
-  retained exit status and explicit workspace re-enable after replacement.
-- Workspace send/history/lifecycle testing needs a separately bounded fixture
-  with owned peers, explicit target/view read-back and a baseline-preserving
-  teardown. Native-maximize notification quietness and the isolated tile-order
-  observation remain unclassified follow-ups, not established defects.
+- Next bounded step: offline producer-shaped reproduction of fixed-tile
+  `partial-observation` and tiled-send held-scope publication, retaining exact
+  request/reply and refusal-site evidence before another live retry. The historic
+  payloads are unavailable; do not substitute inferred causes. Controller restart
+  and tiled return remain pending. A later clean fixture needs retained child
+  exit status, explicit workspace re-enable after replacement and immediate
+  teardown on the first unexpected refusal.
+- Maximize/fullscreen asynchronous outcome diagnostics need the parked adapter
+  correction and regressions. Native-maximize notification quietness and the
+  isolated tile-order observation remain separate unclassified follow-ups.
