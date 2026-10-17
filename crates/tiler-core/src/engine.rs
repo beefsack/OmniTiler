@@ -120,6 +120,17 @@ pub struct Engine {
     /// (current delivered behavior). Changing it never reclassifies
     /// retained windows, only subsequent admissions.
     fixed_size_predicate: crate::size_hints::FixedSizePredicate,
+    /// Engine-wide next first-successful-tiled-admission sequence value
+    /// (D7 victim order input). Independent per-domain sessions each start
+    /// their counter at zero, so admissions in different chronological
+    /// requests would collide or invert once their windows share a domain
+    /// through a send or pair assembly. Every working session is
+    /// synchronized to at least this floor before admission work, and
+    /// every store records the session counter back here, keeping one
+    /// monotonic Engine-wide sequence with no wallclock. Reset with the
+    /// world map on owner/generation change; never persisted across
+    /// restart. Saturating arithmetic throughout: the bound never wraps.
+    admission_seq_next: u64,
     /// Last fixed-size admission report for protocol logging.
     ///
     /// Set when [`Engine::handle`] admitted fixed-size windows with the
@@ -423,6 +434,7 @@ impl Default for Engine {
             last_fixed_admission: None,
             last_migration: None,
             last_drag_preview_stage: None,
+            admission_seq_next: 0,
         }
     }
 }
@@ -481,6 +493,7 @@ impl Engine {
         if owner_changed || generation_changed {
             self.sessions.clear();
             self.outer_gaps.clear();
+            self.admission_seq_next = 0;
             self.owner = Some(owner.clone());
             self.generation = Some(generation.clone());
         }
@@ -734,6 +747,35 @@ impl Engine {
         session.set_no_space_result(self.no_space);
     }
 
+    /// Current Engine-wide admission sequence floor: the recorded
+    /// high-water mark over every live retained counter. The stored mark
+    /// survives retired (emptied) sessions whose counters vanish with
+    /// them; live sessions contribute directly so an unrecorded store
+    /// still floors correctly.
+    fn admission_seq_floor(&self) -> u64 {
+        let mut floor = self.admission_seq_next;
+        for session in self.sessions.values() {
+            floor = floor.max(session.admission_counter_value());
+        }
+        floor
+    }
+
+    /// Advance a working session's next admission sequence to the
+    /// Engine-wide floor before admission work, preserving every tracked
+    /// lifetime sequence. Idempotent; never moves backwards.
+    fn sync_working_counter(&self, session: &mut Session) {
+        session.sync_admission_counter(self.admission_seq_floor());
+    }
+
+    /// Record a stored session's counter into the Engine-wide high-water
+    /// mark. Called on every store so the floor survives retired
+    /// sessions; a plain max that never wraps.
+    fn note_working_counter(&mut self, session: &Session) {
+        self.admission_seq_next = self
+            .admission_seq_next
+            .max(session.admission_counter_value());
+    }
+
     /// Predicate-selected candidate check for the retained Engine setting.
     /// Fixed hints under the predicate, not born fullscreen (D5 bypass),
     /// not already floating, and no adapter-asserted tile win (D3 suppress
@@ -838,12 +880,20 @@ impl Engine {
             .iter()
             .filter(|window| Self::is_fixed_candidate_with(window, predicate))
             .count();
+        // Retained counters predate other domains' admissions; advance
+        // before convergence assigns serial-leg sequences.
+        let floor = self.admission_seq_floor();
         let Some(session_mut) = self.sessions.get_mut(&event.domain_key) else {
             return ConvergeOutcome::NoSession;
         };
+        session_mut.sync_admission_counter(floor);
         match session_mut.converge_observation(&observation, focus) {
             Ok(counts) => {
                 self.converged_this_op = true;
+                // Record the converged counter so the high-water mark
+                // survives a later retirement of this slot.
+                let counter = session_mut.admission_counter_value();
+                self.admission_seq_next = self.admission_seq_next.max(counter);
                 // D23 close cleanup: a valid converged observation forgets
                 // explicitly closed minimize slots AFTER convergence (an
                 // ordinary closed leaf would otherwise mint a slot above)
@@ -939,6 +989,10 @@ impl Engine {
             .iter()
             .filter(|window| Self::is_fixed_candidate_with(window, predicate))
             .count();
+        // Pair assembly keeps only the component max; advance to the
+        // Engine-wide floor before convergence assigns serial-leg
+        // sequences. The canonical store below records the result.
+        self.sync_working_counter(session);
         match session.converge_observation(&observation, focus) {
             Ok(counts) => {
                 self.converged_this_op = true;
@@ -1028,6 +1082,7 @@ impl Engine {
         // no revision, divergence, pending, gap, or topology state is touched.
         session.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut session);
+        self.note_working_counter(&session);
         self.outer_gaps.insert(key.clone(), outer_gap);
         self.sessions.insert(key, session);
     }
@@ -1037,6 +1092,7 @@ impl Engine {
     pub fn insert_session_only(&mut self, key: DomainKey, mut session: Session) {
         session.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut session);
+        self.note_working_counter(&session);
         self.sessions.insert(key, session);
     }
 
@@ -1071,7 +1127,11 @@ impl Engine {
             self.outer_gaps.remove(domain_key);
             return None;
         }
-        Some(session.clone())
+        let mut working = session.clone();
+        // The retained counter may predate other domains' admissions;
+        // advance before any propose/commit work assigns sequences.
+        working.sync_admission_counter(self.admission_seq_floor());
+        Some(working)
     }
 
     /// Store a committed session: empty results retire the slot, otherwise
@@ -1084,6 +1144,7 @@ impl Engine {
         }
         session.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut session);
+        self.note_working_counter(&session);
         self.outer_gaps.insert(domain_key.clone(), outer_gap);
         self.sessions.insert(domain_key, session);
     }
@@ -1162,6 +1223,12 @@ impl Engine {
             target.as_ref(),
             vec![source_domain.clone(), target_domain.clone()],
         )
+        .map(|mut pair| {
+            // Pair assembly keeps only the component max; advance to the
+            // Engine-wide floor before convergence or planning assigns.
+            pair.sync_admission_counter(self.admission_seq_floor());
+            pair
+        })
         .map_err(|error| match error {
             CanonicalPairError::MismatchedIdentity => "canonical-pair-identity-mismatch",
             CanonicalPairError::UnusableInput => "canonical-pair-unusable",
@@ -1418,6 +1485,9 @@ impl Engine {
         };
         fresh.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut fresh);
+        // Fresh domains start their counter at zero; advance to the
+        // Engine-wide floor so serial legs order after retained domains.
+        self.sync_working_counter(&mut fresh);
         let observation = crate::seed::session_observation_for(
             &event.owner,
             &event.generation,
@@ -1611,6 +1681,10 @@ impl Engine {
                         ) {
                             fitted.set_policy(self.policy.clone());
                             self.adopt_session_policy(&mut fitted);
+                            // The clean-fit roster shares one sequence
+                            // number; take it from the Engine-wide floor so
+                            // independent domains never tie except by fit.
+                            self.sync_working_counter(&mut fitted);
                             let base = fitted.accepted_revision();
                             let observation = crate::seed::session_observation_for(
                                 &event.owner,
@@ -1942,6 +2016,10 @@ impl Engine {
         };
         seeded.set_policy(self.policy.clone());
         self.adopt_session_policy(&mut seeded);
+        // Serial seed legs take successive sequences; start them at the
+        // Engine-wide floor so successful legs order after retained
+        // domains instead of replaying their counters.
+        self.sync_working_counter(&mut seeded);
         let seed_observation = crate::seed::session_observation_for(
             &event.owner,
             &event.generation,
@@ -2854,6 +2932,8 @@ impl Engine {
                 }
             };
             seeded.set_policy(self.policy.clone());
+            // First-time seeds join the Engine-wide sequence at the floor.
+            self.sync_working_counter(&mut seeded);
             let seed_observation = crate::seed::session_observation_for(
                 &event.owner,
                 &event.generation,
@@ -2950,6 +3030,10 @@ impl Engine {
             }
         };
         // One convergence over BOTH domains with the combined observation.
+        // Pair assembly keeps only the component max; advance to the
+        // Engine-wide floor before convergence assigns serial-leg
+        // sequences. The canonical store below records the result.
+        self.sync_working_counter(&mut session);
         let base = session.accepted_revision();
         let combined = crate::seed::workspace_observation_for(
             &event.owner,
@@ -3338,6 +3422,10 @@ impl Engine {
                 .map(crate::seed::observed_window_from_engine)
                 .collect(),
         };
+        // Partitioned clones converge carried newcomers; advance both to
+        // the Engine-wide floor first so adopted sequences order after
+        // every retained domain instead of replaying its counter.
+        self.sync_working_counter(&mut moved);
         if let Err(error) = moved.converge_observation(&moved_obs, moved_focus) {
             return match error {
                 ProposeError::Diverged(reason) => CoreReply::Diverged(reason),
@@ -3373,6 +3461,7 @@ impl Engine {
                     .map(crate::seed::observed_window_from_engine)
                     .collect(),
             };
+            self.sync_working_counter(&mut stay);
             if let Err(error) = stay.converge_observation(&stay_obs, stay_focus) {
                 return match error {
                     ProposeError::Diverged(reason) => CoreReply::Diverged(reason),
@@ -3462,6 +3551,11 @@ impl Engine {
         };
         // Commit: relocated domain takes the target slot; the sticky residual
         // keeps the source slot (and its outer gap) only while nonempty.
+        // Both clones converged above, so record their counters first.
+        self.note_working_counter(&moved);
+        if let Some(stay) = stay.as_ref() {
+            self.note_working_counter(stay);
+        }
         let stay = stay.filter(|stay| !committed_session_is_empty(stay));
         let moved_empty = committed_session_is_empty(&moved);
         self.sessions.remove(&source_key);
@@ -3657,12 +3751,14 @@ impl Engine {
                 message: AMBIGUOUS_MESSAGE,
             };
         };
-        let Some(mut session) = crate::seed::seed_session(
+        let floor = self.admission_seq_floor();
+        let Some(mut session) = crate::seed::seed_session_from_counter(
             &event.owner,
             &event.generation,
             event.fingerprint,
             &event.domain,
             &order,
+            floor,
         ) else {
             return CoreReply::SnapshotInvalid {
                 message: OBSERVATION_MESSAGE,
@@ -4753,6 +4849,8 @@ impl Engine {
             })?;
             fresh.set_policy(self.policy.clone());
             let observation = drag_observation_for(event, fresh.accepted_revision());
+            // Fresh drag domains join the Engine-wide sequence at the floor.
+            self.sync_working_counter(&mut fresh);
             fresh
                 .converge_observation(&observation, drag_focus_for(event))
                 .map_err(|error| Box::new(drag_propose_reply(error)))?;
@@ -4764,7 +4862,7 @@ impl Engine {
             }
             return Ok((fresh, true));
         }
-        let Some(session) = self.session(&event.domain_key).cloned() else {
+        let Some(mut session) = self.session(&event.domain_key).cloned() else {
             return Err(Box::new(CoreReply::Rejected {
                 kind: RefusalKind::UnknownDomain.as_str(),
                 message: RefusalKind::UnknownDomain.message(),
@@ -4799,6 +4897,9 @@ impl Engine {
                 message: "domain outer gap does not match retained state",
             }));
         }
+        // The retained counter may predate other domains; advance before
+        // the resolve converges newcomers onto this working copy.
+        self.sync_working_counter(&mut session);
         Ok((session, false))
     }
 
@@ -5327,6 +5428,7 @@ impl Engine {
         self.outer_gaps.remove(&source);
         self.outer_gaps
             .insert(target_key.clone(), request_outer_gap);
+        self.note_working_counter(&moved);
         self.sessions.insert(target_key.clone(), moved);
         true
     }

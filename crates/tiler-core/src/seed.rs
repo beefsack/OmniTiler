@@ -610,6 +610,11 @@ fn seed_admit_step(
 /// ids never determine topology. Correlations are `seed-{index:04}`,
 /// revisions advance one commit per member, and ack/verify follow the
 /// retained lifecycle path exactly.
+///
+/// `seed_session` seeds from the zero counter for standalone use; the
+/// Engine seeds through [`seed_session_from_counter`] with its
+/// Engine-wide floor so independently seeded domains never collide once
+/// their windows share a domain.
 #[must_use]
 pub fn seed_session(
     owner: &OwnerId,
@@ -617,6 +622,22 @@ pub fn seed_session(
     fingerprint: u64,
     domain: &OutputDomain,
     seed_order: &[EngineWindow],
+) -> Option<Session> {
+    seed_session_from_counter(owner, generation, fingerprint, domain, seed_order, 0)
+}
+
+/// [`seed_session`] starting the first-successful-tiled-admission
+/// sequence at `admission_floor` instead of zero. The Engine passes its
+/// Engine-wide floor so this fresh domain's serial legs order after every
+/// retained domain's sequences; leg order within the roster is unchanged.
+#[must_use]
+pub fn seed_session_from_counter(
+    owner: &OwnerId,
+    generation: &GenerationId,
+    fingerprint: u64,
+    domain: &OutputDomain,
+    seed_order: &[EngineWindow],
+    admission_floor: u64,
 ) -> Option<Session> {
     let mut session = Session::new(
         owner.clone(),
@@ -626,6 +647,7 @@ pub fn seed_session(
         vec![domain.clone()],
     )
     .ok()?;
+    session.sync_admission_counter(admission_floor);
     for (index, entry) in seed_order.iter().enumerate() {
         let base = session.accepted_revision();
         // Tiled seed synthesizes the admitted observation with no hints.

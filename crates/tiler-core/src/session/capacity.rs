@@ -176,6 +176,24 @@ impl super::Session {
         self.admission_order.get(window).copied()
     }
 
+    /// Next first-successful-tiled-admission sequence value (D7 victim
+    /// order input). The Engine owns monotonicity across its domain
+    /// sessions: independent sessions each start at zero, so the Engine
+    /// synchronizes this before any admission work and records it on
+    /// every store. Standalone sessions keep their own local counter.
+    #[must_use]
+    pub fn admission_counter_value(&self) -> u64 {
+        self.admission_counter
+    }
+
+    /// Advance the next admission sequence value to at least `next`,
+    /// preserving every tracked lifetime sequence. Never moves the
+    /// counter backwards and never touches topology, membership, focus,
+    /// revision, or classifications.
+    pub fn sync_admission_counter(&mut self, next: u64) {
+        self.admission_counter = self.admission_counter.max(next);
+    }
+
     /// Whether a domain's retained tree was accepted via overlap (D9).
     #[must_use]
     pub fn overlap_accepted(&self, key: &DomainKey) -> bool {

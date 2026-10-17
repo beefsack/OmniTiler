@@ -848,3 +848,255 @@ fn engine_disjoint_unique_source_keeps_legacy_relocation() {
     let kept = engine.session(&s_key).expect("source still retained");
     assert_eq!(tiled_labels(kept), vec!["win-s".to_string()]);
 }
+
+#[test]
+fn engine_independent_domains_share_monotonic_admission_order() {
+    // D7 newest-first is the FIRST successful tiled-admission sequence with
+    // the same lifetime preserved across moves. Two Engine-owned domains
+    // admit in different chronological requests, so per-domain counters
+    // starting at zero would collide or invert once the windows share a
+    // domain: the later domain's window reuses sequence 0 while the
+    // earlier domain already spent 0 and 1. After a send brings them
+    // together, a shrink must evict the actual chronological newest, not
+    // the sequence-highest older window. The only shared-sequence
+    // exception is an explicit clean-fit roster.
+    use tiler_core::boundary::{CoreCommand, CoreEvent, CoreReply};
+    use tiler_core::engine::Engine;
+    let ws1 = domain("o", "ws-1", 120, 80, 0);
+    let ws2 = domain("o", "ws-2", 120, 80, 0);
+    let key1 = ws1.key();
+    let key2 = ws2.key();
+    let mut engine = Engine::new();
+    engine.sync_binding(&owner(), &generation());
+    // Chronologically first: ws-1 admits old1, then old2 as a newcomer.
+    let first = reconcile_event(
+        &owner(),
+        &generation(),
+        &ws1,
+        0,
+        "old1",
+        vec![engine_window(
+            "old1",
+            "o",
+            "ws-1",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+        )],
+        "g-1",
+    );
+    assert!(matches!(engine.handle(&first), CoreReply::Tiled(_)));
+    let second = reconcile_event(
+        &owner(),
+        &generation(),
+        &ws1,
+        0,
+        "old2",
+        vec![
+            engine_window(
+                "old1",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 60,
+                    h: 80,
+                },
+            ),
+            engine_window(
+                "old2",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 60,
+                    y: 0,
+                    w: 60,
+                    h: 80,
+                },
+            ),
+        ],
+        "g-2",
+    );
+    assert!(matches!(
+        engine.handle(&second),
+        CoreReply::Projection(_) | CoreReply::Tiled(_)
+    ));
+    // Chronologically later: ws-2 admits new1 on its independent session.
+    let third = reconcile_event(
+        &owner(),
+        &generation(),
+        &ws2,
+        0,
+        "new1",
+        vec![engine_window(
+            "new1",
+            "o",
+            "ws-2",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 120,
+                h: 80,
+            },
+        )],
+        "g-3",
+    );
+    assert!(matches!(engine.handle(&third), CoreReply::Tiled(_)));
+    let seq = |engine: &tiler_core::engine::Engine, window: &str, key: &DomainKey| {
+        engine
+            .session(key)
+            .expect("retained")
+            .admission_sequence(&WindowId(window.to_owned()))
+    };
+    assert_eq!(seq(&engine, "old1", &key1), Some(0));
+    assert_eq!(seq(&engine, "old2", &key1), Some(1));
+    assert_eq!(
+        seq(&engine, "new1", &key2),
+        Some(2),
+        "the chronologically later independent admission takes the next \
+         Engine-wide sequence, never a colliding per-domain zero"
+    );
+    // Send new1 into ws-1: the source sequence rides the lifetime.
+    let send = CoreEvent {
+        owner: owner(),
+        generation: generation(),
+        correlation: correlation("g-4"),
+        revision: 0,
+        fingerprint: 7,
+        domain: ws2.clone(),
+        domain_key: key2.clone(),
+        outer_gap: 0,
+        focused_window: WindowId("new1".to_owned()),
+        windows: vec![engine_window(
+            "new1",
+            "o",
+            "ws-2",
+            Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 80,
+            },
+        )],
+        directional: None,
+        directional_target_outer_gap: None,
+        target_domain: Some((ws1.clone(), key1.clone())),
+        target_windows: vec![
+            engine_window(
+                "old1",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 40,
+                    h: 80,
+                },
+            ),
+            engine_window(
+                "old2",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 40,
+                    y: 0,
+                    w: 40,
+                    h: 80,
+                },
+            ),
+        ],
+        closed_windows: vec![],
+        command: CoreCommand::SendToWorkspace {
+            window: "new1".to_owned(),
+            target_output: "o".to_owned(),
+            target_workspace: "ws-1".to_owned(),
+            follow: true,
+        },
+    };
+    match engine.handle(&send) {
+        CoreReply::SendWorkspace(_) => {}
+        other => panic!("send commits, got {other:?}"),
+    }
+    assert_eq!(
+        seq(&engine, "new1", &key1),
+        Some(2),
+        "send preserves the sequence"
+    );
+    assert_eq!(seq(&engine, "old1", &key1), Some(0));
+    assert_eq!(seq(&engine, "old2", &key1), Some(1));
+    // Shrink ws-1 to 2x1: no 3-leaf tree projects there (either split
+    // axis starves its nested group), while any surviving 2-leaf
+    // horizontal pair does. Exactly the newest victim floats, which must
+    // be the chronological newest new1.
+    let shrunk_ws1 = domain("o", "ws-1", 2, 1, 0);
+    let shrink = CoreEvent {
+        owner: owner(),
+        generation: generation(),
+        correlation: correlation("g-5"),
+        revision: 0,
+        fingerprint: 7,
+        domain: shrunk_ws1,
+        domain_key: key1.clone(),
+        outer_gap: 0,
+        focused_window: WindowId("new1".to_owned()),
+        windows: vec![
+            engine_window(
+                "old1",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 80,
+                },
+            ),
+            engine_window(
+                "old2",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 1,
+                    y: 0,
+                    w: 1,
+                    h: 80,
+                },
+            ),
+            engine_window(
+                "new1",
+                "o",
+                "ws-1",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 2,
+                    h: 80,
+                },
+            ),
+        ],
+        directional: None,
+        directional_target_outer_gap: None,
+        target_domain: None,
+        target_windows: vec![],
+        closed_windows: vec![],
+        command: CoreCommand::UpdateGaps,
+    };
+    match engine.handle(&shrink) {
+        CoreReply::Projection(_) => {}
+        other => panic!("shrink repairs with a projection, got {other:?}"),
+    }
+    let after = engine.session(&key1).expect("retained");
+    assert_eq!(
+        tiled_labels(after),
+        vec!["old1".to_string(), "old2".to_string()],
+        "shrink evicts the actual chronological newest first"
+    );
+    assert!(
+        after.is_capacity_float(&WindowId("new1".to_owned())),
+        "newest victim floats with diagnostic origin"
+    );
+}
