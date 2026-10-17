@@ -19,6 +19,16 @@ Project principles, approved by the user.
   specific, identified problem or provides tangible value; state that reason
   where the limit is defined. Otherwise it is just complexity.
 
+## Efficiency
+
+- Prefer events over polling: react to host notifications, wakes and
+  signals instead of periodically checking for change, so work happens
+  only when something changed.
+- This serves low latency (react immediately, not at the next tick),
+  efficiency, and game safety (no pointless execution while idle).
+- Use a timer only for a genuine deadline or where the host offers no
+  event; state that reason where the timer is defined.
+
 ## Consistency
 
 - Consistent behavior across target platforms and with the Tier 1 input
