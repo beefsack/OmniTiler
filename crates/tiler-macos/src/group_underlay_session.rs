@@ -84,6 +84,35 @@ pub struct GroupUnderlaySessionReport {
     /// carrier), `below-members` (behind members but ahead of the carrier),
     /// or `unknown` (any index missing).
     pub nonmember_position: String,
+    /// SLS relative-order route resolved in this process (private SkyLight,
+    /// own-window only — never the scripting addition).
+    pub sls_available: bool,
+    /// Raw `CGError` from the direct `SLSOrderWindow` below-target call at
+    /// the initial placement (`None` = unavailable/refused before the call).
+    pub sls_direct_status: Option<i32>,
+    /// Raw status from the transaction fallback at the initial placement
+    /// (`None` = not attempted).
+    pub sls_txn_status: Option<i32>,
+    /// Post-SLS global verdict: carrier below BOTH members.
+    pub sls_below_global: bool,
+    /// Winning SLS route at the initial placement (`"direct"`, `"txn"`, or
+    /// `"none"`); mid-run stability sites reuse the winner.
+    pub sls_route: String,
+    /// Every post-placement stage snapshot held carrier-below-both plus
+    /// carrier-above the parked nonmember.
+    pub sls_stable: bool,
+    /// Foreign (non-owned) persistent windows checked for geometry drift.
+    pub foreign_checked: usize,
+    /// Persistent foreign windows whose layer/onscreen/bounds moved.
+    pub foreign_moved: usize,
+    /// Baseline foreign window IDs absent afterwards (owned PIDs exempt).
+    /// A non-empty list is reported, never silently dropped; `stable` below
+    /// is drift-only, not complete restoration.
+    pub foreign_vanished: Vec<u32>,
+    /// No persistent foreign window moved. Drift-only: vanished/added
+    /// transients are reported separately and never count here, so this is
+    /// not a complete-restoration claim.
+    pub foreign_geometry_stable: bool,
     /// AX focused (pid, wid) before the carrier showed.
     pub focused_before_carrier: Option<(i32, Option<u32>)>,
     /// AX focused (pid, wid) after carrier show/update legs.
@@ -229,6 +258,266 @@ fn fill_margin_sample_appkit(
         return None;
     }
     Some(p)
+}
+
+/// Nonmember stacking class over plain global indices (front-to-back;
+/// -1 = absent). Shared by the public order leg and every SLS stage snapshot
+/// so all stages report identical classes.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn position_class(member_idxs: &[isize], nonmember_idx: isize, carrier_idx: isize) -> &'static str {
+    match (member_idxs, nonmember_idx) {
+        ([a, b], n) if *a >= 0 && *b >= 0 && n >= 0 => {
+            let front = (*a).min(*b);
+            let back = (*a).max(*b);
+            if n < front {
+                "above"
+            } else if n <= back {
+                "interleaved"
+            } else if carrier_idx >= 0 && n > carrier_idx {
+                "below-carrier"
+            } else {
+                "below-members"
+            }
+        }
+        _ => "unknown",
+    }
+}
+
+/// Whether the above-nonmember leg applies at one snapshot: only when the
+/// parked nonmember actually lies below every group member must the stage
+/// keep the carrier above it. A nonmember above or between the members (e.g.
+/// raised by a focus leg) makes that leg not-applicable rather than failed.
+/// Any absent index (or empty member list) is unknown — never an
+/// applicable pass, never a silent skip.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn nonmember_below_members(member_idxs: &[isize], nonmember_idx: isize) -> Option<bool> {
+    if member_idxs.is_empty() || member_idxs.iter().any(|m| *m < 0) || nonmember_idx < 0 {
+        return None;
+    }
+    let mut back = 0isize;
+    for m in member_idxs {
+        back = back.max(*m);
+    }
+    Some(nonmember_idx > back)
+}
+
+/// One SLS stage verdict over plain global indices: the carrier is present
+/// and follows EVERY member; the above-nonmember leg additionally applies
+/// only when the nonmember lies below all members (see
+/// [`nonmember_below_members`]) — otherwise it is not-applicable, reported
+/// via the snapshot's `nonmember_req` leg, never a failure. Any absent index
+/// refuses.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sls_stage_ok(carrier_idx: isize, member_idxs: &[isize], nonmember_idx: isize) -> bool {
+    let below_both = carrier_idx >= 0
+        && !member_idxs.is_empty()
+        && member_idxs.iter().all(|m| *m >= 0 && carrier_idx > *m);
+    if !below_both {
+        return false;
+    }
+    match nonmember_below_members(member_idxs, nonmember_idx) {
+        // Nonmember parked below the group: the carrier must stay above it.
+        Some(true) => carrier_idx < nonmember_idx,
+        // Nonmember above/interleaved (e.g. focus-raised): leg not-applicable.
+        Some(false) => true,
+        // Unprovable without the nonmember index: refuse, never N/A-pass.
+        None => false,
+    }
+}
+
+/// Plain foreign-geometry snapshot entry (identity plus layer/onscreen/CG
+/// bounds): no titles, no content. The live legs build these from the CG
+/// list; the diff below stays pure over plain data.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct ForeignSnap {
+    wid: u32,
+    pid: u32,
+    layer: i32,
+    onscreen: bool,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// Foreign-geometry drift over two snapshots: a persistent window (present in
+/// both) owned by NOBODY in `owned_pids` whose owner/layer/onscreen/bounds
+/// differs counts as moved. Baseline foreign WIDs absent afterwards are
+/// returned as `vanished` (owned PIDs exempt — helper/carrier teardown is
+/// expected, never vanished). Added foreign windows are skipped honestly
+/// (transient UI comes and goes) — never counted as moved. Returns
+/// `(checked, moved, vanished_wids, first_mismatch)`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn diff_foreign_geometry(
+    before: &[ForeignSnap],
+    after: &[ForeignSnap],
+    owned_pids: &[u32],
+) -> (usize, usize, Vec<u32>, Option<String>) {
+    let mut checked = 0usize;
+    let mut moved = 0usize;
+    let mut vanished: Vec<u32> = Vec::new();
+    let mut first: Option<String> = None;
+    for b in before {
+        if owned_pids.contains(&b.pid) {
+            continue;
+        }
+        let Some(a) = after.iter().find(|a| a.wid == b.wid) else {
+            vanished.push(b.wid);
+            continue;
+        };
+        if owned_pids.contains(&a.pid) {
+            continue;
+        }
+        checked += 1;
+        if a.pid != b.pid
+            || a.layer != b.layer
+            || a.onscreen != b.onscreen
+            || a.x != b.x
+            || a.y != b.y
+            || a.w != b.w
+            || a.h != b.h
+        {
+            moved += 1;
+            if first.is_none() {
+                first = Some(format!(
+                    "wid={} pid {}->{} layer {}->{} onscreen {}->{} bounds ({:.1},{:.1},{:.1},{:.1})->({:.1},{:.1},{:.1},{:.1})",
+                    b.wid,
+                    b.pid,
+                    a.pid,
+                    b.layer,
+                    a.layer,
+                    b.onscreen,
+                    a.onscreen,
+                    b.x,
+                    b.y,
+                    b.w,
+                    b.h,
+                    a.x,
+                    a.y,
+                    a.w,
+                    a.h
+                ));
+            }
+        }
+    }
+    (checked, moved, vanished, first)
+}
+
+/// Read one SLS stage snapshot into `detail` (pure readback: no order call,
+/// no pump). Returns `(below_both_members, stage_ok)`.
+#[cfg(target_os = "macos")]
+fn sls_stage_snapshot(
+    detail: &mut Vec<String>,
+    tag: &str,
+    carrier_wid: i64,
+    member_a_wid: u32,
+    member_b_wid: u32,
+    receipt_wid: u32,
+) -> (bool, bool) {
+    let list = crate::ffi::cg_window_list_all().unwrap_or_default();
+    let (below, ci, mi) = crate::ffi::cg_carrier_below_targets(
+        &list,
+        carrier_wid as isize,
+        &[member_a_wid, member_b_wid],
+    );
+    let ni = list
+        .iter()
+        .position(|w| w.wid == receipt_wid)
+        .map(|i| i as isize)
+        .unwrap_or(-1);
+    let pos = position_class(&mi, ni, ci);
+    let nm_req = match nonmember_below_members(&mi, ni) {
+        Some(true) => "applies",
+        Some(false) => "na",
+        None => "unknown",
+    };
+    let ok = below && sls_stage_ok(ci, &mi, ni);
+    detail.push(format!(
+        "sls-stage:{tag} below={below} carrier={ci} members={mi:?} nonmember={ni}({pos}) nonmember_req={nm_req} ok={ok}"
+    ));
+    (below, ok)
+}
+
+/// Direct-route SLS placement assertion below `lowest_wid` (`SLSOrderWindow`,
+/// yabai-pinned). Returns the raw `CGError` (`None` = refused before the
+/// call); the status is recorded in `detail`, never treated as proof. The
+/// caller settles and snapshots.
+#[cfg(target_os = "macos")]
+fn sls_assert_direct(
+    detail: &mut Vec<String>,
+    tag: &str,
+    carrier_wid: i64,
+    lowest_wid: u32,
+) -> Option<i32> {
+    match u32::try_from(carrier_wid).ok() {
+        Some(cw) => match crate::ffi::sls_order_below(cw, lowest_wid) {
+            Ok(s) => {
+                detail.push(format!("sls:{tag} direct status={s} target={lowest_wid}"));
+                Some(s)
+            }
+            Err(e) => {
+                detail.push(format!("sls:{tag} direct refused: {e}"));
+                None
+            }
+        },
+        None => {
+            detail.push(format!(
+                "sls:{tag} carrier wid {carrier_wid} not u32; refusing"
+            ));
+            None
+        }
+    }
+}
+
+/// Transaction-route SLS placement assertion below `lowest_wid`
+/// (`SLSTransactionOrderWindow`, JankyBorders-pinned). Same contract as
+/// [`sls_assert_direct`]: an independent semantic approach, not a retry.
+#[cfg(target_os = "macos")]
+fn sls_assert_txn(
+    detail: &mut Vec<String>,
+    tag: &str,
+    carrier_wid: i64,
+    lowest_wid: u32,
+) -> Option<i32> {
+    match u32::try_from(carrier_wid).ok() {
+        Some(cw) => match crate::ffi::sls_order_below_txn(cw, lowest_wid) {
+            Ok(s) => {
+                detail.push(format!("sls:{tag} txn status={s} target={lowest_wid}"));
+                Some(s)
+            }
+            Err(e) => {
+                detail.push(format!("sls:{tag} txn refused: {e}"));
+                None
+            }
+        },
+        None => {
+            detail.push(format!(
+                "sls:{tag} carrier wid {carrier_wid} not u32; refusing"
+            ));
+            None
+        }
+    }
+}
+
+/// Settle-tolerant wait after an SLS placement: polls the global below-both
+/// verdict up to 2s (an async transaction commit may still be in flight),
+/// then returns for the caller's snapshot. Never gates by itself.
+#[cfg(target_os = "macos")]
+fn sls_settle(pump: &dyn Fn(u64), carrier_wid: i64, member_a_wid: u32, member_b_wid: u32) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let list = crate::ffi::cg_window_list_all().unwrap_or_default();
+        let (below, _, _) = crate::ffi::cg_carrier_below_targets(
+            &list,
+            carrier_wid as isize,
+            &[member_a_wid, member_b_wid],
+        );
+        if below || std::time::Instant::now() >= deadline {
+            break;
+        }
+        pump(250);
+    }
 }
 
 /// Owned-window stack dump for diagnosis: per tracked WID its global index,
@@ -411,6 +700,29 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
         "displays={} scales={:?} primary_h={primary_h}",
         displays.len(),
         displays.iter().map(|d| d.scale).collect::<Vec<_>>()
+    ));
+    // Protected-window geometry baseline (every CG window, titles excluded):
+    // compared after teardown; owned PIDs are exempt there, everything else
+    // (including the hosting terminal) must read back unchanged.
+    let cg_foreign_before: Vec<ForeignSnap> = crate::ffi::cg_window_list_all()
+        .map(|list| {
+            list.iter()
+                .map(|w| ForeignSnap {
+                    wid: w.wid,
+                    pid: w.pid,
+                    layer: w.layer,
+                    onscreen: w.onscreen,
+                    x: w.bounds.x,
+                    y: w.bounds.y,
+                    w: w.bounds.w,
+                    h: w.bounds.h,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    detail.push(format!(
+        "foreign-baseline windows={} frontmost_before={frontmost_before:?}",
+        cg_foreign_before.len()
     ));
 
     // Spawn three owned helpers: the nonmember receipt FIRST so creation
@@ -711,22 +1023,8 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
                 .unwrap_or(-1)
         })
         .unwrap_or(-1);
-    let nonmember_position = match (cg_member_idxs.as_slice(), cg_nonmember_idx) {
-        ([a, b], n) if *a >= 0 && *b >= 0 && n >= 0 => {
-            let front = (*a).min(*b);
-            let back = (*a).max(*b);
-            if n < front {
-                "above"
-            } else if n <= back {
-                "interleaved"
-            } else if cg_carrier_idx >= 0 && n > cg_carrier_idx {
-                "below-carrier"
-            } else {
-                "below-members"
-            }
-        }
-        _ => "unknown",
-    };
+    let nonmember_position =
+        position_class(cg_member_idxs.as_slice(), cg_nonmember_idx, cg_carrier_idx);
     detail.push(format!(
         "order below={ordered_below_global} carrier={cg_carrier_idx} members={cg_member_idxs:?} \
          nonmember={cg_nonmember_idx} ({nonmember_position}) visible={visible_after_show} \
@@ -745,11 +1043,81 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
     ));
     if !ordered_below_global {
         detail.push(
-            "ORDER CONSTRAINT: carrier not below both foreign members in the global CG list; \
-             public relative ordering is unreliable cross-process (no SkyLight attempted)"
+            "ORDER CONSTRAINT (public route): carrier not below both foreign members in the \
+             global CG list; SLS direct + transaction routes evaluated in the sls legs below"
                 .to_owned(),
         );
     }
+
+    // SLS leg (private SkyLight, own-window only — never the scripting
+    // addition): order the AppKit carrier below the lowest member via direct
+    // `SLSOrderWindow` and via the `SLSTransactionOrderWindow` shape, each
+    // with its own settle and global-verdict readback. The pre snapshot
+    // records the public-only placement (expected miss per history; not
+    // gated); stability gates every snapshot from the route posts onward.
+    if gate("sls-order", &mut detail).is_err() {
+        teardown_fail!(fail("sls-order", "gate refused".to_owned()));
+    }
+    let sls_available = crate::ffi::sls_order_available() || crate::ffi::sls_order_txn_available();
+    detail.push(format!(
+        "sls available={sls_available} direct={} txn={}",
+        crate::ffi::sls_order_available(),
+        crate::ffi::sls_order_txn_available()
+    ));
+    let _ = sls_stage_snapshot(
+        &mut detail,
+        "sls-initial-pre",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    // Route discrimination: each semantic approach gets its own settle +
+    // snapshot so a win is attributable. The winner carries the mid-run
+    // stability sites; a loss on both is the ordering-contract verdict.
+    let sls_direct_status =
+        sls_assert_direct(&mut detail, "initial", carrier_wid, lowest_member_wid());
+    sls_settle(&pump, carrier_wid, member_a_wid, member_b_wid);
+    let (direct_below, direct_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-initial-direct-post",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    let sls_txn_status = sls_assert_txn(&mut detail, "initial", carrier_wid, lowest_member_wid());
+    sls_settle(&pump, carrier_wid, member_a_wid, member_b_wid);
+    let (txn_below, txn_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-initial-txn-post",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    let sls_route = if direct_below {
+        "direct"
+    } else if txn_below {
+        "txn"
+    } else {
+        "none"
+    };
+    // Mid-run attempts reuse the winner so stability attributes to one route;
+    // with no winner they keep proving the direct route ineffective.
+    let sls_winner_direct = !txn_below || direct_below;
+    let sls_below_global = direct_below || txn_below;
+    let mut sls_stable = if direct_below { direct_ok } else { txn_ok };
+    detail.push(format!(
+        "sls route={sls_route} below={sls_below_global} stable_so_far={sls_stable}"
+    ));
+    let sls_place = |detail: &mut Vec<String>, tag: &str| {
+        if sls_winner_direct {
+            sls_assert_direct(detail, tag, carrier_wid, lowest_member_wid());
+        } else {
+            sls_assert_txn(detail, tag, carrier_wid, lowest_member_wid());
+        }
+    };
 
     // FOCUS legs: focus must still name member A; the carrier/controller
     // must never be focused. This proves no activation by our panel.
@@ -767,6 +1135,16 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
     detail.push(format!(
         "focused_before={focused_before_carrier:?} focused_after={focused_after_carrier:?}"
     ));
+    // Pure stability read: no placement call since the SLS initial post.
+    let (_, focus_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-focus",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && focus_ok;
 
     // REFLOW leg: move member B, recompute the union, re-track the carrier
     // to the OBSERVED frames (never the requested one), and read back the
@@ -838,8 +1216,29 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
     if let Err(e) = carrier.update(mtm, reflow_outer, fill) {
         teardown_fail!(fail("reflow", e));
     }
+    // Reflow stability: the member-B AX move above may have restacked the
+    // carrier, so snapshot the drift first, then re-place via SLS.
+    let (_, reflow_pre_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-reflow-pre",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && reflow_pre_ok;
     carrier.show_below(mtm, lowest_member_wid() as isize);
+    sls_place(&mut detail, "reflow");
     pump(50);
+    let (_, reflow_post_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-reflow-post",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && reflow_post_ok;
     let got = carrier.frame_points();
     let reflow_ok = frames_close(
         got,
@@ -961,8 +1360,29 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
     // windows (they name the receipt, never the carrier); acceptance needs
     // them to name the receipt while the CG order proves the carrier is
     // stacked between the members and the receipt.
+    // Receipt re-park may have restacked: snapshot, re-place via SLS, then
+    // read the hit joins at the click point.
+    let (_, click_pre_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-click-pre",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && click_pre_ok;
     carrier.show_below(mtm, lowest_member_wid() as isize);
+    sls_place(&mut detail, "click-pre");
     pump(200);
+    let (_, click_placed_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-click-placed",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && click_placed_ok;
     let sls_hit = crate::ffi::sls_window_at_point(click_cg.0, click_cg.1).ok();
     let ax_hit = crate::ffi::ax_hit_test_owner(click_cg.0, click_cg.1).ok();
     let (pre_carrier_idx, pre_receipt_idx, pre_member_idxs) = match crate::ffi::cg_window_list_all()
@@ -1059,6 +1479,20 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
             ));
         }
     }
+    // Receipt activation may have raised it above the members: re-place the
+    // carrier below the members via SLS (keeps carrier above the receipt only
+    // when the receipt sits below the group — read back, never assumed).
+    sls_place(&mut detail, "click-armed");
+    pump(150);
+    let (_, click_armed_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-click-armed",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && click_armed_ok;
     let (mouse_before, mouse_up_before) = {
         pump(600);
         match latest_mouse_counts(&raws[0].lines) {
@@ -1137,7 +1571,17 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
         teardown_fail!(fail("click", format!("member agreement after click: {e}")));
     }
     carrier.show_below(mtm, lowest_member_wid() as isize);
+    sls_place(&mut detail, "click-restore");
     pump(200);
+    let (_, click_restore_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-click-restore",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && click_restore_ok;
     if !carrier.is_visible() {
         teardown_fail!(fail(
             "click",
@@ -1154,7 +1598,18 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
     pump(200);
     let fence_hide_ok = !carrier.is_visible();
     carrier.show_below(mtm, lowest_member_wid() as isize);
+    // No pre snapshot: the carrier was just ordered out (absent by design).
+    sls_place(&mut detail, "fence-restore");
     pump(200);
+    let (_, fence_restore_stage_ok) = sls_stage_snapshot(
+        &mut detail,
+        "sls-fence-restore",
+        carrier_wid,
+        member_a_wid,
+        member_b_wid,
+        receipt_wid,
+    );
+    sls_stable = sls_stable && fence_restore_stage_ok;
     let fence_restore_ok = carrier.is_visible();
 
     // FULLSCREEN leg on owned member A only: enter via the ownership-joined
@@ -1199,11 +1654,23 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
                     exit.applied, exit.fullscreen
                 ));
                 carrier.show_below(mtm, lowest_member_wid() as isize);
+                // No pre snapshot: the carrier was hidden for the fullscreen
+                // leg (absent by design).
+                sls_place(&mut detail, "fullscreen-return");
                 pump(250);
                 let back_visible = carrier.is_visible();
                 let back_focused = crate::ffi::ax_focused_preimage_detailed().ok()
                     == Some((member_a_pid as i32, Some(member_a_wid)));
                 fullscreen_return_ok = back_visible && back_focused;
+                let (_, fs_return_ok) = sls_stage_snapshot(
+                    &mut detail,
+                    "sls-fullscreen-return",
+                    carrier_wid,
+                    member_a_wid,
+                    member_b_wid,
+                    receipt_wid,
+                );
+                sls_stable = sls_stable && fs_return_ok;
                 detail.push(format!(
                     "fs_return visible={back_visible} focused_member_a={back_focused}"
                 ));
@@ -1269,8 +1736,38 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
         "space_restored={space_restored} frontmost_before={frontmost_before:?} \
          frontmost_after={frontmost_after:?} focused_final={focused_final:?}"
     ));
+    // Protected-window restoration: every persistent foreign window (owned
+    // helper/controller PIDs exempt) must read back identical
+    // layer/onscreen/bounds. Added/removed transients never count as moved.
+    let owned_pids = [receipt_pid, member_a_pid, member_b_pid, std::process::id()];
+    let cg_foreign_after: Vec<ForeignSnap> = crate::ffi::cg_window_list_all()
+        .map(|list| {
+            list.iter()
+                .map(|w| ForeignSnap {
+                    wid: w.wid,
+                    pid: w.pid,
+                    layer: w.layer,
+                    onscreen: w.onscreen,
+                    x: w.bounds.x,
+                    y: w.bounds.y,
+                    w: w.bounds.w,
+                    h: w.bounds.h,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let (foreign_checked, foreign_moved, foreign_vanished, foreign_first) =
+        diff_foreign_geometry(&cg_foreign_before, &cg_foreign_after, &owned_pids);
+    let foreign_geometry_stable = foreign_moved == 0;
+    detail.push(format!(
+        "foreign-after checked={foreign_checked} moved={foreign_moved} stable={foreign_geometry_stable} \
+         vanished={foreign_vanished:?} first={foreign_first:?} after_windows={}",
+        cg_foreign_after.len()
+    ));
 
-    let pass = ordered_below_global
+    let pass = sls_below_global
+        && sls_stable
+        && foreign_geometry_stable
         && focus_names_member_a
         && carrier_never_focused
         && reflow_ok
@@ -1317,6 +1814,16 @@ fn run_group_underlay_session_macos(seconds: u64) -> Result<String, (i32, String
         cg_member_idxs,
         cg_nonmember_idx,
         nonmember_position: nonmember_position.to_owned(),
+        sls_available,
+        sls_direct_status,
+        sls_txn_status,
+        sls_below_global,
+        sls_route: sls_route.to_owned(),
+        sls_stable,
+        foreign_checked,
+        foreign_moved,
+        foreign_vanished,
+        foreign_geometry_stable,
         focused_before_carrier,
         focused_after_carrier,
         carrier_never_focused,
@@ -1401,5 +1908,111 @@ mod tests {
     fn frames_close_tolerates_half_point_rounding() {
         assert!(frames_close((1.0, 2.0, 3.0, 4.0), (1.4, 2.4, 3.4, 4.4)));
         assert!(!frames_close((1.0, 2.0, 3.0, 4.0), (1.6, 2.0, 3.0, 4.0)));
+    }
+
+    #[test]
+    fn position_class_names_every_stacking_shape() {
+        // Members at 2 and 5, carrier at 9.
+        assert_eq!(position_class(&[2, 5], 0, 9), "above");
+        assert_eq!(position_class(&[2, 5], 4, 9), "interleaved");
+        assert_eq!(position_class(&[2, 5], 12, 9), "below-carrier");
+        assert_eq!(position_class(&[2, 5], 7, 9), "below-members");
+        // Input order never matters; absent indices are unknown.
+        assert_eq!(position_class(&[5, 2], 12, 9), "below-carrier");
+        assert_eq!(position_class(&[-1, 5], 12, 9), "unknown");
+        assert_eq!(position_class(&[2, 5], -1, 9), "unknown");
+        assert_eq!(position_class(&[2, 5], 12, -1), "below-members");
+    }
+
+    #[test]
+    fn nonmember_requirement_applies_only_below_group() {
+        assert_eq!(nonmember_below_members(&[2, 5], 12), Some(true));
+        assert_eq!(nonmember_below_members(&[5, 2], 12), Some(true));
+        assert_eq!(nonmember_below_members(&[2, 5], 0), Some(false));
+        assert_eq!(nonmember_below_members(&[2, 5], 4), Some(false));
+        assert_eq!(nonmember_below_members(&[2, 5], -1), None);
+        assert_eq!(nonmember_below_members(&[-1, 5], 12), None);
+        assert_eq!(nonmember_below_members(&[], 12), None);
+    }
+
+    #[test]
+    fn sls_stage_ok_needs_below_both_and_applicable_above_nonmember() {
+        // Carrier 9 below members [2, 5], nonmember 12 parked below the group:
+        // the above-nonmember leg applies and holds.
+        assert!(sls_stage_ok(9, &[2, 5], 12));
+        // Nonmember above the group or interleaved (e.g. focus-raised): the
+        // leg is not-applicable, so below-both alone decides.
+        assert!(sls_stage_ok(9, &[2, 5], 0));
+        assert!(sls_stage_ok(9, &[2, 5], 4));
+        // Above a member: refuse. Below the parked nonmember: refuse.
+        assert!(!sls_stage_ok(1, &[2, 5], 12));
+        assert!(!sls_stage_ok(9, &[2, 12], 15));
+        assert!(!sls_stage_ok(15, &[2, 5], 12));
+        // Absent indices and empty members: refuse (unprovable, never N/A).
+        assert!(!sls_stage_ok(-1, &[2, 5], 12));
+        assert!(!sls_stage_ok(9, &[-1, 5], 12));
+        assert!(!sls_stage_ok(9, &[2, 5], -1));
+        assert!(!sls_stage_ok(9, &[], 12));
+    }
+
+    #[test]
+    fn foreign_diff_ignores_owned_and_transient() {
+        let snap = |wid: u32, pid: u32| ForeignSnap {
+            wid,
+            pid,
+            layer: 0,
+            onscreen: true,
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+        };
+        let before = vec![snap(1, 100), snap(2, 100), snap(3, 200)];
+        // Identical: nothing moved, nothing vanished.
+        assert_eq!(
+            diff_foreign_geometry(&before, &before, &[999]),
+            (3, 0, vec![], None)
+        );
+        // Owned PIDs exempt on either side.
+        assert_eq!(
+            diff_foreign_geometry(&before, &before, &[100]),
+            (1, 0, vec![], None)
+        );
+        // Moved bounds on a persistent foreign window counts once.
+        let mut after = before.clone();
+        after[2].x = 50.0;
+        let (checked, moved, vanished, first) = diff_foreign_geometry(&before, &after, &[999]);
+        assert_eq!((checked, moved), (3, 1));
+        assert!(vanished.is_empty());
+        assert!(first.unwrap().contains("wid=3"));
+        // A vanished baseline foreign window is exposed by ID, never dropped:
+        // the 38/39 shape reports [3] rather than claiming full restoration.
+        let removed = vec![snap(1, 100), snap(2, 100)];
+        assert_eq!(
+            diff_foreign_geometry(&before, &removed, &[999]),
+            (2, 0, vec![3], None)
+        );
+        // Added windows never count as moved (and cannot vanish the baseline).
+        let mut added = before.clone();
+        added.push(snap(9, 300));
+        assert_eq!(
+            diff_foreign_geometry(&before, &added, &[999]),
+            (3, 0, vec![], None)
+        );
+        // Owned teardown is expected: a baseline owned window absent
+        // afterwards is exempt, not vanished.
+        let owned_before = vec![snap(1, 100), snap(7, 999)];
+        let owned_after = vec![snap(1, 100)];
+        assert_eq!(
+            diff_foreign_geometry(&owned_before, &owned_after, &[999]),
+            (1, 0, vec![], None)
+        );
+        // Onscreen flip and owner change both count.
+        let mut flipped = before.clone();
+        flipped[0].onscreen = false;
+        assert_eq!(diff_foreign_geometry(&before, &flipped, &[999]).1, 1);
+        let mut reowned = before.clone();
+        reowned[0].pid = 400;
+        assert_eq!(diff_foreign_geometry(&before, &reowned, &[999]).1, 1);
     }
 }

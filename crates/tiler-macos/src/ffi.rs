@@ -2852,6 +2852,181 @@ mod macos {
         Some(unsafe { (table.connection)() })
     }
 
+    // -- Scoped SLS relative-order writes (private SPI; missing => Err) --
+    //
+    // Signatures pinned against local reference checkouts (no Dock injection,
+    // no scripting addition, SIP left on — this connection orders only its
+    // OWN windows relative to a foreign target, the JankyBorders shape):
+    // - yabai `src/misc/extern.h:33`:
+    //   `extern CGError SLSOrderWindow(int cid, uint32_t wid, int mode,
+    //   uint32_t rel_wid);` with raise `mode=1` / lower `mode=-1`
+    //   (`src/message.c` window-raise/window-lower commands).
+    // - JankyBorders `src/misc/extern.h:43,48,52` plus `src/border.c`
+    //   `border_update_internal`: `SLSTransactionCreate(int cid)`,
+    //   `SLSTransactionOrderWindow(CFTypeRef, uint32_t, int, uint32_t)` with
+    //   `BORDER_ORDER_BELOW -1` (`src/border.h`), `SLSTransactionCommit
+    //   (CFTypeRef, int)` with `0`, transaction released after commit.
+    // Both entry points order the CALLER's window; ordering a foreign window
+    // outright (the scripting-addition route) is never attempted here.
+
+    /// Relative-order mode for both SLS order entry points: `-1` below the
+    /// relative target (JankyBorders `BORDER_ORDER_BELOW`, yabai lower).
+    /// The above mode (`1`) is deliberately not exposed: this fixture only
+    /// ever places its own carrier below foreign members.
+    pub const SLS_ORDER_BELOW: i32 = -1;
+
+    struct SlsOrderTable {
+        order_window: unsafe extern "C" fn(i32, u32, i32, u32) -> i32,
+    }
+
+    static SLS_ORDER_TABLE: OnceLock<Option<SlsOrderTable>> = OnceLock::new();
+
+    fn sls_order_table() -> Option<&'static SlsOrderTable> {
+        SLS_ORDER_TABLE
+            .get_or_init(|| {
+                // SAFETY: symbol null-checked before transmuting to the exact
+                // yabai-pinned signature above; missing fails closed.
+                unsafe {
+                    let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let name = CString::new("SLSOrderWindow").expect("static");
+                    let sym = libc::dlsym(handle, name.as_ptr());
+                    if sym.is_null() {
+                        return None;
+                    }
+                    Some(SlsOrderTable {
+                        order_window: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(i32, u32, i32, u32) -> i32,
+                        >(sym),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    struct SlsOrderTxnTable {
+        create: unsafe extern "C" fn(i32) -> RawRef,
+        order: unsafe extern "C" fn(RawRef, u32, i32, u32) -> i32,
+        commit: unsafe extern "C" fn(RawRef, i32) -> i32,
+    }
+
+    static SLS_ORDER_TXN_TABLE: OnceLock<Option<SlsOrderTxnTable>> = OnceLock::new();
+
+    fn sls_order_txn_table() -> Option<&'static SlsOrderTxnTable> {
+        SLS_ORDER_TXN_TABLE
+            .get_or_init(|| {
+                // SAFETY: every symbol null-checked before transmuting to the
+                // exact JankyBorders-pinned signatures above; any missing
+                // symbol fails the table closed.
+                unsafe {
+                    let handle = libc::dlopen(SKYLIGHT.as_ptr().cast(), 0x1);
+                    if handle.is_null() {
+                        return None;
+                    }
+                    let sym = |name: &str| {
+                        let cname = CString::new(name).expect("static");
+                        libc::dlsym(handle, cname.as_ptr())
+                    };
+                    let create = sym("SLSTransactionCreate");
+                    let order = sym("SLSTransactionOrderWindow");
+                    let commit = sym("SLSTransactionCommit");
+                    if create.is_null() || order.is_null() || commit.is_null() {
+                        return None;
+                    }
+                    Some(SlsOrderTxnTable {
+                        create: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(i32) -> RawRef,
+                        >(create),
+                        order: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(RawRef, u32, i32, u32) -> i32,
+                        >(order),
+                        commit: std::mem::transmute::<
+                            *mut std::ffi::c_void,
+                            unsafe extern "C" fn(RawRef, i32) -> i32,
+                        >(commit),
+                    })
+                }
+            })
+            .as_ref()
+    }
+
+    /// Whether the direct SLS relative-order symbol resolved. Read-only
+    /// lookup, no order call.
+    pub fn sls_order_available() -> bool {
+        sls_order_table().is_some()
+    }
+
+    /// Whether the full SLS order-transaction trio resolved. Read-only
+    /// lookup, no order call.
+    pub fn sls_order_txn_available() -> bool {
+        sls_order_txn_table().is_some()
+    }
+
+    /// Order one OWN window (`carrier_wid`, e.g. the AppKit carrier) below a
+    /// foreign target window via direct `SLSOrderWindow`. `Ok` carries the raw
+    /// `CGError` (0 = accepted — never proof; the caller must read back the
+    /// global CG order); `Err` is unavailable/refused-before-call, never a
+    /// guessed placement. Zero or self-relative targets refuse.
+    pub fn sls_order_below(carrier_wid: u32, target_wid: u32) -> Result<i32, String> {
+        if carrier_wid == 0 || target_wid == 0 {
+            return Err("SLS order needs nonzero carrier and target window IDs".to_owned());
+        }
+        if carrier_wid == target_wid {
+            return Err("SLS order refuses a self-relative target".to_owned());
+        }
+        let table = sls_order_table().ok_or_else(|| "SLSOrderWindow unavailable".to_owned())?;
+        let cid =
+            sls_main_connection_id().ok_or_else(|| "SLS connection unavailable".to_owned())?;
+        // SAFETY: resolved non-null symbol with the pinned signature; live
+        // connection ID; plain integer window IDs; status recorded, never
+        // treated as placement proof.
+        let status = unsafe { (table.order_window)(cid, carrier_wid, SLS_ORDER_BELOW, target_wid) };
+        Ok(status)
+    }
+
+    /// Order one OWN window below a foreign target via the JankyBorders
+    /// transaction shape (create, order below, commit, release). Same
+    /// `Ok(status)` / `Err` contract as [`sls_order_below`]; a null
+    /// transaction is `Err`, never retried blindly.
+    pub fn sls_order_below_txn(carrier_wid: u32, target_wid: u32) -> Result<i32, String> {
+        if carrier_wid == 0 || target_wid == 0 {
+            return Err("SLS order needs nonzero carrier and target window IDs".to_owned());
+        }
+        if carrier_wid == target_wid {
+            return Err("SLS order refuses a self-relative target".to_owned());
+        }
+        let table =
+            sls_order_txn_table().ok_or_else(|| "SLS order transaction unavailable".to_owned())?;
+        let cid =
+            sls_main_connection_id().ok_or_else(|| "SLS connection unavailable".to_owned())?;
+        // SAFETY: resolved non-null create symbol; the cid is live; a null
+        // result returns `Err` with no use of the value. Copy rule: success
+        // yields a +1 retained transaction, owned exactly once below (the
+        // JankyBorders release pairing).
+        let raw = unsafe { (table.create)(cid) };
+        if raw.is_null() {
+            return Err("SLSTransactionCreate returned null".to_owned());
+        }
+        let txn: CFRetained<CFType> =
+            unsafe { CFRetained::from_raw(NonNull::new(raw as *mut CFType).expect("non-null")) };
+        let txn_ptr = CFRetained::as_ptr(&txn).as_ptr() as RawRef;
+        // SAFETY: live retained transaction borrowed across both calls (it
+        // outlives them; the callee does not consume it); plain integer args;
+        // statuses recorded, never treated as placement proof.
+        let order_status =
+            unsafe { (table.order)(txn_ptr, carrier_wid, SLS_ORDER_BELOW, target_wid) };
+        if order_status != 0 {
+            return Ok(order_status);
+        }
+        let commit_status = unsafe { (table.commit)(txn_ptr, 0) };
+        Ok(commit_status)
+    }
+
     /// WindowServer input hit-test, matching yabai's unfiltered
     /// `window_manager_find_window_at_point` call. No rectangle/stack guess.
     /// Resolve separately so an absent optional diagnostic cannot disable reads.
@@ -7219,7 +7394,8 @@ pub use macos::{
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
+    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
     sls_spaces_for_windows, sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
@@ -7768,6 +7944,22 @@ mod stub {
         None
     }
 
+    pub fn sls_order_available() -> bool {
+        false
+    }
+
+    pub fn sls_order_txn_available() -> bool {
+        false
+    }
+
+    pub fn sls_order_below(_carrier_wid: u32, _target_wid: u32) -> Result<i32, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn sls_order_below_txn(_carrier_wid: u32, _target_wid: u32) -> Result<i32, String> {
+        Err("macOS-only".to_owned())
+    }
+
     pub fn sls_display_spaces() -> Result<Vec<SlsDisplay>, String> {
         Err("macOS-only".to_owned())
     }
@@ -8066,7 +8258,8 @@ pub use stub::{
     secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
     slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
     sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_direct, sls_space_type, sls_spaces_for_window,
+    sls_move_symbols, sls_move_windows_direct, sls_order_available, sls_order_below,
+    sls_order_below_txn, sls_order_txn_available, sls_space_type, sls_spaces_for_window,
     sls_spaces_for_windows, terminate_process, warp_cursor_position,
 };
 

@@ -210,6 +210,11 @@ found no remaining code blocker, separately from the acceptance gaps above.
 
 ## Exact next action
 
+The [group-underlay SkyLight evaluation](macos-group-underlay.md#scoped-skylight-evaluation-2026-10-17)
+did not establish below-target ordering for the existing AppKit carrier. No
+border switch was made; below-target rendering and Windows band parity remain a
+parked follow-up in the backlog. This is not proof against a different renderer.
+
 Run the linked appearance-only procedure and record the visual verdict. Any
 separate float follow-up must observe an actual successful core verdict rather
 than merely input-post/merged counters. Group underlay and drop overlays remain

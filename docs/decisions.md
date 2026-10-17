@@ -2257,9 +2257,17 @@ platform API behavior.
   left it above at least one member, including a frontmost result after
   front-plus-relative ordering. Below-member placement is a required safety and
   parity invariant; click-through and fullscreen suppression do not compensate.
-  A scoped private SkyLight ordering evaluation versus deferral is an open
-  question; no private rendering route, chord mapping or native-move detector is
-  selected. [Evidence and remaining differences](changes/macos-group-underlay.md).
+  Evaluate scoped private SkyLight relative ordering on the existing carrier
+  within Tier 2 (SIP enabled, no scripting addition or Dock injection), replacing
+  the earlier evaluate-versus-defer question. **Evaluation outcome:** direct
+  ordering returned success without global placement change; transaction ordering
+  returned an error. Neither proved below-every-member placement, so defer product
+  integration and retain only the fail-closed diagnostic. This does not establish
+  failure of a SkyLight-created renderer, which remains a separate unselected
+  evaluation. No private renderer, chord mapping or native-move detector is
+  selected. The active border stays above-target; below-target/band parity remains
+  a follow-up, not an inferred consequence of symbol availability.
+  [Evidence, restoration limitations and remaining differences](changes/macos-group-underlay.md).
 - Group underlay (user decision 2026-10-02, accepted for now):
   `changes/group-underlay-move-trigger.md` on Windows. Show for Win+Shift hold
   (both required, either order, extra modifiers allowed) OR a matching focused

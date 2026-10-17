@@ -3664,11 +3664,16 @@ decisions of 2026-09-24 are under
       **Appearance pending**; float/zoom, stacking variants, multi-display and
       games remain broader follow-ups.
       [Evidence and bounded procedure](changes/macos-active-border.md).
-       **Group underlay blocked 2026-10-17:** diagnostic carrier and strict ARGB/
-       shared-geometry tests delivered; both public AppKit below-member ordering
-       routes failed. No product underlay/trigger/configuration is enabled.
-       Decide scoped private ordering evaluation versus deferral before resuming
-       integration. [Evidence and differences](changes/macos-group-underlay.md).
+        **Group underlay parked 2026-10-17:** public AppKit routes and scoped
+        SkyLight ordering of the AppKit carrier failed global below-member checks
+        (direct success/no movement; transaction error). Diagnostic-only; no
+        product underlay/trigger/configuration or Engine integration. A separate
+        SkyLight-created carrier evaluation would need a new hypothesis and
+        below-members/above-lower-nonmember stability proof. Complete protected-
+        window restoration was not proven (38/39 baseline windows rechecked).
+        **Border follow-up:** below-target ordering and Windows band parity remain
+        unproven; keep current above-target rendering.
+        [Evidence and explicit differences](changes/macos-group-underlay.md).
        Drag/drop overlays remain subsequent work.
   4. Workspace indicator (user 2026-10-16): compact menu-bar item, inspired by
      AeroSpace's all-workspaces-visible numbered mode; explore showing app icons

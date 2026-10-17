@@ -1,5 +1,12 @@
 # macOS group underlay
 
+## Current outcome (2026-10-17)
+
+Parked at a diagnostic-only milestone. Scoped SkyLight ordering of the existing
+AppKit carrier did not prove below-member placement. No product underlay is
+enabled. A different renderer/window-ownership shape would require a new bounded
+evaluation; the present evidence does not establish that all Tier 2 routes fail.
+
 ## Goal and acceptance
 
 Reuse shared active-group projection and visual policy plus the active-border
@@ -7,7 +14,7 @@ AppKit foundation to render the focused tiled group's underlay. Match KDE and
 Windows geometry, fill, configuration and trigger semantics where macOS permits;
 explicitly document host differences. Drop overlays are out of scope.
 
-Accept public below-member ordering with a foreign-process fixture before
+Accept below-member ordering with a foreign-process fixture before
 production integration. Prove group creation/dissolution, projected reflow,
 member/nonmember ordering, click-through, Space/fullscreen suppression and exact
 teardown restoration. Appearance alone remains a short physical check.
@@ -37,8 +44,8 @@ Production integration is blocked. Two foreign-process public-ordering approache
 failed the required global CG ordering gate: relative-Below from the initial
 state left the carrier at index 12 versus member indices [45, 2]; front ordering
 followed by relative-Below left it at index 0 versus members [40, 38]. Smaller
-indices are nearer the front. Neither route establishes placement below all
-members, and no third ordering attempt or private renderer was added.
+indices are nearer the front. Neither public route establishes placement below
+all members. The subsequent private-ordering evaluation is recorded below.
 
 Delivered only: a main-thread filled, nonactivating, click-through carrier;
 shared-core outer-geometry adaptation and strict `#aarrggbb` parsing; and the
@@ -108,11 +115,14 @@ Differences from KDE/Windows at this milestone:
 
 ## Parked questions and exact next action
 
-Select whether to evaluate a scoped private SkyLight ordering route, using local
-reference sources and an owned foreign-process fixture with complete artifacts,
-or defer the underlay. This is an ordering-route decision, not permission to
-inject into Dock, lower SIP or widen TCC. Only after accepted below-member and
-nonmember ordering evidence should production integration resume.
+The tentative scoped SkyLight evaluation replaced the earlier evaluate-versus-
+defer question and is complete with a rejected ordering contract. Defer product
+integration. Exact next action: review whether a separate SkyLight-created
+carrier evaluation is worthwhile; do not repeat the two tested AppKit-carrier
+routes without a changed hypothesis. No such renderer is selected or implemented.
+Only accepted below-member, above-lower-nonmember and focus/raise stability
+evidence can unblock integration. Dock injection, SIP reduction and wider TCC
+remain outside this route.
 
 Cmd+Shift level polling is an unselected chord candidate. The move arm still
 needs a classified native interactive-move source; AX movement notifications
@@ -128,3 +138,104 @@ behavioral discriminators remain TBD in reference outcomes.
 
 Unsafe baseline in `crates/tiler-macos/src/ffi.rs`: 171 lines matching `unsafe`,
 103 matching `unsafe {`. No other unsafe module is permitted.
+
+## Scoped SkyLight evaluation (2026-10-17)
+
+**Tentative (pending user review):** evaluate private relative ordering on the
+existing carrier within Tier 2, with SIP enabled and no scripting addition or
+Dock injection. This is not a selection of a new private renderer. Both tested
+approaches failed; retain only the fail-closed diagnostic and defer integration.
+
+Local source inspection found:
+
+- JankyBorders `src/border.c` orders its SkyLight-created windows using
+  `SLSTransactionCreate`, `SLSTransactionOrderWindow` and commit mode 0, matching
+  level/sublevel and reasserting ordering on window updates. Its window creation
+  differs from this AppKit-owned panel.
+- yabai declares `SLSOrderWindow` in `src/misc/extern.h` and uses it in the Dock
+  scripting-addition payload; that authority path is not used here.
+- AeroSpace supplied no comparable relative-order renderer precedent.
+
+The local headers declare order/commit results as `CGError`; independent review
+checked argument order, transaction release and connection selection against
+those sources. A successful return alone is never the placement oracle.
+
+Two complete foreign-process reports were retained. The first build tested
+direct `SLSOrderWindow`; the second added the transaction discriminator. Direct
+ordering returned 0 on all 16 calls across the two runs but left settled global
+indices unchanged. Transaction ordering returned `-1698579600` (`0x9ac1bb70`)
+before commit and did not change placement. These are observed outcomes for this
+connection/carrier shape, not proof that a different SkyLight renderer cannot work.
+
+Representative second-run indices (smaller is nearer the front):
+
+| Stage | Carrier | Members | Lower nonmember | Below every member |
+| --- | --- | --- | --- | --- |
+| Before/direct/transaction | 0 | 3, 2 | 16 | No |
+| Focus and reflow | 0 | 3, 2 | 16 | No |
+| Click armed, then fence | 4 | 7, 6 | 20 | No |
+| Fullscreen return | 11 | 14, 13 | 28 | No |
+
+The above-lower-nonmember relation alone passes these rows; the required complete
+ordering conjunction never does. Stability below members is therefore unproven.
+No third ordering approach, production integration or border ordering change was
+attempted. Synthetic reflow here is carrier geometry, not Engine reflow.
+
+Both runs reported focus isolation, reflow, mouse-down/up receipt deltas +1/+1,
+pointer restoration, explicit fence hide/return, owned native fullscreen
+entry/hide/exit/return, original Space return, reaped helpers and zero onscreen
+residue. The fence is not a native Space-switch test. All are diagnostic-carrier
+observations, not product lifecycle acceptance. One offscreen CG record was
+reported separately until process teardown.
+
+Baseline/restoration limitation: a pre-run foreign geometry baseline contained
+39 windows; each run re-found 38 with no drift. The absent baseline window was
+not identified in those reports. There is no retained per-window protected-
+terminal comparison: complete restoration must not be claimed. Original Space
+and frontmost application returned; final process checks found no test helpers,
+controller or display-awake child remaining. Unrelated existing processes were
+preserved.
+
+Raw report SHA-256:
+
+- Direct-era build: `9c22fad6d71834099de908902fffe5471554d3a493615ea00ea007d6cdbfc28b`.
+- Route-discrimination build: `8b30b2590dcde20be2f9772abd870305dcf89b720a11762399ce16cf53498931`.
+
+Source was `f1abf858` plus the diagnostic diff. Per-build executable hashes were
+retained separately. The original signed binaries were subsequently rebuilt;
+the reports do not embed source/artifact/signing metadata, so their external
+provenance is incomplete. Fresh signed-build verification is not retroactive
+live evidence.
+
+Review corrections expose vanished baseline IDs in future reports, distinguish
+drift stability from complete restoration, remove stale public-only wording and
+apply the above-nonmember requirement only when that window is below the group.
+Missing indices still refuse, and below-every-member remains mandatory. Pure
+regressions cover these cases; these corrections were not rerun live and cannot
+repair the historical restoration gap. Independent correction review accepts
+diagnostic-only retention, not ordering or product acceptance.
+
+Fresh post-correction gates: 725 macOS tests, locked strict all-target clippy,
+workspace fmt, signed development build and `just verify` passed, with retained
+logs. Original gate logs were unavailable; these fresh checks supersede the
+earlier unretained gate claims. Unsafe accounting for this evaluation in
+`ffi.rs`: lines matching `unsafe` **176 → 191**; matching `unsafe {`
+**104 → 111**. No unsafe was added outside that module.
+
+Remaining KDE/Windows differences, explicitly:
+
+- No product underlay or group creation/dissolution lifecycle; no `ActiveGroup`
+  integration or Engine-projected reflow/re-anchoring.
+- No underlay settings/CLI, modifier chord or classified interactive-move arm.
+- No accepted below-members/border ordering or stable stacking repair; no Windows
+  band matching or KDE target parenting. The front-first diagnostic may cover
+  unrelated windows and is not a product fallback.
+- AppKit point/backing geometry uses a synthetic union, not Engine projection;
+  strict ARGB parsing/shared expansion exist only in the diagnostic foundation.
+- No product Space-switch/fullscreen/maximize suppression acceptance. Diagnostic
+  fullscreen and fence evidence do not establish these product behaviors.
+- Multi-display, physical appearance, chord/move feel and game journeys remain
+  unproven. No appearance-only dogfood step is offered for an absent product.
+- Active border remains above-target at normal level, unlike KDE/Windows
+  below-target rendering and Windows band matching. This evaluation does not
+  prove a small safe border switch; parity is a separate parked follow-up.
